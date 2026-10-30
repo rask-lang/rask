@@ -8289,6 +8289,15 @@ impl<'a> FunctionBuilder<'a> {
                         args[i] = Self::atomic_bits(builder, args[i], ty.as_ref());
                     }
                 }
+                // The `MemoryOrder` crosses as its tag. Passed as the enum, it
+                // was the address of a slot, which the runtime read as no order
+                // it knew and ran SeqCst: every `Relaxed` was ignored.
+                if let Some(last) = args.len().checked_sub(1) {
+                    let ty = mir_args.get(last).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+                    if let Some(MirType::Enum(id)) = &ty {
+                        args[last] = Self::load_enum_tag(builder, ctx, args[last], id.id as usize);
+                    }
+                }
                 if matches!(
                     func_name,
                     "Atomic_compare_exchange" | "Atomic_compare_exchange_weak"

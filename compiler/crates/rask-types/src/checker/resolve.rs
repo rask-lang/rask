@@ -477,6 +477,11 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let args = self.place_method_args(call_node, method_sig, args);
+        if method_sig.effect.acquires || method_sig.effect.releases {
+            if let (Some(call), Some((order_ty, _))) = (call_node, method_sig.params.last()) {
+                self.order_calls.insert(call, (method.to_string(), method_sig.effect, order_ty.clone()));
+            }
+        }
         if method_sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: method_sig.params.len(),
@@ -2720,7 +2725,7 @@ impl TypeChecker {
     /// `AtomicU64`-style names the registry used to carry are gone — the rule
     /// exists so a reader never has to wonder whether a named form and the
     /// generic form differ.
-    fn atomic_payload(&mut self, ty: &Type) -> Option<Type> {
+    pub(super) fn atomic_payload(&mut self, ty: &Type) -> Option<Type> {
         let (name, args): (String, &[GenericArg]) = match ty {
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             Type::Generic { base, args } => (self.types.type_name(*base), args),

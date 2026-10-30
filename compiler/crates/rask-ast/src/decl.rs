@@ -214,7 +214,8 @@ impl FnDecl {
     }
 
     /// The effects the stdlib declares on a function it can't show in a body:
-    /// `@grows`, `@shrinks`, `@blocks`, `@prints`, `@ambient`.
+    /// `@grows`, `@shrinks`, `@blocks`, `@prints`, `@ambient`, and the order
+    /// half an atomic operation applies, `@acquires` or `@releases`.
     pub fn declared_effects(&self) -> DeclaredEffects {
         let has = |name| self.attrs.iter().any(|a| a.is(name));
         DeclaredEffects {
@@ -223,6 +224,8 @@ impl FnDecl {
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
+            acquires: has("acquires"),
+            releases: has("releases"),
         }
     }
 }
@@ -257,6 +260,11 @@ pub struct DeclaredEffects {
     /// task runtime. Its result isn't fixed by its arguments, and it doesn't
     /// wait.
     pub ambient: bool,
+    /// An atomic operation that only reads: of a `MemoryOrder` it can apply
+    /// the acquire half and nothing else (mem.atomics/AT6).
+    pub acquires: bool,
+    /// An atomic operation that only writes: the release half and nothing else.
+    pub releases: bool,
 }
 
 impl DeclaredEffects {

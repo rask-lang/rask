@@ -1719,6 +1719,24 @@ impl ToDiagnostic for crate::TypeError {
                     )
             }
 
+            AtomicOrderDoesNotFit { reads, method, order, span } => {
+                let (does, missing, fits) = if *reads {
+                    ("only reads", "release", "Acquire")
+                } else {
+                    ("only writes", "acquire", "Release")
+                };
+                Diagnostic::error(format!("a `{method}` can't be `{order}`"))
+                    .with_code("E0927")
+                    .with_primary(*span, format!("a {method} {does}, so this order has no {missing} half to apply"))
+                    .with_why(format!(
+                        "an order says which neighbouring reads and writes may not move past this one; \
+                         a {method} has nothing on the {missing} side to order [mem.atomics/AT6]"
+                    ))
+                    .with_fix(format!(
+                        "`order: MemoryOrder.{fits}` if you meant to synchronize, or leave the order out \
+                         for the sequentially consistent default"
+                    ))
+            }
             AtomicOpNeedsNumber { ty, method, span } => {
                 Diagnostic::error(format!(
                     "`{}` needs a payload it can add, and `{}` isn't one", method, ty

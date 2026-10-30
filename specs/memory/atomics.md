@@ -19,7 +19,7 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 | **AT3: Not Copy** | Atomic types are not `Copy` or `Clone` (prevents accidental non-atomic copies) |
 | **AT4: Interior mutability** | Operations take `self`, not `mutate self` — the atomic itself handles synchronization |
 | **AT5: Wrapping arithmetic** | Fetch operations wrap on overflow. No panic, no undefined behavior |
-| **AT6: An order applies its relevant half** | A load, and a compare-exchange that fails, only read, so they use the order's acquire half (`Release` reads as `Relaxed`, `AcqRel` as `Acquire`). A store uses the release half. Every order is valid on every operation |
+| **AT6: The order fits the operation** | A load only reads, so it takes `Relaxed`, `Acquire` or `SeqCst`. A store only writes, so it takes `Relaxed`, `Release` or `SeqCst`. A read-modify-write takes any order. A misfit written at the call is a compile error (E0927); one that arrives in a variable panics when the operation runs. Compare-exchange takes one order, and a failure, which only reads, uses its acquire half |
 | **AT7: Platform-dependent types** | 128-bit and float atomics require hardware support; code must not compile on unsupported platforms |
 
 ## The `Atomic<T>` Type
@@ -90,7 +90,7 @@ Most code never names an order. The default, `SeqCst`, is the one where every ta
 | `AcqRel` | Both. | Read-modify-write in a lock |
 | `SeqCst` | One total order across all `SeqCst` operations. | The default |
 
-An operation uses the half of the order it can (AT6): a load keeps the acquire half, a store the release half, a read-modify-write all of it. Compare-exchange takes one order, and a failed one only reads, so it keeps the acquire half.
+A load has no release half and a store no acquire half, so `Release` on a load or `Acquire` on a store is an error (AT6). Compare-exchange takes one order, and a failed one only reads, so it keeps the acquire half.
 
 **Mental model:** a release store and the acquire load that sees it form a "happens-before" edge. Everything written before the release is visible after the acquire.
 
@@ -284,6 +284,15 @@ Floating-point atomics support a subset of operations:
 ## Error Messages
 
 ```
+ERROR [mem.atomics/AT6]: a `store` can't be `Acquire`
+   |
+8  |  ready.store(true, order: MemoryOrder.Acquire)
+   |                           ^^^^^^^^^^^^^^^^^^^ a store only writes, so this order has no acquire half to apply
+
+FIX: `order: MemoryOrder.Release` if you meant to synchronize, or leave the order out
+```
+
+```
 ERROR [mem.atomics/AT7]: Atomic<u128> not available on this platform
    |
 3  |  static COUNTER: Atomic<u128> = Atomic<u128>.new(0)
@@ -339,8 +348,8 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `Release` order on a load | AT6 | Reads as `Relaxed` |
-| `Acquire` order on a store | AT6 | Writes as `Relaxed` |
+| `Release` or `AcqRel` on a load | AT6 | Compile error; a panic if the order came in a variable |
+| `Acquire` or `AcqRel` on a store | AT6 | Compile error; a panic if the order came in a variable |
 | Mixing atomic and non-atomic access to same location | — | Undefined behavior |
 | Overflow on `fetch_add` | AT5 | Wraps (no panic) |
 | `Atomic<*T>` load then deref | AT1 | Load is safe; deref requires `unsafe` |
@@ -364,7 +373,7 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
 **AT2 (sequentially consistent by default):** This used to require an order on every call, on the theory that it kept the cost visible. It didn't: it made every reader of a counter learn the C11 memory model to write `fetch_add`, and the safe choice was the one that took the most typing. The order is a low-level optimization, so it's opt-in. Code that never names one gets the strongest, and the call that does names it with a label, so a weakened order stands out in review ([#1684](https://github.com/rask-lang/rask/issues/1684)).
 
-**AT6 (the relevant half):** Two orders on compare-exchange, plus a table of which orders each operation accepts, was a rule to learn for no benefit. A failed CAS reads, so its order follows from the one given. The same reading makes `Release` on a load mean something rather than be an error to look up.
+**AT6 (the order fits):** A failed CAS only reads, so its order follows from the one given, and the second order argument went. A load or store given an order it has no half for is different: the program asked for a guarantee the operation can't give. Running it as `Relaxed` would hide that, so it's an error. C11 leaves both undefined.
 
 **AT7 (platform-dependent):** Lock-based emulation of 128-bit atomics is 10x slower than native support. Hiding this cost would violate transparency. Compile-time detection lets library authors provide both paths.
 

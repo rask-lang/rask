@@ -1381,6 +1381,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.atomics/AT6: an order the operation has no use for. A load only
+    /// reads, so it has no release half to apply; a store only writes, so it
+    /// has no acquire half.
+    #[error("a `{method}` can't be `{order}`")]
+    AtomicOrderDoesNotFit {
+        /// Declared `@acquires`: it only reads. Otherwise `@releases`.
+        reads: bool,
+        method: String,
+        order: String,
+        span: Span,
+    },
+
     /// mem.atomics/GA3: an arithmetic atomic operation on a payload that has no
     /// arithmetic. The payload fits the word — a two-`i32` struct is eight
     /// bytes — so `AtomicPayload` isn't the answer; what it lacks is `+`.
@@ -1855,7 +1867,8 @@ impl TypeError {
             | TryInEnsure { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
-            | InvalidConvert { .. } => {}
+            | InvalidConvert { .. }
+            | AtomicOrderDoesNotFit { .. } => {}
         }
     }
 }

@@ -569,6 +569,13 @@ pub struct TypeChecker {
     /// conc.sync/SH9: payloads of `Shared.take()` calls, checked for
     /// linearity once `Shared.new(5)` has defaulted its literal.
     pub(super) pending_shared_takes: Vec<(Type, rask_ast::Span)>,
+    /// Method call arguments written `E.V`: the call's node, the argument's
+    /// node, the variant and its span. Asked once every call has resolved,
+    /// against `order_calls` (mem.atomics/AT6).
+    pub(super) pending_atomic_orders: Vec<(NodeId, NodeId, String, rask_ast::Span)>,
+    /// Calls to an operation declared `@acquires` or `@releases`: its name,
+    /// that declaration, and the type of its last parameter, the order.
+    pub(super) order_calls: HashMap<NodeId, (String, rask_ast::decl::DeclaredEffects, Type)>,
 }
 
 impl TypeChecker {
@@ -740,6 +747,8 @@ impl TypeChecker {
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
             pending_shared_takes: Vec::new(),
+            pending_atomic_orders: Vec::new(),
+            order_calls: HashMap::new(),
         }
     }
 
@@ -916,6 +925,7 @@ impl TypeChecker {
         // instead of having decided it on the spot.
         self.validate_pending_catch_void_checks();
         self.validate_pending_shared_takes();
+        self.validate_pending_atomic_orders();
 
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).

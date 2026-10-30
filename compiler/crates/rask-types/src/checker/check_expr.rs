@@ -792,6 +792,11 @@ impl TypeChecker {
                 if method == "clone" && args.is_empty() {
                     self.pending_wrapper_clone.push((expr.id, object.id));
                 }
+                for arg in args {
+                    if let ExprKind::Field { field, .. } = &arg.expr.kind {
+                        self.pending_atomic_orders.push((expr.id, arg.expr.id, field.clone(), arg.expr.span));
+                    }
+                }
                 // ST1: `staged()` hands back a working copy and commits it when
                 // a scope exits, so it only means anything as the source of
                 // one. `let v = s.staged()` type-checked as an ordinary method
@@ -6400,6 +6405,29 @@ impl TypeChecker {
     /// conc.sync/SH9: `take` empties the box, so it's only for a payload that
     /// makes the box single-handle. Asked after defaulting: at the call,
     /// `Shared.new(5)` still holds an open literal.
+    /// AT6: an order written at a call to an operation declared `@acquires`
+    /// (a load) or `@releases` (a store), naming a half it can't apply. One
+    /// passed in a variable is checked where the operation runs.
+    pub(super) fn validate_pending_atomic_orders(&mut self) {
+        for (call, arg, variant, span) in std::mem::take(&mut self.pending_atomic_orders) {
+            let Some((method, effect, order_ty)) = self.order_calls.get(&call).cloned() else { continue };
+            let arg_ty = self.node_types.get(&arg).map(|t| self.ctx.apply(t));
+            if arg_ty.as_ref() != Some(&self.ctx.apply(&order_ty)) {
+                continue;
+            }
+            let needs_acquire = matches!(variant.as_str(), "Acquire" | "AcqRel");
+            let needs_release = matches!(variant.as_str(), "Release" | "AcqRel");
+            if (effect.acquires && needs_release) || (effect.releases && needs_acquire) {
+                self.errors.push(TypeError::AtomicOrderDoesNotFit {
+                    reads: effect.acquires,
+                    method,
+                    order: variant,
+                    span,
+                });
+            }
+        }
+    }
+
     pub(super) fn validate_pending_shared_takes(&mut self) {
         let pending = std::mem::take(&mut self.pending_shared_takes);
         for (payload, span) in pending {

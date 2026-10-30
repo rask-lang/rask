@@ -58,7 +58,16 @@ known_keys() {
   grep -v '^\s*#' "$KNOWN" | grep ' :: ' | awk -F ' :: ' '{ print $1 " :: " $2 }'
 }
 
-mapfile -t files < <(grep -l -E 'spawn|Multitasking|Channel|Shared|Atomic|ThreadPool|Thread\.' "$SUITE"/*.rk | sort)
+# A file known_divergences.txt lists as failing to check on both backends
+# never builds, so it has nothing to say about scheduling. The differential
+# gate keeps track of it, and notices when it starts passing.
+mapfile -t no_check < <(grep -v '^\s*#' "$ROOT/tests/known_divergences.txt" | grep '(both check)' | awk '{ print $1 }')
+mapfile -t files < <(grep -l -E 'spawn|Multitasking|Channel|Shared|Atomic|ThreadPool|Thread\.' "$SUITE"/*.rk | sort \
+  | while read -r f; do
+      skip=0
+      for n in "${no_check[@]}"; do [ "$(basename "$f")" = "$n" ] && skip=1; done
+      [ "$skip" -eq 0 ] && echo "$f"
+    done)
 fan_out run_one "${files[@]}"
 
 mapfile -t known < <(known_keys)

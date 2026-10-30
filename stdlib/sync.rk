@@ -167,11 +167,13 @@ extend Atomic<T> {
 
     /// Read the value.
     @builtin
+    @acquires
     public func load(self, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     /// Write the value. Takes `self`, not `mutate self`: the atomic does its
     /// own synchronizing (AT4).
     @builtin
+    @releases
     public func store(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) {}
 
     /// Write `value` and answer what was there.

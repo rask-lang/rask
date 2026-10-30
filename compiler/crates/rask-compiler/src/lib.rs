@@ -592,7 +592,7 @@ fn comptime_diagnostics_for(
 ) -> Vec<Diagnostic> {
     // T11 tests need neither typecheck output nor monomorphization — the AST
     // interpreter runs them straight off the decls.
-    let mut diags = evaluate_comptime_tests(decls, Some(cfg));
+    let mut diags = evaluate_comptime_tests(decls, typed, Some(cfg));
 
     if !comptime_eval::has_comptime(decls) {
         return diags;
@@ -1150,7 +1150,7 @@ fn finalize_compile_inner(
 
 // The comptime-global evaluator lives in `comptime_eval` — the single source
 // of truth used by both the pipeline (below) and the CLI's test/bench paths.
-pub use crate::comptime_eval::{fold_comptime, evaluate_comptime_tests};
+pub use crate::comptime_eval::{evaluate_comptime_tests, fold_comptime, interpreter as comptime_interpreter};
 
 pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;

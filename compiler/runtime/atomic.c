@@ -36,12 +36,9 @@ static memory_order to_order(int64_t o) {
     }
 }
 
-// A load, and a compare-exchange that fails, only read: they keep the
-// acquire half of the order and drop the release half. A store keeps the
-// release half. So every `MemoryOrder` means something on every operation,
-// and C11 never sees an acquire store or a release load, which it leaves
-// undefined.
-static memory_order read_half(memory_order mo) {
+// A failed compare-exchange only reads, so it keeps the acquire half of the
+// one order the call gave.
+static memory_order failure_order(memory_order mo) {
     switch (mo) {
         case memory_order_release: return memory_order_relaxed;
         case memory_order_acq_rel: return memory_order_acquire;
@@ -49,12 +46,23 @@ static memory_order read_half(memory_order mo) {
     }
 }
 
-static memory_order write_half(memory_order mo) {
-    switch (mo) {
-        case memory_order_acquire: return memory_order_relaxed;
-        case memory_order_acq_rel: return memory_order_release;
-        default: return mo;
+// A load has no release half and a store no acquire half (mem.atomics/AT6).
+// The checker rejects one written at the call; this is the order that came
+// in a variable. C11 leaves both undefined.
+static memory_order load_order(int64_t o) {
+    memory_order mo = to_order(o);
+    if (mo == memory_order_release || mo == memory_order_acq_rel) {
+        rask_panic("a load can't be Release or AcqRel: it only reads");
     }
+    return mo;
+}
+
+static memory_order store_order(int64_t o) {
+    memory_order mo = to_order(o);
+    if (mo == memory_order_acquire || mo == memory_order_acq_rel) {
+        rask_panic("a store can't be Acquire or AcqRel: it only writes");
+    }
+    return mo;
 }
 
 // A failure ordering may not be a release or stronger than the success one;
@@ -242,12 +250,12 @@ int64_t rask_atomic_default(int64_t size, int64_t kind) {
 int64_t rask_atomic_load(int64_t ptr, int64_t ordering) {
     RASK_SIM_POINT();
     RaskAtomic *a = cell(ptr);
-    return widen(a, raw_load(a, read_half(to_order(ordering))));
+    return widen(a, raw_load(a, load_order(ordering)));
 }
 
 void rask_atomic_store(int64_t ptr, int64_t bits, int64_t ordering) {
     RASK_SIM_POINT();
-    raw_store(cell(ptr), (uint64_t)bits, write_half(to_order(ordering)));
+    raw_store(cell(ptr), (uint64_t)bits, store_order(ordering));
 }
 
 int64_t rask_atomic_swap(int64_t ptr, int64_t bits, int64_t ordering) {
@@ -268,7 +276,7 @@ static int64_t cas(int64_t ptr, int64_t expected, int64_t desired, int64_t order
     // extension, not part of the value.
     uint64_t current = (uint64_t)expected;
     memory_order ok_order = to_order(ordering);
-    _Bool ok = raw_cas(a, &current, (uint64_t)desired, weak, ok_order, read_half(ok_order));
+    _Bool ok = raw_cas(a, &current, (uint64_t)desired, weak, ok_order, failure_order(ok_order));
     *out_ok = ok ? 1 : 0;
     return ok ? expected : widen(a, current);
 }

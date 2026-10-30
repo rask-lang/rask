@@ -9,3 +9,4 @@ tests/suite/p09_simd.rk                            # SIMD vector types unbuilt �
 tests/suite/p11_gradual_generalization.rk          # gradual generalization unbuilt — pending_features
 tests/suite/t_random_range_imported.rk             # imported random.range result type open — #1604
 tests/suite/t_stdlib_interface_default_inherited.rk # stdlib interface defaults not inherited — #1624
+tests/suite/t_default_enum_shares_a_name.rk # program type hides a stdlib type of the same name — #1690

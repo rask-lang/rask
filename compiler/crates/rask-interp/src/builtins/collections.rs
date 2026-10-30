@@ -1104,9 +1104,21 @@ impl Interpreter {
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        // The `MemoryOrder` argument isn't read: it can only make the answer
-        // weaker, and this backend has no weaker answer to give.
+        // The `MemoryOrder` argument only weakens the answer, and this backend
+        // has no weaker answer to give. It is read for one thing: a load has
+        // no release half and a store no acquire half (AT6), and the checker
+        // can only see an order written at the call.
+        let order = |at: usize| match args.get(at) {
+            Some(Value::Enum { variant, .. }) => variant.as_str(),
+            _ => "SeqCst",
+        };
         match method {
+            "load" if matches!(order(0), "Release" | "AcqRel") => {
+                Err(RuntimeError::Panic("a load can't be Release or AcqRel: it only reads".to_string()))
+            }
+            "store" if matches!(order(1), "Acquire" | "AcqRel") => {
+                Err(RuntimeError::Panic("a store can't be Acquire or AcqRel: it only writes".to_string()))
+            }
             "load" => {
                 Ok(atomic.lock().unwrap().clone())
             }

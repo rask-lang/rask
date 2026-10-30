@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::Span;
-use rask_comptime::{ComptimeError, ComptimeInterpreter, ComptimeValue};
+use rask_comptime::{ComptimeError, ComptimeInterpreter, ComptimeValue, EnumRef};
 use rask_diagnostics::Diagnostic;
 use rask_mir::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt};
 use rask_mono::MonoProgram;
@@ -28,6 +28,38 @@ use crate::{is_comptime_init, CfgConfig};
 /// CT35: backwards branches allowed per fold unless `@comptime_quota` says more.
 const DEFAULT_BRANCH_QUOTA: usize = 1_000;
 
+/// An interpreter for the program's compile-time code: its functions, the
+/// build configuration, and which expressions the checker typed as enums.
+pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>) -> ComptimeInterpreter {
+    let mut interp = ComptimeInterpreter::new();
+    if let Some(c) = cfg {
+        interp.inject_cfg(c);
+    }
+    interp.register_functions(decls);
+    interp.know_enums(enum_refs(typed));
+    interp
+}
+
+/// Each expression the checker typed as an enum, with that enum's fieldless
+/// variants. `MemoryOrder.SeqCst` copied to a call as a stdlib default has no
+/// resolution in the program, but the checker typed it all the same.
+fn enum_refs(typed: &TypedProgram) -> HashMap<rask_ast::NodeId, EnumRef> {
+    let mut by_type: HashMap<rask_types::TypeId, Option<EnumRef>> = HashMap::new();
+    let mut out = HashMap::new();
+    for (&node, ty) in &typed.node_types {
+        let rask_types::Type::Named(id) = ty else { continue };
+        let found = by_type.entry(*id).or_insert_with(|| {
+            let rask_types::TypeDef::Enum { name, variants, .. } = typed.types.get(*id)? else { return None };
+            let units = variants.iter().filter(|(_, fields)| fields.is_empty()).map(|(v, _)| v.clone()).collect();
+            Some(EnumRef { name: name.clone(), units })
+        });
+        if let Some(e) = found {
+            out.insert(node, e.clone());
+        }
+    }
+    out
+}
+
 /// Fold every compile-time value in the program. Returns the values and the
 /// errors; a program with any error doesn't compile.
 pub fn fold_comptime(
@@ -36,20 +68,7 @@ pub fn fold_comptime(
     mono: &MonoProgram,
     cfg: Option<&CfgConfig>,
 ) -> (Folded, Vec<Diagnostic>) {
-    let mut interp = ComptimeInterpreter::new();
-    if let Some(c) = cfg {
-        interp.inject_cfg(c);
-    }
-    // Every enum the checker knows, stdlib included, before the program's own:
-    // a default argument is folded at the call, where its enum may not be
-    // declared or imported.
-    for def in typed.types.iter() {
-        if let rask_types::TypeDef::Enum { name, variants, .. } = def {
-            let units = variants.iter().filter(|(_, fields)| fields.is_empty()).map(|(v, _)| v.clone());
-            interp.register_enum(name.clone(), units.collect());
-        }
-    }
-    interp.register_functions(decls);
+    let interp = interpreter(decls, typed, cfg);
 
     let records = mono.node_records(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
@@ -390,7 +409,7 @@ fn eval_error(e: &ComptimeError, span: Span) -> Diagnostic {
 /// `assert`. That's what makes the two edge cases in the spec fall out: a test
 /// that opens a file or reaches `spawn` can't run at compile time, so saying so
 /// is the whole answer.
-pub fn evaluate_comptime_tests(decls: &[Decl], cfg: Option<&CfgConfig>) -> Vec<Diagnostic> {
+pub fn evaluate_comptime_tests(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>) -> Vec<Diagnostic> {
     let tests: Vec<(&rask_ast::decl::TestDecl, Span)> = decls
         .iter()
         .filter_map(|d| match &d.kind {
@@ -402,11 +421,7 @@ pub fn evaluate_comptime_tests(decls: &[Decl], cfg: Option<&CfgConfig>) -> Vec<D
         return Vec::new();
     }
 
-    let mut interp = rask_comptime::ComptimeInterpreter::new();
-    if let Some(c) = cfg {
-        interp.inject_cfg(c);
-    }
-    interp.register_functions(decls);
+    let mut interp = interpreter(decls, typed, cfg);
 
     let mut diags = Vec::new();
     for (test, span) in tests {
