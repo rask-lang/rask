@@ -167,65 +167,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        // Everything the checker types `Iterator<T>` that native can actually
-        // build is a Vec: `map.values()`, `s.split(",")`, `s.lines()` and the
-        // rest all lower to a runtime call returning a `RaskVec *`. That's
-        // exactly what the fused loop indexes, so they're sources — without
-        // this `s.split_whitespace().collect()` fell through to
-        // `Iterator_collect`, which native has no implementation of (#656).
-        //
-        // The test is on the *producer*, not just the type, because an adapter
-        // is typed `Iterator<T>` too and `x.map(f)` is not a Vec. Adapters are
-        // recognised as adapters before this runs; naming the producers keeps
-        // one that isn't (a `map` with a named function rather than a closure)
-        // from being mistaken for a source.
-        if self.is_vec_backed_iterator(expr) {
-            return true;
-        }
-        // The same value moved through a `let`. `map.values()` is
-        // expression-scoped (std.collections), so a local holding one only
-        // makes sense inside the source's scope — but native's failure was a
-        // codegen error naming `Iterator_map`, not a diagnostic saying so
-        // (#676). The local holds the Vec the producer returned, so the chain
-        // fuses from here just as well as from the call.
-        if let ExprKind::Ident(name) = &expr.kind {
-            let typed_iterator = matches!(
-                self.ctx.lookup_raw_type(expr.id),
-                Some(Type::UnresolvedGeneric { ref name, .. }) if name == "Iterator"
-            );
-            if typed_iterator {
-                return true;
-            }
-            if self.meta(name).and_then(|m| m.full_type.as_ref())
-                .is_some_and(|t| t.name().as_deref() == Some("Iterator"))
-            {
-                return true;
-            }
-        }
         false
-    }
-
-    /// A stdlib call that is typed `Iterator<T>` and returns a `RaskVec *`.
-    ///
-    /// `Map.iter()` is deliberately absent: `iter` is consumed as the chain's
-    /// end marker before this runs, and the receiver becomes the source.
-    fn is_vec_backed_iterator(&self, expr: &Expr) -> bool {
-        let ExprKind::MethodCall { method, args, .. } = &expr.kind else {
-            return false;
-        };
-        let materializes = match method.as_str() {
-            "values" | "keys" | "lines" | "chars" | "bytes"
-            | "split_whitespace" | "graphemes" | "take_all" => {
-                args.is_empty()
-            }
-            "split" => args.len() == 1,
-            _ => false,
-        };
-        materializes
-            && matches!(
-                self.ctx.lookup_raw_type(expr.id),
-                Some(Type::UnresolvedGeneric { ref name, .. }) if name == "Iterator"
-            )
     }
 
     /// Try to handle an iterator terminal method (.collect, .fold, .any, etc.)
@@ -266,7 +208,7 @@ impl<'a> MirLowerer<'a> {
             // on a `Vec<i64>` sent it to the string one and printed nothing.
             "join" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object)
-                    .filter(|c| !c.adapters.is_empty() || self.source_is_a_sequence(c.source))
+                    .filter(|c| !c.adapters.is_empty())
                 {
                     // `join` is over strings, and the collected ones are the
                     // temporary vector's to release.
@@ -447,34 +389,6 @@ impl<'a> MirLowerer<'a> {
 
     /// The base name of a recorded receiver prefix, which can carry its generic
     /// arguments — `Vec<i64>` is still a Vec.
-    /// Is this chain source already a sequence — an `Iterator<T>` — rather than a
-    /// collection?
-    ///
-    /// It decides who answers `join` on a chain with no adapters. A `Vec` answers
-    /// it itself and picks the right runtime by element type, so
-    /// `numbers.join(", ")` on a `Vec<i64>` has to keep going there. A sequence
-    /// has nothing to answer with: `s.split(", ").join("|")` reached codegen as a
-    /// call to `Iterator_join`, which nothing emits, while
-    /// `s.split(", ").to_vec().join("|")` two characters longer worked (#878).
-    ///
-    /// Asked positively, off the checker's own type. Asking the other way round —
-    /// "is this *not* a Vec" — answers yes whenever the prefix simply wasn't
-    /// recorded, which sent `Vec<i64>.join` down the materializing path and
-    /// printed nothing.
-    fn source_is_a_sequence(&self, source: &Expr) -> bool {
-        let name = match self.ctx.lookup_raw_type(source.id) {
-            Some(rask_types::Type::UnresolvedGeneric { name, .. }) => name.clone(),
-            Some(rask_types::Type::Generic { base, .. }) => {
-                match self.ctx.type_names.get(base) {
-                    Some(n) => n.clone(),
-                    None => return false,
-                }
-            }
-            _ => return false,
-        };
-        name.as_str().trim() == "Iterator"
-    }
-
     fn prefix_is(prefix: &Option<String>, want: &str) -> bool {
         prefix
             .as_deref()

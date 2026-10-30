@@ -2251,7 +2251,7 @@ impl<'a> MirLowerer<'a> {
             // it was simply never added, which is why `for (k, v) in self`
             // inside `Sequence.to_map` had no element type and fell back to a
             // word (#1046).
-            "Vec" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
+            "Vec" | "Sequence" | "SequenceMut" => args.first()?,
             // `m[k]` and `m.get(k)` yield V, not K.
             "Map" => args.get(1)?,
             _ => return None,
@@ -2663,7 +2663,7 @@ impl<'a> MirLowerer<'a> {
         }
         if let Some(ty) = self.ctx.lookup_raw_type(collection.id) {
             if let Some((name, args)) = self.generic_head(ty) {
-                if matches!(name.as_str(), "Vec" | "Iterator" | "Sequence") {
+                if matches!(name.as_str(), "Vec" | "Sequence") {
                     if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
                         if !matches!(**inner, Type::Var(_)) {
                             return self.ctx.type_to_mir(inner);

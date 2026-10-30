@@ -6782,7 +6782,7 @@ impl TypeChecker {
                 // #1046.
                 if matches!(
                     self.generic_name_of(ty).as_deref(),
-                    Some("Iterator") | Some("Range") | Some("Sequence") | Some("SequenceMut")
+                    Some("Range") | Some("Sequence") | Some("SequenceMut")
                 ) {
                     return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
                 }

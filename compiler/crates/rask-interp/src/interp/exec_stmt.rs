@@ -456,35 +456,6 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
-                    Value::Iterator(iter) => {
-                        loop {
-                            match self.iter_next(&iter)
-                                .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))? {
-                                Some(item) => {
-                                    self.env.push_scope();
-                                    self.define_for_binding(binding, item);
-                                    match self.exec_stmts(body) {
-                                        Ok(_) => {}
-                                        Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                            self.env.pop_scope();
-                                            break;
-                                        }
-                                        Err(diag) if continues_here(&diag.error, loop_label) => {
-                                            self.env.pop_scope();
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            self.env.pop_scope();
-                                            return Err(e);
-                                        }
-                                    }
-                                    self.env.pop_scope();
-                                }
-                                None => break,
-                            }
-                        }
-                        Ok(Value::Unit)
-                    }
                     // type.sequence/SEQ6: a Sequence is a function taking a
                     // yield. Iterating one is calling it — the loop hands over a
                     // yield that runs the body and answers whether to continue,

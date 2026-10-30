@@ -1254,21 +1254,6 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::String,
                 defaults: Vec::new(),
             }]),
-            // Iterator<Item> interface — single method `next(mutate self) -> Item?`
-            "Iterator" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: crate::MethodOrigin::Declared,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "next".to_string(),
-                self_param: SelfParam::Mutate,
-                params: vec![],
-                ret: Type::option(Type::Var(crate::types::TypeVarId(0))),
-                defaults: Vec::new(),
-            }]),
             // NT1–NT3 / the standard-interface roster. `Numeric` is a nominal
             // interface with these eight; `Integer` and `Float` extend it with
             // constants, which have no MethodSig to stand for them — a

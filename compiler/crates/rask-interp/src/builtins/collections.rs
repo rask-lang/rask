@@ -769,16 +769,6 @@ impl Interpreter {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(self.map_contains(&m, key)?))
             }
-            "keys" => {
-                let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
-                    .into_iter().map(|(k, _)| k).collect();
-                Ok(Value::vec(keys))
-            }
-            "values" => {
-                let values: Vec<Value> = map_entries_seeded(&m.lock().unwrap())
-                    .into_iter().map(|(_, v)| v).collect();
-                Ok(Value::vec(values))
-            }
             "len" => Ok(Value::int(m.lock().unwrap().len() as i64)),
             "is_empty" => Ok(Value::Bool(m.lock().unwrap().is_empty())),
             "clear" => {

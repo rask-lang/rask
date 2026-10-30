@@ -1228,11 +1228,10 @@ mod tests {
     /// Two groups. Declared elsewhere and genuinely resolvable: `Never` and
     /// `Ordering` are registered by the checker rather than by a stub;
     /// `Reader`/`Writer` are stdlib interfaces in io.rk, and the stub registry only
-    /// collects structs and enums; `Iterator` is special-cased in the resolver;
-    /// `Self` isn't a type name at all. Genuinely still missing: `Error` is the
+    /// collects structs and enums; `Self` isn't a type name at all. Genuinely still missing: `Error` is the
     /// `any Error` catch-all that ER32 auto-boxing will register (#708).
     const PENDING_STUB_TYPES: &[&str] = &[
-        "Never", "Ordering", "Reader", "Writer", "Iterator", "Self", "Error",
+        "Never", "Ordering", "Reader", "Writer", "Self", "Error",
     ];
 
     /// PascalCase type names a signature string mentions, with generic

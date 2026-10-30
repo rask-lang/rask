@@ -384,7 +384,7 @@ impl TypeChecker {
                 // `const` annotation is where it turned up (#1484).
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Iterator" | "Error" | "Heap" | "Atomic")
+                    || matches!(name, "Error" | "Heap" | "Atomic")
                 {
                     return;
                 }
