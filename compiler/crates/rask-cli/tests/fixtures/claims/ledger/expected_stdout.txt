@@ -5,3 +5,4 @@ Claims <pkg>/claims.rk
   spins_on_seven           checked all 256 inputs
                            1 input ran past the step budget; the first was n = 7
   tasks_double             held for 1,000 inputs (sampled, not proven)
+  map_sizes_agree          held for 1,000 inputs (sampled, not proven)

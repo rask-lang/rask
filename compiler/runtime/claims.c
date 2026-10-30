@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Claims (type.claims): the choices a claim's generated inputs are built from,
-// and the runner that calls a claim once per input.
+// Claims (type.claims): building a claim's inputs, and the runner that calls a
+// claim once per input.
 //
-// An input is a list of choices. Sampling reads them from bytes the claim's
-// seed produces, shrinking from bytes the CLI cut down, and an exhaustive run
-// from the digits of an index. The generated input code never knows which.
-// Bytes past the end read as zero, and zero is always the smallest choice, so
-// a shorter or lower byte string is a smaller input.
+// Each input is built from the shape its type's call site describes (the same
+// shapes json.decode reads, value_shape.h), by making a choice wherever the
+// type allows more than one value. Sampling reads those choices from bytes the
+// claim's seed produces, shrinking from bytes the CLI cut down, and an
+// exhaustive run from the digits of an index. Bytes past the end read as
+// zero, and zero is always the smallest choice, so a shorter or lower byte
+// string is a smaller input.
 
 #include "rask_runtime.h"
 #include "sim.h"
+#include "value_shape.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +35,7 @@ static uint8_t next_byte(void) {
     return b;
 }
 
-uint64_t rask_claim_draw(uint64_t bound) {
+static uint64_t draw(uint64_t bound) {
     if (bound <= 1) return 0;
     if (ch_by_index) {
         uint64_t digit = ch_index % bound;
@@ -67,13 +70,13 @@ static uint64_t raw_bits(int64_t bits) {
 
 // An integer of `bits` width. Mostly small, sometimes anything: a claim about
 // `u32` is usually broken first near zero or at the edges.
-int64_t rask_claim_int(int64_t bits, int64_t is_signed) {
+static int64_t draw_int(int64_t bits, int is_signed) {
     if (ch_by_index) {
-        uint64_t v = rask_claim_draw(bits >= 64 ? UINT64_MAX : 1ULL << bits);
+        uint64_t v = draw(bits >= 64 ? UINT64_MAX : 1ULL << bits);
         return is_signed ? sign_extend(v, bits) : (int64_t)v;
     }
-    if (rask_claim_draw(4) < 3) {
-        uint64_t z = rask_claim_draw(33);
+    if (draw(4) < 3) {
+        uint64_t z = draw(33);
         return is_signed ? zigzag(z) : (int64_t)z;
     }
     uint64_t v = raw_bits(bits);
@@ -82,12 +85,12 @@ int64_t rask_claim_int(int64_t bits, int64_t is_signed) {
 
 // Finite floats only. NaN and the infinities break every equality law, so a
 // claim about floats is written with tolerances and NaN is its own claim.
-double rask_claim_float(void) {
-    switch (rask_claim_draw(4)) {
+static double draw_float(void) {
+    switch (draw(4)) {
     case 0:
-        return (double)zigzag(rask_claim_draw(33));
+        return (double)zigzag(draw(33));
     case 1:
-        return (double)zigzag(rask_claim_draw(2001)) / (double)(1 + rask_claim_draw(100));
+        return (double)zigzag(draw(2001)) / (double)(1 + draw(100));
     case 2: {
         uint64_t bits = raw_bits(64);
         double d;
@@ -97,29 +100,244 @@ double rask_claim_float(void) {
     default: {
         static const double edges[] = { 0.0, -0.0, 0.5, 1e-9, 1e9, 2.2250738585072014e-308,
                                         1.7976931348623157e308 };
-        return edges[rask_claim_draw(sizeof edges / sizeof edges[0])];
+        return edges[draw(sizeof edges / sizeof edges[0])];
     }
     }
 }
 
-// How the input prints, written by the generated code as it builds it.
+// How the inputs print, one `name = value` per input, in the order the claim
+// takes them. Lowering renders each through the type's Debug.
 static char  *note_buf;
 static size_t note_len;
 static size_t note_cap;
 
-void rask_claim_note(const RaskStr *text) {
-    int64_t n = rask_string_len(text);
-    if (note_len + (size_t)n + 1 > note_cap) {
+static void note_append(const char *text, size_t n) {
+    if (note_len + n + 1 > note_cap) {
         size_t cap = note_cap ? note_cap * 2 : 256;
-        while (cap < note_len + (size_t)n + 1) cap *= 2;
+        while (cap < note_len + n + 1) cap *= 2;
         char *grown = realloc(note_buf, cap);
         if (!grown) return;
         note_buf = grown;
         note_cap = cap;
     }
-    memcpy(note_buf + note_len, rask_string_ptr(text), (size_t)n);
-    note_len += (size_t)n;
+    memcpy(note_buf + note_len, text, n);
+    note_len += n;
     note_buf[note_len] = '\0';
+}
+
+void rask_claim_note_input(const RaskStr *text) {
+    if (note_len > 0) note_append(", ", 2);
+    note_append(rask_string_ptr(text), (size_t)rask_string_len(text));
+}
+
+// ─── Building a value from its shape ────────────────────────
+
+// Past this depth a list, map, string or optional is empty, so a type that
+// holds itself through a `Vec` still ends.
+#define MAX_DEPTH 8
+
+static int64_t prim_bits(int64_t kind, int *is_signed) {
+    *is_signed = kind >= RASK_JSHAPE_I8 && kind <= RASK_JSHAPE_I64;
+    switch (kind) {
+    case RASK_JSHAPE_I8: case RASK_JSHAPE_U8: return 8;
+    case RASK_JSHAPE_I16: case RASK_JSHAPE_U16: return 16;
+    case RASK_JSHAPE_I32: case RASK_JSHAPE_U32: return 32;
+    default: return 64;
+    }
+}
+
+static void store_int(void *dst, int64_t width, int64_t v) {
+    switch (width) {
+    case 1: { int8_t x = (int8_t)v; memcpy(dst, &x, 1); break; }
+    case 2: { int16_t x = (int16_t)v; memcpy(dst, &x, 2); break; }
+    case 4: { int32_t x = (int32_t)v; memcpy(dst, &x, 4); break; }
+    default: memcpy(dst, &v, 8); break;
+    }
+}
+
+// A few characters that break text handling, more often than random ones would.
+static const uint32_t ALPHABET[] = { 'a', 'b', 'Z', '0', ' ', '\n', 0xE9 /* é */, '"' };
+#define ALPHABET_LEN (sizeof ALPHABET / sizeof ALPHABET[0])
+
+static uint32_t draw_char(void) {
+    return ALPHABET[draw(ALPHABET_LEN)];
+}
+
+// Whether a list, map or string takes another element: one in four stops it.
+static int another(int depth) {
+    return depth < MAX_DEPTH && draw(4) != 0;
+}
+
+static void fill(void *dst, RaskJsonShape *shape, int depth);
+
+static void fill_string(void *dst, int depth) {
+    char buf[256];
+    size_t n = 0;
+    while (n + 4 <= sizeof buf && another(depth)) {
+        uint32_t c = draw_char();
+        if (c < 0x80) {
+            buf[n++] = (char)c;
+        } else {
+            buf[n++] = (char)(0xC0 | (c >> 6));
+            buf[n++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    RaskStr s;
+    rask_string_from_bytes(&s, buf, (int64_t)n);
+    memcpy(dst, &s, sizeof s);
+}
+
+static void fill_container_elems(RaskJsonShape *shape, int depth, void *container, int is_map) {
+    int64_t slot = shape->slot;
+    char stack_slot[64];
+    char *cell = slot <= (int64_t)sizeof stack_slot ? stack_slot : (char *)rask_alloc(slot);
+    while (another(depth)) {
+        memset(cell, 0, (size_t)slot);
+        if (is_map) {
+            RaskStr key;
+            fill_string(&key, depth + 1);
+            fill(cell, shape->elem, depth + 1);
+            rask_map_insert((RaskMap *)container, &key, cell);
+        } else {
+            fill(cell, shape->elem, depth + 1);
+            rask_vec_push((RaskVec *)container, cell);
+        }
+    }
+    if (cell != stack_slot) rask_free(cell);
+}
+
+static void fill(void *dst, RaskJsonShape *shape, int depth) {
+    if (!shape) return;
+    switch (shape->kind) {
+    case RASK_JSHAPE_BOOL:
+        store_int(dst, 1, (int64_t)draw(2));
+        return;
+    case RASK_JSHAPE_F32: {
+        float f = (float)draw_float();
+        memcpy(dst, &f, sizeof f);
+        return;
+    }
+    case RASK_JSHAPE_F64: {
+        double d = draw_float();
+        memcpy(dst, &d, sizeof d);
+        return;
+    }
+    case RASK_JSHAPE_CHAR: {
+        uint32_t c = draw_char();
+        memcpy(dst, &c, sizeof c);
+        return;
+    }
+    case RASK_JSHAPE_STRING:
+        fill_string(dst, depth);
+        return;
+    case RASK_JSHAPE_VEC: {
+        RaskVec *v = rask_vec_with_capacity(shape->slot, 0, shape->elem_owned,
+                                            shape->n_elem_owned, shape->elem_align);
+        fill_container_elems(shape, depth, v, 0);
+        memcpy(dst, &v, sizeof v);
+        return;
+    }
+    case RASK_JSHAPE_MAP: {
+        RaskMap *m = rask_map_new_string_keys(16, shape->slot, rask_elem_strs_one, 1, 0,
+                                              shape->elem_owned, shape->n_elem_owned,
+                                              shape->elem_align);
+        fill_container_elems(shape, depth, m, 1);
+        memcpy(dst, &m, sizeof m);
+        return;
+    }
+    case RASK_JSHAPE_OPT: {
+        // An exhaustive walk spends one digit on present-or-not; sampling makes
+        // `none` one input in four.
+        int present = ch_by_index ? draw(2) == 1 : (depth < MAX_DEPTH && draw(4) != 0);
+        *(uint8_t *)dst = present ? RASK_TAG_PRESENT : RASK_TAG_ABSENT;
+        if (present) fill((char *)dst + shape->payload_offset, shape->elem, depth + 1);
+        return;
+    }
+    case RASK_JSHAPE_STRUCT:
+        for (int32_t i = 0; i < shape->nfields; i++) {
+            struct RaskJsonField *f = &shape->fields[i];
+            // A field the wire form leaves out takes its default, as in a
+            // decode: a claim gets the values a decode could build.
+            if (f->flags & RASK_JFIELD_NOT_SERIALIZED) {
+                if (f->fill) f->fill((char *)dst + f->offset);
+                continue;
+            }
+            fill((char *)dst + f->offset, f->shape, depth);
+        }
+        return;
+    case RASK_JSHAPE_ENUM: {
+        if (shape->nvariants == 0) return;
+        struct RaskJsonVariant *v = &shape->variants[draw((uint64_t)shape->nvariants)];
+        store_int((char *)dst + shape->tag_offset, shape->tag_width, v->tag);
+        fill(dst, v->payload, depth);
+        return;
+    }
+    default: {
+        int is_signed;
+        int64_t bits = prim_bits(shape->kind, &is_signed);
+        store_int(dst, bits / 8, draw_int(bits, is_signed));
+        return;
+    }
+    }
+}
+
+// How many index values an exhaustive walk of `shape` takes, 0 when it can't be
+// walked. `*distinct` is how many different values those cover: a sum spends a
+// digit on the branch and as many as its widest branch after it, so the
+// narrower branches leave digits unused (claims.c skips those as repeats).
+static uint64_t walk_of(RaskJsonShape *shape, uint64_t *distinct) {
+    if (!shape) { *distinct = 1; return 1; }
+    switch (shape->kind) {
+    case RASK_JSHAPE_BOOL: *distinct = 2; return 2;
+    case RASK_JSHAPE_I8: case RASK_JSHAPE_U8: *distinct = 256; return 256;
+    case RASK_JSHAPE_OPT: {
+        uint64_t d, w = walk_of(shape->elem, &d);
+        if (!w) return 0;
+        *distinct = d + 1;
+        return w > UINT64_MAX / 2 ? 0 : 2 * w;
+    }
+    case RASK_JSHAPE_STRUCT: {
+        uint64_t w = 1, n = 1;
+        for (int32_t i = 0; i < shape->nfields; i++) {
+            uint64_t d, fw = walk_of(shape->fields[i].shape, &d);
+            if (!fw || w > UINT64_MAX / fw) return 0;
+            w *= fw;
+            n *= d;
+        }
+        *distinct = n;
+        return w;
+    }
+    case RASK_JSHAPE_ENUM: {
+        uint64_t widest = 1, n = 0;
+        for (int32_t i = 0; i < shape->nvariants; i++) {
+            uint64_t d, vw = walk_of(shape->variants[i].payload, &d);
+            if (!vw) return 0;
+            if (vw > widest) widest = vw;
+            n += d;
+        }
+        *distinct = n;
+        if (widest > UINT64_MAX / (uint64_t)shape->nvariants) return 0;
+        return widest * (uint64_t)shape->nvariants;
+    }
+    default:
+        return 0;
+    }
+}
+
+// The input's walk so far: every `claims.input` multiplies its own in.
+static uint64_t input_walk;
+static uint64_t input_distinct;
+
+// `claims.input<T>(name)`: build one input of the shape `shape` at `dst`.
+void rask_claim_fill(void *dst, RaskJsonShape *shape) {
+    uint64_t d, w = walk_of(shape, &d);
+    if (!w || !input_walk || input_walk > UINT64_MAX / w) {
+        input_walk = 0;
+    } else {
+        input_walk *= w;
+        input_distinct *= d;
+    }
+    fill(dst, shape, 0);
 }
 
 // The last statement of every claim body calls this (type.claims/CL5): a body
@@ -297,8 +515,7 @@ void rask_claim_start(void) {
 #endif
 }
 
-int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t domain,
-                       int64_t budget) {
+int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t budget) {
     static int64_t claim_index;
     int64_t me = claim_index++;
     if (cfg_shrink_claim >= 0) {
@@ -307,8 +524,13 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
         return run_candidates(fn, name, (uint64_t)seed, budget);
     }
 
-    int exhaustive = domain > 0 && domain <= MAX_WALK;
-    int64_t walk = exhaustive ? domain : cfg_samples;
+    // The first input is the one every choice at zero builds, run as index 0
+    // of an exhaustive walk. Building it measures the walk the claim's inputs
+    // take; when that's small enough the walk carries on, and otherwise the
+    // rest are sampled.
+    int exhaustive = 1;
+    int64_t walk = 1;
+    uint64_t distinct = 1;
     int64_t tried = 0, discarded = 0, budget_hits = 0;
     char *budget_input = NULL;
     int failed = 0;
@@ -321,8 +543,15 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
             ch_by_index = 0;
             sample_bytes((uint64_t)seed, i);
         }
+        input_walk = 1;
+        input_distinct = 1;
         char *msg;
         int out = run_input(fn, input_sim_seed((uint64_t)seed, i), budget, &msg);
+        if (i == 0) {
+            exhaustive = input_walk > 0 && input_walk <= MAX_WALK;
+            walk = exhaustive ? (int64_t)input_walk : cfg_samples;
+            distinct = input_distinct;
+        }
         if (out == OUT_REPEAT) {
             free(msg);
             continue;
@@ -346,10 +575,10 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
 
     printf("%s{\"claim\":\"", rask_test_record_mark());
     rask_test_json_escaped(name);
-    printf("\",\"done\":true,\"mode\":\"%s\",\"tried\":%lld,\"discarded\":%lld,"
+    printf("\",\"done\":true,\"mode\":\"%s\",\"tried\":%lld,\"distinct\":%llu,\"discarded\":%lld,"
            "\"over_budget\":%lld,\"budget_input\":\"",
-           exhaustive ? "all" : "sampled", (long long)tried, (long long)discarded,
-           (long long)budget_hits);
+           exhaustive ? "all" : "sampled", (long long)tried, (unsigned long long)distinct,
+           (long long)discarded, (long long)budget_hits);
     rask_test_json_escaped(budget_input ? budget_input : "");
     printf("\",\"failed\":%s}\n", failed ? "true" : "false");
     fflush(stdout);

@@ -744,7 +744,14 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
             &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None, false),
+        StdlibEntry::simple("json_shape_enum", "rask_json_shape_enum",
+            &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("json_shape_variant", "rask_json_shape_variant",
+            &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("json_shape_free", "rask_json_shape_free", &[types::I64], None, false),
+        // `claims.input<T>`: fill the destination from the claim's choices
+        // through the same shape a decode would read (type.claims).
+        StdlibEntry::simple("claim_fill", "rask_claim_fill", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("json_decode_into", "rask_json_decode_into",
             &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_decode_zero", "rask_json_decode_zero", &[types::I64, types::I64], None, false),

@@ -5574,6 +5574,16 @@ impl<'a> MirLowerer<'a> {
                             return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                         }
 
+                        // claims.input<T>(name) — build a claim's input (type.claims)
+                        if name == "claims" && method == "input" && args.len() == 1 {
+                            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                                return Err(LoweringError::InvalidConstruct(
+                                    "claims.input needs to know what to build".to_string(),
+                                ));
+                            };
+                            return self.lower_claim_input(&args[0].expr, &target).map(Some);
+                        }
+
                         // json.decode<T> — describe T to the runtime, decode into it
                         if name == "json" && method == "decode" && args.len() == 1 {
                             let (str_op, _) = self.lower_expr(&args[0].expr)?;
@@ -8958,7 +8968,7 @@ impl<'a> MirLowerer<'a> {
     /// Vec field printed the *address* of its buffer as an integer, which is
     /// how `Holder { items: 609538720 }` came out where the interpreter says
     /// `Holder { items: [1, 2] }`.
-    fn debug_render_value(
+    pub(super) fn debug_render_value(
         &mut self,
         op: &MirOperand,
         ty: &MirType,
@@ -9876,7 +9886,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Concatenate a list of string operands left to right.
-    fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
+    pub(super) fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
         let mut iter = parts.into_iter();
         let Some(mut acc) = iter.next() else {
             return MirOperand::Constant(MirConst::String(String::new()));
