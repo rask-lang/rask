@@ -1628,20 +1628,10 @@ impl TypeChecker {
                     .unwrap_or_else(|| self.resolve_float_method(&ty, &method, &args, &ret, span))
             }
             // `bool` is Equal and Comparable with `false < true`
-            // (type.operators, support table).
-            Type::Bool => match method.as_str() {
-                "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                    self.unify(&args[0], &Type::Bool, span)?;
-                    self.unify(&ret, &Type::Bool, span)
-                }
-                "compare" if args.len() == 1 => {
-                    self.unify(&args[0], &Type::Bool, span)?;
-                    self.unify(&ret, &self.ordering_type(), span)
-                }
-                "to_string" if args.is_empty() => self.unify(&ret, &Type::String, span),
-                "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
-                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-            },
+            // (type.operators, support table), Hashable and Displayable.
+            Type::Bool => self
+                .resolve_provided_method(&ty, &method, &args, &ret, span)
+                .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span })),
             // Raw pointers. The eager path in check_expr catches these when the
             // receiver's type is already known; it isn't when the pointer came
             // out of another call, and without this arm those fell through to
