@@ -4725,17 +4725,10 @@ impl<'a> FunctionBuilder<'a> {
                 let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
                 let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                if let Some(file_str) = ctx.source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get(func.name.as_str()),
-                        ctx.string_globals.get(file_str),
-                    ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
-                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                    }
-                }
+                let func_ref = ctx.func_refs.get(func.name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+                let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
+                builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
         } else if func.name == "assert_fail_cmp_str" || func.name == "check_fail_cmp_str" {
             // Comparison assert/check failure with string values: args = [left, right, op_str].
@@ -4744,17 +4737,10 @@ impl<'a> FunctionBuilder<'a> {
                 let left_val = Self::lower_operand(builder, &args[0], ctx)?;
                 let right_val = Self::lower_operand(builder, &args[1], ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                if let Some(file_str) = ctx.source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get(func.name.as_str()),
-                        ctx.string_globals.get(file_str),
-                    ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
-                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                    }
-                }
+                let func_ref = ctx.func_refs.get(func.name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+                let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
+                builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
         } else if matches!(func.name.as_str(),
             "assert_fail_cmp_f64" | "assert_fail_cmp_f32"
@@ -4768,17 +4754,10 @@ impl<'a> FunctionBuilder<'a> {
                 let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
                 let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                if let Some(file_str) = ctx.source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        ctx.func_refs.get(func.name.as_str()),
-                        ctx.string_globals.get(file_str),
-                    ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
-                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                        builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
-                    }
-                }
+                let func_ref = ctx.func_refs.get(func.name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+                let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
+                builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
         } else if func.name == "check_fail" {
             // check failed — record failure, don't unwind.
@@ -8425,6 +8404,22 @@ impl<'a> FunctionBuilder<'a> {
     /// Lower a MIR operand to a raw C string pointer (for runtime functions
     /// that take `const char*`). For MirConst::String, returns the data section
     /// pointer directly instead of constructing a Rask string object.
+    /// `file, line, col` for a runtime call that reports where it was made.
+    /// A package build has no source file for the back end yet (#1568), so
+    /// the file goes as null there and the runtime prints the message alone.
+    /// Leaving the call out instead turned a failed comparison `assert` in a
+    /// package into a trap, and a failed `check` into nothing at all.
+    fn location_args(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx) -> [Value; 3] {
+        let file = ctx.source_file.and_then(|f| ctx.string_globals.get(f));
+        let file_ptr = match file {
+            Some(gv) => builder.ins().global_value(types::I64, *gv),
+            None => builder.ins().iconst(types::I64, 0),
+        };
+        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
+        [file_ptr, line_val, col_val]
+    }
+
     fn lower_operand_as_cstr(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
