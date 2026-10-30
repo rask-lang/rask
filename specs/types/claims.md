@@ -1,11 +1,11 @@
 <!-- id: type.claims -->
 <!-- status: proposed -->
-<!-- summary: Hand-written statements of what code must do, checked by the compiler over generated inputs; a counterexample is a compile error -->
-<!-- depends: control/comptime.md, stdlib/testing.md, types/generics.md, stdlib/encoding.md -->
+<!-- summary: Hand-written statements of what code must do, run under sim over generated inputs at build time; a counterexample fails the build -->
+<!-- depends: sim.md, determinism.md, stdlib/testing.md, types/generics.md, stdlib/encoding.md -->
 
 # Claims
 
-A claim says what code must do for every input. A person writes it, the compiler checks it, and an input that breaks it is a compile error.
+A claim says what code must do for every input. A person writes it, the build checks it, and an input that breaks it fails the build.
 
 <!-- test: skip -->
 ```rask
@@ -30,11 +30,11 @@ A claim checks what it says and nothing more. A package held to ten claims has t
 | **CL1: Shape** | `claim name(params) { body }`. The parameters are the inputs the claim holds for, all of them. The body checks with `assert` and `check` (`std.testing/A1`, `A2`) and returns nothing |
 | **CL2: Claims sources only** | A claim is declared only in a claims source: a package's `claims.rk` (W1) or a file or directory its manifest lists under `[claims]` (W2). `claim` anywhere else is a compile error |
 | **CL3: Nothing depends on a claims source** | A claims source may also hold helper functions (a reference model, a generator). Code can't import it; it's reached only through `[claims]` (W2), and release builds strip it, like tests |
-| **CL4: Comptime body** | A claim runs in the comptime interpreter. Its body and everything it calls must be comptime-evaluable (`ctrl.comptime/CT6`, `CT7`): no I/O, no `spawn`, no `any I` |
+| **CL4: Runs under sim** | A claim is compiled to native code and run on the sim runtime (`sim`): one thread at a time, with scheduling, the clock, I/O and faults all drawn from a seed. So a claim can do what a sim test can, `spawn` and I/O included. What sim refuses (`Thread.spawn`, C that escapes to the real world, `sim/B1`, `B2`) a claim can't reach either |
 | **CL5: Discarding an input** | A `return` before the end of the body discards that input. It counts neither for nor against the claim. That's how a claim states a precondition: `if !is_valid(x) { return }` |
 | **CL6: A panic is a failure** | If the code under the claim panics on an input (out of bounds, overflow, `unreachable()`), that input is a counterexample. A claim that just calls a function claims it never panics |
 
-CL2 is the load-bearing rule. A claim only works if the person who wrote it isn't the one who wrote the code. If an agent can edit the claim, its cheapest way past a compile error is to weaken the claim. Keeping claims in their own files is what lets a repo protect them (code owners on one path, or a separate repo with its own access) and lets a reviewer see a claim change on its own. The language can't enforce who wrote a file. It can make claims separable, so the repo can.
+CL2 is the load-bearing rule. A claim only works if the person who wrote it isn't the one who wrote the code. If an agent can edit the claim, its cheapest way past a failed build is to weaken the claim. Keeping claims in their own files is what lets a repo protect them (code owners on one path, or a separate repo with its own access) and lets a reviewer see a claim change on its own. The language can't enforce who wrote a file. It can make claims separable, so the repo can.
 
 A claims source is compiled as its own package, even a file sitting in the package directory, so it sees only what the package it checks makes `public` (`struct.modules`). Claims state what a package promises, and its internals can be rewritten freely as long as the promise holds. That also keeps claims few and broad: checking individual functions is what tests are for.
 
@@ -71,12 +71,12 @@ Every claim ends with a verdict. Only a counterexample fails the build.
 
 | Rule | Description |
 |------|-------------|
-| **V1: Counterexample** | Some input breaks the claim. Compile error showing the smallest input the checker could shrink it to, and the failed assertion with both operands (`std.testing/A5`) |
-| **V2: Checked all** | Every input in the claim's domain was tried. Applies when every parameter's domain is finite and the product is at most 65,536 (bools, enums without payloads, `u8`, `i8`, and tuples and structs of those). Within that domain, the claim is proven |
+| **V1: Counterexample** | Some input breaks the claim. The build fails, showing the smallest input the checker could shrink it to and the failed assertion with both operands (`std.testing/A5`). A claim that reached a scheduling point or simulated I/O also gets sim's replay line (`sim/I4`) |
+| **V2: Checked all** | Every input in the claim's domain was tried. Applies when every parameter's domain is finite and the product is at most 65,536 (bools, enums without payloads, `u8`, `i8`, and tuples and structs of those), and the claim never reaches a scheduling point or simulated I/O. Within that domain, the claim is proven. Once a claim touches either, the schedule and faults are sampled too, and the verdict is at most V3 |
 | **V3: Sampled** | The claim held for N generated inputs (default 1,000). Reported, not an error. The verdict says the number and never rounds up to proven |
-| **V4: Proven** | Reserved for a solver backend. Same claims, stronger verdict. Not part of v1 |
+| **V4: Proven** | Reserved for a solver backend, for claims that touch no scheduling point or I/O. Same claims, stronger verdict. Not part of v1 |
 | **V5: Out of budget** | An input ran past the claim's step budget. Reported with the input, not an error. Not finishing isn't the same as being shown false |
-| **V6: Strict mode** | `rask check --claims strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
+| **V6: Strict mode** | `--claims strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
 
 ```
 claims: game (held to game/claims)
@@ -97,17 +97,27 @@ The error code is a placeholder.
 
 ## Determinism
 
-A compile error that comes and goes between builds is worse than none, so checking is a pure function of the source and the toolchain.
+A build failure that comes and goes between builds is worse than none, so checking is a pure function of the source and the toolchain.
 
 | Rule | Description |
 |------|-------------|
-| **D1: Seed from the claim** | The sampling seed derives from the claim's name and the tokens of its body. The same claim on the same compiler gets the same inputs every time. Editing the claim draws new inputs |
-| **D2: Step budget** | Each input gets a budget counted in interpreter steps, never wall-clock time. Claims don't use the comptime branch quota (`ctrl.comptime/CT35`, 1,000), which is sized for constants, not for running a function a thousand times. `@claim_budget(N)` on a claim raises it |
+| **D1: Seed from the claim** | The claim's seed derives from its name and the tokens of its body. Each input's sim seed derives from (claim seed, input index), so the inputs, schedules and faults are the same every build. Editing the claim draws new ones |
+| **D2: Step budget** | Each input gets a budget counted in steps, never wall-clock time. A claim build counts loop back-edges and calls; ordinary builds don't carry the counter. `@claim_budget(N)` on a claim raises it |
 | **D3: Toolchain-pinned** | A new compiler may change the generators and draw different inputs. That's a toolchain change like any other, and it can turn up a counterexample nobody saw before. That's the point of it |
 | **D4: Cached verdicts** | A verdict is cached under the claim's text and the semantic hashes of every function it reaches (`comp.architecture/IC2`). A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build |
-| **D5: Cached calls** | Calls a claim makes into the package it checks are memoized on (the callee's semantic hash, the receiver and argument values), and the result holds the returned value and, for a `mutate` parameter, the value after the call. Claim code runs at comptime, so a call with the same inputs always gives the same result (`ctrl.comptime/CT7`, `CT65`), and owned values mean nothing else can change behind it. Sampled operation lists share prefixes, so the state after `[Deposit(5), Withdraw(2)]` is computed once for every input that starts that way. The memo table is stored with the verdict cache (D4), keyed the same way, so it survives between builds until the callee changes |
+| **D5: Cached calls** | Calls a claim makes into the package it checks are memoized when the effects analysis finds them pure (no I/O, no scheduling point); an effectful call's result also depends on the sim state, not only its arguments. Pure calls are memoized on (the callee's semantic hash, the receiver and argument values), and the result holds the returned value and, for a `mutate` parameter, the value after the call. A pure call with the same inputs always gives the same result, and owned values mean nothing else can change behind it. Sampled operation lists share prefixes, so the state after `[Deposit(5), Withdraw(2)]` is computed once for every input that starts that way. The memo table is stored with the verdict cache (D4), keyed the same way, so it survives between builds until the callee changes |
 
-Deep random search belongs in `rask test`, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `rask test --claims --seeds N` runs every claim on N more seeds without changing what `rask check` decides.
+Deep random search belongs in `rask test`, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `rask test --claims --seeds N` runs every claim on N more seeds without changing what the build decides.
+
+## When claims run
+
+| Rule | Description |
+|------|-------------|
+| **R1: Where code is compiled** | Claims run as part of `rask build`, `rask run` and `rask test`, and a counterexample stops it. `rask check` type-checks claims but doesn't run them, since it generates no code. `rask check --claims` builds and runs them |
+| **R2: Debug profile** | A claim runs against a debug-profile build of the package, whatever profile is being built, so overflow and bounds checks are on (CL6) |
+| **R3: Native, not interpreted** | Claims check the code that ships. A codegen bug that breaks a claim is reported as a counterexample, and it is one |
+
+Unchanged claims cost nothing to re-run (D4), so the build pays only for claims whose code changed.
 
 ## Claims on interfaces
 
@@ -134,7 +144,7 @@ Interfaces are nominal because a conformance is a statement about meaning (`type
 
 ## Weak claims
 
-A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, drops a branch, swaps two arguments) and reruns the claim. A claim that holds after every change isn't constraining that code, and it's reported. This is too slow for every build, so it's a tool and never part of `rask check`.
+A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, drops a branch, swaps two arguments) and reruns the claim. A claim that holds after every change isn't constraining that code, and it's reported. This is too slow for every build, so it's a tool and never part of one.
 
 ## Tooling
 
@@ -146,9 +156,9 @@ A hand-written claim can still be weaker than its author thinks. `rask claims --
 
 ## What a claim can and can't say
 
-A claim can say anything that's a pure check over values. That covers round trips (`decode(encode(x)) == x`), invariants that survive any sequence of operations, agreement between a fast implementation and a slow obvious one, interface laws, and "never panics".
+A claim can say anything that's a check over values: round trips (`decode(encode(x)) == x`), invariants that survive any sequence of operations, agreement between a fast implementation and a slow obvious one, interface laws, and "never panics". Under sim it can also say things about I/O and concurrency: a server answers every request it accepts, under any schedule and with peers dropping out; a cache stays consistent whatever order its tasks run in. Those verdicts are sampled only (V2), because the schedules and faults are sampled.
 
-It can't say anything about I/O, time, or the network, because comptime can't do them (CL4). It can't say anything about concurrent interleavings either, since there's no `spawn` at comptime. Performance ("runs in O(n)") is out, and so is intent that isn't computable ("the error message is clear"). Those belong in tests, benchmarks and review.
+It can't say anything about the real world: real files, real networks, real time. Sim stands in for all three. Performance ("runs in O(n)") is out, and so is intent that isn't computable ("the error message is clear"). Those belong in tests, benchmarks and review.
 
 Two cases are weak rather than impossible. Floats need tolerances, because NaN breaks every equality law. Inputs that must satisfy a strong precondition need their own generator (IN2), because random sampling discards nearly everything under CL5.
 
@@ -158,9 +168,9 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 |---|---|---|
 | Inputs | The ones the author picked | Every input of the parameter types |
 | Written by | Anyone, agents included | Operators, curated in review |
-| Runs under | `rask test` | `rask check` |
-| On failure | Red test | Compile error |
-| Can do I/O, spawn | Yes | No |
+| Runs under | `rask test` | Every build |
+| On failure | Red test | Build fails |
+| Can do I/O, spawn | Yes, real or under sim | Under sim only |
 | How many | Lots | Few. The program is built around them |
 
 ## Open
@@ -171,4 +181,4 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 - **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for the package's own `claims.rk`, and only that.
 - **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
 - **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).
-- **Claims under sim.** Lifting CL4 for claims run by `rask test --sim` would let claims cover I/O and schedules. Those verdicts would be sampled only.
+- **Build cost.** A changed claim costs a native compile plus its runs. Whether `rask run`, the quick loop, should skip claims and leave them to `rask build` is open.
