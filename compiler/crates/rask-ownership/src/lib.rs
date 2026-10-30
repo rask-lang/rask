@@ -5301,8 +5301,8 @@ impl<'a> OwnershipChecker<'a> {
             "u128" => Type::U128,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "isize" => Type::isize_ty(),
-            "usize" => Type::usize_ty(),
+            "isize" => Type::Isize,
+            "usize" => Type::Usize,
             _ => return self.program.types.get_type_id(name).map(Type::Named),
         })
     }

@@ -78,6 +78,8 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::U32 => Some("u32".to_string()),
         Type::U64 => Some("u64".to_string()),
         Type::U128 => Some("u128".to_string()),
+        Type::Isize => Some("isize".to_string()),
+        Type::Usize => Some("usize".to_string()),
         Type::F32 => Some("f32".to_string()),
         Type::F64 => Some("f64".to_string()),
         Type::InterfaceObject { interface_name, .. } => Some(interface_name.clone()),

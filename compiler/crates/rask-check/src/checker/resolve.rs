@@ -112,8 +112,8 @@ impl TypeChecker {
     fn is_numeric_primitive(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64
         )
     }
@@ -1311,8 +1311,8 @@ impl TypeChecker {
                                 let resolved_arg = self.ctx.apply(arg_ty);
                                 let is_int = matches!(
                                     resolved_arg,
-                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                                 );
                                 if !is_int {
                                     self.unify(arg_ty, &Type::I64, span)?;
@@ -1620,8 +1620,8 @@ impl TypeChecker {
                 }
             }
             // Primitive integer types — resolve operator methods directly
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => {
                 self.resolve_integer_method(&ty, &method, &args, &ret, call_node, span)
             }
             // Primitive float types
@@ -2758,8 +2758,8 @@ impl TypeChecker {
             // Still open — the value that settles it decides, and rejecting on
             // "don't know" would refuse code the checker later accepts.
             Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char => None,
             Type::I128 | Type::U128 => Some(
                 "a 128-bit payload needs `target.has_atomic128`, which isn't wired up yet (AT7)"
@@ -2828,8 +2828,8 @@ impl TypeChecker {
     fn is_countable_payload(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                 | Type::F32 | Type::F64
                 | Type::Var(_)
         )
@@ -3197,8 +3197,8 @@ impl TypeChecker {
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Some(true),
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Some(false),
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => Some(true),
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => Some(false),
             _ => None,
         }
     }

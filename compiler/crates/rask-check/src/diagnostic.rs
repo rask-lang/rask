@@ -1059,7 +1059,11 @@ impl ToDiagnostic for crate::TypeError {
                          `x.wrap<{}>()` keeps the low bits, `x.clamp<{}>()` pins to the range",
                         to, to, to
                     ))
-                    .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
+                    .with_why(if [from, to].iter().any(|t| matches!(t, crate::Type::Usize | crate::Type::Isize)) {
+                        "`usize` and `isize` are 32 bits on a 32-bit target, and a conversion is implicit only when it can't fail on any target, so the program means the same wherever it's built [type.primitives/CV1a, P2]"
+                    } else {
+                        "widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]"
+                    })
             }
 
             IntFloatArithmetic { op, left, right, span } => {

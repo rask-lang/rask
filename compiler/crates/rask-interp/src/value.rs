@@ -63,6 +63,8 @@ impl IntKind {
             Type::U16 => IntKind::U16,
             Type::U32 => IntKind::U32,
             Type::U64 => IntKind::U64,
+            Type::Usize => IntKind::usize_kind(),
+            Type::Isize => IntKind::isize_kind(),
             _ => IntKind::Untyped,
         }
     }

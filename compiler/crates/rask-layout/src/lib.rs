@@ -282,6 +282,9 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let n = ty.scalar_bytes().expect("a scalar knows its width");
             (n, n)
         }
+        // Pointer-sized: the cache's word, which is the target's pointer for
+        // a real layout and 8 for the copy rule.
+        Type::Usize | Type::Isize => (w, w),
         // The runtime's `RaskStr`: 16 bytes on every target, since its heap
         // form holds a 64-bit length beside the pointer.
         Type::String | Type::Bytes => (16, 8),
@@ -497,13 +500,13 @@ fn primitive_or_named(name: &str) -> Type {
         "i16" => Type::I16,
         "i32" => Type::I32,
         "i64" => Type::I64,
-        "isize" => Type::isize_ty(),
+        "isize" => Type::Isize,
         "i128" => Type::I128,
         "u8" => Type::U8,
         "u16" => Type::U16,
         "u32" => Type::U32,
         "u64" => Type::U64,
-        "usize" => Type::usize_ty(),
+        "usize" => Type::Usize,
         "u128" => Type::U128,
         "f32" => Type::F32,
         "f64" => Type::F64,
@@ -995,8 +998,8 @@ fn type_arg_key(
 ) -> Option<String> {
     use GenericArg;
     Some(match ty {
-        Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+        Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
         | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes | Type::Unit => format!("{}", ty),
         Type::Named(id) => type_names.get(id)?.to_string(),
         // An argument substituted into an instantiated copy is named, not

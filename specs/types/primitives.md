@@ -110,6 +110,21 @@ choosing what to lose is a real decision.
 Unsigned → signed needs the target *strictly* wider; same-signedness only needs
 it no narrower; signed → unsigned never coerces.
 
+**`usize` and `isize` are asked on every target.** They're 32 bits on a 32-bit
+target and 64 on a 64-bit one, and a conversion is implicit only when it can't
+fail on any of them. So `u32` → `usize` and `usize` → `u64` are implicit, and
+`u64` → `usize` and `usize` → `u32` name a policy, even when the machine you're
+on would have room. Otherwise the same source would compile on a 64-bit machine
+and fail on a 32-bit one, which is VS7a's problem with the copy rule. A literal
+assigned to `usize` has to fit 32 bits for the same reason.
+
+| From → To | Implicit? | Why |
+|---|---|---|
+| `u32` → `usize` | yes | Fits a 32-bit `usize` |
+| `usize` → `u64` | yes | A 64-bit `usize` fits |
+| `u64` → `usize` | **no** | Doesn't fit a 32-bit `usize` |
+| `usize` → `u32` | **no** | A 64-bit `usize` doesn't fit |
+
 **Int→float is never implicit, even when it's exact.** `i32` → `f64` loses
 nothing and `as` allows it, but it still needs the `as`. Nothing is lost and
 something still changed: equality stops being reliable, `NaN` becomes reachable,

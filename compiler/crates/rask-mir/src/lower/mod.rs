@@ -1341,6 +1341,9 @@ impl<'a> MirContext<'a> {
             Type::U32 => MirType::U32,
             Type::U64 => MirType::U64,
             Type::U128 => MirType::U128,
+            // Where `usize` and `isize` get a width: the target's pointer.
+            Type::Usize => MirType::usize_ty(),
+            Type::Isize => MirType::isize_ty(),
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,

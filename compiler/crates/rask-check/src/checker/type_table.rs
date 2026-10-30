@@ -292,8 +292,8 @@ impl TypeTable {
         self.builtins.insert("()".to_string(), Type::Unit);
         self.builtins.insert("void".to_string(), Type::Unit);
         self.builtins.insert("none".to_string(), Type::None);
-        self.builtins.insert("isize".to_string(), Type::isize_ty());
-        self.builtins.insert("usize".to_string(), Type::usize_ty());
+        self.builtins.insert("isize".to_string(), Type::Isize);
+        self.builtins.insert("usize".to_string(), Type::Usize);
         self.builtins.insert("Never".to_string(), Type::Never);
 
         // The C scalar names an `import c` header translates to. Until these
@@ -2605,6 +2605,8 @@ pub fn primitive_spelling(ty: &Type) -> Option<&'static str> {
         Type::U32 => "u32",
         Type::U64 => "u64",
         Type::U128 => "u128",
+        Type::Isize => "isize",
+        Type::Usize => "usize",
         Type::F32 => "f32",
         Type::F64 => "f64",
         Type::Bool => "bool",

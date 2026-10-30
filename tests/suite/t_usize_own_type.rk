@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `usize` and `isize` are their own types.
+//
+// The checker used to turn `usize` into `u64` or `u32` by the target, so
+// whether `u64` and `usize` mixed depended on where the program was built.
+// Now a conversion is implicit exactly when it fits on every target: into
+// `usize` from anything 32 bits or narrower, out of it into anything 64 bits
+// or wider. The rest names a policy, the same everywhere.
+
+test "what fits on every target is implicit" {
+    let v: Vec<i64> = [1, 2, 3]
+    let n: u64 = v.len()
+    let small: u32 = 7
+    let i: usize = small
+    let wide: u128 = v.len()
+    let signed: i128 = v.len()
+    assert n == 3
+    assert i + v.len() == 10
+    assert wide == 3
+    assert signed == 3
+}
+
+test "the rest names a policy" {
+    let big: u64 = 5
+    let i: usize = big.to<usize>()!
+    let k: i64 = -2
+    let j: isize = k.to<isize>()!
+    let back: u32 = i.to<u32>()!
+    assert i == 5
+    assert j == -2
+    assert back == 5
+}
+
+test "usize arithmetic stays usize" {
+    let v: Vec<string> = ["a", "b"]
+    mut total: usize = 0
+    for s in v {
+        total += s.len()
+    }
+    assert total == 2
+    assert total * 2 == 4
+}

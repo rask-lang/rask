@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a conversion into `usize` or `isize` that fits on a 64-bit target
+// and not on a 32-bit one
+//
+// `usize` was `u64` to the checker on a 64-bit target and `u32` on a 32-bit
+// one, so `let m: usize = n` with `n: u64` compiled on one and not the other.
+// It's its own type now, and a conversion is implicit only when it can't fail
+// on any target (type.primitives/CV1a, P2).
+
+func main() {
+    let v: Vec<i64> = [1, 2, 3]
+    let n: u64 = v.len()
+    // ERROR: a `u64` doesn't fit a 32-bit `usize`
+    let m: usize = n
+    let k: i64 = 4
+    // ERROR: an `i64` doesn't fit a 32-bit `isize`
+    let j: isize = k
+    // ERROR: a `usize` doesn't fit a `u32` on a 64-bit target
+    let w: u32 = v.len()
+    println(m)
+    println(j)
+    println(w)
+}

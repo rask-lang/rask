@@ -24,8 +24,8 @@ use rask_ast::ty::ParamMode;
 fn literal_fits(kind: super::inference::LiteralKind, ty: &Type) -> bool {
     use super::inference::LiteralKind;
     match ty {
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => {
             kind == LiteralKind::Integer
         }
         Type::F32 | Type::F64 => true,
@@ -253,8 +253,8 @@ impl TypeChecker {
         let is_primitive = |t: &Type| matches!(
             t,
             Type::Bool | Type::Char | Type::String | Type::Bytes | Type::Unit
-            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64
         );
         let is_stdlib_container = |t: &Type| match t {
@@ -399,8 +399,8 @@ impl TypeChecker {
     fn is_operator_on_primitive(ty: &Type, method: &str) -> bool {
         let is_primitive = matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char
         );
         if !is_primitive {
@@ -439,8 +439,8 @@ impl TypeChecker {
         }
         let is_int = |t: &Type| matches!(
             t,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
         );
         let is_float = |t: &Type| matches!(t, Type::F32 | Type::F64);
         let is_concrete_primitive = |t: &Type| is_int(t) || is_float(t)
@@ -2315,20 +2315,24 @@ impl TypeChecker {
         from.into_iter().find(|m| !to.contains(m))
     }
 
-    /// Check if `from` can widen to `to` (same signedness, strictly narrower).
-    /// Width and signedness of an integer type, or `None` if it isn't one.
-    fn int_shape(ty: &Type) -> Option<(u32, bool)> {
+    /// The narrowest and widest an integer type is on any target, and its
+    /// signedness; `None` if it isn't an integer. Only `usize` and `isize`
+    /// differ: 32 bits on a 32-bit target, 64 on a 64-bit one.
+    fn int_shape(ty: &Type) -> Option<(u32, u32, bool)> {
+        let fixed = |bits, signed| (bits, bits, signed);
         Some(match ty {
-            Type::I8 => (8, true),
-            Type::I16 => (16, true),
-            Type::I32 => (32, true),
-            Type::I64 => (64, true),
-            Type::I128 => (128, true),
-            Type::U8 => (8, false),
-            Type::U16 => (16, false),
-            Type::U32 => (32, false),
-            Type::U64 => (64, false),
-            Type::U128 => (128, false),
+            Type::I8 => fixed(8, true),
+            Type::I16 => fixed(16, true),
+            Type::I32 => fixed(32, true),
+            Type::I64 => fixed(64, true),
+            Type::I128 => fixed(128, true),
+            Type::Isize => (32, 64, true),
+            Type::U8 => fixed(8, false),
+            Type::U16 => fixed(16, false),
+            Type::U32 => fixed(32, false),
+            Type::U64 => fixed(64, false),
+            Type::U128 => fixed(128, false),
+            Type::Usize => (32, 64, false),
             _ => return None,
         })
     }
@@ -2370,7 +2374,11 @@ impl TypeChecker {
     }
 
     pub(super) fn is_integer_widening(from: &Type, to: &Type) -> bool {
-        let (Some((from_bits, from_signed)), Some((to_bits, to_signed))) =
+        // On every target: the widest the source can be against the narrowest
+        // the target can be. `usize` → `u64` fits everywhere; `u64` → `usize`
+        // doesn't fit on a 32-bit target, so it isn't implicit on any (VS7a's
+        // reason: a program means the same thing wherever it's built).
+        let (Some((_, from_bits, from_signed)), Some((to_bits, _, to_signed))) =
             (Self::int_shape(from), Self::int_shape(to))
         else {
             return false;
