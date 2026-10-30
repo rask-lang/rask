@@ -26,7 +26,9 @@ test "read and write move the whole struct" {
     let p = unsafe xs.as_mut_ptr()
     let second = unsafe p.add(1).read()
     assert second.b == 5
-    unsafe { p.write(Pt(a: 7, b: 8, c: 9)) }
+    unsafe {
+        p.write(Pt(a: 7, b: 8, c: 9))
+    }
     assert xs[0].a == 7
     assert xs[0].c == 9
     assert xs[1].a == 4

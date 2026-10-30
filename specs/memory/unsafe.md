@@ -144,7 +144,7 @@ A pointer is made by a call, and the call says where it points. The compiler kee
 | **PT3: It dies with its source** | After what a pointer points into changes size (its buffer may move), moves, is replaced, or reaches the end of its block, using the pointer, or a value holding it as a whole, is a compile error (E0929). Reading a part of that value with no pointer in it is fine (`h.n` beside a dead `h.p`), and a value that must be consumed still must be. Taking the pointer again afterwards is fine |
 | **PT4: No writes under a view** | While a `with` binding or a `for mutate` loop holds a place in a collection, writing through a pointer into that collection is a compile error (E0931). The binding is the one name that may change that place until the block ends |
 | **PT5: The source stays alive while the pointer is used** | What a pointer points into isn't released before the pointer's last use, however long after its own last use by name that is. PT3 rules out the paths where it's freed on purpose; this one keeps the compiler from freeing it early |
-| **PT7: Debug builds check bounds where the source is known** | A pointer from `as_ptr()` on a local `Vec`, `string` or array, and any pointer made from it by `add`, `sub`, `offset` or `cast` while it stays in a `let`, is checked at each access (`*p`, `*p = v`, `read`, `write`) against that local's storage as it is at the access. Outside it, a debug build panics with the location. A string's terminator can be read, not written. PT3 is what makes the storage at the access the right block to check against |
+| **PT7: Debug builds check bounds where the source is known** | A pointer from `as_ptr()` on a local `Vec`, `string` or array, and any pointer made from it by `add`, `sub`, `offset` or `cast`, is checked at each access (`*p`, `*p = v`, `read`, `write`) against that local's storage as it is at the access. Outside it, a debug build panics with the location. That holds while the binding with the pointer is assigned nothing but steps from itself (`p = p.add(1)`). A string's terminator can be read, not written. PT3 is what makes the storage at the access the right block to check against |
 
 <!-- test: skip -->
 ```rask
@@ -333,7 +333,7 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 | Double-free | Panic (if detectable) | UB |
 | Unaligned access | Panic | Platform-dependent |
 
-Of the debug checks, the null check on every access and the bounds check for a pointer whose source is known (PT7) are built. A pointer from C, or one held in a `mut` that is assigned again, gets the null check only. Use-after-free and double-free aren't built.
+Of the debug checks, the null check on every access and the bounds check for a pointer whose source is known (PT7) are built. A pointer from C, or one held in a `mut` that is assigned something other than a step from itself, gets the null check only. Use-after-free and double-free aren't built.
 
 **Checked/unchecked attributes** (on a function, for every raw-pointer access in it):
 

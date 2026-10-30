@@ -21,16 +21,28 @@ func main() {
     sum += unsafe (*raw.add(11)).wrap<i64>()
     sum += unsafe (*q.add(3)).wrap<i64>()
     sum += unsafe r.add(1).read()
-    unsafe { r.write(1) }
+    unsafe {
+        r.write(1)
+    }
+    // A pointer only ever stepped along from itself keeps its block.
+    mut w = unsafe xs.as_ptr()
+    for i in 0..3 {
+        sum += unsafe (*w).wrap<i64>()
+        w = unsafe w.add(1)
+    }
     println(sum)
 
     let which = os.args().len()
     if which == 1 {
         println(unsafe *p.add(3))
     } else if which == 2 {
-        unsafe { *q.add(3) = 33 }
+        unsafe {
+            *q.add(3) = 33
+        }
     } else if which == 3 {
         println(unsafe r.sub(1).read())
+    } else if which == 4 {
+        println(unsafe *w)
     } else {
         println("fine")
     }

@@ -1816,6 +1816,9 @@ pub struct MirLowerer<'a> {
     /// same value at panic time as when the ensure was scheduled, which is what
     /// makes snapshotting a scalar into the hook's env exact instead of stale.
     reassigned_names: std::collections::HashSet<String>,
+    /// `reassigned_names` without the assignments that step a raw pointer
+    /// along from itself (`p = p.add(1)`). What PT7's block tracking reads.
+    pointer_rebound: std::collections::HashSet<String>,
     /// Every name that appears inside an `ensure` body in this function.
     ///
     /// Scanned up front, because whether a `mut` scalar needs a stack cell has
@@ -3491,9 +3494,43 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
         let mut out = std::collections::HashSet::new();
         for stmt in body {
-            Self::scan_reassigned_stmt(stmt, &mut out);
+            Self::scan_reassigned_stmt(stmt, &mut out, false);
         }
         out
+    }
+
+    /// The same, without `p = p.add(n)` and the other steps a raw pointer takes
+    /// from itself. A pointer only ever reassigned that way stays in the block
+    /// it started in, so it keeps its bounds check (mem.unsafe/PT7).
+    pub(crate) fn collect_reassigned_apart_from_pointer_steps(
+        body: &[rask_ast::stmt::Stmt],
+    ) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, &mut out, true);
+        }
+        out
+    }
+
+    /// `p = p.add(n)`, `p = unsafe p.sub(1)`: the value is `p` moved along by
+    /// pointer arithmetic or a cast.
+    fn is_pointer_step(name: &str, value: &Expr) -> bool {
+        let mut cur = value;
+        loop {
+            match &cur.kind {
+                ExprKind::Unsafe { body } if body.len() == 1 => match &body[0].kind {
+                    rask_ast::stmt::StmtKind::Expr(e) => cur = e,
+                    _ => return false,
+                },
+                ExprKind::MethodCall { object, method, .. }
+                    if matches!(method.as_str(), "add" | "sub" | "offset" | "cast") =>
+                {
+                    cur = object
+                }
+                ExprKind::Ident(n) => return n == name && !std::ptr::eq(cur, value),
+                _ => return false,
+            }
+        }
     }
 
     fn note_place(place: &Expr, out: &mut std::collections::HashSet<String>) {
@@ -3563,19 +3600,27 @@ impl<'a> MirLowerer<'a> {
         (kids, bodies)
     }
 
-    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_stmt(
+        stmt: &rask_ast::stmt::Stmt,
+        out: &mut std::collections::HashSet<String>,
+        skip_steps: bool,
+    ) {
         use rask_ast::stmt::StmtKind as SK;
         // The one thing a statement says on its own: an assignment rebinds the
         // root of its target. Everything else is in the children.
-        if let SK::Assign { target, .. } = &stmt.kind {
-            Self::note_place(target, out);
+        if let SK::Assign { target, value, .. } = &stmt.kind {
+            let step = skip_steps
+                && matches!(&target.kind, ExprKind::Ident(n) if Self::is_pointer_step(n, value));
+            if !step {
+                Self::note_place(target, out);
+            }
         }
         let (kids, bodies) = Self::stmt_children(stmt);
         for k in kids {
-            Self::scan_reassigned_expr(k, out);
+            Self::scan_reassigned_expr(k, out, skip_steps);
         }
         for b in bodies {
-            Self::scan_reassigned_body(b, out);
+            Self::scan_reassigned_body(b, out, skip_steps);
         }
     }
 
@@ -3654,9 +3699,13 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn scan_reassigned_body(body: &[rask_ast::stmt::Stmt], out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_body(
+        body: &[rask_ast::stmt::Stmt],
+        out: &mut std::collections::HashSet<String>,
+        skip_steps: bool,
+    ) {
         for stmt in body {
-            Self::scan_reassigned_stmt(stmt, out);
+            Self::scan_reassigned_stmt(stmt, out, skip_steps);
         }
     }
 
@@ -3763,7 +3812,7 @@ impl<'a> MirLowerer<'a> {
         (kids, bodies)
     }
 
-    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>, skip_steps: bool) {
         // What an expression says on its own: a call that can write an argument
         // rebinds the caller's local, and `take <place>` leaves `none` behind
         // (OPT32) — a write to the place.
@@ -3780,10 +3829,10 @@ impl<'a> MirLowerer<'a> {
         }
         let (kids, bodies) = Self::expr_children(expr);
         for k in kids {
-            Self::scan_reassigned_expr(k, out);
+            Self::scan_reassigned_expr(k, out, skip_steps);
         }
         for b in bodies {
-            Self::scan_reassigned_body(b, out);
+            Self::scan_reassigned_body(b, out, skip_steps);
         }
     }
 
@@ -4426,6 +4475,7 @@ impl<'a> MirLowerer<'a> {
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
+            pointer_rebound: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -4454,6 +4504,7 @@ impl<'a> MirLowerer<'a> {
         // here rather than tracked as lowering goes, because the question is
         // about statements the ensure hasn't reached yet.
         lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
+        lowerer.pointer_rebound = Self::collect_reassigned_apart_from_pointer_steps(&fn_decl.body);
         lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
 
         // Resolve Self from the function name, for the methods that still

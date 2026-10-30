@@ -1693,9 +1693,11 @@ impl<'a> MirLowerer<'a> {
         }
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
-        // A pointer binding keeps its block (PT7) while it holds one value. A
-        // name assigned again could hold another pointer by the time it's read.
-        if !self.reassigned_names.contains(name) {
+        // A pointer binding keeps its block (PT7) while every value it holds
+        // came from that block: never reassigned, or only stepped along from
+        // itself. One assigned anything else could point elsewhere by the time
+        // it's read.
+        if !self.pointer_rebound.contains(name) {
             self.carry_ptr_block(&init_op, local_id);
         }
         // An annotated binding is a coercion site like any other: `let b: T?? = t`

@@ -1034,17 +1034,19 @@ fn raw_pointer_bounds_checks_use_where_the_pointer_came_from() {
     };
     let panicked = |r: &(String, String, Option<i32>), msg: &str| r.2 == Some(101) && r.1.contains(msg);
 
-    let fine = run(false, &["a", "b", "c"]);
+    let fine = run(false, &["a", "b", "c", "d"]);
     assert_eq!(fine.2, Some(0), "{fine:?}");
-    assert!(fine.0.contains("14\nfine"), "{fine:?}");
+    assert!(fine.0.contains("20\nfine"), "{fine:?}");
     let vec_read = run(false, &[]);
     assert!(panicked(&vec_read, "raw pointer read outside"), "{vec_read:?}");
     let str_write = run(false, &["a"]);
     assert!(panicked(&str_write, "raw pointer write outside"), "{str_write:?}");
     let array_read = run(false, &["a", "b"]);
     assert!(panicked(&array_read, "raw pointer read outside"), "{array_read:?}");
-    let release = run(true, &["a", "b", "c"]);
-    assert!(release.0.contains("14\nfine"), "{release:?}");
+    let walked = run(false, &["a", "b", "c"]);
+    assert!(panicked(&walked, "raw pointer read outside"), "{walked:?}");
+    let release = run(true, &["a", "b", "c", "d"]);
+    assert!(release.0.contains("20\nfine"), "{release:?}");
 }
 
 /// `@packed` and `@align` were read by nothing; a malformed one is now an
