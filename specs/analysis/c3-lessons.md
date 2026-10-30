@@ -144,9 +144,11 @@ What Raido has that `mem.alloc` doesn't is the **rewind marker**. `Arena.scoped`
 arena's life to one block: enter, allocate, free the whole thing. Raido's
 `frame_begin()`/`frame_end()` keeps the arena and everything below the marker alive and
 rewinds only what the frame added — so a game loop acquires backing memory once and rewinds
-per frame, rather than acquiring and releasing per frame. `mem.alloc` mentions
-`alloc.reset()` once in prose (the AL8 aside) and never gives it a rule. That's the gap, and
-it's one rule wide.
+per frame, rather than acquiring and releasing per frame. That was the gap, and it's now
+`mem.alloc/AL34`, `AL36`, `AL37`: `using arena.frame() { }` rewinds to a mark on any `Arena`.
+Raido's keep-what's-below-the-mark carries over with one addition: a value born below the mark
+can't grow while the frame is open, since growth lands above the mark. The compiler infers which
+calls grow which arguments, so the check reaches through callees.
 
 Two details Raido states better than C3, worth carrying into that rule: **fixed size, no
 auto-grow** (its reason — "hides allocation cost" — is principle 1 restated; a growing arena
