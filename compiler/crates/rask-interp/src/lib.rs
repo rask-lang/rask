@@ -582,3 +582,4 @@ pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, 
 
 #[cfg(test)]
 mod drift;
+mod diagnostic;

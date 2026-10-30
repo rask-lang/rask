@@ -12,6 +12,7 @@ rask-desugar = { path = "../rask-desugar" }
 rask-comptime = { path = "../rask-comptime" }
 rask-resolve = { path = "../rask-resolve" }
 rask-types = { path = "../rask-types" }
+rask-check = { path = "../rask-check" }
 rask-ownership = { path = "../rask-ownership" }
 rask-effects = { path = "../rask-effects" }
 rask-diagnostics = { path = "../rask-diagnostics" }
@@ -19,4 +20,4 @@ rask-stdlib = { path = "../rask-stdlib" }
 rask-mono = { path = "../rask-mono" }
 rask-mir = { path = "../rask-mir" }
 rask-codegen = { path = "../rask-codegen" }
-rask-miri = { path = "../rask-miri" }
+rask-interp = { path = "../rask-interp" }

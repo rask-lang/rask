@@ -8,8 +8,6 @@
 //
 import async.Handles
 import sync.Atomic
-import sync.Relaxed
-import sync.SeqCst
 import sync.Shared
 
 // Approach 1: Use ! to panic on task failure (simplest for tests)
@@ -65,7 +63,7 @@ const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
 
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     using Multitasking {
-        COUNTER.store(0, SeqCst)
+        COUNTER.store(0)
 
         // A `Vec` can't hold the handles — a `Handle` is linear and a Vec
         // drop can't consume its elements (mem.resource-types/RC1). A
@@ -75,9 +73,7 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
         for i in 0..num_tasks {
             tasks.add(spawn {
                 for j in 0..count_per_task {
-                    // Relaxed is enough: nothing here depends on the order of
-                    // anything but the counter itself.
-                    COUNTER.fetch_add(1, Relaxed)
+                    COUNTER.fetch_add(1)
                 }
             })
         }
@@ -85,7 +81,7 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
             r!
         }
 
-        return COUNTER.load(SeqCst)
+        return COUNTER.load()
     }
 }
 

@@ -188,7 +188,7 @@ Query-based architectures (demand-driven, memoized computation graphs) are power
 
 Rask's bet: the compiler is fast enough that file-level caching plus function-level incremental MIR (IC1-IC4) gives sub-200ms response without a query framework. If the full pipeline from "file changed" to "errors updated" runs in under 200ms, there's no perceptible lag. The architecture stays simple — a cache in front of a pipeline, not a rewrite of the pipeline into a dependency graph.
 
-If this bet is wrong (projects grow too large, 200ms isn't achievable), the upgrade path is: add finer-grained caching inside typecheck (per-function memoization). That's a local change to `rask-types`, not an architectural rewrite. The pipeline structure and the single-binary constraint both survive.
+If this bet is wrong (projects grow too large, 200ms isn't achievable), the upgrade path is: add finer-grained caching inside typecheck (per-function memoization). That's a local change to `rask-check`, not an architectural rewrite. The pipeline structure and the single-binary constraint both survive.
 
 ### Design Targets
 
@@ -268,7 +268,7 @@ pub struct MirProgram {
 
 ```rust
 pub interface DataflowAnalysis {
-    type Domain: Clone + Eq;
+    type Domain: Cloneable + Equal;
     fn direction() -> Direction;        // Forward or Backward
     fn bottom() -> Self::Domain;        // lattice bottom
     fn join(a: &Self::Domain, b: &Self::Domain) -> Self::Domain;

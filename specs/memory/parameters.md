@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Three parameter modes — borrow (default), mutate, take. Mutate arguments are marked at the call site too -->
 <!-- depends: memory/ownership.md, memory/borrowing.md -->
-<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-parser/ -->
+<!-- implemented-by: compiler/crates/rask-check/, compiler/crates/rask-parser/ -->
 
 # Parameter Modes
 

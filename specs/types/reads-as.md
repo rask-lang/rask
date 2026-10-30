@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: A struct may read as one of its own fields: methods it doesn't declare are that field's read-only methods, called on the field -->
 <!-- depends: types/structs.md, memory/parameters.md -->
-<!-- implemented-by: compiler/crates/rask-types/src/checker/reads_as.rs -->
+<!-- implemented-by: compiler/crates/rask-check/src/checker/reads_as.rs -->
 
 # Reads-As
 

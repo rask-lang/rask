@@ -245,14 +245,14 @@ Prefer `StringView` when you want the text itself; prefer `Span` when you want p
 
 ## Iteration
 
-Iterators borrow for expression scope only. Cannot be stored.
+Each of these is a `Sequence`: the string hands over one item at a time and nothing is collected first. The items borrow for the expression; keep one with `.to_string()` or `.to_vec()`.
 
 | Method | Yields | Notes |
 |--------|--------|-------|
-| `s.graphemes()` | Expression-scoped slices | What a reader calls characters (U2). The unit for cursors and truncation |
-| `s.chars()` | `char` (u32 Unicode scalar) | Expression-scoped iterator. For lexers and protocol parsers (U3) |
-| `s.bytes()` | `u8` | Raw byte iterator |
-| `s.char_indices()` | `(usize, char)` | Byte offset + scalar pairs. The offset is a byte index (U1) |
+| `s.graphemes()` | Slices, lazily | What a reader calls characters (U2). The unit for cursors and truncation |
+| `s.chars()` | `char` (Unicode scalar), lazily | For lexers and protocol parsers (U3) |
+| `s.bytes()` | `u8`, lazily | Raw bytes |
+| `s.char_indices()` | `(usize, char)`, lazily | Byte offset + scalar pairs. The offset is a byte index (U1) |
 | `s.lines()` | Slices, lazily | Split on newlines |
 | `s.split(pat)` | Slices, lazily | Split on pattern |
 | `s.split_whitespace()` | Slices, lazily | Split on Unicode whitespace, skip empty |
@@ -260,10 +260,10 @@ Iterators borrow for expression scope only. Cannot be stored.
 <!-- surface -->
 ```rask
 extend string {
-    func graphemes(self) -> Iterator<string>
-    func chars(self) -> Iterator<char>
-    func bytes(self) -> Iterator<u8>
-    func char_indices(self) -> Iterator<(usize, char)>
+    func graphemes(self) -> Sequence<StringSlice>
+    func chars(self) -> Sequence<char>
+    func bytes(self) -> Sequence<u8>
+    func char_indices(self) -> Sequence<(usize, char)>
     func lines(self) -> Sequence<StringSlice>
     func split(self, pat: string) -> Sequence<StringSlice>
     func split_whitespace(self) -> Sequence<StringSlice>

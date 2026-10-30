@@ -59,7 +59,8 @@ rask run examples/hello_world.rk --json
 **Analysis:**
 - `rask-resolve` - Symbol resolution
 - `rask-desugar` - Sugar expansion
-- `rask-types` - Type checking and inference
+- `rask-types` - The type data: `Type`, `TypeDef`, what the checker produces
+- `rask-check` - Type checking and inference
 - `rask-ownership` - Borrow checking (planned)
 - `rask-comptime` - Compile-time execution
 

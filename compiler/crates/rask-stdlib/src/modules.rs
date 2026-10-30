@@ -33,9 +33,6 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
     // `Heap` is codegen's one-pointer indirection (mem.heap); memory.rk
     // declares the rest of the box family but not this one.
     ("memory", &["Heap"]),
-    // The atomics are codegen intrinsics. sync.rk declares `Mutex` and
-    // `Shared`'s strategies, so those come off the file itself.
-    ("sync", &["Atomic"]),
 ];
 
 /// Names a module exports that aren't types — free functions that come into
@@ -48,11 +45,6 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
     ("core", &["transmute"]),
     // `std` re-exports the reflection module.
     ("std", &["reflect", "exit"]),
-    // Atomic memory orderings. They're variants of the compiler's `Ordering`,
-    // which it shares with comparison results, so there's no `enum` in sync.rk
-    // to read them off — but `import sync.Relaxed` is the spelling the corpus
-    // uses and it has to name something.
-    ("sync", &["Ordering", "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"]),
     // The interfaces fmt.rk and encoding.rk declare. Compiler-provided, so always in
     // scope and satisfied by shape — the declarations are read for their method
     // lists, not to gate conformance. Listed here because a selective import

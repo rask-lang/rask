@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::ptr::RawPtr;
-use crate::value::{FloatKind, IntKind, IteratorState, Value};
+use crate::value::{FloatKind, IntKind, Value};
 
 impl Interpreter {
     /// `bytes` methods (std.bytes): the natives `stdlib/string.rk` declares,
@@ -149,23 +149,6 @@ impl Interpreter {
             "to_lowercase" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_lowercase()))))
             }
-            "chars" => {
-                let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
-                let state = IteratorState::PreComputed { items: chars, index: 0 };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
-            }
-            "char_indices" => {
-                let pairs: Vec<Value> = s.lock().unwrap().char_indices()
-                    .map(|(i, c)| Value::tuple(vec![Value::int(i as i64), Value::Char(c)]))
-                    .collect();
-                Ok(Value::vec(pairs))
-            }
-            "bytes" => {
-                let bytes: Vec<Value> = s.lock().unwrap().bytes()
-                    .map(|b| Value::int(b as i64))
-                    .collect();
-                Ok(Value::vec(bytes))
-            }
             // `replace` itself is Rask (stdlib/string.rk) and picks one of
             // these two by whether it was given a `limit:`. An empty `from`
             // matches nothing, as in the C runtime.
@@ -188,13 +171,18 @@ impl Interpreter {
             // Display columns (std.strings/U2) — `len` is bytes, `width`
             // aligns. Zero-width for combining marks, two for East Asian wide.
             "width" => Ok(Value::int(display_width(&s.lock().unwrap()) as i64)),
-            "graphemes" => {
-                let items: Vec<Value> = graphemes(&s.lock().unwrap())
-                    .into_iter()
-                    .map(|g| Value::String(Arc::new(Mutex::new(g))))
-                    .collect();
-                let state = IteratorState::PreComputed { items, index: 0 };
-                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
+            // Where the grapheme starting at `start` ends; `graphemes()` is
+            // Rask (stdlib/string.rk) and walks with this.
+            "grapheme_end_at" => {
+                let start = self.expect_int(&args, 0)? as usize;
+                let s = s.lock().unwrap();
+                let end = match s.get(start..) {
+                    Some(rest) if !rest.is_empty() => {
+                        start + rest.graphemes(true).next().map_or(rest.len(), str::len)
+                    }
+                    _ => s.len(),
+                };
+                Ok(Value::int(end as i64))
             }
             "truncate" => {
                 let cols = self.expect_int(&args, 0)?;

@@ -2,7 +2,8 @@
 //! Completion: dot-triggered (fields/methods) and identifier (symbols/keywords).
 
 use tower_lsp::lsp_types::*;
-use rask_types::{MethodSig, SelfParam, Type, TypeDef, TypeTable};
+use rask_types::{MethodSig, SelfParam, Type, TypeDef};
+use rask_check::TypeTable;
 
 use crate::backend::CompilationResult;
 use crate::type_format::TypeFormatter;

@@ -72,16 +72,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     // `program_args` already starts with the script path — main.rs puts it
     // there — so this is argv as std.os/A1 describes it.
     let mut interp = rask_interp::Interpreter::with_args(program_args);
-    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    interp.inject_cfg(&cfg);
-    interp.adopt_checker_tables(&result.typed);
-    // Set source info from the first source file (single-file mode).
-    if let Some((_, source)) = result.source_files.first() {
-        interp.set_source_info(path, source);
-    }
-    if !result.package_names.is_empty() {
-        interp.register_packages(&result.package_names);
-    }
+    rask_compiler::prepare_interpreter(&mut interp, &result);
     let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     match interp.run(&all) {
         Ok(_) => {}
@@ -416,15 +407,7 @@ fn run_test_file_interp(
     // Same as `cmd_run`: the program name is argv[0], so a test that reads
     // `os.args()` sees what it would see natively (std.os/A1).
     let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
-    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    interp.inject_cfg(&cfg);
-    interp.adopt_checker_tables(&result.typed);
-    if let Some((_, source)) = result.source_files.first() {
-        interp.set_source_info(path, source);
-    }
-    if !result.package_names.is_empty() {
-        interp.register_packages(&result.package_names);
-    }
+    rask_compiler::prepare_interpreter(&mut interp, &result);
 
     let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     let test_results = interp.run_tests(&all, filter);
@@ -1180,10 +1163,7 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
     let result = crate::run_check_or_exit(path, format);
 
     let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
-    interp.adopt_checker_tables(&result.typed);
-    if !result.package_names.is_empty() {
-        interp.register_packages(&result.package_names);
-    }
+    rask_compiler::prepare_interpreter(&mut interp, &result);
     let all = rask_compiler::program_decls(&result.decls, Some(&result.typed));
     let results = interp.run_benchmarks(&all, filter.as_deref());
 

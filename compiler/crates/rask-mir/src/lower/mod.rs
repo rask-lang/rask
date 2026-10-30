@@ -23,7 +23,7 @@ use rask_ast::{
     expr::{BinOp, Expr, ExprKind, UnaryOp},
     LineMap, NodeId, Span,
 };
-use rask_types::layout::{StructLayout, EnumLayout};
+use rask_check::layout::{StructLayout, EnumLayout};
 use rask_types::Type;
 use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
@@ -380,7 +380,7 @@ impl<'a> MirContext<'a> {
     /// Everything else defaults to empty, with a `with_*` to set it. A new field
     /// is one edit here, and no call site can miss it.
     pub fn new(
-        typed: &'a rask_types::TypedProgram,
+        typed: &'a rask_check::TypedProgram,
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         records: &'a rask_mono::NodeRecords,
@@ -499,7 +499,7 @@ pub struct MirContext<'a> {
     /// time it exists, and `std.reflect`'s `is_resource` and flatness walk are
     /// asking about exactly those (#791). This is the declarations as the checker
     /// recorded them — the same thing the interpreter reads off its AST maps.
-    pub type_defs: &'a rask_types::TypeTable,
+    pub type_defs: &'a rask_check::TypeTable,
     /// Every value computed at compile time. Lowering reads these instead
     /// of lowering the code that would compute them.
     pub folded: &'a Folded,
@@ -571,7 +571,7 @@ pub struct MirContext<'a> {
     /// variable or missing outright; this is the applied type the checker
     /// dispatched on, so lowering reads it instead of guessing a prefix from
     /// the receiver's syntactic shape.
-    pub call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+    pub call_targets: &'a HashMap<NodeId, rask_check::Callee>,
     /// OR1: operator calls the checker resolved to a conformance.
     ///
     /// `a * b` is a machine instruction on some pairs and a call on others, and
@@ -579,7 +579,7 @@ pub struct MirContext<'a> {
     /// can't re-derive that from the receiver's MIR type — an `f64` receiver
     /// looks like plain arithmetic either way — so it reads what the checker
     /// settled on.
-    pub operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
+    pub operator_targets: &'a HashMap<NodeId, rask_check::OperatorTarget>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
@@ -652,16 +652,16 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
-        static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
+        static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_check::Callee>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_OPERATOR_TARGETS:
-            std::sync::LazyLock<HashMap<NodeId, rask_types::OperatorTarget>> =
+            std::sync::LazyLock<HashMap<NodeId, rask_check::OperatorTarget>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, Type>> =
             std::sync::LazyLock::new(HashMap::new);
-        static EMPTY_TYPE_DEFS: std::sync::LazyLock<rask_types::TypeTable> =
+        static EMPTY_TYPE_DEFS: std::sync::LazyLock<rask_check::TypeTable> =
             std::sync::LazyLock::new(Default::default);
         MirContext {
             struct_layouts: &[],
@@ -805,7 +805,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which is right until a type argument is an inline aggregate
     /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
     /// instance layout and falls through to the shared one. The name comes from
-    /// `rask_types::layout::generic_instance_name`, so both sides spell it the same way by
+    /// `rask_check::layout::generic_instance_name`, so both sides spell it the same way by
     /// construction (#781).
     pub fn generic_instance_mir_type(
         &self,
@@ -834,7 +834,7 @@ impl<'a> MirContext<'a> {
             let rask_types::GenericArg::Type(t) = arg else { return None };
             arg_tys.push((**t).clone());
         }
-        rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
+        rask_check::layout::generic_instance_name(bare, &arg_tys, self.type_names)
     }
 
     /// The instance layout name for a checker type, in either spelling.
@@ -852,7 +852,7 @@ impl<'a> MirContext<'a> {
                     let rask_types::GenericArg::Type(t) = arg else { return None };
                     arg_tys.push((**t).clone());
                 }
-                rask_types::layout::generic_instance_name(bare, &arg_tys, self.type_names)
+                rask_check::layout::generic_instance_name(bare, &arg_tys, self.type_names)
             }
             _ => None,
         }
@@ -999,13 +999,13 @@ impl<'a> MirContext<'a> {
                 // aggregate has a layout of its own, not found under the base
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
-                let arg_tys: Vec<Type> = args.iter().map(rask_types::layout::field_type).collect();
+                let arg_tys: Vec<Type> = args.iter().map(rask_check::layout::field_type).collect();
                 if self.nominal_underlying.contains_key(head) {
                     let generic: Vec<rask_types::GenericArg> =
                         arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
                     return self.resolve_unresolved_generic(head, &generic);
                 }
-                if let Some(name) = rask_types::layout::generic_instance_name(head, &arg_tys, self.type_names) {
+                if let Some(name) = rask_check::layout::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
                     }
@@ -1032,7 +1032,7 @@ impl<'a> MirContext<'a> {
                 rask_types::GenericArg::ConstUsize(_) => None,
             }))
             .collect();
-        Some(self.type_to_mir(&rask_types::substitute_type(underlying, &map)))
+        Some(self.type_to_mir(&rask_check::substitute_type(underlying, &map)))
     }
 
     /// A generic the checker left as a name with arguments: `One<Big>` in an
@@ -1057,7 +1057,7 @@ impl<'a> MirContext<'a> {
                     })
                     .collect();
                 if let Some(instance) = arg_tys
-                    .and_then(|tys| rask_types::layout::generic_instance_name(name, &tys, self.type_names))
+                    .and_then(|tys| rask_check::layout::generic_instance_name(name, &tys, self.type_names))
                 {
                     if let Some((idx, sl)) = self.find_struct(&instance) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -1297,7 +1297,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which resolves to no layout and comes out a bare word that
     /// owns nothing.
     pub fn field_types(&self) -> crate::FieldTypes {
-        let field = |f: &rask_types::layout::FieldLayout| self.type_to_mir(&f.ty);
+        let field = |f: &rask_check::layout::FieldLayout| self.type_to_mir(&f.ty);
         crate::FieldTypes {
             structs: self
                 .struct_layouts
@@ -1574,7 +1574,7 @@ impl<'a> MirContext<'a> {
         type_names: &HashMap<rask_types::TypeId, String>,
     ) -> Option<String> {
         Self::type_prefix(ty, type_names)
-            .or_else(|| rask_types::primitive_spelling(ty).map(str::to_string))
+            .or_else(|| rask_check::primitive_spelling(ty).map(str::to_string))
     }
 
     pub fn type_prefix(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
@@ -1645,8 +1645,8 @@ impl<'a> MirContext<'a> {
     /// the body under the matching symbol.
     pub fn recorded_conformance_package(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { package, .. } => package.clone(),
-            rask_types::Callee::Free(_) => None,
+            rask_check::Callee::Method { package, .. } => package.clone(),
+            rask_check::Callee::Free(_) => None,
         }
     }
 
@@ -1658,10 +1658,10 @@ impl<'a> MirContext<'a> {
             return Self::conformance_prefix(&target.recv, self.type_names);
         }
         match self.call_targets.get(&node)? {
-            rask_types::Callee::Method { recv, method, .. } => Self::type_prefix(recv, self.type_names)
+            rask_check::Callee::Method { recv, method, .. } => Self::type_prefix(recv, self.type_names)
                 .or_else(|| Self::declared_width_prefix(recv, method))
                 .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
-            rask_types::Callee::Free(_) => None,
+            rask_check::Callee::Free(_) => None,
         }
     }
 
@@ -1670,7 +1670,7 @@ impl<'a> MirContext<'a> {
     /// `f32` onto `f64`, which is right for a libm call and wrong here:
     /// `f32.to_bits()` is the f32's own 32 bits.
     fn declared_width_prefix(recv: &Type, method: &str) -> Option<String> {
-        let name = rask_types::primitive_spelling(recv)?;
+        let name = rask_check::primitive_spelling(recv)?;
         rask_stdlib::lookup_method(name, method).map(|_| name.to_string())
     }
 
@@ -2258,7 +2258,7 @@ impl<'a> MirLowerer<'a> {
             // it was simply never added, which is why `for (k, v) in self`
             // inside `Sequence.to_map` had no element type and fell back to a
             // word (#1046).
-            "Vec" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
+            "Vec" | "Sequence" | "SequenceMut" => args.first()?,
             // `m[k]` and `m.get(k)` yield V, not K.
             "Map" => args.get(1)?,
             _ => return None,
@@ -2326,7 +2326,7 @@ impl<'a> MirLowerer<'a> {
     /// The struct layout of whatever an expression evaluates to, when it's a
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.
-    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_types::layout::StructLayout> {
+    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_check::layout::StructLayout> {
         let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match ty {
             Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
             Type::Named(id) => self
@@ -2670,7 +2670,7 @@ impl<'a> MirLowerer<'a> {
         }
         if let Some(ty) = self.ctx.lookup_raw_type(collection.id) {
             if let Some((name, args)) = self.generic_head(ty) {
-                if matches!(name.as_str(), "Vec" | "Iterator" | "Sequence") {
+                if matches!(name.as_str(), "Vec" | "Sequence") {
                     if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
                         if !matches!(**inner, Type::Var(_)) {
                             return self.ctx.type_to_mir(inner);
@@ -7571,7 +7571,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_construct() {
         // Shape.Circle(5.0) → store tag 0, store payload f64
-        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_check::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
             name: "Shape".to_string(),
@@ -7639,7 +7639,7 @@ mod tests {
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
-        let empty_type_defs = rask_types::TypeTable::default();
+        let empty_type_defs = rask_check::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -7693,7 +7693,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_no_payload() {
         // Color.Red() → store tag only
-        use rask_types::layout::{EnumLayout, VariantLayout};
+        use rask_check::layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
             name: "Color".to_string(),
@@ -7726,7 +7726,7 @@ mod tests {
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
-        let empty_type_defs = rask_types::TypeTable::default();
+        let empty_type_defs = rask_check::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.
@@ -7778,7 +7778,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_multi_field() {
         // Msg.Pair(1, 2) → store tag + 2 payload fields
-        use rask_types::layout::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_check::layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
             name: "Msg".to_string(),
@@ -7820,7 +7820,7 @@ mod tests {
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
-        let empty_type_defs = rask_types::TypeTable::default();
+        let empty_type_defs = rask_check::TypeTable::default();
         let ctx = MirContext {
             // No checker in a hand-built lowering unit, so there's no GC9
             // decision to read. Stated, not defaulted.

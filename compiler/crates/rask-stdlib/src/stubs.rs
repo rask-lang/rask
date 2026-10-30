@@ -187,6 +187,13 @@ fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
     })
 }
 
+/// One stub file's parsed declarations by its name (`"ops.rk"`), or `None` if
+/// there is no such file or it doesn't lex.
+pub(crate) fn parsed_file(name: &str) -> Option<&'static [Decl]> {
+    let index = all_sources().iter().position(|(file, _)| *file == name)?;
+    parsed_stdlib()[index].as_deref()
+}
+
 /// One stub file's declarations, parsed with ids from `next_id` (which comes
 /// back advanced past them), or `None` if it doesn't lex.
 ///

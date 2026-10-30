@@ -9,7 +9,6 @@ mod collections;
 mod enums;
 mod threading;
 mod shared;
-mod iterators;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -245,7 +244,6 @@ impl Interpreter {
             Value::StringBuilder(buf) => {
                 return self.call_string_builder_method(&Arc::clone(buf), method, args)
             }
-            Value::Iterator(iter) => return self.call_iterator_method(&Arc::clone(iter), method, args),
             #[cfg(not(target_arch = "wasm32"))]
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
             #[cfg(not(target_arch = "wasm32"))]

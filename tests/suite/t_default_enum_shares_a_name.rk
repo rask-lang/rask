@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A default argument naming an enum, in a program with its own enum of the
+// same name.
+//
+// A default is copied into each call, and it was read there as the program's
+// code: the checker typed `MemoryOrder.SeqCst` against the program's enum,
+// which has no `SeqCst`, and the rename that gives a shadowing program type
+// its own symbol renamed the copy too (#1690). Code the stdlib wrote reads
+// the stdlib's names wherever it lands now.
+
+import sync.Atomic
+
+enum MemoryOrder {
+    Loose
+    Strict
+}
+
+func pick(mode: MemoryOrder = MemoryOrder.Strict) -> i64 {
+    match mode {
+        MemoryOrder.Loose => return 1
+        MemoryOrder.Strict => return 2
+    }
+}
+
+const PICKED: i64 = comptime pick()
+
+test "the stdlib's default and the program's enum both fold" {
+    let a = Atomic<i64>.new(5)
+    a.store(7)
+    assert a.load() == 7
+    assert pick() == 2
+    assert pick(mode: MemoryOrder.Loose) == 1
+    assert PICKED == 2
+}

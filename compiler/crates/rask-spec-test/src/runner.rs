@@ -234,7 +234,7 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
 
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,

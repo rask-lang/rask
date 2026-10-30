@@ -342,8 +342,8 @@ Each stage is independently shippable and testable.
   public type alias Sequence<T> = func(|T| -> bool)
   ```
 - **File**: `compiler/crates/rask-stdlib/src/stubs.rs` — forwards `DeclKind::TypeAlias` from stdlib stubs (previously filtered out)
-- **Known gap**: `SequenceMut<T>` is commented out. The type-parser path for function types (`parse_fn_type`) doesn't accept named parameters (`yield: |T|`) or `mutate` in closure-type parameter position. Stage 3 or a separate small stage should extend `compiler/crates/rask-types/src/checker/parse_type.rs` (`parse_fn_type` around line 247) to accept both, then restore the `SequenceMut` and named-`yield` forms.
-- **Follow-up**: verify the alias resolves at use sites. `let s: Sequence<i32> = |x| { x > 0 }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-types/src/checker/declarations.rs`.
+- **Known gap**: `SequenceMut<T>` is commented out. The type-parser path for function types (`parse_fn_type`) doesn't accept named parameters (`yield: |T|`) or `mutate` in closure-type parameter position. Stage 3 or a separate small stage should extend `compiler/crates/rask-check/src/checker/parse_type.rs` (`parse_fn_type` around line 247) to accept both, then restore the `SequenceMut` and named-`yield` forms.
+- **Follow-up**: verify the alias resolves at use sites. `let s: Sequence<i32> = |x| { x > 0 }` should type-check. If resolution fails, inspect `rask-resolve/src/resolver.rs` and `rask-check/src/checker/declarations.rs`.
 
 ### Stage 3 — MIR: for-loop lowering over `Sequence<T>`
 
@@ -397,7 +397,7 @@ Each stage is independently shippable and testable.
 - **`stdlib/collections.rk`** — `Vec::take_all()` returns `Sequence<T>` (line 83)
 - **`stdlib/string.rk`** — `chars()`, `bytes()`, `char_indices()`, `split()`, `split_whitespace()`, `lines()` (lines 102–117)
 - **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `take_all()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
-- **Type checker** (`compiler/crates/rask-types/src/checker/resolve.rs`): remove the Iterator-return references for `drain()`/`take_all()` (lines 1365, 1746–1748)
+- **Type checker** (`compiler/crates/rask-check/src/checker/resolve.rs`): remove the Iterator-return references for `drain()`/`take_all()` (lines 1365, 1746–1748)
 - The existing chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator interface
 
 ### Stage 7 — Channel `stream()` method
@@ -421,7 +421,7 @@ Each stage is independently shippable and testable.
 
 ### Stage 8 — Retire `Iterator<Item>` interface
 
-- **File**: `compiler/crates/rask-types/src/interfaces.rs` — delete the `"Iterator" =>` arm at lines 330–336
+- **File**: `compiler/crates/rask-check/src/interfaces.rs` — delete the `"Iterator" =>` arm at lines 330–336
 - **File**: `rask-interp/src/builtins/iterators.rs` — the pull-based `IteratorState` and `iter_next()` may stay as internal-only or be removed. Remove if Stage 6 rewrote all builtins
 - `Value::Iterator` variant in `rask-interp/src/value.rs:396` — remove if no runtime uses it
 - Update remaining error messages mentioning `Iterator<T>` to reference `Sequence<T>`
@@ -452,8 +452,8 @@ Each stage is independently shippable and testable.
 | Closure lowering | `compiler/crates/rask-mir/src/lower/closures.rs:18` | `lower_closure()` |
 | ClosureCall MIR | `compiler/crates/rask-mir/src/stmt.rs:59` | MIR opcode |
 | Iterator-chain fusion | `compiler/crates/rask-mir/src/lower/iterators.rs` | built-in fusion |
-| Iterator interface | `compiler/crates/rask-types/src/interfaces.rs:330-336` | delete in Stage 8 |
-| Function type parsing | `compiler/crates/rask-types/src/checker/parse_type.rs:247` | `parse_fn_type()` |
+| Iterator interface | `compiler/crates/rask-check/src/interfaces.rs:330-336` | delete in Stage 8 |
+| Function type parsing | `compiler/crates/rask-check/src/checker/parse_type.rs:247` | `parse_fn_type()` |
 | Generic substitution | `compiler/crates/rask-mono/src/instantiate.rs:70` | `substitute_type_string()` |
 | Stdlib Vec methods | `stdlib/collections.rk:80,83` | return types |
 | Stdlib string methods | `stdlib/string.rk:102-117` | return types |
@@ -477,7 +477,7 @@ Each stage is independently shippable and testable.
 
 **Per-stage (CI):**
 - Stage 1: `cargo test -p rask-parser`
-- Stage 2–3: `cargo test -p rask-types -p rask-mir`
+- Stage 2–3: `cargo test -p rask-check -p rask-mir`
 - Stage 4: `cargo test -p rask-interp`
 - Stages 5–7: `compiler/target/release/rask run tests/suite/t26_custom_sequence.rk`
 - Stage 8: `git grep -n "Iterator<"` returns zero hits

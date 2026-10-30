@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `match` on an enum, run at compile time.
+//
+// `Mode.Fast` in a pattern parses as a name, and the compile-time evaluator
+// took every name pattern as a binding, so the first arm matched whatever the
+// value was. `comptime pick(Mode.Safe)` folded to the `Fast` arm's answer
+// while the same call at run time gave the right one.
+
+enum Mode {
+    Fast
+    Safe
+    Slow
+}
+
+func pick(mode: Mode) -> i64 {
+    match mode {
+        Mode.Fast => return 1
+        Mode.Safe => return 2
+        Mode.Slow => return 3
+    }
+}
+
+const FAST: i64 = comptime pick(Mode.Fast)
+const SAFE: i64 = comptime pick(Mode.Safe)
+const SLOW: i64 = comptime pick(Mode.Slow)
+
+test "each arm folds to its own answer" {
+    assert FAST == 1
+    assert SAFE == 2
+    assert SLOW == 3
+    assert pick(Mode.Slow) == SLOW
+}

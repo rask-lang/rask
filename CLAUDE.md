@@ -274,15 +274,15 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | AST node types | `rask-ast/src/{decl,expr,stmt}.rs` |
 | Operator desugaring | `rask-desugar/src/lib.rs` |
 | Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
-| Type error / inference | `rask-types/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
-| Interface / generics | `rask-types/src/checker/{generics,resolve}.rs` |
-| Borrow checking | `rask-types/src/checker/borrow.rs`, `rask-ownership/` |
+| Type error / inference | `rask-check/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
+| Interface / generics | `rask-check/src/checker/{generics,resolve}.rs` |
+| Borrow checking | `rask-check/src/checker/borrow.rs`, `rask-ownership/` |
 | Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
 | MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
 | MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |
 | Interpreter bugs | `rask-interp/src/interp/`, `rask-interp/src/stdlib/` |
 | Stdlib types/stubs | `rask-stdlib/src/{stubs,types,builtins}.rs` |
-| Error formatting | `rask-diagnostics/src/{formatter,convert}.rs` |
+| Error formatting | `rask-diagnostics/src/formatter.rs`, each crate's `src/diagnostic.rs` |
 | CLI commands | `rask-cli/src/commands/`, `main.rs` |
 | Formatter | `rask-fmt/src/printer.rs` |
 

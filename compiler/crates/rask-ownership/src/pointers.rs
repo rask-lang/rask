@@ -25,7 +25,8 @@ use rask_ast::expr::{Expr, ExprKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::visit::{self, Visit};
 use rask_ast::Span;
-use rask_types::{ParamMode, Type};
+use rask_types::Type;
+use rask_ast::ty::ParamMode;
 
 use crate::error::{OwnershipError, OwnershipErrorKind, PointerLoss, PointerSink, Sink};
 use crate::state::BindingState;

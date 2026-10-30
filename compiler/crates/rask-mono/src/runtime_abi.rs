@@ -55,6 +55,14 @@ runtime_constants! {
     RASK_SORT_PASS_F64 = 3;
     RASK_SORT_PASS_F32 = 4;
 
+    /// `MemoryOrder`'s tags, in its declaration order in stdlib/sync.rk; a
+    /// test holds the two together. The runtime maps each to a C11 order.
+    RASK_MEMORY_ORDER_RELAXED = 0;
+    RASK_MEMORY_ORDER_ACQUIRE = 1;
+    RASK_MEMORY_ORDER_RELEASE = 2;
+    RASK_MEMORY_ORDER_ACQ_REL = 3;
+    RASK_MEMORY_ORDER_SEQ_CST = 4;
+
     /// A `RaskStr` holds up to this many bytes inline. Its last byte is the
     /// inline capacity left, so an empty string's is this.
     RASK_SSO_MAX = 15;
@@ -202,6 +210,23 @@ mod tests {
 
     fn header_path() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/rask_abi.h")
+    }
+
+    #[test]
+    fn memory_order_tags_follow_the_declaration() {
+        for (variant, tag) in [
+            ("Relaxed", RASK_MEMORY_ORDER_RELAXED),
+            ("Acquire", RASK_MEMORY_ORDER_ACQUIRE),
+            ("Release", RASK_MEMORY_ORDER_RELEASE),
+            ("AcqRel", RASK_MEMORY_ORDER_ACQ_REL),
+            ("SeqCst", RASK_MEMORY_ORDER_SEQ_CST),
+        ] {
+            assert_eq!(
+                rask_stdlib::modules::variant_tag("MemoryOrder", variant).map(i64::from),
+                Some(tag),
+                "MemoryOrder.{variant} in stdlib/sync.rk and its constant here disagree"
+            );
+        }
     }
 
     #[test]

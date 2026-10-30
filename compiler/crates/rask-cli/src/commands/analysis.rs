@@ -2,16 +2,14 @@
 //! Analysis commands: typecheck, ownership, comptime, unsafe report.
 
 use colored::Colorize;
-use rask_diagnostics::{Diagnostic, ToDiagnostic};
-use rask_types::UnsafeCategory;
+use rask_check::UnsafeCategory;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs;
 use std::process;
 
 use std::path::Path;
 
-use crate::{output, Format, show_diagnostics, collect_rk_files};
+use crate::{output, Format, collect_rk_files};
 
 /// Resolve a path to the .rk file(s) to process.
 /// - Single file: returns it as-is.
@@ -154,54 +152,23 @@ pub fn cmd_comptime(path: &str, format: Format) {
     let mut total_errors = 0usize;
 
     for file in &files {
-        let source = match fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(file), e);
-                total_errors += 1;
+        // Checked first, like every other command: the evaluator reads what
+        // the resolver bound each name to, and an unchecked file has none of it.
+        let result = match crate::run_check(file, format) {
+            Ok(r) => r,
+            Err(n) => {
+                total_errors += n;
                 continue;
             }
         };
-
-        let mut lexer = rask_lexer::Lexer::new(&source);
-        let lex_result = lexer.tokenize();
-
-        if !lex_result.is_ok() {
-            let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, file, "lex", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
-            }
-            total_errors += lex_result.errors.len();
-            continue;
-        }
-
-        let mut parser = rask_parser::Parser::new(lex_result.tokens);
-        let mut parse_result = parser.parse();
-
-        if !parse_result.is_ok() {
-            let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, file, "parse", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
-            }
-            total_errors += parse_result.errors.len();
-            continue;
-        }
-
-        rask_desugar::desugar_with_stdlib(
-            &mut parse_result.decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
-        );
-
-        let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
-        comptime_interp.register_functions(&parse_result.decls);
+        let mut comptime_interp = rask_compiler::comptime_interpreter(&result.decls, &result.typed, None);
+        let decls = &result.decls;
 
         if multi && format == Format::Human {
             println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());
         }
 
-        for decl in &parse_result.decls {
+        for decl in decls {
             if let rask_ast::decl::DeclKind::Const(c) = &decl.kind {
                 if matches!(c.init.kind, rask_ast::expr::ExprKind::Comptime { .. }) {
                     match comptime_interp.eval_expr(&c.init) {

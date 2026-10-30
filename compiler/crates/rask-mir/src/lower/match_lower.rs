@@ -1603,7 +1603,7 @@ impl<'a> MirLowerer<'a> {
         &self,
         ty: &MirType,
         field_name: &str,
-    ) -> Option<(usize, rask_types::layout::FieldLayout)> {
+    ) -> Option<(usize, rask_check::layout::FieldLayout)> {
         let MirType::Struct(crate::types::StructLayoutId { id, .. }) = ty else {
             return None;
         };
@@ -1965,10 +1965,10 @@ impl<'a> MirLowerer<'a> {
         };
         let bare = variant.rsplit('.').next().unwrap_or(variant);
         let (_, data) = variants.iter().find(|(v, _)| v == bare)?;
-        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        let subst = rask_check::TypeTable::generic_field_subst(type_params, args);
         let payload = data
             .iter()
-            .map(|t| rask_types::TypeTable::substitute_generic_field(t, &subst))
+            .map(|t| rask_check::TypeTable::substitute_generic_field(t, &subst))
             .collect();
         let names = table
             .struct_variant_fields(&format!("{}.{}", table.type_name(id), bare))
@@ -1986,11 +1986,11 @@ impl<'a> MirLowerer<'a> {
         let rask_types::TypeDef::Struct { type_params, fields, .. } = self.ctx.type_defs.get(id)? else {
             return None;
         };
-        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        let subst = rask_check::TypeTable::generic_field_subst(type_params, args);
         Some(
             fields
                 .iter()
-                .map(|(n, t)| (n.clone(), rask_types::TypeTable::substitute_generic_field(t, &subst)))
+                .map(|(n, t)| (n.clone(), rask_check::TypeTable::substitute_generic_field(t, &subst)))
                 .collect(),
         )
     }

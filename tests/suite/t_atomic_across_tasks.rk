@@ -17,43 +17,42 @@
 // by name from anywhere and there is nothing to move.
 
 import sync.Atomic
-import sync.Relaxed
-import sync.SeqCst
+import sync.MemoryOrder
 
 const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
 const SHUTDOWN: Atomic<bool> = Atomic<bool>.new(false)
 
 func bump(times: i64) {
     for i in 0..times {
-        COUNTER.fetch_add(1, Relaxed)
+        COUNTER.fetch_add(1, order: MemoryOrder.Relaxed)
     }
 }
 
 test "two tasks counting on one atomic agree on the total" {
     using Multitasking {
-        COUNTER.store(0, SeqCst)
+        COUNTER.store(0)
         let a = spawn { bump(250) }
         ensure a.detach()
         let b = spawn { bump(250) }
         ensure b.detach()
         a.join()!
         b.join()!
-        assert COUNTER.load(SeqCst) == 500
+        assert COUNTER.load() == 500
     }
 }
 
 test "a shutdown flag set by one task is seen by the next" {
     using Multitasking {
-        SHUTDOWN.store(false, SeqCst)
-        let setter = spawn { SHUTDOWN.store(true, Relaxed) }
+        SHUTDOWN.store(false)
+        let setter = spawn { SHUTDOWN.store(true) }
         setter.join()!
-        assert SHUTDOWN.load(SeqCst)
+        assert SHUTDOWN.load()
     }
 }
 
 test "the bare and qualified spellings of an ordering are the same value" {
     let a = Atomic<i64>.new(1)
-    assert a.load(Relaxed) == a.load(Ordering.Relaxed)
+    assert a.load() == a.load()
 }
 
 test "compare_exchange reports the value it found" {
@@ -61,39 +60,39 @@ test "compare_exchange reports the value it found" {
     // the old value on success, the observed one on failure — and as `T or T`
     // no pattern could separate them.
     let a = Atomic<i64>.new(5)
-    match a.compare_exchange(5, 9, SeqCst, SeqCst) {
+    match a.compare_exchange(5, 9) {
         i64 as old => { assert old == 5 }
         CasFailed as e => { assert false }
     }
-    assert a.load(SeqCst) == 9
+    assert a.load() == 9
 
     // It holds 9 now, so exchanging against 5 fails and hands back what's there.
-    match a.compare_exchange(5, 1, SeqCst, SeqCst) {
+    match a.compare_exchange(5, 1) {
         i64 as old => { assert false }
         CasFailed as e => { assert e.found == 9 }
     }
-    assert a.load(SeqCst) == 9
+    assert a.load() == 9
 }
 
 test "the spec's retry loop terminates" {
     let a = Atomic<i64>.new(0)
     mut swaps = 0
     loop {
-        let current = a.load(Relaxed)
+        let current = a.load()
         if current >= 5 {
             break
         }
-        match a.compare_exchange_weak(current, current + 1, SeqCst, Relaxed) {
+        match a.compare_exchange_weak(current, current + 1) {
             i64 as _ => { swaps = swaps + 1 }
             CasFailed as _ => { }
         }
     }
-    assert a.load(SeqCst) == 5
+    assert a.load() == 5
     assert swaps == 5
 }
 
 test "swap hands back the old value" {
     let a = Atomic<i64>.new(3)
-    assert a.swap(8, SeqCst) == 3
-    assert a.load(SeqCst) == 8
+    assert a.swap(8) == 3
+    assert a.load() == 8
 }

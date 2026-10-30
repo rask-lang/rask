@@ -99,7 +99,7 @@ type alias Handler = func(i32) -> string
 | `@resource` on type | T3 | `@resource type FileHandle = i32` — must consume |
 | `with` empty list | T11 | `type X = T implements ` — same as no `with` clause |
 | Comptime | T7 | Constructor and extraction work in comptime context |
-| Generic bounds | T4 | `type Wrapper<T: Clone> = T implements Clone` — bounds propagate |
+| Generic bounds | T4 | `type Wrapper<T: Cloneable> = T implements Cloneable` — bounds propagate |
 | Alias to alias | A2 | Chains resolve: `type alias A = B`, `type alias B = i32` → A is i32 |
 | Cyclic alias | T6 | Compile error with cycle path |
 | Shadowing builtin | — | `type string = i32` — error: cannot shadow builtin type |

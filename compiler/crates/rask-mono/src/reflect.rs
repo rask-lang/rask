@@ -8,7 +8,7 @@
 
 use rask_ast::decl::field_attrs;
 use rask_ast::ty::TypeExpr;
-use rask_types::TypeTable;
+use rask_check::TypeTable;
 
 use crate::EnumLayout;
 

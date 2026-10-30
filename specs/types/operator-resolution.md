@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Operators resolve on the ordered pair of operand types against declared operator interfaces, instead of as a method lookup on the left operand -->
 <!-- depends: types/operators.md, types/interfaces.md, types/generics.md, types/associated-types.md -->
-<!-- implemented-by: compiler/crates/rask-types/, stdlib/ops.rk -->
+<!-- implemented-by: compiler/crates/rask-check/, stdlib/ops.rk -->
 
 # Operator Resolution
 
@@ -16,7 +16,7 @@ Three separate problems shared one cause.
 
 **The left operand decided everything.** `Meters * 2.0` works — `Meters` writes `mul(self, k: f64) -> Meters` and heterogeneous right operands were always fine. `2.0 * Meters` was unreachable: it means `(2.0).mul(Meters)`, and a primitive's methods come from a closed table in the compiler with no extension point. Units, currency, scalar-times-vector and matrix-times-vector all want both directions, and half of each pair could not be written at all.
 
-**The compiler was the extension point.** When the stdlib needed an operator whose result type depends on the right operand, there was nowhere to say it, so it went into the type checker instead (`rask-types/src/checker/resolve.rs`):
+**The compiler was the extension point.** When the stdlib needed an operator whose result type depends on the right operand, there was nowhere to say it, so it went into the type checker instead (`rask-check/src/checker/resolve.rs`):
 
 ```rust
 // Instant subtraction: overloaded on argument type

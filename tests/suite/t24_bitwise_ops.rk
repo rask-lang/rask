@@ -185,4 +185,15 @@ test "bitwise on i128" {
     assert ~b == -16
 }
 
+// The interpreter complemented all 64 bits of the slot and gave
+// 18446744073709551415 for `~200u8`. A narrow unsigned value stays in its width.
+test "bit not keeps an unsigned value in its width" {
+    let a: u8 = 200
+    let b: u16 = 1
+    let c: u32 = 0
+    assert ~a == 55
+    assert ~b == 65534
+    assert ~c == 4294967295
+}
+
 func main() {}

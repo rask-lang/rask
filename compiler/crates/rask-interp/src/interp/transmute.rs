@@ -2,7 +2,7 @@
 //! `transmute` (mem.unsafe): the value written out as the bytes native holds
 //! it in, read back as the target type.
 //!
-//! The bytes are laid out by the checker's table (`rask_types::layout`), the
+//! The bytes are laid out by the checker's table (`rask_check::layout`), the
 //! layout native and the size test read, so a field lands at the offset it has
 //! natively and padding is zero.
 
@@ -41,7 +41,7 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 impl Interpreter {
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
-        let spell = |ty: &Type| rask_types::layout::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
+        let spell = |ty: &Type| rask_check::layout::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
         let (from, to) = (spell(from)?, spell(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
@@ -77,7 +77,7 @@ impl Interpreter {
     }
 
     /// The struct a layout-spelled type names, its name, and its layout.
-    fn struct_layout(&self, ty: &Type) -> Option<(String, rask_types::layout::StructLayout)> {
+    fn struct_layout(&self, ty: &Type) -> Option<(String, rask_check::layout::StructLayout)> {
         let (name, args) = match ty {
             Type::UnresolvedNamed(name) => (name, Vec::new()),
             Type::UnresolvedGeneric { name, args } => (
