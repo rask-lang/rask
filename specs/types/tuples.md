@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Anonymous product types with positional access, destructuring, and structural equality -->
 <!-- depends: memory/value-semantics.md, types/structs.md -->
-<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-check/ -->
 
 # Tuple Types
 

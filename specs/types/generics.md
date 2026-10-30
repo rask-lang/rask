@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Nominal interface conformance via extend...with, operator-to-method expansion, verified clone/equal/comparable, code specialization per type -->
 <!-- depends: types/structs.md, types/enums.md, types/interfaces.md -->
-<!-- implemented-by: compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-check/ -->
 
 # Generics and Interfaces
 

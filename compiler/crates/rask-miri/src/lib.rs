@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use rask_mir::{LocalId, MirFunction, StructLayoutId};
-use rask_types::layout::{StructLayout, EnumLayout};
+use rask_check::layout::{StructLayout, EnumLayout};
 
 pub use stdlib::{PureStdlib, StdlibProvider};
 

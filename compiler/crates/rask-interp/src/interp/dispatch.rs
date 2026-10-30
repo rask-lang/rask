@@ -679,7 +679,7 @@ impl Interpreter {
     /// the arithmetic.
     pub(crate) fn call_operator_conformance(
         &mut self,
-        target: &rask_types::OperatorTarget,
+        target: &rask_check::OperatorTarget,
         receiver: Value,
         args: Vec<Value>,
     ) -> Option<Result<Value, RuntimeError>> {

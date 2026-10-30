@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Explicit unsafe blocks for raw pointers, FFI, inline assembly. The compiler still tracks where each pointer points; debug-mode runtime checks for what it can't see -->
 <!-- depends: memory/ownership.md -->
-<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-check/ -->
 
 # Unsafe Blocks
 

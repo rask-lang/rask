@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 rask-ast = { path = "../rask-ast" }
 rask-types = { path = "../rask-types" }
+rask-check = { path = "../rask-check" }
 rask-mono = { path = "../rask-mono" }
-rask-comptime = { path = "../rask-comptime" }
 rask-diagnostics = { path = "../rask-diagnostics" }
 rask-stdlib = { path = "../rask-stdlib" }
 

@@ -6,17 +6,16 @@
 import thread.ThreadPool
 import async.Handles
 import sync.Atomic
-import sync.SeqCst
 
 const IN_FLIGHT: Atomic<i64> = Atomic<i64>.new(0)
 const PEAK: Atomic<i64> = Atomic<i64>.new(0)
 
 func body() -> i64 {
-    let now = IN_FLIGHT.fetch_add(1, SeqCst) + 1
-    if now > PEAK.load(SeqCst) {
-        PEAK.store(now, SeqCst)
+    let now = IN_FLIGHT.fetch_add(1) + 1
+    if now > PEAK.load() {
+        PEAK.store(now)
     }
-    IN_FLIGHT.fetch_sub(1, SeqCst)
+    IN_FLIGHT.fetch_sub(1)
     return 1
 }
 
@@ -28,7 +27,7 @@ test "a pool of one runs one job at a time" {
             jobs.add(ThreadPool.spawn { return body() })
         }
         let _ = jobs.join_all()
-        assert PEAK.load(SeqCst) == 1
+        assert PEAK.load() == 1
     }
 }
 

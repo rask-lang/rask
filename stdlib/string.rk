@@ -229,24 +229,84 @@ extend string {
     // under a second name (std.api/SD5).
 
     // ── Iteration ───────────────────────────────────────────
-    // Iterators borrow for expression scope only. Cannot be stored.
+    // Each of these is a sequence: the string hands over one item at a time,
+    // and nothing is collected first.
 
-    /// Iterate over graphemes — what a reader calls characters (std.strings/U2).
-    /// The unit for cursor movement and truncation.
-    @native("rask_string_graphemes")
-    public func graphemes(self) -> Iterator<string> {}
+    /// The graphemes, what a reader calls characters (std.strings/U2), as
+    /// slices of this string. The unit for cursor movement and truncation.
+    public func graphemes(self) -> Sequence<StringSlice> {
+        let text = self
+        return |yield| {
+            let n = text.len()
+            mut at = 0
+            while at < n {
+                let end = text.grapheme_end_at(at)
+                if !yield(slice_of(text, 0, at, end)) {
+                    return
+                }
+                at = end
+            }
+        }
+    }
 
-    /// Iterate over Unicode scalars. For lexers and protocol parsers (U3).
-    @native("rask_string_chars")
-    public func chars(self) -> Iterator<char> {}
+    /// Where the grapheme starting at byte `start` ends.
+    @native("rask_string_grapheme_end_at")
+    func grapheme_end_at(self, start: usize) -> usize {}
 
-    /// Iterate over raw bytes.
-    @native("rask_string_bytes")
-    public func bytes(self) -> Iterator<u8> {}
+    /// The Unicode scalars. For lexers and protocol parsers (U3).
+    public func chars(self) -> Sequence<char> {
+        let text = self
+        return |yield| {
+            let n = text.len()
+            mut at = 0
+            while at < n {
+                if text.char_at(at)? as c {
+                    if !yield(c) {
+                        return
+                    }
+                    at = at + c.len_utf8()
+                } else {
+                    return
+                }
+            }
+        }
+    }
 
-    /// Iterate over (byte_index, char) pairs.
-    @native("rask_string_char_indices")
-    public func char_indices(self) -> Iterator<(usize, char)> {}
+    /// The raw bytes.
+    public func bytes(self) -> Sequence<u8> {
+        let text = self
+        return |yield| {
+            let n = text.len()
+            mut at = 0
+            while at < n {
+                if text.byte_at(at)? as b {
+                    if !yield(b) {
+                        return
+                    }
+                }
+                at = at + 1
+            }
+        }
+    }
+
+    /// Each scalar with the byte offset it starts at.
+    public func char_indices(self) -> Sequence<(usize, char)> {
+        let text = self
+        return |yield| {
+            let n = text.len()
+            mut at = 0
+            while at < n {
+                if text.char_at(at)? as c {
+                    if !yield((at, c)) {
+                        return
+                    }
+                    at = at + c.len_utf8()
+                } else {
+                    return
+                }
+            }
+        }
+    }
 
     /// The pieces between each `sep`, as slices of this string, one at a time
     /// (std.strings/S2). An empty `sep` splits between characters, with an

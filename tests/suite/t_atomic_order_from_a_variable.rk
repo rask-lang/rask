@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A memory order passed in a variable.
+//
+// The checker rejects `x.load(order: MemoryOrder.Release)` written at the
+// call (mem.atomics/AT6), but an order that arrives as a value is only known
+// when the operation runs. A load has no release half and a store no acquire
+// half, so those panic there, on both backends, instead of running as
+// something the program didn't ask for.
+//
+// The panic is also the proof the order reaches the runtime at all. Natively
+// it used to cross as the enum's address, which the runtime read as no order
+// it knew and ran SeqCst, so every opt-in order was silently ignored.
+
+import async.JoinError
+import sync.{Atomic, MemoryOrder}
+
+func load_with(a: Atomic<i64>, order: MemoryOrder) -> i64 {
+    return a.load(order: order)
+}
+
+func store_with(a: Atomic<i64>, value: i64, order: MemoryOrder) -> i64 {
+    a.store(value, order: order)
+    return value
+}
+
+test "an order that fits runs" {
+    let a = Atomic<i64>.new(1)
+    store_with(a, 5, MemoryOrder.Release)
+    assert load_with(a, MemoryOrder.Acquire) == 5
+    store_with(a, 6, MemoryOrder.Relaxed)
+    assert load_with(a, MemoryOrder.SeqCst) == 6
+}
+
+test "a release load panics" {
+    using Multitasking {
+        let a = Atomic<i64>.new(1)
+        let r = spawn { return load_with(a, MemoryOrder.Release) }.join()
+        match r {
+            i64 as _ => { assert false },
+            JoinError.Panicked(msg) => { assert msg.contains("only reads") },
+            JoinError as _ => { assert false },
+        }
+    }
+}
+
+test "an acquire-release store panics" {
+    using Multitasking {
+        let a = Atomic<i64>.new(1)
+        let r = spawn { return store_with(a, 2, MemoryOrder.AcqRel) }.join()
+        match r {
+            i64 as _ => { assert false },
+            JoinError.Panicked(msg) => { assert msg.contains("only writes") },
+            JoinError as _ => { assert false },
+        }
+    }
+}

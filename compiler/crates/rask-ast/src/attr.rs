@@ -101,12 +101,19 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
+    // Stdlib declarations: the one half of a `MemoryOrder` an atomic operation
+    // can apply. A load only reads, a store only writes (mem.atomics/AT6).
+    ("acquires", ArgForm::Exprs, Writer::Stdlib),
+    ("releases", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs, Writer::Anyone),
+    ("claim", ArgForm::Exprs, Writer::Anyone), // type.claims/CL1
     // Comptime
     ("comptime_quota", ArgForm::Exprs, Writer::Anyone),
+    // Claims
+    ("claim_budget", ArgForm::Exprs, Writer::Anyone), // type.claims/D2
     // Lints and warnings (tool.lint, tool.warnings)
     ("allow", ArgForm::RuleNames, Writer::Anyone),
     ("warn", ArgForm::RuleNames, Writer::Anyone),

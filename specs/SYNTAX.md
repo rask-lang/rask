@@ -662,7 +662,7 @@ func debug_sort(items: Vec<T>) where T: Comparable + Debug {
 ```rask
 // generics → params → return → where
 public func lookup<K, V>(map: Map<K, V>, key: K) -> V or NotFound
-    where K: HashKey, V: Clone
+    where K: HashKey, V: Cloneable
 {
     let v = try map.get(key)
     return v.clone()

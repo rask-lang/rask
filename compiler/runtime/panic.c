@@ -495,9 +495,12 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     // strings are already file:line (#748).
     (void)col;
     char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf), "%s:%d: %s",
-             file ? file : "<unknown>", line,
-             msg ? msg : "(unknown panic)");
+    // No file when the back end had no source to name (a package build, #1568).
+    if (file) {
+        snprintf(buf, sizeof(buf), "%s:%d: %s", file, line, msg ? msg : "(unknown panic)");
+    } else {
+        snprintf(buf, sizeof(buf), "%s", msg ? msg : "(unknown panic)");
+    }
 
     if (ffi_boundary_depth > 0) {
         ffi_boundary_abort(buf);
@@ -513,7 +516,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
         longjmp(panic_ctx.buf, 1);
     }
 
-    fprintf(stderr, "panic at %s\n", buf);
+    fprintf(stderr, file ? "panic at %s\n" : "panic: %s\n", buf);
     print_backtrace();
     exit(101);
 }

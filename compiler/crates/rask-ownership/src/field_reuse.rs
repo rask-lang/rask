@@ -40,7 +40,8 @@ use rask_ast::expr::{Expr, ExprKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::visit::{self, Visit};
 use rask_ast::NodeId;
-use rask_types::{ParamMode, TypedProgram};
+use rask_ast::ty::ParamMode;
+use rask_check::TypedProgram;
 
 use crate::OwnershipChecker;
 

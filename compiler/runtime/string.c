@@ -1067,55 +1067,6 @@ void rask_string_from_char(RaskStr *out, int64_t cp) {
     str_make(out, buf, n);
 }
 
-// ─── Split / lines / chars → Vec ────────────────────────────
-
-// Unicode scalars, not bytes. `char_at` and `len` already agree that a `char`
-// is a scalar and `len()` counts bytes; this walked bytes, so `"aöb".chars()`
-// yielded four items and printed the two halves of `ö` as Latin-1 (`[a][Ã][¶][b]`).
-// Any program touching non-ASCII text got mojibake, silently.
-// std.strings: `(byte index, scalar)` per Unicode scalar. Elements are
-// 16 bytes — index at +0, scalar at +8 — which is the tuple's own layout, so
-// the Vec is iterated exactly like any other `Vec<(usize, char)>`.
-RaskVec *rask_string_char_indices(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16, NULL, 0, 0);
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t i = 0;
-    while (i < len) {
-        int64_t width;
-        int64_t pair[2];
-        pair[0] = i;
-        pair[1] = (int64_t)str_decode_at(d, len, i, &width);
-        rask_vec_push(v, pair);
-        i += width;
-    }
-    return v;
-}
-
-// A `Vec<char>`: four bytes per scalar, the width of a `char`.
-RaskVec *rask_string_chars(const RaskStr *s) {
-    RaskVec *v = rask_vec_new((int64_t)sizeof(int32_t), NULL, 0, 0);
-    int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t i = 0;
-    while (i < len) {
-        int64_t width;
-        int32_t ch = (int32_t)str_decode_at(d, len, i, &width);
-        rask_vec_push(v, &ch);
-        i += width;
-    }
-    return v;
-}
-
-// Raw bytes, one item per byte — the counterpart to `chars()`, which yields
-// scalars. `from_utf8` is the way back, so this pair is the round trip a
-// byte-oriented program needs; before #774 the declaration had a bare `@native`
-// with no symbol behind it and codegen failed with "Function not found:
-// string_bytes".
-RaskVec *rask_string_bytes(const RaskStr *s) {
-    return rask_vec_from_bytes(str_data(s), str_len(s));
-}
-
 // ─── Builder operations (out-param) ─────────────────────────
 // Builder always works in heap mode. Promotes SSO to heap on first use.
 
@@ -1902,21 +1853,12 @@ void rask_string_reverse(RaskStr *out, const RaskStr *s) {
     rask_realloc(buf, len, 0);
 }
 
-// One string per grapheme (U2) — the unit for cursors and truncation, and
-// what split() would give if the separator were "between characters".
-RaskVec *rask_string_graphemes(const RaskStr *s) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1, 0);
+// Where the grapheme cluster starting at byte `start` ends: what
+// `graphemes()` walks with (U2). At or past the end, the length.
+int64_t rask_string_grapheme_end_at(const RaskStr *s, int64_t start) {
     int64_t len = str_len(s);
-    const char *d = str_data(s);
-    int64_t i = 0;
-    while (i < len) {
-        int64_t end = str_grapheme_end(d, len, i);
-        RaskStr g;
-        str_make(&g, d + i, end - i);
-        rask_vec_push(v, &g);
-        i = end;
-    }
-    return v;
+    if (start >= len) return len;
+    return str_grapheme_end(str_data(s), len, start);
 }
 
 // NFC (U5): canonical decomposition, canonical ordering, then canonical

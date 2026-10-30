@@ -1640,7 +1640,22 @@ fn insert_for_function(
     let fresh = collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
     let ensured = consumed_by_an_ensure(func, all, &fresh, keeps);
 
+    let before_lent: HashSet<LocalId> = tracked.keys().copied().collect();
     let lent = lent_slots(func, &mut tracked, kept);
+    // Names for what a lent slot holds: loads from it and their copies. Not
+    // the slot's addresses, nor the closures that borrow it, which
+    // `lent_slots` tracks under the same free.
+    let from_slots: HashMap<LocalId, &'static str> = tracked
+        .iter()
+        .filter(|(id, _)| {
+            !before_lent.contains(id)
+                && !lent.slots.contains_key(id)
+                && !lent.refs.contains(id)
+                && !lent.closures.contains(id)
+                && is_container_shaped(func, **id)
+        })
+        .map(|(id, free)| (*id, *free))
+        .collect();
     let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
     let facts =
         container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, own, &passed, &owned);
@@ -1658,8 +1673,40 @@ fn insert_for_function(
     // A capture the frame frees itself, because it frees the closure too. The
     // capture is a hand-over as far as the analysis is concerned, so the two
     // never free one value on one path.
-    let with_closure = captures_freed_with_the_closure(func, &fresh);
-    let with_closure = one_free_per_group(func, with_closure, &value_groups(func, &fresh));
+    //
+    // That includes a load from a lent slot. `for s in v.as_sequence() { …v… }`
+    // (and `m.keys()`, which is built the same way) puts `v` in a slot because
+    // the loop body reads it, and the sequence's closure captures what the slot
+    // holds. The ownership plan reads the capture as a hand-over and the
+    // closure's drop leaves it to the frame, so without this nobody freed `v`.
+    // The slot is the variable, so it can be read again past the drop; a
+    // capture whose slot is read there is left alone.
+    let mut fresh_or_lent = fresh.clone();
+    fresh_or_lent.extend(from_slots.iter().map(|(id, free)| (*id, *free)));
+    let with_closure = captures_freed_with_the_closure(func, &fresh_or_lent);
+    let with_closure = if from_slots.is_empty() {
+        with_closure
+    } else {
+        let reach = strict_reach(func);
+        let slot_names: HashSet<LocalId> = from_slots
+            .keys()
+            .chain(lent.slots.keys())
+            .chain(lent.refs.iter())
+            .copied()
+            .collect();
+        let drops: Vec<(LocalId, usize, usize)> = crate::closures::closure_drops_by_create(func).collect();
+        with_closure
+            .into_iter()
+            .filter(|(owner, _, local, _)| {
+                !from_slots.contains_key(local)
+                    || drops
+                        .iter()
+                        .filter(|(create, _, _)| create == owner)
+                        .all(|(_, bi, si)| !read_after(func, &reach, &slot_names, *bi, *si))
+            })
+            .collect()
+    };
+    let with_closure = one_free_per_group(func, with_closure, &value_groups(func, &fresh_or_lent));
 
     let guards = crate::analysis::ownership::Guards::new(func, &plan);
     // A release under a lent slot frees what the slot holds *now*: the callee

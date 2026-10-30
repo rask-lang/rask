@@ -455,15 +455,15 @@ items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 | Method | Returns | Notes |
 |--------|---------|-------|
 | `map.contains(k)` | `bool` | Check key existence without copying value |
-| `map.keys()` | expression-scoped iterator | Iterate over keys |
-| `map.values()` | expression-scoped iterator | Iterate over values |
+| `map.keys()` | `Sequence<K>`, lazily | The keys |
+| `map.values()` | `Sequence<V>`, lazily | The values, in `keys()` order |
 
 <!-- surface -->
 ```rask
 extend Map<K, V> {
     func contains(self, key: K) -> bool
-    func keys(self) -> Iterator<K>
-    func values(self) -> Iterator<V>
+    func keys(self) -> Sequence<K>
+    func values(self) -> Sequence<V>
 }
 ```
 

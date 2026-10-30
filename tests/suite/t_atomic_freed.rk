@@ -24,32 +24,31 @@
 // Spec: specs/memory/atomics.md — GA1, `Atomic<T>` is the only spelling; GA2,
 // the payload is a machine word.
 import sync.Atomic
-import sync.Ordering
 
 test "mem.atomics — a counter is freed and still reads right" {
     let a = Atomic<i64>.new(7)
-    assert a.load(Ordering.SeqCst) == 7
-    a.store(42, Ordering.SeqCst)
-    assert a.load(Ordering.SeqCst) == 42
+    assert a.load() == 7
+    a.store(42)
+    assert a.load() == 42
 }
 
 test "mem.atomics — the default constructor too" {
     let a = Atomic<i64>.default()
-    assert a.load(Ordering.SeqCst) == 0
-    a.store(3, Ordering.SeqCst)
-    assert a.load(Ordering.SeqCst) == 3
+    assert a.load() == 0
+    a.store(3)
+    assert a.load() == 3
 }
 
 test "mem.atomics — fetch_add through a freed handle" {
     let a = Atomic<i64>.new(10)
-    assert a.fetch_add(5, Ordering.SeqCst) == 10
-    assert a.load(Ordering.SeqCst) == 15
+    assert a.fetch_add(5) == 10
+    assert a.load() == 15
 }
 
 test "mem.atomics — swap" {
     let a = Atomic<i64>.new(1)
-    assert a.swap(9, Ordering.SeqCst) == 1
-    assert a.load(Ordering.SeqCst) == 9
+    assert a.swap(9) == 1
+    assert a.load() == 9
 }
 
 // `take` frees the block itself, so the frame must not free it again —
@@ -63,15 +62,15 @@ test "mem.atomics — one consumed, one dropped, in the same frame" {
     let a = Atomic<i64>.new(1)
     let b = Atomic<i64>.new(2)
     assert a.take() == 1
-    assert b.load(Ordering.SeqCst) == 2
+    assert b.load() == 2
 }
 
 // A bool payload, which is the same word to the runtime.
 test "mem.atomics — a bool flag" {
     let flag = Atomic<bool>.new(false)
-    assert !flag.load(Ordering.SeqCst)
-    flag.store(true, Ordering.SeqCst)
-    assert flag.load(Ordering.SeqCst)
+    assert !flag.load()
+    flag.store(true)
+    assert flag.load()
 }
 
 // One per turn, so a missing free shows up as a count rather than as one
@@ -80,8 +79,8 @@ test "mem.atomics — an atomic per turn" {
     mut total = 0
     for i in 0..8 {
         let a = Atomic<i64>.new(i.clamp<i64>())
-        a.fetch_add(1, Ordering.SeqCst)
-        total = total + a.load(Ordering.SeqCst)
+        a.fetch_add(1)
+        total = total + a.load()
     }
     assert total == 36
 }
@@ -91,8 +90,8 @@ test "mem.atomics — three at a time" {
     let a = Atomic<i64>.new(1)
     let b = Atomic<i64>.new(2)
     let c = Atomic<i64>.new(3)
-    assert a.load(Ordering.SeqCst) + b.load(Ordering.SeqCst) + c.load(Ordering.SeqCst) == 6
-    a.store(10, Ordering.SeqCst)
-    assert a.load(Ordering.SeqCst) == 10
-    assert b.load(Ordering.SeqCst) == 2
+    assert a.load() + b.load() + c.load() == 6
+    a.store(10)
+    assert a.load() == 10
+    assert b.load() == 2
 }

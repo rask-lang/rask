@@ -1066,11 +1066,6 @@ impl Interpreter {
                 if let Some(kind) = super::register::prelude_builtin(base_name) {
                     return Ok(Value::Builtin(kind));
                 }
-                // `import sync.Relaxed` brings the ordering into scope under
-                // its bare name, which is how mem.atomics writes its examples.
-                if rask_stdlib::ordering_tag(base_name).is_some() {
-                    return Ok(Value::stdlib_enum("Ordering", base_name, vec![]));
-                }
                 Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 

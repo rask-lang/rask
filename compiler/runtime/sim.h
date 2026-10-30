@@ -124,6 +124,10 @@ int64_t rask_sim_step(void);
 int64_t rask_sim_time_ns(void);
 int64_t rask_sim_wall_ns(void);
 _Noreturn void rask_test_sim_fail(const char *msg);
+// Between two claim inputs (claims.c): the next input starts in a world as
+// fresh as a new process's, so it replays alone exactly as it ran in the batch.
+// Returns 0, changing nothing, when a task from the last input is still alive.
+int rask_sim_reseed(uint64_t seed);
 
 // A call sim has no model for (sim/B3). Panics under sim with "no simulated
 // implementation for <what>", where the format names the call and what it

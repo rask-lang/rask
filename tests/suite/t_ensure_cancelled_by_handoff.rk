@@ -21,7 +21,6 @@
 // leak ledger for a bug it isn't about.
 
 import sync.Atomic
-import sync.SeqCst
 
 const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
 
@@ -36,7 +35,7 @@ extend Conn {
     }
 
     func close(take self) -> i64 {
-        CLOSES.fetch_add(1, SeqCst)
+        CLOSES.fetch_add(1)
         return self.id
     }
 }
@@ -82,33 +81,33 @@ func handed_to_take() -> i64 {
 }
 
 test "mem.linear/L6 — returning the value cancels its ensure" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     let c = returned()
     ensure c.close()
-    assert CLOSES.load(SeqCst) == 0
+    assert CLOSES.load() == 0
     assert c.close() == 1
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "mem.linear/L6 — breaking out with the value cancels its ensure" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     let c = broken_out()
     ensure c.close()
-    assert CLOSES.load(SeqCst) == 0
+    assert CLOSES.load() == 0
     assert c.close() == 2
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "mem.linear/L6 — a rebinding moves the obligation, it doesn't double it" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert rebound() == 3
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "mem.linear/L6 — a `take` parameter takes the obligation with it" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert handed_to_take() == 4
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 func main() {}

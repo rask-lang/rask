@@ -1,0 +1,841 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//! Type definitions used throughout the checker.
+
+use std::collections::HashMap;
+
+use rask_ast::NodeId;
+use rask_resolve::SymbolId;
+
+use super::type_table::TypeTable;
+use rask_types::{ErrorWrap, MethodSig, TypeBinding, TypeDef};
+
+use rask_types::{Type, TypeId};
+
+/// The function a call expression resolves to (CALL6). Recorded once during
+/// type checking so lowering and the hidden-param pass never re-derive it
+/// from a reconstructed name.
+///
+/// A structured id, never a name string:
+/// - `Free` for `f(...)` — the callee's resolved symbol.
+/// - `Method` for `recv.m(...)` / `T.m(...)` — the *resolved* receiver type
+///   plus the method name selected by dispatch. Methods have no single symbol
+///   id yet, so `(receiver type, name)` stands in as the structured id.
+///
+/// The receiver is stored fully applied — substitutions run, aliases resolved —
+/// which is the part consumers can't reconstruct. `node_types` holds whatever
+/// the receiver *expression* was assigned, and that is routinely still a type
+/// variable (or missing entirely, for nodes synthesized after checking).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Callee {
+    Free(SymbolId),
+    Method {
+        recv: Type,
+        method: String,
+        /// XC4/XC5: the package whose `extend` block supplies this method, when
+        /// more than one declares it. `None` is the ordinary case — one block,
+        /// one body, nothing to choose between.
+        package: Option<String>,
+    },
+}
+
+impl Callee {
+    /// The receiver's TypeId, for user-defined types. `None` for stdlib and
+    /// primitive receivers, which have no entry in the type table.
+    pub fn recv_type_id(&self) -> Option<TypeId> {
+        match self {
+            Callee::Method { recv: Type::Named(id), .. } => Some(*id),
+            Callee::Method { recv: Type::Generic { base, .. }, .. } => Some(*base),
+            _ => None,
+        }
+    }
+}
+
+/// Canonical name for a method receiver, matching how monomorphization mangles
+/// `{Type}_{method}`. Returns `None` for receivers that don't qualify a method
+/// name on their own (bare type variables, tuples, unit).
+pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
+    match ty {
+        Type::Named(id) | Type::Generic { base: id, .. } => {
+            types.get(*id).map(|_| types.type_name(*id))
+        }
+        Type::UnresolvedNamed(name) => Some(name.clone()),
+        Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+        Type::String => Some("string".to_string()),
+        Type::Bytes => Some("bytes".to_string()),
+        // `T?` is `T or none`; it dispatches as Option, everything else as Result.
+        Type::Result { err, .. } if **err == Type::None => Some("Option".to_string()),
+        Type::Result { .. } => Some("Result".to_string()),
+        Type::RawPtr(_) => Some("Ptr".to_string()),
+        Type::Bool => Some("bool".to_string()),
+        Type::Char => Some("char".to_string()),
+        Type::I8 => Some("i8".to_string()),
+        Type::I16 => Some("i16".to_string()),
+        Type::I32 => Some("i32".to_string()),
+        Type::I64 => Some("i64".to_string()),
+        Type::I128 => Some("i128".to_string()),
+        Type::U8 => Some("u8".to_string()),
+        Type::U16 => Some("u16".to_string()),
+        Type::U32 => Some("u32".to_string()),
+        Type::U64 => Some("u64".to_string()),
+        Type::U128 => Some("u128".to_string()),
+        Type::F32 => Some("f32".to_string()),
+        Type::F64 => Some("f64".to_string()),
+        Type::InterfaceObject { interface_name, .. } => Some(interface_name.clone()),
+        _ => None,
+    }
+}
+
+/// Builtin module method signature.
+#[derive(Debug, Clone)]
+pub struct ModuleMethodSig {
+    pub name: String,
+    pub params: Vec<Type>,
+    pub ret: Type,
+    /// Interface bounds on the method's own type parameters, as the stub wrote them
+    /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
+    /// type argument at the call site.
+    pub type_param_bounds: Vec<(String, rask_ast::ty::TypeExpr)>,
+    /// Which bounded type parameter each parameter *is*, when its declared type
+    /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
+    ///
+    /// `params` can't answer this: `stub_type` turns a single-letter type
+    /// parameter into the `_Any` wildcard, which is what the return-type
+    /// freshening runs on, so by then the name is gone. Without it a call that
+    /// didn't write the type argument had nothing to check the bound against.
+    pub param_type_params: Vec<Option<String>>,
+}
+
+
+impl TypedProgram {
+    /// What a method call's declaration says it does (`@grows`, `@shrinks`,
+    /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
+    /// method declares none.
+    pub fn declared_effects(&self, call: NodeId) -> rask_ast::decl::DeclaredEffects {
+        let Some(callee @ Callee::Method { method, .. }) = self.call_targets.get(&call) else {
+            return Default::default();
+        };
+        callee
+            .recv_type_id()
+            .and_then(|id| self.types.get(id))
+            .and_then(|def| match def {
+                TypeDef::Struct { methods, .. }
+                | TypeDef::Enum { methods, .. }
+                | TypeDef::NominalAlias { methods, .. } => {
+                    methods.iter().find(|m| m.name == *method).map(|m| m.effect)
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each method call the checker resolved, keyed by the call's node: what
+    /// it calls and what the method declares it does to its receiver's size.
+    pub fn method_targets(&self) -> HashMap<NodeId, rask_ast::decl::MethodTarget> {
+        self.call_targets
+            .iter()
+            .filter_map(|(node, callee)| match callee {
+                Callee::Method { recv, method, .. } => {
+                    let ty = receiver_name(recv, &self.types)?;
+                    Some((*node, rask_ast::decl::MethodTarget {
+                        name: format!("{ty}.{method}"),
+                        effect: self.declared_effects(*node),
+                    }))
+                }
+                Callee::Free(_) => None,
+            })
+            .collect()
+    }
+
+    /// Program functions whose name is already some method's symbol, each
+    /// against a symbol of its own: `Vec_len` → `Vec_len#fn`.
+    ///
+    /// A method `m` on `T` is `T_m` to every backend, and a function is its
+    /// name, so `func Vec_len` and `Vec.len` were one symbol. `#` is in no
+    /// identifier, so the new name can't be one either. The method keeps its
+    /// symbol because the stdlib's tables, and MIR's own spellings for it, are
+    /// keyed on that. `main` and a function with a foreign ABI keep theirs:
+    /// something outside the program calls them by it.
+    fn functions_needing_symbols(&self, decls: &[rask_ast::decl::Decl]) -> HashMap<String, String> {
+        use rask_ast::decl::DeclKind;
+        let method_symbols: std::collections::HashSet<String> = self
+            .types
+            .types
+            .iter()
+            .flat_map(|def| {
+                let methods: &[MethodSig] = match def {
+                    TypeDef::Struct { methods, .. }
+                    | TypeDef::Enum { methods, .. }
+                    | TypeDef::NominalAlias { methods, .. } => methods,
+                    _ => &[],
+                };
+                let ty = super::type_table::TypeTable::def_name(def);
+                methods.iter().map(move |m| format!("{ty}_{}", m.name))
+            })
+            .collect();
+        decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Fn(f)
+                    if f.name != "main"
+                        && f.abi.is_none()
+                        && (method_symbols.contains(&f.name)
+                            || rask_stdlib::mir_metadata::is_method_symbol(&f.name)) =>
+                {
+                    Some((f.name.clone(), format!("{}#fn", f.name)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Hand the checker's own declarations to the program: the derived
+    /// `eq`/`hash`/`compare` bodies and wrapper functions it wrote and
+    /// checked, and every `==` on two wrappers turned into a call to the
+    /// wrapper's `eq` (`checker/derive.rs`).
+    ///
+    /// Also writes each transparent alias's target where the alias was named.
+    ///
+    /// Done here, by the entry points that check a program, rather than by
+    /// whoever runs next: every pass after this one reads the declarations,
+    /// and none of them should have to know the checker wrote some.
+    /// Write each call the checker placed into its declaration: arguments in
+    /// parameter order, defaults filled in. Without it on the stdlib's copy, a
+    /// stdlib body calling a method with a default argument reached codegen
+    /// one argument short.
+    fn place_args(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        // Calls the checker placed: each argument moves to its parameter, and
+        // a parameter left out gets its default. Where that would change
+        // which argument's code runs first, those arguments are bound to
+        // temporaries beforehand, in written order, and the call reads them.
+        struct Places<'a> {
+            placed: &'a HashMap<NodeId, Vec<PlacedArg>>,
+            hoists: &'a HashMap<NodeId, ArgHoist>,
+            done: std::collections::HashSet<NodeId>,
+        }
+        impl rask_ast::rewrite::Rewrite for Places<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
+                use rask_ast::stmt::{Stmt, StmtKind};
+                let Some(placed) = self.placed.get(&e.id) else { return };
+                // The call is still inside the block that replaces it.
+                if !self.done.insert(e.id) {
+                    return;
+                }
+                let (ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }) = &mut e.kind else { return };
+                if placed.iter().any(|p| matches!(p, PlacedArg::Written(i) if *i >= args.len())) {
+                    return;
+                }
+                let mut written = std::mem::take(args);
+                let mut lets = Vec::new();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    for (arg, let_id, ident) in &hoist.binds {
+                        let name = format!("__arg_{}", let_id.0);
+                        let span = written[*arg].expr.span;
+                        let read = Expr { id: *ident, kind: ExprKind::Ident(name.clone()), span };
+                        let init = std::mem::replace(&mut written[*arg].expr, read);
+                        lets.push(Stmt { id: *let_id, kind: StmtKind::Let { name, name_span: span, ty: None, init }, span });
+                    }
+                }
+                *args = placed
+                    .iter()
+                    .map(|p| match p {
+                        PlacedArg::Written(i) => written[*i].clone(),
+                        PlacedArg::Default(expr) => CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() },
+                    })
+                    .collect();
+                if let Some(hoist) = self.hoists.get(&e.id) {
+                    let span = e.span;
+                    let call = Expr { id: e.id, kind: std::mem::replace(&mut e.kind, ExprKind::Bool(false)), span };
+                    lets.push(Stmt { id: hoist.block, kind: StmtKind::Expr(call), span });
+                    e.id = hoist.block;
+                    e.kind = ExprKind::Block(lets);
+                }
+            }
+        }
+        if !self.arg_places.is_empty() {
+            rask_ast::rewrite::rewrite_decls(
+                decls,
+                &mut Places { placed: &self.arg_places, hoists: &self.arg_hoists, done: Default::default() },
+            );
+        }
+    }
+
+    /// Write into `decls` what the checker decided about particular nodes:
+    /// a `==` on two wrappers sent to the wrapper's `eq`, a `.clone()` that is
+    /// a copy, a collection standing for a `Sequence`, a call's arguments
+    /// placed. Keyed by node, so it applies to any copy of checked
+    /// declarations: the program's, and each fresh copy of the stdlib's bodies
+    /// a backend compiles. Those copies used to get only the placed arguments,
+    /// so a stdlib body couldn't write what a program can (#1621).
+    pub fn rewrite_checked_nodes(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_calls, &self.copied_clones));
+
+        // A collection standing in for a `Sequence<E>` (SEQ48) gets the
+        // `as_sequence()` the checker typed for it. The wrapping call is the
+        // node the slot's type and the call's target were recorded on.
+        // The walk goes on into the wrapped value, which still has its own
+        // id, so each one is wrapped once.
+        struct ChainHeads<'a>(&'a HashMap<NodeId, NodeId>, std::collections::HashSet<NodeId>);
+        impl rask_ast::rewrite::Rewrite for ChainHeads<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind};
+                let Some(call) = self.0.get(&e.id) else { return };
+                if !self.1.insert(e.id) {
+                    return;
+                }
+                let span = e.span;
+                let value = std::mem::replace(e, Expr { id: *call, kind: ExprKind::Bool(false), span });
+                e.kind = ExprKind::MethodCall {
+                    object: Box::new(value),
+                    method: "as_sequence".to_string(),
+                    type_args: None,
+                    args: Vec::new(),
+                };
+            }
+        }
+        if !self.sequence_coercions.is_empty() {
+            rask_ast::rewrite::rewrite_decls(decls, &mut ChainHeads(&self.sequence_coercions, Default::default()));
+        }
+
+        self.place_args(decls);
+        self.reads_as.rewrite(decls);
+        self.filed_methods.rewrite(decls);
+    }
+
+    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        self.rewrite_checked_nodes(decls);
+
+        if !self.struct_shorthand_patterns.is_empty() {
+            struct_shorthands(decls, &self.struct_shorthand_patterns);
+        }
+
+        // A program type sharing a stdlib type's name has gone by its symbol
+        // in the table since it was registered (`TypeTable::written_names`).
+        // Its declaration and every use the program wrote say that symbol from
+        // here, and the written name means the stdlib's type to every pass
+        // after this one — so neither backend can mistake one for the other
+        // (#1333). What the checker wrote itself is named from the table
+        // already, which is why this runs before those are added.
+        let renamed = self.types.release_written_names();
+        rename_types(decls, &renamed, &self.type_test_patterns);
+
+        // `is json.JsonError as e` kept its module through checking, which is
+        // what said the stdlib's type was meant (#1470). The bare name means
+        // that type from here, and the backends read a dotted pattern name as
+        // `Enum.Variant`.
+        struct ModuleTypePatterns<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for ModuleTypePatterns<'_> {
+            fn pattern(&mut self, p: &mut rask_ast::expr::Pattern) {
+                let rask_ast::expr::Pattern::TypePat {
+                    ty: rask_ast::ty::TypeExpr::Named { path, .. }, ..
+                } = p
+                else {
+                    return;
+                };
+                if path.len() > 1 && self.0.module_named(&path[0]).is_some() {
+                    path.remove(0);
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut ModuleTypePatterns(&self.types));
+
+        // A program function the same way, when its name is a symbol the
+        // backends already use for a method: `func Vec_len(v)` and `v.len()`
+        // were one `Vec_len` to native, and the method call ran the program's
+        // body (#1307).
+        let renamed = self.functions_needing_symbols(decls);
+        rask_ast::qualify::qualify_in_place(decls, &renamed);
+        for (written, symbol) in &renamed {
+            if let Some(ret) = self.inferred_fn_ret.remove(written) {
+                self.inferred_fn_ret.insert(symbol.clone(), ret);
+            }
+            if let Some(params) = self.inferred_fn_params.remove(written) {
+                self.inferred_fn_params.insert(symbol.clone(), params);
+            }
+        }
+
+        let mut derived = std::mem::take(&mut self.derived_decls);
+        rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_calls, &self.copied_clones));
+        decls.extend(derived);
+
+        // A transparent alias is the type it names. The checker resolves one
+        // through its alias table; mono, lowering and the interpreter read the
+        // written types and have no table, so a field or parameter typed
+        // `Names` reached them as a type nobody declared (#1316). Writing the
+        // target in its place hands them what the checker already knew.
+        struct Aliases<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for Aliases<'_> {
+            fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+                *t = self.0.expand_aliases(t);
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Aliases(&self.types));
+
+        // The backends know an interface by its symbol, one per declaration
+        // (`TypeTable::interface_symbol`). A program interface shadowing a
+        // stdlib one has a symbol that isn't its name, so the program's `any
+        // Writer` is written out as that symbol here — the stdlib's own
+        // `any Writer` keeps the plain name and means the stdlib's (#1426).
+        struct AnySymbols<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for AnySymbols<'_> {
+            fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+                let rask_ast::ty::TypeExpr::Any(inner) = t else { return };
+                let Some(name) = inner.name() else { return };
+                let Type::InterfaceObject { decl, .. } = self.0.interface_object(&name) else { return };
+                let symbol = self.0.interface_symbol(&name, decl);
+                if symbol != name {
+                    **inner = rask_ast::ty::TypeExpr::named(symbol);
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
+    }
+}
+
+/// Where an `extend` block's method is filed under a name of its own, and the
+/// calls that reach it: written into the declarations so every backend sees
+/// one name per body.
+#[derive(Debug, Clone, Default)]
+pub struct FiledMethods {
+    /// `(impl block, method as written)` → the name it's filed under.
+    pub decls: HashMap<(NodeId, String), String>,
+    /// A call → the filed name of the method it reaches.
+    pub calls: HashMap<NodeId, String>,
+}
+
+impl FiledMethods {
+    fn rewrite(&self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        if self.decls.is_empty() && self.calls.is_empty() {
+            return;
+        }
+        for decl in decls.iter_mut() {
+            if let rask_ast::decl::DeclKind::Impl(i) = &mut decl.kind {
+                for m in &mut i.methods {
+                    if let Some(filed) = self.decls.get(&(decl.id, m.name.clone())) {
+                        m.name = filed.clone();
+                    }
+                }
+            }
+        }
+        struct Calls<'a>(&'a HashMap<NodeId, String>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                if let Some(filed) = self.0.get(&e.id) {
+                    if let rask_ast::expr::ExprKind::MethodCall { method, .. } = &mut e.kind {
+                        *method = filed.clone();
+                    }
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.calls));
+    }
+}
+
+/// The wrapper `==` calls and copied clones the checker recorded, keyed by
+/// node (`rewrite_checked_nodes`).
+struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>, &'a std::collections::HashSet<NodeId>);
+impl rask_ast::rewrite::Rewrite for Calls<'_> {
+    fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+        use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
+        if self.1.contains(&e.id) {
+            if let ExprKind::MethodCall { object, .. } = &e.kind {
+                *e = object.as_ref().clone();
+            }
+            return;
+        }
+        let Some((callee, name)) = self.0.get(&e.id) else { return };
+        let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
+        let ExprKind::MethodCall { object, mut args, .. } = old else {
+            e.kind = old;
+            return;
+        };
+        let mut call_args = vec![CallArg { name: None, mode: ArgMode::Default, expr: *object }];
+        call_args.extend(args.drain(..).map(|a| CallArg { name: None, mode: ArgMode::Default, expr: a.expr }));
+        e.kind = ExprKind::Call {
+            func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
+            args: call_args,
+        };
+    }
+}
+
+/// Arguments of a placed call bound to temporaries so they run in the order
+/// written (`arg_labels::plan_hoist`).
+#[derive(Debug, Clone)]
+pub struct ArgHoist {
+    /// The block that replaces the call.
+    pub block: NodeId,
+    /// `(written argument, its let's id, the temporary's use's id)`, in
+    /// written order.
+    pub binds: Vec<(usize, NodeId, NodeId)>,
+}
+
+/// Where one parameter's argument comes from in a placed call.
+#[derive(Debug, Clone)]
+pub enum PlacedArg {
+    /// The argument written at this index.
+    Written(usize),
+    /// The parameter's default, copied for this call.
+    Default(rask_ast::expr::Expr),
+}
+
+/// Result of type checking.
+#[derive(Debug)]
+pub struct TypedProgram {
+    /// Resolved symbols from name resolution.
+    pub symbols: rask_resolve::SymbolTable,
+    /// Struct declarations synthesized from `import c` headers. Not in the
+    /// source, so monomorphization has to be handed them or a C struct gets no
+    /// layout (#948).
+    pub c_type_decls: Vec<rask_ast::decl::Decl>,
+    /// Symbol resolutions from name resolution.
+    pub resolutions: HashMap<NodeId, SymbolId>,
+    /// Type table with all type definitions.
+    pub types: TypeTable,
+    /// Computed type for each expression node.
+    pub node_types: HashMap<NodeId, Type>,
+    /// Resolved type arguments for each generic call site, each named by the
+    /// type parameter it binds. Key is the Call/MethodCall expression's NodeId.
+    pub call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
+    /// CALL6: the function each call resolves to, keyed by the Call/MethodCall
+    /// expression's NodeId. The single source of truth for dispatch — lowering
+    /// and the hidden-param pass read this instead of mangling type names.
+    pub call_targets: HashMap<NodeId, Callee>,
+    /// OR1: operator calls the pair resolved to a conformance, keyed by the
+    /// MethodCall's NodeId.
+    ///
+    /// `a * b` is a machine instruction on some pairs and a call on others, and
+    /// on a primitive receiver the right operand is what decides — so the
+    /// backends read the answer here rather than each deciding again from the
+    /// receiver alone.
+    pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
+    /// TR5: implicit interface coercion sites. NodeId of expression → the
+    /// interface's symbol (`TypeTable::interface_symbol`).
+    pub interface_coercions: HashMap<NodeId, String>,
+    /// An `if`/`match` arm that gains a `T?` layer because another arm is a
+    /// `T?` (`CoercionSite::Branch`): the arm's node → the whole expression's
+    /// type. Lowering wraps the arm's value there.
+    pub arm_widenings: HashMap<NodeId, Type>,
+    /// XC4: which package wrote each source file, by file id. A span carries
+    /// its file id, so this answers "whose code is this?" for anything after
+    /// the checker — the merged decl list has no packages left in it.
+    pub file_packages: HashMap<u16, String>,
+    /// XC5: `extend` blocks whose methods need the declaring package in their
+    /// symbol, because another package declares the same method on the same
+    /// type. Impl decl id → package name. Empty in every program without a
+    /// collision, which is nearly all of them.
+    ///
+    /// Without it both blocks' `label` mangle to one `Doc_label` and whichever
+    /// the pass read last wins, so `liba`'s own call ran `libb`'s body.
+    pub conformance_disambiguation: HashMap<NodeId, String>,
+    /// OR4: the interface each `implements` block conforms to, by its own
+    /// name. Impl decl id → `Mul` for `Meters implements ops.Mul<f64>`.
+    /// An operator conformance's methods are filed under the applied argument,
+    /// and whether the block is one depends on which interface it names, not
+    /// on how the header spelled it.
+    pub conformance_interfaces: HashMap<NodeId, String>,
+    /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing
+    /// function's error enum. NodeId of the `try` expression → the variant.
+    pub error_wraps: HashMap<NodeId, ErrorWrap>,
+    /// ER14a: `??` sites whose right side is still wrapped. There the present
+    /// path hands back the left operand unchanged — unwrapping it would throw
+    /// away the layer the chain is still carrying.
+    pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// ER9: the value of each `return` that goes to the error side of the
+    /// function's `T or E`. The checker picked the side by type when it
+    /// accepted the return; the backends wrap by this instead of comparing
+    /// types again — a `type Code = i64` error is an `i64` to both of them.
+    pub err_returns: std::collections::HashSet<NodeId>,
+    /// CM1: closure literals that outlive the frame that built them, so their
+    /// captures travel with them instead of being pointed at. Worked out by the
+    /// ownership pass and written back here, because lowering and the
+    /// interpreter both have to agree with it.
+    pub escaping_closures: std::collections::HashSet<NodeId>,
+    /// Assignments whose new value is built out of the old one, so the slot's
+    /// old value isn't released before the write (`rask_ownership`). Worked out
+    /// by the ownership pass and written back here, like `escaping_closures`.
+    pub field_reuses: std::collections::HashSet<NodeId>,
+    /// The bindings each `return` moves, keyed by the returned expression
+    /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
+    pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,
+    /// Closure literals that capture a link or a `Local` box, so they may not
+    /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block that
+    /// names one of these by itself is rejected at compile time; one that
+    /// captures such a closure value is refused when the task starts, from a
+    /// flag the closure carries (#1356). Worked out by the ownership pass and
+    /// written back here, like `escaping_closures`.
+    pub task_bound_closures: std::collections::HashSet<NodeId>,
+    /// Closure literals in a generic body — task blocks' own included — that
+    /// capture a name whose type mentions a type parameter, with each such
+    /// capture's name and type. Whether one is task-bound depends on the
+    /// instantiation, and both backends decide it from the substituted types
+    /// through `TypeTable::generic_closure_task_bound`.
+    /// Written back by the ownership pass.
+    pub generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
+    /// For each closure that outlives its frame, the captures that are lent
+    /// parameters of that frame (mem.closures/CM3): held, not owned. Written
+    /// back by the ownership pass.
+    pub lent_captures: HashMap<NodeId, Vec<String>>,
+    /// ER16a: `try` node → the postfix-chain step it attaches to, when that
+    /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the
+    /// `read_file(p)` call, so lowering branches there and hands `.len()` the
+    /// payload. A `try` absent from this map wraps its whole operand.
+    pub try_chain_placement: HashMap<NodeId, NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node. On a
+    /// flat `T? or E` that's a re-shaped value (`E?`, `T or E`, `T?`), not a
+    /// payload the scrutinee already holds, so a backend has to build it.
+    pub else_binding_types: HashMap<NodeId, Type>,
+    /// Unsafe operations recorded during type checking (span + category).
+    pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
+    /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).
+    /// Used by the LSP for hover on identifiers that aren't expression nodes.
+    pub span_types: HashMap<(usize, usize, u16), Type>,
+    /// GC9: methods whose `self` is mutable, keyed by the method's span.
+    ///
+    /// `mutate self` and `take self` say so in the signature, but a private
+    /// method may omit the mode and have it inferred from the body — so the
+    /// signature alone doesn't answer the question. This is where the answer
+    /// the checker already worked out gets recorded, so MIR lowering can read it
+    /// rather than re-deriving GC9 with a second walker that could drift.
+    ///
+    /// Keyed by span because FnDecl has no NodeId, and spans survive the clone
+    /// monomorphization makes of each generic instantiation.
+    pub mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
+    /// Bare names in a pattern that the checker read as a type test rather
+    /// than as a variant or a binding — `r is ParseError` — keyed by the span
+    /// of the statement or expression the pattern sits in.
+    ///
+    /// A bare `ParseError` can be any of the three, and only the scrutinee's
+    /// type says which. Renaming a type has to rename the first kind and leave
+    /// `AppError`'s `ParseError` variant alone (`attach_derived`).
+    pub type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Bare `Pair(a, b)` patterns that matched a struct, keyed like
+    /// `type_test_patterns`. Some enum also has a `Pair` variant, so the
+    /// desugarer left the pattern as written; `attach_derived` makes each one
+    /// the struct pattern `Pair(a: a, b: b)`.
+    pub struct_shorthand_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Calls whose labels or defaults moved their arguments: call → where each
+    /// parameter's argument comes from. The checker placed them where it knew
+    /// the callee; `attach_derived` writes them into the call.
+    pub arg_places: HashMap<NodeId, Vec<PlacedArg>>,
+    /// Placed calls whose arguments are bound first, by call.
+    pub arg_hoists: HashMap<NodeId, ArgHoist>,
+    /// Function name → inferred return type, for functions that don't declare one
+    /// (`func f() { return 41 }`). An absent annotation is not the same as
+    /// returning nothing, and the declaration string is the only thing lowering
+    /// can otherwise see — so without this the signature came out `void` while
+    /// the body returned a value.
+    pub inferred_fn_ret: HashMap<String, Type>,
+    /// Function name → the types inferred for its untyped parameters
+    /// (`func greet(name) { … }`), in declaration order and paired with the
+    /// parameter name. The declaration string is empty for those, and empty
+    /// reads as `void` everywhere downstream — which is how an inferred
+    /// `string` parameter reached MIR as a void and printed as an address
+    /// (#905). Written back into the declarations after checking.
+    pub inferred_fn_params: HashMap<String, Vec<(String, Type)>>,
+    /// Declarations the checker wrote and checked (`checker/derive.rs`).
+    /// `attach_derived` moves them into the program.
+    pub derived_decls: Vec<rask_ast::decl::Decl>,
+    /// Method calls on a wrapper (`==`, `.clone()`) that go through the
+    /// function written for its type: call node → (callee node, function
+    /// name). Applied by `attach_derived`.
+    pub wrapper_calls: HashMap<NodeId, (NodeId, String)>,
+    /// `.clone()` on a wrapper a copy duplicates: the call is its receiver.
+    /// Applied by `attach_derived`.
+    pub copied_clones: std::collections::HashSet<NodeId>,
+    /// A collection filling a `Sequence<E>` slot: value node → the node of
+    /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
+    pub sequence_coercions: HashMap<NodeId, NodeId>,
+    /// Receivers read through the field their type reads as (`reads_as.rs`).
+    pub reads_as: super::ReadsAs,
+    /// Methods filed under a name of their own because another `extend` block
+    /// with a different header declares the same one, and the calls that
+    /// reach them.
+    pub filed_methods: FiledMethods,
+    /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
+    pub wrapper_fns: Vec<super::derive::WrapperFns>,
+    /// The methods the checker wrote for generic types, as `Type_method`
+    /// (`Slot_clone`). Reached only through a call pinned to the type, so
+    /// mono never widens a call it couldn't pin onto one (#1434).
+    pub derived_generic_methods: std::collections::HashSet<String>,
+}
+
+/// Give each type in `map` its new name, in its declaration and everywhere the
+/// program names it.
+///
+/// `rask_ast::qualify` renames every bare name in a pattern, which is right
+/// for a package's declarations and wrong here: a bare `ParseError` in a
+/// pattern is just as often `AppError`'s variant of that name. Only the ones
+/// the checker read as a type test are the type (`type_test_patterns`); a bare
+/// constructor pattern is always a variant.
+/// Bare `Pair(a, b)` patterns the checker matched against a struct become
+/// that struct's pattern. Spans are the ones `check_pattern` was handed.
+fn struct_shorthands(
+    decls: &mut [rask_ast::decl::Decl],
+    found: &std::collections::HashSet<(rask_ast::Span, String)>,
+) {
+    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::stmt::{Stmt, StmtKind};
+
+    struct Shorthands<'a>(&'a std::collections::HashSet<(rask_ast::Span, String)>);
+
+    impl Shorthands<'_> {
+        fn convert(&self, p: &mut Pattern, span: rask_ast::Span) {
+            match p {
+                Pattern::Constructor { name, fields } if self.0.contains(&(span, name.clone())) => {
+                    let fields = fields
+                        .iter()
+                        .filter_map(|f| match f {
+                            Pattern::Ident(n) => Some((n.clone(), Pattern::Ident(n.clone()))),
+                            _ => None,
+                        })
+                        .collect();
+                    *p = Pattern::Struct { name: name.clone(), fields, rest: false };
+                }
+                Pattern::Constructor { fields, .. } | Pattern::Tuple(fields) | Pattern::Or(fields) => {
+                    fields.iter_mut().for_each(|f| self.convert(f, span))
+                }
+                Pattern::Struct { fields, .. } => fields.iter_mut().for_each(|(_, f)| self.convert(f, span)),
+                Pattern::Wildcard
+                | Pattern::Ident(_)
+                | Pattern::Literal(_)
+                | Pattern::Range { .. }
+                | Pattern::TypePat { .. } => {}
+            }
+        }
+    }
+
+    impl rask_ast::rewrite::Rewrite for Shorthands<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            let span = e.span;
+            match &mut e.kind {
+                ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| self.convert(&mut a.pattern, span)),
+                ExprKind::IfLet { pattern, .. }
+                | ExprKind::GuardPattern { pattern, .. }
+                | ExprKind::IsPattern { pattern, .. } => self.convert(pattern, span),
+                _ => {}
+            }
+        }
+
+        fn body(&mut self, b: &mut Vec<Stmt>) {
+            for stmt in b {
+                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                    let span = stmt.span;
+                    self.convert(pattern, span);
+                }
+            }
+        }
+    }
+
+    rask_ast::rewrite::rewrite_decls(decls, &mut Shorthands(found));
+}
+
+fn rename_types(
+    decls: &mut [rask_ast::decl::Decl],
+    map: &HashMap<String, String>,
+    type_tests: &std::collections::HashSet<(rask_ast::Span, String)>,
+) {
+    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::stmt::{Stmt, StmtKind};
+
+    if map.is_empty() {
+        return;
+    }
+
+    struct Types<'a> {
+        map: &'a HashMap<String, String>,
+        type_tests: &'a std::collections::HashSet<(rask_ast::Span, String)>,
+        locals: std::collections::HashSet<String>,
+    }
+
+    impl Types<'_> {
+        /// The bare type tests in one pattern, checked under `span`.
+        fn type_tests_in(&self, p: &mut Pattern, span: rask_ast::Span) {
+            match p {
+                Pattern::Ident(name) => {
+                    if self.type_tests.contains(&(span, name.clone())) {
+                        if let Some(to) = self.map.get(name.as_str()) {
+                            *name = to.clone();
+                        }
+                    }
+                }
+                Pattern::Constructor { fields, .. } => {
+                    fields.iter_mut().for_each(|f| self.type_tests_in(f, span))
+                }
+                Pattern::Struct { fields, .. } => {
+                    fields.iter_mut().for_each(|(_, f)| self.type_tests_in(f, span))
+                }
+                Pattern::Tuple(parts) | Pattern::Or(parts) => {
+                    parts.iter_mut().for_each(|f| self.type_tests_in(f, span))
+                }
+                Pattern::Wildcard
+                | Pattern::Literal(_)
+                | Pattern::Range { .. }
+                | Pattern::TypePat { .. } => {}
+            }
+        }
+    }
+
+    impl rask_ast::rewrite::Rewrite for Types<'_> {
+        fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+            t.rename(&|name| self.map.get(name).cloned());
+        }
+
+        fn expr(&mut self, e: &mut Expr) {
+            let span = e.span;
+            // A default argument the stdlib wrote, copied into the call: its
+            // `MemoryOrder` is the stdlib's, as the checker read it.
+            if crate::layout::is_stdlib_span(span) {
+                return;
+            }
+            match &mut e.kind {
+                ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
+                    if !self.locals.contains(name.as_str()) {
+                        if let Some(to) = self.map.get(name.as_str()) {
+                            *name = to.clone();
+                        }
+                    }
+                }
+                ExprKind::StructLit { name, .. } => {
+                    rask_ast::qualify::rename_path_head(name, |n| self.map.get(n).cloned())
+                }
+                ExprKind::Match { arms, .. } => {
+                    for arm in arms {
+                        self.type_tests_in(&mut arm.pattern, span);
+                    }
+                }
+                ExprKind::IfLet { pattern, .. }
+                | ExprKind::GuardPattern { pattern, .. }
+                | ExprKind::IsPattern { pattern, .. } => self.type_tests_in(pattern, span),
+                _ => {}
+            }
+        }
+
+        fn body(&mut self, b: &mut Vec<Stmt>) {
+            for stmt in b {
+                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                    let span = stmt.span;
+                    self.type_tests_in(pattern, span);
+                }
+            }
+        }
+
+        fn pattern(&mut self, p: &mut Pattern) {
+            // `ParseError.Plain` and `ParseError { .. }` name the type; a bare
+            // name is handled with its span above.
+            let name = match p {
+                Pattern::Ident(name) | Pattern::Constructor { name, .. } if name.contains('.') => name,
+                Pattern::Struct { name, .. } => name,
+                _ => return,
+            };
+            rask_ast::qualify::rename_path_head(name, |n| self.map.get(n).cloned());
+        }
+    }
+
+    for decl in decls.iter_mut() {
+        // A bare type test reads as a binding to a syntactic walk; it isn't one.
+        let mut locals = rask_ast::qualify::names_bound_in(decl);
+        locals.retain(|n| !type_tests.iter().any(|(_, t)| t == n));
+        rask_ast::rewrite::rewrite_decl(decl, &mut Types { map, type_tests, locals });
+        rask_ast::qualify::rename_declaration(decl, map);
+    }
+}

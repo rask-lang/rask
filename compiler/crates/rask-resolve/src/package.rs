@@ -176,8 +176,12 @@ impl std::error::Error for PackageError {}
 // Shared helpers (no &self — pure functions on paths)
 // =========================================================================
 
-/// Collect .rk source file paths from a directory (excluding build.rk).
-/// Also includes any .rk files from the .rk-gen/ subdirectory.
+/// A package's own claims (type.claims/W1). Never one of its sources: the
+/// build compiles it as a package of its own that imports this one.
+pub const CLAIMS_FILE: &str = "claims.rk";
+
+/// Collect .rk source file paths from a directory (excluding build.rk and
+/// claims.rk). Also includes any .rk files from the .rk-gen/ subdirectory.
 fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageError> {
     let mut files = Vec::new();
     let mut subdirs = Vec::new();
@@ -191,7 +195,8 @@ fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageE
 
         if path.is_file() {
             if let Some(ext) = path.extension() {
-                if ext == "rk" && path.file_name().and_then(|n| n.to_str()) != Some("build.rk") {
+                let name = path.file_name().and_then(|n| n.to_str());
+                if ext == "rk" && name != Some("build.rk") && name != Some(CLAIMS_FILE) {
                     files.push(path);
                 }
             }

@@ -1234,25 +1234,34 @@ fn ct_checked_binop_i128(kind: CtInt, op: CtOp, a: i128, b: i128) -> ComptimeRes
     }
 }
 
+/// The enum the checker typed an expression as: `Level` for `Level.Low`.
+#[derive(Debug, Clone)]
+pub struct EnumRef {
+    pub name: String,
+    /// The variants that carry no fields, so `Level.Low` is a value.
+    pub units: Vec<String>,
+}
+
 pub struct ComptimeInterpreter {
     env: ComptimeEnv,
-    /// Each enum's variants that carry no fields, by enum name. `Level.Low`
-    /// is a value, and nothing else here says `Level` names a type.
-    unit_variants: HashMap<String, Vec<String>>,
+    /// Each expression the checker typed as an enum, by its node. Nothing in
+    /// the AST says `Level` names a type, and matching on the spelling picked
+    /// the wrong enum when two shared a name.
+    enums: HashMap<rask_ast::NodeId, EnumRef>,
 }
 
 impl ComptimeInterpreter {
     pub fn new() -> Self {
         Self {
             env: ComptimeEnv::new(),
-            unit_variants: HashMap::new(),
+            enums: HashMap::new(),
         }
     }
 
     pub fn with_quota(quota: usize) -> Self {
         Self {
             env: ComptimeEnv::with_quota(quota),
-            unit_variants: HashMap::new(),
+            enums: HashMap::new(),
         }
     }
 
@@ -1294,17 +1303,17 @@ impl ComptimeInterpreter {
     /// would have; this only stops the lookup failing first.
     pub fn register_functions(&mut self, decls: &[Decl]) {
         for decl in decls {
-            match &decl.kind {
-                DeclKind::Fn(f) if f.is_comptime || !f.body.is_empty() => {
+            if let DeclKind::Fn(f) = &decl.kind {
+                if f.is_comptime || !f.body.is_empty() {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
-                DeclKind::Enum(e) => {
-                    let units = e.variants.iter().filter(|v| v.fields.is_empty()).map(|v| v.name.clone());
-                    self.unit_variants.insert(e.name.clone(), units.collect());
-                }
-                _ => {}
             }
         }
+    }
+
+    /// The expressions the checker typed as enums.
+    pub fn know_enums(&mut self, enums: HashMap<rask_ast::NodeId, EnumRef>) {
+        self.enums = enums;
     }
 
     /// Evaluate a comptime expression.
@@ -1402,12 +1411,13 @@ impl ComptimeInterpreter {
 
             // Field access
             ExprKind::Field { object, field } => {
-                if let ExprKind::Ident(name) = &object.kind {
-                    let is_unit_variant = self.env.get(name).is_none()
-                        && self.unit_variants.get(name).is_some_and(|vs| vs.contains(field));
-                    if is_unit_variant {
+                // `Level.Low`: the checker typed the access as `Level`, and the
+                // left side names no value in scope.
+                let names_value = matches!(&object.kind, ExprKind::Ident(n) if self.env.get(n).is_some());
+                if let Some(e) = self.enums.get(&expr.id).filter(|_| !names_value) {
+                    if e.units.contains(field) {
                         return Ok(ControlFlow::Normal(ComptimeValue::Enum {
-                            name: name.clone(),
+                            name: e.name.clone(),
                             variant: field.clone(),
                             data: None,
                         }));
@@ -3057,6 +3067,14 @@ impl ComptimeInterpreter {
     fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
+            // `Level.Low` parses as a name. It was taken as a binding, so the
+            // first such arm matched every value. The checker has already
+            // held the pattern to the scrutinee's enum; the variant decides.
+            Pattern::Ident(name) if name.contains('.') => Ok(matches!(
+                value,
+                ComptimeValue::Enum { variant, data: None, .. }
+                    if name.rsplit('.').next() == Some(variant.as_str())
+            )),
             Pattern::Ident(_) => Ok(true), // Binds anything
             Pattern::Literal(lit) => {
                 let lit_val = self.eval_expr(lit)?;
@@ -3160,6 +3178,7 @@ impl ComptimeInterpreter {
     fn bind_pattern(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<()> {
         match pattern {
             Pattern::Wildcard => Ok(()),
+            Pattern::Ident(name) if name.contains('.') => Ok(()),
             Pattern::Ident(name) => {
                 self.env.define(name.clone(), value.clone());
                 Ok(())

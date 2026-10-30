@@ -2,14 +2,13 @@
 // A read-then-write on an atomic, from two tasks. Native tasks run each body to
 // completion, so a plain `rask test` never sees the lost update; sim does.
 import sync.Atomic
-import sync.SeqCst
 
 const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
 
 func racy_bump(times: i64) {
     for i in 0..times {
-        let v = COUNTER.load(SeqCst)
-        COUNTER.store(v + 1, SeqCst)
+        let v = COUNTER.load()
+        COUNTER.store(v + 1)
     }
 }
 
@@ -21,7 +20,7 @@ test "lost update" {
         ensure b.detach()
         a.join()!
         b.join()!
-        let total = COUNTER.load(SeqCst)
+        let total = COUNTER.load()
         println("total {total}")
         assert total == 20
     }

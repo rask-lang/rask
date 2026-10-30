@@ -17,7 +17,6 @@
 // body leaks whether the body runs or not (#1224).
 
 import sync.Atomic
-import sync.SeqCst
 
 const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
 
@@ -36,7 +35,7 @@ extend Conn {
     }
 
     func close(take self) -> i64 {
-        CLOSES.fetch_add(1, SeqCst)
+        CLOSES.fetch_add(1)
         return self.id
     }
 }
@@ -77,33 +76,33 @@ func nested() -> Wrapper {
 }
 
 test "a struct literal field is looked inside" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert in_a_struct_literal().value == 1
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "a tuple element is looked inside" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert in_a_tuple().0 == 2
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "an array element is looked inside" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert in_an_array() == 3
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "an index expression is looked inside" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert in_an_index() == 50
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 test "and one nested in another" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     assert nested().value == 5
-    assert CLOSES.load(SeqCst) == 1
+    assert CLOSES.load() == 1
 }
 
 func main() {}

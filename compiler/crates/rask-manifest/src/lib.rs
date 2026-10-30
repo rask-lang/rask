@@ -91,11 +91,7 @@ fn check_loader() -> Result<Loader, String> {
 
 fn interpreter_for(result: &rask_compiler::CheckResult) -> rask_interp::Interpreter {
     let mut interp = rask_interp::Interpreter::new();
-    interp.inject_cfg(&rask_comptime::CfgConfig::from_host("debug", vec![]));
-    interp.adopt_checker_tables(&result.typed);
-    if !result.package_names.is_empty() {
-        interp.register_packages(&result.package_names);
-    }
+    rask_compiler::prepare_interpreter(&mut interp, result);
     interp
 }
 

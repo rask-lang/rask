@@ -32,12 +32,11 @@ fn announce_stack_budget() {}
 
 /// Browser-based Rask playground.
 ///
-/// Provides a simple API for running Rask code and capturing output.
+/// Provides a simple API for running Rask code and capturing output. Each run
+/// gets a fresh interpreter, so nothing one program left behind (a module
+/// constant, a registered package) is there for the next.
 #[wasm_bindgen]
-pub struct Playground {
-    interpreter: Interpreter,
-    output_buffer: Arc<Mutex<String>>,
-}
+pub struct Playground {}
 
 #[wasm_bindgen]
 impl Playground {
@@ -49,11 +48,7 @@ impl Playground {
 
         announce_stack_budget();
 
-        let (interpreter, output_buffer) = Interpreter::with_captured_output();
-        Self {
-            interpreter,
-            output_buffer,
-        }
+        Self {}
     }
 
     /// Run Rask source code and return output or error.
@@ -65,15 +60,13 @@ impl Playground {
     /// of the typechecker's output handed to the interpreter — so a third of
     /// the examples failed here while running fine on a local build (#1177).
     pub fn run(&mut self, source: &str) -> Result<String, String> {
-        self.output_buffer.lock().unwrap().clear();
-
         let checked = frontend(source)?;
-        self.prepare(&checked, source);
+        let (mut interpreter, output_buffer) = interpreter_for(&checked);
 
         let all = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
-        let outcome = self.interpreter.run(&all);
+        let outcome = interpreter.run(&all);
 
-        let output = self.output_buffer.lock().unwrap().clone();
+        let output = output_buffer.lock().unwrap().clone();
         match outcome {
             Ok(_) => Ok(output),
             Err(diag) => match diag.error {
@@ -93,14 +86,12 @@ impl Playground {
     /// measurement. A benchmark block still runs — once, so you can see it
     /// does — it just isn't timed.
     pub fn run_tests(&mut self, source: &str) -> Result<String, String> {
-        self.output_buffer.lock().unwrap().clear();
-
         let checked = frontend(source)?;
-        self.prepare(&checked, source);
+        let (mut interpreter, _output) = interpreter_for(&checked);
 
         let all = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
-        let results = self.interpreter.run_tests(&all, None);
-        let benchmarks = self.interpreter.run_benchmarks(&all, None);
+        let results = interpreter.run_tests(&all, None);
+        let benchmarks = interpreter.run_benchmarks(&all, None);
 
         if results.is_empty() && benchmarks.is_empty() {
             return Err(escape_html(
@@ -179,19 +170,17 @@ impl Playground {
     /// `rask run --interp` does exactly this; leaving it out is why the
     /// playground's error wrapping and try-chains behaved differently from a
     /// local run.
-    fn prepare(&mut self, checked: &rask_compiler::CheckResult, source: &str) {
-        self.interpreter.inject_cfg(&cfg());
-        self.interpreter.adopt_checker_tables(&checked.typed);
-        self.interpreter.set_source_info(PLAYGROUND, source);
-        if !checked.package_names.is_empty() {
-            self.interpreter.register_packages(&checked.package_names);
-        }
-    }
-
     /// Get the version of the Rask compiler.
     pub fn version() -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
+}
+
+/// An interpreter for one run of `checked`, with its output captured.
+fn interpreter_for(checked: &rask_compiler::CheckResult) -> (Interpreter, Arc<Mutex<String>>) {
+    let (mut interpreter, output) = Interpreter::with_captured_output();
+    rask_compiler::prepare_interpreter(&mut interpreter, checked);
+    (interpreter, output)
 }
 
 /// The file name diagnostics are rendered against. There is no file.

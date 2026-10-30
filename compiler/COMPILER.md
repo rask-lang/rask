@@ -27,7 +27,8 @@ compiler/crates/
 ├── rask-parser/         Stage 2: Tokens → tree (AST)
 ├── rask-desugar/        Stage 3: Simplify tree (operators → method calls)
 ├── rask-resolve/        Stage 4: Connect names to definitions
-├── rask-types/          Stage 5: Figure out every expression's type
+├── rask-types/          The type data every stage after the checker reads
+├── rask-check/          Stage 5: Figure out every expression's type
 ├── rask-ownership/      Stage 6: Verify memory safety
 ├── rask-mono/           Stage 7: Eliminate generics
 ├── rask-mir/            Stage 8: Flatten into basic blocks (MIR)

@@ -1,0 +1,7 @@
+=== Typecheck OK ===
+Claims <pkg>/claims.rk
+  kinds_hold               checked all 514 inputs, 257 discarded
+  entries_print            held for 1,000 inputs (sampled, not proven)
+  spins_on_seven           checked all 256 inputs
+                           1 input ran past the step budget; the first was n = 7
+  tasks_double             held for 1,000 inputs (sampled, not proven)

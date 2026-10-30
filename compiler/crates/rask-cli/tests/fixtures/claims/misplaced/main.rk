@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A claim in an ordinary source file (type.claims/CL2).
+
+claim never_negative(x: u8) {
+    assert x >= 0
+}
+
+func main() {
+    println("misplaced")
+}

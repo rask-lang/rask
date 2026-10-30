@@ -1205,8 +1205,6 @@ pub enum Value {
     /// StringBuilder's growable buffer. Shared so a `mutate self` push is
     /// visible through the caller's binding, matching the native handle.
     StringBuilder(Arc<Mutex<String>>),
-    /// Lazy iterator (wraps a source and optional adapters)
-    Iterator(Arc<Mutex<IteratorState>>),
     /// Raw pointer (`*T`). Holds the buffer it points into and an element
     /// index rather than an address — see `ptr.rs`.
     RawPtr(crate::ptr::RawPtr),
@@ -1283,80 +1281,6 @@ impl RngState {
         if lo >= hi { return lo; }
         let range = (hi - lo) as u64;
         lo + (self.next_u64() % range) as i64
-    }
-}
-
-/// Lazy iterator state. Each variant wraps a source and advances on `next()`.
-pub enum IteratorState {
-    /// Iterate over Vec elements by index.
-    Vec {
-        items: Arc<Mutex<VecData>>,
-        index: usize,
-    },
-    /// Apply a mapping function to each element.
-    Map {
-        source: Arc<Mutex<IteratorState>>,
-        mapper: Value,
-    },
-    /// Keep only elements matching a predicate.
-    Filter {
-        source: Arc<Mutex<IteratorState>>,
-        predicate: Value,
-    },
-    /// Yield (index, element) pairs.
-    Enumerate {
-        source: Arc<Mutex<IteratorState>>,
-        counter: usize,
-    },
-    /// Take at most N elements.
-    Take {
-        source: Arc<Mutex<IteratorState>>,
-        remaining: usize,
-    },
-    /// Skip the first N elements.
-    Skip {
-        source: Arc<Mutex<IteratorState>>,
-        to_skip: usize,
-        skipped: bool,
-    },
-    /// Iterate over a range of integers.
-    Range {
-        current: i64,
-        end: i64,
-        inclusive: bool,
-    },
-    /// Map then flatten each result.
-    FlatMap {
-        source: Arc<Mutex<IteratorState>>,
-        mapper: Value,
-        buffer: std::vec::Vec<Value>,
-    },
-    /// Zip two iterators together.
-    Zip {
-        a: Arc<Mutex<IteratorState>>,
-        b: Arc<Mutex<IteratorState>>,
-    },
-    /// Owned pre-computed elements (e.g. string lines/chars/split results).
-    PreComputed {
-        items: std::vec::Vec<Value>,
-        index: usize,
-    },
-}
-
-impl fmt::Debug for IteratorState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Vec { index, .. } => write!(f, "VecIter(index={})", index),
-            Self::Map { .. } => write!(f, "MapIter"),
-            Self::Filter { .. } => write!(f, "FilterIter"),
-            Self::Enumerate { counter, .. } => write!(f, "EnumerateIter({})", counter),
-            Self::Take { remaining, .. } => write!(f, "TakeIter({})", remaining),
-            Self::Skip { to_skip, .. } => write!(f, "SkipIter({})", to_skip),
-            Self::Range { current, end, .. } => write!(f, "RangeIter({}..{})", current, end),
-            Self::FlatMap { .. } => write!(f, "FlatMapIter"),
-            Self::Zip { .. } => write!(f, "ZipIter"),
-            Self::PreComputed { index, items } => write!(f, "PreComputedIter({}/{})", index, items.len()),
-        }
     }
 }
 
@@ -1539,7 +1463,6 @@ impl Value {
             Value::SimdF32x8(_) => "f32x8",
             Value::Rng(_) => "Random",
             Value::StringBuilder(_) => "StringBuilder",
-            Value::Iterator(_) => "Iterator",
             Value::RawPtr(_) => "raw pointer",
             Value::Nominal { .. } => "nominal",
             Value::NominalConstructor { .. } => "nominal constructor",
@@ -1908,7 +1831,6 @@ impl fmt::Display for Value {
             }
             Value::Rng(_) => write!(f, "<Random>"),
             Value::StringBuilder(_) => write!(f, "<StringBuilder>"),
-            Value::Iterator(_) => write!(f, "<Iterator>"),
             // Native prints a pointer as its address in decimal. The number
             // differs between runs there too, so nothing can depend on it —
             // what matters is that it reads as an address and not as `0`.

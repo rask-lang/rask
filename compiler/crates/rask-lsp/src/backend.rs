@@ -25,7 +25,7 @@ use tower_lsp::Client;
 use rask_ast::decl::Decl;
 use rask_ast::Span;
 use rask_diagnostics::ToDiagnostic;
-use rask_types::TypedProgram;
+use rask_check::TypedProgram;
 
 use crate::convert::{to_lsp_diagnostic, LineIndex};
 use crate::position_index::{build_position_index, PositionIndex};
@@ -336,7 +336,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // --- Typecheck (lenient so ownership/effects still run) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,

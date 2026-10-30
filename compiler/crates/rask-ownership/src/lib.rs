@@ -9,6 +9,7 @@
 mod state;
 mod error;
 mod field_reuse;
+mod diagnostic;
 mod resize;
 mod pointers;
 
@@ -27,7 +28,9 @@ use rask_ast::expr::{Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
-use rask_types::{CopyVerdict, ParamMode, Type, TypedProgram};
+use rask_types::Type;
+use rask_check::{CopyVerdict, TypedProgram};
+use rask_ast::ty::ParamMode;
 
 /// Result of ownership analysis.
 #[derive(Debug)]
@@ -338,7 +341,7 @@ pub struct OwnershipChecker<'a> {
     /// owner's.
     type_params_in_scope: Vec<String>,
     /// The parameters an `extend` header brings into scope, while its methods
-    /// are walked (`rask_types::header_type_params`).
+    /// are walked (`rask_check::header_type_params`).
     header_type_params: Vec<String>,
     /// See `OwnershipResult::return_moves`.
     return_moves: ReturnMoves,
@@ -568,9 +571,9 @@ impl<'a> OwnershipChecker<'a> {
     fn check_zip_items_copy(&mut self, expr: &Expr) {
         let is_vec_zip = matches!(
             self.program.call_targets.get(&expr.id),
-            Some(rask_types::Callee::Method { recv, method, .. })
+            Some(rask_check::Callee::Method { recv, method, .. })
                 if method == "zip"
-                    && rask_types::receiver_name(recv, &self.program.types).as_deref() == Some("Vec")
+                    && rask_check::receiver_name(recv, &self.program.types).as_deref() == Some("Vec")
         );
         if !is_vec_zip {
             return;
@@ -1043,7 +1046,7 @@ impl<'a> OwnershipChecker<'a> {
             for stmt in &func.body {
                 rask_ast::visit::walk_stmt(stmt, &mut |e| {
                     let ExprKind::MethodCall { method, .. } = &e.kind else { return };
-                    let Some(rask_types::Callee::Method { recv, .. }) = self.program.call_targets.get(&e.id) else {
+                    let Some(rask_check::Callee::Method { recv, .. }) = self.program.call_targets.get(&e.id) else {
                         return;
                     };
                     let Type::Generic { base, args } = recv else { return };
@@ -1133,14 +1136,14 @@ impl<'a> OwnershipChecker<'a> {
         }
         let mut subst: HashMap<String, Type> = HashMap::new();
         let (func, owner) = match self.program.call_targets.get(&e.id)? {
-            rask_types::Callee::Free(sym) => {
+            rask_check::Callee::Free(sym) => {
                 let name = self.program.symbols.get(*sym)?.name.clone();
                 generic_fns.get(&(None, name))?.clone()
             }
-            rask_types::Callee::Method { recv, method, .. } => {
+            rask_check::Callee::Method { recv, method, .. } => {
                 // The receiver's type arguments bind the header's parameters:
                 // `extend Holder<T>` called on a `Holder<Conn>` has `T = Conn`.
-                let recv = rask_types::substitute_type(recv, outer);
+                let recv = rask_check::substitute_type(recv, outer);
                 let (base, args) = match &recv {
                     Type::Generic { base, args } => (*base, args.clone()),
                     Type::Named(id) => (*id, Vec::new()),
@@ -1161,7 +1164,7 @@ impl<'a> OwnershipChecker<'a> {
         };
         if let Some(bindings) = self.program.call_type_args.get(&e.id) {
             for b in bindings {
-                subst.insert(b.param.clone(), rask_types::substitute_type(&b.ty, outer));
+                subst.insert(b.param.clone(), rask_check::substitute_type(&b.ty, outer));
             }
         }
         if linear_only && !subst.values().any(|t| self.program.types.is_linear_value(t)) {
@@ -1194,7 +1197,7 @@ impl<'a> OwnershipChecker<'a> {
         for stmt in &func.body {
             rask_ast::visit::walk_stmt(stmt, &mut |e| {
                 if let Some(t) = self.program.node_types.get(&e.id) {
-                    let concrete = rask_types::substitute_type(t, subst);
+                    let concrete = rask_check::substitute_type(t, subst);
                     if concrete != *t {
                         node_types.insert(e.id, concrete);
                     }
@@ -1258,7 +1261,7 @@ impl<'a> OwnershipChecker<'a> {
             DeclKind::Extern(_) => {}
             DeclKind::Impl(impl_decl) => {
                 self.self_ty = self.declared_type_from_name(&impl_decl.target_ty);
-                let header = rask_types::header_type_params(impl_decl, &self.program.types);
+                let header = rask_check::header_type_params(impl_decl, &self.program.types);
                 for method in &impl_decl.methods {
                     self.header_type_params = header.clone();
                     self.check_fn(method, &impl_decl.where_bounds);
@@ -1352,12 +1355,12 @@ impl<'a> OwnershipChecker<'a> {
         // implied ones.
         let mut params = self.header_type_params.clone();
         params.extend(owner_params.iter().map(|p| p.name.clone()));
-        params.extend(rask_types::signature_type_param_names(fn_decl));
+        params.extend(rask_check::signature_type_param_names(fn_decl));
         self.type_params_in_scope = params;
         self.copy_params = owner_params
             .iter()
             .chain(&fn_decl.type_params)
-            .filter(|p| p.bounds.iter().any(|b| b.ty.name().is_some_and(|n| rask_types::bound_implies_copy(&n))))
+            .filter(|p| p.bounds.iter().any(|b| b.ty.name().is_some_and(|n| rask_check::bound_implies_copy(&n))))
             .map(|p| p.name.clone())
             .collect();
 
@@ -5479,9 +5482,9 @@ impl<'a> OwnershipChecker<'a> {
                             if *is_unique {
                                 return MoveReason::Unique { type_name };
                             }
-                            let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+                            let subst = rask_check::TypeTable::generic_field_subst(type_params, args);
                             let all_fields_copy = fields.iter()
-                                .all(|(_, t)| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst)));
+                                .all(|(_, t)| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst)));
                             if all_fields_copy {
                                 MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
@@ -5489,9 +5492,9 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                         rask_types::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+                            let subst = rask_check::TypeTable::generic_field_subst(type_params, args);
                             let all_copy = variants.iter().all(|(_, data)| data.iter()
-                                .all(|t| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst))));
+                                .all(|t| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst))));
                             if all_copy {
                                 MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
                             } else {
@@ -5605,7 +5608,7 @@ impl<'a> OwnershipChecker<'a> {
                 return Some(
                     fields
                         .iter()
-                        .map(|(n, t)| (n.clone(), rask_types::substitute_type(t, &subst)))
+                        .map(|(n, t)| (n.clone(), rask_check::substitute_type(t, &subst)))
                         .collect(),
                 );
             }
@@ -5685,7 +5688,7 @@ impl<'a> OwnershipChecker<'a> {
     ) -> Option<Vec<Type>> {
         let subst = self.def_args_subst(base, args);
         self.variant_payload_in_def(base, variant)
-            .map(|ts| ts.iter().map(|t| rask_types::substitute_type(t, &subst)).collect())
+            .map(|ts| ts.iter().map(|t| rask_check::substitute_type(t, &subst)).collect())
     }
 
     /// A generic declaration's parameters bound to the arguments a type gives them.
@@ -6294,10 +6297,10 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    fn report_task_bound(&mut self, name: &str, ty: &Type, reason: rask_types::TaskBound, span: Span) {
+    fn report_task_bound(&mut self, name: &str, ty: &Type, reason: rask_check::TaskBound, span: Span) {
         let kind = match reason {
-            rask_types::TaskBound::LocalBox => OwnershipErrorKind::LocalSharedSent { name: name.to_string() },
-            rask_types::TaskBound::Link => OwnershipErrorKind::LinkSent {
+            rask_check::TaskBound::LocalBox => OwnershipErrorKind::LocalSharedSent { name: name.to_string() },
+            rask_check::TaskBound::Link => OwnershipErrorKind::LinkSent {
                 name: name.to_string(),
                 ty: self.program.types.resolve_type_names(ty).to_string(),
                 bare_link: self.is_link_type(ty),
@@ -7629,9 +7632,9 @@ impl<'a> OwnershipChecker<'a> {
     /// one instead of freeing them with the temporary.
     fn is_take_all(&self, expr: &Expr) -> bool {
         match self.program.call_targets.get(&expr.id) {
-            Some(rask_types::Callee::Method { recv, method, .. }) if method == "take_all" => {
+            Some(rask_check::Callee::Method { recv, method, .. }) if method == "take_all" => {
                 matches!(
-                    rask_types::receiver_name(recv, &self.program.types).as_deref(),
+                    rask_check::receiver_name(recv, &self.program.types).as_deref(),
                     Some("Vec" | "Map")
                 )
             }

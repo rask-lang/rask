@@ -1408,15 +1408,6 @@ impl Resolver {
                             | SymbolKind::BuiltinType { .. }
                             | SymbolKind::BuiltinModule { .. }
                     )
-                    // A variant of a compiler-registered enum counts too. The
-                    // atomic orderings are variants of `Ordering`, which the
-                    // resolver puts in scope itself, so `import sync.Relaxed`
-                    // met a name that was already there and was reported as
-                    // shadowing an import that doesn't exist.
-                    || (matches!(
-                            sym.kind,
-                            SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. }
-                        ) && self.builtin_enums.contains(&existing_id))
                 });
                 let is_stdlib = self.stdlib_symbols.contains(&existing_id);
                 let is_imported = self.imported_symbols.contains(&binding_name);

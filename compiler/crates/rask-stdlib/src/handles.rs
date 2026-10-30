@@ -30,7 +30,6 @@ pub struct RuntimeHandle {
 const COMPILER_PROVIDED: &[(&str, RuntimeHandle)] = &[
     ("Shared", RuntimeHandle { release: None }),
     ("Heap", RuntimeHandle { release: None }),
-    ("Atomic", RuntimeHandle { release: Some("rask_atomic_free") }),
     // Only ever named to make a pair of ends; the ends are the values.
     ("Channel", RuntimeHandle { release: None }),
 ];

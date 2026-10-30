@@ -29,53 +29,53 @@ struct Slot {
 
 test "mem.atomics — new and load" {
     let a = Atomic<i64>.new(7)
-    assert a.load(Ordering.SeqCst) == 7
+    assert a.load() == 7
 }
 
 test "mem.atomics — store replaces the value" {
     let a = Atomic<i64>.new(0)
-    a.store(42, Ordering.SeqCst)
-    assert a.load(Ordering.SeqCst) == 42
+    a.store(42)
+    assert a.load() == 42
 }
 
 test "mem.atomics — swap returns the old value" {
     let a = Atomic<i64>.new(1)
-    assert a.swap(2, Ordering.SeqCst) == 1
-    assert a.load(Ordering.SeqCst) == 2
+    assert a.swap(2) == 1
+    assert a.load() == 2
 }
 
 test "mem.atomics — an integer payload counts" {
     let a = Atomic<i64>.new(0)
-    a.fetch_add(5, Ordering.SeqCst)
-    a.fetch_add(3, Ordering.SeqCst)
-    assert a.load(Ordering.SeqCst) == 8
+    a.fetch_add(5)
+    a.fetch_add(3)
+    assert a.load() == 8
 }
 
 test "mem.atomics — counting in a loop" {
     let a = Atomic<i64>.new(0)
     for _ in 0..10 {
-        a.fetch_add(1, Ordering.SeqCst)
+        a.fetch_add(1)
     }
-    assert a.load(Ordering.SeqCst) == 10
+    assert a.load() == 10
 }
 
 test "mem.atomics — a bool payload loads and stores" {
     let flag = Atomic<bool>.new(false)
-    assert !flag.load(Ordering.SeqCst)
-    flag.store(true, Ordering.SeqCst)
-    assert flag.load(Ordering.SeqCst)
+    assert !flag.load()
+    flag.store(true)
+    assert flag.load()
 }
 
 test "mem.atomics — a word-sized struct payload" {
     let s = Atomic<Slot>.new(Slot(packed: 0))
-    s.store(Slot(packed: 3), Ordering.SeqCst)
-    let got = s.load(Ordering.SeqCst)
+    s.store(Slot(packed: 3))
+    let got = s.load()
     assert got.packed == 3
 }
 
 test "mem.atomics — default for a primitive payload" {
     let a = Atomic<i64>.default()
-    assert a.load(Ordering.SeqCst) == 0
+    assert a.load() == 0
 }
 
 func main() {}

@@ -463,6 +463,9 @@ impl Default for ErrorCodeRegistry {
                 "E0926" => ("a `with` source that is a call on something other than a `Shared`", Type,
                     "A `with` block holds one place open across several statements and writes the binding back when the block ends. Only two sources give it a place to write back to: an element reached by key, and the payload behind a `Shared` lock (`.read()`, `.write()`, `.staged()`). A method on a user type returns a value, so the binding is a copy and the write-back has nowhere to go: the source said \"mutate inside a scope\" and the program did nothing. Both backends compiled it and printed the old value (#1658). A user type can't take part in `with` yet; analysis.library-protocols proposes an `Access` conformance for that.",
                     "struct Cell { value: i64 }\nextend Cell {\n    func write(mutate self) -> i64 { return self.value }\n}\n\nmut c = Cell(value: 1)\nwith c.write() as v {      // error: `v` is a copy of the returned i64\n    v += 1\n}\n\n// fix: call it and bind the result\nlet v = c.write()\n// or change the value where it lives, inside a `mutate self` method\nc.bump()"),
+                "E0933" => ("an atomic order the operation has no use for", Type,
+                    "An order says which neighbouring reads and writes may not move past an atomic operation. A load only reads, so it has an acquire half and nothing else; a store only writes, so it has a release half. `Release` on a load or `Acquire` on a store asks for a guarantee the operation can't give, and running it as `Relaxed` would hide that the program meant something else (mem.atomics/AT6). `AcqRel` is for read-modify-writes. An order that arrives in a variable is checked when the operation runs, and a misfit panics.",
+                    "ready.store(true, order: MemoryOrder.Acquire)   // error: a store has no acquire half\n// fix: the release half is the store's\nready.store(true, order: MemoryOrder.Release)"),
                 "E0909" => ("a field read stored as a second owner", Ownership,
                     "Reading a field gives a view of storage the source still holds (mem.borrowing/S1). Handing that view to anything that owns what it holds — a field or a variable, a struct literal, a tuple, a variant payload, a `Heap`, a `take` parameter, a `push` — makes that an owner of it too, so one value ends up with two owners: a write through either is a write through both, and each one frees it. A `let` that names the view first changes nothing: `let tmp = src.items` is still the view.\n\nIt doesn't matter whether the source is a borrowed parameter, a `take` parameter or a local: a field read is a view either way. Only a linear field (a `@resource`, a `Heap`) moves out when it's read. For anything else, ask for the copy, and the cost shows.",
                     "func rebuild(src: Bag) -> Bag {\n    mut out = Bag(items: [])\n    out.items = src.items             // error: a view of `src.items`\n    // fix: a copy of its own\n    out.items = src.items.clone()\n    return out\n}"),
@@ -677,6 +680,12 @@ impl Default for ErrorCodeRegistry {
                 "E0386" => ("this needs an `unsafe` block", Type,
                     "Raw pointers, C calls and reinterpreting memory are the operations the compiler can't check for you, so they're written inside `unsafe { … }`. The block isn't permission — it's a marker that says \"the invariant here is mine, not the compiler's\", which is what makes it findable later.",
                     "let v = *p                   // error: dereference requires `unsafe`\n// fix: mark the region\nunsafe { let v = *p }"),
+                "E0950" => ("a claim is false", Type,
+                    "A claim says what code must do for every input (type.claims). The build ran it on generated inputs and found one it doesn't hold for: an `assert` failed, or the code under the claim panicked. The input shown is the smallest the checker could cut the failing one down to.\n\nEither the code is wrong or the claim is. A claim is written by people and kept out of the code's way on purpose, so if it's the claim, change it in review rather than alongside the code it checks.",
+                    "claim never_overdrawn(ops: Vec<Op>) {\n    mut l = Ledger.new()\n    for op in ops { … }\n    assert l.balance() >= 0   // error: counterexample: ops = [Op.Withdraw(1)]\n}\n\n// fix the code: `withdraw` lost its overdraft check\nfunc withdraw(mutate self, amount: u32) -> bool {\n    if amount > self.balance() { return false }\n    …\n}"),
+                "E0951" => ("a claim outside a claims file", Type,
+                    "A claim is only worth anything if the person who wrote it isn't the one who wrote the code it checks, so claims live apart from the code: in the package's `claims.rk`, or in a claims source its manifest lists (type.claims/CL2). The build compiles that file as a package of its own, which is also what limits a claim to the package's `public` items.",
+                    "// ledger/ledger.rk\nclaim never_negative(x: u32) { … }   // error: not a claims file\n\n// fix: move it to ledger/claims.rk\nimport ledger\nclaim never_negative(x: u32) { … }"),
                 "E0921" => ("`transmute` between types of different sizes", Type,
                     "`transmute` reinterprets the bytes of one value as another type. Both types have to occupy the same number of bytes, as laid out in memory, padding included: a smaller target would drop bytes, a larger one would read bytes that were never written.",
                     "let x: u32 = 7\nlet y: u64 = unsafe { transmute(x) }   // error: 4 bytes into 8\n// fix: widen with a conversion, which isn't a reinterpretation\nlet y: u64 = x"),
@@ -734,9 +743,9 @@ impl Default for ErrorCodeRegistry {
                 "E0402" => ("an atomic arithmetic operation on a payload with no arithmetic", Type,
                     "`fetch_add` and its siblings are one instruction that reads, adds and writes back — the hardware does the adding, so the payload has to be a number it can add (mem.atomics/GA3). The payload fitting a word isn't enough: a struct of two `i32`s is eight bytes and still has no `+`.",
                     "let a = Atomic<Pair>.new(p)
-a.fetch_add(1, Ordering.SeqCst)   // error: no arithmetic on this payload
+a.fetch_add(1)   // error: no arithmetic on this payload
 // fix: read, compute, put it back
-let old = a.load(Ordering.SeqCst)"),
+let old = a.load()"),
                 "E0403" => ("a field and a method on one type share a name", Type,
                     "One name per member of a type (type.structs/M7). A field holding a function is callable — `h.run(5)` calls it (M6) — so a method of the same name would make `h.run` and `h.run(5)` reach two different things, with nothing in either line to say which. The declaration is rejected instead of a precedence rule being invented for the call sites.",
                     "struct Handler {\n    public run: func(i64) -> i64\n}\nextend Handler {\n    public func run(self, x: i64) -> i64 { … }   // error: `run` is already a field\n}\n// fix: rename one of them"),
@@ -997,65 +1006,85 @@ impl ErrorCodeRegistry {
 // hit "`??` on a value that is always there" and ran `rask explain E0831` got
 // an explanation about `using` clauses on `main` instead (#892).
 //
-// These read `convert.rs` and this file as text, so they're derived from what
-// the compiler actually does rather than from a list someone has to remember
-// to update.
+// These read each crate's `src/diagnostic.rs` and this file as text, so
+// they're derived from what the compiler actually does rather than from a list
+// someone has to remember to update.
 #[cfg(test)]
 mod registry_audit {
     use super::ErrorCodeRegistry;
 
-    const CONVERT_RS: &str = include_str!("convert.rs");
     const CODES_RS: &str = include_str!("codes.rs");
 
-    /// Every `with_code("…")` in `convert.rs`, with the match arm it sits under.
+    /// Every crate's `src/diagnostic.rs`, where its errors become diagnostics,
+    /// as (`crate/src/diagnostic.rs`, text).
+    fn diagnostic_sources() -> Vec<(String, String)> {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut out: Vec<(String, String)> = std::fs::read_dir(crates)
+            .unwrap()
+            .flatten()
+            .filter_map(|c| {
+                let path = c.path().join("src/diagnostic.rs");
+                let text = std::fs::read_to_string(&path).ok()?;
+                Some((format!("{}/src/diagnostic.rs", c.file_name().to_string_lossy()), text))
+            })
+            .collect();
+        out.sort();
+        assert!(out.len() >= 6, "found {} diagnostic.rs files; is the walk finding the crates?", out.len());
+        out
+    }
+
+    /// Every `with_code("…")` in a `diagnostic.rs`, with the match arm it sits
+    /// under and where.
     ///
     /// A `with_code` inside a free helper function belongs to that helper, not
     /// to whichever arm happened to be last: attributing one to the arm above
     /// it reported E0328 as shared with `ConflictingMethods`, which never
     /// emitted it (#992).
-    fn emitted_codes() -> Vec<(String, String, usize)> {
+    fn emitted_codes() -> Vec<(String, String, String)> {
         let mut out = Vec::new();
-        let mut arm = String::from("<none>");
-        for (n, line) in CONVERT_RS.lines().enumerate() {
-            let indent = line.len() - line.trim_start().len();
-            let head = line.trim_start();
-            if head.starts_with("fn ")
-                || head.starts_with("pub fn ")
-                || head.starts_with("pub(crate) fn ")
-                || head.starts_with("pub(super) fn ")
-            {
-                let name: String = head
-                    .rsplit_once("fn ")
-                    .map(|(_, r)| r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
-                    .unwrap_or_default();
-                arm = format!("fn {name}");
-            }
-            // Match arms sit at 8–16 spaces and start with the variant name.
-            if (8..=16).contains(&indent) {
-                let name: String = head
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                let rest = head[name.len()..].trim_start();
-                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                    && (rest.starts_with('{') || rest.starts_with("=>") || rest.starts_with('('))
+        for (file, text) in diagnostic_sources() {
+            let mut arm = String::from("<none>");
+            for (n, line) in text.lines().enumerate() {
+                let indent = line.len() - line.trim_start().len();
+                let head = line.trim_start();
+                if head.starts_with("fn ")
+                    || head.starts_with("pub fn ")
+                    || head.starts_with("pub(crate) fn ")
+                    || head.starts_with("pub(super) fn ")
                 {
-                    arm = name;
+                    let name: String = head
+                        .rsplit_once("fn ")
+                        .map(|(_, r)| r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
+                        .unwrap_or_default();
+                    arm = format!("fn {name}");
                 }
-            }
-            let mut rest = line;
-            while let Some(i) = rest.find("with_code(\"") {
-                rest = &rest[i + "with_code(\"".len()..];
-                if let Some(end) = rest.find('"') {
-                    let code = &rest[..end];
-                    // Runtime codes too. `RuntimeDiagnostic` has its own R00xx
-                    // namespace and the registry never covered it, so `rask
-                    // explain R0001` said the code didn't exist — the same
-                    // wrong answer a shared code gives, arrived at by a
-                    // different route (#992). A reader looking a code up off a
-                    // panic has the question a compile error's reader has.
-                    if matches!(code.as_bytes()[0], b'E' | b'W' | b'R') {
-                        out.push((code.to_string(), arm.clone(), n + 1));
+                // Match arms sit at 8–16 spaces and start with the variant name.
+                if (8..=16).contains(&indent) {
+                    let name: String = head
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    let rest = head[name.len()..].trim_start();
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                        && (rest.starts_with('{') || rest.starts_with("=>") || rest.starts_with('('))
+                    {
+                        arm = name;
+                    }
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("with_code(\"") {
+                    rest = &rest[i + "with_code(\"".len()..];
+                    if let Some(end) = rest.find('"') {
+                        let code = &rest[..end];
+                        // Runtime codes too. `RuntimeDiagnostic` has its own R00xx
+                        // namespace and the registry never covered it, so `rask
+                        // explain R0001` said the code didn't exist — the same
+                        // wrong answer a shared code gives, arrived at by a
+                        // different route (#992). A reader looking a code up off a
+                        // panic has the question a compile error's reader has.
+                        if matches!(code.as_bytes()[0], b'E' | b'W' | b'R') {
+                            out.push((code.to_string(), arm.clone(), format!("{}:{}", file, n + 1)));
+                        }
                     }
                 }
             }
@@ -1116,7 +1145,7 @@ mod registry_audit {
         );
     }
 
-    /// Codes emitted by `convert.rs` with no `rask explain` entry.
+    /// Codes a `diagnostic.rs` emits with no `rask explain` entry.
     ///
     /// Every one of these is a user who reads a code off a diagnostic, asks the
     /// compiler what it means, and is told the code doesn't exist. This list may
@@ -1144,7 +1173,7 @@ mod registry_audit {
             .filter(|(code, _, _)| {
                 registry.get(code).is_none() && !UNEXPLAINED.contains(&code.as_str())
             })
-            .map(|(code, arm, line)| format!("{} ({} at convert.rs:{})", code, arm, line))
+            .map(|(code, arm, at)| format!("{} ({} at {})", code, arm, at))
             .collect();
         missing.sort();
         missing.dedup();
@@ -1159,7 +1188,7 @@ mod registry_audit {
     /// The code literals every compiler crate's source emits, with where:
     /// `with_code("E…")`, and a `code: "E…"` field on an error struct of its
     /// own. Desugar's format-template errors were E0338 for months while the
-    /// test above, reading `convert.rs` alone, never saw them.
+    /// test above, reading the conversions alone, never saw them.
     fn emitted_anywhere() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -1263,9 +1292,11 @@ mod registry_audit {
                 found.push(info.code.to_string());
             }
         }
-        for (i, line) in include_str!("convert.rs").lines().enumerate() {
-            if says_own(line) {
-                found.push(format!("convert.rs:{}", i + 1));
+        for (file, text) in diagnostic_sources() {
+            for (i, line) in text.lines().enumerate() {
+                if says_own(line) {
+                    found.push(format!("{}:{}", file, i + 1));
+                }
             }
         }
         assert!(found.is_empty(), "these still tell users to write `own`: {:?}", found);
