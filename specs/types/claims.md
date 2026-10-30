@@ -181,4 +181,3 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 - **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for the package's own `claims.rk`, and only that.
 - **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
 - **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).
-- **Build cost.** A changed claim costs a native compile plus its runs. Whether `rask run`, the quick loop, should skip claims and leave them to `rask build` is open.
