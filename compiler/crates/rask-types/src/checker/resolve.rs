@@ -2103,12 +2103,36 @@ impl TypeChecker {
         Some(self.apply_method_sig(ty, method, &sig, Default::default(), args.to_vec(), ret, call_node, span))
     }
 
-    /// A method a primitive answers through a conformance the compiler
-    /// provides for it (`primitive_conformances`) rather than a declaration in
-    /// `stdlib/*.rk`: its comparisons and its hash. The signature is the
-    /// interface's, with `Self` read as the receiver. The operator interfaces
-    /// are left to the integer and float resolvers, which know how to say what
-    /// is wrong with a mixed operand.
+    /// The signature of a method a primitive answers through a conformance
+    /// the compiler provides for it (`primitive_conformances`), not a
+    /// declaration in `stdlib/*.rk`: its operators, comparisons and hash. The
+    /// interface it comes from says the shape; `Self` reads as the receiver.
+    /// An operator interface from `stdlib/ops.rk` takes one `Self` when it has
+    /// an `Rhs` and nothing when it's unary, and answers `Self`.
+    fn provided_signature(&self, ty: &Type, method: &str) -> Option<(Vec<Type>, Type)> {
+        let conformances = crate::interfaces::primitive_conformances(ty);
+        if let Some(op) = conformances
+            .iter()
+            .find(|i| rask_stdlib::operators::operator_interface_method(i) == Some(method))
+        {
+            let params = if rask_stdlib::operators::is_unary_operator_interface(op) { vec![] } else { vec![ty.clone()] };
+            return Some((params, ty.clone()));
+        }
+        let sig = conformances
+            .iter()
+            .filter_map(|i| crate::interfaces::builtin_interface_methods(i))
+            .flatten()
+            .find(|m| m.name == method)?;
+        let resolve = |t: &Type| match t {
+            t if crate::interfaces::is_self_placeholder(t) => ty.clone(),
+            Type::UnresolvedNamed(n) if n == "Ordering" => self.ordering_type(),
+            t => t.clone(),
+        };
+        Some((sig.params.iter().map(|(p, _)| resolve(p)).collect(), resolve(&sig.ret)))
+    }
+
+    /// A provided method (`provided_signature`) on a primitive whose operand
+    /// has to be exactly the receiver's type: `string`, `char`, `bytes`.
     fn resolve_provided_method(
         &mut self,
         ty: &Type,
@@ -2117,26 +2141,50 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Option<Result<bool, TypeError>> {
-        let sig = crate::interfaces::primitive_conformances(ty)
-            .iter()
-            .filter(|i| rask_stdlib::operators::operator_interface_method(i).is_none())
-            .filter_map(|i| crate::interfaces::builtin_interface_methods(i))
-            .flatten()
-            .find(|m| m.name == method && m.params.len() == args.len())?;
-        let resolve = |this: &Self, t: &Type| match t {
-            t if crate::interfaces::is_self_placeholder(t) => ty.clone(),
-            Type::UnresolvedNamed(n) if n == "Ordering" => this.ordering_type(),
-            t => t.clone(),
-        };
-        let want_ret = resolve(self, &sig.ret);
-        for ((param, _), arg) in sig.params.iter().zip(args) {
-            let want = resolve(self, param);
-            if let Err(e) = self.unify(arg, &want, span) {
+        let (params, want_ret) = self.provided_signature(ty, method).filter(|(p, _)| p.len() == args.len())?;
+        for (param, arg) in params.iter().zip(args) {
+            if let Err(e) = self.unify(arg, param, span) {
                 // Pin the answer first, so one error doesn't become two with
                 // the second blaming a binding that's fine.
                 let _ = self.unify(ret, &want_ret, span);
                 return Some(Err(e));
             }
+        }
+        Some(self.unify(ret, &want_ret, span))
+    }
+
+    /// A provided method on an integer or a float. The operand isn't held to
+    /// the receiver's exact type: comparison crosses widths and signedness
+    /// (type.operators/ORD4), so the unify below only pins a literal and its
+    /// failure is dropped. What is wrong with an operand is judged first, by
+    /// checks that know how to say it: mixed signedness and int/float mixing
+    /// for arithmetic, a different kind of value for anything binary.
+    fn resolve_numeric_provided(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<Result<bool, TypeError>> {
+        let (params, want_ret) = self.provided_signature(ty, method).filter(|(p, _)| p.len() == args.len())?;
+        if let [operand] = args {
+            let arithmetic = rask_stdlib::operators::operator_interface(method).is_some();
+            let judged = if arithmetic {
+                self.reject_mixed_signedness(method, ty, operand, span)
+                    .and_then(|()| self.reject_int_float_mix(method, ty, operand, span))
+                    .and_then(|()| self.reject_incomparable_operand(method, ty, operand, span))
+            } else {
+                self.reject_incomparable_operand(method, ty, operand, span)
+            };
+            if let Err(bad) = judged {
+                // The answer's type doesn't depend on what's wrong with the
+                // operand, so pin it before reporting. Leaving it open turned
+                // one error into two, the second blaming a `let` that's fine.
+                let _ = self.unify(ret, &want_ret, span);
+                return Some(Err(bad));
+            }
+            let _ = self.unify(operand, &params[0], span);
         }
         Some(self.unify(ret, &want_ret, span))
     }
@@ -3611,9 +3659,8 @@ impl TypeChecker {
     /// Resolve methods on primitive integer types (i8..i128, u8..u128).
     ///
     /// The operators (add, bit_and, compare, …) and `hash` are the widths'
-    /// conformances, which the compiler registers, so they're answered here
-    /// with diagnostics that know what a mixed operand is. Every named method
-    /// is declared in stdlib/int.rk and typed from that declaration.
+    /// conformances (`primitive_conformances`). Every named method is declared
+    /// in stdlib/int.rk and typed from that declaration.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn resolve_integer_method(
         &mut self,
@@ -3624,88 +3671,31 @@ impl TypeChecker {
         call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let is_signed = matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128);
-        match method {
-            // Binary arithmetic → same type. `mod` (AR3, Euclidean) rides
-            // here rather than beside it: it takes the same two operands and
-            // answers in the same type, so the mixed-signedness rule and the
-            // result type are the ones `%` already has.
-            "add" | "sub" | "mul" | "div" | "rem" | "mod"
-            | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr"
-                if args.len() == 1 => {
-                if let Err(mixed) = self
-                    .reject_mixed_signedness(method, ty, &args[0], span)
-                    .and_then(|()| self.reject_int_float_mix(method, ty, &args[0], span))
-                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
-                {
-                    // Pin the result to the receiver on the way out. The
-                    // operands are the complaint; leaving `ret` open turns one
-                    // error into two, the second being "couldn't work out the
-                    // type of x" pointing at a binding that's fine.
-                    let _ = self.unify(ret, ty, span);
-                    return Err(mixed);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, ty, span)
-            }
-            // Unary → same type
-            "neg" if args.is_empty() && is_signed => self.unify(ret, ty, span),
-            "bit_not" if args.is_empty() => self.unify(ret, ty, span),
-            // Comparison → bool
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                // The comparison answers `bool` whatever is wrong with the
-                // operands, so pin that before reporting. Returning first left
-                // the binding's type open and turned one error into two, the
-                // second blaming a `let` that is fine.
-                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
-                    let _ = self.unify(ret, &Type::Bool, span);
-                    return Err(bad);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::Bool, span)
-            }
-            "compare" if args.len() == 1 => {
-                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
-                    let ord = self.ordering_type();
-                    let _ = self.unify(ret, &ord, span);
-                    return Err(bad);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &self.ordering_type(), span)
-            }
-            // HA1: every integer width is Hashable, and `Hashable` is
-            // `hash(self) -> u64`. The interface table said so and this didn't, so the
-            // conformance held while the call was rejected (#813).
-            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            _ => {
-                let width = ty.to_string();
-                // UN1: `unchecked_add` and its siblings are declared `unsafe`
-                // — no overflow check at all, UB if it actually overflows — so
-                // the call has to be written inside `unsafe`. Recorded whether
-                // or not it is: `rask unsafe`'s report audits the unsafe
-                // surface a file has, and this op belongs on it either way.
-                if rask_stdlib::lookup_method(&width, method).is_some_and(|m| m.is_unsafe) {
-                    self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
-                    if !self.in_unsafe {
-                        self.errors.push(TypeError::UnsafeRequired {
-                            operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
-                            span,
-                        });
-                    }
-                }
-                self.resolve_declared_primitive_method(&width, ty, method, args, ret, call_node, span)
-                    .unwrap_or_else(|| Err(TypeError::NoSuchMethod {
-                        ty: ty.clone(),
-                        method: method.to_string(),
-                        span,
-                    }))
+        if let Some(answer) = self.resolve_numeric_provided(ty, method, args, ret, span) {
+            return answer;
+        }
+        let width = ty.to_string();
+        // UN1: `unchecked_add` and its siblings are declared `unsafe` — no
+        // overflow check at all, UB if it actually overflows — so the call has
+        // to be written inside `unsafe`. Recorded whether or not it is: `rask
+        // unsafe`'s report audits the unsafe surface a file has, and this op
+        // belongs on it either way.
+        if rask_stdlib::lookup_method(&width, method).is_some_and(|m| m.is_unsafe) {
+            self.unsafe_ops.push((span, super::UnsafeCategory::UncheckedArith));
+            if !self.in_unsafe {
+                self.errors.push(TypeError::UnsafeRequired {
+                    operation: format!(".{}() — UB on overflow (type.overflow/UN1)", method),
+                    span,
+                });
             }
         }
+        self.resolve_declared_primitive_method(&width, ty, method, args, ret, call_node, span)
+            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: ty.clone(), method: method.to_string(), span }))
     }
 
-    /// The float operators (`add`, `eq`, `compare`, …), which the compiler
-    /// registers for both widths. Every named float method is declared in
-    /// stdlib/float.rk, and the caller tries that declaration first.
+    /// The float operators (`add`, `eq`, `compare`, …): the widths'
+    /// conformances, which the compiler provides. Every named float method is
+    /// declared in stdlib/float.rk, and the caller tries that declaration first.
     pub(super) fn resolve_float_method(
         &mut self,
         ty: &Type,
@@ -3714,50 +3704,8 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        match method {
-            "add" | "sub" | "mul" | "div" | "rem" if args.len() == 1 => {
-                // The other side of #816: `f64 + i64` was accepted too, and the
-                // discarded unify is why nothing said so. #816 added the
-                // int/float guard and left the discard, so every *other* wrong
-                // operand still sailed through — `f64 * Meters` type-checked and
-                // multiplied the struct's address (#978).
-                if let Err(bad) = self
-                    .reject_int_float_mix(method, ty, &args[0], span)
-                    .and_then(|()| self.reject_incomparable_operand(method, ty, &args[0], span))
-                {
-                    // Pin the result to the receiver on the way out, so one
-                    // error doesn't become two with the second blaming a
-                    // binding that is fine.
-                    let _ = self.unify(ret, ty, span);
-                    return Err(bad);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, ty, span)
-            }
-            "neg" if args.is_empty() => self.unify(ret, ty, span),
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
-                    let _ = self.unify(ret, &Type::Bool, span);
-                    return Err(bad);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &Type::Bool, span)
-            }
-            "compare" if args.len() == 1 => {
-                if let Err(bad) = self.reject_incomparable_operand(method, ty, &args[0], span) {
-                    let ord = self.ordering_type();
-                    let _ = self.unify(ret, &ord, span);
-                    return Err(bad);
-                }
-                let _ = self.unify(&args[0], ty, span);
-                self.unify(ret, &self.ordering_type(), span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: ty.clone(),
-                method: method.to_string(),
-                span,
-            }),
-        }
+        self.resolve_numeric_provided(ty, method, args, ret, span)
+            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: ty.clone(), method: method.to_string(), span }))
     }
 
     /// Resolve methods on raw pointer types (`*T`) once the receiver is known.
