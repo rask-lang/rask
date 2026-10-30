@@ -2450,25 +2450,14 @@ impl TypeChecker {
     /// is known about it — `==` on a bare `T` is a type error.
     fn type_has_method_in(&self, ty: &Type, method: &str, params: &[String]) -> bool {
         match ty {
-            // Primitives
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
-            }
-            // CO4: floats are Comparable — `compare` is the total order — but
-            // not Hashable (HA4).
-            Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "compare" | "debug")
-            }
-            Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
-            }
-            Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "debug")
-            }
-            Type::String | Type::Bytes => {
-                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
-            }
+            // Primitives: what their conformances require (CO4 makes floats
+            // Comparable, HA4 keeps them out of Hashable).
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Unit
+            | Type::String | Type::Bytes => crate::interfaces::primitive_conformances(ty)
+                .iter()
+                .any(|i| crate::interfaces::interface_requires(i, method)),
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
             // is registered with that use still a name, because the type
             // didn't exist yet when its fields were read.
