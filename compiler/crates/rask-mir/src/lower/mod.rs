@@ -1932,6 +1932,9 @@ pub struct MirLowerer<'a> {
     /// `value.(name)` reads them so a field name can be given a name of its own
     /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
     comptime_strings: HashMap<String, String>,
+    /// Raw pointers whose block lowering saw made, by the local holding them.
+    /// See `PtrBlock`.
+    ptr_blocks: HashMap<LocalId, PtrBlock>,
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for
@@ -4444,6 +4447,7 @@ impl<'a> MirLowerer<'a> {
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
+            ptr_blocks: HashMap::new(),
         };
 
         // Which names this body reassigns (see `reassigned_names`). Scanned once
@@ -6645,6 +6649,20 @@ pub(crate) enum PointerChecks {
     Always,
     /// `@unchecked_unsafe`: never checked.
     Never,
+}
+
+/// The block a raw pointer points into, for a debug build's bounds check
+/// (mem.unsafe/PT7): the pointer came from `as_ptr()` on a local `Vec`,
+/// `string` or array of scalars, maybe moved along by `add`, `sub`, `offset`
+/// or `cast`. The block is read at the access, not when the pointer was made:
+/// PT3 keeps the root from changing size while the pointer is in use, and if
+/// it did anyway, the pointer is outside the root's storage now and the check
+/// says so.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PtrBlock {
+    Vec { root: LocalId },
+    Str { root: LocalId },
+    Array { root: LocalId, bytes: i64 },
 }
 
 impl PointerChecks {

@@ -278,6 +278,7 @@ void     rask_vec_free(RaskVec *v);
 // copying another's elements owns them only after this.
 void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
+int64_t  rask_ptr_in_vec(int64_t p, const RaskVec *v, int64_t access);
 int64_t  rask_vec_as_ptr(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
@@ -412,6 +413,7 @@ void        rask_leak_check(void);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
+int64_t     rask_ptr_in_str(int64_t p, const RaskStr *s, int64_t access, int64_t write);
 const char *rask_string_ptr(const RaskStr *s);
 const char *rask_string_message(const RaskStr *s);
 int64_t     rask_string_is_empty(const RaskStr *s);

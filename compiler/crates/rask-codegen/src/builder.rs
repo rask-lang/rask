@@ -60,6 +60,9 @@ pub(crate) const OV_DIV_ZERO: &str = "division by zero";
 /// as the interpreter words it.
 pub(crate) const PTR_NULL_READ: &str = "null pointer read";
 pub(crate) const PTR_NULL_WRITE: &str = "null pointer write";
+/// mem.unsafe/PT7: an access through a pointer outside the block it came from.
+pub(crate) const PTR_OOB_READ: &str = "raw pointer read outside the storage it points into";
+pub(crate) const PTR_OOB_WRITE: &str = "raw pointer write outside the storage it points into";
 
 /// Which check fired, for picking the message.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,6 +91,8 @@ macro_rules! overflow_messages {
             OV_DIV_ZERO,
             PTR_NULL_READ,
             PTR_NULL_WRITE,
+            PTR_OOB_READ,
+            PTR_OOB_WRITE,
             $(
                 concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
@@ -4635,6 +4640,43 @@ impl<'a> FunctionBuilder<'a> {
                 let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
                 let msg = if flag(2) { PTR_NULL_WRITE } else { PTR_NULL_READ };
                 Self::guard_overflow(builder, ctx, is_null, msg);
+                // PT7: `ptr_check(p, always, write, access, kind, root, bytes)`
+                // when lowering knows the block: 1 a `Vec`, 2 a `string`, 3 an
+                // array of `bytes` at `root`.
+                if args.len() == 7 {
+                    let int = |i: usize| match args.get(i) {
+                        Some(MirOperand::Constant(MirConst::Int(n))) => *n,
+                        _ => 0,
+                    };
+                    let access = builder.ins().iconst(types::I64, int(3).max(1));
+                    let root = Self::lower_operand_typed(builder, &args[5], Some(types::I64), ctx)?;
+                    let inside = match int(4) {
+                        1 => {
+                            let f = ctx.func_refs.get("ptr_in_vec")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("ptr_in_vec".into()))?;
+                            let call = builder.ins().call(*f, &[ptr, root, access]);
+                            builder.inst_results(call)[0]
+                        }
+                        2 => {
+                            let f = ctx.func_refs.get("ptr_in_str")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("ptr_in_str".into()))?;
+                            let write = builder.ins().iconst(types::I64, flag(2) as i64);
+                            let call = builder.ins().call(*f, &[ptr, root, access, write]);
+                            builder.inst_results(call)[0]
+                        }
+                        _ => {
+                            let off = builder.ins().isub(ptr, root);
+                            let end = builder.ins().iadd(off, access);
+                            let lo = builder.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, off, 0);
+                            let hi = builder.ins().icmp_imm(IntCC::SignedLessThanOrEqual, end, int(6));
+                            let ok = builder.ins().band(lo, hi);
+                            builder.ins().uextend(types::I64, ok)
+                        }
+                    };
+                    let outside = builder.ins().icmp_imm(IntCC::Equal, inside, 0);
+                    let msg = if flag(2) { PTR_OOB_WRITE } else { PTR_OOB_READ };
+                    Self::guard_overflow(builder, ctx, outside, msg);
+                }
             }
             return Ok(true);
         } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {

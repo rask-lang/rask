@@ -999,7 +999,7 @@ impl<'a> MirLowerer<'a> {
                         let val_op = self.as_slot_value(val_op, &pointee);
                         let store_size = pointee.size();
                         if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
-                            self.emit_pointer_check(&MirOperand::Local(addr_local), true);
+                            self.emit_pointer_check(&MirOperand::Local(addr_local), true, store_size as i64);
                         }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
@@ -1693,6 +1693,11 @@ impl<'a> MirLowerer<'a> {
         }
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
+        // A pointer binding keeps its block (PT7) while it holds one value. A
+        // name assigned again could hold another pointer by the time it's read.
+        if !self.reassigned_names.contains(name) {
+            self.carry_ptr_block(&init_op, local_id);
+        }
         // An annotated binding is a coercion site like any other: `let b: T?? = t`
         // needs both layers built here rather than left for codegen to infer from
         // the depth mismatch, which only ever added Option layers and typed the

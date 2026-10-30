@@ -997,6 +997,56 @@ fn raw_pointer_null_checks_follow_build_mode_and_attributes() {
     assert!(!panicked(&debug_unchecked, "null pointer"), "{debug_unchecked:?}");
 }
 
+/// mem.unsafe/PT7: a pointer from `as_ptr()` on a local `Vec`, `string` or
+/// array is checked against that local's storage in a debug build: in-bounds
+/// accesses (a string's terminator included) run, one past the end panics
+/// with the access named. Release doesn't check.
+#[test]
+fn raw_pointer_bounds_checks_use_where_the_pointer_came_from() {
+    let rask = rask_binary();
+    let run = |release: bool, args: &[&str]| {
+        let bin = std::env::temp_dir().join(format!(
+            "rask_ptrbounds_{}_{}_{}",
+            release,
+            std::process::id(),
+            next_tmp_id()
+        ));
+        let mut cmd = Command::new(&rask);
+        cmd.arg("compile");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(fixture("pointer_bounds.rk"))
+            .arg("-o")
+            .arg(&bin)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("rask compile");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let ran = Command::new(&bin).args(args).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        (
+            String::from_utf8_lossy(&ran.stdout).to_string(),
+            String::from_utf8_lossy(&ran.stderr).to_string(),
+            ran.status.code(),
+        )
+    };
+    let panicked = |r: &(String, String, Option<i32>), msg: &str| r.2 == Some(101) && r.1.contains(msg);
+
+    let fine = run(false, &["a", "b", "c"]);
+    assert_eq!(fine.2, Some(0), "{fine:?}");
+    assert!(fine.0.contains("14\nfine"), "{fine:?}");
+    let vec_read = run(false, &[]);
+    assert!(panicked(&vec_read, "raw pointer read outside"), "{vec_read:?}");
+    let str_write = run(false, &["a"]);
+    assert!(panicked(&str_write, "raw pointer write outside"), "{str_write:?}");
+    let array_read = run(false, &["a", "b"]);
+    assert!(panicked(&array_read, "raw pointer read outside"), "{array_read:?}");
+    let release = run(true, &["a", "b", "c"]);
+    assert!(release.0.contains("14\nfine"), "{release:?}");
+}
+
 /// `@packed` and `@align` were read by nothing; a malformed one is now an
 /// error where it's written.
 #[test]
