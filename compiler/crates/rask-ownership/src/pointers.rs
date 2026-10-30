@@ -18,7 +18,12 @@
 //! A pointer from `alloc`, a C function or an integer points into nothing here
 //! and carries nothing. What's behind it is the `unsafe` block's to vouch for.
 
+use std::collections::{HashMap, HashSet};
+
+use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, UnaryOp};
+use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::visit::{self, Visit};
 use rask_ast::Span;
 use rask_types::{ParamMode, Type};
 
@@ -89,30 +94,12 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
-                ExprKind::Call { func, args } => {
-                    let into_c = func.name().is_some_and(|n| self.c_functions.contains(n));
-                    if into_c || !self.answers_pointer(value) {
-                        continue;
-                    }
-                    let takes = self.callee_take_params(func).unwrap_or_default();
-                    for (i, a) in args.iter().enumerate() {
-                        if !takes.get(i).copied().unwrap_or(false) {
-                            self.collect_arg_pointee(&a.expr, out);
-                        }
-                    }
-                }
-                ExprKind::MethodCall { object, method, args, .. } => {
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
                     if !self.answers_pointer(value) {
                         continue;
                     }
-                    if !self.is_take_self_method(object, method) {
-                        self.collect_arg_pointee(object, out);
-                    }
-                    let modes = self.method_param_modes(value.id, object, method).unwrap_or_default();
-                    for (i, a) in args.iter().enumerate() {
-                        if !matches!(modes.get(i), Some(ParamMode::Take)) {
-                            self.collect_arg_pointee(&a.expr, out);
-                        }
+                    for arg in self.pointer_call_args(value) {
+                        self.collect_arg_pointee(arg, out);
                     }
                 }
                 _ => {
@@ -270,7 +257,7 @@ impl<'a> OwnershipChecker<'a> {
             return;
         }
         for name in victims {
-            self.bindings.insert(name, BindingState::Moved { at: span });
+            self.bindings.insert(name, BindingState::PointerDead { at: span });
         }
         self.ptr_deaths.entry(span).or_default().push((pointee, loss));
     }
@@ -411,5 +398,323 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Unary { op: UnaryOp::Deref, operand } => Some(operand),
             _ => None,
         }
+    }
+}
+
+// ─── Where a function's returned pointer can point ─────────────────────────
+
+/// One place a pointer a function returns can point into, by the position of
+/// the parameter it was handed in (the receiver counts as a parameter).
+type ParamOrigins = HashSet<usize>;
+
+impl<'a> OwnershipChecker<'a> {
+    /// PT1, inferred: for every function and method with a body, which of its
+    /// parameters the pointers it returns can point into. Computed to a fixed
+    /// point over the calls between bodies, starting from "none", so recursion
+    /// settles on what some path actually returns. A body this can't see (a
+    /// native or builtin, an interface method, a closure value) keeps the
+    /// signature rule at the call: every argument it borrows.
+    pub(crate) fn infer_pointer_returns(&mut self, groups: &[&[Decl]]) {
+        let mut bodies: Vec<(Option<String>, &FnDecl)> = Vec::new();
+        for decls in groups {
+            for decl in decls.iter() {
+                match &decl.kind {
+                    DeclKind::Fn(f) if !f.body_lives_elsewhere() => bodies.push((None, f)),
+                    DeclKind::Impl(i) => {
+                        let ty = i.target_ty.name().unwrap_or_default();
+                        for m in i.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
+                            bodies.push((Some(ty.clone()), m));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        loop {
+            let mut changed = false;
+            for (owner, f) in &bodies {
+                let origins = self.returned_param_origins(f);
+                let flags: Vec<bool> = (0..f.params.len()).map(|i| origins.contains(&i)).collect();
+                let key = (owner.clone(), f.name.clone());
+                if self.pointer_returns.get(&key) != Some(&flags) {
+                    self.pointer_returns.insert(key, flags);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    /// The parameters `f`'s returned pointers can point into, read off its
+    /// body without regard to order: every way a name is given a value counts,
+    /// so a name points wherever any of them points.
+    fn returned_param_origins(&self, f: &FnDecl) -> ParamOrigins {
+        struct Walk<'c, 'a> {
+            checker: &'c OwnershipChecker<'a>,
+            params: Vec<String>,
+            origins: HashMap<String, ParamOrigins>,
+            returned: ParamOrigins,
+            in_closure: u32,
+            changed: bool,
+        }
+        impl<'c, 'a> Walk<'c, 'a> {
+            fn param(&self, name: &str) -> Option<usize> {
+                self.params.iter().position(|p| p == name)
+            }
+            /// Where the storage of a name is: a parameter's own, or what a
+            /// local was lent or copied from.
+            fn name_origins(&self, name: &str) -> ParamOrigins {
+                match self.param(name) {
+                    Some(i) => HashSet::from([i]),
+                    None => self.origins.get(name).cloned().unwrap_or_default(),
+                }
+            }
+            fn root_origins(&self, expr: &Expr) -> ParamOrigins {
+                let place = match &expr.kind {
+                    ExprKind::MethodCall { object, .. } => object.as_ref(),
+                    _ => expr,
+                };
+                let root = match &place.kind {
+                    ExprKind::Ident(n) => Some(n.as_str()),
+                    _ => OwnershipChecker::projection_root(place),
+                };
+                root.map(|r| self.name_origins(r)).unwrap_or_default()
+            }
+            /// What a value's pointers point into.
+            fn pointer_origins(&self, expr: &Expr) -> ParamOrigins {
+                let c = self.checker;
+                let mut out = ParamOrigins::new();
+                let mut values = Vec::new();
+                c.values_reaching(expr, true, &mut values);
+                for v in values {
+                    let holds = c.node_ty(&v.id).is_some_and(|t| c.type_holds_pointer(t));
+                    if !holds && !matches!(v.kind, ExprKind::Closure { .. }) {
+                        continue;
+                    }
+                    match &v.kind {
+                        ExprKind::Ident(n) => out.extend(self.name_origins(n)),
+                        ExprKind::Closure { params, body, .. } => {
+                            let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                            let mut captures = Vec::new();
+                            c.collect_free_vars(body, &locals, &mut captures);
+                            for n in captures {
+                                out.extend(self.name_origins(&n));
+                            }
+                        }
+                        ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
+                            for arg in c.pointer_call_args(v) {
+                                out.extend(self.storage_origins(arg));
+                            }
+                        }
+                        _ => out.extend(self.root_origins(v)),
+                    }
+                }
+                out
+            }
+            /// What a call argument can be pointed into through.
+            fn storage_origins(&self, arg: &Expr) -> ParamOrigins {
+                let c = self.checker;
+                let Some(ty) = c.node_ty(&arg.id) else { return ParamOrigins::new() };
+                if c.type_holds_pointer(ty) {
+                    return self.pointer_origins(arg);
+                }
+                if OwnershipChecker::has_no_storage(ty) {
+                    return ParamOrigins::new();
+                }
+                self.root_origins(arg)
+            }
+            /// What a name bound from `init` stands for: where its pointers
+            /// point, or where its storage is.
+            fn bind(&mut self, names: &[String], init: &Expr) {
+                let c = self.checker;
+                let from = if c.node_ty(&init.id).is_some_and(|t| c.type_holds_pointer(t)) {
+                    self.pointer_origins(init)
+                } else {
+                    self.storage_origins(init)
+                };
+                self.add(names, from);
+            }
+            fn add(&mut self, names: &[String], from: ParamOrigins) {
+                if from.is_empty() {
+                    return;
+                }
+                for n in names {
+                    if self.param(n).is_some() {
+                        continue;
+                    }
+                    let entry = self.origins.entry(n.clone()).or_default();
+                    let before = entry.len();
+                    entry.extend(from.iter().copied());
+                    self.changed |= entry.len() != before;
+                }
+            }
+        }
+        impl<'c, 'a, 'e> Visit<'e> for Walk<'c, 'a> {
+            fn expr(&mut self, expr: &'e Expr) -> bool {
+                match &expr.kind {
+                    // A `return` inside a closure is the closure's.
+                    ExprKind::Closure { body, .. } => {
+                        self.in_closure += 1;
+                        visit::visit_expr(body, self);
+                        self.in_closure -= 1;
+                        return false;
+                    }
+                    ExprKind::IsPresent { expr: inner, binding: Some(name) } => {
+                        self.bind(std::slice::from_ref(name), inner);
+                    }
+                    ExprKind::IfLet { expr: scrutinee, pattern, .. } => {
+                        let names = rask_ast::stmt::pattern_binding_names(pattern);
+                        self.bind(&names, scrutinee);
+                    }
+                    ExprKind::Match { scrutinee, arms } => {
+                        for arm in arms {
+                            let names = rask_ast::stmt::pattern_binding_names(&arm.pattern);
+                            self.bind(&names, scrutinee);
+                        }
+                    }
+                    ExprKind::WithAs { bindings, .. } => {
+                        for b in bindings {
+                            let from = self.root_origins(&b.source);
+                            self.add(std::slice::from_ref(&b.name), from);
+                        }
+                    }
+                    _ => {}
+                }
+                true
+            }
+            fn stmt(&mut self, stmt: &'e Stmt) -> bool {
+                match &stmt.kind {
+                    StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                        self.bind(std::slice::from_ref(name), init);
+                    }
+                    StmtKind::LetTuple { patterns, init } | StmtKind::MutTuple { patterns, init } => {
+                        let names: Vec<String> = rask_ast::stmt::tuple_pats_flat_names(patterns)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect();
+                        self.bind(&names, init);
+                    }
+                    StmtKind::LetStruct { pattern, init, .. } => {
+                        let names = rask_ast::stmt::pattern_binding_names(pattern);
+                        self.bind(&names, init);
+                    }
+                    StmtKind::WhileLet { pattern, expr, .. } => {
+                        let names = rask_ast::stmt::pattern_binding_names(pattern);
+                        self.bind(&names, expr);
+                    }
+                    StmtKind::Assign { target, value, .. } => {
+                        if let Some(root) = OwnershipChecker::assign_root(target) {
+                            self.bind(&[root], value);
+                        }
+                    }
+                    StmtKind::For { binding, iter, .. } => {
+                        let names: Vec<String> = binding.names().into_iter().map(str::to_string).collect();
+                        let from = self.root_origins(iter);
+                        self.add(&names, from);
+                    }
+                    StmtKind::Return(Some(value)) if self.in_closure == 0 => {
+                        let from = self.pointer_origins(value);
+                        self.returned.extend(from);
+                    }
+                    _ => {}
+                }
+                true
+            }
+        }
+        let mut w = Walk {
+            checker: self,
+            params: f.params.iter().map(|p| p.name.clone()).collect(),
+            origins: HashMap::new(),
+            returned: ParamOrigins::new(),
+            in_closure: 0,
+            changed: true,
+        };
+        // Order doesn't matter, so walk until nothing new is learned.
+        while w.changed {
+            w.changed = false;
+            w.returned.clear();
+            visit::visit_body(&f.body, &mut w);
+        }
+        w.returned
+    }
+
+    /// The arguments of a call answering a pointer that the pointer can point
+    /// into: those its body says (`infer_pointer_returns`), or, with no body to
+    /// read, every argument it borrows. A C function's point into nothing.
+    pub(crate) fn pointer_call_args<'e>(&self, call: &'e Expr) -> Vec<&'e Expr> {
+        let mut out = Vec::new();
+        match &call.kind {
+            ExprKind::Call { func, args } => {
+                if func.name().is_some_and(|n| self.c_functions.contains(n)) {
+                    return out;
+                }
+                let inferred = func.name().and_then(|n| self.pointer_returns.get(&(None, n.to_string())));
+                match inferred {
+                    Some(flags) => {
+                        for (i, a) in args.iter().enumerate() {
+                            if flags.get(i).copied().unwrap_or(false) {
+                                out.push(&a.expr);
+                            }
+                        }
+                    }
+                    None => {
+                        let takes = self.callee_take_params(func).unwrap_or_default();
+                        for (i, a) in args.iter().enumerate() {
+                            if !takes.get(i).copied().unwrap_or(false) {
+                                out.push(&a.expr);
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let inferred = self
+                    .receiver_type_name(object)
+                    .and_then(|ty| self.pointer_returns.get(&(Some(ty), method.clone())));
+                let self_at = self.method_self_position(object, method);
+                match (inferred, self_at) {
+                    (Some(flags), Some(k)) => {
+                        if flags.get(k).copied().unwrap_or(false) {
+                            out.push(object.as_ref());
+                        }
+                        let rest = (0..flags.len()).filter(|&i| i != k);
+                        for (a, i) in args.iter().zip(rest) {
+                            if flags[i] {
+                                out.push(&a.expr);
+                            }
+                        }
+                    }
+                    (Some(flags), None) => {
+                        for (i, a) in args.iter().enumerate() {
+                            if flags.get(i).copied().unwrap_or(false) {
+                                out.push(&a.expr);
+                            }
+                        }
+                    }
+                    (None, _) => {
+                        if !self.is_take_self_method(object, method) {
+                            out.push(object.as_ref());
+                        }
+                        let modes = self.method_param_modes(call.id, object, method).unwrap_or_default();
+                        for (i, a) in args.iter().enumerate() {
+                            if !matches!(modes.get(i), Some(ParamMode::Take)) {
+                                out.push(&a.expr);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Where `self` sits among a method's declared parameters, if it has one:
+    /// `None` for a static method, whose arguments line up from the start.
+    fn method_self_position(&self, object: &Expr, method: &str) -> Option<usize> {
+        let ty = self.receiver_type_name(object)?;
+        self.method_params.get(&(ty, method.to_string()))?.iter().position(|n| n == "self")
     }
 }

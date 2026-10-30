@@ -54,6 +54,39 @@ func resized_through_a_call() {
     println(unsafe *p)           // ERROR: E0929
 }
 
+// What a body returns decides, not its signature: `fresh` borrows `xs` and
+// hands back memory from `malloc`, so growing `xs` leaves its pointer alone.
+func fresh(v: Vec<i32>) -> *u8 {
+    return unsafe malloc(v.len().wrap<u64>())
+}
+
+func untouched_by_the_borrow() {
+    mut xs: Vec<i32> = [1, 2]
+    let p = fresh(xs)
+    xs.push(3)
+    println(p.is_null())         // fine
+}
+
+// A linear value with a dead pointer in it still owes its consume.
+@resource
+struct Lease {
+    p: *i32
+    id: i32
+}
+
+extend Lease {
+    func release(take self) -> i32 {
+        return self.id
+    }
+}
+
+func lease_left_behind() {
+    mut xs: Vec<i32> = [1]
+    let l = Lease(p: unsafe xs.as_ptr(), id: 3)
+    xs.push(2)                   // ERROR: E0805
+    println(xs.len())
+}
+
 func moved() {
     let xs: Vec<i32> = [1, 2]
     let p = unsafe xs.as_ptr()
@@ -83,7 +116,8 @@ func held_in_a_struct() {
     mut xs: Vec<i32> = [1, 2]
     let h = Holder(p: unsafe xs.as_ptr(), n: 1)
     xs.clear()
-    println(h.n)                 // ERROR: E0929
+    println(h.n)                 // fine: `n` holds no pointer
+    println(unsafe *h.p)         // ERROR: E0929
 }
 
 func written_under_a_view() {
@@ -131,6 +165,8 @@ func allowed() {
 func main() {
     resized()
     resized_through_a_call()
+    untouched_by_the_borrow()
+    lease_left_behind()
     moved()
     replaced()
     out_of_scope()

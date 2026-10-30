@@ -268,9 +268,19 @@ pub struct OwnershipChecker<'a> {
     ptr_deaths: HashMap<Span, Vec<(String, PointerLoss)>>,
     /// Parameters this body owns (`take`): a pointer into one can't leave it.
     taken_params: HashSet<String>,
+    /// Set while walking the binding at the root of a field read whose result
+    /// holds no pointer: a dead pointer elsewhere in the value doesn't stop it.
+    pointer_free_read: bool,
     /// Functions declared `extern "C"` without a body. A pointer one answers
     /// points into nothing the compiler can see (PT1): C doesn't say.
     c_functions: HashSet<String>,
+    /// PT1, inferred per body: for a function (`None`) or a method (its
+    /// type), which parameters a returned pointer can point into, receiver
+    /// included, by position (`pointers.rs`).
+    pointer_returns: HashMap<(Option<String>, String), Vec<bool>>,
+    /// Each method's parameter names in order, `self` included, so a call
+    /// can line its receiver and arguments up with `pointer_returns`.
+    method_params: HashMap<(String, String), Vec<String>>,
     /// Loops iterating a `Rack`'s own nodes: (element type key, binding names).
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
@@ -479,7 +489,10 @@ impl<'a> OwnershipChecker<'a> {
             ptr_lenders: HashMap::new(),
             ptr_deaths: HashMap::new(),
             taken_params: HashSet::new(),
+            pointer_free_read: false,
             c_functions: HashSet::new(),
+            pointer_returns: HashMap::new(),
+            method_params: HashMap::new(),
             rack_iterations: Vec::new(),
             param_types: HashMap::new(),
             borrow_bindings: HashMap::new(),
@@ -683,6 +696,7 @@ impl<'a> OwnershipChecker<'a> {
         self.collect_signatures(extra);
         self.collect_signatures(decls);
         self.infer_resizes(&[extra, decls]);
+        self.infer_pointer_returns(&[extra, decls]);
         self.run(decls)
     }
 
@@ -697,6 +711,10 @@ impl<'a> OwnershipChecker<'a> {
             if let DeclKind::Impl(impl_decl) = &decl.kind {
                 let ty = impl_decl.target_ty.name().unwrap_or_default();
                 for m in &impl_decl.methods {
+                    self.method_params.insert(
+                        (ty.clone(), m.name.clone()),
+                        m.params.iter().map(|p| p.name.clone()).collect(),
+                    );
                     let self_deleting = m
                         .params
                         .iter()
@@ -2624,12 +2642,17 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) => {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {
-                    // PT3: a pointer whose pointee went is reported as that.
-                    if let Some(kind) = Self::unavailable_span(state).and_then(|at| self.pointer_death(name, at)) {
-                        self.errors.push(OwnershipError { kind, span: expr.span });
+                    // PT3: a pointer whose pointee went is reported as that,
+                    // unless this reads a part of the value that holds none.
+                    if let BindingState::PointerDead { at } = state {
+                        if !self.pointer_free_read {
+                            if let Some(kind) = self.pointer_death(name, *at) {
+                                self.errors.push(OwnershipError { kind, span: expr.span });
+                            }
+                        }
                         return;
                     }
-                    if Self::is_available(state) {
+                    if Self::is_available(state) && !self.pointer_free_read {
                         self.check_pointer_use(name, expr.span);
                     }
                     let Some(state) = self.bindings.get(name) else { return };
@@ -2999,15 +3022,22 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            ExprKind::Field { object, field: _ } => {
+            ExprKind::Field { object, field: _ } | ExprKind::OptionalField { object, field: _ } => {
+                // PT3: a part with no pointer in it reads fine after the
+                // value's pointer died. Only along a chain of field reads.
+                let outer = self.pointer_free_read;
+                let chain = matches!(
+                    object.kind,
+                    ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::OptionalField { .. }
+                );
+                let free = self.node_ty(&expr.id).is_some_and(|t| !self.type_holds_pointer(t));
+                self.pointer_free_read = chain && (outer || free);
                 self.check_expr(object);
+                self.pointer_free_read = outer;
             }
             ExprKind::DynamicField { object, field_expr } => {
                 self.check_expr(object);
                 self.check_expr(field_expr);
-            }
-            ExprKind::OptionalField { object, field: _ } => {
-                self.check_expr(object);
             }
             ExprKind::Index { object, index } => {
                 self.check_expr(object);
@@ -3483,7 +3513,10 @@ impl<'a> OwnershipChecker<'a> {
                 // so the function-exit check doesn't ask the caller to also
                 // consume it. Borrowed scrutinees stay borrowed.
                 if let ExprKind::Ident(name) = &scrutinee.kind {
-                    let owned = matches!(self.bindings.get(name), Some(BindingState::Owned));
+                    let owned = matches!(
+                        self.bindings.get(name),
+                        Some(BindingState::Owned | BindingState::PointerDead { .. })
+                    );
                     let needs_move = scrutinee_ty
                         .as_ref()
                         .map_or(false, |ty| !self.is_copy(ty));
@@ -3742,7 +3775,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Whether a binding can still be used (not moved/maybe-moved/discarded).
     fn is_available(state: &BindingState) -> bool {
-        matches!(state, BindingState::Owned | BindingState::Borrowed { .. })
+        matches!(state, BindingState::Owned | BindingState::Borrowed { .. } | BindingState::PointerDead { .. })
     }
 
     /// Extract the move/discard span from an unavailable state.
@@ -3763,8 +3796,13 @@ impl<'a> OwnershipChecker<'a> {
         let a_gone = !Self::is_available(a);
         let b_gone = !Self::is_available(b);
         match (a_gone, b_gone) {
-            // Live on both paths — keep the state (borrows already released).
-            (false, false) => a.clone(),
+            // Live on both paths — keep the state (borrows already released),
+            // unless a pointer in it died on one of them (PT3).
+            (false, false) => match (a, b) {
+                (BindingState::PointerDead { .. }, _) => a.clone(),
+                (_, BindingState::PointerDead { .. }) => b.clone(),
+                _ => a.clone(),
+            },
             // Gone on both paths. Definitely unavailable, unless one side is
             // only maybe-gone, which keeps the result maybe.
             (true, true) => {
@@ -4598,6 +4636,9 @@ impl<'a> OwnershipChecker<'a> {
                                 return;
                             }
                             BindingState::Owned => {}
+                            // Its use was reported where `check_expr` met the
+                            // name; the move still happens.
+                            BindingState::PointerDead { .. } => {}
                         }
                     }
                     self.bindings.insert(source_name, BindingState::Moved { at: span });
@@ -5194,6 +5235,8 @@ impl<'a> OwnershipChecker<'a> {
                         span,
                     });
                 }
+                // Reported at the name (PT3); a borrow of it adds nothing.
+                BindingState::PointerDead { .. } => {}
             }
         }
     }
@@ -7854,7 +7897,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Ident(name) => {
                 if self.resource_bindings.contains(name)
-                    && matches!(self.bindings.get(name), Some(BindingState::Owned))
+                    && matches!(self.bindings.get(name), Some(BindingState::Owned | BindingState::PointerDead { .. }))
                 {
                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                 }
