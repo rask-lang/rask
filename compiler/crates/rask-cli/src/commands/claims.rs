@@ -15,7 +15,8 @@ use std::process;
 
 use colored::Colorize;
 use rask_ast::decl::{Decl, DeclKind, FieldVisibility};
-use rask_types::{GenericArg, Type, TypeDef, TypedProgram};
+use rask_check::TypedProgram;
+use rask_types::{GenericArg, Type, TypeDef};
 
 use crate::output;
 use crate::Format;
