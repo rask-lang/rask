@@ -1350,6 +1350,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.resources/RC5: `clear`, `set`, `get` and the like on a `Vec` or
+    /// `Map` whose elements must be consumed. `copies` is a copy out (`get`),
+    /// otherwise a drop (`clear`).
+    #[error("`{method}` would {} a `{elem}` in a `{container}`", if *copies { "copy" } else { "drop" })]
+    LinearElementLost {
+        container: String,
+        method: String,
+        elem: Type,
+        copies: bool,
+        span: Span,
+    },
+
     /// type.sequence/SEQ29: `to_map` is defined only on a sequence of pairs.
     #[error("`to_map` needs a sequence of pairs")]
     ToMapNeedsPairs {
@@ -1658,6 +1670,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            LinearElementLost { elem, .. } => *elem = f(elem),
             SharedCycle { payload, .. } => *payload = f(payload),
             RackNodeNotStruct { node, .. } => *node = f(node),
             TransmuteNeedsTarget { from, .. } => *from = f(from),

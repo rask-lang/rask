@@ -312,6 +312,49 @@ impl TypeChecker {
         }
     }
 
+    /// RC5: a method that drops elements (`clear`) or copies one out (`get`)
+    /// can't be called on a container whose elements must be consumed. The
+    /// method says which it does (`@drops_elements`, `@copies_elements`); the
+    /// element's linearity is what rules it out.
+    pub(super) fn validate_pending_element_uses(&mut self) {
+        let pending = std::mem::take(&mut self.pending_element_uses);
+        let mut reported: Vec<Span> = Vec::new();
+        for (span, recv, method) in pending {
+            let recv = self.ctx.apply(&recv);
+            let Type::Generic { base, args } = &recv else { continue };
+            if !matches!(self.types.type_name(*base).as_str(), "Vec" | "Map") {
+                continue;
+            }
+            let elem = args.iter().rev().find_map(|a| match a {
+                crate::GenericArg::Type(t) if self.types.holds_linear_value(t) => Some((**t).clone()),
+                _ => None,
+            });
+            let Some(elem) = elem else { continue };
+            let effect = if method == "=" {
+                Some(rask_ast::decl::DeclaredEffects { drops_elements: true, ..Default::default() })
+            } else {
+                match self.types.get(*base) {
+                    Some(super::TypeDef::Struct { methods, .. }) => {
+                        methods.iter().find(|m| m.name == method).map(|m| m.effect)
+                    }
+                    _ => None,
+                }
+            };
+            let Some(effect) = effect else { continue };
+            if !(effect.drops_elements || effect.copies_elements) || reported.contains(&span) {
+                continue;
+            }
+            reported.push(span);
+            self.errors.push(TypeError::LinearElementLost {
+                container: self.types.type_name(*base),
+                method,
+                elem,
+                copies: effect.copies_elements,
+                span,
+            });
+        }
+    }
+
     pub(super) fn validate_pending_linear_containers(&mut self) {
         let pending = std::mem::take(&mut self.pending_linear_containers);
         let mut reported: Vec<Span> = Vec::new();

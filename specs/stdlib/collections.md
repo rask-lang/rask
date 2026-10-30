@@ -340,6 +340,28 @@ for i in 0..vec.len() { }        // i: usize (index iteration, explicit)
 for item in vec.take_all() { }   // item: T (consuming iteration)
 ```
 
+### Resources in a collection
+
+A `Vec` or `Map` holding values that must be consumed is owed itself
+(`mem.resources/RC1`, RC3). `consume` takes the lot and is what an `ensure`
+commits it with; `pop` and `remove` hand one back. The methods that would drop
+or copy an element aren't available on it (RC5).
+
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `vec.consume(\|take x\| …)` | `()` | Hands every element over, front first, and frees the vector |
+| `map.consume(\|take k, take v\| …)` | `()` | The same for each entry |
+
+<!-- surface -->
+```rask
+extend Vec<T> {
+    func consume(take self, f: func(take T)) -> void
+}
+extend Map<K, V> {
+    func consume(take self, f: func(take K, take V)) -> void
+}
+```
+
 ### Conditional Removal
 
 | Method | Returns | Notes |

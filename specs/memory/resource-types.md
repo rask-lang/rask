@@ -220,31 +220,40 @@ func read_config(file: File) -> Config or FileError {
 
 | Rule | Collection | Resource allowed? | Reason |
 |------|------------|-------------------|--------|
-| **RC1** | `Vec<Resource>` | No | Vec drop would need to consume each element |
+| **RC1** | `Vec<Resource>` | Yes, and the `Vec` is owed | It must be consumed like the resources in it: moved, or `consume`d |
 | **RC2** | `Rack<Resource>` | No | `delete` frees the node rather than handing it back, so nothing can consume one |
-| **RC3** | `Map<K, Resource>` | No | Map drop same problem as Vec |
+| **RC3** | `Map<K, Resource>` | Yes, and the `Map` is owed | Same as `Vec`. `insert` hands back the value it replaces, so that one is owed too |
 | **RC4** | `Resource?` | Yes | Must match and consume |
+| **RC5: Nothing loses an element** | `Vec`, `Map` | | A method that would drop an element (`clear`, `set`, `remove_where`, writing over `v[i]`) or hand out a copy of one (`get`, `first`, `clone`) is refused, and so is a `for` over `take_all()`, which drops the rest on an early exit. The method says which it does (`@drops_elements`, `@copies_elements`); the element's linearity rules it out. A generic body is checked against each type it's called with |
 
-So: no container holds a linear value. An optional is what's left, and matching
-it is the consumption.
+A container of things that must be consumed must be consumed itself, the way a
+`Heap` must. Elements come out one at a time with `pop` and `remove`, which hand
+the element back, and `consume` takes the lot. The `ensure` that commits the
+container (L7) is a `consume`, and the drain that wants to hear about each
+failure is a `pop` loop:
 
 <!-- test: skip -->
 ```rask
-mut conn: Connection? = try Connection.open(addr)
-
-// Later: match to consume
-if conn? as c {
-    try c.close()
-    conn = none
+func close_all(take files: Vec<File>) -> void or Error {
+    ensure files.consume(|take f| f.close() catch _ => {})
+    while files.pop()? as f {
+        try f.close()
+    }
 }
 ```
 
-`Pool<Resource>` used to be the one that worked, because `Pool.remove` answered
-`T?` — there was always a way to get the value back out (rask-lang/rask#908).
-Nothing replaced it: a rack fails RC1's test in different words, so the three
-rejections are one rule with three receivers. If a container for linear values
-comes back, it needs a `take` that hands the value over.
+If the third `close` fails, `try` leaves and the rest are still in `files`, so
+the `ensure` closes them. A normal exit hands the `ensure` an empty vector. A
+`mutate` parameter needs neither: what the loop doesn't drain is still the
+caller's.
 
+`for f in files.take_all()` reads better and is refused (RC5): the loop owns the
+drained vector, and a `try` out of it drops what's left.
+
+Looking is fine. `for f in files`, `with files[i] as f` and `files.read(i, …)`
+lend an element where it lives.
+
+## Error Messages
 ## Error Messages
 
 **Resource not consumed [L1]:**
@@ -336,24 +345,19 @@ func update_user(db: Database, user_id: u64) -> void or Error {
 
 ### Many connections
 
-A resource can't live in a container (RC1–RC3), so "many of them" is a fixed set
-of names, each consumed on its own path.
+A `Vec` of connections is owed like each connection (RC1). The `ensure` commits
+the lot, and each request is served from the vector:
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
-func serve_two(a: Connection, b: Connection) -> void or Error {
-    ensure a.close()
-    ensure b.close()
-
-    try a.handle_request()
-    try b.handle_request()
+func serve_all(take conns: Vec<Connection>) -> void or Error {
+    ensure conns.consume(|take c| c.close() catch _ => {})
+    for c in conns {
+        try c.handle_request()
+    }
     return
 }
 ```
-
-Growing that to a real server means the connections stay where they were
-acquired — one per task, consumed by the task that took it — rather than
-gathered into a pool the program then has to remember to drain.
 
 ---
 
@@ -365,7 +369,9 @@ gathered into a pool the program then has to remember to drain.
 
 **L4 (ensure):** The bridge between linearity and error handling. Commit to cleanup early, then use `try` freely knowing it'll happen.
 
-**RC1–RC3 (no container at all):** a drop can't return errors, so a `Vec` or a `Map` that held linear elements would have to drop them silently. A rack's `delete` is explicit, which is what made a pool's `remove` acceptable — but `delete` answers nothing, so there is no call that consumes a node. Three receivers, one reason, and `T?` is what's left.
+**RC1–RC5 (a container of obligations is an obligation):** a drop can't return errors and there are no destructors, so a `Vec` holding linear elements can't be allowed to drop them. RC1 used to say it can't hold them either, which made "a variable number of open files" a program the language couldn't write. `Heap` already had the answer: the box is linear because what it holds is. A `Vec` is the same, and the methods that would lose an element are the ones that go. I chose `pop` as the drain over `for x in v.take_all()`: an early exit from a `pop` loop leaves the rest in `v`, where the `ensure` or the caller still sees them. With `take_all` they'd be in a temporary nobody can name.
+
+A rack is still out (RC2). `delete` answers nothing, so there is no call that consumes a node.
 
 There used to be an R5 as well: a `Pool<Resource>` dropped non-empty panicked at run time, because the compiler couldn't statically track what a pool held. That was the only runtime rule in this spec, and it went with the pool. Everything here is a compile error now.
 

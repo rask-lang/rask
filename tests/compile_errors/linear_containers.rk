@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: linear values in a container (mem.resource-types/RC1-RC3)
+// Compile Error: linear values in containers (mem.resource-types/RC1-RC5)
 //
-// Two kinds of linear value, and they are linear for different reasons: a
-// `@resource` struct because of what it holds, a `Heap<T>` because it *is* the
-// allocation someone has to give back. Both are covered — the Vec check used to
-// catch only the first (#1245).
-//
-// Vec and Map drop can't consume their elements, and `Rack.delete` frees a node
-// rather than handing it back, so a linear value (@resource, a transitively-
-// linear struct/enum, or an optional/tuple/array built from one) can't live in
-// any of them — it would be silently dropped, breaking consume-exactly-once.
-// `T?` (RC4) is what's left. Every route a linear type can reach a container is
-// covered below.
+// A `Vec` or `Map` can hold values that must be consumed, and is then owed
+// itself: `pop` and `remove` hand elements back, `consume` takes the lot.
+// What it can't do is lose one. A method that would drop an element (`clear`,
+// `set`, writing over `v[i]`) or hand out a copy of one (`get`, `first`) is
+// refused on such a container, in a generic body too, once a call makes the
+// element linear, and so is a `for` over `take_all()`, which drops the rest on
+// an early exit. A `Rack` can't hold one at all: `delete` frees the node
+// rather than handing it back.
 
 import memory.Rack
 import memory.Heap
@@ -35,119 +32,101 @@ struct Wrapper {
     inner: File
 }
 
-// ── RC1: Vec ────────────────────────────────────────────────────────
+// ── RC1: a Vec of resources is owed ────────────────────────────────
 
-// Route: direct binding annotation
-func vec_annotation() -> void {
-    let files: Vec<File> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File`
-    return
-}
-
-// Route: inferred element via push (no annotation)
-func vec_push() -> void {
-    // ERROR [RC1]: element unifies to `File` through the push below
-    mut files = Vec.new()
+func never_consumed() {
+    mut files: Vec<File> = Vec.new()
+    ensure files.consume(|take f| f.close())
     files.push(File.open())
-    return
+    let other: Vec<File> = Vec.new()     // ERROR: E0805
 }
 
-// Route: function parameter
-func vec_param(files: Vec<File>) -> void {   // ERROR [RC1]: `Vec` cannot hold linear value `File`
-    return
+// ── RC5: nothing may drop or copy an element ───────────────────────
+
+func cleared(mutate files: Vec<File>) {
+    files.clear()                        // ERROR: E0823
 }
 
-// Route: return type
-func vec_return() -> Vec<File> {             // ERROR [RC1]: `Vec` cannot hold linear value `File`
-    return Vec.new()
+func overwritten(mutate files: Vec<File>) {
+    files.set(0, File.open())            // ERROR: E0823
 }
 
-// Route: struct field
-struct HasVec {
-    files: Vec<File>                     // ERROR [RC1]: `Vec` cannot hold linear value `File`
+func written_over(mutate files: Vec<File>) {
+    files[0] = File.open()               // ERROR: E0823
 }
 
-// Route: transitively-linear element
-func vec_transitive() -> void {
-    let ws: Vec<Wrapper> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Wrapper`
-    return
+func filtered(mutate files: Vec<File>) {
+    files.remove_where(|f| f.fd == 1)    // ERROR: E0823
 }
 
-// Route: nested Vec<Vec<File>>
-func vec_nested() -> void {
-    let vv: Vec<Vec<File>> = Vec.new() // ERROR [RC1]: innermost `Vec` cannot hold `File`
-    return
+func copied_out(files: Vec<File>) -> i32 {
+    // ERROR: E0823
+    if files.first()? as f {
+        return f.fd
+    }
+    return 0
 }
 
-// Route: optional element (RC4 optional is fine on its own, but not inside a Vec)
-func vec_optional() -> void {
-    let opts: Vec<File?> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `File?`
-    return
+func copied_from_a_map(m: Map<string, File>) -> i32 {
+    // ERROR: E0823
+    if m.get("a")? as f {
+        return f.fd
+    }
+    return 0
 }
 
-// Route: type alias
-type alias FileList = Vec<File>          // ERROR [RC1]: `Vec` cannot hold linear value `File`
-
-// ── The same rule for `Heap<T>`, which is linear by being the obligation ──
-//
-// A `@resource` struct is linear because of what it holds; a `Heap<T>` *is* the
-// obligation — the allocation someone has to give back. `Vec<Heap<i64>>`
-// type-checked for a while because the Vec check asked "does this hold anything
-// linear inside it", and a `Heap` holds a plain `i64`. The Map half asked the
-// right question, which is how the asymmetry turned up (#1245).
-
-func vec_of_heap() -> void {
-    let hs: Vec<Heap<i64>> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
-    return
+func map_cleared(mutate m: Map<string, Wrapper>) {
+    m.clear()                            // ERROR: E0823
 }
 
-// Inferred through a push, with no annotation to read it off.
-func vec_of_heap_inferred() -> void {
-    // ERROR [RC1]: element unifies to `Heap<i64>` through the push below
-    mut hs = Vec.new()
-    hs.push(Heap(7))
-    return
+func heaps_cleared(mutate hs: Vec<Heap<i64>>) {
+    hs.clear()                           // ERROR: E0823
 }
 
-func heap_param(hs: Vec<Heap<i64>>) -> void {   // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
-    return
+// The loop owns what `take_all` hands back, so a `break`, `return` or `try`
+// out of it drops the rest. `while files.pop()? as f` leaves them in `files`.
+func drained_by_for(mutate files: Vec<File>) {
+    // ERROR: E0844
+    for f in files.take_all() {
+        f.close()
+    }
 }
 
-struct HasHeapVec {
-    boxes: Vec<Heap<i64>>                // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
+// A generic body is checked against each type it's called with.
+func wipe<T>(mutate v: Vec<T>) {
+    v.clear()
 }
 
-func map_of_heap() -> void {
-    let m: Map<string, Heap<i64>> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `Heap<i64>`
-    return
+func wiped(mutate files: Vec<File>) {
+    wipe(mutate files)                   // ERROR: E0849
 }
 
-// ── RC3: Map ────────────────────────────────────────────────────────
-
-// Route: Map value is linear
-func map_value() -> void {
-    let m: Map<string, File> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
-    return
-}
-
-// Route: Map key is linear (a resource key is as unconsumable on drop as a value)
-func map_key() -> void {
-    let m: Map<File, string> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
-    return
+// Fine: looked at where they live, taken out to be closed.
+func handled(mutate files: Vec<File>) -> i32 {
+    mut sum: i32 = 0
+    for f in files {
+        sum += f.fd
+    }
+    with files[0] as f {
+        sum += f.fd
+    }
+    let taken = files.remove(0)
+    taken.close()
+    while files.pop()? as f {
+        f.close()
+    }
+    return sum
 }
 
 // ── RC2: Rack ───────────────────────────────────────────────────────
 
-// `Pool.remove` answered `T?`, which is what made a pool the one container a
-// linear value could live in. `Rack.delete` answers nothing, so a rack is in
-// with Vec and Map (rask-lang/rask#908).
 func rack_node() -> void {
-    let r: Rack<File> = Rack.new()         // ERROR [RC2]: `Rack` cannot hold linear value `File`
+    let r: Rack<File> = Rack.new()         // ERROR: E0820
     return
 }
 
-// Route: transitively linear node
 func rack_wrapper() -> void {
-    let r: Rack<Wrapper> = Rack.new()      // ERROR [RC2]: `Rack` cannot hold linear value `Wrapper`
+    let r: Rack<Wrapper> = Rack.new()      // ERROR: E0820
     return
 }
 

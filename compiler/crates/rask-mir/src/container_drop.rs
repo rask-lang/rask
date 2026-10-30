@@ -1580,10 +1580,18 @@ fn params_this_frame_owns(
     // (`container_facts`).
     let head = func.name.rsplit("::").next().unwrap_or(&func.name);
     let receiver_lent = rask_stdlib::mir_metadata::borrows_receiver(head);
+    // A `take self` receiver is handed over by every caller whether or not
+    // the body keeps it (`container_facts` reads the declaration), so it is
+    // this frame's to free. Asking only whether the body kept it left
+    // `Vec.consume` freeing nothing and its caller freeing nothing.
+    let receiver_taken = rask_stdlib::mir_metadata::consumes_receiver(head);
     func.params
         .iter()
         .enumerate()
-        .filter(|(i, _)| flags.get(*i).copied().unwrap_or(false) && !(*i == 0 && receiver_lent))
+        .filter(|(i, _)| {
+            let kept = flags.get(*i).copied().unwrap_or(false) || (*i == 0 && receiver_taken);
+            kept && !(*i == 0 && receiver_lent)
+        })
         .filter_map(|(_, p)| match func.local_ty(p.id).cloned() {
             Some(MirType::Container(kind)) => Some((p.id, container_free(kind))),
             _ => None,

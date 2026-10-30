@@ -128,7 +128,7 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [ownership_errors.rk](ownership_errors.rk) | Use-after-move, conditional move, @unique, @resource leak/double-consume, Vec never Copy |
-| [linear_containers.rk](linear_containers.rk) | Vec/Map can't hold linear elements (RC1/RC3): annotation, push, param, return, field, transitive, nested, optional, alias, Map value/key (E0820) |
+| [linear_containers.rk](linear_containers.rk) | A Vec or Map of linear values is owed itself (RC1/RC3, E0805), nothing may drop or copy an element (`clear`, `set`, `v[i] = …`, `remove_where`, `get`, `first`: RC5, E0823; a `for` over `take_all()`: E0844; the same through a generic body: E0849), and a Rack can't hold one (RC2, E0820) |
 | [linear_generic_instance.rk](linear_generic_instance.rk) | A generic body re-checked for the linear type it is called with (#1366, E0904): a `T` dropped in the body, a payload matched out of `List<Conn>` and dropped, a drop two generic calls down blamed on the outer call, a generic method and a method of a generic type (`Holder<T>.drop_it(take self)`) that drop theirs, a `take self` on a concrete holder that leaks its resource field, and a `T` handed to two `take` parameters |
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |
 | [borrow_errors.rk](borrow_errors.rk) | Mutating read-only param, moving from borrow, storing slices, borrow escape, structural mutation in `with`, non-Copy element binding |
@@ -195,7 +195,7 @@ go down.
 | [memory_only_on_rask_func.rk](memory_only_on_rask_func.rk) | `@memory_only` on a Rask function (E0854). It vouches for a C function's body, which the compiler can't see; a Rask function's effects are read from its own body. Was `@pure`, which also claimed to be a lint annotation nothing checked |
 | [shared_access_closure.rk](shared_access_closure.rk) | A closure handed to a blocking `read`/`write` on a `Shared` (E0900, #1311). Blocking access is a `with` block or one expression; closures are for `try_read`/`try_write`. The checker accepted the closure form, undeclared, and native read a slot nobody wrote |
 | [link_sent_to_task.rk](link_sent_to_task.rk) | A link captured by `spawn` (E0901, #830) — on its own, optional, in a Vec, in a struct field, or as a channel's element. A link is its node's address, so two tasks would write one node unordered. A copied field and a whole rack still cross |
-| [thread_handle_unjoined.rk](thread_handle_unjoined.rk) | A `Thread` handle dropped without a join or detach (E0805, #1360), and one put in a `Vec` (E0820). Several go in a `Handles` |
+| [thread_handle_unjoined.rk](thread_handle_unjoined.rk) | A `Thread` handle dropped without a join or detach (E0805, #1360), and a `Vec` of them nobody consumes (E0805). Several go in a `Handles` |
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |

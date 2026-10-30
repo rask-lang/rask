@@ -503,6 +503,10 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
+    /// RC5: method calls on a `Vec` or `Map`, with the receiver as resolved
+    /// then. Checked after solving, once the element type is settled, for a
+    /// method that would drop or copy an element that must be consumed.
+    pub(super) pending_element_uses: Vec<(rask_ast::Span, Type, String)>,
     /// SH10: struct fields and enum payloads that spell a `Shared`, checked
     /// for a box cycle once every declaration is registered, since the cycle
     /// can close through a type declared later. (Owner, field, type, span).
@@ -691,6 +695,7 @@ impl TypeChecker {
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
+            pending_element_uses: Vec::new(),
             pending_shared_fields: Vec::new(),
 
             type_test_patterns: std::collections::HashSet::new(),
@@ -889,6 +894,7 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+        self.validate_pending_element_uses();
 
         // SH10: a `Shared` field whose payload can hold the owner again.
         self.validate_shared_cycles();

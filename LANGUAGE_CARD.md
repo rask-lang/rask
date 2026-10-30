@@ -332,7 +332,7 @@ duck interface Sketchy { func poke(self) }       // opt-in shape-matching — pr
 
 ## Resources and cleanup
 
-`@resource` types are linear: must be consumed exactly once — the compiler rejects a path where a file might not close (`mem.resource-types`, `mem.linear`).
+`@resource` types are linear: must be consumed exactly once — the compiler rejects a path where a file might not close (`mem.resource-types`, `mem.linear`). A `Vec` or `Map` holding them is owed too: commit it with `ensure files.consume(|take f| f.close() catch _ => {})` and drain with `while files.pop()? as f { try f.close() }`. Methods that would drop or copy an element (`clear`, `get`) aren't available on it.
 
 <!-- test: parse -->
 ```rask

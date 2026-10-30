@@ -784,6 +784,10 @@ impl TypeChecker {
             }
         }
 
+        if matches!(super::receiver_name(&ty, &self.types).as_deref(), Some("Vec" | "Map")) {
+            self.pending_element_uses.push((span, ty.clone(), method.clone()));
+        }
+
         // XC3: a call to a method two visible conformances both supply picks a
         // body just as silently as a bound does, so the call is a use site too.
         if !matches!(ty, Type::Var(_) | Type::Error) {

@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Vec` or `Map` can hold values that must be consumed, and is owed itself
+// (mem.resource-types/RC1, RC3). `pop` and `remove` hand an element back;
+// `consume` takes the lot, and is what an `ensure` commits the container
+// with. Draining with `while v.pop()? as x` and leaving early leaves the rest
+// in `v`, so the `ensure` closes those.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+struct Refused {
+    id: i64
+}
+
+extend Refused {
+    func message(self) -> string {
+        return "refused {self.id}"
+    }
+}
+
+extend Conn {
+    func close(take self, mutate log: Vec<i64>) -> void or Refused {
+        log.push(self.id)
+        if self.id == 3 {
+            return Refused(id: self.id)
+        }
+        return
+    }
+}
+
+func drain(mutate pool: Vec<Conn>, mutate log: Vec<i64>) -> void or Refused {
+    while pool.pop()? as c {
+        try c.close(mutate log)
+    }
+}
+
+func open_five(mutate log: Vec<i64>) -> void or Refused {
+    mut pool: Vec<Conn> = Vec.new()
+    ensure pool.consume(|take c| c.close(mutate log) catch _ => {})
+    for i in 1..6 {
+        pool.push(Conn(id: i))
+    }
+    try drain(mutate pool, mutate log)
+}
+
+test "an early exit leaves the rest to the ensure" {
+    mut log: Vec<i64> = Vec.new()
+    mut refused = false
+    open_five(mutate log) catch _ => {
+        refused = true
+    }
+    assert refused
+    // 5, 4 and 3 by the drain, which stops at 3; 1 and 2 by the ensure.
+    assert log.len() == 5
+    assert log[0] == 5
+    assert log[2] == 3
+    assert log[3] == 1
+    assert log[4] == 2
+}
+
+test "remove hands one back, the ensure takes the rest" {
+    mut log: Vec<i64> = Vec.new()
+    remove_first(mutate log)
+    assert log.len() == 3
+    assert log[0] == 7
+    assert log[1] == 8
+}
+
+func remove_first(mutate log: Vec<i64>) {
+    mut pool: Vec<Conn> = Vec.new()
+    ensure pool.consume(|take c| c.close(mutate log) catch _ => {})
+    pool.push(Conn(id: 7))
+    pool.push(Conn(id: 8))
+    pool.push(Conn(id: 9))
+    let first = pool.remove(0)
+    first.close(mutate log) catch _ => {}
+}
+
+test "a map of resources hands back the one an insert replaces" {
+    mut log: Vec<i64> = Vec.new()
+    replace_in_map(mutate log)
+    // 1 when the insert replaced it, 2 by the ensure.
+    assert log.len() == 2
+    assert log[0] == 1
+    assert log[1] == 2
+}
+
+func replace_in_map(mutate log: Vec<i64>) {
+    mut m: Map<string, Conn> = Map.new()
+    ensure m.consume(|take k, take c| c.close(mutate log) catch _ => {})
+    if m.insert("a", Conn(id: 1))? as old {
+        old.close(mutate log) catch _ => {}
+    }
+    if m.insert("a", Conn(id: 2))? as old {
+        old.close(mutate log) catch _ => {}
+    }
+}

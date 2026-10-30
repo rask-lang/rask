@@ -252,6 +252,12 @@ impl TypeChecker {
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
                 self.check_assignment_target(target);
+                // RC5: writing over `v[i]` drops what was there.
+                if let rask_ast::expr::ExprKind::Index { object, .. } = &target.kind {
+                    if let Some(container) = self.node_types.get(&object.id).cloned() {
+                        self.pending_element_uses.push((stmt.span, container, "=".to_string()));
+                    }
+                }
 
                 // `*x = v` requires unsafe only when `x` really is a raw
                 // pointer. Writing through an `Owned` is a mutable borrow

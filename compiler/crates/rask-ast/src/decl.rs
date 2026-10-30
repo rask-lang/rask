@@ -220,6 +220,8 @@ impl FnDecl {
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
+            drops_elements: has("drops_elements"),
+            copies_elements: has("copies_elements"),
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
@@ -246,6 +248,14 @@ pub struct DeclaredEffects {
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
+    /// Drops elements without handing them back (`clear`, `set` over one).
+    /// Refused on a container whose elements must be consumed
+    /// (mem.resources/RC5).
+    pub drops_elements: bool,
+    /// Hands out a copy of an element (`get`, `first`, `clone`). Refused on
+    /// a container whose elements must be consumed: a copy would be a second
+    /// owner (RC5).
+    pub copies_elements: bool,
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,

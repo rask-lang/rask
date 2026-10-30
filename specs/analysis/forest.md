@@ -261,8 +261,9 @@ owns, and no value is reached twice. `mem.linear/L1`–`L7` make a linear
 value's consumption a checked obligation on every path, and
 `ctrl.ensure/EN1`–`EN2` with `ctrl.panic/U6` make the unwinding path one of
 those paths. Containers release their elements as part of the walk, and
-`mem.resource-types/RC1`–`RC3` keep linear values out of containers so the
-walk never has an obligation it cannot discharge. `tests/leak_gate.sh` is this claim run over
+`mem.resource-types/RC1`–`RC5` make a container of linear values linear
+itself, and keep them out of racks, so the walk never has an obligation it
+cannot discharge. `tests/leak_gate.sh` is this claim run over
 the suite under `RASK_LEAK_CHECK=1`.
 
 **Exception one, now closed: `Shared` cycles.** A struct may hold a `Shared`,
@@ -271,7 +272,7 @@ can't see a cycle. That was the one place outside a rack where the language
 could build a cycle, and it leaked (rask-lang/rask#1672). It is now a type
 error, `conc.sync/SH10`: a `Shared` field whose payload can hold a box of
 the owning type again, by value or through further boxes, is rejected the
-way `mem.resource-types/RC1` rejects a linear element in a `Vec`. The rule
+way `mem.resource-types/RC2` rejects a linear node in a `Rack`. The rule
 is on the shape, so a tree of boxes is rejected along with the cycle it
 could become, and the answer in both cases is the one the design already
 gives for values that point at each other: put them in a rack and share the

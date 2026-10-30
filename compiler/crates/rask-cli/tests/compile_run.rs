@@ -3272,12 +3272,11 @@ fn error_comptime_field_name_that_is_not_a_field() {
 
 #[test]
 fn error_linear_containers() {
-    // RC1/RC3: Vec/Map can't hold linear elements (@resource, transitively
-    // linear, or optionals/tuples built from them). Covers every entry route:
-    // annotation, push, param, return, field, transitive, nested, optional,
-    // alias, Map value, Map key (E0820).
+    // RC1-RC5: a Vec/Map of linear values is owed itself, nothing may drop or
+    // copy an element, and a Rack can't hold one. The marker gate checks each
+    // line; this only checks the file fails.
     assert!(compile_error("linear_containers.rk"),
-        "should reject Vec/Map of linear values across all entry routes (E0820)");
+        "should reject losing a linear element, an unconsumed container, and a rack of them");
 }
 
 #[test]

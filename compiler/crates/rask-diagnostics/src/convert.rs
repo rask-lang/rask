@@ -3448,33 +3448,64 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             LinearInContainer { container, elem, span } => {
-                let rule = match container.as_str() {
-                    "Map" => "RC3",
-                    "Rack" => "RC2",
-                    _ => "RC1",
-                };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);
-                // A rack fails for the same reason with a different verb:
-                // `delete` frees the node, it never hands it back, so there is
-                // no call that consumes one.
-                let mechanism = if container == "Rack" {
-                    format!("`Rack.delete` frees the node rather than handing it back, so nothing \
-                             can consume `{}` — and it is linear, so it has to be consumed exactly \
-                             once", elem)
-                } else {
-                    format!("`{}` drop can't consume its elements, but `{}` is linear — it must be \
-                             consumed exactly once, so it can't be silently dropped", container, elem)
-                };
                 Diagnostic::error(label.clone())
                     .with_code("E0820")
                     .with_primary(*span, label)
-                    .with_why(format!("{} [mem.resource-types/{}]", mechanism, rule))
-                    .with_fix(
-                        "hold it in an optional `T?` and match to consume it (RC4). No container \
-                         takes a linear value: a Vec or Map drop can't consume its elements, and \
-                         a rack's delete can't give a node back"
+                    .with_why(format!(
+                        "`Rack.delete` frees the node rather than handing it back, so nothing \
+                         can consume `{}`, and it has to be consumed exactly once \
+                         [mem.resource-types/RC2]",
+                        elem
+                    ))
+                    .with_fix(format!(
+                        "keep them in a `Vec<{}>` (which hands each back with `pop` or \
+                         `remove`), or in a field typed `{}?` and match to consume it",
+                        elem, elem
+                    ))
+            }
+            LinearElementLost { container, method, elem, copies, span } => {
+                let (label, why, fix) = if *copies {
+                    (
+                        format!("`{}` would copy a `{}` out of this `{}`", method, elem, container),
+                        format!(
+                            "`{}` must be consumed exactly once, so there can't be a second one \
+                             [mem.resource-types/RC5]",
+                            elem
+                        ),
+                        "look at it where it lives — `with v[i] as x { … }`, `for x in v`, or \
+                         `v.read(i, |x| …)` — or take it out with `remove(i)` or `pop()`"
                             .to_string(),
                     )
+                } else {
+                    let what = if method == "=" {
+                        "assigning over an element".to_string()
+                    } else {
+                        format!("`{}`", method)
+                    };
+                    (
+                        format!("{} would drop a `{}` still in this `{}`", what, elem, container),
+                        format!(
+                            "`{}` must be consumed, and nothing consumes what {} throws away \
+                             [mem.resource-types/RC5]",
+                            elem, what
+                        ),
+                        if method == "=" {
+                            "take the old one out first and consume it: `let old = v.remove(i)`, \
+                             then `v.insert(i, new)`"
+                                .to_string()
+                        } else {
+                            "take each one out and consume it: `while v.pop()? as x { … }`, or \
+                             `v.consume(|take x| …)` for all of them"
+                                .to_string()
+                        },
+                    )
+                };
+                Diagnostic::error(label.clone())
+                    .with_code("E0823")
+                    .with_primary(*span, label)
+                    .with_why(why)
+                    .with_fix(fix)
             }
             IndexTypeMismatch { container, found, kind, span } => {
                 use rask_types::IndexErrorKind as K;
@@ -3989,6 +4020,34 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     func, param
                 ))
                 .with_why("`take` empties the box, which is only sound on the last handle. A `Shared` is single-handle only when its value must be consumed, and the body is checked against each type it's called with [conc.sync/SH9]")
+            }
+
+            DrainLoopOverLinear => Diagnostic::error(
+                "a `for` over `take_all()` would drop what's left if it exits early",
+            )
+            .with_code("E0844")
+            .with_primary(self.span, "the loop owns these, and a `break`, `return` or `try` leaves the rest")
+            .with_fix("drain with `while v.pop()? as x { … }`: an early exit leaves the rest in `v`, still owed")
+            .with_why("the elements must be consumed exactly once, and nothing consumes what a loop leaves behind [mem.resource-types/RC5]"),
+
+            ElementLostInGenericInstance { chain, param, type_arg, method, copies, at } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let verb = if *copies { "copies" } else { "drops" };
+                Diagnostic::error(format!(
+                    "`{}` {} elements with `{}`, and this call gives it `{}` = `{}`",
+                    func, verb, method, param, type_arg
+                ))
+                .with_code("E0849")
+                .with_primary(self.span, format!("`{}` = `{}` here", param, type_arg))
+                .with_secondary(*at, format!("`{}` {} an element, in `{}`", method, verb, func))
+                .with_fix(format!(
+                    "call it with elements that needn't be consumed, or have `{}` take them out with `pop` or `remove` instead",
+                    func
+                ))
+                .with_why(format!(
+                    "`{}` must be consumed exactly once, and a generic body is checked against each type it's called with [mem.resource-types/RC5]",
+                    type_arg
+                ))
             }
 
             LinearInGenericInstance { chain, type_args, inner, inner_span } => {
