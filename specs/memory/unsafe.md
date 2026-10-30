@@ -151,6 +151,7 @@ An unsafe interface is one whose contract some unsafe code elsewhere relies on, 
 | **UT1: Explicit unsafe conformance** | Conforming to an `unsafe interface` requires `unsafe T implements I` (E0386) |
 | **UT2: Contract obligation** | The conformance promises what the interface's doc comment says. The unsafe code that calls through it may rely on that promise and nothing more |
 | **UT3: Only where it means something** | `unsafe` in front of a conformance to an ordinary interface, or in front of `extend`, is a compile error (E0932). It would read as a promise nobody relies on |
+| **UT4: An owning pointer lives in a `@resource`** | A struct whose raw pointer owns what it points at (it frees it, or hands it back to an allocator) is written `@resource`. It then neither copies nor clones at any size, and must be consumed exactly once (`mem.linear`), so the block can't be freed twice or leaked. The compiler treats it as owning that block: a pointer made from the struct points into the struct (PT1), storing a new address in its pointer field replaces the block under every pointer into it (PT3), and a method that does so counts as resizing it. A struct without `@resource` is a view: its pointer copies and clones as an address. The compiler can't see which a pointer is, so this is the one thing the author has to say |
 
 <!-- test: parse -->
 ```rask
@@ -442,6 +443,8 @@ FIX: Add to clobber list or declare as output:
 
 **PT1–PT5 (where pointers point):** Rust leaves a raw pointer's lifetime to the programmer, because it can't connect a `*const T` back to the reference it came from. Rask has no references, so every pointer starts at a call, and the call's arguments say what it points into. That makes the common mistakes (a pointer kept across a `push`, returned out of the frame that owns the buffer, written while a `with` holds the element) the same errors a `with` binding or a closure already gets, with no annotation. The rule for a call reads the callee's body, the way resize and allocator inference do, so a function that borrows a vector and returns fresh memory isn't tied to the vector. Rust can't do this from a signature and asks for lifetime annotations instead. Only where there's no body to read does the call fall back to the strict reading, every borrowed argument.
 
+**UT4 (owning pointers):** The first version refused `clone` on any struct holding a raw pointer, on the grounds that the compiler can't tell an owning pointer from a borrowed one. That missed the case that matters most: a 16-byte `{ptr, len}` copies on `let b = a`, so it had two owners with no `clone` in sight. Saying ownership on the type fixes both and buys more. Linearity already means no copy, no clone and exactly one release, and once the compiler knows the struct owns its block, the pointers it hands out are tied to it: an arena's allocations die at the arena's block end or when it grows. A collection of owners is the cost: `Vec` can't hold a linear value (`mem.resources/RC1`), so a pool of buffers is a `Vec` of optionals or a rack today.
+
 **UT1–UT3 (unsafe interfaces):** The marker exists for one job: a contract that unsafe code on the other side of a generic relies on. `Send` and `Sync` don't qualify. In Rust, safe code can hand an `Rc` or a `&T` to another thread, so the type needs a marker saying it may. In Rask safe code has no such path: what crosses is decided by shape, and every place two tasks could touch one byte goes through an `unsafe` block someone wrote. A marker on the type would be a second signature on that same line.
 
 **UF3 (document invariants):** Every unsafe operation has an implicit contract — preconditions the caller must ensure. The `/// # Safety` convention makes these visible.
@@ -454,6 +457,7 @@ The core pattern for unsafe code: encapsulate raw operations behind a safe API t
 
 <!-- test: parse -->
 ```rask
+@resource
 public struct SafeBuffer {
     ptr: *u8,
     len: usize,
@@ -518,6 +522,7 @@ let ptr = unsafe { c.malloc(size) }
 unsafe { c.free(ptr) }
 
 // Safe CString wrapper
+@resource
 public struct CString {
     ptr: *u8,
     len: usize,

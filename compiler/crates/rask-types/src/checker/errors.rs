@@ -1063,15 +1063,6 @@ pub enum TypeError {
     },
 
 
-    /// type.generics/CL2: `clone` on a struct holding a raw pointer, which
-    /// derives none: only its author knows whether the pointer owns.
-    #[error("`{ty}` holds a raw pointer, so it has no derived `clone`")]
-    CloneOfPointerHolder {
-        ty: String,
-        field: String,
-        span: Span,
-    },
-
     /// mem.linear/L8: `clone` on a value consumed exactly once.
     #[error("`{ty}` can't be cloned — it's consumed exactly once")]
     CloneLinear {
@@ -1840,7 +1831,6 @@ impl TypeError {
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
-            | CloneOfPointerHolder { .. }
             | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }

@@ -2348,14 +2348,13 @@ impl TypeChecker {
         Some(DeriveShape { parts, type_params: type_params.clone(), methods: methods.clone() })
     }
 
-    /// Whether a type of this shape derives `method`: each field has it,
-    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2):
-    /// whether the pointer owns what it points at is the author's to say.
+    /// Whether a type of this shape derives `method`: each field has it, and
+    /// `hash` also needs `eq` (HA1). A raw pointer field clones by copying the
+    /// address: a struct that owns what its pointer points at is a
+    /// `@resource`, which has no clone at all (mem.unsafe/UT4).
     fn parts_derive(&self, shape: &DeriveShape, method: &str) -> bool {
         let all = |m: &str| shape.parts.iter().all(|ty| self.type_has_method_in(ty, m, &shape.type_params));
-        all(method)
-            && (method != "hash" || all("eq"))
-            && (method != "clone" || !shape.parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
+        all(method) && (method != "hash" || all("eq"))
     }
 
     fn auto_derive_interfaces(&mut self) {
@@ -2438,24 +2437,6 @@ impl TypeChecker {
         matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
     }
 
-    /// CL2: the raw pointer field of a struct with no `clone`, derived or
-    /// written: `.clone()` on it has nothing to call.
-    pub(super) fn pointer_field_without_clone(&self, ty: &Type) -> Option<String> {
-        let id = match ty {
-            Type::Named(id) => *id,
-            Type::Generic { base, .. } => *base,
-            _ => return None,
-        };
-        let TypeDef::Struct { fields, methods, .. } = self.types.get(id)? else { return None };
-        if methods.iter().any(|m| m.name == "clone") {
-            return None;
-        }
-        fields
-            .iter()
-            .find(|(_, t)| matches!(t, Type::RawPtr(_)))
-            .map(|(name, _)| name.clone())
-    }
-
     /// Check if a type has a given method (for auto-derive field checking).
     pub(super) fn type_has_method(&self, ty: &Type, method: &str) -> bool {
         self.type_has_method_in(ty, method, &[])
@@ -2488,6 +2469,9 @@ impl TypeChecker {
             Type::String | Type::Bytes => {
                 matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
+            // An address: copies and compares as one. What it points
+            // at isn't part of it (mem.unsafe/UT4).
+            Type::RawPtr(_) => matches!(method, "eq" | "clone"),
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
             // is registered with that use still a name, because the type
             // didn't exist yet when its fields were read.

@@ -2334,7 +2334,7 @@ impl<'a> OwnershipChecker<'a> {
                 // PT3: storing over something with storage of its own frees
                 // what it held, under any pointer into it.
                 if let (Some(root), Some(ty)) = (Self::assign_root(target), self.node_ty(&target.id)) {
-                    if !Self::has_no_storage(ty) {
+                    if !Self::has_no_storage(ty) || self.replaces_owned_block(target) {
                         self.kill_pointers_into(&root, PointerLoss::Replaced, stmt.span, None);
                     }
                 }

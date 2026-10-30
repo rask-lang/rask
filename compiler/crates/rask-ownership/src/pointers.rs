@@ -103,12 +103,20 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 _ => {
-                    // A part read out of a binding that holds pointers.
+                    // A part read out of a binding that holds pointers. Out of
+                    // a `@resource`, the pointer points into what it owns (UT4).
                     let Some(root) = Self::projection_root(value) else { continue };
                     let holds = self.node_ty(&value.id).is_some_and(|t| self.type_holds_pointer(t));
                     if holds {
                         if let Some(s) = self.ptr_sources.get(root) {
                             out.extend(s.iter().cloned());
+                        }
+                        let owner = self
+                            .binding_types
+                            .get(root)
+                            .is_some_and(|t| self.program.types.is_linear_value(t));
+                        if owner {
+                            out.push(self.pointee_root(root));
                         }
                     }
                 }
@@ -128,7 +136,11 @@ impl<'a> OwnershipChecker<'a> {
         let Some(ty) = self.node_ty(&arg.id) else { return };
         if self.type_holds_pointer(ty) {
             self.collect_pointer_sources(arg, out);
-            return;
+            // UT4: a `@resource` owns what its pointers point at, so a pointer
+            // made from one points into the resource itself.
+            if !self.program.types.is_linear_value(ty) {
+                return;
+            }
         }
         if Self::has_no_storage(ty) {
             return;

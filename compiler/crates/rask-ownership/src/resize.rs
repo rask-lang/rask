@@ -209,7 +209,16 @@ impl<'a> OwnershipChecker<'a> {
         let StmtKind::Assign { target, .. } = &stmt.kind else { return None };
         Self::extract_root_and_fields(target).0?;
         let ty = self.node_ty(&target.id)?;
-        (!self.is_copy(ty)).then_some(target)
+        (!self.is_copy(ty) || self.replaces_owned_block(target)).then_some(target)
+    }
+
+    /// A new address stored into a pointer field of a `@resource`: the
+    /// resource owns what that field points at (mem.unsafe/UT4), so this is
+    /// its storage being replaced, the way `v = Vec.new()` is a vector's.
+    pub(crate) fn replaces_owned_block(&self, target: &Expr) -> bool {
+        let ExprKind::Field { object, .. } = &target.kind else { return false };
+        let holds = self.node_ty(&target.id).is_some_and(|t| self.type_holds_pointer(t));
+        holds && self.node_ty(&object.id).is_some_and(|t| self.program.types.is_linear_value(t))
     }
 }
 

@@ -2994,16 +2994,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
             }
-            CloneOfPointerHolder { ty, field, span } => {
-                Diagnostic::error(format!("`{}` holds a raw pointer, so it has no derived `clone`", ty))
-                    .with_code("E0933")
-                    .with_primary(*span, format!("`{}.{}` is a raw pointer", ty, field))
-                    .with_fix(format!(
-                        "write the copy yourself, deciding what the pointer's copy points at:\n    {} implements Cloneable {{\n        func clone(self) -> {} {{ … }}\n    }}",
-                        ty, ty
-                    ))
-                    .with_why("a derived clone would copy the address, and if the pointer owns what it points at that's two owners of one block. Only the author knows which it is [type.generics/CL2]")
-            }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
                     .with_code("E0918")
