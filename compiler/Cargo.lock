@@ -1411,6 +1411,7 @@ dependencies = [
  "rask-desugar",
  "rask-diagnostics",
  "rask-effects",
+ "rask-interp",
  "rask-lexer",
  "rask-mir",
  "rask-mono",

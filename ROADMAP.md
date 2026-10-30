@@ -422,7 +422,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 448 sites restate a fact, 441 to go.**
+ratchet at its target. Today: 441 sites restate a fact, 434 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -445,7 +445,7 @@ each pinned at today's count, each with the count it has to reach.
 | Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
 | Public entry points into the passes | 14 | 7 | #1568 |
-| Interpreters built outside the driver | 11 | 0 | #1568 |
+| Interpreters run without the driver's setup (`prepare_interpreter`) | 4 | 0 | #1568 |
 | Size or alignment computed outside the layout model | 5 | 0 | #1567 |
 | Readers of the pointer-width process global | 15 | 0 | #1568 |
 
@@ -493,8 +493,11 @@ for a checker type by accident, and no grep test has to say so.
    says `usize?`, a pipe just delivers the wrong fact faster. The `.rk`
    declaration becomes the only source first.
 3. The rest of **#1568**: the LSP and spec-test front ends, the interpreter
-   setups, the config built fifteen times, node ids, and the pointer width
-   out of its global and into the config the driver hands down.
+   setups, the config built fifteen times, and node ids. Every tool readies
+   its interpreter with `rask_compiler::prepare_interpreter` now, from the
+   `cfg` the check recorded; what's left runs on declarations nothing
+   checked (build scripts, spec-test) or is `rask comptime`'s second
+   evaluator.
 4. **#1566 + #1567.** The checker records what it decided per node (which
    variant a pattern names, which side a return goes to, that a call was an
    operator), and layout moves into its own crate. That needs `rask-types`
@@ -503,7 +506,10 @@ for a checker type by accident, and no grep test has to say so.
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
    `compiler/CLAUDE.md` calls `rask_types::layout` "the one size model"
-   today; it will be right once the other five answers are gone.
+   today; it will be right once the other five answers are gone. The
+   pointer-width global goes here too, not in step 3: most of its fifty-odd
+   readers are `MirType::size()` and `LayoutCache::new()`, which this step
+   replaces, so threading a `Target` through them first would be done twice.
 5. **#1564 + #1565.** A call carries its callee's identity and signature;
    stdlib facts live only on the `.rk` declarations. #1656 is the first
    consumer of that flow and a good proof it works, but not a gate.

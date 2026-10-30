@@ -82,8 +82,8 @@ const RATCHETS: &[Ratchet] = &[
         count: pass_entry_points,
     },
     Ratchet {
-        name: "interpreter setups outside the driver",
-        today: 11,
+        name: "interpreters run without the driver's setup",
+        today: 4,
         target: 0,
         why: "a tool built its own interpreter instead of asking the driver for \
               one; the copies skip steps the driver does (rask-lang/rask#1568)",
@@ -272,26 +272,35 @@ fn pass_entry_points(crates: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Interpreters a tool builds without `rask_compiler::prepare_interpreter`
+/// within the next few lines: run on declarations nothing checked, or set up
+/// by hand, which is how the copies drifted (#1177, #1568).
 fn interpreter_setups(crates: &Path) -> Vec<String> {
-    let mut files = Vec::new();
+    let mut dirs = Vec::new();
     for entry in fs::read_dir(crates).unwrap().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        // The two evaluators own their own constructors.
-        if name == "rask-interp" || name == "rask-comptime" {
+        // The two evaluators own their own constructors; the driver is where
+        // the setup lives.
+        if name == "rask-interp" || name == "rask-comptime" || name == "rask-compiler" {
             continue;
         }
-        files.push(format!("{name}/src"));
+        dirs.push(format!("{name}/src"));
     }
-    let dirs: Vec<&str> = files.iter().map(String::as_str).collect();
-    source_lines(crates, &dirs, &[])
-        .into_iter()
-        .filter(|(_, _, code)| {
-            ["Interpreter::new(", "Interpreter::with_args(", "Interpreter::with_captured_output("]
-                .iter()
-                .any(|p| code.contains(p))
-        })
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
+    let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+    let lines = source_lines(crates, &dirs, &[]);
+    let mut out = Vec::new();
+    for (i, (rel, line, code)) in lines.iter().enumerate() {
+        let builds = ["Interpreter::new(", "Interpreter::with_args(", "Interpreter::with_captured_output("]
+            .iter()
+            .any(|p| code.contains(p));
+        let prepared = lines[i..lines.len().min(i + 5)]
+            .iter()
+            .any(|(r, _, c)| r == rel && c.contains("prepare_interpreter("));
+        if builds && !prepared {
+            out.push(site(rel, *line, code));
+        }
+    }
+    out
 }
 
 fn size_models(crates: &Path) -> Vec<String> {

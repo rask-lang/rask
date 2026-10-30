@@ -100,6 +100,9 @@ pub struct CheckResult {
     /// Where `format(…)` was called. Desugar compiles each one into string
     /// building, so `decls` has no call left to find (std.fmt/CM5).
     pub format_calls: Vec<rask_ast::Span>,
+    /// The target and features the program was checked for. Whatever runs it
+    /// next has to agree, so it reads them from here.
+    pub cfg: CfgConfig,
 }
 
 /// Result of the full compilation pipeline (through monomorphization).
@@ -150,6 +153,24 @@ impl<T> PipelineOutput<T> {
 
     fn ok_with_sources(value: T, diagnostics: Vec<Diagnostic>, source_files: Vec<(PathBuf, String)>) -> Self {
         Self { result: Some(value), diagnostics, source_files }
+    }
+}
+
+/// Ready an interpreter to run what `result` checked: the same `cfg`, the
+/// checker's tables, the source for diagnostics, and the packages.
+///
+/// Every tool that runs a program on the interpreter calls this. Each used to
+/// do it by hand, and the copies drifted: the benchmark runner skipped the
+/// `cfg` and the source, and `rask run --interp` and the manifest loader used
+/// the host's `cfg` whatever the check was for.
+pub fn prepare_interpreter(interp: &mut rask_interp::Interpreter, result: &CheckResult) {
+    interp.inject_cfg(&result.cfg);
+    interp.adopt_checker_tables(&result.typed);
+    if let Some((path, source)) = result.source_files.first() {
+        interp.set_source_info(&path.to_string_lossy(), source);
+    }
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
     }
 }
 
@@ -539,6 +560,7 @@ pub fn check_loaded(
             effects,
             effect_warnings,
             format_calls: desugared.format_calls.clone(),
+            cfg: config.cfg.clone(),
         },
         diags,
         source_files,
@@ -892,6 +914,7 @@ fn check_package_scoped(
             effects,
             effect_warnings,
             format_calls: desugared.format_calls.clone(),
+            cfg: config.cfg.clone(),
         },
         diags,
         source_files,
