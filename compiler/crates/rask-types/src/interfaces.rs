@@ -1091,7 +1091,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
                 defaults: Vec::new(),
             }]),
-            "Equal" | "Eq" => Some(vec![MethodSig {
+            "Equal" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
                 effect: Default::default(),
@@ -1105,7 +1105,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Bool,
                 defaults: Vec::new(),
             }]),
-            "Comparable" | "Ord" => Some(vec![
+            "Comparable" => Some(vec![
                 MethodSig {
                     param_names: Vec::new(),
                     origin: crate::MethodOrigin::Declared,
@@ -1182,7 +1182,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     defaults: Vec::new(),
                 },
             ]),
-            "Clone" | "Cloneable" => Some(vec![MethodSig {
+            "Cloneable" => Some(vec![MethodSig {
                 param_names: Vec::new(),
                 origin: crate::MethodOrigin::Declared,
                 effect: Default::default(),
@@ -1399,40 +1399,10 @@ impl<'a> InterfaceChecker<'a> {
         }
     }
 
-    /// Check if a primitive type has a builtin method.
+    /// Whether a primitive answers `method` through a conformance the
+    /// compiler provides for it (`primitive_conformances`).
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
-        match ty {
-            // Integer types: eq, hash, clone, arithmetic, compare, to_string
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method,
-                    "add" | "sub" | "mul" | "div" | "rem" |
-                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
-                    "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "to_string" | "debug"
-                )
-            }
-            // Floats: eq, clone, but NOT hash (HA4)
-            Type::F32 | Type::F64 => {
-                matches!(method,
-                    "add" | "sub" | "mul" | "div" | "rem" |
-                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
-                    "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "to_string" | "debug"
-                )
-            }
-            // Bool: eq, hash, clone, compare, to_string
-            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
-            // Char: eq, hash, clone, comparison, to_string
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
-            // String: eq, hash, clone, len, comparison, to_string
-            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "debug"),
-            // Bytes: the same, except it isn't text (std.bytes/BY6)
-            Type::Bytes => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "debug"),
-            // Unit: eq, hash, clone
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "to_string" | "debug"),
-            _ => false,
-        }
+        primitive_conformances(ty).iter().any(|i| interface_requires(i, method))
     }
 
     /// Check if two method signatures match.
@@ -1798,6 +1768,50 @@ fn is_float_type(ty: &Type) -> bool {
     matches!(ty, Type::F32 | Type::F64)
 }
 
+/// The interfaces a primitive conforms to without any `extend` block.
+///
+/// This is the one statement of it. The conformance check reads it, and so
+/// does the method resolver for the comparisons and hashes a primitive answers
+/// without a declaration in `stdlib/*.rk`. Floats aren't `Hashable` (HA4) and
+/// have no bit operators; unsigned integers have no `Neg`; `bytes` isn't text,
+/// so it isn't `Displayable` (std.bytes/BY6).
+pub fn primitive_conformances(ty: &Type) -> &'static [&'static str] {
+    const SIGNED: &[&str] = &[
+        "Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug",
+        "Add", "Sub", "Mul", "Div", "Rem", "Neg",
+        "BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr",
+    ];
+    const UNSIGNED: &[&str] = &[
+        "Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug",
+        "Add", "Sub", "Mul", "Div", "Rem",
+        "BitAnd", "BitOr", "BitXor", "BitNot", "Shl", "Shr",
+    ];
+    const FLOAT: &[&str] = &[
+        "Equal", "Comparable", "Cloneable", "Displayable", "Debug",
+        "Add", "Sub", "Mul", "Div", "Rem", "Neg",
+    ];
+    const SCALAR: &[&str] = &["Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug"];
+    const BYTES: &[&str] = &["Equal", "Comparable", "Hashable", "Cloneable", "Debug"];
+    const UNIT: &[&str] = &["Equal", "Hashable", "Cloneable", "Displayable", "Debug"];
+    match ty {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => SIGNED,
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => UNSIGNED,
+        Type::F32 | Type::F64 => FLOAT,
+        Type::Bool | Type::Char | Type::String => SCALAR,
+        Type::Bytes => BYTES,
+        Type::Unit => UNIT,
+        _ => &[],
+    }
+}
+
+/// Whether `interface` requires a method called `method`: an operator
+/// interface's from `stdlib/ops.rk`, a compiler-provided one's from
+/// `builtin_interface_methods`.
+pub fn interface_requires(interface: &str, method: &str) -> bool {
+    rask_stdlib::operators::operator_interface_method(interface) == Some(method)
+        || builtin_interface_methods(interface).is_some_and(|ms| ms.iter().any(|m| m.name == method))
+}
+
 /// Interfaces the compiler provides rather than the program declaring them.
 ///
 /// A vtable can only be built for an interface whose method list is known, and both
@@ -1950,27 +1964,6 @@ pub fn implements_interface(
 ) -> bool {
     let mut checker = InterfaceChecker::new(types);
     checker.check_satisfies(ty, &TypeExpr::named(interface_name), Span::new(0, 0)).is_ok()
-}
-
-/// Get all interfaces that a type implements.
-pub fn implemented_interfaces(types: &TypeTable, ty: &Type) -> Vec<String> {
-    let mut result = Vec::new();
-    // Check against known interfaces
-    let known_interfaces = [
-        "Add", "Sub", "Mul", "Div", "Rem", "Neg",
-        "Equal", "Eq", "Comparable", "Ord",
-        "Clone", "Cloneable", "Hashable",
-        "Displayable", "Debug",
-    ];
-
-    for interface_name in known_interfaces {
-        let mut checker = InterfaceChecker::new(types);
-        if checker.check_satisfies(ty, &TypeExpr::named(interface_name), Span::new(0, 0)).is_ok() {
-            result.push(interface_name.to_string());
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]

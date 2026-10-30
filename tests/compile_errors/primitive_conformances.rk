@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a primitive filling a bound it doesn't conform to
+//
+// Floats have no bit operators and unsigned integers have no `Neg`. The
+// conformance check kept its own list of what each primitive answers, and it
+// said otherwise, so both calls below type-checked. `band(1.5, 2.5)` then died
+// in native codegen and `flip(5u32)` panicked at run time. The check reads
+// `primitive_conformances` now, the same table the method resolver uses.
+
+func band<T: BitAnd>(a: T, b: T) -> T {
+    return a & b
+}
+
+func flip<T: Neg>(x: T) -> T {
+    return -x
+}
+
+func main() {
+    // ERROR: f64 isn't BitAnd
+    let x = band(1.5, 2.5)
+    let small: u32 = 5
+    // ERROR: u32 isn't Neg
+    let y = flip(small)
+}

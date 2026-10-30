@@ -268,7 +268,7 @@ pub struct MirProgram {
 
 ```rust
 pub interface DataflowAnalysis {
-    type Domain: Clone + Eq;
+    type Domain: Cloneable + Equal;
     fn direction() -> Direction;        // Forward or Backward
     fn bottom() -> Self::Domain;        // lattice bottom
     fn join(a: &Self::Domain, b: &Self::Domain) -> Self::Domain;

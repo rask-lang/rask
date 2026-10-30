@@ -550,7 +550,7 @@ let value = infallible()!  // Cannot panic (compiler knows)
 | Enum in Vec | E5 | Allowed if non-linear |
 | Enum in Pool | E5 | Allowed; linear payloads require explicit `remove()` + consume |
 | `File?` in Pool | PM5 | Error: "Pool cannot contain linear payloads" |
-| Generic constraints | E4 | `enum Foo<T: Clone>` — constraint applies to ALL variants uniformly |
+| Generic constraints | E4 | `enum Foo<T: Cloneable>` — constraint applies to ALL variants uniformly |
 | Match on Copy type | E4 | Copies enum, mutations in arm affect copy not original |
 
 ## Examples

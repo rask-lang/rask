@@ -25,6 +25,6 @@ pub use checker::{
 };
 pub use interfaces::{
     InterfaceBound, InterfaceChecker, InterfaceError,
-    verify_instantiation, implements_interface, bound_implies_copy, implemented_interfaces, substitute_type,
+    verify_instantiation, implements_interface, bound_implies_copy, substitute_type,
     COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, object_compatible_methods, interface_vtable_methods,
 };

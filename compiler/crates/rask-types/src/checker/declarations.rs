@@ -1129,7 +1129,7 @@ impl TypeChecker {
     /// thing `@no_encode` says no to.
     fn core_interface(name: &str) -> Option<bool> {
         match name {
-            "Equal" | "Eq" | "Hashable" | "Comparable" | "Ord" | "Cloneable" | "Clone" => {
+            "Equal" | "Hashable" | "Comparable" | "Cloneable" => {
                 Some(false)
             }
             "Encode" | "Decode" => Some(true),
