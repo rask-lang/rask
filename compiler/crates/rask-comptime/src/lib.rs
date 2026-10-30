@@ -3067,6 +3067,14 @@ impl ComptimeInterpreter {
     fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
+            // `Level.Low` parses as a name. It was taken as a binding, so the
+            // first such arm matched every value. The checker has already
+            // held the pattern to the scrutinee's enum; the variant decides.
+            Pattern::Ident(name) if name.contains('.') => Ok(matches!(
+                value,
+                ComptimeValue::Enum { variant, data: None, .. }
+                    if name.rsplit('.').next() == Some(variant.as_str())
+            )),
             Pattern::Ident(_) => Ok(true), // Binds anything
             Pattern::Literal(lit) => {
                 let lit_val = self.eval_expr(lit)?;
@@ -3170,6 +3178,7 @@ impl ComptimeInterpreter {
     fn bind_pattern(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<()> {
         match pattern {
             Pattern::Wildcard => Ok(()),
+            Pattern::Ident(name) if name.contains('.') => Ok(()),
             Pattern::Ident(name) => {
                 self.env.define(name.clone(), value.clone());
                 Ok(())

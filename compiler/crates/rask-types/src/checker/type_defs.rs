@@ -1064,6 +1064,11 @@ fn rename_types(
 
         fn expr(&mut self, e: &mut Expr) {
             let span = e.span;
+            // A default argument the stdlib wrote, copied into the call: its
+            // `MemoryOrder` is the stdlib's, as the checker read it.
+            if crate::layout::is_stdlib_span(span) {
+                return;
+            }
             match &mut e.kind {
                 ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                     if !self.locals.contains(name.as_str()) {

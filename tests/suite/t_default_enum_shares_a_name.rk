@@ -3,10 +3,11 @@
 // A default argument naming an enum, in a program with its own enum of the
 // same name.
 //
-// A default is a constant, folded at each call. The fold used to find
-// `MemoryOrder.SeqCst` by looking `MemoryOrder` up by name, so the program's
-// `MemoryOrder` below hid the stdlib's and `a.load()` had no `SeqCst` to read.
-// It reads the enum the checker typed the access as now.
+// A default is copied into each call, and it was read there as the program's
+// code: the checker typed `MemoryOrder.SeqCst` against the program's enum,
+// which has no `SeqCst`, and the rename that gives a shadowing program type
+// its own symbol renamed the copy too (#1690). Code the stdlib wrote reads
+// the stdlib's names wherever it lands now.
 
 import sync.Atomic
 

@@ -526,6 +526,16 @@ impl TypeChecker {
     /// with no recorded type, so `v(2)` lowered as a call to a *function named
     /// `v`* and lowering gave up on the return type (#1244).
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
+        // Code the stdlib wrote reads names the way the stdlib does, wherever
+        // it ends up: a default argument is copied into the call, and
+        // `MemoryOrder.SeqCst` there means the stdlib's enum even in a program
+        // that declares its own `MemoryOrder`.
+        if !self.types.stdlib_mode && crate::layout::is_stdlib_span(expr.span) {
+            self.types.stdlib_mode = true;
+            let ty = self.infer_expr(expr);
+            self.types.stdlib_mode = false;
+            return ty;
+        }
         let ty = self.infer_expr_kind(expr);
         self.node_types.insert(expr.id, ty.clone());
         self.note_node_origin(expr);
