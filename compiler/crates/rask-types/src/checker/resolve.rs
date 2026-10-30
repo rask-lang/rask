@@ -1384,7 +1384,7 @@ impl TypeChecker {
             }
             // Vec (bare, for static constructors like Vec.new())
             Type::UnresolvedNamed(name) if name == "Vec" => {
-                self.resolve_vec_static_method(&method, &args, &ret, span)
+                self.resolve_vec_method(&[], &method, &args, &ret, span)
             }
             // Map<K, V>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Map" => {
@@ -1392,7 +1392,7 @@ impl TypeChecker {
             }
             // Map (bare, for static constructors like Map.new())
             Type::UnresolvedNamed(name) if name == "Map" => {
-                self.resolve_map_static_method(&method, &args, &ret, span)
+                self.resolve_map_method(&[], &method, &args, &ret, span)
             }
             // Random (no type params — static and instance methods)
             Type::UnresolvedNamed(name) if name == "Random" => {
@@ -2646,38 +2646,6 @@ impl TypeChecker {
             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
-    /// Resolve static methods on bare Vec (e.g. Vec.new()).
-    pub(super) fn resolve_vec_static_method(
-        &mut self,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            "new" if args.is_empty() => {
-                let fresh = self.ctx.fresh_var();
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            _ => {
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(self.ctx.fresh_var()))],
-                };
-                Err(TypeError::NoSuchMethod {
-                    ty: vec_ty,
-                    method: method.to_string(),
-                    span,
-                })
-            }
-        }
-    }
-
-    /// Resolve instance methods on Vec<T>.
     /// A method a stdlib generic type declares, checked against its
     /// declaration with the receiver's type arguments bound positionally.
     /// `None` when the type declares no such method.
@@ -2748,45 +2716,7 @@ impl TypeChecker {
             };
             return self.resolve_method(sequence, method.to_string(), args.to_vec(), ret.clone(), span, None);
         }
-        self.resolve_vec_static_method(method, args, ret, span)
-    }
-
-    /// Resolve static methods on bare Map (e.g. Map.new()).
-    pub(super) fn resolve_map_static_method(
-        &mut self,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            "new" if args.is_empty() => {
-                let fresh_k = self.ctx.fresh_var();
-                let fresh_v = self.ctx.fresh_var();
-                let map_ty = Type::UnresolvedGeneric {
-                    name: "Map".to_string(),
-                    args: vec![
-                        GenericArg::Type(Box::new(fresh_k)),
-                        GenericArg::Type(Box::new(fresh_v)),
-                    ],
-                };
-                self.unify(ret, &map_ty, span)
-            }
-            _ => {
-                let map_ty = Type::UnresolvedGeneric {
-                    name: "Map".to_string(),
-                    args: vec![
-                        GenericArg::Type(Box::new(self.ctx.fresh_var())),
-                        GenericArg::Type(Box::new(self.ctx.fresh_var())),
-                    ],
-                };
-                Err(TypeError::NoSuchMethod {
-                    ty: map_ty,
-                    method: method.to_string(),
-                    span,
-                })
-            }
-        }
+        Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span })
     }
 
     /// Check one argument against the type the receiver's type arguments say it
@@ -2826,7 +2756,7 @@ impl TypeChecker {
             ],
         };
         self.resolve_declared_stdlib_method("Map", &self_ty, &[key, value], method, args, ret, span)
-            .unwrap_or_else(|| self.resolve_map_static_method(method, args, ret, span))
+            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
     /// Resolve methods on Rng (both static and instance — no type params).
@@ -2845,14 +2775,8 @@ impl TypeChecker {
         // Strip generic params from name: "Vec<T>" → "Vec"
         let base_name = type_name;
         match base_name {
-            "Vec" if type_args.is_empty() => {
-                Some(self.resolve_vec_static_method(method, args, ret, span))
-            }
             "Vec" => {
                 Some(self.resolve_vec_method(type_args, method, args, ret, span))
-            }
-            "Map" if type_args.is_empty() => {
-                Some(self.resolve_map_static_method(method, args, ret, span))
             }
             "Map" => {
                 Some(self.resolve_map_method(type_args, method, args, ret, span))
