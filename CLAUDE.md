@@ -274,9 +274,9 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | AST node types | `rask-ast/src/{decl,expr,stmt}.rs` |
 | Operator desugaring | `rask-desugar/src/lib.rs` |
 | Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
-| Type error / inference | `rask-types/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
-| Interface / generics | `rask-types/src/checker/{generics,resolve}.rs` |
-| Borrow checking | `rask-types/src/checker/borrow.rs`, `rask-ownership/` |
+| Type error / inference | `rask-check/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
+| Interface / generics | `rask-check/src/checker/{generics,resolve}.rs` |
+| Borrow checking | `rask-check/src/checker/borrow.rs`, `rask-ownership/` |
 | Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
 | MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
 | MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |

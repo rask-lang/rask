@@ -178,7 +178,7 @@ dependencies, detects cycles, and tracks per-package metadata.
 
 Determines the type of every expression and verifies type correctness.
 
-**Files:** `rask-types/src/checker/` (16 files). See [Type System](02-types.md)
+**Files:** `rask-check/src/checker/` (16 files). See [Type System](02-types.md)
 for the deep dive.
 
 **Output:** `TypedProgram` containing:

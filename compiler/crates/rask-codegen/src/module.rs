@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
-use rask_types::layout::{EnumLayout, StructLayout};
+use rask_check::layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};

@@ -46,7 +46,7 @@ pub use rask_effects::{EffectMap, EffectWarning};
 pub use rask_mir::{ComptimeGlobalMeta, Folded};
 pub use rask_mono::MonoProgram;
 pub use rask_resolve::{PackageId, PackageRegistry};
-pub use rask_types::TypedProgram;
+pub use rask_check::TypedProgram;
 
 // ============================================================================
 // Core types
@@ -301,7 +301,7 @@ fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOu
 /// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
 ///
 /// Re-exported so callers that render diagnostics don't each need rask-mono.
-pub use rask_types::layout::is_stdlib_span;
+pub use rask_check::layout::is_stdlib_span;
 
 /// The declarations the interpreter runs: the program's, plus the stdlib modules
 /// that are written in Rask.
@@ -494,7 +494,7 @@ pub fn check_loaded(
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -592,7 +592,7 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
 
 fn comptime_diagnostics_for(
     decls: &[Decl],
-    typed: &rask_types::TypedProgram,
+    typed: &rask_check::TypedProgram,
     cfg: &CfgConfig,
 ) -> Vec<Diagnostic> {
     // T11 tests need neither typecheck output nor monomorphization — the AST
@@ -866,7 +866,7 @@ fn check_package_scoped(
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut pkg_ctx.all_decls,
             &stdlib_decls,
@@ -1344,14 +1344,14 @@ fn visible_packages(
 fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
     let user_error = diags.iter().any(|d| {
         matches!(d.severity, Severity::Error)
-            && d.primary_span().is_some_and(|s| !rask_types::layout::is_stdlib_span(s))
+            && d.primary_span().is_some_and(|s| !rask_check::layout::is_stdlib_span(s))
     });
     if !user_error {
         return;
     }
     diags.retain(|d| {
         !matches!(d.severity, Severity::Error)
-            || d.primary_span().is_none_or(|s| !rask_types::layout::is_stdlib_span(s))
+            || d.primary_span().is_none_or(|s| !rask_check::layout::is_stdlib_span(s))
     });
 }
 

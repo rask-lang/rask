@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use rask_mir::FieldAccess;
 use rask_mir::{BinOp, BlockId, ContainerKind, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
-use rask_types::layout::{StructLayout, EnumLayout};
+use rask_check::layout::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::dispatch::{ArgAdapt, RetAdapt};
 use crate::slot::LocalSlot;
@@ -2305,7 +2305,7 @@ impl<'a> FunctionBuilder<'a> {
                         if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
-                            let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
+                            let (tag_size, _) = rask_check::layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
                                 _ => types::I8,
@@ -3873,7 +3873,7 @@ impl<'a> FunctionBuilder<'a> {
         let (offset, ty) = match ctx.enum_layouts.get(idx) {
             Some(layout) => {
                 let (tag_size, _) =
-                    rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
+                    rask_check::layout::type_size_align(&layout.tag_ty, &Default::default());
                 let ty = match tag_size {
                     8 => types::I64,
                     4 => types::I32,
@@ -7386,7 +7386,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         let Some(layout) = ctx.enum_layouts.get(id.id as usize) else { return Ok(()) };
         let tag_offset = layout.tag_offset as i32;
-        let (tag_size, _) = rask_types::layout::type_size_align(&layout.tag_ty, &Default::default());
+        let (tag_size, _) = rask_check::layout::type_size_align(&layout.tag_ty, &Default::default());
         let tag_ty = match tag_size {
             2 => types::I16,
             4 => types::I32,

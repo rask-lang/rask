@@ -1355,12 +1355,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-check"
+version = "0.6.0"
+dependencies = [
+ "rask-ast",
+ "rask-diagnostics",
+ "rask-parser",
+ "rask-resolve",
+ "rask-stdlib",
+ "rask-types",
+ "thiserror",
+]
+
+[[package]]
 name = "rask-cli"
 version = "0.6.0"
 dependencies = [
  "colored",
  "rask-ast",
  "rask-c-parse",
+ "rask-check",
  "rask-codegen",
  "rask-compiler",
  "rask-comptime",
@@ -1394,6 +1408,7 @@ dependencies = [
  "gimli",
  "object",
  "rask-ast",
+ "rask-check",
  "rask-mir",
  "rask-mono",
  "rask-stdlib",
@@ -1406,6 +1421,7 @@ name = "rask-compiler"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-codegen",
  "rask-comptime",
  "rask-desugar",
@@ -1484,6 +1500,7 @@ dependencies = [
  "indexmap",
  "libc",
  "rask-ast",
+ "rask-check",
  "rask-comptime",
  "rask-desugar",
  "rask-diagnostics",
@@ -1524,6 +1541,7 @@ name = "rask-lsp"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-compiler",
  "rask-comptime",
  "rask-desugar",
@@ -1563,6 +1581,7 @@ name = "rask-mir"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-diagnostics",
  "rask-mono",
  "rask-parser",
@@ -1574,8 +1593,8 @@ dependencies = [
 name = "rask-miri"
 version = "0.6.0"
 dependencies = [
+ "rask-check",
  "rask-mir",
- "rask-types",
 ]
 
 [[package]]
@@ -1583,6 +1602,7 @@ name = "rask-mono"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
@@ -1594,6 +1614,7 @@ name = "rask-ownership"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-diagnostics",
  "rask-stdlib",
  "rask-types",
@@ -1645,6 +1666,7 @@ name = "rask-spec-test"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-desugar",
  "rask-interp",
  "rask-lexer",
@@ -1652,7 +1674,6 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
- "rask-types",
 ]
 
 [[package]]
@@ -1670,11 +1691,6 @@ name = "rask-types"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-diagnostics",
- "rask-parser",
- "rask-resolve",
- "rask-stdlib",
- "thiserror",
 ]
 
 [[package]]

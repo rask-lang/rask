@@ -1397,9 +1397,9 @@ impl<'a> MirLowerer<'a> {
         // was only ever asking under the written name, so every generic struct
         // answered "not a struct type" (#968).
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_types::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_check::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let found = instance.as_deref().and_then(|k| self.ctx.find_struct(k));
 
@@ -1436,7 +1436,7 @@ impl<'a> MirLowerer<'a> {
         // alignment (S1/L4), and reflection reports what the author wrote —
         // which is also what a serializer's key order follows. The two only
         // agreed while every field had the same alignment (#1083).
-        let mut ordered: Vec<&rask_types::layout::FieldLayout> = layout.fields.iter().collect();
+        let mut ordered: Vec<&rask_check::layout::FieldLayout> = layout.fields.iter().collect();
         ordered.sort_by_key(|fl| fl.decl_index);
 
         Ok(ordered

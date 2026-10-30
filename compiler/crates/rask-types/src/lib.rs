@@ -1,30 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Type system and type checker for the Rask language.
+//! The type data every stage after the checker reads: `Type`, and what a
+//! type declaration says once its fields and signatures are `Type`s.
 //!
-//! Performs type inference and checking on the AST.
+//! The checker (`rask-check`) produces these; layout, monomorphization, MIR,
+//! codegen and the interpreter read them. Nothing here checks anything.
 
 mod types;
-mod checker;
-mod interfaces;
-mod copy_rule;
+mod defs;
 pub mod abi;
-pub mod reflect;
-pub mod layout;
-mod diagnostic;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
-pub use copy_rule::CopyVerdict;
-pub use checker::{
-    typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,
-    ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy, InferenceContext, TypeConstraint, MethodSig, MethodOrigin, SelfParam,
-    ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
-    OperatorTarget, operator_interface, primitive_spelling, TaskBound,
-    header_type_params, signature_type_param_names, struct_type_param_names,
-    bind_header_pattern, bind_header_patterns,
-    enum_type_param_names, UnsafeCategory, binary_field_runtime_type, is_type_param_name,
-};
-pub use interfaces::{
-    InterfaceBound, InterfaceChecker, InterfaceError,
-    verify_instantiation, implements_interface, bound_implies_copy, substitute_type,
-    COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, object_compatible_methods, interface_vtable_methods,
+pub use defs::{
+    conformance_symbol, ErrorWrap, InterfaceAssocType, InterfaceTypeParam, MethodOrigin, MethodSig,
+    SelfParam, TypeBinding, TypeDef,
 };

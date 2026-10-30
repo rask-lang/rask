@@ -176,7 +176,7 @@ fn checker_method_arms(crates: &Path) -> Vec<String> {
     ];
     let mut out = Vec::new();
     let mut current_fn = String::new();
-    for (rel, line, code) in source_lines(crates, &["rask-types/src/checker"], &[]) {
+    for (rel, line, code) in source_lines(crates, &["rask-check/src/checker"], &[]) {
         let head = code.trim_start();
         if let Some(rest) = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "].iter().find_map(|p| head.strip_prefix(p)) {
             current_fn = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
@@ -206,7 +206,7 @@ fn checker_method_arms(crates: &Path) -> Vec<String> {
 }
 
 fn any_wildcards(crates: &Path) -> Vec<String> {
-    source_lines(crates, &["rask-types/src"], &[])
+    source_lines(crates, &["rask-check/src", "rask-types/src"], &[])
         .into_iter()
         .filter(|(_, _, code)| code.contains("\"_Any\""))
         .map(|(rel, line, code)| site(&rel, line, &code))
@@ -254,7 +254,7 @@ fn pass_entry_points(crates: &Path) -> Vec<String> {
         "rask-parser/src/lib.rs",
         "rask-desugar/src/lib.rs",
         "rask-resolve/src/lib.rs",
-        "rask-types/src/lib.rs",
+        "rask-check/src/lib.rs",
         "rask-ownership/src/lib.rs",
         "rask-effects/src/lib.rs",
         "rask-comptime/src/lib.rs",
@@ -304,7 +304,7 @@ fn interpreter_setups(crates: &Path) -> Vec<String> {
 }
 
 fn size_models(crates: &Path) -> Vec<String> {
-    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-types/src/copy_rule.rs"];
+    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-check/src/copy_rule.rs"];
     let names = ["fn size(", "fn align(", "fn slot_size(", "fn named_layout_size(", "fn struct_elem_size(", "fn value_size("];
     source_lines(crates, &dirs, &[])
         .into_iter()

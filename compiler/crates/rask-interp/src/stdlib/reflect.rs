@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
 use rask_ast::ty::TypeExpr;
-use rask_types::reflect;
+use rask_check::reflect;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{StructData, Value};
@@ -43,7 +43,7 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
         self.0.nominal_targets.get(name).map(|t| vec![t.clone()])
     }
 
-    fn type_table(&self) -> &rask_types::TypeTable {
+    fn type_table(&self) -> &rask_check::TypeTable {
         &self.0.types
     }
 
@@ -130,19 +130,19 @@ impl Interpreter {
         decl: &rask_ast::decl::StructDecl,
         ty: &TypeExpr,
         params: &[String],
-    ) -> Option<rask_types::layout::StructLayout> {
+    ) -> Option<rask_check::layout::StructLayout> {
         let args = ty.args();
         if args.len() != params.len() {
             return None;
         }
-        let type_args: Vec<rask_types::Type> = args.iter().map(rask_types::layout::field_type).collect();
+        let type_args: Vec<rask_types::Type> = args.iter().map(rask_check::layout::field_type).collect();
         // `compute_struct_layout` wants the declaration in its `Decl` wrapper,
         // which is why the list is kept: the span decides whether the type
         // counts as stdlib, and a synthesized one would answer that wrong.
         let owner = self.type_decls.iter().find(|d| {
             matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
         })?;
-        Some(rask_types::layout::compute_struct_layout(owner, &type_args, &self.layout_cache))
+        Some(rask_check::layout::compute_struct_layout(owner, &type_args, &self.layout_cache))
     }
 
     /// reflect.fields<T>() → []FieldInfo
@@ -252,8 +252,8 @@ impl Interpreter {
             kind: rask_ast::decl::DeclKind::Enum(decl.clone()),
             span: rask_ast::Span::new(0, 0),
         };
-        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
-        let layout = rask_types::layout::compute_enum_layout(&decl, &type_args, &self.layout_cache);
+        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
+        let layout = rask_check::layout::compute_enum_layout(&decl, &type_args, &self.layout_cache);
         let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }

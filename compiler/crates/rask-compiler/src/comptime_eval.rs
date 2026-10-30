@@ -20,7 +20,7 @@ use rask_comptime::{ComptimeError, ComptimeInterpreter, ComptimeValue, EnumRef};
 use rask_diagnostics::Diagnostic;
 use rask_mir::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt};
 use rask_mono::MonoProgram;
-use rask_types::TypedProgram;
+use rask_check::TypedProgram;
 
 use crate::comptime_aggregate::{encode, encode_list, encode_map, natural_type, NoBytes};
 use crate::{is_comptime_init, CfgConfig};

@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 rask-mir = { path = "../rask-mir" }
-rask-types = { path = "../rask-types" }
+rask-check = { path = "../rask-check" }

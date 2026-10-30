@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Tagged unions with positional or named payloads, inferred binding modes, exhaustive matching -->
 <!-- depends: types/structs.md -->
-<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-check/ -->
 
 # Enums
 

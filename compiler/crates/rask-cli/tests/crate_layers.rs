@@ -63,6 +63,19 @@ fn diagnostics_depends_only_on_the_ast() {
 }
 
 #[test]
+fn type_data_depends_only_on_the_ast() {
+    let g = graph();
+    let deps = &g["rask-types"];
+    let extra: Vec<_> = deps.iter().filter(|d| *d != "rask-ast").collect();
+    assert!(
+        extra.is_empty(),
+        "rask-types depends on {extra:?}. It holds the data the checker produces and \
+         every later stage reads; layout will read it too, and the checker reads \
+         layout, so it can't reach the checker or anything the checker needs"
+    );
+}
+
+#[test]
 fn the_native_pipeline_never_reaches_the_interpreter() {
     let g = graph();
     let mut found = Vec::new();

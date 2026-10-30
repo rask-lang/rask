@@ -17,7 +17,8 @@ use rask_ast::{
 };
 use rask_ast::NodeId;
 use rask_ast::ty::TypeExpr;
-use rask_types::{Callee, Type, TypeBinding, TypeDef, TypeId, TypedProgram};
+use rask_types::{Type, TypeBinding, TypeDef, TypeId};
+use rask_check::{Callee, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphization work item
@@ -40,7 +41,7 @@ pub const INSTANTIATION_LIMIT: usize = 64;
 ///
 /// Bindings carry the checker's types, ids and all; this is the one place they
 /// become names, because a symbol is text (#1393).
-pub fn mangle_name(base: &str, type_args: &[TypeBinding], types: Option<&rask_types::TypeTable>) -> String {
+pub fn mangle_name(base: &str, type_args: &[TypeBinding], types: Option<&rask_check::TypeTable>) -> String {
     if type_args.is_empty() {
         return base.to_string();
     }
@@ -142,11 +143,11 @@ pub struct Monomorphizer<'a> {
     /// the copies through this.
     pub node_origins: HashMap<NodeId, NodeId>,
     /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
-    pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    pub instantiated_call_targets: HashMap<NodeId, rask_check::Callee>,
     /// OR1: the same, for the operator calls a conformance answered. An
     /// instantiated body's nodes are new, and the receiver the checker recorded
     /// was still the type parameter.
-    pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
+    pub instantiated_operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
     /// ER31a error wraps for the copies, same idea. The wrapping variant names a
     /// concrete enum, so it carries over unchanged.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
@@ -368,8 +369,8 @@ impl<'a> Monomorphizer<'a> {
         let mut owner_params: HashMap<String, Vec<String>> = HashMap::new();
         for decl in decls {
             let (name, params) = match &decl.kind {
-                DeclKind::Struct(s) => (&s.name, rask_types::struct_type_param_names(s)),
-                DeclKind::Enum(e) => (&e.name, rask_types::enum_type_param_names(e)),
+                DeclKind::Struct(s) => (&s.name, rask_check::struct_type_param_names(s)),
+                DeclKind::Enum(e) => (&e.name, rask_check::enum_type_param_names(e)),
                 _ => continue,
             };
             if params.is_empty() {
@@ -517,10 +518,10 @@ impl<'a> Monomorphizer<'a> {
         // function nobody had emitted (#708). Method names only — the
         // signatures live in rask-types, and the concrete bodies are found by
         // bare name below, same as for a declared interface.
-        for name in rask_types::COMPILER_PROVIDED_TRAITS {
+        for name in rask_check::COMPILER_PROVIDED_TRAITS {
             interface_methods
                 .entry(name.to_string())
-                .or_insert_with(|| rask_types::builtin_interface_method_names(name));
+                .or_insert_with(|| rask_check::builtin_interface_method_names(name));
         }
 
         Self {
@@ -577,7 +578,7 @@ impl<'a> Monomorphizer<'a> {
         // One method list per interface declaration, keyed the way MIR and the
         // vtables name it. Read off the declarations by name, a program's
         // `interface Writer` and the stdlib's shared one entry (#1426).
-        mono.interface_methods = rask_types::interface_vtable_methods(&typed.types);
+        mono.interface_methods = rask_check::interface_vtable_methods(&typed.types);
         // Instantiated copies number their nodes from here up. Anything at or
         // below this is a real node of the original program, and a copy reusing
         // one would answer type and dispatch queries with that node's record.
@@ -639,10 +640,10 @@ impl<'a> Monomorphizer<'a> {
             }
             if let Some(callee) = typed.call_targets.get(&old_id) {
                 let carried = match callee {
-                    rask_types::Callee::Free(sym) => Some(rask_types::Callee::Free(*sym)),
-                    rask_types::Callee::Method { recv, method, package } => {
+                    rask_check::Callee::Free(sym) => Some(rask_check::Callee::Free(*sym)),
+                    rask_check::Callee::Method { recv, method, package } => {
                         Self::concretize(recv, type_args, &bindings).map(|recv| {
-                            rask_types::Callee::Method {
+                            rask_check::Callee::Method {
                                 recv,
                                 method: method.clone(),
                                 package: package.clone(),
@@ -676,18 +677,18 @@ impl<'a> Monomorphizer<'a> {
                     let rhs_is_primitive = match target.rhs.as_deref() {
                         None => true,
                         Some(r) => match bindings.get(r) {
-                            Some(t) => rask_types::primitive_spelling(t).is_some(),
+                            Some(t) => rask_check::primitive_spelling(t).is_some(),
                             None => rask_ast::primitives::is_builtin_value_type(r),
                         },
                     };
                     let language_pair =
-                        rask_types::primitive_spelling(&recv).is_some() && rhs_is_primitive;
+                        rask_check::primitive_spelling(&recv).is_some() && rhs_is_primitive;
                     // The call target the checker recorded for the same node
                     // names the method the same way, `mul$T`, and that is what
                     // reachability enqueues. Left as it was, the operator's
                     // dispatch said `Meters_mul$Meters` while nothing generated
                     // it, and `i32_mul$i32` for a pair that has no body (#1472).
-                    if let Some(rask_types::Callee::Method { method: m, .. }) =
+                    if let Some(rask_check::Callee::Method { method: m, .. }) =
                         self.instantiated_call_targets.get_mut(&new_id)
                     {
                         *m = if language_pair { target.operator.clone() } else { method.clone() };
@@ -695,7 +696,7 @@ impl<'a> Monomorphizer<'a> {
                     if !language_pair {
                         self.instantiated_operator_targets.insert(
                             new_id,
-                            rask_types::OperatorTarget {
+                            rask_check::OperatorTarget {
                                 recv,
                                 method,
                                 operator: target.operator.clone(),
@@ -779,7 +780,7 @@ impl<'a> Monomorphizer<'a> {
     /// The name a concrete type is spelled by, for a conformance method's
     /// filed name. `None` for anything a conformance header can't name.
     fn type_spelling(ty: &Type) -> Option<String> {
-        rask_types::primitive_spelling(ty).map(str::to_string).or_else(|| match ty {
+        rask_check::primitive_spelling(ty).map(str::to_string).or_else(|| match ty {
             Type::UnresolvedNamed(name) => Some(name.clone()),
             Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
             _ => None,
@@ -1008,7 +1009,7 @@ impl<'a> Monomorphizer<'a> {
             // (`BufferedReader$Buffer`) and the body after the method
             // (`BufferedReader_read$Buffer`); codegen joins the two here.
             let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
-            if let Some(layout) = rask_types::layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+            if let Some(layout) = rask_check::layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
                 let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
                 self.vtable_symbols.insert((layout, method.clone()), symbol);
             }
@@ -1412,7 +1413,7 @@ impl<'a> Monomorphizer<'a> {
     /// instance of nothing.
     fn receiver_bindings(&self, call_id: NodeId, qualified: &str) -> Vec<TypeBinding> {
         match self.call_target(call_id) {
-            Some(rask_types::Callee::Method { recv, .. }) => self.bindings_for(recv, qualified),
+            Some(rask_check::Callee::Method { recv, .. }) => self.bindings_for(recv, qualified),
             _ => Vec::new(),
         }
     }
@@ -1437,7 +1438,7 @@ impl<'a> Monomorphizer<'a> {
         }
 
         let templates = owner.template.args();
-        let Some(bound) = rask_types::bind_header_patterns(&typed.types, &templates, &actuals) else {
+        let Some(bound) = rask_check::bind_header_patterns(&typed.types, &templates, &actuals) else {
             return Vec::new();
         };
         if bound.len() != owner.params.len() {
@@ -1456,7 +1457,7 @@ impl<'a> Monomorphizer<'a> {
     /// `<type#84><i32>`, neither of which names anything downstream. `None` when
     /// some part of the type has no name at all — an inference variable, a type
     /// parameter still standing for itself.
-    pub fn nameable_type(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
+    pub fn nameable_type(ty: &Type, types: &rask_check::TypeTable) -> Option<Type> {
         let bare = |n: &str| n.trim().to_string();
         match ty {
             Type::Named(id) => {
@@ -1517,7 +1518,7 @@ impl<'a> Monomorphizer<'a> {
     fn nameable_generic(
         head: &str,
         args: &[rask_types::GenericArg],
-        types: &rask_types::TypeTable,
+        types: &rask_check::TypeTable,
     ) -> Option<Type> {
         if head.is_empty() || args.is_empty() {
             return None;
@@ -1562,7 +1563,7 @@ impl<'a> Monomorphizer<'a> {
             // method table for a body settles all of it at once — including an
             // error type whose `message()` is derived (ER6), since the derive
             // runs in desugaring and is an ordinary method by now.
-            let Some(name) = rask_types::receiver_name(member, &typed.types) else {
+            let Some(name) = rask_check::receiver_name(member, &typed.types) else {
                 return Vec::new();
             };
             let mangled = format!("{}_message", name);
@@ -1601,7 +1602,7 @@ impl<'a> Monomorphizer<'a> {
             rask_types::GenericArg::Type(inner) => inner,
             _ => return None,
         };
-        let name = rask_types::receiver_name(elem, &typed.types)?;
+        let name = rask_check::receiver_name(elem, &typed.types)?;
         let mangled = format!("{}_compare", name);
         self.method_table.contains_key(&mangled).then_some(mangled)
     }
@@ -1646,7 +1647,7 @@ impl<'a> Monomorphizer<'a> {
                     typed.types.get(*id),
                     Some(rask_types::TypeDef::Struct { .. } | rask_types::TypeDef::Enum { .. })
                 ) => {
-                    let qualified = format!("{}_{method}", rask_types::receiver_name(key, &typed.types)?);
+                    let qualified = format!("{}_{method}", rask_check::receiver_name(key, &typed.types)?);
                     reach.method_table.contains_key(&qualified).then(|| {
                         reach.enqueue(qualified.clone(), Vec::new());
                         qualified
@@ -1756,7 +1757,7 @@ impl<'a> Monomorphizer<'a> {
         let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
         match ty {
             Some(rask_types::Type::Result { ok, .. }) => {
-                rask_types::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
+                rask_check::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
             }
             _ => false,
         }
@@ -1768,7 +1769,7 @@ impl<'a> Monomorphizer<'a> {
             .instantiated_node_types
             .get(&id)
             .or_else(|| typed.node_types.get(&id))?;
-        rask_types::receiver_name(ty, &typed.types)
+        rask_check::receiver_name(ty, &typed.types)
     }
 
     /// Add a (name, type_args) pair to queue if not already seen
@@ -1777,7 +1778,7 @@ impl<'a> Monomorphizer<'a> {
     /// body's record still names the type parameter. Reading only the latter
     /// is what widened `self[i].hash()` inside `Vec_hash$i64` to every `hash`
     /// there is, the generic `Vec_hash` among them, which then had no `T`.
-    fn call_target(&self, id: NodeId) -> Option<&rask_types::Callee> {
+    fn call_target(&self, id: NodeId) -> Option<&rask_check::Callee> {
         self.instantiated_call_targets
             .get(&id)
             .or_else(|| self.typed?.call_targets.get(&id))
@@ -1789,10 +1790,10 @@ impl<'a> Monomorphizer<'a> {
     fn module_function_body(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         match self.call_target(id)? {
-            rask_types::Callee::Method { recv, method, .. } => {
-                Some(format!("{}_{}", rask_types::receiver_name(recv, &typed.types)?, method))
+            rask_check::Callee::Method { recv, method, .. } => {
+                Some(format!("{}_{}", rask_check::receiver_name(recv, &typed.types)?, method))
             }
-            rask_types::Callee::Free(_) => None,
+            rask_check::Callee::Free(_) => None,
         }
     }
 
@@ -2141,7 +2142,7 @@ impl<'a> Monomorphizer<'a> {
                         .and_then(|typed| self.call_target(expr.id).map(|c| (c, typed)))
                     {
                         Some((Callee::Method { recv, method: m, package }, typed)) => {
-                            match rask_types::receiver_name(recv, &typed.types) {
+                            match rask_check::receiver_name(recv, &typed.types) {
                                 Some(name) => {
                                     // `{x}` reaches `to_string` or, for an error
                                     // type, `message` (std.fmt/D5) — same
@@ -2214,7 +2215,7 @@ impl<'a> Monomorphizer<'a> {
                                         .and_then(|t| self.call_target(expr.id).map(|c| (c, t)))
                                         .and_then(|(c, t)| match c {
                                             Callee::Method { recv, .. } => {
-                                                rask_types::receiver_name(recv, &t.types)
+                                                rask_check::receiver_name(recv, &t.types)
                                             }
                                             _ => None,
                                         })

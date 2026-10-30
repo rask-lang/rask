@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Compiler warnings for suspicious-but-valid code -->
 <!-- depends: tooling/lint.md, structure/build.md -->
-<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-diagnostics/ -->
+<!-- implemented-by: compiler/crates/rask-check/, compiler/crates/rask-diagnostics/ -->
 
 # Compiler Warnings
 
@@ -46,7 +46,7 @@ func process(data: Vec<u8>) -> i32 {
 **W11 (mod_for_index) scope:** Only where the remainder *is* the index of a `[…]` access — a `%` whose result is a value is usually exactly what was meant. Silent when the left operand can't be negative: a non-negative literal, a `.len()`/`.count()` call, or a sum/product of those. A suggestion, so the fix is printed as code: `ring[(i - 1).mod(n)]`.
 
 **W9 (torn_lock_update) implementation:** checked at the `with` binding in
-`rask-types` rather than as a syntactic pass, because it must not fire under
+`rask-check` rather than as a syntactic pass, because it must not fire under
 `Local` — nothing there can observe a torn update and `staged()` is refused
 outright (`conc.sync/ST3a`), so the suggested fix would be a compile error.
 Suppression is `@allow(torn_lock_update)` on the enclosing *function*; a `test`

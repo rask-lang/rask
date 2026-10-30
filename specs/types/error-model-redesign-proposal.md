@@ -466,7 +466,7 @@ After reading the affected specs, here are the concrete changes each needs:
 
 **Stdlib:** `stdlib/result.rk` and `stdlib/option.rk` likely deleted (combinators move to free functions or compiler builtins). Every stdlib file using `Result`/`Option` migrates.
 
-**Compiler:** `rask-parser` (universal auto-wrap, type patterns in match), `rask-types` (disjointness check at formation and instantiation), `rask-resolve` (operator forms), `rask-mir` (operator lowering), `rask-diagnostics` (migration errors for `Some(v)`, `Ok(v)`, `match on Option`).
+**Compiler:** `rask-parser` (universal auto-wrap, type patterns in match), `rask-check` (disjointness check at formation and instantiation), `rask-resolve` (operator forms), `rask-mir` (operator lowering), `rask-diagnostics` (migration errors for `Some(v)`, `Ok(v)`, `match on Option`).
 
 **Examples and tests:** all `.rk` files using `Result`/`Option`/`Some`/`None`/`Ok`/`Err`.
 

@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Atomic<T> for any padding-free Copy payload that fits an atomic word; one spelling, no named variants; sequentially consistent unless an order is asked for; no unsafe needed -->
 <!-- depends: memory/unsafe.md, concurrency/sync.md -->
-<!-- implemented-by: compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-check/ -->
 
 # Atomics
 

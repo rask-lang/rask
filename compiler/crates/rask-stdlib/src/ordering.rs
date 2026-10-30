@@ -10,7 +10,7 @@
 //!
 //! ## It still gets a layout
 //!
-//! `rask_types::layout::ordering_layout` synthesizes one from that list, so `Ordering`
+//! `rask_check::layout::ordering_layout` synthesizes one from that list, so `Ordering`
 //! lays out like any other fieldless enum: a `u8` tag at offset 0.
 //! `compare` stores its result into a real slot rather than handing back the
 //! bare tag, which is what makes `Ordering implements Displayable` work on

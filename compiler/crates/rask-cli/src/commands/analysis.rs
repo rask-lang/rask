@@ -2,7 +2,7 @@
 //! Analysis commands: typecheck, ownership, comptime, unsafe report.
 
 use colored::Colorize;
-use rask_types::UnsafeCategory;
+use rask_check::UnsafeCategory;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::process;

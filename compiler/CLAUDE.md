@@ -50,7 +50,13 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/error.rs` — resolution errors
 - Package management (less commonly edited): `package.rs`, `registry.rs`, `lockfile.rs`, `semver.rs`
 
-### rask-types — Type checker and inference (largest crate)
+### rask-types — The type data every later stage reads
+- `src/types.rs` — the `Type` enum itself, `TypeId`, `GenericArg`
+- `src/defs.rs` — `TypeDef`, `MethodSig`: a declaration once its fields and signatures are `Type`s
+- `src/abi.rs` — wrapper layouts and tag offsets the backends share
+- Depends on `rask-ast` alone. The checker produces this data; nothing here checks anything
+
+### rask-check — Type checker and inference (largest crate)
 - `src/checker/check_expr.rs` — type checking expressions (biggest file)
 - `src/checker/check_stmt.rs` — type checking statements
 - `src/checker/check_fn.rs` — function signature checking
@@ -61,9 +67,8 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/checker/borrow.rs` — borrow scope tracking during type check
 - `src/checker/arg_labels.rs` — named-argument labels checked against the resolved callee
 - `src/checker/errors.rs` — TypeError definitions
-- `src/checker/type_defs.rs` — TypeDef, MethodSig, TypedProgram
+- `src/checker/type_defs.rs` — TypedProgram, Callee
 - `src/checker/builtins.rs` — built-in type registrations
-- `src/types.rs` — the `Type` enum itself
 - `src/layout.rs` — memory layouts (size, alignment, field offsets): the one size model. Monomorphization lays out with it, and `TypeTable::size_align` answers the copy rule, `reflect.size_of` and `transmute` from it
 - Inference bug: start in `unify.rs`, trace through `inference.rs`
 - New built-in type: register in `builtins.rs`, define methods in `rask-stdlib`
