@@ -145,9 +145,10 @@ arena's life to one block: enter, allocate, free the whole thing. Raido's
 `frame_begin()`/`frame_end()` keeps the arena and everything below the marker alive and
 rewinds only what the frame added — so a game loop acquires backing memory once and rewinds
 per frame, rather than acquiring and releasing per frame. That was the gap, and it's now
-`mem.alloc/AL34`–`AL35`: a `FrameArena` that only hands out `using frames.frame() { }` blocks,
-each rewound to empty on exit. Raido's keep-what's-below-the-mark doesn't carry over: a value
-born below the mark can still grow above it in Rask, and the rewind would free that.
+`mem.alloc/AL34`, `AL36`, `AL37`: `using arena.frame() { }` rewinds to a mark on any `Arena`.
+Raido's keep-what's-below-the-mark carries over with one addition: a value born below the mark
+can't grow while the frame is open, since growth lands above the mark. The compiler infers which
+calls grow which arguments, so the check reaches through callees.
 
 Two details Raido states better than C3, worth carrying into that rule: **fixed size, no
 auto-grow** (its reason — "hides allocation cost" — is principle 1 restated; a growing arena

@@ -79,28 +79,33 @@ AL17 and AL18 are deleted. An inline closure runs under whatever is current when
 
 ## Frames
 
-A game loop wants one block of memory for the whole run and a clean slate every frame. `Arena.scoped` gets the clean slate by acquiring and freeing the backing memory each time. A `FrameArena` keeps the memory and rewinds it at the end of each frame.
+A game loop wants one block of memory for the whole run and a clean slate every frame. `Arena.scoped` gets the clean slate by acquiring and freeing the backing memory each time. A frame keeps the memory: it marks where the arena's bump pointer is when the frame opens and moves it back there when the frame closes.
 
 | Rule | Description |
 |------|-------------|
-| **AL34: A frame is a `using` that rewinds** | `using frames.frame() { body }` installs `frames` as the current allocator and rewinds it to empty on exit, normal, `return`, `try` and unwind alike. `frame()` is only valid as a `using` operand |
-| **AL35: A frame arena holds nothing but the current frame** | `FrameArena` doesn't implement `Allocator`, so it can't be installed with a plain `using` or named in `new_in`/`clone_in`; `frame()` is the only way in. `frame()` borrows it exclusively for the block, like `with` (`mem.borrowing`), so frames don't nest. Everything in the arena was born in the open frame, AL13 keeps it there, and the rewind frees exactly that |
+| **AL34: A frame is a `using` that rewinds** | `using arena.frame() { body }` marks the arena's position, installs the arena as the current allocator, and moves the position back to the mark on exit, normal, `return`, `try` and unwind alike. Everything allocated during the body is gone; everything allocated before it stays. Values born in the body are frame-born, and AL13 keeps them inside like any block |
+| **AL35** | Deleted. It made frames a separate `FrameArena` type that held nothing but the current frame. AL36 and AL37 get the same safety on an ordinary `Arena` |
+| **AL36: Older values don't grow during a frame** | `arena.frame()` borrows `arena` for the block, like `with` (`mem.borrowing`), so inside it the arena can't be named: no `new_in(arena)`, no passing it on, no nested `arena.frame()`. A value born under `arena` before the frame opened may be read and changed in place inside the frame, but not grown: no push, insert, extend, reserve or longer string, directly or through a call that grows it (AL37). Growing takes room above the mark, and the rewind would free it under the value. Compile error (E0422) at the push, or at the call naming the line in the callee that grows. Values from any other allocator grow as usual |
+| **AL37: Growth is inferred** | For every function the compiler computes, in the same pass as AL27 and AL33, which parameters it may grow: any operation that allocates through the parameter's remembered allocator (AL22), directly or by passing it to a callee that does. Indirect calls take the union over targets (AL30). Nothing is declared; it shows as a ghost on the signature next to the stash set |
 
 <!-- test: skip -->
 ```rask
 func run(mut world: World) {
-    let frames = FrameArena.new(4.megabytes())    // backing acquired once
-    loop {
-        using frames.frame() {
-            let visible = cull(world.entities)    // frame scratch
-            draw(visible)
-            world.tick()                          // world's own vecs grow in Global (AL22)
-        }                                         // rewound, ready for the next frame
+    let arena = Arena.new(4.megabytes())          // backing acquired once
+    using arena {
+        let level = load_level()                  // stays for the whole run
+        loop {
+            using arena.frame() {
+                level.player.x += 1               // fine: changed in place
+                let hits = collide(level)         // fine: frame scratch
+                draw(hits)
+                world.tick()                      // fine: world grows in Global
+            }                                     // rewound to the mark, level untouched
+            level.spawn_wave()                    // fine: no frame open, level may grow
+        }
     }
 }
 ```
-
-Data that has to outlive a frame, like a loaded level, lives in `Global` or in an ordinary `Arena` around the loop. It can't share the frame arena, and AL35 is why.
 
 ## Racks and Heap
 
@@ -124,8 +129,7 @@ Allocation already costs a `malloc`; the indirect call next to it is noise. The 
 | Allocator | Description |
 |-----------|-------------|
 | `Global` | The process allocator. `malloc`/`free` unless the program replaces it before its first allocation (`rask_allocator_set` in the runtime), which is how a build with no OS gets a heap over a static buffer ([bare-metal.md](../analysis/bare-metal.md)). Default |
-| `Arena` | Bump allocator. Bulk free on drop, `dealloc` is a no-op. Fixed size, exhaustion is `AllocError`, never a hidden `malloc` |
-| `FrameArena` | Bump memory that only hands out frames (AL34). Fixed size, rewound to empty after each frame |
+| `Arena` | Bump allocator. Bulk free on drop, `dealloc` is a no-op. Fixed size, exhaustion is `AllocError`, never a hidden `malloc`. `arena.frame()` rewinds to a mark (AL34) |
 | `FixedBuffer` | Allocates from a `[u8; N]` the caller owns. No system calls. Embedded-friendly |
 
 <!-- test: skip -->
@@ -188,8 +192,11 @@ FIX: Hoist the call out of the block, or run it under Global:
 | `try_push` on a `FixedBuffer`-backed vec | AL3 | `GrowError` when the buffer is full |
 | Panic inside the block | AL12 | Unwind restores the previous allocator and frees the arena after `ensure` blocks ran |
 | Frame-born value assigned to a binding outside the frame | AL13 | Compile error, same as any nested block |
-| `Vec.new_in(frames)` or `using frames { }` | AL35 | Compile error: a `FrameArena` isn't an `Allocator` |
-| `frames.frame()` inside another `frames.frame()` | AL35 | Compile error: `frames` is already borrowed by the outer frame |
+| `Vec.new_in(arena)` inside `arena.frame()` | AL36 | Compile error: the frame borrows `arena` |
+| `arena.frame()` inside another `arena.frame()` | AL36 | Compile error: `arena` is already borrowed by the outer frame |
+| `level.enemies.push(e)` inside the frame, `level` born before it | AL36 | Compile error at the push. Grow it before or after the frame, or keep `level` in `Global` |
+| `level.enemies[i].hp -= 1` inside the frame | AL36 | Fine: in place, nothing grows |
+| Frame-born vec pushed to inside the frame | AL34 | Fine: it's above the mark and goes with it |
 | Frame runs out of room | AL3 | `AllocError` from the allocation that didn't fit. The arena never grows, so a frame never hides a `malloc` |
 | Outer `World` mutated in place inside a frame | AL22 | Fine. Its collections remember `Global` and grow there |
 | Pointer from `.as_ptr()` handed to C inside a block | AL13 | No new rule. A raw pointer is already invalid once its source is dropped (`struct.c-interop/ST4`), the source is block-born so it's dropped no later than the block ends, and the arena is freed no earlier. C keeping it longer was already the `unsafe` block's promise to break |
@@ -213,7 +220,7 @@ FIX: Hoist the call out of the block, or run it under Global:
 
 **Why infer stash and not declare it (AL27).** Declaring it is function colouring under another name: it goes on every signature it's true of and every caller of those. Inference costs the compiler one transitive pass over MIR it already has the moves for, and the user nothing. If the analysis turns out to fire on every builder in a real program, the answer is a finer analysis, not an annotation.
 
-**Why frames get their own type (AL35).** Raido's frame marker keeps everything below the mark and rewinds only what the frame added. Copied here as a frame on an ordinary `Arena`, it's unsound under AL22. A value born under the arena before the frame still grows through the arena, so `level.enemies.push(e)` inside the frame takes room above the mark, and the rewind frees it while `level` still points at it. Nested frames have the same hole one level down. Ruling out growth of older values inside a frame would need a third inferred property per function, "grows this parameter". A type that holds only the current frame needs nothing: there are no older values.
+**Why growth is checked (AL36).** Raido's frame marker keeps everything below the mark and rewinds what the frame added. Older data pointing above the mark is a host bug there, caught only by an opt-in runtime check that's off by default (`debug_frame_writes`). In Rask the frame-born half is already AL13. Growth is the other way in: growing an older value takes room at the top of the arena, above the mark, so the rewind would free memory that value still points at. A separate arena type holding only the current frame avoids the question, at the cost of a second type and of level data living somewhere else. Inferring "may grow this parameter" costs one more fact in a pass that already runs, and it lets the level share the arena with its frames. The error points at the push that would have dangled.
 
 ### Open
 
@@ -221,7 +228,7 @@ FIX: Hoist the call out of the block, or run it under Global:
 
 ### See Also
 
-- [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`), and the exclusive borrow `frame()` takes (AL35)
+- [Borrowing](borrowing.md) — the `with` block rule AL13 is modelled on (`mem.borrowing/W2`), and the borrow `frame()` takes (AL36)
 - [Heap Values](heap.md) — `Heap(…)` takes the current allocator (`mem.heap/HP6`)
 - [Racks and Links](racks.md) — rack chunks under an arena (`mem.racks`)
 - [Async](../concurrency/async.md) — `using Multitasking { … }` installs a scheduler the same way
