@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct whose raw pointer owns what it points at is a `@resource`
+// (mem.unsafe/UT4). It can't be duplicated, it must be released once, and the
+// compiler ties the pointers it hands out to it: they die when its block ends
+// or when it moves its storage. A struct without `@resource` is a view, and
+// copies and clones as an address.
+
+extern "C" func malloc(size: u64) -> *u8
+extern "C" func realloc(p: *u8, size: u64) -> *u8
+extern "C" func free(p: *u8)
+
+@resource
+struct Arena {
+    base: *u8
+    cap: i64
+    used: i64
+}
+
+extend Arena {
+    func new(cap: i64) -> Arena {
+        return Arena(base: unsafe malloc(cap.wrap<u64>()), cap: cap, used: 0)
+    }
+
+    func alloc(mutate self, n: i64) -> *u8 {
+        let p = unsafe self.base.add(self.used)
+        self.used += n
+        return p
+    }
+
+    func grow(mutate self) {
+        self.cap *= 2
+        self.base = unsafe realloc(self.base, self.cap.wrap<u64>())
+    }
+
+    func free(take self) {
+        unsafe free(self.base)
+    }
+}
+
+// A view: owns nothing.
+struct Span {
+    data: *u8
+    len: i64
+    stride: i64
+}
+
+func duplicated() {
+    let a = Arena.new(8)
+    ensure a.free()
+    let b = a.clone()            // ERROR: E0917
+}
+
+func outlives_the_arena() -> u8 {
+    let spare: Vec<u8> = [0]
+    mut keep = unsafe spare.as_ptr()
+    if spare.len() > 0 {
+        mut a = Arena.new(64)
+        ensure a.free()
+        keep = a.alloc(8)
+    }
+    return unsafe *keep          // ERROR: E0929
+}
+
+func used_after_grow() {
+    mut a = Arena.new(8)
+    ensure a.free()
+    let x = a.alloc(8)
+    a.grow()
+    println(unsafe *x)           // ERROR: E0929
+    let y = a.alloc(8)
+    println(unsafe *y)           // fine: taken after the grow
+}
+
+// Fine: a view copies, clones and compares as an address.
+func views() {
+    let s = Span(data: unsafe malloc(8), len: 8, stride: 1)
+    let t = s.clone()
+    println(t == s)
+    unsafe free(s.data)
+}
+
+func main() {
+    duplicated()
+    println(outlives_the_arena())
+    used_after_grow()
+    views()
+}

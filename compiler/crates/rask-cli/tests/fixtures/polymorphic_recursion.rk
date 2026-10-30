@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Polymorphic recursion: `nest<T>` calls `nest<Vec<T>>`, so native code needs
+// a copy per level and there is no last level. Compiling used to hang forever
+// (#1663); it stops at the CT68 depth limit with the chain. The interpreter
+// makes no copies and runs it.
+func nest<T>(x: T, n: i32) -> i32 {
+    if n == 0 { return 0 }
+    let v: Vec<T> = Vec.new()
+    return nest(v, n - 1)
+}
+
+func main() {
+    println(nest(1, 3))
+}

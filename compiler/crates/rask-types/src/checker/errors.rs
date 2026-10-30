@@ -589,6 +589,14 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    /// mem.unsafe/UT3: `unsafe` on a conformance to an ordinary interface,
+    /// or on an `extend`: a promise nothing relies on.
+    #[error("`unsafe` here promises nothing")]
+    UnsafeWithoutContract {
+        /// The interface, for a conformance; `None` for a plain `extend`.
+        interface: Option<String>,
+        span: Span,
+    },
     #[error("{problem}")]
     LayoutAttribute {
         problem: String,
@@ -919,22 +927,6 @@ pub enum TypeError {
     #[error("unknown context `{name}` in `using` block")]
     UnknownContext {
         name: String,
-        span: Span,
-    },
-
-    /// conc.sync/SH7: a task-local `Shared` sent to another task.
-    #[error("this `Shared` is task-local and cannot be sent")]
-    LocalSharedSent {
-        name: String,
-        span: Span,
-    },
-
-    /// mem.ownership/T2: a value carrying a `Link` captured by `spawn`. A link
-    /// is a node's address; two tasks holding it would both write the node.
-    #[error("`{name}` holds a link, which can't go to another task")]
-    LinkSent {
-        name: String,
-        ty: Type,
         span: Span,
     },
 
@@ -1767,8 +1759,6 @@ impl TypeError {
             | MutateConst { .. }
             | RetiredBoxType { .. }
             | SharedAccessClosure { .. }
-            | LocalSharedSent { .. }
-            | LinkSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }
@@ -1796,6 +1786,7 @@ impl TypeError {
             | WithNeedsElementOrBox { .. }
             | WithOverCall { .. }
             | UnsafeRequired { .. }
+            | UnsafeWithoutContract { .. }
             | LayoutAttribute { .. }
             | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }

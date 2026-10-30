@@ -946,6 +946,8 @@ impl TypeChecker {
             | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
             | Type::F32 | Type::F64 => true,
+            // An address: the copy points where the original does.
+            Type::RawPtr(_) => true,
             Type::Tuple(elems) => elems.iter().all(Self::clones_by_copy),
             Type::Result { ok, err } => Self::clones_by_copy(ok) && Self::clones_by_copy(err),
             _ => false,

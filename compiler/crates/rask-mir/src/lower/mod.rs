@@ -396,6 +396,7 @@ impl<'a> MirContext<'a> {
             fallback_keeps_shape: &records.fallback_keeps_shape,
             err_returns: &records.err_returns,
             escaping_closures: &records.escaping_closures,
+            lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
             return_moves: &records.return_moves,
             task_bound_closures: &records.task_bound_closures,
@@ -542,6 +543,9 @@ pub struct MirContext<'a> {
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
+    /// CM3: for those closures, the captures that are lent parameters of the
+    /// frame that built them (ownership). Held, never freed by the closure.
+    pub lent_captures: &'a std::collections::HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value takes the old one: the slot's old value is
     /// the new one's now, so nothing is released before the write (ownership).
     pub field_reuses: &'a std::collections::HashSet<NodeId>,
@@ -640,6 +644,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_RETURN_MOVES: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
             std::sync::LazyLock::new(std::collections::HashMap::new);
+        static EMPTY_LENT: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
@@ -677,6 +683,7 @@ impl<'a> MirContext<'a> {
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             err_returns: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
+            lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: &EMPTY_ESCAPING,
@@ -7624,6 +7631,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7654,6 +7662,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
@@ -7709,6 +7718,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7739,6 +7749,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,
@@ -7801,6 +7812,7 @@ mod tests {
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
         let empty_escaping = std::collections::HashSet::new();
+        let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7831,6 +7843,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: &empty_escaping,

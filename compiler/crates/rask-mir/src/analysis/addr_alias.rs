@@ -68,6 +68,33 @@ impl AddrAliases {
                         }
                         continue;
                     }
+                    // A call answering a raw pointer points into the storage
+                    // of each argument it was handed, and wherever a pointer
+                    // argument already pointed (mem.unsafe/PT1).
+                    if let MirStmtKind::Call { dst: Some(dst), func: f, args } = &stmt.kind {
+                        if f.points_into_args {
+                            let mut found: Vec<LocalId> = Vec::new();
+                            for arg in args {
+                                let MirOperand::Local(a) = arg else { continue };
+                                let holds_storage = types.get(a).is_some_and(|t| {
+                                    t.passed_by_address()
+                                        || matches!(t, MirType::Container(_) | MirType::Heap(_))
+                                });
+                                if holds_storage {
+                                    found.push(*a);
+                                }
+                                found.extend(pointees.get(a).cloned().unwrap_or_default());
+                            }
+                            for p in found {
+                                let entry = pointees.entry(*dst).or_default();
+                                if !entry.contains(&p) {
+                                    entry.push(p);
+                                    changed = true;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let MirStmtKind::Assign { dst, rvalue } = &stmt.kind else { continue };
                     // The destination has to be a scalar — a cast that produces
                     // another aggregate is a conversion, not an address.
@@ -212,6 +239,30 @@ mod tests {
         );
         let a = AddrAliases::build(&f);
         assert_eq!(a.pointees(LocalId(2)), &[LocalId(0), LocalId(1)]);
+    }
+
+    /// A call lowering marked as answering a raw pointer points into the
+    /// storage it was handed, and through a pointer argument to wherever that
+    /// pointed (mem.unsafe/PT1). A scalar argument is no storage.
+    #[test]
+    fn a_pointer_call_points_into_its_arguments() {
+        let call = |dst: u32, args: Vec<MirOperand>| {
+            MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(LocalId(dst)),
+                func: crate::FunctionRef { points_into_args: true, ..crate::FunctionRef::internal("f".into()) },
+                args,
+            })
+        };
+        let f = func_with(
+            vec![(0, MirType::Buffer), (1, MirType::Ptr), (2, MirType::I64), (3, MirType::Ptr)],
+            vec![
+                call(1, vec![MirOperand::Local(LocalId(0))]),
+                call(3, vec![MirOperand::Local(LocalId(1)), MirOperand::Local(LocalId(2))]),
+            ],
+        );
+        let a = AddrAliases::build(&f);
+        assert_eq!(a.pointees(LocalId(1)), &[LocalId(0)]);
+        assert_eq!(a.pointees(LocalId(3)), &[LocalId(0)]);
     }
 
     #[test]
