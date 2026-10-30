@@ -601,7 +601,16 @@ fn comptime_diagnostics_for(
     // has no `main`, and the plain one calls that a fatal error — so check said
     // nothing at all about the comptime consts in every test file we have,
     // including ones that would fail to compile.
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, decls) else {
+    //
+    // Laid out over the stdlib too, as the compile path does: a value folded
+    // here can have a stdlib type, and with only the program's declarations
+    // that type had no layout, so a default like `MemoryOrder.SeqCst` failed
+    // on `check` and not on `run`.
+    let mut layout_decls = decls.to_vec();
+    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    typed.rewrite_checked_nodes(&mut stdlib);
+    layout_decls.extend(stdlib);
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
         return diags;

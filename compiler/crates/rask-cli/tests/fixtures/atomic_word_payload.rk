@@ -4,7 +4,6 @@
 // text uses and it was a compile error — the rule counted fields times eight
 // instead of reading the width (#1083).
 import sync.Atomic
-import sync.Ordering
 
 struct Slot {
     index: i32
@@ -13,9 +12,9 @@ struct Slot {
 
 func main() {
     let a = Atomic.new(Slot(index: 1, generation: 2))
-    let s = a.load(SeqCst)
+    let s = a.load()
     println("{s.index} {s.generation}")
-    a.store(Slot(index: 7, generation: 9), SeqCst)
-    let t = a.load(SeqCst)
+    a.store(Slot(index: 7, generation: 9))
+    let t = a.load()
     println("{t.index} {t.generation}")
 }

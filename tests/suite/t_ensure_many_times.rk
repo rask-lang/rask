@@ -13,7 +13,6 @@
 // Each case counts closes, because a second close has no symptom of its own.
 
 import sync.Atomic
-import sync.SeqCst
 
 const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
 
@@ -28,7 +27,7 @@ extend Conn {
     }
 
     func close(take self) -> i64 {
-        CLOSES.fetch_add(1, SeqCst)
+        CLOSES.fetch_add(1)
         return self.id
     }
 }
@@ -40,7 +39,7 @@ func use_once(i: i64) -> i64 {
 }
 
 test "a consumed value's ensure stands down past the 256th ensure" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     mut i = 0
     mut sum = 0
     while i < 1000 {
@@ -48,16 +47,16 @@ test "a consumed value's ensure stands down past the 256th ensure" {
         i = i + 1
     }
     assert sum == 499500
-    assert CLOSES.load(SeqCst) == 1000
+    assert CLOSES.load() == 1000
 }
 
 test "an unconsumed value's ensure still runs, past the 256th" {
-    CLOSES.store(0, SeqCst)
+    CLOSES.store(0)
     mut i = 0
     while i < 600 {
         let c = Conn.open(i)
         ensure c.close()
         i = i + 1
     }
-    assert CLOSES.load(SeqCst) == 600
+    assert CLOSES.load() == 600
 }

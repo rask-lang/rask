@@ -42,6 +42,14 @@
 #define RASK_SORT_PASS_F64 3
 #define RASK_SORT_PASS_F32 4
 
+// `MemoryOrder`'s tags, in its declaration order in stdlib/sync.rk; a
+// test holds the two together. The runtime maps each to a C11 order.
+#define RASK_MEMORY_ORDER_RELAXED 0
+#define RASK_MEMORY_ORDER_ACQUIRE 1
+#define RASK_MEMORY_ORDER_RELEASE 2
+#define RASK_MEMORY_ORDER_ACQ_REL 3
+#define RASK_MEMORY_ORDER_SEQ_CST 4
+
 // A `RaskStr` holds up to this many bytes inline. Its last byte is the
 // inline capacity left, so an empty string's is this.
 #define RASK_SSO_MAX 15

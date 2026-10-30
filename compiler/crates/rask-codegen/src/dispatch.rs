@@ -1001,11 +1001,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
     entries.push(atomic("Atomic_swap", "rask_atomic_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
     entries.push(atomic(
         "Atomic_compare_exchange", "rask_atomic_compare_exchange",
-        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+        &[types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
     ));
     entries.push(atomic(
         "Atomic_compare_exchange_weak", "rask_atomic_compare_exchange_weak",
-        &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
+        &[types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
     ));
     for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
         entries.push(atomic(

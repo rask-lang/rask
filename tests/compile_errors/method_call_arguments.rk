@@ -2,7 +2,7 @@
 //
 // A method the type does have, called wrong.
 //
-// `Atomic<i64>.take(Ordering.SeqCst)` reported "no method `take`
+// `Atomic<i64>.take(MemoryOrder.SeqCst)` reported "no method `take`
 // found for type `Atomic<i64>`" and then suggested `take` — the name
 // that had just been written. Every arm of the atomic resolver is guarded on
 // the argument count, so a wrong count falls through to "no such method", and
@@ -24,27 +24,26 @@
 // Rejection is the right answer either way. This file is about which
 // rejection, and the last case is the one that still has to say the name
 // doesn't exist.
-import sync.Atomic
-import sync.Ordering
+import sync.{Atomic, MemoryOrder}
 
 func too_many() {
     let a = Atomic<i64>.new(1)
     // ERROR: `load` takes an ordering and nothing else
-    println(a.load(Ordering.SeqCst, 3))
+    println(a.load(MemoryOrder.SeqCst, 3))
     return
 }
 
 func too_few() {
     let a = Atomic<i64>.new(1)
-    // ERROR: `store` takes a value and an ordering
-    a.store(5)
+    // ERROR: `store` takes a value
+    a.store()
     return
 }
 
 func take_takes_none() {
     let a = Atomic<i64>.new(1)
     // ERROR: `take` reads the word without an ordering — it consumes the atomic
-    println(a.take(Ordering.SeqCst))
+    println(a.take(MemoryOrder.SeqCst))
     return
 }
 
@@ -53,7 +52,7 @@ func take_takes_none() {
 func no_such_name() {
     let a = Atomic<i64>.new(1)
     // ERROR: no method `increment` — the name is `fetch_add`
-    println(a.increment(1, Ordering.SeqCst))
+    println(a.increment(1))
     return
 }
 
@@ -69,7 +68,7 @@ struct Pair {
 func no_arithmetic_on_the_payload() {
     let a = Atomic<Pair>.new(Pair(a: 1, b: 2))
     // ERROR: `fetch_add` needs a payload it can add, and `Pair` isn't one
-    println(a.fetch_add(1, Ordering.SeqCst).a)
+    println(a.fetch_add(1).a)
     return
 }
 

@@ -1087,21 +1087,6 @@ impl Interpreter {
             (TypeConstructorKind::Atomic, "default") => {
                 Ok(Value::Atomic(Arc::new(Mutex::new(Value::int(0)))))
             }
-            (TypeConstructorKind::Ordering, "Relaxed") => {
-                Ok(Value::stdlib_enum("Ordering", "Relaxed", vec![]))
-            }
-            (TypeConstructorKind::Ordering, "Acquire") => {
-                Ok(Value::stdlib_enum("Ordering", "Acquire", vec![]))
-            }
-            (TypeConstructorKind::Ordering, "Release") => {
-                Ok(Value::stdlib_enum("Ordering", "Release", vec![]))
-            }
-            (TypeConstructorKind::Ordering, "AcqRel") => {
-                Ok(Value::stdlib_enum("Ordering", "AcqRel", vec![]))
-            }
-            (TypeConstructorKind::Ordering, "SeqCst") => {
-                Ok(Value::stdlib_enum("Ordering", "SeqCst", vec![]))
-            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),
                 method: method.to_string(),
@@ -1119,32 +1104,23 @@ impl Interpreter {
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        // The ordering argument is checked but not used: it can only make the
-        // answer weaker, and this backend has no weaker answer to give.
-        let ordering_at = |i: usize| self.parse_ordering(&args, i).map(|_| ());
-
+        // The `MemoryOrder` argument isn't read: it can only make the answer
+        // weaker, and this backend has no weaker answer to give.
         match method {
             "load" => {
-                ordering_at(0)?;
                 Ok(atomic.lock().unwrap().clone())
             }
             "store" => {
-                ordering_at(1)?;
                 let value = args.first().cloned().unwrap_or(Value::Unit);
                 *atomic.lock().unwrap() = value;
                 Ok(Value::Unit)
             }
             "swap" => {
-                ordering_at(1)?;
                 let value = args.first().cloned().unwrap_or(Value::Unit);
                 let mut slot = atomic.lock().unwrap();
                 Ok(std::mem::replace(&mut slot, value))
             }
-            // AT6 says the failure ordering must be no stronger than success
-            // and must not be Release or AcqRel; that's a compile-time rule.
             "compare_exchange" | "compare_exchange_weak" => {
-                ordering_at(2)?;
-                ordering_at(3)?;
                 let expected = args.first().cloned().unwrap_or(Value::Unit);
                 let new = args.get(1).cloned().unwrap_or(Value::Unit);
                 let mut slot = atomic.lock().unwrap();
@@ -1169,7 +1145,6 @@ impl Interpreter {
             "take" => Ok(atomic.lock().unwrap().clone()),
             // AT5: the fetch family wraps on overflow and returns the OLD value.
             _ if method.starts_with("fetch_") => {
-                ordering_at(1)?;
                 let operand = args.first().cloned().unwrap_or(Value::Unit);
                 let mut slot = atomic.lock().unwrap();
                 let old = slot.clone();
@@ -1248,37 +1223,6 @@ impl Interpreter {
         // AT5 wraps at the payload's width, not at 64 bits: a `u8` at 250
         // plus 10 holds 4.
         Ok(Value::Int(kind.wrap(n), kind))
-    }
-
-    fn parse_ordering(
-        &self,
-        args: &[Value],
-        idx: usize,
-    ) -> Result<std::sync::atomic::Ordering, RuntimeError> {
-        use std::sync::atomic::Ordering;
-        match args.get(idx) {
-            Some(Value::Enum { name, variant, .. }) if name == "Ordering" => {
-                match variant.as_str() {
-                    "Relaxed" => Ok(Ordering::Relaxed),
-                    "Acquire" => Ok(Ordering::Acquire),
-                    "Release" => Ok(Ordering::Release),
-                    "AcqRel" => Ok(Ordering::AcqRel),
-                    "SeqCst" => Ok(Ordering::SeqCst),
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "unknown Ordering variant: {}",
-                        variant
-                    ))),
-                }
-            }
-            Some(v) => Err(RuntimeError::TypeError(format!(
-                "expected Ordering, got {}",
-                v.type_name()
-            ))),
-            None => Err(RuntimeError::ArityMismatch {
-                expected: idx + 1,
-                got: args.len(),
-            }),
-        }
     }
 }
 

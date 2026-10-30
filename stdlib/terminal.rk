@@ -5,7 +5,7 @@
 
 import os
 import sync.Atomic
-import sync.Relaxed
+import sync.MemoryOrder
 
 /// A colour for text or its background. Bright variants are the second eight of
 /// the 16-colour palette; `Ansi` indexes the 256-colour one.
@@ -174,12 +174,12 @@ extend terminal {
 
     /// Override colour detection for every style: what a `--color` flag sets.
     public func set_color(mode: ColorMode) -> void {
-        COLOR_MODE.store(mode as i64, Relaxed)
+        COLOR_MODE.store(mode as i64, order: MemoryOrder.Relaxed)
     }
 
     /// Whether styles emit escapes right now (T3).
     func color_enabled() -> bool {
-        let mode = COLOR_MODE.load(Relaxed)
+        let mode = COLOR_MODE.load(order: MemoryOrder.Relaxed)
         if mode == 1 {
             return true
         }

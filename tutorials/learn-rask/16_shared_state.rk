@@ -15,7 +15,7 @@
 //     config.read().timeout                     // one expression, same lock
 //
 //   Atomic<T> — lock-free single values (for simple counters and flags)
-//     counter.fetch_add(1, Relaxed)     // hardware-level atomic increment
+//     counter.fetch_add(1)     // hardware-level atomic increment
 //     There is one atomic type and one way to spell it. The payload has to fit
 //     one machine word: an integer, a bool, a float.
 //
@@ -31,8 +31,6 @@
 //
 
 import sync.Atomic
-import sync.Relaxed
-import sync.SeqCst
 import sync.Shared
 
 // --- Example ---

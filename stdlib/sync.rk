@@ -129,6 +129,27 @@ extend CasFailed<T> {
 // call, for the payload's width. Which payloads may sit in one (GA2), and which
 // operations a payload has (GA3), are rules about the type, so the checker
 // judges them before it reads a signature from here.
+//
+// Every operation is sequentially consistent unless the call says otherwise,
+// so `a.load()` and `a.fetch_add(1)` are all most code writes. A weaker order is
+// an optimization for code that has measured a need for one, and it's written
+// at the call that wants it: `a.load(order: MemoryOrder.Relaxed)`.
+
+/// How much an atomic operation orders the memory around it. The default,
+/// `SeqCst`, is one order every task agrees on; the others give up some of
+/// that for speed on hardware that reorders.
+public enum MemoryOrder {
+    /// Atomic, and nothing more: no ordering with other memory.
+    Relaxed
+    /// A load: nothing after it moves before it. Pairs with a `Release` store.
+    Acquire
+    /// A store: nothing before it moves after it. Pairs with an `Acquire` load.
+    Release
+    /// A read-modify-write that is both.
+    AcqRel
+    /// One total order all tasks agree on. The default.
+    SeqCst
+}
 
 /// One word that any number of tasks read and write without a lock.
 @handle(release: "rask_atomic_free")
@@ -146,52 +167,53 @@ extend Atomic<T> {
 
     /// Read the value.
     @builtin
-    public func load(self, order: Ordering) -> T {}
+    public func load(self, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     /// Write the value. Takes `self`, not `mutate self`: the atomic does its
     /// own synchronizing (AT4).
     @builtin
-    public func store(self, value: T, order: Ordering) {}
+    public func store(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) {}
 
     /// Write `value` and answer what was there.
     @builtin
-    public func swap(self, value: T, order: Ordering) -> T {}
+    public func swap(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     /// If the value is `current`, write `new`. The old value on success,
     /// `CasFailed` holding what was actually there on failure. Compares bits.
+    /// A failure only reads, so it uses `order` without its release half.
     @builtin
-    public func compare_exchange(self, current: T, new: T, success: Ordering, failure: Ordering) -> T or CasFailed<T> {}
+    public func compare_exchange(self, current: T, new: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T or CasFailed<T> {}
 
     /// `compare_exchange` that may fail when the value matched. Cheaper on
     /// some hardware; call it in a loop.
     @builtin
-    public func compare_exchange_weak(self, current: T, new: T, success: Ordering, failure: Ordering) -> T or CasFailed<T> {}
+    public func compare_exchange_weak(self, current: T, new: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T or CasFailed<T> {}
 
     // The fetch family answers the old value and wraps on overflow (AT5).
 
     @builtin
-    public func fetch_add(self, value: T, order: Ordering) -> T {}
+    public func fetch_add(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_sub(self, value: T, order: Ordering) -> T {}
+    public func fetch_sub(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_max(self, value: T, order: Ordering) -> T {}
+    public func fetch_max(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_min(self, value: T, order: Ordering) -> T {}
+    public func fetch_min(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_and(self, value: T, order: Ordering) -> T {}
+    public func fetch_and(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_or(self, value: T, order: Ordering) -> T {}
+    public func fetch_or(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_xor(self, value: T, order: Ordering) -> T {}
+    public func fetch_xor(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     @builtin
-    public func fetch_nand(self, value: T, order: Ordering) -> T {}
+    public func fetch_nand(self, value: T, order: MemoryOrder = MemoryOrder.SeqCst) -> T {}
 
     /// Consume the atomic and answer what it held. `take self` is what makes
     /// this safe without an ordering: nobody else can be reading it (AT3).

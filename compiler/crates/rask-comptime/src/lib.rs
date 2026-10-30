@@ -1300,11 +1300,18 @@ impl ComptimeInterpreter {
                 }
                 DeclKind::Enum(e) => {
                     let units = e.variants.iter().filter(|v| v.fields.is_empty()).map(|v| v.name.clone());
-                    self.unit_variants.insert(e.name.clone(), units.collect());
+                    self.register_enum(e.name.clone(), units.collect());
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Make `name.Variant` a value for each of `units`. An enum the program
+    /// doesn't declare reaches compile-time code too: a stdlib default like
+    /// `order: MemoryOrder = MemoryOrder.SeqCst` is folded at every call.
+    pub fn register_enum(&mut self, name: String, units: Vec<String>) {
+        self.unit_variants.insert(name, units);
     }
 
     /// Evaluate a comptime expression.

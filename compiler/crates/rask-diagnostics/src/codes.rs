@@ -704,9 +704,9 @@ impl Default for ErrorCodeRegistry {
                 "E0402" => ("an atomic arithmetic operation on a payload with no arithmetic", Type,
                     "`fetch_add` and its siblings are one instruction that reads, adds and writes back — the hardware does the adding, so the payload has to be a number it can add (mem.atomics/GA3). The payload fitting a word isn't enough: a struct of two `i32`s is eight bytes and still has no `+`.",
                     "let a = Atomic<Pair>.new(p)
-a.fetch_add(1, Ordering.SeqCst)   // error: no arithmetic on this payload
+a.fetch_add(1)   // error: no arithmetic on this payload
 // fix: read, compute, put it back
-let old = a.load(Ordering.SeqCst)"),
+let old = a.load()"),
                 "E0403" => ("a field and a method on one type share a name", Type,
                     "One name per member of a type (type.structs/M7). A field holding a function is callable — `h.run(5)` calls it (M6) — so a method of the same name would make `h.run` and `h.run(5)` reach two different things, with nothing in either line to say which. The declaration is rejected instead of a precedence rule being invented for the call sites.",
                     "struct Handler {\n    public run: func(i64) -> i64\n}\nextend Handler {\n    public func run(self, x: i64) -> i64 { … }   // error: `run` is already a field\n}\n// fix: rename one of them"),

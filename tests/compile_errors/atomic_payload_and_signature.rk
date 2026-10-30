@@ -7,7 +7,7 @@
 // A table in the checker answered them before, and it dropped every argument
 // mismatch: `n.store("s", Relaxed)` type-checked.
 
-import sync.{Atomic, Relaxed}
+import sync.Atomic
 
 struct Big {
     a: i64
@@ -21,8 +21,8 @@ func main() {
     let big = Atomic<Big>.new(Big(a: 1, b: 2))
     let flag = Atomic<bool>.new(false)
     // ERROR: a bool can't be added (GA3)
-    let x = flag.fetch_add(true, Relaxed)
+    let x = flag.fetch_add(true)
     let n = Atomic<i64>.new(1)
     // ERROR: store takes the payload type
-    n.store("s", Relaxed)
+    n.store("s")
 }

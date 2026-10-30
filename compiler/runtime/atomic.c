@@ -23,18 +23,37 @@
 #include <string.h>
 
 // ── Ordering conversion ────────────────────────────────────
-// Maps Rask Ordering enum tag to C11 memory_order.
-// Tag values match resolver registration order (after Less/Equal/Greater):
-//   Relaxed=3, Acquire=4, Release=5, AcqRel=6, SeqCst=7
+// `MemoryOrder`'s tag to a C11 memory_order. The tags are generated into
+// rask_abi.h from the compiler's one list.
 
 static memory_order to_order(int64_t o) {
     switch (o) {
-        case 3: return memory_order_relaxed;
-        case 4: return memory_order_acquire;
-        case 5: return memory_order_release;
-        case 6: return memory_order_acq_rel;
-        case 7: return memory_order_seq_cst;
+        case RASK_MEMORY_ORDER_RELAXED: return memory_order_relaxed;
+        case RASK_MEMORY_ORDER_ACQUIRE: return memory_order_acquire;
+        case RASK_MEMORY_ORDER_RELEASE: return memory_order_release;
+        case RASK_MEMORY_ORDER_ACQ_REL: return memory_order_acq_rel;
         default: return memory_order_seq_cst;
+    }
+}
+
+// A load, and a compare-exchange that fails, only read: they keep the
+// acquire half of the order and drop the release half. A store keeps the
+// release half. So every `MemoryOrder` means something on every operation,
+// and C11 never sees an acquire store or a release load, which it leaves
+// undefined.
+static memory_order read_half(memory_order mo) {
+    switch (mo) {
+        case memory_order_release: return memory_order_relaxed;
+        case memory_order_acq_rel: return memory_order_acquire;
+        default: return mo;
+    }
+}
+
+static memory_order write_half(memory_order mo) {
+    switch (mo) {
+        case memory_order_acquire: return memory_order_relaxed;
+        case memory_order_acq_rel: return memory_order_release;
+        default: return mo;
     }
 }
 
@@ -223,12 +242,12 @@ int64_t rask_atomic_default(int64_t size, int64_t kind) {
 int64_t rask_atomic_load(int64_t ptr, int64_t ordering) {
     RASK_SIM_POINT();
     RaskAtomic *a = cell(ptr);
-    return widen(a, raw_load(a, to_order(ordering)));
+    return widen(a, raw_load(a, read_half(to_order(ordering))));
 }
 
 void rask_atomic_store(int64_t ptr, int64_t bits, int64_t ordering) {
     RASK_SIM_POINT();
-    raw_store(cell(ptr), (uint64_t)bits, to_order(ordering));
+    raw_store(cell(ptr), (uint64_t)bits, write_half(to_order(ordering)));
 }
 
 int64_t rask_atomic_swap(int64_t ptr, int64_t bits, int64_t ordering) {
@@ -241,27 +260,27 @@ int64_t rask_atomic_swap(int64_t ptr, int64_t bits, int64_t ordering) {
 // Returns the value the cell held. Writes 1 to *out_ok on success, 0 on
 // failure; codegen builds the `T or CasFailed<T>` from the two.
 
-static int64_t cas(int64_t ptr, int64_t expected, int64_t desired, int64_t success_ord,
-                   int64_t fail_ord, int64_t *out_ok, _Bool weak) {
+static int64_t cas(int64_t ptr, int64_t expected, int64_t desired, int64_t ordering,
+                   int64_t *out_ok, _Bool weak) {
     RASK_SIM_POINT();
     RaskAtomic *a = cell(ptr);
     // Compared at the cell's width: the bits above it in `expected` are the
     // extension, not part of the value.
     uint64_t current = (uint64_t)expected;
-    _Bool ok = raw_cas(a, &current, (uint64_t)desired, weak,
-                       to_order(success_ord), to_order(fail_ord));
+    memory_order ok_order = to_order(ordering);
+    _Bool ok = raw_cas(a, &current, (uint64_t)desired, weak, ok_order, read_half(ok_order));
     *out_ok = ok ? 1 : 0;
     return ok ? expected : widen(a, current);
 }
 
 int64_t rask_atomic_compare_exchange(int64_t ptr, int64_t expected, int64_t desired,
-                                     int64_t success_ord, int64_t fail_ord, int64_t *out_ok) {
-    return cas(ptr, expected, desired, success_ord, fail_ord, out_ok, 0);
+                                     int64_t ordering, int64_t *out_ok) {
+    return cas(ptr, expected, desired, ordering, out_ok, 0);
 }
 
 int64_t rask_atomic_compare_exchange_weak(int64_t ptr, int64_t expected, int64_t desired,
-                                          int64_t success_ord, int64_t fail_ord, int64_t *out_ok) {
-    return cas(ptr, expected, desired, success_ord, fail_ord, out_ok, 1);
+                                          int64_t ordering, int64_t *out_ok) {
+    return cas(ptr, expected, desired, ordering, out_ok, 1);
 }
 
 // ── Fetch operations ────────────────────────────────────────

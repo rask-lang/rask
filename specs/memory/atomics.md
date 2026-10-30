@@ -1,12 +1,12 @@
 <!-- id: mem.atomics -->
 <!-- status: decided -->
-<!-- summary: Atomic<T> for any padding-free Copy payload that fits an atomic word; one spelling, no named variants; explicit memory ordering; no unsafe needed -->
+<!-- summary: Atomic<T> for any padding-free Copy payload that fits an atomic word; one spelling, no named variants; sequentially consistent unless an order is asked for; no unsafe needed -->
 <!-- depends: memory/unsafe.md, concurrency/sync.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Atomics
 
-Atomic types provide safe, data-race-free shared memory access with explicit memory ordering.
+Atomic types provide safe, data-race-free shared memory access. Every operation is sequentially consistent unless the call asks for something weaker.
 
 There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payload the hardware can treat as a single word — integers, floats, `bool`, pointers, and user structs that are Copy, padding-free, and word-sized. There are no named variants: no `Atomic<u64>`, no `Atomic<bool>` — a reader never has to wonder whether a named form and the generic form differ. Which operations exist follows from the payload: everything gets load/store/swap/CAS, integers additionally count, floats additionally add — a struct payload gets no `fetch_add` because adding two structs means nothing.
 
@@ -15,11 +15,11 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 | Rule | Description |
 |------|-------------|
 | **AT1: Safe operations** | All atomic load/store/swap/CAS/fetch operations are safe — no `unsafe` needed |
-| **AT2: Explicit ordering** | Every operation requires a memory ordering parameter |
+| **AT2: Sequentially consistent by default** | An operation takes an optional `order: MemoryOrder`, defaulting to `SeqCst`. A weaker order is opt-in at the call: `counter.fetch_add(1, order: MemoryOrder.Relaxed)` |
 | **AT3: Not Copy** | Atomic types are not `Copy` or `Clone` (prevents accidental non-atomic copies) |
 | **AT4: Interior mutability** | Operations take `self`, not `mutate self` — the atomic itself handles synchronization |
 | **AT5: Wrapping arithmetic** | Fetch operations wrap on overflow. No panic, no undefined behavior |
-| **AT6: Ordering constraints** | CAS failure ordering must be no stronger than success ordering, and must not be `Release` or `AcqRel` |
+| **AT6: An order applies its relevant half** | A load, and a compare-exchange that fails, only read, so they use the order's acquire half (`Release` reads as `Relaxed`, `AcqRel` as `Acquire`). A store uses the release half. Every order is valid on every operation |
 | **AT7: Platform-dependent types** | 128-bit and float atomics require hardware support; code must not compile on unsupported platforms |
 
 ## The `Atomic<T>` Type
@@ -45,9 +45,9 @@ struct Slot {
 
 let current = Atomic<Slot>.new(Slot(index: 0, gen: 0))
 
-let old = current.load(Acquire)
+let old = current.load()
 let next = Slot(index: old.index + 1, gen: old.gen)
-match current.compare_exchange(old, next, AcqRel, Relaxed) {
+match current.compare_exchange(old, next) {
     Slot as _      => {},          // swapped as one unit
     CasFailed as _ => retry(),
 }
@@ -80,30 +80,25 @@ Add a field to `Slot` and it either still fits (nothing to update) or the `Atomi
 
 ## Memory Orderings
 
-| Ordering | Description | Use Case |
+Most code never names an order. The default, `SeqCst`, is the one where every task sees every atomic operation happen in the same single sequence, which is what people assume without thinking about it. The weaker orders are an optimization for lock-free code, and they live in `MemoryOrder` (`import sync.MemoryOrder`), passed by name.
+
+| Order | Description | Use Case |
 |----------|-------------|----------|
 | `Relaxed` | No synchronization. Only atomicity guaranteed. | Counters, statistics |
-| `Acquire` | Subsequent reads/writes cannot be reordered before this load. | Lock acquisition |
-| `Release` | Previous reads/writes cannot be reordered after this store. | Lock release, publishing data |
-| `AcqRel` | Both Acquire and Release. | Read-modify-write in lock |
-| `SeqCst` | Total ordering across all SeqCst operations. | When in doubt |
+| `Acquire` | Later reads and writes can't move before this load. | Lock acquisition |
+| `Release` | Earlier reads and writes can't move after this store. | Lock release, publishing data |
+| `AcqRel` | Both. | Read-modify-write in a lock |
+| `SeqCst` | One total order across all `SeqCst` operations. | The default |
 
-**Valid orderings per operation type:**
+An operation uses the half of the order it can (AT6): a load keeps the acquire half, a store the release half, a read-modify-write all of it. Compare-exchange takes one order, and a failed one only reads, so it keeps the acquire half.
 
-| Operation Type | Valid Orderings |
-|----------------|-----------------|
-| Load | `Relaxed`, `Acquire`, `SeqCst` |
-| Store | `Relaxed`, `Release`, `SeqCst` |
-| Read-modify-write | All orderings |
-| Compare-exchange | Success and failure orderings (AT6: failure ≤ success) |
-
-**Mental model:** Release-Acquire forms a "happens-before" relationship. All writes before the Release are visible after the Acquire.
+**Mental model:** a release store and the acquire load that sees it form a "happens-before" edge. Everything written before the release is visible after the acquire.
 
 <!-- test: parse -->
 ```rask
-// Thread A (producer):          Thread B (consumer):
-//   data = 42                     while !ready.load(Acquire) {}
-//   ready.store(true, Release)    print(data)  // guaranteed to see 42
+// Task A (producer):                               Task B (consumer):
+//   data = 42                                        while !ready.load(order: MemoryOrder.Acquire) {}
+//   ready.store(true, order: MemoryOrder.Release)    print(data)  // guaranteed to see 42
 ```
 
 ## Operations
@@ -126,28 +121,30 @@ let slot = Atomic<Slot>.new(Slot(index: 0, gen: 0))
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `load(order)` | `self, Ordering -> T` | Atomically read the value |
-<!-- The examples write `Relaxed` bare; that's `import sync.Relaxed`, which
-     brings the ordering into scope under its own name. `Ordering.Relaxed`
-     is the same value and needs no import. -->
-| `store(v, order)` | `self, T, Ordering -> void` | Atomically write the value |
-| `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
+| `load()` | `self -> T` | Atomically read the value |
+| `store(v)` | `self, T -> void` | Atomically write the value |
+| `swap(v)` | `self, T -> T` | Atomically replace, return old value |
+
+Every operation here and below also takes `order: MemoryOrder = MemoryOrder.SeqCst` last (AT2). The tables leave it out.
 
 `store` takes `self` (not `mutate self`) because atomics use interior mutability (AT4).
 
 <!-- test: skip -->
 ```rask
-let value = counter.load(Relaxed)
-counter.store(100, Release)
-let old = counter.swap(new_value, AcqRel)
+let value = counter.load()
+counter.store(100)
+let old = counter.swap(new_value)
+
+// opting in to a weaker order
+let hits = counter.load(order: MemoryOrder.Relaxed)
 ```
 
 ### Compare-and-Exchange
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or CasFailed<T>` | If value == current, set to new. Returns old on success, `CasFailed(actual)` on failure |
-| `compare_exchange_weak(current, new, success, fail)` | Same | May spuriously fail. Use in loops |
+| `compare_exchange(current, new)` | `self, T, T -> T or CasFailed<T>` | If value == current, set to new. Returns old on success, `CasFailed(actual)` on failure |
+| `compare_exchange_weak(current, new)` | Same | May spuriously fail. Use in loops |
 
 - `compare_exchange`: Must succeed if value matches. Use for single-attempt operations.
 - `compare_exchange_weak`: May fail spuriously even if value matches. More efficient in loops on some architectures.
@@ -157,11 +154,11 @@ let old = counter.swap(new_value, AcqRel)
 <!-- test: skip -->
 ```rask
 loop {
-    let current = counter.load(Relaxed)
+    let current = counter.load()
     if current >= threshold {
         break
     }
-    match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
+    match counter.compare_exchange_weak(current, current + 1) {
         u64 as _ => break,
         CasFailed as _ => continue,
     }
@@ -174,14 +171,14 @@ Per GA3, the fetch family exists where the payload can do arithmetic. All fetch 
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `fetch_add(v, order)` | `self, T, Ordering -> T` | Add |
-| `fetch_sub(v, order)` | `self, T, Ordering -> T` | Subtract |
-| `fetch_and(v, order)` | `self, T, Ordering -> T` | Bitwise AND |
-| `fetch_or(v, order)` | `self, T, Ordering -> T` | Bitwise OR |
-| `fetch_xor(v, order)` | `self, T, Ordering -> T` | Bitwise XOR |
-| `fetch_nand(v, order)` | `self, T, Ordering -> T` | Bitwise NAND |
-| `fetch_max(v, order)` | `self, T, Ordering -> T` | Max |
-| `fetch_min(v, order)` | `self, T, Ordering -> T` | Min |
+| `fetch_add(v)` | `self, T -> T` | Add |
+| `fetch_sub(v)` | `self, T -> T` | Subtract |
+| `fetch_and(v)` | `self, T -> T` | Bitwise AND |
+| `fetch_or(v)` | `self, T -> T` | Bitwise OR |
+| `fetch_xor(v)` | `self, T -> T` | Bitwise XOR |
+| `fetch_nand(v)` | `self, T -> T` | Bitwise NAND |
+| `fetch_max(v)` | `self, T -> T` | Max |
+| `fetch_min(v)` | `self, T -> T` | Min |
 
 `Atomic<bool>` supports `fetch_and`, `fetch_or`, `fetch_xor`, `fetch_nand` with `bool` operands. Float payloads get `fetch_add`, `fetch_sub`, `fetch_max`, `fetch_min` (see the float section below). Struct payloads get no fetch operations — read-modify-write on a struct is a CAS loop, where the modify step is ordinary visible code.
 
@@ -193,7 +190,7 @@ Dereferencing the loaded pointer requires `unsafe` (AT1 applies to the atomic op
 
 <!-- test: skip -->
 ```rask
-let ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
+let ptr = atomic_ptr.load()  // Safe: just a pointer value
 unsafe {
     let value = *ptr  // Unsafe: dereferencing raw pointer
 }
@@ -220,10 +217,10 @@ Fences enforce ordering without an atomic variable.
 
 | Operation | Description |
 |-----------|-------------|
-| `fence(Acquire)` | All subsequent reads/writes cannot be reordered before this fence |
-| `fence(Release)` | All previous reads/writes cannot be reordered after this fence |
-| `fence(AcqRel)` | Both Acquire and Release |
-| `fence(SeqCst)` | Full memory barrier |
+| `fence(MemoryOrder.Acquire)` | All subsequent reads/writes cannot be reordered before this fence |
+| `fence(MemoryOrder.Release)` | All previous reads/writes cannot be reordered after this fence |
+| `fence(MemoryOrder.AcqRel)` | Both Acquire and Release |
+| `fence(MemoryOrder.SeqCst)` | Full memory barrier |
 | `compiler_fence(order)` | Prevents compiler reordering only (no CPU barrier) |
 
 `compiler_fence` is for signal handlers, memory-mapped I/O, or when hardware provides ordering guarantees.
@@ -231,8 +228,8 @@ Fences enforce ordering without an atomic variable.
 <!-- test: skip -->
 ```rask
 data = 42
-fence(Release)
-ready.store(true, Relaxed)  // Relaxed is sufficient after fence
+fence(MemoryOrder.Release)
+ready.store(true, order: MemoryOrder.Relaxed)  // Relaxed is enough after the fence
 ```
 
 ## Platform-Dependent Payloads
@@ -287,26 +284,6 @@ Floating-point atomics support a subset of operations:
 ## Error Messages
 
 ```
-ERROR [mem.atomics/AT2]: missing memory ordering
-   |
-12 |  counter.fetch_add(1)
-   |  ^^^^^^^^^^^^^^^^^^^^ atomic operations require an explicit ordering parameter
-
-FIX: counter.fetch_add(1, Relaxed)
-```
-
-```
-ERROR [mem.atomics/AT6]: invalid failure ordering for compare_exchange
-   |
-8  |  x.compare_exchange(old, new, Acquire, AcqRel)
-   |                                        ^^^^^^ failure ordering must be ≤ success ordering
-
-WHY: Failure ordering cannot be Release or AcqRel, and cannot be stronger than success ordering.
-
-FIX: x.compare_exchange(old, new, Acquire, Relaxed)
-```
-
-```
 ERROR [mem.atomics/AT7]: Atomic<u128> not available on this platform
    |
 3  |  static COUNTER: Atomic<u128> = Atomic<u128>.new(0)
@@ -346,15 +323,15 @@ FIX: reorder fields largest-first, or make the padding explicit:
 ```
 ERROR [mem.atomics/GA3]: no fetch_add on Atomic<Slot>
    |
-9  |  current.fetch_add(delta, AcqRel)
+9  |  current.fetch_add(delta)
    |          ^^^^^^^^^ Slot is a struct — arithmetic on it has no meaning
 
 FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
   loop {
-      let old = current.load(Relaxed)
+      let old = current.load()
       let next = Slot { index: old.index + delta, gen: old.gen }
-      if current.compare_exchange_weak(old, next, AcqRel, Relaxed)? { break }
+      if current.compare_exchange_weak(old, next)? { break }
   }
 ```
 
@@ -362,9 +339,8 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| CAS failure ordering > success ordering | AT6 | Compile error |
-| `Release` ordering on load | AT2 | Compile error (invalid for loads) |
-| `Acquire` ordering on store | AT2 | Compile error (invalid for stores) |
+| `Release` order on a load | AT6 | Reads as `Relaxed` |
+| `Acquire` order on a store | AT6 | Writes as `Relaxed` |
 | Mixing atomic and non-atomic access to same location | — | Undefined behavior |
 | Overflow on `fetch_add` | AT5 | Wraps (no panic) |
 | `Atomic<*T>` load then deref | AT1 | Load is safe; deref requires `unsafe` |
@@ -386,7 +362,9 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 
 **AT1 (safe operations):** Atomic operations can't cause data races — the hardware guarantees atomicity. The type system prevents mixing atomic and non-atomic access. Logical errors (ABA, incorrect ordering) are possible but don't violate memory safety.
 
-**AT2 (explicit ordering):** CORE_DESIGN says "no shared mutable memory between tasks" — atomics are the explicit escape hatch when you genuinely need it. Making ordering explicit keeps the cost visible.
+**AT2 (sequentially consistent by default):** This used to require an order on every call, on the theory that it kept the cost visible. It didn't: it made every reader of a counter learn the C11 memory model to write `fetch_add`, and the safe choice was the one that took the most typing. The order is a low-level optimization, so it's opt-in. Code that never names one gets the strongest, and the call that does names it with a label, so a weakened order stands out in review ([#1684](https://github.com/rask-lang/rask/issues/1684)).
+
+**AT6 (the relevant half):** Two orders on compare-exchange, plus a table of which orders each operation accepts, was a rule to learn for no benefit. A failed CAS reads, so its order follows from the one given. The same reading makes `Release` on a load mean something rather than be an error to look up.
 
 **AT7 (platform-dependent):** Lock-based emulation of 128-bit atomics is 10x slower than native support. Hiding this cost would violate transparency. Compile-time detection lets library authors provide both paths.
 
@@ -414,16 +392,16 @@ Users who need an "empty" state add their own sentinel field — visible in the 
 
 | Scenario | Recommended Ordering |
 |----------|---------------------|
+| Anything you're unsure about | Leave it out (`SeqCst`) |
 | Simple counter (stats, metrics) | `Relaxed` |
 | Flag to signal "data ready" | Writer: `Release`, Reader: `Acquire` |
 | Spin lock acquire | `Acquire` on successful CAS |
 | Spin lock release | `Release` store |
 | Reference count increment | `Relaxed` |
 | Reference count decrement (checking for zero) | `AcqRel` |
-| Unknown / unsure | `SeqCst` (safest, may be slower) |
 | Publishing a value (writer) | `Release` store/swap |
 | Consuming a published value (reader) | `Acquire` load |
-| CAS in a lock-free op | Success: `AcqRel`, Failure: `Relaxed` |
+| CAS in a lock-free op | `AcqRel` |
 
 **Performance hierarchy (fastest to slowest):**
 
@@ -443,12 +421,12 @@ On x86, `Relaxed`, `Acquire`, and `Release` are typically free (x86 has strong o
 static REQUESTS: Atomic<u64> = Atomic<u64>.new(0)
 
 func handle_request(req: Request) {
-    REQUESTS.fetch_add(1, Relaxed)
+    REQUESTS.fetch_add(1)
     // ... process request
 }
 
 func get_stats() -> u64 {
-    return REQUESTS.load(Relaxed)
+    return REQUESTS.load()
 }
 ```
 
@@ -459,13 +437,13 @@ func get_stats() -> u64 {
 static SHUTDOWN: Atomic<bool> = Atomic<bool>.new(false)
 
 func worker_loop() {
-    while !SHUTDOWN.load(Acquire) {
+    while !SHUTDOWN.load() {
         do_work()
     }
 }
 
 func request_shutdown() {
-    SHUTDOWN.store(true, Release)
+    SHUTDOWN.store(true)
 }
 ```
 
@@ -475,11 +453,11 @@ func request_shutdown() {
 ```rask
 func increment_if_below(counter: Atomic<u64>, max: u64) -> bool {
     loop {
-        let current = counter.load(Relaxed)
+        let current = counter.load()
         if current >= max {
             return false
         }
-        match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
+        match counter.compare_exchange_weak(current, current + 1) {
             u64 as _ => return true,
             CasFailed as _ => continue,
         }
@@ -498,15 +476,15 @@ struct ArcInner<T> {
 
 func arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
     unsafe {
-        (*ptr).count.fetch_add(1, Relaxed)
+        (*ptr).count.fetch_add(1, order: MemoryOrder.Relaxed)
     }
     return ptr
 }
 
 func arc_drop<T>(ptr: *ArcInner<T>) {
     unsafe {
-        if (*ptr).count.fetch_sub(1, AcqRel) == 1 {
-            fence(Acquire)
+        if (*ptr).count.fetch_sub(1, order: MemoryOrder.AcqRel) == 1 {
+            fence(MemoryOrder.Acquire)
             dealloc(ptr)
         }
     }
@@ -525,9 +503,9 @@ struct SpinLockInner<T> {
 func spin_acquire<T>(lock: *SpinLockInner<T>) {
     unsafe {
         while (*lock).locked.compare_exchange_weak(
-            false, true, Acquire, Relaxed
+            false, true, order: MemoryOrder.Acquire
         ) is CasFailed {
-            while (*lock).locked.load(Relaxed) {
+            while (*lock).locked.load(order: MemoryOrder.Relaxed) {
                 spin_hint()
             }
         }
@@ -536,7 +514,7 @@ func spin_acquire<T>(lock: *SpinLockInner<T>) {
 
 func spin_release<T>(lock: *SpinLockInner<T>) {
     unsafe {
-        (*lock).locked.store(false, Release)
+        (*lock).locked.store(false, order: MemoryOrder.Release)
     }
 }
 ```

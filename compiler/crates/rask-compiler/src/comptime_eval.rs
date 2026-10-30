@@ -40,6 +40,15 @@ pub fn fold_comptime(
     if let Some(c) = cfg {
         interp.inject_cfg(c);
     }
+    // Every enum the checker knows, stdlib included, before the program's own:
+    // a default argument is folded at the call, where its enum may not be
+    // declared or imported.
+    for def in typed.types.iter() {
+        if let rask_types::TypeDef::Enum { name, variants, .. } = def {
+            let units = variants.iter().filter(|(_, fields)| fields.is_empty()).map(|(v, _)| v.clone());
+            interp.register_enum(name.clone(), units.collect());
+        }
+    }
     interp.register_functions(decls);
 
     let records = mono.node_records(typed);

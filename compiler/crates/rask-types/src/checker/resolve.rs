@@ -812,7 +812,7 @@ impl TypeChecker {
         // A typed one is a declared struct and would otherwise take the
         // general path below, which knows nothing about payloads.
         if let Some(payload) = self.atomic_payload(&ty) {
-            return self.resolve_atomic_method(payload, &method, &args, &ret, span);
+            return self.resolve_atomic_method(payload, &method, &args, &ret, call_node, span);
         }
 
         // RK11. Without this the name falls through to the node type's own
@@ -1325,7 +1325,7 @@ impl TypeChecker {
                         // Named type corresponds to a builtin with hardcoded
                         // method resolution (Vec, Map, Shared, etc.).
                         let type_name = self.types.type_name(*type_id);
-                        self.resolve_builtin_method_by_name(&type_name, &[], &method, &args, &ret, span)
+                        self.resolve_builtin_method_by_name(&type_name, &[], &method, &args, &ret, call_node, span)
                             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span }))
                     }
                 }
@@ -1353,11 +1353,11 @@ impl TypeChecker {
                 self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
             }
             Type::UnresolvedNamed(name) if name == "File" => {
-                self.resolve_file_method(&method, &args, &ret, span)
+                self.resolve_file_method(&method, &args, &ret, call_node, span)
             }
             // Rack<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Rack" => {
-                self.resolve_rack_method(type_args, &method, &args, &ret, span)
+                self.resolve_rack_method(type_args, &method, &args, &ret, call_node, span)
             }
             // Link<T> — a reference. `eq`/`ne` compare node identity; anything
             // else went to the node's own methods above.
@@ -1376,27 +1376,27 @@ impl TypeChecker {
             }
             // Rack (bare, for Rack.new())
             Type::UnresolvedNamed(name) if name == "Rack" => {
-                self.resolve_rack_method(&[], &method, &args, &ret, span)
+                self.resolve_rack_method(&[], &method, &args, &ret, call_node, span)
             }
             // Vec<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
-                self.resolve_vec_method(type_args, &method, &args, &ret, span)
+                self.resolve_vec_method(type_args, &method, &args, &ret, call_node, span)
             }
             // Vec (bare, for static constructors like Vec.new())
             Type::UnresolvedNamed(name) if name == "Vec" => {
-                self.resolve_vec_method(&[], &method, &args, &ret, span)
+                self.resolve_vec_method(&[], &method, &args, &ret, call_node, span)
             }
             // Map<K, V>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Map" => {
-                self.resolve_map_method(type_args, &method, &args, &ret, span)
+                self.resolve_map_method(type_args, &method, &args, &ret, call_node, span)
             }
             // Map (bare, for static constructors like Map.new())
             Type::UnresolvedNamed(name) if name == "Map" => {
-                self.resolve_map_method(&[], &method, &args, &ret, span)
+                self.resolve_map_method(&[], &method, &args, &ret, call_node, span)
             }
             // Random (no type params — static and instance methods)
             Type::UnresolvedNamed(name) if name == "Random" => {
-                self.resolve_rng_method(&method, &args, &ret, span)
+                self.resolve_rng_method(&method, &args, &ret, call_node, span)
             }
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
@@ -1404,7 +1404,7 @@ impl TypeChecker {
             }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
-                self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
+                self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, call_node, span)
             }
             // `Channel.buffered(n)` / `.unbuffered()` with no explicit `<T>`.
             // `Channel` is declared in async.rk, so the stub-registry arm below
@@ -1417,7 +1417,7 @@ impl TypeChecker {
             // mints a fresh inner type when it gets no args, which is what's
             // wanted: the element type is pinned by the first `send`.
             Type::UnresolvedNamed(name) if name == "Channel" => {
-                self.resolve_concurrency_generic_method("Channel", &[], &method, &args, &ret, span)
+                self.resolve_concurrency_generic_method("Channel", &[], &method, &args, &ret, call_node, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
             Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
@@ -1545,7 +1545,7 @@ impl TypeChecker {
                         Ok(progress)
                     } else {
                         let type_name = self.types.type_name(*base);
-                        self.resolve_builtin_method_by_name(&type_name, generic_args, &method, &args, &ret, span)
+                        self.resolve_builtin_method_by_name(&type_name, generic_args, &method, &args, &ret, call_node, span)
                             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span }))
                     }
                 }
@@ -2166,7 +2166,7 @@ impl TypeChecker {
                 call_node,
             );
         }
-        self.resolve_vec_method(&type_args, method, &args, ret, span)
+        self.resolve_vec_method(&type_args, method, &args, ret, call_node, span)
     }
 
     /// A method on an open `File`: what stdlib/io.rk declares. It had a
@@ -2177,9 +2177,10 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
-        self.resolve_declared_by_name("File", method, args, ret, span)
+        self.resolve_declared_by_name("File", method, args, ret, call_node, span)
     }
 
     /// A method on a stdlib type the checker reaches by name (`Instant`,
@@ -2309,6 +2310,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         // What `Sender` and `Receiver` declare in stdlib/async.rk. `Shared`
@@ -2325,7 +2327,7 @@ impl TypeChecker {
                 .collect();
             let self_ty = Type::UnresolvedGeneric { name: type_name.to_string(), args: type_args.to_vec() };
             if let Some(answer) =
-                self.resolve_declared_stdlib_method(type_name, &self_ty, &targs, method, args, ret, span)
+                self.resolve_declared_stdlib_method(type_name, &self_ty, &targs, method, args, ret, call_node, span)
             {
                 return answer;
             }
@@ -2502,6 +2504,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let node_type = match type_args.first() {
@@ -2512,7 +2515,7 @@ impl TypeChecker {
             name: "Rack".to_string(),
             args: vec![GenericArg::Type(Box::new(node_type.clone()))],
         };
-        self.resolve_declared_stdlib_method("Rack", &self_ty, &[node_type], method, args, ret, span)
+        self.resolve_declared_stdlib_method("Rack", &self_ty, &[node_type], method, args, ret, call_node, span)
             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
@@ -2528,6 +2531,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Option<Result<bool, TypeError>> {
         let (Type::Named(id) | Type::Generic { base: id, .. }) = self.types.lookup(type_name)? else {
@@ -2544,7 +2548,7 @@ impl TypeChecker {
             .zip(type_args.iter())
             .map(|(p, t)| (p.as_str(), t.clone()))
             .collect();
-        Some(self.apply_method_sig(self_ty, method, &sig, subst, args.to_vec(), ret, None, span))
+        Some(self.apply_method_sig(self_ty, method, &sig, subst, args.to_vec(), ret, call_node, span))
     }
 
     /// A method on a `Vec<T>` the checker reaches by name: what `Vec`
@@ -2563,6 +2567,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
@@ -2575,7 +2580,7 @@ impl TypeChecker {
             args: vec![GenericArg::Type(Box::new(inner_type.clone()))],
         };
         if let Some(answer) =
-            self.resolve_declared_stdlib_method("Vec", &self_ty, &[inner_type.clone()], method, args, ret, span)
+            self.resolve_declared_stdlib_method("Vec", &self_ty, &[inner_type.clone()], method, args, ret, call_node, span)
         {
             return answer;
         }
@@ -2611,6 +2616,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let mut arg = |i: usize| match type_args.get(i) {
@@ -2625,7 +2631,7 @@ impl TypeChecker {
                 GenericArg::Type(Box::new(value.clone())),
             ],
         };
-        self.resolve_declared_stdlib_method("Map", &self_ty, &[key, value], method, args, ret, span)
+        self.resolve_declared_stdlib_method("Map", &self_ty, &[key, value], method, args, ret, call_node, span)
             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
@@ -2640,18 +2646,19 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Option<Result<bool, TypeError>> {
         // Strip generic params from name: "Vec<T>" → "Vec"
         let base_name = type_name;
         match base_name {
             "Vec" => {
-                Some(self.resolve_vec_method(type_args, method, args, ret, span))
+                Some(self.resolve_vec_method(type_args, method, args, ret, call_node, span))
             }
             "Map" => {
-                Some(self.resolve_map_method(type_args, method, args, ret, span))
+                Some(self.resolve_map_method(type_args, method, args, ret, call_node, span))
             }
-            "Random" => Some(self.resolve_rng_method(method, args, ret, span)),
+            "Random" => Some(self.resolve_rng_method(method, args, ret, call_node, span)),
             "Atomic" => {
                 let payload = match type_args.first() {
                     Some(GenericArg::Type(t)) => (**t).clone(),
@@ -2659,13 +2666,13 @@ impl TypeChecker {
                         .atomic_payload(&Type::UnresolvedNamed(type_name.to_string()))
                         .unwrap_or_else(|| self.ctx.fresh_var()),
                 };
-                Some(self.resolve_atomic_method(payload, method, args, ret, span))
+                Some(self.resolve_atomic_method(payload, method, args, ret, call_node, span))
             }
             name if Self::is_simd_type(name) => {
                 Some(self.resolve_simd_method(name, method, args, ret, span))
             }
             "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
-                Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, span))
+                Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, call_node, span))
             }
             // `Cell` and `Mutex` are here to be *rejected* with a message that
             // names the strategy that replaced them — without the arm they fall
@@ -2684,9 +2691,10 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
-        self.resolve_declared_by_name("Random", method, args, ret, span)
+        self.resolve_declared_by_name("Random", method, args, ret, call_node, span)
     }
 
     /// A method a non-generic stdlib type declares, or "no such method".
@@ -2696,10 +2704,11 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let ty = Type::UnresolvedNamed(type_name.to_string());
-        self.resolve_declared_stdlib_method(type_name, &ty, &[], method, args, ret, span)
+        self.resolve_declared_stdlib_method(type_name, &ty, &[], method, args, ret, call_node, span)
             .unwrap_or_else(|| {
                 Err(TypeError::NoSuchMethod { ty, method: method.to_string(), span })
             })
@@ -2829,6 +2838,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
         ret: &Type,
+        call_node: Option<NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         let self_ty = Type::UnresolvedGeneric {
@@ -2847,7 +2857,7 @@ impl TypeChecker {
         {
             return Err(TypeError::AtomicOpNeedsNumber { ty: val_ty, method: method.to_string(), span });
         }
-        self.resolve_declared_stdlib_method("Atomic", &self_ty, &[val_ty.clone()], method, args, ret, span)
+        self.resolve_declared_stdlib_method("Atomic", &self_ty, &[val_ty.clone()], method, args, ret, call_node, span)
             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
