@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a claim's generated inputs are built from (type.claims). The compiler
+// writes the input code for each claim from its parameter types; that code
+// calls these. An input is a list of choices: sampled from the claim's seed,
+// cut down while shrinking, or walked exhaustively. Zero is always the
+// smallest choice.
+//
+// Hand-written generators (type.claims/IN2) will build on this; until then
+// nothing but generated code should call it.
+
+public struct claims { }
+
+extend claims {
+    /// A choice below `bound`.
+    @native("rask_claim_draw")
+    public func draw(bound: u64) -> u64 {}
+
+    /// An integer `bits` wide, sign-extended when `signed` is 1: mostly small,
+    /// sometimes anything in range. An unsigned 64-bit value comes back with
+    /// its bits as they are.
+    @native("rask_claim_int")
+    public func int(bits: i64, signed: i64) -> i64 {}
+
+    /// A finite float.
+    @native("rask_claim_float")
+    public func float() -> f64 {}
+
+    /// Called at the end of every claim body: a body that returned before
+    /// reaching it discarded its input (type.claims/CL5).
+    @native("rask_claim_reached_end")
+    public func reached_end() {}
+
+    /// Append to how the current input prints in a counterexample.
+    @native("rask_claim_note")
+    public func note(text: string) {}
+}

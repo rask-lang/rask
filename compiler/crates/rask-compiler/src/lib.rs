@@ -57,12 +57,21 @@ pub struct CompilerConfig {
     pub cfg: CfgConfig,
     /// Opt-in warnings the command line turned on (`--warn blocking_print`).
     pub warn: Vec<String>,
+    /// The root package is a claims package, so it may declare claims
+    /// (type.claims/CL2). Nothing else may.
+    pub claims: bool,
 }
 
 impl CompilerConfig {
     /// A config for `cfg` with no opt-in warnings turned on.
     pub fn new(cfg: CfgConfig) -> Self {
-        Self { cfg, warn: Vec::new() }
+        Self { cfg, warn: Vec::new(), claims: false }
+    }
+
+    /// For compiling a package's claims (type.claims).
+    pub fn with_claims(mut self) -> Self {
+        self.claims = true;
+        self
     }
 
     /// Tell the frontend what machine it is compiling for.
@@ -75,6 +84,22 @@ impl CompilerConfig {
         rask_ast::primitives::set_pointer_bits(self.cfg.pointer_bits());
         rask_ast::primitives::set_c_char_unsigned(self.cfg.c_char_unsigned());
     }
+}
+
+/// E0951: a claim anywhere but a claims package (type.claims/CL2).
+fn misplaced_claims(decls: &[Decl]) -> Vec<Diagnostic> {
+    decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("claim")) => Some(
+                Diagnostic::error(format!("claim `{}` is outside a claims file", f.name))
+                    .with_code("E0951")
+                    .with_primary(f.span, "a claim can only be declared in a package's `claims.rk`")
+                    .with_help("move it to `claims.rk` beside the package's sources, and import the package there"),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A discovered package context for multi-file compilation.
@@ -424,6 +449,12 @@ pub fn check_loaded(
         decls.extend(parse_result.decls);
     }
 
+    let misplaced = misplaced_claims(&decls);
+    if !misplaced.is_empty() {
+        diags.extend(misplaced);
+        return PipelineOutput::fail_with_sources(diags, source_files);
+    }
+
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
     // --- Build configuration into `comptime` code (CC1) ---
@@ -720,6 +751,12 @@ fn check_package_scoped(
                     .map(unimported_annotation_diagnostic),
             );
         }
+    }
+    if !config.claims {
+        diags.extend(misplaced_claims(&pkg_ctx.all_decls));
+    }
+    for (_, decls) in &merged {
+        diags.extend(misplaced_claims(decls));
     }
     for (_, decls) in merged {
         pkg_ctx.all_decls.extend(decls);

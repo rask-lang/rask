@@ -763,15 +763,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                     let release = opts.profile == "release";
                     match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
                         Ok(_) => {
-                            let elapsed = start.elapsed();
-                            println!();
-                            println!(
-                                "   {} {} ({}) [{:.2}s]",
-                                "Finished".green().bold(),
-                                bin_path.display(),
-                                opts.profile,
-                                elapsed.as_secs_f64()
-                            );
+                            finish_build(path, 0, start, &bin_path, &opts.profile);
                             return;
                         }
                         Err(e) => {
@@ -852,15 +844,26 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     }
 
     // === LC1 Step 8-9: Link + report ===
+    finish_build(path, total_errors, start, &out_dir.join(&bin_name), &opts.profile);
+}
+
+/// Run the package's claims once it built (type.claims/R1), then report.
+/// Exits 1 on any error or a false claim.
+fn finish_build(path: &str, mut total_errors: usize, start: Instant, bin_path: &Path, profile: &str) {
+    if total_errors == 0
+        && super::claims::check_package_claims(path, crate::Format::Human, super::claims::ClaimsMode::Run)
+            == super::claims::ClaimsOutcome::Failed
+    {
+        total_errors += 1;
+    }
     let elapsed = start.elapsed();
     println!();
     if total_errors == 0 {
-        let bin_path = out_dir.join(&bin_name);
         println!(
             "   {} {} ({}) [{:.2}s]",
             "Finished".green().bold(),
             bin_path.display(),
-            opts.profile,
+            profile,
             elapsed.as_secs_f64()
         );
     } else {
