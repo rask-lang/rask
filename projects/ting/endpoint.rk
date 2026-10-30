@@ -85,13 +85,7 @@ extend Endpoint {
         let local = ep.socket.local_addr()
         let here = c_text(local)
         let there = c_text(server)
-        // Written as an assignment: an `if` with a `none` arm doesn't widen
-        // to `*u8?` yet (#1692).
-        mut remote: *u8? = none
-        if !server.is_empty() {
-            remote = unsafe there.as_ptr()
-        }
-        ep.quic = unsafe ting_quic_new(here.as_ptr(), remote)
+        ep.quic = unsafe ting_quic_new(here.as_ptr(), if server.is_empty() { none } else { there.as_ptr() })
         if ep.quic is none {
             return IoError.Other("not an address QUIC can use: {local} / {server}")
         }

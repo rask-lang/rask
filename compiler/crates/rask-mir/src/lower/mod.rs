@@ -31,6 +31,10 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
+/// No arm widenings: a lowering context built without a checked program.
+static EMPTY_ARM_WIDENINGS: std::sync::LazyLock<HashMap<NodeId, rask_types::Type>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 /// `none` for `Link<T>?` — the null address. See `rask_types::abi`.
 pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
@@ -408,6 +412,7 @@ impl<'a> MirContext<'a> {
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
+            arm_widenings: &typed.arm_widenings,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -535,6 +540,8 @@ pub struct MirContext<'a> {
     pub interface_methods: HashMap<String, Vec<String>>,
     /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
     pub interface_coercions: &'a HashMap<NodeId, String>,
+    /// See `TypedProgram::arm_widenings`.
+    pub arm_widenings: &'a HashMap<NodeId, rask_types::Type>,
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
@@ -682,6 +689,7 @@ impl<'a> MirContext<'a> {
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             err_returns: &EMPTY_COALESCE_SHAPE,
@@ -7665,6 +7673,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7752,6 +7761,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7846,6 +7856,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,

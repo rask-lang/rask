@@ -356,6 +356,8 @@ pub struct TypeChecker {
     /// interface's symbol (`TypeTable::interface_symbol`).
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
+    /// See `TypedProgram::arm_widenings`.
+    pub(super) arm_widenings: HashMap<NodeId, Type>,
     /// ER31a: `try` sites where the propagated error gets wrapped in a variant
     /// of the enclosing function's error enum. NodeId of the `try` expression →
     /// the wrapping variant. Both backends read this to build the enum value.
@@ -649,6 +651,7 @@ impl TypeChecker {
             in_assign_target: false,
             in_stmt_expr: false,
             interface_coercions: HashMap::new(),
+            arm_widenings: HashMap::new(),
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
@@ -1065,6 +1068,11 @@ impl TypeChecker {
             .collect();
 
         let interface_coercions = self.interface_coercions.clone();
+        let arm_widenings: HashMap<NodeId, Type> = self
+            .arm_widenings
+            .iter()
+            .map(|(n, t)| (*n, self.ctx.apply(t)))
+            .collect();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let err_returns = self.err_returns.clone();
@@ -1109,6 +1117,7 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
+            arm_widenings,
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,

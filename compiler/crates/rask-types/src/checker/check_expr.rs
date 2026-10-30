@@ -957,12 +957,10 @@ impl TypeChecker {
                         // don't need to agree. Return unit.
                         Type::Unit
                     } else {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            then_ty.clone(),
-                            else_ty,
+                        self.join_arms(
+                            vec![(then_ty, then_branch.id), (else_ty, else_branch.id)],
                             expr.span,
-                        ));
-                        then_ty
+                        )
                     }
                 } else {
                     Type::Unit
@@ -1088,7 +1086,7 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
-                let result_ty = self.ctx.fresh_var();
+                let mut arm_types: Vec<(Type, rask_ast::NodeId)> = Vec::new();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
                     self.push_scope();
@@ -1110,11 +1108,7 @@ impl TypeChecker {
                     // In statement position, arm types don't need to agree.
                     if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
                         every_arm_diverges = false;
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            result_ty.clone(),
-                            arm_ty,
-                            expr.span,
-                        ));
+                        arm_types.push((arm_ty, arm.body.id));
                     }
                 }
 
@@ -1130,7 +1124,7 @@ impl TypeChecker {
                     // failure leaves behind (#1026).
                     Type::Never
                 } else {
-                    result_ty
+                    self.join_arms(arm_types, expr.span)
                 }
             }
 
@@ -7166,4 +7160,46 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+impl TypeChecker {
+    /// The type of an `if` or `match` from its arms' types. The arms agree,
+    /// except that when one is a `T?` and another a bare `T`, the whole is the
+    /// `T?` and the bare arm gains the layer, as it would at an assignment
+    /// (type.optionals/OPT6): `if c { none } else { 5 }` is an `i64?`.
+    ///
+    /// Each arm used to be made equal to the others before anything knew the
+    /// target, so `none` and `5` never met in the middle (#1692).
+    pub(super) fn join_arms(&mut self, arms: Vec<(Type, rask_ast::NodeId)>, span: Span) -> Type {
+        let Some((first, _)) = arms.first().cloned() else {
+            return self.ctx.fresh_var();
+        };
+        let optional_arm = arms
+            .iter()
+            .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
+        let Some(target_at) = optional_arm else {
+            for (ty, _) in arms.into_iter().skip(1) {
+                self.ctx.add_constraint(TypeConstraint::Equal(first.clone(), ty, span));
+            }
+            return first;
+        };
+        let target = arms[target_at].0.clone();
+        for (i, (ty, node)) in arms.into_iter().enumerate() {
+            if i == target_at {
+                continue;
+            }
+            if self.ctx.apply(&ty).as_option().is_some() {
+                self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
+            } else {
+                self.coerce_into_node(
+                    rask_ast::coercion::CoercionSite::Branch,
+                    ty,
+                    target.clone(),
+                    Some(node),
+                    span,
+                );
+            }
+        }
+        target
+    }
 }

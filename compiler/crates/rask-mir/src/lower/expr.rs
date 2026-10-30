@@ -1521,6 +1521,19 @@ impl<'a> MirLowerer<'a> {
                 self.builder.set_local_type(*id, ty.clone());
             }
         }
+        // OPT6: an `if`/`match` arm that's a bare `T` where another arm is a
+        // `T?` gains the layer here, at the arm's own value, so every way an
+        // arm is lowered gets it (#1692).
+        if let Some(whole) = self.ctx.arm_widenings.get(&expr.id).cloned() {
+            let want = self.ctx.type_to_mir(&whole);
+            let wrapped = self.coerce_into_wrapper(
+                rask_ast::coercion::CoercionSite::Branch,
+                op,
+                &ty,
+                &want,
+            );
+            return Ok((wrapped, want));
+        }
         // TR5: a concrete value the checker flagged as flowing into an
         // `any Interface` position gets its vtable here — at the value, so every
         // use site is covered by one rule. Boxing at the call argument alone

@@ -1329,7 +1329,9 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
-
+        if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
+            self.arm_widenings.insert(node, expected.clone());
+        }
 
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {

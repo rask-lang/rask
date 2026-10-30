@@ -803,6 +803,10 @@ pub struct TypedProgram {
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,
+    /// An `if`/`match` arm that gains a `T?` layer because another arm is a
+    /// `T?` (`CoercionSite::Branch`): the arm's node → the whole expression's
+    /// type. Lowering wraps the arm's value there.
+    pub arm_widenings: HashMap<NodeId, Type>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after
     /// the checker — the merged decl list has no packages left in it.
