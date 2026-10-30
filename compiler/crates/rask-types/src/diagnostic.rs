@@ -1265,44 +1265,6 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("the rack owns its nodes for their whole life [mem.racks/RK1], and a link is a reference to one [RK2]. `take self` consumes the receiver, which would leave the rack holding a node that is gone — every other link to it would read freed memory")
             }
 
-            LocalSharedSent { name, span } => {
-                Diagnostic::error("this `Shared` is task-local and cannot be sent")
-                    .with_code("E0346")
-                    .with_primary(*span, format!("`{}` uses the `Local` strategy", name))
-                    .with_fix(
-                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
-                         locks more cheaply when writes dominate"
-                    )
-                    .with_why(
-                        "`Local` takes no lock at all, so two tasks touching it would \
-                         race. It is the opt-out, not the default, and this error is \
-                         what makes it safe to reach for [conc.sync/SH7]",
-                    )
-            }
-
-            LinkSent { name, ty, span } => {
-                let rendered = ty.to_string();
-                let label = if rendered.starts_with("Link<") {
-                    format!("`{}` is a link into a rack", name)
-                } else {
-                    format!("`{}` is a `{}`, which holds a link", name, rendered)
-                };
-                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
-                    .with_code("E0901")
-                    .with_primary(*span, label)
-                    .with_fix(
-                        "copy out what the task needs before the spawn — `let id = n.id` — \
-                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
-                         `copy` inside",
-                    )
-                    .with_why(
-                        "a link is its node's address, and every link can write the node, \
-                         so two tasks holding one would both write the same memory with \
-                         nothing ordering them. A rack moves as a whole, links and all; a \
-                         link on its own never crosses [mem.ownership/T2]",
-                    )
-            }
-
             SharedStrategyMismatch { found, expected, span } => {
                 Diagnostic::error(format!(
                     "this `Shared` uses the `{}` strategy, but `{}` is expected here",
@@ -1809,6 +1771,24 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0386")
                     .with_primary(*span, "unsafe operation outside unsafe block")
+            }
+
+            UnsafeWithoutContract { interface, span } => {
+                let (headline, primary) = match interface {
+                    Some(name) => (
+                        format!("`{}` isn't an unsafe interface, so `unsafe` on this conformance promises nothing", name),
+                        format!("nothing relies on a promise about `{}`", name),
+                    ),
+                    None => (
+                        "`unsafe` on an `extend` promises nothing".to_string(),
+                        "an `extend` adds methods; it can't make a promise".to_string(),
+                    ),
+                };
+                Diagnostic::error(headline)
+                    .with_code("E0932")
+                    .with_primary(*span, primary)
+                    .with_fix("remove `unsafe` here, and mark the methods that need it `unsafe func` instead")
+                    .with_why("`unsafe` on a conformance is where an author signs for a contract other unsafe code relies on. On an ordinary interface nothing does, and a reader would look for a promise that isn't there [mem.unsafe/UT3]")
             }
 
             LayoutAttribute { problem, span } => {

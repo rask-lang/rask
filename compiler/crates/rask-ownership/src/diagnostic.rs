@@ -106,32 +106,36 @@ impl ToDiagnostic for crate::OwnershipError {
             }
 
             FieldViewStored { into, path, root, field_ty, bound } => {
-                use crate::ViewSink;
+                use crate::Sink;
                 // The value as written at the store: the field read, or the
                 // name that holds the view.
                 let shown = bound.as_ref().map(|(n, _)| n.as_str()).unwrap_or(path);
                 let (headline, owner) = match into {
-                    ViewSink::Place(target) => (
+                    Sink::Return => (
+                        format!("returning `{}` would give it a second owner", path),
+                        "the caller".to_string(),
+                    ),
+                    Sink::Place { place: target, .. } => (
                         format!("`{}` and `{}` would be the same `{}`", target, path, field_ty),
                         format!("`{}`", target),
                     ),
-                    ViewSink::StructField { ty, field } => (
+                    Sink::StructField { ty, field } => (
                         format!("the new `{}` would share its `{}` with `{}`", ty, field, path),
                         format!("the new `{}`", ty),
                     ),
-                    ViewSink::Element => (
+                    Sink::Element => (
                         format!("`{}` stored in a tuple or array would get a second owner", path),
                         "the tuple or array".to_string(),
                     ),
-                    ViewSink::Payload { variant } => (
+                    Sink::Payload { variant } => (
                         format!("`{}` would share its payload with `{}`", variant, path),
                         format!("`{}`", variant),
                     ),
-                    ViewSink::Heap => (
+                    Sink::Heap => (
                         format!("`Heap({})` would be a second owner of `{}`", shown, path),
                         "the `Heap`".to_string(),
                     ),
-                    ViewSink::TakeArg { callee } => (
+                    Sink::TakeArg { callee } => (
                         format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
                         format!("`{}`", callee),
                     ),
@@ -142,7 +146,7 @@ impl ToDiagnostic for crate::OwnershipError {
                         name, path
                     ),
                     None => match into {
-                        ViewSink::Place(target) => format!(
+                        Sink::Place { place: target, .. } => format!(
                             "store a separate value: `{} = {}.clone()`",
                             target, path
                         ),
@@ -235,26 +239,35 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            LentValueEscapes { call, holder, lender, payload_ty, clone_form, lent_at } => {
+            LentValueEscapes { into, call, holder, lender, payload_ty, clone_form, lent_at } => {
+                use crate::Sink;
+                let verb = if matches!(into, Sink::Return) { "hand back" } else { "store" };
                 let fix = match clone_form {
                     Some(m) => format!(
-                        "hand back a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
-                        lender, m, payload_ty
+                        "{} a copy — `{}` has `{}`, which allocates a new `{}` and says so at the call site",
+                        verb, lender, m, payload_ty
                     ),
                     None => format!(
-                        "hand back a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
-                        payload_ty
+                        "{} a copy — `.clone()` what the lookup answers with, so the new `{}` is visible here",
+                        verb, payload_ty
                     ),
                 };
-                Diagnostic::error(format!(
-                    "`{}` hands back what `{}` still holds — returning it gives the caller a second name for it",
-                    call, holder
-                ))
+                let second = match into {
+                    Sink::Return => "returning it gives the caller a second name for it".to_string(),
+                    Sink::Place { place, .. } => format!("storing it in `{}` gives it a second owner", place),
+                    Sink::StructField { ty, field } => format!("the new `{}`'s `{}` would be a second owner of it", ty, field),
+                    Sink::Element => "a tuple or array holding it would be a second owner".to_string(),
+                    Sink::Payload { variant } => format!("`{}` holding it would be a second owner", variant),
+                    Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
+                    Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
+                };
+                let primary = match into {
+                    Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
+                    _ => format!("this would own a `{}` that `{}` still holds", payload_ty, holder),
+                };
+                Diagnostic::error(format!("`{}` hands back what `{}` still holds — {}", call, holder, second))
                 .with_code("E0879")
-                .with_primary(
-                    self.span,
-                    format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
-                )
+                .with_primary(self.span, primary)
                 .with_secondary(*lent_at, format!("`{}` keeps the value; the lookup reads it in place", holder))
                 .with_fix(fix)
                 .with_why(
@@ -735,6 +748,41 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
+            LocalSharedSent { name } => {
+                Diagnostic::error("this `Shared` is task-local and cannot be sent")
+                    .with_code("E0346")
+                    .with_primary(self.span, format!("`{}` uses the `Local` strategy", name))
+                    .with_fix(
+                        "drop the `.local` — `Shared.new(…)` locks, and `Shared.mutex(…)` \
+                         locks more cheaply when writes dominate"
+                    )
+                    .with_why(
+                        "`Local` takes no lock at all, so two tasks touching it would \
+                         race. It is the opt-out, not the default, and this error is \
+                         what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+            LinkSent { name, ty, bare_link } => {
+                let label = if *bare_link {
+                    format!("`{}` is a link into a rack", name)
+                } else {
+                    format!("`{}` is a `{}`, which holds a link", name, ty)
+                };
+                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
+                    .with_code("E0901")
+                    .with_primary(self.span, label)
+                    .with_fix(
+                        "copy out what the task needs before the spawn — `let id = n.id` — \
+                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
+                         `copy` inside",
+                    )
+                    .with_why(
+                        "a link is its node's address, and every link can write the node, \
+                         so two tasks holding one would both write the same memory with \
+                         nothing ordering them. A rack moves as a whole, links and all; a \
+                         link on its own never crosses [mem.ownership/T2]",
+                    )
+            }
             LinkOutlivesRack { link, rack, via, carried } => {
                 let holds = if *carried { "holds links into" } else { "lives in" };
                 let (primary, fix) = match via {
@@ -1134,13 +1182,20 @@ impl ToDiagnostic for crate::OwnershipError {
                            consumed on some paths but not others has no definite answer at scope exit (C4)")
             }
 
-            WithBlockStructuralMutation { collection, operation, binding_span } => {
-                Diagnostic::error(format!(
-                    "cannot {} `{}` inside `with` block",
-                    operation, collection
-                ))
+            WithBlockStructuralMutation { collection, operation, via, binding_span } => {
+                let (headline, primary) = match via {
+                    Some(callee) => (
+                        format!("`{}` can resize `{}`, and a `with` block is holding an element of it", callee, collection),
+                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                    ),
+                    None => (
+                        format!("cannot {} `{}` inside `with` block", operation, collection),
+                        format!("{} not allowed inside with block", operation),
+                    ),
+                };
+                Diagnostic::error(headline)
                 .with_code("E0808")
-                .with_primary(self.span, format!("{} not allowed inside with block", operation))
+                .with_primary(self.span, primary)
                 .with_secondary(*binding_span, "element borrowed here")
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
@@ -1200,13 +1255,124 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("a task works on its own copy of what it captured, and `join()` is not a write-back — the write would be thrown away when the task ends")
             }
 
-            ForMutateStructuralMutation { collection, operation, loop_span } => {
+            HeldNodeDeleted { collection, link, holder_span, in_loop } => {
+                let holder = if *in_loop { "the `for mutate` loop" } else { "the `with` block" };
                 Diagnostic::error(format!(
-                    "cannot {} `{}` during `for mutate` — invalidates iteration",
-                    operation, collection
+                    "this can delete the node holding `{}`, and {} is still using it",
+                    collection, holder
                 ))
+                .with_code("E0928")
+                .with_primary(self.span, format!("the node `{}` names can be freed here", link))
+                .with_secondary(*holder_span, format!("`{}` is held from here until the block ends", collection))
+                .with_fix(format!(
+                    "delete after the block ends, or copy what you need out of `{}` first",
+                    collection
+                ))
+                .with_why(
+                    "a node's fields live in the node, and deleting it frees them. Nodes never \
+                     move, so deleting a different node is fine, but this one is where the held \
+                     element lives [mem.racks/RK1, mem.borrowing/W2]",
+                )
+            }
+
+            PointerDangles { name, pointee, loss, lost_at } => {
+                use crate::PointerLoss;
+                let (what, at, fix) = match loss {
+                    PointerLoss::Resized { operation, via } => (
+                        "changed size, so its storage may have moved".to_string(),
+                        match via {
+                            Some(callee) => format!("`{}` can resize `{}` here", callee, pointee),
+                            None => format!("`{}` here can move `{}`'s storage", operation, pointee),
+                        },
+                        format!("take the pointer again after the change: `{} = unsafe {}.as_ptr()`", name, pointee),
+                    ),
+                    PointerLoss::Moved => (
+                        "was moved, and its storage went with it".to_string(),
+                        format!("`{}` moves here", pointee),
+                        format!("use `{}` before `{}` moves, or take a pointer into wherever it went", name, pointee),
+                    ),
+                    PointerLoss::Replaced => (
+                        "was replaced, which freed what it held".to_string(),
+                        format!("`{}` is replaced here", pointee),
+                        format!("take the pointer again after the assignment: `{} = unsafe {}.as_ptr()`", name, pointee),
+                    ),
+                    PointerLoss::OutOfScope => (
+                        "went out of scope".to_string(),
+                        format!("`{}` is freed at the end of this block", pointee),
+                        format!("declare `{}` where `{}` is, so it lives as long as the pointer is used", pointee, name),
+                    ),
+                };
+                Diagnostic::error(format!("`{}` points into `{}`, which {}", name, pointee, what))
+                    .with_code("E0929")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*lost_at, at)
+                    .with_fix(fix)
+                    .with_why(
+                        "a raw pointer doesn't keep what it points into alive or in place. The compiler \
+                         knows where each pointer came from, so a read here is an error rather than a \
+                         read of freed memory [mem.unsafe/PT3]",
+                    )
+            }
+
+            PointerEscapes { pointee, into } => {
+                use crate::PointerSink;
+                let (headline, primary, fix) = match into {
+                    PointerSink::Return => (
+                        format!("this returns a pointer into `{}`, which is freed when the function returns", pointee),
+                        format!("points into `{}`", pointee),
+                        format!("return `{}` itself, or allocate with `alloc` and have the caller free it", pointee),
+                    ),
+                    PointerSink::Place(place) => (
+                        format!("`{}` outlives `{}`, so it can't hold a pointer into it", place, pointee),
+                        format!("points into `{}`, which is freed when the function returns", pointee),
+                        format!("store `{}` itself, or allocate with `alloc` and free it explicitly", pointee),
+                    ),
+                    PointerSink::Task(capture) => (
+                        format!("`{}` points into `{}` and can't cross into a task", capture, pointee),
+                        format!("the task may still run after `{}` is gone", pointee),
+                        format!("move `{}` into the task instead, or share it through a `Shared`", pointee),
+                    ),
+                };
+                Diagnostic::error(headline)
+                    .with_code("E0930")
+                    .with_primary(self.span, primary)
+                    .with_fix(fix)
+                    .with_why(
+                        "a raw pointer doesn't keep what it points into alive. One into this frame's \
+                         own values is good only while the frame is [mem.unsafe/PT2]",
+                    )
+            }
+
+            PointerWriteUnderView { pointee, holder_span, in_loop } => {
+                let holder = if *in_loop { "the `for mutate` loop" } else { "the `with` block" };
+                Diagnostic::error(format!(
+                    "this writes through a pointer into `{}` while {} holds a place in it",
+                    pointee, holder
+                ))
+                .with_code("E0931")
+                .with_primary(self.span, format!("writes into `{}`", pointee))
+                .with_secondary(*holder_span, format!("`{}` is held from here until the block ends", pointee))
+                .with_fix("write through the binding instead, or after the block ends".to_string())
+                .with_why(
+                    "while a binding holds a place, it's the one name that may change it. A write \
+                     through a pointer would land under it and be lost or overwrite it [mem.unsafe/PT4]",
+                )
+            }
+
+            ForMutateStructuralMutation { collection, operation, via, loop_span } => {
+                let (headline, primary) = match via {
+                    Some(callee) => (
+                        format!("`{}` can resize `{}`, which a `for mutate` is iterating", callee, collection),
+                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                    ),
+                    None => (
+                        format!("cannot {} `{}` during `for mutate` — invalidates iteration", operation, collection),
+                        format!("{} not allowed during mutable iteration", operation),
+                    ),
+                };
+                Diagnostic::error(headline)
                 .with_code("E0814")
-                .with_primary(self.span, format!("{} not allowed during mutable iteration", operation))
+                .with_primary(self.span, primary)
                 .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
                 .with_help("collect changes and apply them after the loop")
                 .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")

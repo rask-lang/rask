@@ -2729,6 +2729,67 @@ fn error_a_task_local_shared_cannot_be_sent() {
     );
 }
 
+// ctrl.comptime/CT68: a generic that recurses at a bigger type stops at the
+// depth limit with the chain, instead of hanging the compiler (#1663). The
+// interpreter has nothing to instantiate and answers.
+#[test]
+fn polymorphic_recursion_stops_at_the_depth_limit() {
+    let (_stdout, stderr, code) = run_capture("--native", "polymorphic_recursion.rk");
+    assert_ne!(code, 0, "native has no finite set of copies to build: {stderr}");
+    assert!(stderr.contains("E0927"), "{stderr}");
+    assert!(stderr.contains("`nest<i32>` needs `nest<Vec<i32>>`"), "the chain starts readable: {stderr}");
+    let (stdout, stderr, code) = run_capture("--interp", "polymorphic_recursion.rk");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "0\n");
+}
+
+#[test]
+fn error_rack_delete_while_held() {
+    let (failed, out) = compile_error_output("rack_delete_while_held.rk");
+    assert!(failed, "a delete of a held node, or through a closure, must be rejected: {}", out);
+    // The held node deleted, cleared, and taken by a `deleting` call (#1666);
+    // a link read after a closure deleted or cleared its node (#1665).
+    // Deleting a different node, directly or in a closure, reports nothing.
+    assert_eq!(out.matches("error[E0928]").count(), 3, "held node: {}", out);
+    assert_eq!(out.matches("error[E0328]").count(), 2, "through a closure: {}", out);
+}
+
+#[test]
+fn error_held_source_resized() {
+    let (failed, out) = compile_error_output("held_source_resized.rk");
+    assert!(failed, "resizing what a with/for mutate holds must be rejected: {}", out);
+    // Through a helper (two levels), a reassignment, a held field cleared or
+    // reset through its owner's method: E0808. Through a helper and on a held
+    // field during `for mutate`: E0814. The allowed shapes report nothing.
+    assert_eq!(out.matches("error[E0808]").count(), 4, "with: {}", out);
+    // ... plus one through an interface object, taken to resize.
+    assert_eq!(out.matches("error[E0814]").count(), 3, "for mutate: {}", out);
+    assert!(
+        out.contains("`wipe_twice` can resize `v`") && out.contains("`reset` can resize `h.items`"),
+        "the message names the callee that would resize it: {}",
+        out
+    );
+}
+
+#[test]
+fn error_flow_through_shapes() {
+    let (failed, out) = compile_error_output("flow_through_shapes.rk");
+    assert!(failed, "restricted values reaching a destination must be rejected: {}", out);
+    // A lookup stored in a field and returned in a tuple; a link returned
+    // through an `if` (two arms, two links) and a `match` (two arms, one link).
+    assert_eq!(out.matches("error[E0879]").count(), 2, "lookup escapes: {}", out);
+    assert_eq!(out.matches("error[E0379]").count(), 3, "link escapes, one per link: {}", out);
+    // A closure over a dying local: through an `if`, inside a tuple literal,
+    // and carried in a bound tuple then returned whole, destructured, or read
+    // out of a struct field. Kept local, it compiles.
+    assert_eq!(out.matches("error[E0862]").count(), 5, "frame-bound closures: {}", out);
+    assert!(
+        out.contains("storing it in `h.items`") && out.contains("a tuple or array holding it"),
+        "the lookup message names where it was going: {}",
+        out
+    );
+}
+
 #[test]
 fn error_shared_cycle() {
     let (failed, out) = compile_error_output("shared_cycle.rk");

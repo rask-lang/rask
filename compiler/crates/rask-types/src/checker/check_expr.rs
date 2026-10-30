@@ -623,33 +623,6 @@ impl TypeChecker {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
-                    // A spawn needs to know which names reached a task-local box
-                    // or a link, and where. Recorded here rather than re-walked
-                    // at the `spawn`, which would have to know every expression
-                    // shape to be right; judged after solving, because right now
-                    // the type of a `let c = Shared.new(0)` is usually still a
-                    // variable.
-                    // A name whose type is a type parameter is recorded too: a
-                    // closure capturing it is judged per instantiation.
-                    let resolved = self.resolve_named(&self.ctx.apply(&ty));
-                    let generic = Self::names_type_param(&resolved, &|n| {
-                        self.types.is_type_param_in_scope(n)
-                    });
-                    if generic
-                        || matches!(resolved, Type::Var(_))
-                        || Self::type_is_shared(&resolved, &self.types)
-                        || self.types.task_bound(&resolved).is_some()
-                    {
-                        let depth = self.local_depth(name).unwrap_or(0);
-                        let type_params = self.types.type_param_scope();
-                        self.task_bound_uses.push(super::TaskBoundUse {
-                            name: name.clone(),
-                            ty: ty.clone(),
-                            span: expr.span,
-                            depth,
-                            type_params,
-                        });
-                    }
                     ty
                 } else if let Some(type_id) = self
                     .types
@@ -1918,7 +1891,6 @@ impl TypeChecker {
             }
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
-                self.closure_spans.push((expr.id, expr.span, self.local_types.len()));
                 // A slot type still naming a generic parameter (`func(T)` before
                 // substitution) says nothing the body can use yet.
                 let expected_params = self.closure_param_expectations.remove(&expr.id);
@@ -2021,24 +1993,9 @@ impl TypeChecker {
             // A task block. Its value is the task's result, so the expression
             // is a `Handle` of whatever the block produces (conc.async/H5).
             ExprKind::Spawn { body, .. } => {
-                // What the block names from outside crosses to the task: a
-                // link or a `Local` box there is refused once types are solved
-                // (`validate_spawn_captures`), and in a generic body, per
-                // instantiation.
-                let depth = self.local_types.len();
-                self.spawn_spans.push((body.id, body.span, depth));
-                // A closure the block calls by name crosses with it.
-                let mut named: Vec<(rask_ast::Span, usize)> = Vec::new();
-                rask_ast::visit::walk_expr(body, &mut |e| {
-                    if let ExprKind::Ident(n) = &e.kind {
-                        if let Some(d) = self.local_depth(n) {
-                            if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
-                                named.extend(bound.iter().copied());
-                            }
-                        }
-                    }
-                });
-                self.spawn_spans.extend(named.into_iter().map(|(span, d)| (body.id, span, d)));
+                // What the block captures, and whether any of it may not cross
+                // to another task, is the ownership pass's to answer: it knows
+                // each closure's captures (`check_task_crossing`).
                 let body_ty = self.infer_expr(body);
                 let result = match self.ctx.apply(&body_ty) {
                     Type::Fn { ret, .. } => *ret,
@@ -6134,139 +6091,6 @@ impl TypeChecker {
             }
             _ => None,
         }
-    }
-
-    /// Report every task-local `Shared` (SH7) and every value carrying a link
-    /// (`mem.ownership/T2`) a task block reaches.
-    ///
-    /// A value is captured by naming it, so the names checked inside a task
-    /// block's span are exactly the values that task can touch. Matching on
-    /// span containment beats re-walking the body, which would have to know
-    /// every expression and statement shape to be right.
-    ///
-    /// Runs after constraint solving for the same reason
-    /// `validate_pending_mutations` does: during the walk, the type of a
-    /// `let c = Shared.new(0)` is usually still a variable.
-    pub(super) fn validate_spawn_captures(&mut self) {
-        let uses = std::mem::take(&mut self.task_bound_uses);
-        self.mark_task_bound_closures(&uses);
-        let spawns = std::mem::take(&mut self.spawn_spans);
-        if spawns.is_empty() {
-            return;
-        }
-        let mut reported: std::collections::HashSet<(String, usize)> =
-            std::collections::HashSet::new();
-        let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
-            inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
-        };
-        for super::TaskBoundUse { name, ty, span, depth, .. } in uses {
-            // Made inside the task — a `let` in the block, a pattern binding —
-            // sits deeper than the block. Only what it reaches from outside
-            // crosses. The outermost task that captures it is the one to fix.
-            let Some(i) = spawns
-                .iter()
-                .position(|(_, block, block_depth)| within(span, block) && depth <= *block_depth)
-            else {
-                continue;
-            };
-            let resolved = self.resolve_named(&self.ctx.apply(&ty));
-            let error = match self.types.task_bound(&resolved) {
-                Some(crate::TaskBound::LocalBox) => {
-                    TypeError::LocalSharedSent { name: name.clone(), span }
-                }
-                Some(crate::TaskBound::Link) => TypeError::LinkSent {
-                    name: name.clone(),
-                    ty: self.types.resolve_type_names(&resolved),
-                    span,
-                },
-                None => continue,
-            };
-            if reported.insert((name, i)) {
-                self.errors.push(error);
-            }
-        }
-    }
-
-    /// Every closure that captures a task-bound value, by the same rule the
-    /// task block check uses: a use inside the closure of a name from a scope
-    /// no deeper than the closure's own.
-    ///
-    /// A task block that names such a closure value — `let f = reader(link)`,
-    /// then `spawn { f() }` — would hand the link to another task without the
-    /// block mentioning it, so the closure carries a flag and the spawn
-    /// refuses a flagged capture when the task starts (#1356). A task block's
-    /// own closure node is one of these too: in a generic body that is how a
-    /// `T` that turns out to be a link is caught.
-    ///
-    /// A capture whose type names a type parameter can't be judged here: `x: T`
-    /// is a link in one instantiation and an `i64` in the next. Those go into
-    /// `generic_closure_captures` for whoever sees the concrete type.
-    fn mark_task_bound_closures(&mut self, uses: &[super::TaskBoundUse]) {
-        let closures = std::mem::take(&mut self.closure_spans);
-        if closures.is_empty() {
-            return;
-        }
-        let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
-            inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
-        };
-        for u in uses {
-            let resolved = self.resolve_named(&self.ctx.apply(&u.ty));
-            let bound = self.types.task_bound(&resolved).is_some();
-            if !bound && !Self::names_type_param(&resolved, &|n| u.type_params.iter().any(|p| p == n)) {
-                continue;
-            }
-            for (id, span, depth) in &closures {
-                if !(within(u.span, span) && u.depth <= *depth) {
-                    continue;
-                }
-                if bound {
-                    self.task_bound_closures.insert(*id);
-                    continue;
-                }
-                let captures = self.generic_closure_captures.entry(*id).or_default();
-                if !captures.iter().any(|(n, t)| *n == u.name && *t == resolved) {
-                    captures.push((u.name.clone(), resolved.clone()));
-                }
-            }
-        }
-        // Already refused whatever it's instantiated with.
-        let bound = &self.task_bound_closures;
-        self.generic_closure_captures.retain(|id, _| !bound.contains(id));
-    }
-
-    /// Does this type mention a name `is_param` says is a type parameter?
-    fn names_type_param(ty: &Type, is_param: &dyn Fn(&str) -> bool) -> bool {
-        let params = is_param;
-        let arg = |a: &GenericArg| matches!(a, GenericArg::Type(t) if Self::names_type_param(t, params));
-        match ty {
-            Type::UnresolvedNamed(n) => is_param(n),
-            Type::Generic { args, .. } => args.iter().any(arg),
-            Type::UnresolvedGeneric { args, .. } => args.iter().any(arg),
-            Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(|t| Self::names_type_param(t, params))
-            }
-            Type::Array { elem, .. } => Self::names_type_param(elem, params),
-            Type::Result { ok, err } => {
-                Self::names_type_param(ok, params) || Self::names_type_param(err, params)
-            }
-            _ => false,
-        }
-    }
-
-    /// Remember a closure bound to `name` by `let`, `mut` or `=`, for a task
-    /// block that calls it by name. A name rebound several times keeps every
-    /// closure it was given: whichever one is live at the spawn, the check
-    /// covers it.
-    pub(super) fn note_closure_binding(&mut self, name: &str, value: &Expr) {
-        if !matches!(value.kind, ExprKind::Closure { .. }) {
-            return;
-        }
-        let Some(holder) = self.local_depth(name) else { return };
-        let written = self.local_types.len();
-        self.closure_bindings
-            .entry((name.to_string(), holder))
-            .or_default()
-            .push((value.span, written));
     }
 
     /// W9: warn when a `with` block over a sync box assigns two or more fields

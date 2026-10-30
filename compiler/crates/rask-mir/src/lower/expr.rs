@@ -1490,6 +1490,15 @@ impl<'a> MirLowerer<'a> {
         self.builder.set_span(parent_span);
         let (op, ty) = lowered?;
         self.mark_consumed_by(expr);
+        // A call that answers a raw pointer answers one into its arguments
+        // (mem.unsafe/PT1): `s.as_ptr()` points into `s`. Said on the call, so
+        // liveness keeps `s` for as long as the pointer is in use. Without it
+        // the string was released at `as_ptr`, its last use by name.
+        if let (ExprKind::Call { .. } | ExprKind::MethodCall { .. }, MirOperand::Local(id)) = (&expr.kind, &op) {
+            if matches!(self.ctx.lookup_raw_type(expr.id), Some(rask_types::Type::RawPtr(_))) {
+                self.builder.mark_points_into_args(*id);
+            }
+        }
         // Lowering works each expression's type out as it goes, and lands on
         // `Ptr` — "some address, contents unknown" — whenever it can't. The
         // checker already answered the question; ask it here, once, instead of

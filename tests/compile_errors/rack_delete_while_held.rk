@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Deletes that free a node something is still using.
+//
+// `with a.items[0]` and `for mutate x in a.items`, where `a` is a link, hold a
+// place inside the node `a` names. Deleting that node, or any delete that picks
+// its own nodes, freed the element under the binding (#1666). And a closure
+// that deletes through a captured rack is that delete at the call, so the link
+// it took is dead afterwards (#1665). Deleting a different node is fine: nodes
+// never move.
+
+import memory.Rack
+import memory.Link
+
+struct Node {
+    v: i32
+    items: Vec<i32>
+    next: Link<Node>?
+}
+
+func kill_all(deleting r: Rack<Node>) {
+    r.clear()
+}
+
+func held_node_deleted() {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, items: [1, 2], next: none))
+    let b = r.insert(Node(v: 2, items: [3], next: none))
+    with a.items[0] as first {
+        r.delete(b)              // fine: another node
+        println(first)
+    }
+    with a.items[0] as first {
+        r.delete(a)              // ERROR: E0928
+        println(first)
+    }
+}
+
+func held_node_cleared() {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, items: [1, 2], next: none))
+    with a.items[0] as first {
+        r.clear()                // ERROR: E0928
+        println(first)
+    }
+    // `clear` killed `a`, so the loop holds a node of its own.
+    let c = r.insert(Node(v: 3, items: [4], next: none))
+    for mutate x in c.items {
+        kill_all(deleting r)     // ERROR: E0928
+        x += 1
+    }
+}
+
+func through_a_closure() {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, items: [], next: none))
+    let kill = || { r.delete(a) }
+    kill()
+    println(a.v)                 // ERROR: E0328
+}
+
+func cleared_through_a_closure() {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, items: [], next: none))
+    let wipe = || { r.clear() }
+    wipe()
+    println(a.v)                 // ERROR: E0328
+}
+
+// Fine: the closure deletes another node, so `a` is still alive.
+func closure_deletes_another() {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node(v: 1, items: [], next: none))
+    let b = r.insert(Node(v: 2, items: [], next: none))
+    let kill = || { r.delete(b) }
+    kill()
+    println(a.v)
+}
+
+func main() {
+    held_node_deleted()
+    held_node_cleared()
+    through_a_closure()
+    cleared_through_a_closure()
+    closure_deletes_another()
+}

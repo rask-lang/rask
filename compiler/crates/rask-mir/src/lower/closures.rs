@@ -340,9 +340,16 @@ impl<'a> MirLowerer<'a> {
         } else {
             crate::CaptureAccess::Borrowed
         };
-        let captures = crate::stmt::lay_out_captures(
+        let mut captures = crate::stmt::lay_out_captures(
             free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), by_ref, *copy)),
         );
+        // CM3: a carried capture that is a lent parameter of this frame is the
+        // caller's, held for it. The environment must not free it.
+        if let Some(lent) = closure_id.and_then(|id| self.ctx.lent_captures.get(&id)) {
+            for (cap, (name, ..)) in captures.iter_mut().zip(free_vars.iter()) {
+                cap.lent = lent.iter().any(|l| l == name);
+            }
+        }
 
         // 4. Synthesize a MIR function for the closure body.
         //

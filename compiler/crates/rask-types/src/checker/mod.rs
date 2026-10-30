@@ -46,7 +46,7 @@ pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass
 pub use parse_type::resolve_type_expr;
 pub use declarations::is_type_param_name;
 pub use generics::{bind_header_pattern, bind_header_patterns};
-pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
+pub use declarations::{binary_field_runtime_type, header_type_params, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::ActiveBorrow;
 
@@ -132,19 +132,6 @@ pub enum UnsafeCategory {
     Transmute,
     UnionFieldAccess,
     UncheckedArith,
-}
-
-/// A name used somewhere a `spawn` might capture it. See `task_bound_uses`.
-pub(super) struct TaskBoundUse {
-    pub name: String,
-    pub ty: Type,
-    pub span: rask_ast::Span,
-    /// Depth of the local scope the name was found in. One declared inside the
-    /// spawned closure is deeper than the call and belongs to the task.
-    pub depth: usize,
-    /// The type parameters in scope at the use. A closure capturing a name
-    /// whose type mentions one is judged per instantiation.
-    pub type_params: Vec<String>,
 }
 
 pub struct TypeChecker {
@@ -453,16 +440,6 @@ pub struct TypeChecker {
     /// the receiver has a real type to answer from instead of the union of
     /// every stdlib method name (#928).
     pub(super) pending_self_mutations: Vec<PendingSelfMutation>,
-    /// Every use of a name that might turn out to be something a task can't
-    /// be handed — a `Local` box (SH7) or a value carrying a `Link` (T2) — with
-    /// its type and span. Checked after constraint solving: during the walk the
-    /// type is usually still a variable, since `let c = Shared.new(0)` is solved
-    /// later.
-    pub(super) task_bound_uses: Vec<TaskBoundUse>,
-    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
-    pub(super) task_bound_closures: std::collections::HashSet<NodeId>,
-    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
-    pub(super) generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// Suppressions from the enclosing function's `@allow(...)` attributes.
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
@@ -486,20 +463,6 @@ pub struct TypeChecker {
     /// `staged()` calls already reported. A body can be inferred more than once
     /// and the error is about where the call sits, not about a type.
     pub(super) staged_reported: std::collections::HashSet<rask_ast::NodeId>,
-    /// Every task block's body: its closure node, its span and the local scope
-    /// depth it was written at. A use inside one of these of a name from a
-    /// scope no deeper than that is a capture: the name is reached from
-    /// another task.
-    pub(super) spawn_spans: Vec<(NodeId, rask_ast::Span, usize)>,
-    /// Closures bound to a name, keyed by the name and the depth of the scope
-    /// holding it, each with its span and the scope depth where it was
-    /// written. A task block that calls one by name runs its body on the task
-    /// as surely as its own, so the closure's captures are checked the same way.
-    pub(super) closure_bindings:
-        HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
-    /// Every closure expression — task blocks' included — with its span and
-    /// the scope depth it was written at, for `mark_task_bound_closures`.
-    pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Calls that wrote a named argument, checked once callees are settled.
     pub(super) labeled_calls: Vec<arg_labels::LabeledCall>,
     /// Every method call with where it was written, for the visibility check.
@@ -724,16 +687,10 @@ impl TypeChecker {
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
-            task_bound_uses: Vec::new(),
-            generic_closure_captures: HashMap::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
-            spawn_spans: Vec::new(),
-            closure_spans: Vec::new(),
-            closure_bindings: HashMap::new(),
-            task_bound_closures: std::collections::HashSet::new(),
             labeled_calls: Vec::new(),
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
@@ -858,7 +815,6 @@ impl TypeChecker {
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
         self.validate_pending_mutations();
-        self.validate_spawn_captures();
 
         // ER3a: verify no `T or E` in a callee's signature collapsed to `E or E`
         // once the type args are known.
@@ -1173,8 +1129,10 @@ impl TypeChecker {
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
-            task_bound_closures: std::mem::take(&mut self.task_bound_closures),
-            generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
+            // The ownership pass works these out; the driver writes them back.
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
+            lent_captures: HashMap::new(),
             try_chain_placement,
             else_binding_types,
             unsafe_ops,

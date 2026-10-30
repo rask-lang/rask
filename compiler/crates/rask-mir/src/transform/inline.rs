@@ -754,6 +754,7 @@ fn remap_stmt(
                     size: c.size,
                     by_ref: c.by_ref,
                     copy: c.copy,
+                    lent: c.lent,
                 })
                 .collect(),
             heap: *heap,
@@ -877,6 +878,7 @@ fn remap_stmt(
                     size: c.size,
                     by_ref: c.by_ref,
                     copy: c.copy,
+                    lent: c.lent,
                 })
                 .collect(),
         },

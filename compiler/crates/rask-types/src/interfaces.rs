@@ -1778,6 +1778,8 @@ pub fn primitive_conformances(ty: &Type) -> &'static [&'static str] {
     const SCALAR: &[&str] = &["Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug"];
     const BYTES: &[&str] = &["Equal", "Comparable", "Hashable", "Cloneable", "Debug"];
     const UNIT: &[&str] = &["Equal", "Hashable", "Cloneable", "Displayable", "Debug"];
+    // An address: what it points at isn't part of it (mem.unsafe/UT4).
+    const POINTER: &[&str] = &["Equal", "Cloneable"];
     match ty {
         Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => SIGNED,
         Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => UNSIGNED,
@@ -1785,6 +1787,7 @@ pub fn primitive_conformances(ty: &Type) -> &'static [&'static str] {
         Type::Bool | Type::Char | Type::String => SCALAR,
         Type::Bytes => BYTES,
         Type::Unit => UNIT,
+        Type::RawPtr(_) => POINTER,
         _ => &[],
     }
 }

@@ -26,7 +26,14 @@ struct WorkItem {
     /// Every type parameter this copy fixes, named. Owner's first, then the
     /// method's own — the order the symbol name is built from.
     type_args: Vec<TypeBinding>,
+    /// How many generic instantiations in a row demanded this one (CT68).
+    depth: usize,
 }
+
+/// ctrl.comptime/CT68: an instantiation chain longer than this is an error.
+/// Polymorphic recursion (`nest<T>` calling `nest<Vec<T>>`) makes one that
+/// never ends; anything legitimate is far shorter.
+pub const INSTANTIATION_LIMIT: usize = 64;
 
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"
@@ -96,6 +103,19 @@ pub struct Monomorphizer<'a> {
     seen: HashMap<String, bool>,
     /// BFS work queue
     queue: VecDeque<WorkItem>,
+    /// The item whose body is being walked: its symbol and chain depth, so
+    /// what it enqueues knows who demanded it.
+    current: Option<(String, usize)>,
+    /// Which instantiation demanded each generic one, by symbol, for the
+    /// chain CT68 prints.
+    demanded_by: HashMap<String, String>,
+    /// Each generic instance as a person reads it (`nest<Vec<i32>>`), by
+    /// symbol, for the message.
+    shown: HashMap<String, String>,
+    /// Set when a chain passed `INSTANTIATION_LIMIT`: the generic instances
+    /// in it as a person reads them, outermost first. Reachability stops
+    /// there.
+    pub too_deep: Option<Vec<String>>,
     /// Resulting instantiated functions
     pub results: Vec<MonoFunction>,
     /// Call expression NodeId → mangled callee name.
@@ -134,6 +154,8 @@ pub struct Monomorphizer<'a> {
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
     pub instantiated_err_returns: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// CM3: lent captures, as `typed.lent_captures`, under instantiated ids.
+    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments in the copies whose new value takes the old one.
     pub instantiated_field_reuses: HashSet<NodeId>,
     pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
@@ -510,6 +532,10 @@ impl<'a> Monomorphizer<'a> {
             package_modules: std::collections::HashSet::new(),
             seen: HashMap::new(),
             queue: VecDeque::new(),
+            current: None,
+            demanded_by: HashMap::new(),
+            shown: HashMap::new(),
+            too_deep: None,
             results: Vec::new(),
             call_rewrites: HashMap::new(),
             map_key_fns: HashMap::new(),
@@ -524,6 +550,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_err_returns: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
+            instantiated_lent_captures: HashMap::new(),
             instantiated_field_reuses: HashSet::new(),
             instantiated_return_moves: HashMap::new(),
             instantiated_task_bound_closures: HashSet::new(),
@@ -699,6 +726,11 @@ impl<'a> Monomorphizer<'a> {
             // it is written, which substitution doesn't move.
             if typed.escaping_closures.contains(&old_id) {
                 self.instantiated_escaping_closures.insert(new_id);
+            }
+            // CM3: which captures are lent is where the closure is written,
+            // too.
+            if let Some(lent) = typed.lent_captures.get(&old_id) {
+                self.instantiated_lent_captures.insert(new_id, lent.clone());
             }
             // Which assignment builds its value from the old one is written in
             // the source, and substitution doesn't change it.
@@ -1125,13 +1157,17 @@ impl<'a> Monomorphizer<'a> {
     /// Run until fixpoint: process queue, instantiate, discover more calls
     pub fn run(&mut self) {
         while let Some(item) = self.queue.pop_front() {
+            if self.too_deep.is_some() {
+                break;
+            }
             let key = mangle_name(&item.name, &item.type_args, self.typed.map(|t| &t.types));
             if let Some(visited) = self.seen.get(&key) {
                 if *visited {
                     continue;
                 }
             }
-            self.seen.insert(key, true);
+            self.seen.insert(key.clone(), true);
+            self.current = Some((key, item.depth));
 
             let original = match self.fn_table.get(&item.name) {
                 Some(decl) => *decl,
@@ -1762,10 +1798,47 @@ impl<'a> Monomorphizer<'a> {
 
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
-        if !self.seen.contains_key(&key) {
-            self.seen.insert(key, false);
-            self.queue.push_back(WorkItem { name, type_args });
+        if self.seen.contains_key(&key) {
+            return;
         }
+        // CT68: a generic instance demanded by a generic instance is one
+        // step deeper in a chain; anything else starts a new one.
+        if !type_args.is_empty() {
+            let args: Vec<String> = type_args
+                .iter()
+                .map(|b| match self.typed {
+                    Some(t) => t.types.resolve_type_names(&b.ty).to_string(),
+                    None => b.ty.to_string(),
+                })
+                .collect();
+            self.shown.insert(key.clone(), format!("{}<{}>", name, args.join(", ")));
+        }
+        let depth = match (&self.current, type_args.is_empty()) {
+            (Some((parent, d)), false) => {
+                self.demanded_by.insert(key.clone(), parent.clone());
+                d + 1
+            }
+            _ => 0,
+        };
+        if depth > INSTANTIATION_LIMIT {
+            if self.too_deep.is_none() {
+                let mut chain = vec![key.clone()];
+                let mut at = key.clone();
+                while let Some(parent) = self.demanded_by.get(&at) {
+                    chain.push(parent.clone());
+                    at = parent.clone();
+                }
+                chain.reverse();
+                // Only the generic links read as a chain; the root that
+                // started it (`main`) is where it was reached from, not part
+                // of it.
+                let chain = chain.iter().filter_map(|k| self.shown.get(k).cloned()).collect();
+                self.too_deep = Some(chain);
+            }
+            return;
+        }
+        self.seen.insert(key, false);
+        self.queue.push_back(WorkItem { name, type_args, depth });
     }
 
     // --- AST visitors: find calls, enqueue discovered functions ---

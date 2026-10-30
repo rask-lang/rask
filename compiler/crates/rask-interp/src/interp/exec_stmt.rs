@@ -328,7 +328,23 @@ impl Interpreter {
                 match iter_val {
                     Value::Vec(ref v) if *mutate => {
                         let len = v.lock().unwrap().len();
+                        // Each element is read and written back by index, and the
+                        // checker refuses a resize during the loop (LP14). If one
+                        // gets through anyway, say so the way an index does rather
+                        // than abort the interpreter (#1670).
+                        let in_bounds = |i: usize| -> Result<(), RuntimeDiagnostic> {
+                            let now = v.lock().unwrap().len();
+                            if i < now {
+                                Ok(())
+                            } else {
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::IndexOutOfBounds { index: i as i64, len: now },
+                                    iter.span,
+                                ))
+                            }
+                        };
                         for i in 0..len {
+                            in_bounds(i)?;
                             let item = v.lock().unwrap()[i].clone();
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
@@ -341,6 +357,16 @@ impl Interpreter {
                             if let ForBinding::Single(name) = binding {
                                 if let Some(val) = self.env.get(name) {
                                     let val = val.clone();
+                                    if let Err(e) = in_bounds(i) {
+                                        self.env.pop_scope();
+                                        // A panic in the body is the first thing
+                                        // that went wrong; report it, not this.
+                                        return match outcome {
+                                            Err(d) if !breaks_here(&d.error, loop_label)
+                                                && !continues_here(&d.error, loop_label) => Err(d),
+                                            _ => Err(e),
+                                        };
+                                    }
                                     v.lock().unwrap()[i] = val;
                                 }
                             }

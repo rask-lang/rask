@@ -93,7 +93,7 @@ for item in vec.take_all() {  // vec now empty
 | Rule | Description |
 |------|-------------|
 | **LP13: In-place mutation** | `item.field = x` mutates the element in place. `item = x` replaces the entire element |
-| **LP14: No structural mutation** | Cannot insert, remove, or clear during mutable iteration |
+| **LP14: No structural mutation** | Cannot insert, remove, clear or replace the collection during mutable iteration, by the same rule as `mem.borrowing/W2`: through the collection itself, through what holds it, or through a helper whose body can resize the parameter it was handed |
 | **LP15: Collection readable** | Other elements accessible via inline expression access (same as LP3) |
 | **LP16: No take parameters** | Cannot pass `item` to `take` parameters (same as LP6) |
 

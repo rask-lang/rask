@@ -514,6 +514,11 @@ pub fn check_loaded(
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
+    // Which closures may not reach another task: ownership's answer, read
+    // by lowering, mono and the interpreter.
+    typed.task_bound_closures = ownership_result.task_bound_closures.clone();
+    typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
+    typed.lent_captures = ownership_result.lent_captures.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -879,6 +884,11 @@ fn check_package_scoped(
     }
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
+    // Which closures may not reach another task: ownership's answer, read
+    // by lowering, mono and the interpreter.
+    typed.task_bound_closures = ownership_result.task_bound_closures.clone();
+    typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
+    typed.lent_captures = ownership_result.lent_captures.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -1102,7 +1112,25 @@ fn finalize_compile_inner(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            diags.push(Diagnostic::error(e.to_string()));
+            let d = match &e {
+                rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => {
+                    Diagnostic::error(e.to_string())
+                        .with_code("E0927")
+                        .with_fix(
+                            "give the recursion a type that stops changing: recurse at the same \
+                             `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
+                             instead of a type argument",
+                        )
+                        .with_why(
+                            "native code is one copy per set of type arguments, and here every \
+                             copy calls one with a bigger type, so there is no finite set to \
+                             compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
+                             makes no copies",
+                        )
+                }
+                _ => Diagnostic::error(e.to_string()),
+            };
+            diags.push(d);
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };

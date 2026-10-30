@@ -17,7 +17,7 @@ Interface conformance is declared — `Type implements Interface` says the type 
 | **G2: Checked at use site** | The compiler verifies interface matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before interface checking |
-| **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require an `unsafe` conformance |
+| **G5: Verified clone** | Compiler ensures clone produces deep copy; an owning pointer lives in a `@resource`, which has none (`mem.unsafe/UT4`) |
 | **G6: Code specialization** | Each `<T>` usage generates specialized code (monomorphization) — fast calls, but increases binary size |
 | **G6a: Methods specialize with their type** | A method declared in `extend One<A>` is specialized per receiver instantiation, same as a generic function: `One<i64>.get()` and `One<Big>.get()` are two bodies. That's what lets each instantiation have a layout that fits its type argument — a struct or tuple argument *is* its bytes, so one shared body couldn't take both an 8-byte and a 24-byte `self`. A method with its own parameters specializes on the receiver's arguments and then its own |
 | **G7: Runtime polymorphism opt-in** | `any Interface` for heterogeneous collections; dispatch through function pointer table (vtable) |
@@ -405,12 +405,11 @@ The compiler expands operators into method calls before type checking (G4), then
 
 ## Compiler-Verified Cloneable
 
-The compiler auto-derives Cloneable where all fields implement Cloneable and no raw pointers exist (G5).
+The compiler auto-derives Cloneable where all fields implement Cloneable (G5). A raw pointer clones by copying its address. A struct that owns what its pointer points at is a `@resource`, which has no clone (`mem.unsafe/UT4`).
 
 | Rule | Description |
 |------|-------------|
 | **CL1: Auto-derive** | Primitives, structs with all Cloneable fields, arrays/Vec of Cloneable, `Map<K, V>` and `Set<T>` of Cloneable parts, handles: auto-derived |
-| **CL2: Pointer block** | Struct with raw pointer is NOT Cloneable unless `unsafe T implements Cloneable` |
 
 ```rask
 interface Cloneable {
@@ -422,7 +421,7 @@ interface Cloneable {
 |------|------------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
 | Struct with all Cloneable fields | Auto-derived (deep copy) |
-| Struct with raw pointer | NOT Cloneable unless `unsafe T implements Cloneable` |
+| Struct with raw pointer | Auto-derived (address copy). One that owns what it points at is a `@resource`: no clone, no copy |
 | Array/Vec of Cloneable | Auto-derived (element-wise clone) |
 | `Map<K, V>`, `Set<T>` of Cloneable | Auto-derived (entry-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
@@ -638,7 +637,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the interface system handles dispatch.
 
-**G5 (verified clone):** Compiler-verified Cloneable prevents aliasing bugs. Types with raw pointers can't silently claim to be cloneable.
+**G5 (verified clone):** Compiler-verified Cloneable prevents aliasing bugs. The compiler can't tell an owning pointer from a borrowed one by looking, so the author says which: an owning one is a `@resource`, which neither copies nor clones at any size, and must be released. A rule that only refused `clone` missed the 16-byte struct, which copies on `let b = a` anyway.
 
 **G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 

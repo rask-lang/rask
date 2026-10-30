@@ -319,6 +319,13 @@ pub struct ClosureCapture {
     /// heap environment's copy needs references of its own to the strings in
     /// it, the way a captured string does (`rc_insert`).
     pub copy: bool,
+    /// The captured value is a lent parameter of the frame that built the
+    /// closure: the caller's, held across the call (mem.closures/CM3). A
+    /// closure that outlives that frame holds the caller's handle and points
+    /// at the caller's value, so its environment must never free it. Once
+    /// the frame is inlined into its caller the capture looks like the
+    /// caller's own local, and freeing it freed the caller's Vec (#1679).
+    pub lent: bool,
 }
 
 /// Lay out a closure environment: each capture at its own alignment, in
@@ -340,7 +347,7 @@ pub fn lay_out_captures(
             };
             let offset = end.next_multiple_of(align);
             end = offset + size;
-            ClosureCapture { local_id, offset, size, by_ref, copy }
+            ClosureCapture { local_id, offset, size, by_ref, copy, lent: false }
         })
         .collect()
 }

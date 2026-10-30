@@ -2348,13 +2348,13 @@ impl TypeChecker {
         Some(DeriveShape { parts, type_params: type_params.clone(), methods: methods.clone() })
     }
 
-    /// Whether a type of this shape derives `method`: each field has it,
-    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2).
+    /// Whether a type of this shape derives `method`: each field has it, and
+    /// `hash` also needs `eq` (HA1). A raw pointer field clones by copying the
+    /// address: a struct that owns what its pointer points at is a
+    /// `@resource`, which has no clone at all (mem.unsafe/UT4).
     fn parts_derive(&self, shape: &DeriveShape, method: &str) -> bool {
         let all = |m: &str| shape.parts.iter().all(|ty| self.type_has_method_in(ty, m, &shape.type_params));
-        all(method)
-            && (method != "hash" || all("eq"))
-            && (method != "clone" || !shape.parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
+        all(method) && (method != "hash" || all("eq"))
     }
 
     fn auto_derive_interfaces(&mut self) {
@@ -2451,11 +2451,12 @@ impl TypeChecker {
     fn type_has_method_in(&self, ty: &Type, method: &str, params: &[String]) -> bool {
         match ty {
             // Primitives: what their conformances require (CO4 makes floats
-            // Comparable, HA4 keeps them out of Hashable).
+            // Comparable, HA4 keeps them out of Hashable). A raw pointer is
+            // an address and copies and compares as one (mem.unsafe/UT4).
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
             | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Unit
-            | Type::String | Type::Bytes => crate::interfaces::primitive_conformances(ty)
+            | Type::String | Type::Bytes | Type::RawPtr(_) => crate::interfaces::primitive_conformances(ty)
                 .iter()
                 .any(|i| crate::interfaces::interface_requires(i, method)),
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
@@ -2764,19 +2765,31 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
-                // UT1: implementing an unsafe interface requires `unsafe extend`
-                if let Some(interface) = &i.interface {
-                    let interface_name = interface.to_string();
-                    if let Some(type_id) = self.types.interface_decl(interface) {
-                        if let Some(TypeDef::Interface { is_unsafe: true, .. }) = self.types.get(type_id) {
-                            if !i.is_unsafe {
-                                self.errors.push(TypeError::UnsafeRequired {
-                                    operation: format!("implementing unsafe interface `{}`", interface_name),
-                                    span: decl.span,
-                                });
-                            }
-                        }
+                // UT1: conforming to an unsafe interface is written `unsafe`.
+                // UT3: and `unsafe` is written nowhere else. `None` for an
+                // interface that names nothing: that's reported where it's
+                // resolved.
+                let unsafe_interface = match &i.interface {
+                    Some(interface) => self.types.interface_decl(interface).map(|type_id| {
+                        matches!(self.types.get(type_id), Some(TypeDef::Interface { is_unsafe: true, .. }))
+                    }),
+                    None => Some(false),
+                };
+                match (unsafe_interface, i.is_unsafe) {
+                    (Some(true), false) => {
+                        let interface_name = i.interface.as_ref().map(|t| t.to_string()).unwrap_or_default();
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: format!("implementing unsafe interface `{}`", interface_name),
+                            span: decl.span,
+                        });
                     }
+                    (Some(false), true) => {
+                        self.errors.push(TypeError::UnsafeWithoutContract {
+                            interface: i.interface.as_ref().map(|t| t.to_string()),
+                            span: decl.span,
+                        });
+                    }
+                    _ => {}
                 }
                 // The receiver is written like any other type: `extend Box2<T, U>`
                 // on a one-parameter `Box2` names nothing.
@@ -3288,7 +3301,7 @@ impl TypeChecker {
 /// `struct Holder<Output>` is the parameter, not `os.Output` (#1487). A header
 /// that leaves the arguments off (`extend Wrapper` on a `Wrapper<T>`) has the
 /// declaration's names, and a `where` clause can only bound a parameter.
-pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
+pub fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
     let declared: Vec<String> = i
         .target_ty
         .name()
