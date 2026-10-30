@@ -24,7 +24,7 @@ use crate::types::{Type, TypeId};
 /// OR2/OR9: `Equal` and `Comparable` are absent from the operator table on
 /// purpose — comparison stays same-type on both sides, so `eq`/`lt`/… are not
 /// resolved on the pair.
-pub use rask_ast::operators::{has_rhs, is_unary_operator_interface, operator_interface};
+pub use rask_stdlib::operators::{has_rhs, is_unary_operator_interface, operator_interface};
 
 /// True for the two unary operators, which take no `Rhs`.
 pub fn is_unary_operator(method: &str) -> bool {
@@ -366,7 +366,7 @@ impl TypeChecker {
         let self_name = self.types.type_name(self_id);
         let applied_base = self.types.interface_name(applied);
         let written_rhs = applied.args().first().and_then(TypeExpr::name);
-        let rhs = rask_ast::operators::filed_rhs(&self_name, &applied_base, written_rhs.as_deref());
+        let rhs = rask_stdlib::operators::filed_rhs(&self_name, &applied_base, written_rhs.as_deref());
         let filed = rhs
             .as_ref()
             .map(|r| format!("{}${}", method, r))

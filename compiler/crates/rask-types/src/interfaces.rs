@@ -462,7 +462,7 @@ impl<'a> InterfaceChecker<'a> {
             // argument (`mul$f64`), so compare on the name the interface asked for.
             let by_name: Vec<&MethodSig> = type_methods
                 .iter()
-                .filter(|m| rask_ast::operators::method_display(&m.name) == required.name)
+                .filter(|m| rask_stdlib::operators::method_display(&m.name) == required.name)
                 .collect();
             let found = by_name
                 .iter()

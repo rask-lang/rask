@@ -753,7 +753,7 @@ impl TypeChecker {
         let Some(interface) = &i.interface else { return };
         let base = self.types.interface_name(interface);
         let interface_ref = interface;
-        if rask_ast::operators::operator_interface_method(&base).is_some() {
+        if rask_stdlib::operators::operator_interface_method(&base).is_some() {
             return;
         }
         let siblings: Vec<TypeExpr> = self
@@ -1342,7 +1342,7 @@ impl TypeChecker {
                     receiver_as_written(m, &mut sig);
                 }
                 if let Some(filed) = interface.as_ref().and_then(|(t, name)| {
-                    rask_ast::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
+                    rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
                     sig.name = filed;
                 }

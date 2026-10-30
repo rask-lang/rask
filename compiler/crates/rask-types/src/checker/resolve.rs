@@ -1788,16 +1788,16 @@ impl TypeChecker {
             if let Some(applied) = bounds
                 .iter()
                 .find(|b| {
-                    rask_ast::operators::operator_interface_method(&self.types.interface_name(b))
+                    rask_stdlib::operators::operator_interface_method(&self.types.interface_name(b))
                         == Some(method.as_str())
                 })
                 .cloned()
             {
                 let applied_base = self.types.interface_name(&applied);
                 let written_rhs = applied.args().first().and_then(TypeExpr::name);
-                let rhs = rask_ast::operators::filed_rhs(&param, &applied_base, written_rhs.as_deref());
+                let rhs = rask_stdlib::operators::filed_rhs(&param, &applied_base, written_rhs.as_deref());
                 if let Some(filed) =
-                    rask_ast::operators::filed_operator_method(&param, &applied_base, written_rhs.as_deref(), &method)
+                    rask_stdlib::operators::filed_operator_method(&param, &applied_base, written_rhs.as_deref(), &method)
                 {
                     // CALL6: dispatch keys on this, and mono carries it into
                     // each instantiation with `T` replaced — which is what

@@ -465,23 +465,28 @@ for a checker type by accident, and no grep test has to say so.
    `ToDiagnostic` into the crate whose error it converts. Mechanical, and
    it's what makes the layering in #1568 enforceable.
 
-   Then one crate for the facts about the language, as opposed to facts
-   about a program. The operator table (symbol, binding power, desugared
-   method, interface), the keyword list, the stdlib's declarations, the
-   runtime's constants and C signatures: nobody computes these, so they're
-   stated once and read by every stage. Most are already Rask source
-   (`stdlib/*.rk`, `ops.rk`), so the crate parses them once and hands out
-   tables; the rest (`rask_runtime.h`'s `#define`s and prototypes) it
-   either generates or checks against. Today that role is spread over
-   `rask-ast`, the lexer, `rask-stdlib` and, for the runtime constants,
-   nothing at all. Facts about a program (a `Type`, a layout, a callee) are
-   not definitions, they're a stage's output, and they stay with the stage
-   that produces them; only their shapes are shared.
+   Then the facts about the language, as opposed to facts about a program:
+   the operator table, the keyword list, the stdlib's declarations, the
+   runtime's constants and C signatures. Nobody computes these, so each is
+   stated once and read by every stage. They can't share one crate, because
+   reading the stdlib's declarations takes the parser and the parser needs
+   the keywords. So there are two homes, split by that line: what the
+   lexer, parser and desugarer need lives in `rask-ast` (keywords, binding
+   powers, the methods operators desugar to), and what is declared in Rask
+   lives in `rask-stdlib`, which parses `stdlib/*.rk` once and hands out
+   tables. Most of this was already true when step 1 started; the runtime
+   constants are generated into `rask_abi.h` from one Rust list. The
+   operator interfaces were the last copy: `OPERATOR_TRAITS` restated
+   `ops.rk` with nothing checking them, and `rask_stdlib::operators` now
+   reads the file. Facts about a program (a `Type`, a layout, a callee) are
+   a stage's output and stay with the stage that produces them; only their
+   shapes are shared.
 
    What stops the drift is the dependency direction, not where the tables
-   live. `rask-mir` depends on `rask-parser` today, which is how it ends up
-   parsing. Once it depends only on the type data and mono's output, the
-   only way for it to learn a fact is to be handed one.
+   live. `crate_layers` (`rask-cli/tests`) holds the graph: diagnostics
+   depends on the AST alone, and mono, MIR and codegen can't reach the
+   interpreter. Each later step that takes a crate's reach away adds its
+   edge there.
 2. **#1561** before anything is handed down. Every later step is "carry the
    checker's answer to the next pass". If the checker's answer for
    `Vec.capacity` comes from a table that says `u64` while `collections.rk`

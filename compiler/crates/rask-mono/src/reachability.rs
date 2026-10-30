@@ -453,7 +453,7 @@ impl<'a> Monomorphizer<'a> {
                             .as_ref()
                             .zip(conformance_interfaces.get(&decl.id))
                             .and_then(|(t, iface)| {
-                                rask_ast::operators::conformance_method_name(
+                                rask_stdlib::operators::conformance_method_name(
                                     &i.target_ty, t, iface, &method.name,
                                 )
                             });

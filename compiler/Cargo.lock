@@ -1563,7 +1563,6 @@ version = "0.6.0"
 dependencies = [
  "rask-ast",
  "rask-diagnostics",
- "rask-interp",
  "rask-mono",
  "rask-parser",
  "rask-stdlib",

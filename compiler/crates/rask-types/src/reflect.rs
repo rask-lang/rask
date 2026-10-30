@@ -383,7 +383,7 @@ pub fn methods(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<MethodFact>, Stri
         if !meets_where {
             continue;
         }
-        let name = rask_ast::operators::method_display(&sig.name).to_string();
+        let name = rask_stdlib::operators::method_display(&sig.name).to_string();
         let ret = crate::substitute_type(&sig.ret, &subst);
         let fact = MethodFact {
             is_public: types.method_is_public(c.id, &name),
