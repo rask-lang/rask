@@ -194,6 +194,7 @@ FIX: Hoist the call out of the block, or run it under Global:
 | Frame-born value assigned to a binding outside the frame | AL13 | Compile error, same as any nested block |
 | `return Vec.new_in(arena)` where this body declared `arena` | AL13 | Compile error: the arena is freed on return |
 | `Vec.new_in(arena)` in a function that took `arena` as a parameter, returned | AL13, AL33 | Fine: the caller's arena outlives the call, and the caller sees the vec as born under it |
+| A struct holding an `Arena` field and data allocated in it | AL13 | Not supported. The data would be born under a field of the same struct, and nothing tracks that. Keep the arena in the function that runs the game (`main`, `run`) and pass it down; a constructor takes the arena as a parameter |
 | `Vec.new_in(arena)` inside `arena.frame()` | AL36 | Compile error: the frame borrows `arena` |
 | `arena.frame()` inside another `arena.frame()` | AL36 | Compile error: `arena` is already borrowed by the outer frame |
 | `level.enemies.push(e)` inside the frame, `level` born before it | AL36 | Compile error at the push. Grow it before or after the frame, or keep `level` in `Global` |
