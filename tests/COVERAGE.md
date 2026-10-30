@@ -141,7 +141,7 @@ C toolchain and a companion object file. The raw-pointer half turns out to be
 perfectly testable in one file, and doing so found #935 — the interpreter treated a
 raw pointer as a plain i64, so `*p` silently yielded 0 while native read the byte.
 Fixed; `t_month_unsafe.rk` now covers dereference, `read()`, `write()`, the
-arithmetic and alignment methods, pointer identity, `cast`, `nullptr`, Vec pointers,
+arithmetic and alignment methods, pointer identity, `cast`, `*T?` (absent pointers), Vec pointers,
 `string.from_raw`/`from_c`, and the U3 and UF1 forms — 16 tests, green on both
 backends. Widening it past the original six found two more native bugs: #985
 (pointer stride disagrees with the Vec's slot width for elements under 8 bytes)

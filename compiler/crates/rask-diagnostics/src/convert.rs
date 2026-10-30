@@ -159,6 +159,16 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why(why)
             }
 
+            // C's and Rust's null spellings. A pointer that may be absent is an
+            // optional like any other (mem.unsafe/PT6).
+            UndefinedSymbol { name } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
+                Diagnostic::error(format!("there is no `{}`: absence is `none`", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, "write `none` here")
+                    .with_fix("`none`, at a pointer type that may be absent: `let p: *u8? = none`")
+                    .with_why("a `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, and it's tested with `p?` or `p is none` like any other optional [mem.unsafe/PT6]")
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")
@@ -2199,6 +2209,14 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0386")
                     .with_primary(*span, "unsafe operation outside unsafe block")
+            }
+
+            DerefOptionalPointer { found, span } => {
+                Diagnostic::error(format!("`*` on a `{}`, which may be absent", found))
+                    .with_code("E0934")
+                    .with_primary(*span, "this pointer may be null")
+                    .with_fix("unwrap it first: `let q = p ?? return …` or `if p? as q { … *q … }`")
+                    .with_why("a `*T?` is the pointer or `none`, and `none` is the null address. Reading through it would read address 0, so the absent case is handled before the pointer is used [mem.unsafe/PT6]")
             }
 
             UnsafeWithoutContract { interface, span } => {

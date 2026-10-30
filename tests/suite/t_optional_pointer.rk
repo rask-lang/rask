@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `*T?` is a raw pointer that may be absent (mem.unsafe/PT6): one word, null
+// for `none`, so it's the word C passes. A `*T` is never null.
+//
+// Natively an optional pointer used to be a tagged 16-byte value, so a struct
+// field holding one read its own address back as the pointer, and `none`
+// tested present.
+
+import fs
+
+struct Holder {
+    q: *i64?
+    n: i64
+}
+
+extend Holder {
+    func get(self) -> i64 {
+        let p = self.q ?? return -1
+        return unsafe *p
+    }
+}
+
+func first_or(p: *i64?, fallback: i64) -> i64 {
+    if p? as q {
+        return unsafe *q
+    }
+    return fallback
+}
+
+test "a struct field holding an absent pointer reads as absent" {
+    let xs: Vec<i64> = [7, 8]
+    mut h = Holder(q: none, n: 1)
+    assert h.q is none
+    assert h.get() == -1
+    h.q = unsafe xs.as_ptr()
+    assert h.q?
+    assert h.get() == 7
+}
+
+test "an optional pointer passes through a call and binds with `as`" {
+    let xs: Vec<i64> = [41, 2]
+    assert first_or(none, 5) == 5
+    assert first_or(unsafe xs.as_ptr(), 5) == 41
+}
+
+test "the stdlib's C calls that can fail come back as `none`" {
+    let missing = fs.read_text("/definitely/not/a/path/here.txt") catch _ => "gone"
+    assert missing == "gone"
+}

@@ -424,7 +424,7 @@ impl<'a> WarnContext<'a> {
             // Leaves
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None
+            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None
             | ExprKind::Ident(_) | ExprKind::GenericName { .. } => {}
         }
     }

@@ -1259,11 +1259,26 @@ impl Parser {
             ));
         }
 
-        // Handle raw pointer types: *T
+        // `*T`. A `?` written after it belongs to the pointer: `*u8?` is a
+        // pointer that may be absent, the one C hands back (mem.unsafe/PT6).
+        // A pointer to an optional is written `*(u8?)`. `or` binds outside
+        // the pointer too: `*u8 or E` is a result holding a pointer.
         if self.check(&TokenKind::Star) {
             self.advance();
-            let pointee_ty = self.parse_type_name()?;
-            return Ok(TypeExpr::RawPtr(Box::new(pointee_ty)));
+            let grouped = self.check(&TokenKind::LParen);
+            let mut pointee = self.parse_base_type()?;
+            let mut absent = 0;
+            if !grouped {
+                while let TypeExpr::Optional(inner) = pointee {
+                    pointee = *inner;
+                    absent += 1;
+                }
+            }
+            let mut ty = TypeExpr::RawPtr(Box::new(pointee));
+            for _ in 0..absent {
+                ty = TypeExpr::Optional(Box::new(ty));
+            }
+            return Ok(ty);
         }
 
         if self.check(&TokenKind::LParen) {
@@ -3205,7 +3220,7 @@ impl Parser {
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Take
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Nullptr
+                | TokenKind::None
         )
     }
 
@@ -3349,7 +3364,7 @@ impl Parser {
                     let span = init.span.clone();
                     let inner = std::mem::replace(
                         init,
-                        Expr { id: self.next_id(), kind: ExprKind::Null, span: span.clone() },
+                        Expr { id: self.next_id(), kind: ExprKind::None, span: span.clone() },
                     );
                     let stmt = Stmt {
                         id: self.next_id(),
@@ -3756,11 +3771,6 @@ impl Parser {
                 let end = self.tokens[self.pos - 1].span.end;
                 // OPT3: dedicated absent literal, not the `None` enum variant.
                 Ok(Expr { id: self.next_id(), kind: ExprKind::None, span: self.span(start, end) })
-            }
-            TokenKind::Nullptr => {
-                self.advance();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Null, span: self.span(start, end) })
             }
 
             TokenKind::Ident(name) => {
@@ -5760,7 +5770,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Loop
             | TokenKind::Match
             | TokenKind::None
-            | TokenKind::Nullptr
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try

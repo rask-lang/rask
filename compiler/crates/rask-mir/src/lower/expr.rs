@@ -175,8 +175,7 @@ fn expr_may_do_work(e: &Expr) -> bool {
         | ExprKind::Bytes(_)
         | ExprKind::Bool(_)
         | ExprKind::Char(_)
-        | ExprKind::None
-        | ExprKind::Null => false,
+        | ExprKind::None => false,
         ExprKind::Field { object, .. } => expr_may_do_work(object),
         ExprKind::Index { object, index } => expr_may_do_work(object) || expr_may_do_work(index),
         ExprKind::Unary { operand, .. } => expr_may_do_work(operand),
@@ -1578,10 +1577,6 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Bool(b) => Ok((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
             // StringInterp is desugared to concat chains before MIR lowering
             ExprKind::StringInterp(_) => unreachable!("StringInterp should be desugared before MIR"),
-            ExprKind::Null => {
-                // Null pointer literal — zero value
-                Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Ptr))
-            }
             ExprKind::None => self.lower_none(expr),
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => self.lower_ident(expr, name),
@@ -2433,7 +2428,7 @@ impl<'a> MirLowerer<'a> {
                 // this way), so deref is a relabel, not a load; a real load
                 // here read whatever address the value's first word happened
                 // to look like (segfault on `(*owned_point).x`), #737.
-                UnaryOp::Deref if matches!(operand_ty, MirType::Ptr) => {
+                UnaryOp::Deref if matches!(operand_ty, MirType::Ptr | MirType::RawPtr) => {
                     if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
                         self.emit_pointer_check(&operand_op, false);
                     }
@@ -7605,11 +7600,11 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id),
             Some(rask_types::Type::RawPtr(_))
         );
-        if matches!(obj_ty, MirType::Ptr) && is_raw_ptr {
+        if matches!(obj_ty, MirType::Ptr | MirType::RawPtr) && is_raw_ptr {
             let entry = rask_stdlib::ptr_methods::lookup(method.as_str());
             if method == "cast" {
                 // Cast is a no-op at runtime — pointer value unchanged
-                return Ok(Some((obj_op.clone(), MirType::Ptr)));
+                return Ok(Some((obj_op.clone(), MirType::RawPtr)));
             }
             // `p.read()` / `p.write(v)` on a float go through the same typed
             // load and store `*p` does — the C helpers move an `int64_t`, which
@@ -7663,7 +7658,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 let ret_ty = match entry.map(|e| e.sig) {
                     Some(rask_stdlib::PtrSig::Write) => MirType::Void,
-                    Some(rask_stdlib::PtrSig::Arith) => MirType::Ptr,
+                    Some(rask_stdlib::PtrSig::Arith) => MirType::RawPtr,
                     Some(rask_stdlib::PtrSig::Predicate)
                     | Some(rask_stdlib::PtrSig::PredicateInt)
                     | Some(rask_stdlib::PtrSig::Comparison) => MirType::Bool,

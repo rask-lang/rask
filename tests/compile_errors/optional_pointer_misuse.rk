@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `*T` is never null and a `*T?` must be unwrapped before it's used as a
+// pointer (mem.unsafe/PT6). `is_null()` is gone: `p?` and `p is none` are the
+// optional's own tests.
+
+extern "C" func getenv(name: *u8) -> *u8?
+
+func main() {
+    let xs: Vec<u8> = [1]
+    let p: *u8 = none                     // ERROR: E0308
+    let q = unsafe xs.as_ptr()
+    println(q.is_null())                  // ERROR: E0313
+    let home = unsafe getenv("HOME\0".as_ptr())
+    println(unsafe *home)                 // ERROR: E0934
+}

@@ -488,6 +488,8 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            // `*(u8?)`: written bare, the `?` would be the pointer's.
+            Type::RawPtr(inner) if matches!(**inner, Type::Result { .. }) => write!(f, "*({})", inner),
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
             Type::InterfaceObject { interface_name, .. } => write!(f, "any {}", interface_name),

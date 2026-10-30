@@ -424,6 +424,9 @@ impl TypeExpr {
                     _ => format!("func({}) -> {}", params, ret.source()),
                 }
             }
+            TypeExpr::RawPtr(inner) if matches!(**inner, TypeExpr::Optional(_) | TypeExpr::Result { .. }) => {
+                format!("*({})", inner.source())
+            }
             TypeExpr::RawPtr(inner) => format!("*{}", inner.source()),
             TypeExpr::Any(inner) => format!("any {}", inner.source()),
         }
@@ -474,6 +477,10 @@ impl fmt::Display for TypeExpr {
                     write!(f, "{}", p)?;
                 }
                 write!(f, ") -> {}", ret)
+            }
+            // `*(u8?)`: written bare, the `?` would be the pointer's.
+            TypeExpr::RawPtr(inner) if matches!(**inner, TypeExpr::Optional(_) | TypeExpr::Result { .. }) => {
+                write!(f, "*({})", inner)
             }
             TypeExpr::RawPtr(inner) => write!(f, "*{}", inner),
             TypeExpr::Any(inner) => write!(f, "any {}", inner),

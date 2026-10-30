@@ -609,7 +609,6 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null
         | ExprKind::None
         | ExprKind::Ident(_)
         | ExprKind::GenericName { .. } => {}
@@ -874,8 +873,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
             r
         }
         ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
-        | ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_)
-        | ExprKind::Null | ExprKind::None | ExprKind::Ident(_)
+        | ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Ident(_)
         | ExprKind::GenericName { .. } => false,
     }
 }

@@ -169,7 +169,7 @@ impl<'a> MirLowerer<'a> {
         } = &cur.kind {
             let operand_is_raw = matches!(
                 self.ctx.lookup_raw_type(operand.id).map(|t| self.ctx.type_to_mir(t)),
-                Some(MirType::Ptr)
+                Some(MirType::RawPtr)
             );
             if operand_is_raw {
                 return cur;
@@ -3491,7 +3491,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
 /// own header — `data` overwritten, `len` left from the old vector, which is
 /// why `xs.len()` still answered 1 after the whole thing was replaced.
 pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
-    matches!(ty, MirType::Ptr | MirType::Container(_))
+    matches!(ty, MirType::Ptr | MirType::RawPtr | MirType::Container(_))
 }
 
 /// Does this `mutate` parameter need a pointer of its own?

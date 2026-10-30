@@ -259,6 +259,9 @@ pub enum TypeError {
     /// reader can't tell "negate the payload" from "test for absence".
     #[error("`!` on `{found}` — negation doesn't reach through an optional")]
     NotOnOptional { found: Type, span: Span },
+    /// mem.unsafe/PT6: `*p` where `p: *T?`. It may be the null address.
+    #[error("`*` on `{found}`, which may be absent")]
+    DerefOptionalPointer { found: Type, span: Span },
     /// CV1a/CV2: an integer that doesn't fit the position it's going into.
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
@@ -1637,6 +1640,7 @@ impl TypeError {
             | NotIterable { found, .. }
             | ForMutateReadOnlySource { found, .. }
             | NotOnOptional { found, .. }
+            | DerefOptionalPointer { found, .. }
             | PresenceTestOnResult { found, .. }
             | TakeOnNonOptional { found, .. }
             | TryOnFlatShape { found, .. }

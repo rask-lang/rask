@@ -2132,6 +2132,8 @@ impl<'a> FunctionBuilder<'a> {
             ty if ty.is_option() && matches!(ty.as_option().unwrap(),
                 RaskType::UnresolvedGeneric { name, .. } if name == "Link")
                 => false,
+            // `*T?` is the same: the pointer, null for `none` (mem.unsafe/PT6).
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::RawPtr(_)) => false,
             // The same option with its payload already resolved to a `TypeId`.
             // `Generic`/`Named` payloads are the runtime-opaque pointer types
             // (line above), and an option over one of those is the niche — one
@@ -2813,6 +2815,7 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Tuple(_)
                         | MirType::Array { .. }
                         | MirType::Ptr
+                        | MirType::RawPtr
                         | MirType::Container(_)
                         // A `Heap<T>` standing where a `T` is expected (HP5):
                         // the block's address is the aggregate's address, so
@@ -3993,7 +3996,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Ptr | MirType::Container(_) => {
+            | MirType::Char | MirType::Ptr | MirType::RawPtr | MirType::Container(_) => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -4931,15 +4934,6 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 builder.ins().iadd(ptr_val, byte_offset)
             };
-            if let Some(dst_id) = dst {
-                if let Some(var) = ctx.var_map.get(dst_id) {
-                    builder.def_var(*var, result);
-                }
-            }
-        } else if func.name == "Ptr_is_null" {
-            // ptr.is_null() → ptr == 0 (returns I8 boolean)
-            let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
-            let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
             if let Some(dst_id) = dst {
                 if let Some(var) = ctx.var_map.get(dst_id) {
                     builder.def_var(*var, result);

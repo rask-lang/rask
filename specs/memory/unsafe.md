@@ -52,13 +52,14 @@ let value = unsafe { *ptr }
 
 | Type | Description |
 |------|-------------|
-| `*T` | Raw pointer to T (read or write access) |
+| `*T` | Raw pointer to T (read or write access). Never null |
+| `*T?` | A raw pointer that may be absent: `none` is the null address |
 
 | Property | Behavior |
 |----------|----------|
 | Size | Same as `usize` (platform pointer size) |
 | Copy | Always Copy (pointer value, not pointee) |
-| Nullable | Can be null; no Option optimization |
+| Null | Not a `*T`. `*T?` is the same word with null for `none` (PT6) |
 | Alignment | May be unaligned |
 | Validity | Not tracked; may dangle |
 
@@ -74,9 +75,23 @@ unsafe {
 }
 ```
 
+| Rule | Description |
+|------|-------------|
+| **PT6: Absence is a type** | A `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, the same word C passes, so a C declaration states whether its pointer can be null (`extern "C" func getenv(name: *u8) -> *u8?`). It's an optional like any other: `p?` tests it, `if p? as q` binds the pointer, `p ?? return e` unwraps or leaves, `none` is the null literal. A pointer from `as_ptr()` or arithmetic on a `*T` is a `*T`. A `?` written after a pointer type is the pointer's; a pointer to an optional is `*(T?)` |
+
+<!-- test: skip -->
+```rask
+extern "C" func getenv(name: *u8) -> *u8?
+
+func home() -> string? {
+    let p = unsafe getenv("HOME\0".as_ptr()) ?? return none
+    return unsafe string.from_raw(p, strlen(p))
+}
+```
+
 ## Pointer Operations
 
-All require unsafe except `is_null()`.
+All require unsafe except `==` and `!=`, which compare addresses.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -86,7 +101,6 @@ All require unsafe except `is_null()`.
 | `ptr.add(n)` | `*T, usize -> *T` | Offset by n elements |
 | `ptr.sub(n)` | `*T, usize -> *T` | Offset back by n elements |
 | `ptr.offset(n)` | `*T, isize -> *T` | Signed offset |
-| `ptr.is_null()` | `*T -> bool` | Check for null (safe to call) |
 | `ptr.cast<U>()` | `*T -> *U` | Reinterpret pointer type |
 | `ptr.align_offset(n)` | `*T, usize -> usize` | Bytes to next aligned address |
 | `ptr.is_aligned()` | `*T -> bool` | Check natural alignment |
@@ -312,7 +326,7 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 
 | Operation | Debug Behavior | Release Behavior |
 |-----------|----------------|------------------|
-| Null pointer deref | Panic with location (built) | UB |
+| Null pointer deref | Panic with location (built). A `*T` can only be null if it came from outside the types: a C declaration that says `*T` where C returns null, or a `transmute` | UB |
 | Out-of-bounds pointer | Panic with location | UB |
 | Use-after-free | Panic (if detectable) | UB |
 | Double-free | Panic (if detectable) | UB |
@@ -440,6 +454,8 @@ FIX: Add to clobber list or declare as output:
 **Debug-mode safety:** Instead of "all pointer errors are UB" like Rust, I added debug-mode runtime checks. Cuts debugging time massively without hurting release performance. Philosophy: crash loudly in development, run fast in production. This follows Zig's pragmatic approach.
 
 **Single pointer type (`*T`):** Rust's `*const T` / `*mut T` distinction adds ceremony without real safety — you can cast between them freely. A single `*T` type is simpler and equally honest about what raw pointers are.
+
+**PT6 (null is a type):** C's null pointer is the one value of a pointer type that means "there isn't one", and every C API documents which of its pointers can be it. Writing that into the declaration as `*T?` puts the check where the type says it's needed and nowhere else, and costs nothing: the optional is the same word, null for `none`, the way `Link<T>?` already is. `null` and `is_null()` are gone; `none` and `p?` are what every other optional uses.
 
 **PT1–PT5 (where pointers point):** Rust leaves a raw pointer's lifetime to the programmer, because it can't connect a `*const T` back to the reference it came from. Rask has no references, so every pointer starts at a call, and the call's arguments say what it points into. That makes the common mistakes (a pointer kept across a `push`, returned out of the frame that owns the buffer, written while a `with` holds the element) the same errors a `with` binding or a closure already gets, with no annotation. The rule for a call reads the callee's body, the way resize and allocator inference do, so a function that borrows a vector and returns fresh memory isn't tied to the vector. Rust can't do this from a signature and asks for lifetime annotations instead. Only where there's no body to read does the call fall back to the strict reading, every borrowed argument.
 

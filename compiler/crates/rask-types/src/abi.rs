@@ -71,6 +71,10 @@ pub fn union_layout(payload_size: u32, payload_align: u32) -> WrapperLayout {
 /// The sentinel belongs to the type, not to the niche mechanism.
 pub const LINK_NONE_SENTINEL: i64 = 0;
 
+/// `none` for `*T?`: the null address, the one C uses for "no pointer"
+/// (mem.unsafe/PT6). A `*T` is never null, so the word is free.
+pub const RAW_PTR_NONE_SENTINEL: i64 = 0;
+
 #[cfg(test)]
 mod tests {
     use super::*;

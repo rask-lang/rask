@@ -223,7 +223,7 @@ import c "sqlite3.h" as sql
 public struct Database { handle: *sql.sqlite3 }
 
 public func open(path: string) -> Database or Error {
-    mut db: *sql.sqlite3 = nullptr
+    mut db: *sql.sqlite3? = none
     unsafe {
         mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {

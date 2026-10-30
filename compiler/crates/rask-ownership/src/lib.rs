@@ -2714,7 +2714,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
+            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::GenericName { .. } => {}
 
             ExprKind::Binary { left, op: _, right } => {
                 self.check_expr(left);

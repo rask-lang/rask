@@ -589,7 +589,6 @@ impl TypeChecker {
             ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
-            ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
             // OPT3: `none` is `T?` with inner type inferred from context.
             ExprKind::None => Type::option(self.ctx.fresh_var()),
 
@@ -688,6 +687,18 @@ impl TypeChecker {
                                 t.heap_payload().expect("just checked").clone()
                             }
                             Type::RawPtr(inner) => *inner,
+                            // PT6: `*T?` may be the null address; the payload
+                            // is reached through `??` or `as`, not `*`.
+                            ref t if matches!(t.as_option(), Some(Type::RawPtr(_))) => {
+                                self.errors.push(TypeError::DerefOptionalPointer {
+                                    found: t.clone(),
+                                    span: expr.span,
+                                });
+                                match t.as_option() {
+                                    Some(Type::RawPtr(inner)) => (**inner).clone(),
+                                    _ => unreachable!("matched above"),
+                                }
+                            }
                             // The operand's type isn't settled yet — it came
                             // out of another call, as in `*nums.as_ptr()`.
                             // Returning the open var left the whole binding

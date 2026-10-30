@@ -1009,7 +1009,6 @@ impl Desugarer {
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Ident(_) | ExprKind::GenericName { .. }
-            | ExprKind::Null
             | ExprKind::None
             | ExprKind::Bytes(_)
             => {}

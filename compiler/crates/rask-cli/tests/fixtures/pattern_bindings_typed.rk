@@ -185,15 +185,14 @@ func record_altitude(mutate log: Vec<i32>, altitude: i32) {
     todo()
 }
 
-// `nullptr` is deliberately typed `*_`; the comparison says what it's compared
-// against. Only the deferred path tied the two, so a comparison against an
-// already-known pointer left the `nullptr` with a pointee nothing bound.
-extern "C" func allocate(size: usize) -> *u8
+// A pointer C may not hand back is `*u8?`, and asking whether it did is
+// the optional's own test.
+extern "C" func allocate(size: usize) -> *u8?
 
 func allocated() -> bool {
     unsafe {
         let p = allocate(16)
-        if p == nullptr {
+        if p is none {
             return false
         }
         return true

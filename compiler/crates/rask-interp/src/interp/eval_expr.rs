@@ -1022,11 +1022,6 @@ impl Interpreter {
             // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
             ExprKind::None => Ok(Value::none()),
 
-            // The null pointer. This used to fall through to the catch-all
-            // and evaluate to unit, so `null.is_null()` was "method not found
-            // on `void`" (#935).
-            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
-
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());

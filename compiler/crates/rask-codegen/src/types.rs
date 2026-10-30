@@ -13,7 +13,7 @@ use crate::CodegenResult;
 pub fn extern_type_to_mir(ty: &rask_ast::ty::TypeExpr) -> MirType {
     use rask_ast::ty::TypeExpr;
     match ty {
-        TypeExpr::RawPtr(_) => return MirType::Ptr,
+        TypeExpr::RawPtr(_) => return MirType::RawPtr,
         TypeExpr::Unit => return MirType::Void,
         _ => {}
     }
@@ -62,6 +62,7 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::F64 => Ok(types::F64),
         MirType::Char => Ok(types::I32), // Unicode scalar value
         MirType::Ptr => Ok(types::I64),  // Pointer
+        MirType::RawPtr => Ok(types::I64), // Raw pointer (mem.unsafe)
         MirType::Container(_) => Ok(types::I64), // Container handle
         MirType::Heap(_) => Ok(types::I64),      // Block address
         MirType::Buffer => Ok(types::I64), // String data pointer

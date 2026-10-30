@@ -187,8 +187,10 @@ fn cached_generic_layout(
         .filter(|(size, _)| *size > 0)
 }
 
-fn is_link(ty: &Type) -> bool {
-    matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Link")
+/// A payload whose `T?` is one word with no tag: a link, or a raw pointer,
+/// each with null for `none`.
+fn is_niche_word(ty: &Type) -> bool {
+    matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Link") || matches!(ty, Type::RawPtr(_))
 }
 
 /// Where a `T?`, `T or E` or error union keeps its payload, and its size, by
@@ -222,7 +224,7 @@ fn wrapper_layout_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknow
             Some(crate::abi::union_layout(size, align))
         }
         _ => {
-            let inner = ty.as_option().filter(|inner| !is_link(inner))?;
+            let inner = ty.as_option().filter(|inner| !is_niche_word(inner))?;
             let (size, align) = size_align_in(inner, cache, on_unknown)?;
             Some(crate::abi::option_layout(size, align))
         }
@@ -284,9 +286,9 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         // The runtime's `RaskStr`: 16 bytes on every target, since its heap
         // form holds a 64-bit length beside the pointer.
         Type::String | Type::Bytes => (16, 8),
-        // Niche optimization: `Link<T>?` is the node's address with null
-        // for `none` — one word, no tag.
-        ty if ty.as_option().is_some_and(is_link) => (w, w),
+        // Niche optimization: `Link<T>?` is the node's address and `*T?` the
+        // pointer, each with null for `none` — one word, no tag.
+        ty if ty.as_option().is_some_and(is_niche_word) => (w, w),
         Type::Result { .. } => {
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)

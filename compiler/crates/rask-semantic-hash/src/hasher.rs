@@ -654,9 +654,6 @@ impl Hasher {
                 self.feed_tag(44);
                 self.feed_bool(*b);
             }
-            ExprKind::Null => {
-                self.feed_tag(45);
-            }
             ExprKind::None => {
                 self.feed_tag(89);
             }

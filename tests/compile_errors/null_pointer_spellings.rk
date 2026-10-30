@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `*T` is never null; a pointer that may be absent is `*T?`, and its absence
+// is `none` (mem.unsafe/PT6). The language had three other spellings for it:
+// a `nullptr` keyword, a built-in `null` of type `*void`,
+// and `is_null()` (see optional_pointer_misuse.rk).
+
+func main() {
+    let a: *u8? = nullptr                 // ERROR: E0200
+    let b: *u8? = null                    // ERROR: E0200
+}

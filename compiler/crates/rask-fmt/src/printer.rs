@@ -1814,7 +1814,7 @@ impl<'a> Printer<'a> {
 
     fn format_expr_inner(&mut self, expr: &Expr, parent_prec: Option<u8>) {
         match &expr.kind {
-            ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Null => {
+            ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) | ExprKind::Bytes(_) | ExprKind::Char(_) => {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
             }
@@ -2604,7 +2604,6 @@ impl<'a> Printer<'a> {
                 | ExprKind::StringInterp(_)
                 | ExprKind::Char(_)
                 | ExprKind::Bool(_)
-                | ExprKind::Null
                 | ExprKind::None
                 | ExprKind::Ident(_)
                 | ExprKind::GenericName { .. }

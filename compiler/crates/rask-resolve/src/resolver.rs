@@ -276,15 +276,6 @@ impl Resolver {
             self.stdlib_symbols.insert(sym_id);
         }
 
-        // Register null constant for unsafe pointer comparisons
-        let null_sym = self.symbols.insert(
-            "null".to_string(),
-            SymbolKind::Variable { mutable: false },
-            Some(TypeExpr::RawPtr(Box::new(TypeExpr::Unit))),
-            Span::new(0, 0),
-            true,
-        );
-        let _ = self.scopes.define("null".to_string(), null_sym, Span::new(0, 0));
     }
 
     /// The name `spawn_with(name, …)` handed its task, for E0915's fix.
@@ -2546,7 +2537,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
-            ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
+            ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None => {}
             ExprKind::Ident(name) => self.resolve_name(expr, name),
             ExprKind::GenericName { name, type_args } => {
                 self.resolve_name(expr, name);

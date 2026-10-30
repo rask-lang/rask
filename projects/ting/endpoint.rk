@@ -21,7 +21,7 @@ import string.cstring
 // file's. They do read the clock and ask for random bytes.
 @ambient
 extern "C" {
-    func ting_quic_new(local: *u8, remote: *u8) -> *u8
+    func ting_quic_new(local: *u8, remote: *u8?) -> *u8?
     func ting_quic_free(quic: *u8)
     func ting_quic_receive(quic: *u8, pkt: *u8, len: i64, from: *u8) -> i64
     func ting_quic_send(quic: *u8, peer: *u8, data: *u8, len: i64, reliable: i64) -> i64
@@ -55,7 +55,9 @@ struct Scratch {
 @resource
 public struct Endpoint {
     socket: UdpSocket
-    quic: *u8
+    // Absent only while `start` builds it: the socket has to be in the
+    // endpoint, with its close committed, before its address can be read.
+    quic: *u8?
     out: Scratch
 }
 
@@ -76,18 +78,29 @@ extend Endpoint {
     func start(take socket: UdpSocket, server: string) -> Endpoint or IoError {
         mut ep = Endpoint(
             socket: socket
-            quic: nullptr
+            quic: none
             out: Scratch(bytes: zeroed(BUF), addr: zeroed(ADDR), reliable: [0])
         )
         ensure ep.close()
         let local = ep.socket.local_addr()
         let here = c_text(local)
         let there = c_text(server)
-        ep.quic = unsafe ting_quic_new(here.as_ptr(), if server.is_empty() { nullptr } else { there.as_ptr() })
-        if ep.quic.is_null() {
+        // Written as an assignment: an `if` with a `none` arm doesn't widen
+        // to `*u8?` yet (#1692).
+        mut remote: *u8? = none
+        if !server.is_empty() {
+            remote = unsafe there.as_ptr()
+        }
+        ep.quic = unsafe ting_quic_new(here.as_ptr(), remote)
+        if ep.quic is none {
             return IoError.Other("not an address QUIC can use: {local} / {server}")
         }
         return ep
+    }
+
+    /// The QUIC state. Every endpoint `start` hands out has one.
+    func handle(self) -> *u8 {
+        return self.quic!
     }
 
     public func local_addr(self) -> string {
@@ -95,8 +108,8 @@ extend Endpoint {
     }
 
     public func close(take self) -> void or IoError {
-        if !self.quic.is_null() {
-            unsafe ting_quic_free(self.quic)
+        if self.quic? as quic {
+            unsafe ting_quic_free(quic)
         }
         try self.socket.close()
         return
@@ -107,7 +120,7 @@ extend Endpoint {
     public func send(mutate self, to: string, data: Vec<u8>, reliable: bool) -> void or IoError {
         let peer = c_text(to)
         let kind: i64 = if reliable { 1 } else { 0 }
-        let r = unsafe ting_quic_send(self.quic, peer.as_ptr(), data.as_ptr(), data.len().wrap<i64>(), kind)
+        let r = unsafe ting_quic_send(self.handle(), peer.as_ptr(), data.as_ptr(), data.len().wrap<i64>(), kind)
         if r < 0 {
             return IoError.Other("no connection to {to}")
         }
@@ -118,7 +131,7 @@ extend Endpoint {
     /// acks, timers that came due.
     public func flush(mutate self) -> void or IoError {
         loop {
-            let n = unsafe ting_quic_next_packet(self.quic, self.out.bytes.as_mut_ptr(), PACKET, self.out.addr.as_mut_ptr(), ADDR)
+            let n = unsafe ting_quic_next_packet(self.handle(), self.out.bytes.as_mut_ptr(), PACKET, self.out.addr.as_mut_ptr(), ADDR)
             if n <= 0 {
                 return
             }
@@ -136,11 +149,11 @@ extend Endpoint {
             }
             let from = c_text(d.from)
             // A packet ngtcp2 can't read is dropped, as QUIC drops them.
-            unsafe ting_quic_receive(self.quic, d.data.as_ptr(), d.data.len().wrap<i64>(), from.as_ptr())
+            unsafe ting_quic_receive(self.handle(), d.data.as_ptr(), d.data.len().wrap<i64>(), from.as_ptr())
         }
         mut got: Vec<Message> = []
         loop {
-            let n = unsafe ting_quic_next_message(self.quic, self.out.bytes.as_mut_ptr(), BUF, self.out.addr.as_mut_ptr(), ADDR, self.out.reliable.as_mut_ptr())
+            let n = unsafe ting_quic_next_message(self.handle(), self.out.bytes.as_mut_ptr(), BUF, self.out.addr.as_mut_ptr(), ADDR, self.out.reliable.as_mut_ptr())
             if n < 0 {
                 return got
             }
@@ -155,13 +168,13 @@ extend Endpoint {
     /// Whether the handshake with `peer` is done.
     public func connected(self, peer: string) -> bool {
         let p = c_text(peer)
-        return unsafe ting_quic_connected(self.quic, p.as_ptr()) == 1
+        return unsafe ting_quic_connected(self.handle(), p.as_ptr()) == 1
     }
 
     /// Reliable messages to `peer` not yet acknowledged.
     public func unacked(self, peer: string) -> i64 {
         let p = c_text(peer)
-        return unsafe ting_quic_unacked(self.quic, p.as_ptr())
+        return unsafe ting_quic_unacked(self.handle(), p.as_ptr())
     }
 }
 

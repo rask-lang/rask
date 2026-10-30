@@ -40,7 +40,7 @@ pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 /// one type and the word itself carries the answer.
 pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
     match ty {
-        MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
+        MirType::Option(inner) if inner.is_niche_payload() => ty.niche_none(),
         MirType::Link(_) => ty.niche_none(),
         _ => None,
     }
@@ -91,6 +91,9 @@ pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
 /// The word that means `none` for a niche option spelled by name.
 pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
     let inner = ty.as_option()?;
+    if let Type::RawPtr(_) = inner {
+        return Some(rask_types::abi::RAW_PTR_NONE_SENTINEL);
+    }
     let Type::UnresolvedGeneric { name, .. } = inner else { return None };
     niche_sentinel_for_head(name)
 }
@@ -971,7 +974,8 @@ impl<'a> MirContext<'a> {
                     None => interface.to_string(),
                 },
             },
-            TypeExpr::RawPtr(_) | TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
+            TypeExpr::RawPtr(_) => MirType::RawPtr,
+            TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
             TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
             TypeExpr::Named { path, args } => self.resolve_generic_expr(&path.join("."), args),
         }
@@ -1262,6 +1266,7 @@ impl<'a> MirContext<'a> {
     pub(crate) fn niche_option_sentinel(&self, ty: &Type) -> Option<i64> {
         let inner = ty.as_option()?;
         let head = match inner {
+            Type::RawPtr(_) => return Some(rask_types::abi::RAW_PTR_NONE_SENTINEL),
             Type::UnresolvedGeneric { name, .. } => name.clone(),
             Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
             _ => return None,
@@ -1278,6 +1283,7 @@ impl<'a> MirContext<'a> {
     pub(crate) fn niche_option_mir_type(&self, ty: &Type) -> Option<MirType> {
         let inner = ty.as_option()?;
         let (name, args) = match inner {
+            Type::RawPtr(_) => return Some(MirType::Option(Box::new(MirType::RawPtr))),
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
             _ => return None,
@@ -1402,7 +1408,7 @@ impl<'a> MirContext<'a> {
                 }
             }
             Type::UnresolvedGeneric { name, args } => self.resolve_unresolved_generic(name, args),
-            Type::RawPtr(_) => MirType::Ptr,
+            Type::RawPtr(_) => MirType::RawPtr,
             // A closure is a pointer to its block, and saying so in the type is
             // what lets a carrier holding one give it back. `MirType::Ptr` is
             // every other pointer as well, so a tuple element or an optional's
@@ -3789,6 +3795,7 @@ impl<'a> MirLowerer<'a> {
                 | MirType::Array { .. }
                 | MirType::Tuple(_)
                 | MirType::Ptr
+                | MirType::RawPtr
                 | MirType::Container(_)
                 | MirType::Buffer
         )
@@ -3900,7 +3907,7 @@ impl<'a> MirLowerer<'a> {
             let cap_ty = self
                 .builder
                 .local_type(cap.outer)
-                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr | MirType::Container(_))))
+                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr | MirType::RawPtr | MirType::Container(_))))
                 .unwrap_or_else(|| cap.ty.clone());
             let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
@@ -6023,7 +6030,7 @@ impl<'a> MirLowerer<'a> {
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
             | ExprKind::StringInterp(..) | ExprKind::Bytes(..)
-            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
+            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::None | ExprKind::GenericName { .. } => {}
         }
     }
 

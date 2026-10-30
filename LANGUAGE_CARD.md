@@ -427,7 +427,7 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Interface` at comptim
 11. **`|` has three meanings**: closure params `|x| x + 1`, error unions `IoError | ParseError` (error position only), bitwise-or. Match alternatives also use `|`.
 12. **Map iteration order is seeded-random** — sort before iterating if order matters. `push`/`insert` panic on OOM; `try_push` for fallible.
 13. **Static paths use `.`**: `Shape.Circle(2.0)`, `Vec.new()`, `Token.Plus` — never `::`.
-14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`. `nullptr` exists only for raw pointers inside `unsafe`.
+14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`. A raw pointer that may be absent is `*T?`, and its absence is `none` too.
 15. **Struct literals use parens, not braces**: `Point(x: 1.0, y: 2.0)`, never `Point { x: 1.0, y: 2.0 }`. Fields go by name, so `Point(1.0, 2.0)` is an error; only functions, positional variants and newtypes take values by position.
 16. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
