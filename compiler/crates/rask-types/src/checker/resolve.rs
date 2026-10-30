@@ -1367,16 +1367,9 @@ impl TypeChecker {
                 }
             }
             // Rack (bare, for Rack.new())
-            Type::UnresolvedNamed(name) if name == "Rack" => match method.as_str() {
-                "new" if args.is_empty() => {
-                    let rack_ty = Type::UnresolvedGeneric {
-                        name: "Rack".to_string(),
-                        args: vec![GenericArg::Type(Box::new(self.ctx.fresh_var()))],
-                    };
-                    self.unify(&ret, &rack_ty, span)
-                }
-                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-            },
+            Type::UnresolvedNamed(name) if name == "Rack" => {
+                self.resolve_rack_method(&[], &method, &args, &ret, span)
+            }
             // Vec<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
                 self.resolve_vec_method(type_args, &method, &args, &ret, span)
@@ -2636,11 +2629,10 @@ impl TypeChecker {
         }
     }
 
-    /// `Rack<T>` methods (analysis.fourth-option).
-    ///
-    /// Note what is absent: no `get`. A pool hands out handles that must be
-    /// redeemed at the pool; a rack hands out links that are followed
-    /// directly, so the only container-level operations left are structural.
+    /// `Rack<T>` methods: what stdlib/memory.rk declares. A table of its own
+    /// used to answer these, and it had drifted: `len` was `u64` where the
+    /// file says `usize`, it accepted a `links()` nobody declares, and it
+    /// never checked what was passed to `delete` or `contains`.
     pub(super) fn resolve_rack_method(
         &mut self,
         type_args: &[GenericArg],
@@ -2649,52 +2641,16 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let node_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-            *t.clone()
-        } else {
-            self.ctx.fresh_var()
+        let node_type = match type_args.first() {
+            Some(GenericArg::Type(t)) => (**t).clone(),
+            _ => self.ctx.fresh_var(),
         };
-        let link_ty = Type::UnresolvedGeneric {
-            name: "Link".to_string(),
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Rack".to_string(),
             args: vec![GenericArg::Type(Box::new(node_type.clone()))],
         };
-
-        match method {
-            // rack.insert(node: T) -> Link<T>
-            "insert" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &node_type, span);
-                self.unify(ret, &link_ty, span)
-            }
-            // rack.delete(l: Link<T>) -> ()
-            // Every edge pointing at the node becomes `none` here.
-            "delete" if args.len() == 1 => self.unify(ret, &Type::Unit, span),
-            "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
-            "contains" if args.len() == 1 => self.unify(ret, &Type::Bool, span),
-            "clear" if args.is_empty() => self.unify(ret, &Type::Unit, span),
-            // rack.nodes() -> Vec<Link<T>>
-            "nodes" | "links" if args.is_empty() => {
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(link_ty))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            _ => {
-                self.ctx.add_constraint(TypeConstraint::HasMethod {
-                    ty: Type::UnresolvedGeneric {
-                        name: "Rack".to_string(),
-                        args: type_args.to_vec(),
-                    },
-                    method: method.to_string(),
-                    args: args.to_vec(),
-                    ret: ret.clone(),
-                    span,
-                    call_node: None,
-                });
-                Ok(false)
-            }
-        }
+        self.resolve_declared_stdlib_method("Rack", &self_ty, &[node_type], method, args, ret, span)
+            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
     /// Resolve static methods on bare Vec (e.g. Vec.new()).
