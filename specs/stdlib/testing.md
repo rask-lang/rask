@@ -310,7 +310,7 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 
 ### Open Issues
 
-- **Fuzzing** — Property-based / fuzz testing built-in?
+- **Fuzzing** — Property-based checking is proposed as claims (`type.claims`), checked by `rask check` rather than run as tests. Fuzzing beyond that is open
 - **Coverage** — Code coverage reporting approach?
 - **Fixtures** — Setup/teardown beyond `ensure`?
 
