@@ -19,7 +19,7 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 | **AT3: Not Copy** | Atomic types are not `Copy` or `Clone` (prevents accidental non-atomic copies) |
 | **AT4: Interior mutability** | Operations take `self`, not `mutate self` — the atomic itself handles synchronization |
 | **AT5: Wrapping arithmetic** | Fetch operations wrap on overflow. No panic, no undefined behavior |
-| **AT6: The order fits the operation** | A load only reads, so it takes `Relaxed`, `Acquire` or `SeqCst`. A store only writes, so it takes `Relaxed`, `Release` or `SeqCst`. A read-modify-write takes any order. A misfit written at the call is a compile error (E0927); one that arrives in a variable panics when the operation runs. Compare-exchange takes one order, and a failure, which only reads, uses its acquire half |
+| **AT6: The order fits the operation** | A load only reads, so it takes `Relaxed`, `Acquire` or `SeqCst`. A store only writes, so it takes `Relaxed`, `Release` or `SeqCst`. A read-modify-write takes any order. A misfit written at the call is a compile error (E0933); one that arrives in a variable panics when the operation runs. Compare-exchange takes one order, and a failure, which only reads, uses its acquire half |
 | **AT7: Platform-dependent types** | 128-bit and float atomics require hardware support; code must not compile on unsupported platforms |
 
 ## The `Atomic<T>` Type

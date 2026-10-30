@@ -496,8 +496,8 @@ for a checker type by accident, and no grep test has to say so.
    setups, the config built fifteen times, and node ids. Every tool readies
    its interpreter with `rask_compiler::prepare_interpreter` now, from the
    `cfg` the check recorded; what's left runs on declarations nothing
-   checked (build scripts, spec-test) or is `rask comptime`'s second
-   evaluator.
+   checked (build scripts, spec-test). `rask comptime` checks first now and
+   builds its evaluator the way the compile does.
 4. **#1566 + #1567.** The checker records what it decided per node (which
    variant a pattern names, which side a return goes to, that a call was an
    operator), and layout moves into its own crate. That needs `rask-types`

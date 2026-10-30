@@ -1688,7 +1688,7 @@ impl ToDiagnostic for crate::TypeError {
                     ("only writes", "acquire", "Release")
                 };
                 Diagnostic::error(format!("a `{method}` can't be `{order}`"))
-                    .with_code("E0927")
+                    .with_code("E0933")
                     .with_primary(*span, format!("a {method} {does}, so this order has no {missing} half to apply"))
                     .with_why(format!(
                         "an order says which neighbouring reads and writes may not move past this one; \
