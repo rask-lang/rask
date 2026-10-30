@@ -46,35 +46,67 @@ fn retarget_anon(ty: &mut CType, placeholder: &str, adopted: &str, is_struct: bo
 
 pub struct CParser {
     tokens: Vec<CToken>,
+    files: Vec<String>,
     pos: usize,
     warnings: Vec<CWarning>,
+    /// What constants are known so far, for array sizes and enumerators.
+    consts: Constants,
+    /// The file the preprocessor's last line marker named.
+    file: String,
+    /// Types declared inside another's body, waiting to be emitted ahead of it.
+    nested: Vec<CItem>,
+    /// Tags of the structs whose bodies are being parsed, innermost last.
+    outer: Vec<Option<String>>,
+    anon: usize,
 }
 
 impl CParser {
     pub fn new(tokens: Vec<CToken>) -> Self {
+        Self::with_files(tokens, vec![String::new()])
+    }
+
+    /// `files` is what the lexer's line markers named, indexed by
+    /// `CToken::file`.
+    pub fn with_files(tokens: Vec<CToken>, files: Vec<String>) -> Self {
         Self {
             tokens,
+            files,
             pos: 0,
             warnings: Vec::new(),
+            consts: Constants::default(),
+            file: String::new(),
+            nested: Vec::new(),
+            outer: Vec::new(),
+            anon: 0,
         }
     }
 
+    fn push(&mut self, out: &mut Vec<CItem>, decl: CDecl, line: usize) {
+        self.consts.note(&decl);
+        out.extend(self.nested.drain(..));
+        out.push(CItem { decl, file: self.file.clone(), line });
+    }
+
     pub fn parse(&mut self) -> Result<CParseResult, ParseError> {
-        let mut decls = Vec::new();
+        let mut decls: Vec<CItem> = Vec::new();
 
         loop {
             self.skip_newlines();
             if self.at_eof() {
                 break;
             }
+            let line = self.line();
+            self.file = self.files.get(self.peek_token().file as usize).cloned().unwrap_or_default();
 
             match self.peek() {
                 // Preprocessor directives
-                CTokenKind::PPDefine => {
-                    if let Some(d) = self.parse_define()? {
-                        decls.push(CDecl::Define(d));
-                    }
-                }
+                CTokenKind::PPDefine => match self.parse_define() {
+                    Ok(Some(d)) => self.push(&mut decls, CDecl::Define(d), line),
+                    Ok(None) => {}
+                    // A name the lexer read as an attribute keyword: nothing
+                    // a binding can use.
+                    Err(_) => self.skip_to_newline(),
+                },
                 CTokenKind::PPInclude
                 | CTokenKind::PPIfdef
                 | CTokenKind::PPIfndef
@@ -95,9 +127,14 @@ impl CParser {
                 // Declarations
                 _ => {
                     match self.try_parse_declaration() {
-                        Ok(Some(mut new_decls)) => decls.append(&mut new_decls),
-                        Ok(None) => {}
+                        Ok(Some(new_decls)) => {
+                            for d in new_decls {
+                                self.push(&mut decls, d, line);
+                            }
+                        }
+                        Ok(None) => self.nested.clear(),
                         Err(e) => {
+                            self.nested.clear();
                             self.warnings.push(CWarning {
                                 message: format!("skipping declaration: {} (at {:?})", e.message, self.peek()),
                                 line: e.line,
@@ -122,7 +159,7 @@ impl CParser {
     }
 
     fn peek_token(&self) -> &CToken {
-        static EOF_TOKEN: CToken = CToken { kind: CTokenKind::Eof, line: 0, space_before: false };
+        static EOF_TOKEN: CToken = CToken { kind: CTokenKind::Eof, line: 0, space_before: false, file: 0 };
         if self.pos < self.tokens.len() {
             &self.tokens[self.pos]
         } else {
@@ -235,131 +272,60 @@ impl CParser {
 
     fn parse_define(&mut self) -> Result<Option<CDefine>, ParseError> {
         self.advance(); // consume PPDefine
-        self.skip_whitespace_tokens();
-
         let name = self.expect_ident()?;
 
-        // Function-like macro: #define FOO(a, b) ...
-        // Only if `(` immediately follows name (no space). `#define EOF (-1)` has a space.
-        if self.peek() == CTokenKind::LParen && !self.peek_token().space_before {
+        // Function-like only if `(` touches the name: `#define EOF (-1)` has a space.
+        let params = if self.peek() == CTokenKind::LParen && !self.peek_token().space_before {
             let mut params = Vec::new();
-            self.advance(); // (
-            while self.peek() != CTokenKind::RParen && !self.at_eof()
-                && self.peek() != CTokenKind::Newline
-            {
-                if let CTokenKind::Ident(p) = self.peek() {
-                    params.push(p);
-                    self.advance();
-                } else if self.peek() == CTokenKind::Ellipsis {
-                    params.push("...".to_string());
-                    self.advance();
-                } else {
-                    self.advance();
+            self.advance();
+            while !matches!(self.peek(), CTokenKind::RParen | CTokenKind::Newline | CTokenKind::Eof) {
+                match self.advance() {
+                    CTokenKind::Ident(p) => params.push(p),
+                    CTokenKind::Ellipsis => params.push("...".to_string()),
+                    _ => {}
                 }
-                self.match_token(&CTokenKind::Comma);
             }
             self.match_token(&CTokenKind::RParen);
-            self.skip_to_newline();
-
-            self.warnings.push(CWarning {
-                message: format!("function-like macro `{}` skipped", name),
-                line: self.line(),
-            });
-            return Ok(Some(CDefine {
-                name,
-                kind: CDefineKind::FunctionMacro { params },
-            }));
-        }
-
-        // Object-like macro: try to parse value
-        self.skip_whitespace_tokens();
-
-        if self.peek() == CTokenKind::Newline || self.at_eof() {
-            // Empty define — skip
-            return Ok(None);
-        }
-
-        let kind = match self.peek() {
-            CTokenKind::IntLit(v) => {
-                self.advance();
-                self.skip_to_newline();
-                CDefineKind::Integer(v)
-            }
-            CTokenKind::UIntLit(v) => {
-                self.advance();
-                self.skip_to_newline();
-                CDefineKind::UnsignedInteger(v)
-            }
-            CTokenKind::FloatLit(v) => {
-                self.advance();
-                self.skip_to_newline();
-                CDefineKind::Float(v)
-            }
-            CTokenKind::StringLit(s) => {
-                self.advance();
-                self.skip_to_newline();
-                CDefineKind::String(s)
-            }
-            // Negative literal: - <number>
-            CTokenKind::Minus => {
-                self.advance();
-                match self.peek() {
-                    CTokenKind::IntLit(v) => {
-                        self.advance();
-                        self.skip_to_newline();
-                        CDefineKind::Integer(-v)
-                    }
-                    CTokenKind::FloatLit(v) => {
-                        self.advance();
-                        self.skip_to_newline();
-                        CDefineKind::Float(-v)
-                    }
-                    _ => {
-                        self.skip_to_newline();
-                        CDefineKind::Unparseable
-                    }
-                }
-            }
-            // Parenthesized constant: #define X (42)
-            CTokenKind::LParen => {
-                self.advance();
-                let inner = match self.peek() {
-                    CTokenKind::IntLit(v) => {
-                        self.advance();
-                        Some(CDefineKind::Integer(v))
-                    }
-                    CTokenKind::UIntLit(v) => {
-                        self.advance();
-                        Some(CDefineKind::UnsignedInteger(v))
-                    }
-                    CTokenKind::Minus => {
-                        self.advance();
-                        match self.peek() {
-                            CTokenKind::IntLit(v) => {
-                                self.advance();
-                                Some(CDefineKind::Integer(-v))
-                            }
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                };
-                if inner.is_some() && self.peek() == CTokenKind::RParen {
-                    self.advance();
-                    self.skip_to_newline();
-                    inner.unwrap()
-                } else {
-                    self.skip_to_newline();
-                    CDefineKind::Unparseable
-                }
-            }
-            _ => {
-                self.skip_to_newline();
-                CDefineKind::Unparseable
-            }
+            Some(params)
+        } else {
+            None
         };
 
-        Ok(Some(CDefine { name, kind }))
+        let mut body = Vec::new();
+        while !matches!(self.peek(), CTokenKind::Newline | CTokenKind::Eof) {
+            body.push(self.advance());
+        }
+        // An empty object-like macro is an include guard or a feature flag.
+        if body.is_empty() && params.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(CDefine { name, params, body, text: String::new() }))
+    }
+
+    /// The tokens up to the first of `stops` outside brackets, evaluated.
+    fn const_expr_until(&mut self, stops: &[CTokenKind]) -> Option<i64> {
+        let mut toks = Vec::new();
+        let mut depth = 0i32;
+        loop {
+            let t = self.peek();
+            if matches!(t, CTokenKind::Eof) || (depth == 0 && stops.contains(&t)) {
+                break;
+            }
+            match t {
+                CTokenKind::LParen | CTokenKind::LBracket => depth += 1,
+                CTokenKind::RParen | CTokenKind::RBracket => depth -= 1,
+                CTokenKind::Newline => {
+                    self.advance();
+                    continue;
+                }
+                _ => {}
+            }
+            if depth < 0 {
+                break;
+            }
+            toks.push(self.advance());
+        }
+        crate::consteval::eval_int(&toks, &self.consts).and_then(|v| i64::try_from(v).ok())
     }
 
     fn skip_whitespace_tokens(&mut self) {
@@ -455,8 +421,9 @@ impl CParser {
         // Function declaration?
         if self.peek() == CTokenKind::LParen {
             let func = self.parse_function_decl(name, ptr_ty, is_static, is_inline)?;
-            // Skip static/inline functions per spec (internal linkage)
-            if func.is_static {
+            // A static function has internal linkage. A static inline one is
+            // still usable: the compiler builds a wrapper for it (IN2).
+            if func.is_static && !func.is_inline {
                 return Ok(None);
             }
             return Ok(Some(vec![CDecl::Function(func)]));
@@ -534,16 +501,9 @@ impl CParser {
                 CTokenKind::Float => { base = Some(CType::Float); self.advance(); break; }
                 CTokenKind::Double => { base = Some(CType::Double); self.advance(); break; }
                 CTokenKind::Bool => { base = Some(CType::Bool); self.advance(); break; }
-                CTokenKind::Struct => {
-                    self.advance();
-                    let tag = self.expect_ident()?;
-                    base = Some(CType::StructTag(tag));
-                    break;
-                }
-                CTokenKind::Union => {
-                    self.advance();
-                    let tag = self.expect_ident()?;
-                    base = Some(CType::UnionTag(tag));
+                CTokenKind::Struct | CTokenKind::Union => {
+                    let is_struct = self.advance() == CTokenKind::Struct;
+                    base = Some(self.struct_specifier(is_struct)?);
                     break;
                 }
                 CTokenKind::Enum => {
@@ -559,23 +519,7 @@ impl CParser {
                         break;
                     }
                     let name = name.clone();
-                    // Resolve well-known typedefs
-                    base = Some(match name.as_str() {
-                        "size_t" => CType::SizeT,
-                        "ssize_t" | "ptrdiff_t" => CType::SSizeT,
-                        "int8_t" | "__int8_t" => CType::FixedInt { bits: 8, signed: true },
-                        "int16_t" | "__int16_t" => CType::FixedInt { bits: 16, signed: true },
-                        "int32_t" | "__int32_t" => CType::FixedInt { bits: 32, signed: true },
-                        "int64_t" | "__int64_t" => CType::FixedInt { bits: 64, signed: true },
-                        "uint8_t" | "__uint8_t" => CType::FixedInt { bits: 8, signed: false },
-                        "uint16_t" | "__uint16_t" => CType::FixedInt { bits: 16, signed: false },
-                        "uint32_t" | "__uint32_t" => CType::FixedInt { bits: 32, signed: false },
-                        "uint64_t" | "__uint64_t" => CType::FixedInt { bits: 64, signed: false },
-                        "intptr_t" => CType::IntPtr { signed: true },
-                        "uintptr_t" => CType::IntPtr { signed: false },
-                        "FILE" | "va_list" | "wchar_t" | "jmp_buf" => CType::Named(name),
-                        _ => CType::Named(name),
-                    });
+                    base = Some(crate::builtin_typedef(&name).unwrap_or(CType::Named(name)));
                     self.advance();
                     break;
                 }
@@ -584,10 +528,12 @@ impl CParser {
         }
 
         // Resolve combined specifiers
-        let ty = if let Some(base) = base {
+        let unsigned = is_signed == Some(false);
+        let has_base = base.is_some();
+        let ty = if let Some(base) = base.filter(|b| *b != CType::Int) {
             match base {
                 CType::Char if is_signed == Some(true) => CType::SignedChar,
-                CType::Char if is_signed == Some(false) => CType::UnsignedChar,
+                CType::Char if unsigned => CType::UnsignedChar,
                 CType::Double if long_count > 0 => CType::Double, // long double → f64 (approximate)
                 _ => base,
             }
@@ -609,13 +555,9 @@ impl CParser {
             } else {
                 CType::Long
             }
-        } else if is_signed.is_some() {
-            // bare `signed` or `unsigned` → int
-            if is_signed == Some(false) {
-                CType::UnsignedInt
-            } else {
-                CType::Int
-            }
+        } else if is_signed.is_some() || has_base {
+            // `int`, `unsigned int`, or bare `signed` / `unsigned`
+            if unsigned { CType::UnsignedInt } else { CType::Int }
         } else {
             return Err(ParseError::new("expected type specifier".into(), self.line()));
         };
@@ -701,7 +643,10 @@ impl CParser {
             let size = if self.peek() == CTokenKind::RBracket {
                 None
             } else {
-                self.parse_const_expr_value()
+                match self.const_expr_until(&[CTokenKind::RBracket]) {
+                    Some(n) if n >= 0 => Some(n as u64),
+                    _ => return Err(ParseError::new(format!("array size of `{}` isn't a constant", name), self.line())),
+                }
             };
             self.expect(&CTokenKind::RBracket)?;
             ty = CType::Array(Box::new(ty), size);
@@ -861,7 +806,10 @@ impl CParser {
 
         // Parse body
         self.expect(&CTokenKind::LBrace)?;
-        let fields = self.parse_struct_fields()?;
+        self.outer.push(tag.clone());
+        let fields = self.parse_struct_fields();
+        self.outer.pop();
+        let fields = fields?;
         self.expect(&CTokenKind::RBrace)?;
 
         let decl = CStructDecl {
@@ -961,6 +909,44 @@ impl CParser {
         Ok(Some(decls))
     }
 
+    /// `struct tag`, or a struct defined where a type is expected:
+    /// `struct tag { … }` or `struct { … }` as a field's type. A body becomes
+    /// a declaration of its own, emitted ahead of the one that contains it; an
+    /// anonymous one is named after its container.
+    fn struct_specifier(&mut self, is_struct: bool) -> Result<CType, ParseError> {
+        let tag = if let CTokenKind::Ident(_) = self.peek() {
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        let as_type = |t: String| if is_struct { CType::StructTag(t) } else { CType::UnionTag(t) };
+        if self.peek() != CTokenKind::LBrace {
+            return match tag {
+                Some(t) => Ok(as_type(t)),
+                None => Err(ParseError::new("struct without a tag or a body".into(), self.line())),
+            };
+        }
+        let tag = tag.unwrap_or_else(|| {
+            let outer = self.outer.iter().rev().flatten().next().cloned().unwrap_or_else(|| "anon".into());
+            self.anon += 1;
+            format!("{}_anon{}", outer, self.anon - 1)
+        });
+        let line = self.line();
+        self.advance();
+        self.outer.push(Some(tag.clone()));
+        let fields = self.parse_struct_fields();
+        self.outer.pop();
+        let fields = fields?;
+        self.expect(&CTokenKind::RBrace)?;
+        let decl = CStructDecl { tag: Some(tag.clone()), fields, is_forward: false };
+        self.nested.push(CItem {
+            decl: if is_struct { CDecl::Struct(decl) } else { CDecl::Union(decl) },
+            file: self.file.clone(),
+            line,
+        });
+        Ok(as_type(tag))
+    }
+
     fn parse_struct_fields(&mut self) -> Result<Vec<CField>, ParseError> {
         let mut fields = Vec::new();
         loop {
@@ -979,14 +965,28 @@ impl CParser {
 
             // Parse one or more field declarators
             loop {
-                let (field_ty, name) = self.parse_declarator(ty.clone())?;
+                let (field_ty, mut name) = self.parse_declarator(ty.clone())?;
 
                 let bit_width = if self.match_token(&CTokenKind::Colon) {
-                    self.parse_const_expr_value().map(|v| v as u32)
+                    match self.const_expr_until(&[CTokenKind::Comma, CTokenKind::Semi]) {
+                        Some(w) if w >= 0 => Some(w as u32),
+                        _ => return Err(ParseError::new("bitfield width isn't a constant".into(), self.line())),
+                    }
                 } else {
                     None
                 };
 
+                // An unnamed member still takes room: a nested struct or union
+                // whose fields C lets you reach directly, or bitfield padding.
+                // Rask reaches them through a name.
+                if name.is_empty() {
+                    match (&field_ty, bit_width) {
+                        (_, Some(0)) => {}
+                        (_, Some(_)) => name = format!("pad{}", fields.len()),
+                        (CType::StructTag(_) | CType::UnionTag(_), None) => name = format!("anon{}", fields.len()),
+                        _ => {}
+                    }
+                }
                 if !name.is_empty() {
                     fields.push(CField { name, ty: field_ty, bit_width });
                 }
@@ -1037,7 +1037,9 @@ impl CParser {
 
         self.expect(&CTokenKind::LBrace)?;
         let mut variants = Vec::new();
-        let mut next_value: i64 = 0;
+        // `None` once an explicit value couldn't be evaluated: the ones
+        // counting up from it are unknown too, until the next one that can.
+        let mut next_value: Option<i64> = Some(0);
 
         loop {
             self.skip_newlines();
@@ -1047,23 +1049,19 @@ impl CParser {
 
             let name = self.expect_ident()?;
             let value = if self.match_token(&CTokenKind::Eq) {
-                if let Some(v) = self.parse_const_expr_value() {
-                    next_value = v as i64 + 1;
-                    Some(v as i64)
-                } else {
-                    // Unparseable expression — skip to comma
-                    self.skip_to_comma_or_brace();
-                    let v = next_value;
-                    next_value += 1;
-                    Some(v)
-                }
+                let v = self.const_expr_until(&[CTokenKind::Comma, CTokenKind::RBrace]);
+                self.skip_to_comma_or_brace();
+                v
             } else {
-                let v = next_value;
-                next_value += 1;
-                Some(v)
+                next_value
             };
+            next_value = value.and_then(|v| v.checked_add(1));
+            if let Some(v) = value {
+                self.consts.enumerators.insert(name.clone(), v);
+            }
 
             variants.push(CEnumVariant { name, value });
+            self.skip_newlines();
             self.match_token(&CTokenKind::Comma);
         }
         self.expect(&CTokenKind::RBrace)?;
@@ -1124,42 +1122,6 @@ impl CParser {
                 CTokenKind::Comma | CTokenKind::RBrace => break,
                 _ => { self.advance(); }
             }
-        }
-    }
-
-    /// Try to evaluate a simple constant expression (for array sizes, enum values).
-    fn parse_const_expr_value(&mut self) -> Option<u64> {
-        match self.peek() {
-            CTokenKind::IntLit(v) => { self.advance(); Some(v as u64) }
-            CTokenKind::UIntLit(v) => { self.advance(); Some(v) }
-            CTokenKind::Ident(_) => {
-                // Named constant — can't resolve, skip
-                self.advance();
-                // Might be `sizeof(type)`
-                if self.peek() == CTokenKind::LParen {
-                    let mut depth = 0u32;
-                    loop {
-                        match self.peek() {
-                            CTokenKind::LParen => { depth += 1; self.advance(); }
-                            CTokenKind::RParen => {
-                                self.advance();
-                                depth -= 1;
-                                if depth == 0 { break; }
-                            }
-                            _ if self.at_eof() => break,
-                            _ => { self.advance(); }
-                        }
-                    }
-                }
-                None
-            }
-            CTokenKind::LParen => {
-                self.advance();
-                let val = self.parse_const_expr_value();
-                self.match_token(&CTokenKind::RParen);
-                val
-            }
-            _ => None,
         }
     }
 }

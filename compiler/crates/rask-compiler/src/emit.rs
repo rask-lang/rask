@@ -77,7 +77,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
     let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
-    let extern_funcs = extern_func_names(input.decls, &input.typed.symbols);
+    let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
@@ -135,6 +135,10 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
+
+    // A `@bits` field shares its storage unit; its stores become
+    // read-modify-write before anything reasons about them.
+    rask_mir::bitfields::expand_stores(&mut functions, &input.mono.struct_layouts);
 
     // A captured scalar has to live in memory before SSA runs, or SSA builds
     // phis over a variable whose real home is a stack slot (#1038).
@@ -212,7 +216,7 @@ fn emit_inner(
     obj_path: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), Vec<String>> {
-    let Lowered { functions, pipeline, field_types } = lower(input, entry)?;
+    let Lowered { mut functions, pipeline, field_types } = lower(input, entry)?;
     let has_errors = pipeline.diagnostics.iter().any(|d| d.severity == Severity::Error);
     diagnostics.extend(pipeline.diagnostics);
     if has_errors {
@@ -234,13 +238,22 @@ fn emit_inner(
     let mut extern_sigs: Vec<_> = input.decls.iter().filter_map(|d| match &d.kind {
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
+            link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
             // The parser rejects an extern parameter without a type.
             param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
             ret_ty: e.ret_ty.clone(),
         }),
         _ => None,
     }).collect();
-    extern_sigs.extend(c_import_extern_sigs(&input.typed.symbols));
+    let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
+    extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
+    // Only the externs the program reaches. A header declares far more than
+    // a program calls, and each declared import is a symbol the link must
+    // find: some of a header's functions exist only on other platforms, or
+    // in a library the program never links.
+    let reached = reached_symbols(&functions);
+    extern_sigs.retain(|s| reached.contains(&s.name));
+    write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
     codegen.declare_functions(input.mono, &functions).map_err(fail)?;
     codegen.register_strings(&functions).map_err(fail)?;
@@ -282,7 +295,63 @@ fn emit_inner(
             .map_err(|e| vec![format!("benchmark runner: {}", e)])?,
     }
 
-    codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])
+    codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])?;
+    write_inline_wrappers(input, target, obj_path)
+}
+
+/// The C companion of an object that calls a header's inline functions:
+/// `<obj>.inline.c`, which the link step compiles beside it
+/// (struct.c-interop/IN2). A stale one from an earlier build goes.
+///
+/// Its own file, apart from the variadic wrappers: those declare the C
+/// functions they call without the headers, which a header's own
+/// declaration would contradict.
+fn write_inline_wrappers(input: &BackEnd, target: Option<&str>, obj_path: &str) -> Result<(), Vec<String>> {
+    let (arch, os) = match target {
+        Some(t) => rask_codegen::targets::arch_and_os(t).map_err(|e| vec![e])?,
+        None => (std::env::consts::ARCH.to_string(), std::env::consts::OS.to_string()),
+    };
+    let dirs: HashMap<u16, std::path::PathBuf> = input
+        .source_file
+        .and_then(|f| std::path::Path::new(f).parent())
+        .map(|d| (0u16, d.to_path_buf()))
+        .into_iter()
+        .collect();
+    let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
+    let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
+    write_companion(obj_path, "inline", src)
+}
+
+/// Every function name a call or a function address in `functions` names.
+fn reached_symbols(functions: &[MirFunction]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for f in functions {
+        for block in &f.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    rask_mir::MirStmtKind::Call { func, .. } => {
+                        names.insert(func.name.clone());
+                    }
+                    rask_mir::MirStmtKind::Assign { rvalue: rask_mir::MirRValue::FuncAddr(n), .. } => {
+                        names.insert(n.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    names
+}
+
+/// `<obj>.<kind>.c`, which the link step compiles beside the object; or no
+/// file, when there's nothing to put in it.
+fn write_companion(obj_path: &str, kind: &str, src: String) -> Result<(), Vec<String>> {
+    let path = format!("{}.{}.c", obj_path, kind);
+    if src.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    std::fs::write(&path, src).map_err(|e| vec![format!("writing {}: {}", path, e)])
 }
 
 /// Mono's function bodies under their mangled names, with the externs and
@@ -327,70 +396,13 @@ fn nominal_underlying(typed: &TypedProgram) -> HashMap<String, rask_types::Type>
         .collect()
 }
 
-/// Every `extern "C"` function: declared ones and those a C header import
-/// brought in.
-fn extern_func_names(decls: &[Decl], symbols: &rask_resolve::SymbolTable) -> HashSet<String> {
-    let mut names: HashSet<String> = decls.iter().filter_map(|d| match &d.kind {
+/// Every `extern "C"` function, including the ones a C header import
+/// translated: those are declarations like any other by now.
+fn extern_func_names(decls: &[Decl]) -> HashSet<String> {
+    decls.iter().filter_map(|d| match &d.kind {
         DeclKind::Extern(e) => Some(e.name.clone()),
         _ => None,
-    }).collect();
-    for sym in symbols.iter() {
-        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
-            for &member_id in members.values() {
-                if let Some(member) = symbols.get(member_id) {
-                    if let rask_resolve::SymbolKind::ExternFunction { abi, .. } = &member.kind {
-                        if abi == "C" {
-                            names.insert(member.name.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    names
-}
-
-/// Signatures of the functions C header imports brought in.
-fn c_import_extern_sigs(symbols: &rask_resolve::SymbolTable) -> Vec<rask_codegen::ExternFuncSig> {
-    let mut sigs = Vec::new();
-    for sym in symbols.iter() {
-        if let rask_resolve::SymbolKind::CNamespace { members } = &sym.kind {
-            // The header's struct types register under the qualified spelling —
-            // `c.Rect` — because that is how a program writes them. A parameter
-            // declared as one arrives here bare, so it wouldn't find the layout
-            // that says how to pass it (#948).
-            let structs: HashSet<&str> = members
-                .iter()
-                .filter(|(_, &id)| {
-                    symbols
-                        .get(id)
-                        .is_some_and(|m| matches!(m.kind, rask_resolve::SymbolKind::Struct { .. }))
-                })
-                .map(|(name, _)| name.as_str())
-                .collect();
-            let qualify = |ty: &rask_ast::ty::TypeExpr| match ty.bare_name() {
-                Some(name) if structs.contains(name) => rask_ast::ty::TypeExpr::Named {
-                    path: vec![sym.name.clone(), name.to_string()],
-                    args: Vec::new(),
-                },
-                _ => ty.clone(),
-            };
-            for &member_id in members.values() {
-                if let Some(member) = symbols.get(member_id) {
-                    if let rask_resolve::SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
-                        if abi == "C" {
-                            sigs.push(rask_codegen::ExternFuncSig {
-                                name: member.name.clone(),
-                                param_types: params.iter().map(qualify).collect(),
-                                ret_ty: ret_ty.as_ref().map(qualify),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-    sigs
+    }).collect()
 }
 
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.

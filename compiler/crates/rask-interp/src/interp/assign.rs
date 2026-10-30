@@ -93,7 +93,7 @@ impl Interpreter {
         }
     }
 
-    fn assign_nested_field(obj: &Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
+    fn assign_nested_field(&self, obj: &Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
         if field_chain.is_empty() {
             return Err(RuntimeError::TypeError(
                 "cannot assign to a value directly through nested field chain".to_string(),
@@ -110,6 +110,11 @@ impl Interpreter {
                 // where the holder lives.)
                 Value::Struct(s) | Value::Link { node: s, .. } => {
                     let mut guard = s.lock().unwrap();
+                    self.check_bits(&guard.name, field, &value)?;
+                    // A union's write makes this member the live one (UN3).
+                    if self.union_decls.contains_key(&guard.name) {
+                        guard.fields.clear();
+                    }
                     let previous = guard.fields.get(field).cloned();
                     let value = wrap_like(previous.as_ref(), value);
                     guard.fields.insert(field.clone(), value.clone());
@@ -146,7 +151,7 @@ impl Interpreter {
                     RuntimeError::TypeError(format!("no field '{}' on struct", first))
                 })?;
                 drop(guard);
-                Self::assign_nested_field(&inner, &field_chain[1..], value)
+                self.assign_nested_field(&inner, &field_chain[1..], value)
             }
             Value::Link { node, .. } => {
                 let guard = node.lock().unwrap();
@@ -154,14 +159,14 @@ impl Interpreter {
                     RuntimeError::TypeError(format!("no field '{}' on node", first))
                 })?;
                 drop(guard);
-                Self::assign_nested_field(&inner, &field_chain[1..], value)
+                self.assign_nested_field(&inner, &field_chain[1..], value)
             }
             // `world.player.health = x` — the edge is optional, so the chain
             // steps through `Some(link)` transparently once it is known live.
             Value::Enum { name, variant, fields, .. }
                 if name == "Option" && variant == "Some" && !fields.is_empty() =>
             {
-                Self::assign_nested_field(&fields[0], field_chain, value)
+                self.assign_nested_field(&fields[0], field_chain, value)
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot access field '{}' on {}", first, obj.type_name()
@@ -223,7 +228,7 @@ impl Interpreter {
                     let idx = *i as usize;
                     let vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        Self::assign_nested_field(&vec[idx], field_chain, value)
+                        self.assign_nested_field(&vec[idx], field_chain, value)
                     } else {
                         Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
                     }
@@ -232,7 +237,7 @@ impl Interpreter {
                 }
             }
             Value::Map(m) => match self.map_get(m, idx.clone())? {
-                Some(v) => Self::assign_nested_field(&v, field_chain, value),
+                Some(v) => self.assign_nested_field(&v, field_chain, value),
                 None => Err(RuntimeError::Panic("key not found in map".to_string())),
             },
             _ => Err(RuntimeError::TypeError(format!(
@@ -285,7 +290,7 @@ impl Interpreter {
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get(var_name) {
                             let obj = obj.clone();
-                            Self::assign_nested_field(&obj, &field_chain, value)
+                            self.assign_nested_field(&obj, &field_chain, value)
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }
@@ -305,7 +310,7 @@ impl Interpreter {
                                 "invalid inline sync access: .{}() on {}",
                                 method, receiver.type_name()
                             )))?;
-                        Self::assign_nested_field(&obj, &field_chain, value)
+                        self.assign_nested_field(&obj, &field_chain, value)
                     }
                     _ => Err(RuntimeError::TypeError("invalid assignment target; assign to a variable, field, or index".to_string())),
                 }

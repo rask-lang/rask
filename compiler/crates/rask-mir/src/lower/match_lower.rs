@@ -1388,16 +1388,8 @@ impl<'a> MirLowerer<'a> {
                         _ => format!("__match_{}", field_name),
                     };
                     let local = self.builder.alloc_local(local_name, field_ty.clone());
-                    let rvalue = MirRValue::Field {
-                        base: scrutinee_op.clone(),
-                        field_index: field_idx as u32,
-                        byte_offset: Some(field_layout.offset),
-                        access: FieldAccess::for_field(&field_ty, field_layout.size),
-                    };
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local,
-                        rvalue,
-                    }));
+                    let fl = field_layout.clone();
+                    self.read_layout_field(local, scrutinee_op.clone(), field_idx as u32, &fl, &field_ty, fl.offset);
                     reads.push((field_name.clone(), local, field_ty, field_pat));
                 }
             }
@@ -1529,15 +1521,8 @@ impl<'a> MirLowerer<'a> {
                 _ => format!("__is_{}", field_name),
             };
             let local = self.builder.alloc_local(local_name, field_ty.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: local,
-                rvalue: MirRValue::Field {
-                    base: val.clone(),
-                    field_index: field_idx as u32,
-                    byte_offset: Some(field_layout.offset),
-                    access: FieldAccess::for_field(&field_ty, field_layout.size),
-                },
-            }));
+            let fl = field_layout.clone();
+            self.read_layout_field(local, val.clone(), field_idx as u32, &fl, &field_ty, fl.offset);
             reads.push((local, field_ty, field_pat));
         }
 

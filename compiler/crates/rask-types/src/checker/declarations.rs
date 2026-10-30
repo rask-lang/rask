@@ -70,125 +70,6 @@ impl TypeChecker {
         }
     }
 
-    /// Synthesize a real struct declaration for every struct an `import c`
-    /// header brought in.
-    ///
-    /// `resolve_c_import` puts them in the namespace's `members` map, which is
-    /// enough for `c.Rect` to *resolve* in a signature and nothing else: there
-    /// was no type entry behind it, so `func f() -> c.Nonexistent` type-checked
-    /// too, and there was no way to build one (#948).
-    ///
-    /// A declaration rather than a type-table entry, because a type entry alone
-    /// stops at the type checker — monomorphization computes layouts from
-    /// declarations, so without one a `c.Rect` field read had no offset and
-    /// codegen guessed a machine word. One synthesized decl gives the checker,
-    /// mono, MIR and codegen the same struct every other struct gets.
-    ///
-    /// They take the qualified spelling — `c.Rect`, or `mylib.Rect` under
-    /// `import c "…" as mylib` — because that is how the program writes them,
-    /// and because a header's `Rect` must not claim the bare name a Rask
-    /// declaration might want. `@layout(C)` because it is one.
-    pub(super) fn collect_c_types(&mut self) {
-        use rask_ast::decl::{Field, FieldVisibility, StructDecl};
-        use rask_ast::decl::{Decl, DeclKind};
-        use rask_ast::Span;
-        use rask_resolve::SymbolKind;
-
-        // (namespace, member name, member symbol) for every C namespace.
-        let members: Vec<(String, String, rask_resolve::SymbolId)> = self
-            .resolved
-            .symbols
-            .iter()
-            .filter_map(|sym| match &sym.kind {
-                SymbolKind::CNamespace { members } => Some(
-                    members
-                        .iter()
-                        .map(|(name, id)| (sym.name.clone(), name.clone(), *id))
-                        .collect::<Vec<_>>(),
-                ),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-
-        self.c_namespaces.extend(
-            self.resolved
-                .symbols
-                .iter()
-                .filter(|sym| matches!(sym.kind, SymbolKind::CNamespace { .. }))
-                .map(|sym| sym.name.clone()),
-        );
-
-        // A header's own type names, per namespace. The struct is registered
-        // as `c.Vec2`, but a field written `Vec2 a;` in the same header names
-        // it bare, and bare it names nothing the layout can find: `Seg`'s two
-        // `Vec2` fields each got a word's worth of unknown and went to C in
-        // integer registers (#1655).
-        let own_types: std::collections::HashMap<&str, Vec<&str>> = members.iter().fold(std::collections::HashMap::new(), |mut m, (ns, name, id)| {
-            if self.c_struct_fields(*id).is_some() {
-                m.entry(ns.as_str()).or_default().push(name.as_str());
-            }
-            m
-        });
-
-        let mut decls = Vec::new();
-        for (ns, name, id) in &members {
-            let Some(field_syms) = self.c_struct_fields(*id) else { continue };
-            let span = self.resolved.symbols.get(*id).map_or(Span::new(0, 0), |s| s.span);
-            let siblings = own_types.get(ns.as_str()).map(Vec::as_slice).unwrap_or(&[]);
-            let fields: Vec<Field> = field_syms
-                .iter()
-                .filter_map(|(fname, fid)| {
-                    let f = self.resolved.symbols.get(*fid)?;
-                    let mut ty = f.ty.clone()?;
-                    ty.rename(&|n| siblings.contains(&n).then(|| format!("{ns}.{n}")));
-                    Some(Field {
-                        name: fname.clone(),
-                        name_span: f.span,
-                        ty,
-                        // A C header field: the declaration is the only place there is.
-                        ty_span: f.span,
-                        visibility: FieldVisibility::Public,
-                        attrs: Vec::new(),
-                        default: None,
-                        doc: None,
-                    })
-                })
-                .collect();
-            if fields.len() != field_syms.len() {
-                // A field whose C type didn't translate. Half a struct would
-                // put every later field at the wrong offset, so skip it and let
-                // the name stay unknown.
-                continue;
-            }
-
-            decls.push(Decl {
-                // A synthesized decl is never looked up by node id — nothing
-                // in the source points at it.
-                id: rask_ast::NodeId::DUMMY,
-                kind: DeclKind::Struct(StructDecl {
-                    name: format!("{}.{}", ns, name),
-                    type_params: Vec::new(),
-                    fields,
-                    methods: Vec::new(),
-                    is_pub: true,
-                    attrs: vec![rask_ast::attr::Attr::synthetic(
-                        "layout",
-                        Some(vec![rask_ast::attr::AttrArg {
-                            label: None,
-                            value: rask_ast::attr::AttrValue::synthetic_name("C"),
-                        }]),
-                    )],
-                    doc: None,
-                }),
-                span,
-            });
-        }
-
-        self.collect_type_declarations(&decls);
-        self.c_type_decls = decls;
-    }
-
     /// The field symbols of a C struct named in a namespace, following the
     /// typedef if there is one.
     ///
@@ -1543,6 +1424,44 @@ impl TypeChecker {
         Some(keep)
     }
 
+    /// TM7: `@bits(n)` packs an integer field of a `@layout(C)` struct into n
+    /// bits. Rask's own layout reorders fields, so C's packing rule needs C's
+    /// order to mean anything.
+    fn check_bitfields(&mut self, s: &StructDecl) {
+        let c_layout = s.attrs.iter().any(|a| a.is("layout") && a.positional().and_then(|v| v.ident()) == Some("C"));
+        for f in &s.fields {
+            let Some(a) = f.attrs.iter().find(|a| a.is("bits")) else { continue };
+            let width = crate::layout::bit_width(&f.attrs);
+            let ty = resolve_type_expr(&f.ty, &self.types).unwrap_or(Type::Error);
+            let type_bits = match ty {
+                Type::I8 | Type::U8 => Some(8),
+                Type::I16 | Type::U16 => Some(16),
+                Type::I32 | Type::U32 => Some(32),
+                Type::I64 | Type::U64 => Some(64),
+                Type::Error => continue,
+                _ => None,
+            };
+            let problem = if !c_layout {
+                Some(format!("`@bits` packs fields the way C does, so `{}` needs `@layout(C)`", s.name))
+            } else if type_bits.is_none() {
+                Some(format!("`@bits` packs an integer, and `{}` is `{}`", f.name, ty))
+            } else {
+                match width {
+                    None => Some("`@bits` takes the width in bits: `@bits(3)`".to_string()),
+                    Some(0) => Some("a field can't be 0 bits wide".to_string()),
+                    Some(w) if w > type_bits.unwrap_or(64) => Some(format!(
+                        "`{}` is {} bits wide, so it can't hold a {}-bit field",
+                        ty, type_bits.unwrap_or(64), w
+                    )),
+                    Some(_) => None,
+                }
+            };
+            if let Some(problem) = problem {
+                self.errors.push(TypeError::LayoutAttribute { problem, span: a.span });
+            }
+        }
+    }
+
     /// `@packed` and `@align` lay out a struct's fields (type.structs). On
     /// anything else they'd be read by nothing.
     fn refuse_struct_only_layout(&mut self, attrs: &[rask_ast::attr::Attr], what: &str) {
@@ -1558,6 +1477,7 @@ impl TypeChecker {
         if let Err((span, problem)) = rask_ast::attr::layout_request(&s.attrs) {
             self.errors.push(TypeError::LayoutAttribute { problem, span });
         }
+        self.check_bitfields(s);
         // The declaration's own parameters are in scope (`owner_type_params`),
         // so a field written `Output` is the parameter, not `os.Output` (#915).
         let type_params = struct_type_param_names(s);
@@ -1993,6 +1913,176 @@ impl TypeChecker {
                 with_interfaces: a.with_interfaces.clone(),
                 methods: Vec::new(),
             });
+        }
+    }
+
+    /// CB3: read every extern's `@context`, and work out the Rask view of its
+    /// callback and the C signature a trampoline has to match.
+    pub(super) fn collect_extern_contexts(&mut self, decls: &[rask_ast::decl::Decl]) {
+        for decl in decls {
+            let rask_ast::decl::DeclKind::Extern(e) = &decl.kind else { continue };
+            let names: Vec<&str> = e.params.iter().map(|p| p.name.as_str()).collect();
+            let spec = match rask_ast::attr::context_spec(&e.attrs, &names) {
+                None => continue,
+                Some(Ok(spec)) => spec,
+                Some(Err((span, problem))) => {
+                    self.errors.push(TypeError::BadAnnotation {
+                        name: "context".to_string(),
+                        problem,
+                        fix: "name the function-pointer parameter, then its `*void` context: `@context(callback, userdata, at: 0)`".to_string(),
+                        why: "the compiler passes a closure as the context and a trampoline as the callback, so it has to know which is which [struct.c-interop/CB3]",
+                        span,
+                    });
+                    continue;
+                }
+            };
+            let cb_ty = e.params[spec.callback].ty.as_ref().map(|t| resolve_type_expr(t, &self.types).unwrap_or(Type::Error));
+            let fn_ty = match cb_ty.map(|t| self.resolve_named(&t)) {
+                Some(Type::RawPtr(inner)) => self.resolve_named(&inner),
+                _ => Type::Error,
+            };
+            let Type::Fn { params, ret } = fn_ty else {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: "context".to_string(),
+                    problem: format!("`{}` isn't a C function pointer", e.params[spec.callback].name),
+                    fix: "point `@context` at a `*func(…)` parameter".to_string(),
+                    why: "the closure travels as the context pointer and a trampoline takes the callback's place [struct.c-interop/CB3]",
+                    span: decl.span,
+                });
+                continue;
+            };
+            if spec.at >= params.len() {
+                self.errors.push(TypeError::BadAnnotation {
+                    name: "context".to_string(),
+                    problem: format!("the callback takes {} arguments, so the context can't be argument {}", params.len(), spec.at),
+                    fix: "`at:` counts the callback's arguments from 0".to_string(),
+                    why: "the trampoline reads the closure out of that argument [struct.c-interop/CB3]",
+                    span: decl.span,
+                });
+                continue;
+            }
+            self.c_contexts.insert(
+                e.name.clone(),
+                super::type_defs::CContext { spec, c_params: params.iter().map(|p| p.ty.clone()).collect(), ret: *ret },
+            );
+        }
+    }
+
+    /// CB3: the signature a program calls a `@context` extern through: the
+    /// context parameter gone, and the callback a closure without it. The
+    /// closure is `take`: C keeps it, so it outlives this frame and carries
+    /// what it captured.
+    pub(super) fn context_view(&self, name: &str, params: Vec<Type>, ret: Type) -> Option<Type> {
+        let cc = self.c_contexts.get(name)?;
+        let mut view = Vec::new();
+        for (i, p) in params.into_iter().enumerate() {
+            if i == cc.spec.context {
+                continue;
+            }
+            if i == cc.spec.callback {
+                let cb_params: Vec<crate::types::FnParam> = cc
+                    .c_params
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != cc.spec.at)
+                    .map(|(_, t)| crate::types::FnParam::borrowed(t.clone()))
+                    .collect();
+                view.push(crate::types::FnParam {
+                    mode: rask_ast::ty::ParamMode::Take,
+                    ty: Type::Fn { params: cb_params, ret: Box::new(cc.ret.clone()) },
+                });
+                continue;
+            }
+            view.push(crate::types::FnParam::borrowed(p));
+        }
+        Some(Type::Fn { params: view, ret: Box::new(ret) })
+    }
+
+    /// An argument past a variadic extern's fixed parameters, checked once
+    /// its type is known.
+    pub(super) fn note_variadic_arg(&mut self, ty: Type, span: Span) {
+        self.pending_variadic.push((ty, span));
+    }
+
+    /// What C's `...` can take: numbers, `bool`, `char` and raw pointers,
+    /// passed with C's default promotions. Anything that owns memory or has a
+    /// Rask layout C can't read isn't one.
+    pub(super) fn check_variadic_args(&mut self) {
+        for (ty, span) in std::mem::take(&mut self.pending_variadic) {
+            let ty = self.resolve_named(&self.ctx.apply(&ty));
+            let ok = matches!(
+                ty,
+                Type::Bool | Type::Char | Type::I8 | Type::I16 | Type::I32 | Type::I64
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::F32 | Type::F64
+                    | Type::RawPtr(_) | Type::Var(_) | Type::Error
+            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::primitives::c_type_spelling(n).is_some());
+            if !ok {
+                self.errors.push(TypeError::VariadicArg { ty, span });
+            }
+        }
+    }
+
+    /// CB1: a named function handed to C as a function pointer is one C can
+    /// call: an `extern "C"` function, with a body or from a header. A Rask
+    /// function's panics would unwind through C's frames. A closure is MIR's
+    /// to judge, since only it knows what the closure captured.
+    pub(super) fn check_c_fn_pointers(&mut self) {
+        let nodes: Vec<(rask_ast::NodeId, Span)> = self.c_fn_pointers.iter().map(|(n, s)| (*n, *s)).collect();
+        for (node, span) in nodes {
+            let Some(&sym) = self.resolved.resolutions.get(&node) else { continue };
+            let Some(symbol) = self.resolved.symbols.get(sym) else { continue };
+            let ok = match &symbol.kind {
+                rask_resolve::SymbolKind::ExternFunction { .. } => true,
+                rask_resolve::SymbolKind::Function { .. } => self.extern_c_fns.contains(&sym),
+                // A variable holding a function value is a closure, not code.
+                _ => false,
+            };
+            if !ok {
+                self.errors.push(TypeError::NotCCallable { name: symbol.name.clone(), span });
+            }
+        }
+    }
+
+    /// TM8: every union member is plain data. Checked once every type is
+    /// registered, since a member may name one declared later.
+    pub(super) fn check_union_members(&mut self, decls: &[rask_ast::decl::Decl]) {
+        for decl in decls {
+            let rask_ast::decl::DeclKind::Union(u) = &decl.kind else { continue };
+            for f in &u.fields {
+                let Ok(ty) = resolve_type_expr(&f.ty, &self.types) else { continue };
+                if !self.plain_data(&ty, 0) {
+                    self.errors.push(TypeError::UnionOwningMember {
+                        union_name: u.name.clone(),
+                        member: f.name.clone(),
+                        ty,
+                        span: f.ty_span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Bytes and nothing behind them that needs releasing.
+    fn plain_data(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 32 {
+            return true;
+        }
+        match ty {
+            Type::Bool | Type::Char | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::F32 | Type::F64
+            | Type::RawPtr(_) | Type::Unit => true,
+            // Reported where it's resolved; one error is enough.
+            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } | Type::Error | Type::Var(_) => true,
+            Type::Array { elem, .. } => self.plain_data(elem, depth + 1),
+            Type::Named(id) => match self.types.get(*id) {
+                Some(TypeDef::Struct { fields, is_resource, .. }) => {
+                    !is_resource && fields.iter().all(|(_, t)| self.plain_data(t, depth + 1))
+                }
+                Some(TypeDef::Union { .. }) | Some(TypeDef::Primitive { .. }) => true,
+                Some(TypeDef::NominalAlias { underlying, .. }) => self.plain_data(underlying, depth + 1),
+                _ => false,
+            },
+            _ => false,
         }
     }
 

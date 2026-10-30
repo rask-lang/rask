@@ -58,6 +58,13 @@ pub enum OwnershipErrorKind {
         reason: MoveReason,
     },
 
+    /// struct.c-interop/CB6: a closure that captures, handed to C as a bare
+    /// function pointer. C calls the code with nowhere to find the captures.
+    #[error("a closure handed to C as a function pointer captures `{captured}`")]
+    CCallbackCaptures {
+        captured: String,
+    },
+
     /// mem.borrowing/S5: `mut x = value.field` on a non-Copy field — a second,
     /// writable name for storage the source still holds.
     #[error("`{binding}` and `{path}` would be the same `{field_ty}`, both writable")]

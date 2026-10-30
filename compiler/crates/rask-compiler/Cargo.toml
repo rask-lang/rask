@@ -20,3 +20,4 @@ rask-mono = { path = "../rask-mono" }
 rask-mir = { path = "../rask-mir" }
 rask-codegen = { path = "../rask-codegen" }
 rask-miri = { path = "../rask-miri" }
+rask-c-parse = { path = "../rask-c-parse" }

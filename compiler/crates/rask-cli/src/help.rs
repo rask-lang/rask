@@ -27,6 +27,7 @@ pub fn print_usage() {
     println!("  {}          List available compilation targets", output::command("targets"));
     println!("  {} {}  Format source files", output::command("fmt"), output::arg("<file | dir>..."));
     println!("  {} {}   Explain an error code", output::command("explain"), output::arg("<code>"));
+    println!("  {} {}   Write the Rask binding for a C header", output::command("bindc"), output::arg("<file.h>"));
     println!("  {}             Show this help", output::command("help"));
     println!("  {}          Show version", output::command("version"));
 

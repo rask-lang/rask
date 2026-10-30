@@ -14,7 +14,7 @@ pub mod layout;
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use copy_rule::CopyVerdict;
 pub use checker::{
-    typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,
+    typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, CContext, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,
     ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy, InferenceContext, TypeConstraint, MethodSig, MethodOrigin, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
     OperatorTarget, operator_interface, primitive_spelling, TaskBound,

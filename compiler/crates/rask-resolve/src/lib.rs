@@ -76,40 +76,6 @@ pub struct ResolvedProgram {
     pub package_deps: HashMap<String, HashSet<String>>,
 }
 
-/// Extern function signature extracted from C imports or explicit `extern "C"` decls.
-#[derive(Debug, Clone)]
-pub struct CImportExternFunc {
-    pub name: String,
-    pub params: Vec<rask_ast::ty::TypeExpr>,
-    pub ret_ty: Option<rask_ast::ty::TypeExpr>,
-}
-
-impl ResolvedProgram {
-    /// Extract all extern "C" function names and signatures from C import namespaces.
-    /// Used by MIR lowering (extern_funcs set) and codegen (extern function declarations).
-    pub fn c_import_extern_funcs(&self) -> Vec<CImportExternFunc> {
-        let mut result = Vec::new();
-        for sym in self.symbols.iter() {
-            if let SymbolKind::CNamespace { members } = &sym.kind {
-                for (_, &member_id) in members {
-                    if let Some(member) = self.symbols.get(member_id) {
-                        if let SymbolKind::ExternFunction { abi, params, ret_ty } = &member.kind {
-                            if abi == "C" {
-                                result.push(CImportExternFunc {
-                                    name: member.name.clone(),
-                                    params: params.clone(),
-                                    ret_ty: ret_ty.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        result
-    }
-}
-
 /// Resolve all names in a list of declarations (single-file mode).
 pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)
@@ -128,18 +94,6 @@ pub fn resolve_with_stdlib(
     Resolver::resolve_with_stdlib(decls, stdlib_decls)
 }
 
-/// `resolve_with_stdlib`, told where each file lives, so `import c` can look
-/// for a header beside the file that imports it (#1096), and which (arch, os)
-/// is being built for, so it reads that target's system headers (#1102).
-pub fn resolve_with_stdlib_and_dirs(
-    decls: &[Decl],
-    stdlib_decls: &[Decl],
-    source_dirs: HashMap<u16, std::path::PathBuf>,
-    c_target: Option<(String, String)>,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib_and_dirs(decls, stdlib_decls, source_dirs, c_target)
-}
-
 pub fn resolve_package(
     decls: &[Decl],
     registry: &PackageRegistry,
@@ -155,8 +109,7 @@ pub fn resolve_package_with_stdlib(
     registry: &PackageRegistry,
     current_package: PackageId,
     stdlib_decls: &[Decl],
-    c_target: Option<(String, String)>,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls, c_target)
+    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
 }
 

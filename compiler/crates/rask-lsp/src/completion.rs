@@ -109,7 +109,6 @@ fn identifier_completion(source: &str, offset: usize, cached: &CompilationResult
             rask_resolve::SymbolKind::ExternalPackage { .. } => (CompletionItemKind::MODULE, "package".to_string()),
             rask_resolve::SymbolKind::ExternFunction { .. } => (CompletionItemKind::FUNCTION, "extern func".to_string()),
             rask_resolve::SymbolKind::TypeAlias { .. } => (CompletionItemKind::CLASS, "type alias".to_string()),
-            rask_resolve::SymbolKind::CNamespace { .. } => (CompletionItemKind::MODULE, "c namespace".to_string()),
             rask_resolve::SymbolKind::Field { .. } => continue,
         };
 

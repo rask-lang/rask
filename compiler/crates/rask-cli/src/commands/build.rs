@@ -757,7 +757,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                         compiler_fp
                     );
                 }
-                if let Err(e) = std::fs::copy(&cached_obj, &obj_path) {
+                if let Err(e) = super::cache::restore(&cached_obj, &obj_path) {
                     eprintln!("warning: cache copy failed: {}", e);
                 } else {
                     let release = opts.profile == "release";

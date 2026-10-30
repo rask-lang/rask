@@ -3119,6 +3119,17 @@ impl<'a> OwnershipChecker<'a> {
                 let mut capture_projections: HashMap<String, Option<Vec<String>>> = HashMap::new();
                 self.collect_free_vars_with_projections(body, &param_names, &mut captures, &mut capture_projections);
 
+                // CB6: C calls a function pointer with only its own arguments,
+                // so there's nowhere for captures to come from.
+                if self.instance.is_none() && self.program.c_fn_pointers.contains(&expr.id) {
+                    if let Some(first) = captures.first() {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::CCallbackCaptures { captured: first.clone() },
+                            span: expr.span,
+                        });
+                    }
+                }
+
                 // T2/SH7: what this closure takes with it, asked whether it may
                 // reach another task. A generic body re-walked for one
                 // instantiation sees the same captures; once is enough.

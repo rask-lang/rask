@@ -968,13 +968,24 @@ fn main() {
             }
             commands::tools::cmd_explain(cmd_args[2]);
         }
-        "c-header" => {
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing header file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("c-header"), output::arg("<file.h>"));
-                process::exit(1);
+        "bindc" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") || cmd_args.len() < 3 {
+                println!("Write the Rask binding for a C header.\n");
+                println!("Usage: rask bindc <header.h> [-o out.rk] [--check out.rk] [--hiding name,...]\n");
+                println!("The output is what `import c \"header.h\"` compiles. Commit it, don't edit");
+                println!("it: correct a declaration with an explicit `extern \"C\"` one elsewhere.");
+                if cmd_args.len() < 3 {
+                    process::exit(1);
+                }
+                return;
             }
-            commands::tools::cmd_c_header(cmd_args[2]);
+            let flag = |name: &str| {
+                cmd_args.iter().position(|a| *a == name).and_then(|i| cmd_args.get(i + 1).copied())
+            };
+            let hiding: Vec<String> = flag("--hiding")
+                .map(|h| h.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default();
+            commands::tools::cmd_bindc(cmd_args[2], flag("-o"), flag("--check"), &hiding);
         }
         "keys" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

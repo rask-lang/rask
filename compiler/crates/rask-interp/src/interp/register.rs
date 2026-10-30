@@ -264,6 +264,9 @@ impl Interpreter {
                         }
                     }
                 }
+                DeclKind::Union(u) => {
+                    self.union_decls.insert(u.name.clone(), u.clone());
+                }
                 // AN6: an annotation's declared fields, kept as a struct so
                 // `field.get<A>()` can read a value's declared type. No methods
                 // and no constructor — the checker rejects both (AN1, AN3).

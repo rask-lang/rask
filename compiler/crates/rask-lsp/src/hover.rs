@@ -103,7 +103,6 @@ fn kind_label(kind: &rask_resolve::SymbolKind) -> &'static str {
         rask_resolve::SymbolKind::ExternFunction { .. } => "Extern Function",
         rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
         rask_resolve::SymbolKind::TypeAlias { .. } => "Type Alias",
-        rask_resolve::SymbolKind::CNamespace { .. } => "C Namespace",
     }
 }
 
