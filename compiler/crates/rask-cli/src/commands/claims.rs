@@ -302,8 +302,6 @@ fn plan_claims(
             };
             match gen.expr(ty) {
                 Ok((expr, dom)) => {
-                    let sep = if k == 0 { "" } else { ", " };
-                    body.push_str(&format!("    __claims.note({})\n", rask_string(&format!("{sep}{} = ", p.name))));
                     let binding = if p.is_mutate { "mut" } else { "let" };
                     body.push_str(&format!("    {binding} __arg{k} = {expr}\n"));
                     args.push(format!("__arg{k}"));
@@ -319,6 +317,10 @@ fn plan_claims(
         if !ok {
             continue;
         }
+        // The input prints the way any value does, through its derived
+        // `Debug`, before the claim can take it apart.
+        let shown: Vec<String> = f.params.iter().enumerate().map(|(k, p)| format!("{} = {{__arg{k}:debug}}", p.name)).collect();
+        body.push_str(&format!("    __claims.note(\"{}\")\n", shown.join(", ")));
         cases.push_str(&format!(
             "func {}() {{\n{body}    {}({})\n}}\n\n",
             case_fn(claims.len()),
@@ -383,15 +385,11 @@ func {end}() {{
 
 func __claim_bool() -> bool {{
     let coin: u64 = __claims.draw(2)
-    let b = coin == 1
-    __claims.note("{{b}}")
-    return b
+    return coin == 1
 }}
 
 func __claim_f64() -> f64 {{
-    let x = __claims.float()
-    __claims.note("{{x}}")
-    return x
+    return __claims.float()
 }}
 
 func __claim_char() -> char {{
@@ -404,68 +402,41 @@ func __claim_char() -> char {{
     if pick == 5 {{ c = '\n' }}
     if pick == 6 {{ c = 'é' }}
     if pick == 7 {{ c = '"' }}
-    __claims.note("'{{c}}'")
     return c
 }}
 
 func __claim_string() -> string {{
     mut s = StringBuilder.new()
     while __claims.draw(4) != 0 {{
-        let pick: u64 = __claims.draw(8)
-        mut c = 'a'
-        if pick == 1 {{ c = 'b' }}
-        if pick == 2 {{ c = 'Z' }}
-        if pick == 3 {{ c = '0' }}
-        if pick == 4 {{ c = ' ' }}
-        if pick == 5 {{ c = '\n' }}
-        if pick == 6 {{ c = 'é' }}
-        if pick == 7 {{ c = '"' }}
-        s.push_char(c)
+        s.push_char(__claim_char())
     }}
-    let text = s.build()
-    __claims.note("{{text:debug}}")
-    return text
+    return s.build()
 }}
 
 func __claim_vec<T>(elem: func() -> T) -> Vec<T> {{
     mut v: Vec<T> = Vec.new()
-    __claims.note("[")
     while __claims.draw(4) != 0 {{
-        if v.len() > 0 {{
-            __claims.note(", ")
-        }}
         v.push(elem())
     }}
-    __claims.note("]")
     return v
 }}
 
 func __claim_optional<T>(some: func() -> T) -> T? {{
     if __claims.draw(4) == 0 {{
-        __claims.note("none")
         return none
     }}
     return some()
 }}
 
 func __claim_tuple2<A, B>(a: func() -> A, b: func() -> B) -> (A, B) {{
-    __claims.note("(")
     let x = a()
-    __claims.note(", ")
-    let y = b()
-    __claims.note(")")
-    return (x, y)
+    return (x, b())
 }}
 
 func __claim_tuple3<A, B, C>(a: func() -> A, b: func() -> B, c: func() -> C) -> (A, B, C) {{
-    __claims.note("(")
     let x = a()
-    __claims.note(", ")
     let y = b()
-    __claims.note(", ")
-    let z = c()
-    __claims.note(")")
-    return (x, y, z)
+    return (x, y, c())
 }}
 {ints}"#,
         end = rask_desugar::CLAIM_END_MARKER,
@@ -478,7 +449,7 @@ fn int_generators() -> String {
     let mut out = String::new();
     for (name, bits, signed) in INT_TYPES {
         out.push_str(&format!(
-            "\nfunc __claim_{name}() -> {name} {{\n    let v = __claims.int({bits}, {}).wrap<{name}>()\n    __claims.note(\"{{v}}\")\n    return v\n}}\n",
+            "\nfunc __claim_{name}() -> {name} {{\n    return __claims.int({bits}, {}).wrap<{name}>()\n}}\n",
             *signed as i64,
         ));
     }
@@ -495,23 +466,6 @@ const INT_TYPES: &[(&str, u32, bool)] = &[
     ("u32", 32, false),
     ("u64", 64, false),
 ];
-
-/// A Rask string literal holding `s`.
-fn rask_string(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '{' => out.push_str("{{"),
-            '}' => out.push_str("}}"),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
 
 /// The input space of a type, for an exhaustive walk (type.claims/V2).
 #[derive(Clone, Copy)]
@@ -665,19 +619,15 @@ impl<'a> Generators<'a> {
     }
 
     fn struct_body(&mut self, name: &str, fields: &[(String, Type)]) -> Result<(String, Domain), String> {
-        let shown = self.names.declared.get(name).cloned().unwrap_or_else(|| name.to_string());
         let mut body = String::new();
         let mut dom = Domain::finite(1);
         let mut args = Vec::new();
         for (i, (field, fty)) in fields.iter().enumerate() {
             let (x, d) = self.expr(fty)?;
-            let lead = if i == 0 { format!("{shown}({field}: ") } else { format!(", {field}: ") };
-            body.push_str(&format!("    __claims.note({})\n    let f{i} = {x}\n", rask_string(&lead)));
+            body.push_str(&format!("    let f{i} = {x}\n"));
             args.push(format!("{field}: f{i}"));
             dom = product(dom, d);
         }
-        let close = if fields.is_empty() { format!("{shown}()") } else { ")".to_string() };
-        body.push_str(&format!("    __claims.note({})\n", rask_string(&close)));
         body.push_str(&format!("    return {}({})\n", self.path(name), args.join(", ")));
         Ok((body, dom))
     }
@@ -686,7 +636,6 @@ impl<'a> Generators<'a> {
         if variants.is_empty() {
             return Err(format!("`{name}` has no variants, so there's nothing to generate"));
         }
-        let shown = self.names.declared.get(name).cloned().unwrap_or_else(|| name.to_string());
         let path = self.path(name);
         let mut body = format!("    match __claims.draw({}) {{\n", variants.len());
         let mut doms = Vec::new();
@@ -694,7 +643,6 @@ impl<'a> Generators<'a> {
             let arm = if i + 1 == variants.len() { "_".to_string() } else { i.to_string() };
             body.push_str(&format!("        {arm} => {{\n"));
             if payload.is_empty() {
-                body.push_str(&format!("            __claims.note({})\n", rask_string(&format!("{shown}.{variant}"))));
                 body.push_str(&format!("            return {path}.{variant}\n"));
                 doms.push(Domain::finite(1));
             } else {
@@ -702,12 +650,10 @@ impl<'a> Generators<'a> {
                 let mut args = Vec::new();
                 for (k, pty) in payload.iter().enumerate() {
                     let (x, d) = self.expr(pty)?;
-                    let lead = if k == 0 { format!("{shown}.{variant}(") } else { ", ".to_string() };
-                    body.push_str(&format!("            __claims.note({})\n            let p{k} = {x}\n", rask_string(&lead)));
+                    body.push_str(&format!("            let p{k} = {x}\n"));
                     args.push(format!("p{k}"));
                     dom = product(dom, d);
                 }
-                body.push_str("            __claims.note(\")\")\n");
                 body.push_str(&format!("            return {path}.{variant}({})\n", args.join(", ")));
                 doms.push(dom);
             }
