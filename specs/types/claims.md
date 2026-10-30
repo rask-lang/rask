@@ -26,13 +26,35 @@ I want this without turning Rask into a proof language. Nobody writes a proof. T
 | Rule | Description |
 |------|-------------|
 | **CL1: Shape** | `claim name(params) { body }`. The parameters are the inputs the claim holds for, all of them. The body checks with `assert` and `check` (`std.testing/A1`, `A2`) and returns nothing |
-| **CL2: Claim files only** | A claim is declared only in a claim file: `foo_claims.rk` beside `foo.rk`, compiled with that module and seeing its private items (like `std.testing/T3`, `T4`). `claim` anywhere else is a compile error |
+| **CL2: Claim files only** | A claim is declared only in a claim file (see Where claims live). `claim` anywhere else is a compile error |
 | **CL3: Nothing depends on a claim file** | Claim files may also hold helper functions (a reference model, a generator). Code outside claim files can't import them, and release builds strip them, like tests |
+| **CL7: Public only** | A claim sees what the package it checks makes `public`, nothing private (like external test files, `std.testing/T4`). It states what the package promises, so the internals can be rewritten freely as long as the promise holds |
 | **CL4: Comptime body** | A claim runs in the comptime interpreter. Its body and everything it calls must be comptime-evaluable (`ctrl.comptime/CT6`, `CT7`): no I/O, no `spawn`, no `any I` |
 | **CL5: Discarding an input** | A `return` before the end of the body discards that input. It counts neither for nor against the claim. That's how a claim states a precondition: `if !is_valid(x) { return }` |
 | **CL6: A panic is a failure** | If the code under the claim panics on an input (out of bounds, overflow, `unreachable()`), that input is a counterexample. A claim that just calls a function claims it never panics |
 
 CL2 is the load-bearing rule. A claim only works if the person who wrote it isn't the one who wrote the code. If an agent can edit the claim, its cheapest way past a compile error is to weaken the claim. Putting claims in their own files is what lets a repo protect them (code owners, required review) and lets a reviewer see a claim change on its own. The language can't enforce who wrote a file. It can make claims separable, so the repo can.
+
+Claims should be few and broad. A package's handful of claims says what the package is for; checking every function is what tests are for. CL7 keeps them that way: a claim that can't see internals can't pin them down.
+
+## Where claims live
+
+Three scopes, from narrow to wide. All of them are claim files, and none of them sit next to the code an agent is editing.
+
+| Rule | Description |
+|------|-------------|
+| **W1: Package claims** | `claims.rk` in the package directory, or several as `claims_<topic>.rk`. They check that package's public API. One glob (`**/claims*.rk`) protects every package's claims in a repo |
+| **W2: Shared claims** | A claims package holds only claims and their helpers, and checks nothing by itself. A package applies one through its manifest, and its generic claims (G1) are checked against that package's conforming types. This is how a repo, a company, or an outside author states rules once for many packages: "every `Encode` type round-trips", "every `Comparable` is a total order" |
+| **W3: Locked like dependencies** | A shared claims package from a registry or git is pinned in `rask.lock` with its checksum (`struct.packages/LK3`). Editing it locally fails the build, so the only way to change one is a visible lock update |
+
+<!-- test: skip -->
+```toml
+[claims]
+acme = { git = "https://git.acme.dev/claims", version = "2.1" }   # company-wide
+repo = { path = "../claims" }                                       # repo-wide
+```
+
+The stdlib ships its interface laws (W2) and every package applies them without asking.
 
 ## Inputs
 
@@ -56,18 +78,18 @@ Every claim ends with a verdict. Only a counterexample fails the build.
 | **V6: Strict mode** | `rask check --claims strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
 
 ```
-claims: src/game_claims.rk
+claims: game/claims.rk
   replay_never_wins   held for 1,000 sampled inputs
   cell_roundtrip      checked all 512 inputs
 
 error[E0950]: claim `sort_is_stable` is false
-  --> src/sort_claims.rk:12:5
+  --> sorting/claims.rk:12:5
    |
 12 |     assert s[0].tag == "b"
    |     ^^^^^^^^^^^^^^^^^^^^^^ assertion failed: "a" == "b" (left: "a", right: "b")
    |
    = counterexample: items = [Item(1, "b"), Item(1, "a")]
-   = the claim is in src/sort_claims.rk; if it is wrong, fix it there, in review
+   = the claim is in sorting/claims.rk; if it is wrong, fix it there, in review
 ```
 
 The error code is a placeholder.
@@ -81,6 +103,7 @@ A compile error that comes and goes between builds is worse than none, so checki
 | **D1: Seed from the claim** | The sampling seed derives from the claim's name and the tokens of its body. The same claim on the same compiler gets the same inputs every time. Editing the claim draws new inputs |
 | **D2: Step budget** | Each input gets a budget counted in interpreter steps, never wall-clock time. Claims don't use the comptime branch quota (`ctrl.comptime/CT35`, 1,000), which is sized for constants, not for running a function a thousand times. `@claim_budget(N)` on a claim raises it |
 | **D3: Toolchain-pinned** | A new compiler may change the generators and draw different inputs. That's a toolchain change like any other, and it can turn up a counterexample nobody saw before. That's the point of it |
+| **D4: Cached verdicts** | A verdict is cached under the claim's text and the semantic hashes of every function it reaches (`comp.architecture/IC2`). A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build |
 
 Deep random search belongs in `rask test`, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `rask test --claims --seeds N` runs every claim on N more seeds without changing what `rask check` decides.
 
@@ -90,7 +113,7 @@ A generic claim is checked against every conforming type in the build.
 
 <!-- test: skip -->
 ```rask
-// stdlib/compare_claims.rk
+// a shared claims package (W2); the stdlib's applies everywhere
 claim antisymmetric<T: Comparable>(a: T, b: T) {
     if a.compare(b) == Less {
         assert b.compare(a) == Greater
@@ -101,7 +124,9 @@ claim antisymmetric<T: Comparable>(a: T, b: T) {
 | Rule | Description |
 |------|-------------|
 | **G1: Per conformance** | A claim with an interface bound is instantiated for each type in the build that conforms to the bound and is generatable (IN1). Each instantiation gets its own verdict |
-| **G2: Across packages** | A claim travels with the interface. Claims in the package that declares `Comparable` are checked against conformances in every package that uses it, including the program's own types |
+| **G2: Across packages** | A generic claim applied through W2 reaches every conformance in the applying package, whichever package declared the interface |
+
+Finding every conformance is whole-program knowledge, which `std.reflect` refuses to hand user code (R2). Here the checker does it, the way monomorphization finds instantiations, and user code never sees the list.
 
 Interfaces are nominal because a conformance is a statement about meaning (`type.generics`). Having a `compare()` method doesn't make a type a total order, and G1 is how the compiler holds a conformance to what it says. A person writes the law once, and every type anyone writes is checked against it.
 
@@ -141,4 +166,6 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 - **Generator spelling** (IN2). An interface the type conforms to in its claim file is the likely shape. The name isn't picked.
 - **Solver backend** (V4). Rask's memory model is what makes this tractable. With no storable references, single ownership, and mutable borrows that exclude everything else, a prover rarely has to ask what else a write changed. Loops are the hard part. A proof needs an invariant, and when the solver can't infer one the verdict falls back to V2 or V3. Nobody is asked to write one, and whether they *may* is open.
 - **Function contracts.** A guarantee written on a function signature would read better than a separate claim for simple cases. `ensure` is taken (cleanup), so contracts would need their own word, and they would break CL2 by putting intent next to code an agent edits.
+- **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
+- **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).
 - **Claims under sim.** Lifting CL4 for claims run by `rask test --sim` would let claims cover I/O and schedules. Those verdicts would be sampled only.
