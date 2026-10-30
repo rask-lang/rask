@@ -24,44 +24,6 @@ use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// The runtime entry points that answer with the address of a string's own
-/// buffer rather than with a value.
-///
-/// Everything else a string method returns is either a scalar or a string of
-/// its own; these two hand out an interior pointer, and the string is what
-/// keeps the storage behind it alive.
-const HANDS_OUT_THE_BUFFER: &[&str] = &["string_as_ptr", "string_as_mut_ptr"];
-
-/// Does this statement hand out the address of `local`'s buffer?
-///
-/// Two spellings, one meaning. `s as i64` is the cast only `unsafe` code can
-/// ask for; `s.as_ptr()` is the method, and it lowers to a call. Both read as
-/// the string's last use, because nothing afterwards names the string — what
-/// continues is the address. Releasing on that reading frees the buffer while
-/// the address is still in flight.
-fn hands_out_the_buffer(stmt: &MirStmt, local: LocalId) -> bool {
-    match &stmt.kind {
-        MirStmtKind::Assign { rvalue: MirRValue::Cast { value, target_ty }, .. } => {
-            matches!(value, MirOperand::Local(id) if *id == local)
-                && matches!(
-                    target_ty,
-                    MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
-                        | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-                        | MirType::U128 | MirType::Ptr
-                )
-        }
-        // `let p = unsafe s.as_ptr()` — the method form, which the cast rule
-        // never covered. `strlen(s.as_ptr())` in a frame that doesn't name `s`
-        // again read the buffer after it had been freed, and got a wrong answer
-        // out of libc whenever the free had written over the bytes (#1118).
-        MirStmtKind::Call { func, args, .. } => {
-            HANDS_OUT_THE_BUFFER.contains(&func.name.as_str())
-                && args.iter().any(|a| matches!(a, MirOperand::Local(id) if *id == local))
-        }
-        _ => false,
-    }
-}
-
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 ///
 /// `kept` says, per callee, which of its parameters it holds on to — see
@@ -1670,8 +1632,6 @@ fn overwritten_places(
                         let stmt = &block.statements[i];
                         if handed_to_a_keeper(stmt, local, own) {
                             // Its last use gave the reference away.
-                        } else if hands_out_the_buffer(stmt, local) {
-                            out.push((bi, d, local));
                         } else {
                             out.push((bi, after_increments(block, i + 1), local));
                         }
@@ -1734,18 +1694,13 @@ fn dies_in_block(
             return None;
         }
         if reads {
-            // Handing out the buffer's address is not the end of the string's
-            // usefulness, but nothing after it mentions the string, so the
-            // naive spot is directly after — the release runs, the buffer is
-            // freed, and the raw address the callee dereferences is dangling.
-            // `write_raw` in `stdlib/http.rk` is exactly this shape, which is
-            // how the HTTP server answered with eight bytes of allocator
-            // free-list where `HTTP/1.1` should be. Hold the reference to the
-            // end of the block, so every use of the address it produced is
-            // covered.
-            if hands_out_the_buffer(stmt, local) {
-                return Some(n);
-            }
+            // A read through an address counts (`AddrAliases`): `s.as_ptr()`
+            // or `s as i64` hands out the buffer's address, and whatever reads
+            // that address later reads `s`. Releasing at the hand-out freed
+            // the buffer under it; `write_raw` in `stdlib/http.rk` answered
+            // with eight bytes of allocator free-list where `HTTP/1.1` should
+            // be (#1036, #1118).
+            //
             // The last use gives the reference to a call that keeps it, so
             // there is nothing left here to release.
             if handed_to_a_keeper(stmt, local, own) {
@@ -2060,7 +2015,9 @@ mod tests {
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local(1)),
-                        func: FunctionRef::internal("string_as_ptr".into()),
+                        // Lowering marks a call answering a raw pointer; the
+                        // name says nothing (mem.unsafe/PT1).
+                        func: FunctionRef { points_into_args: true, ..FunctionRef::internal("string_as_ptr".into()) },
                         args: vec![MirOperand::Local(local(0))],
                     }),
                     MirStmt::dummy(MirStmtKind::Call {

@@ -186,6 +186,21 @@ impl BlockBuilder {
         false
     }
 
+    /// Mark the last call in the current block that fills `dst` as answering a
+    /// pointer into its arguments. Returns whether one was found.
+    pub fn mark_points_into_args(&mut self, dst: LocalId) -> bool {
+        let block = &mut self.function.blocks[self.current_block.0 as usize];
+        for stmt in block.statements.iter_mut().rev() {
+            if let MirStmtKind::Call { dst: Some(d), func, .. } = &mut stmt.kind {
+                if *d == dst {
+                    func.points_into_args = true;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Replace the args of the call to `name` at `(block, index)`. Callers that
     /// only learn a call's argument later — `collect()` doesn't know its element
     /// size until the loop body has been lowered — record the position when they
