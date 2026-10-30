@@ -88,7 +88,9 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? return IoError.last_os_error()
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         let raw = try read_to_end(f)
         let result = unsafe string.from_raw(raw.ptr, raw.len.wrap<usize>())
         unsafe rask_free(raw.ptr)
@@ -97,7 +99,9 @@ extend fs {
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? return IoError.last_os_error()
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         let raw = try read_to_end(f)
         mut data: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
         mut i: i64 = 0
@@ -113,13 +117,17 @@ extend fs {
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr()) ?? return IoError.last_os_error()
+        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
     /// Write bytes to a file, replacing its contents.
     public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr()) ?? return IoError.last_os_error()
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         // Byte by byte into a flat buffer, the one shape `fwrite` takes.
         let n = data.len()
         let buf = unsafe rask_alloc(if n > 0 { n.wrap<i64>() } else { 1 })
@@ -167,7 +175,9 @@ extend fs {
 
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
-        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr()) ?? return IoError.last_os_error()
+        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr()) ?? {
             unsafe fclose(src)
             return IoError.last_os_error()
@@ -244,7 +254,9 @@ extend fs {
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr()) ?? return IoError.last_os_error()
+        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr()) ?? {
+            return IoError.last_os_error()
+        }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
@@ -386,7 +398,9 @@ extend fs {
 
     /// User home directory. none if unknown.
     public func home_dir() -> Path? {
-        let ptr = unsafe getenv("HOME\0".as_ptr()) ?? return none
+        let ptr = unsafe getenv("HOME\0".as_ptr()) ?? {
+            return none
+        }
         let len = unsafe strlen(ptr)
         let s = unsafe string.from_raw(ptr, len)
         return Path.from(s)
