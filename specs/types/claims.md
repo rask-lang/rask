@@ -28,35 +28,35 @@ A claim checks what it says and nothing more. A package held to ten claims has t
 | Rule | Description |
 |------|-------------|
 | **CL1: Shape** | `claim name(params) { body }`. The parameters are the inputs the claim holds for, all of them. The body checks with `assert` and `check` (`std.testing/A1`, `A2`) and returns nothing |
-| **CL2: Claims packages only** | A claim is declared only in a claims package, a package whose manifest marks it as one (spelling open). `claim` anywhere else is a compile error |
-| **CL3: Nothing depends on a claims package** | A claims package may also hold helper functions (a reference model, a generator). Code can't import it; it's reached only through `[claims]` (W2), and release builds strip it, like tests |
+| **CL2: Claims sources only** | A claim is declared only in a claims source: a file or directory some manifest lists under `[claims]` (W1). Being listed is what makes it one. `claim` anywhere else is a compile error |
+| **CL3: Nothing depends on a claims source** | A claims source may also hold helper functions (a reference model, a generator). Code can't import it; it's reached only through `[claims]` (W2), and release builds strip it, like tests |
 | **CL4: Comptime body** | A claim runs in the comptime interpreter. Its body and everything it calls must be comptime-evaluable (`ctrl.comptime/CT6`, `CT7`): no I/O, no `spawn`, no `any I` |
 | **CL5: Discarding an input** | A `return` before the end of the body discards that input. It counts neither for nor against the claim. That's how a claim states a precondition: `if !is_valid(x) { return }` |
 | **CL6: A panic is a failure** | If the code under the claim panics on an input (out of bounds, overflow, `unreachable()`), that input is a counterexample. A claim that just calls a function claims it never panics |
 
-CL2 is the load-bearing rule. A claim only works if the person who wrote it isn't the one who wrote the code. If an agent can edit the claim, its cheapest way past a compile error is to weaken the claim. Keeping claims in their own package is what lets a repo protect them (code owners on one path, or a separate repo with its own access) and lets a reviewer see a claim change on its own. The language can't enforce who wrote a file. It can make claims separable, so the repo can.
+CL2 is the load-bearing rule. A claim only works if the person who wrote it isn't the one who wrote the code. If an agent can edit the claim, its cheapest way past a compile error is to weaken the claim. Keeping claims in their own files is what lets a repo protect them (code owners on one path, or a separate repo with its own access) and lets a reviewer see a claim change on its own. The language can't enforce who wrote a file. It can make claims separable, so the repo can.
 
-A claims package is another package, so it sees only what the package it checks makes `public` (`struct.modules`). Claims state what a package promises, and its internals can be rewritten freely as long as the promise holds. That also keeps claims few and broad: checking individual functions is what tests are for.
+A claims source is compiled as its own package, even a file sitting in the package directory, so it sees only what the package it checks makes `public` (`struct.modules`). Claims state what a package promises, and its internals can be rewritten freely as long as the promise holds. That also keeps claims few and broad: checking individual functions is what tests are for.
 
 ## Where claims live
 
-One mechanism covers every scope. A package's own claims, a repo's, a company's, and an outside author's are all claims packages, and they differ only in where the package comes from.
+One mechanism covers every scope. A package's own claims, a repo's, a company's, and an outside author's are all claims sources, and they differ only in where the source comes from.
 
 | Rule | Description |
 |------|-------------|
-| **W1: Claims packages** | A claims package holds claims and their helpers and checks nothing on its own. A package's own claims usually sit in a subdirectory (`sorting/claims/`, its own package by `struct.modules/PO1`). Shared ones live wherever the repo or company keeps them |
-| **W2: Applying** | A package lists the claims packages it's held to under `[claims]`. Every claim in them is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims package importing the package that applies it is not a cycle |
-| **W3: Locked like dependencies** | A claims package from a registry or git is pinned in `rask.lock` with its checksum (`struct.packages/LK3`). Editing it locally fails the build, so the only way to change one is a visible lock update |
+| **W1: Claims sources** | A `[claims]` entry names a file (`claims.rk`) or a directory of claim files. A listed file inside the package directory is taken out of the package's own sources (an exception to `struct.modules/PO1`) and compiled as its own package. A package's own claims are usually one `claims.rk`. Shared ones live wherever the repo or company keeps them |
+| **W2: Applying** | A package lists the claims sources it's held to under `[claims]`. Every claim in them is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims source importing the package that applies it is not a cycle |
+| **W3: Locked like dependencies** | A claims source from a registry or git is pinned in `rask.lock` with its checksum (`struct.packages/LK3`). Editing it locally fails the build, so the only way to change one is a visible lock update |
 
 <!-- test: skip -->
 ```toml
 [claims]
-own  = { path = "claims" }                                          # this package's promises
+own  = { path = "claims.rk" }                                       # this package's promises
 repo = { path = "../shared-claims" }                                # repo-wide
 acme = { git = "https://git.acme.dev/claims", version = "2.1" }     # company-wide
 ```
 
-The stdlib's interface laws are a claims package every package is held to without listing it.
+The stdlib's interface laws are a claims source every package is held to without listing it.
 
 ## Inputs
 
@@ -115,7 +115,7 @@ A generic claim is checked against every conforming type in the build.
 
 <!-- test: skip -->
 ```rask
-// a shared claims package (W2); the stdlib's applies everywhere
+// a shared claims source (W2); the stdlib's applies everywhere
 claim antisymmetric<T: Comparable>(a: T, b: T) {
     if a.compare(b) == Less {
         assert b.compare(a) == Greater
@@ -168,7 +168,7 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 - **Generator spelling** (IN2). An interface the type conforms to in its claim file is the likely shape. The name isn't picked.
 - **Solver backend** (V4). Rask's memory model is what makes this tractable. With no storable references, single ownership, and mutable borrows that exclude everything else, a prover rarely has to ask what else a write changed. Loops are the hard part. A proof needs an invariant, and when the solver can't infer one the verdict falls back to V2 or V3. Nobody is asked to write one, and whether they *may* is open.
 - **Function contracts.** A guarantee written on a function signature would read better than a separate claim for simple cases. `ensure` is taken (cleanup), so contracts would need their own word, and they would break CL2 by putting intent next to code an agent edits.
-- **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for a claims package that sits inside the package it checks, and only that one.
+- **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for a claims file listed by the package it checks, and only that one.
 - **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
 - **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).
 - **Claims under sim.** Lifting CL4 for claims run by `rask test --sim` would let claims cover I/O and schedules. Those verdicts would be sampled only.
