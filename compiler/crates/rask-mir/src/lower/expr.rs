@@ -2816,7 +2816,7 @@ impl<'a> MirLowerer<'a> {
     fn thread_context(
         &mut self,
         extern_name: &str,
-        cc: &rask_types::CContext,
+        cc: &rask_check::CContext,
         mut args: Vec<MirOperand>,
     ) -> Vec<MirOperand> {
         let closure = args[cc.spec.callback].clone();
@@ -3070,7 +3070,7 @@ impl<'a> MirLowerer<'a> {
                 other => other.as_link().map(|s| s.id),
             };
             // A `@bits` field, wherever below its layout is found.
-            let mut bits: Option<rask_types::layout::BitSlot> = None;
+            let mut bits: Option<rask_check::layout::BitSlot> = None;
             let (field_index, result_ty, byte_offset, field_size) = if let Some(id) = &node_layout {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                     if let Some((idx, fl)) = layout.fields.iter().enumerate()
@@ -3265,7 +3265,7 @@ impl<'a> MirLowerer<'a> {
         dst: crate::LocalId,
         base: MirOperand,
         field_index: u32,
-        fl: &rask_types::layout::FieldLayout,
+        fl: &rask_check::layout::FieldLayout,
         field_ty: &MirType,
         byte_offset: u32,
     ) {
@@ -3292,7 +3292,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         unit: MirOperand,
         ty: &MirType,
-        slot: rask_types::layout::BitSlot,
+        slot: rask_check::layout::BitSlot,
     ) -> MirOperand {
         let unit_bits = (ty.size() * 8) as i64;
         use crate::operand::BinOp as Op;

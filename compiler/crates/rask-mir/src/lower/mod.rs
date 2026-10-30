@@ -478,7 +478,7 @@ impl<'a> MirContext<'a> {
 }
 
 /// No extern takes a closure through a context pointer.
-pub(crate) static EMPTY_C_CONTEXTS: std::sync::LazyLock<HashMap<String, rask_types::CContext>> =
+pub(crate) static EMPTY_C_CONTEXTS: std::sync::LazyLock<HashMap<String, rask_check::CContext>> =
     std::sync::LazyLock::new(HashMap::new);
 
 /// No function value coerced to a C function pointer.
@@ -545,7 +545,7 @@ pub struct MirContext<'a> {
     /// CB1/CB2: function values passed where C wants a function pointer.
     pub c_fn_pointers: &'a std::collections::HashSet<NodeId>,
     /// CB3: externs whose callback takes a closure through its context.
-    pub c_contexts: &'a HashMap<String, rask_types::CContext>,
+    pub c_contexts: &'a HashMap<String, rask_check::CContext>,
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,

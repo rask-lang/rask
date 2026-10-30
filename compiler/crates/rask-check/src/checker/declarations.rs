@@ -1981,20 +1981,20 @@ impl TypeChecker {
                 continue;
             }
             if i == cc.spec.callback {
-                let cb_params: Vec<crate::types::FnParam> = cc
+                let cb_params: Vec<rask_types::FnParam> = cc
                     .c_params
                     .iter()
                     .enumerate()
                     .filter(|(j, _)| *j != cc.spec.at)
-                    .map(|(_, t)| crate::types::FnParam::borrowed(t.clone()))
+                    .map(|(_, t)| rask_types::FnParam::borrowed(t.clone()))
                     .collect();
-                view.push(crate::types::FnParam {
+                view.push(rask_types::FnParam {
                     mode: rask_ast::ty::ParamMode::Take,
                     ty: Type::Fn { params: cb_params, ret: Box::new(cc.ret.clone()) },
                 });
                 continue;
             }
-            view.push(crate::types::FnParam::borrowed(p));
+            view.push(rask_types::FnParam::borrowed(p));
         }
         Some(Type::Fn { params: view, ret: Box::new(ret) })
     }

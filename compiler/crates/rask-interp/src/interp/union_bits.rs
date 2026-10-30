@@ -104,7 +104,7 @@ impl crate::interp::Interpreter {
     pub(crate) fn check_bits(&self, struct_name: &str, field: &str, value: &Value) -> Result<(), crate::interp::RuntimeError> {
         let Some(decl) = self.struct_decls.get(struct_name) else { return Ok(()) };
         let Some(f) = decl.fields.iter().find(|f| f.name == field) else { return Ok(()) };
-        let Some(width) = rask_types::layout::bit_width(&f.attrs) else { return Ok(()) };
+        let Some(width) = rask_check::layout::bit_width(&f.attrs) else { return Ok(()) };
         let Value::Int(v, kind) = value else { return Ok(()) };
         let signed = matches!(kind, IntKind::I8 | IntKind::I16 | IntKind::I32 | IntKind::I64);
         let fits = if width >= 64 {
