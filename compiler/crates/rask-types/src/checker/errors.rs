@@ -589,6 +589,14 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
+    /// mem.unsafe/UT3: `unsafe` on a conformance to an ordinary interface,
+    /// or on an `extend`: a promise nothing relies on.
+    #[error("`unsafe` here promises nothing")]
+    UnsafeWithoutContract {
+        /// The interface, for a conformance; `None` for a plain `extend`.
+        interface: Option<String>,
+        span: Span,
+    },
     #[error("{problem}")]
     LayoutAttribute {
         problem: String,
@@ -1054,6 +1062,15 @@ pub enum TypeError {
         step_direction: String,
     },
 
+
+    /// type.generics/CL2: `clone` on a struct holding a raw pointer, which
+    /// derives none: only its author knows whether the pointer owns.
+    #[error("`{ty}` holds a raw pointer, so it has no derived `clone`")]
+    CloneOfPointerHolder {
+        ty: String,
+        field: String,
+        span: Span,
+    },
 
     /// mem.linear/L8: `clone` on a value consumed exactly once.
     #[error("`{ty}` can't be cloned — it's consumed exactly once")]
@@ -1778,6 +1795,7 @@ impl TypeError {
             | WithNeedsElementOrBox { .. }
             | WithOverCall { .. }
             | UnsafeRequired { .. }
+            | UnsafeWithoutContract { .. }
             | LayoutAttribute { .. }
             | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }
@@ -1822,6 +1840,7 @@ impl TypeError {
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
+            | CloneOfPointerHolder { .. }
             | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }

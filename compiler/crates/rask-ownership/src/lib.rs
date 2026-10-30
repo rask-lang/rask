@@ -10,13 +10,14 @@ mod state;
 mod error;
 mod field_reuse;
 mod resize;
+mod pointers;
 
 pub use field_reuse::field_reuses;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
     AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
-    Sink,
+    PointerLoss, PointerSink, Sink,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -255,6 +256,21 @@ pub struct OwnershipChecker<'a> {
     /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
     /// on a link can tell "the node was deleted here" from "you moved it here".
     link_delete_spans: std::collections::HashSet<Span>,
+    /// mem.unsafe/PT1: what each binding holding a raw pointer points into,
+    /// as the names of the values in this body that own that storage.
+    ptr_sources: HashMap<String, Vec<String>>,
+    /// A binding lent out of a collection (a loop item, a `with` element, a
+    /// pattern over a borrowed value) and the collection: a pointer into the
+    /// item points into the collection.
+    ptr_lenders: HashMap<String, String>,
+    /// Where a pointer died and why, keyed by the span its binding was marked
+    /// gone at, the way `link_delete_spans` tells a delete from a move.
+    ptr_deaths: HashMap<Span, Vec<(String, PointerLoss)>>,
+    /// Parameters this body owns (`take`): a pointer into one can't leave it.
+    taken_params: HashSet<String>,
+    /// Functions declared `extern "C"` without a body. A pointer one answers
+    /// points into nothing the compiler can see (PT1): C doesn't say.
+    c_functions: HashSet<String>,
     /// Loops iterating a `Rack`'s own nodes: (element type key, binding names).
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
@@ -459,6 +475,11 @@ impl<'a> OwnershipChecker<'a> {
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
+            ptr_sources: HashMap::new(),
+            ptr_lenders: HashMap::new(),
+            ptr_deaths: HashMap::new(),
+            taken_params: HashSet::new(),
+            c_functions: HashSet::new(),
             rack_iterations: Vec::new(),
             param_types: HashMap::new(),
             borrow_bindings: HashMap::new(),
@@ -691,6 +712,9 @@ impl<'a> OwnershipChecker<'a> {
                             .insert((ty.clone(), m.name.clone()), (self_deleting, params));
                     }
                 }
+            }
+            if let DeclKind::Extern(ext) = &decl.kind {
+                self.c_functions.insert(ext.name.clone());
             }
             if let DeclKind::Fn(fn_decl) = &decl.kind {
                 let takes: Vec<bool> = fn_decl.params.iter().map(|p| p.is_take).collect();
@@ -1209,6 +1233,10 @@ impl<'a> OwnershipChecker<'a> {
         self.writable_links.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
+        self.ptr_sources.clear();
+        self.ptr_lenders.clear();
+        self.ptr_deaths.clear();
+        self.taken_params.clear();
         self.rack_iterations.clear();
         self.current_block = 0;
         self.current_stmt = 0;
@@ -1249,6 +1277,9 @@ impl<'a> OwnershipChecker<'a> {
         self.param_types.clear();
         for param in &fn_decl.params {
             self.param_types.insert(param.name.clone(), param.ty.clone());
+            if param.is_take {
+                self.taken_params.insert(param.name.clone());
+            }
         }
 
         // A rack reached through a `mutate`/`deleting` parameter is writable; one
@@ -1464,6 +1495,10 @@ impl<'a> OwnershipChecker<'a> {
         for name in dying {
             self.scope_limited_closures.remove(&name);
         }
+
+        // PT3: what this block declared is freed here, so a pointer into it
+        // held outside is dead.
+        self.kill_pointers_at_block_exit(block_inner, stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
 
         self.current_block = block_id;
     }
@@ -1820,7 +1855,18 @@ impl<'a> OwnershipChecker<'a> {
     /// Can a value of this type hold a closure: is it one, or does it hold one
     /// in a tuple element, an option, a container, or a struct or enum field?
     fn type_holds_callable(&self, ty: &Type, seen: &mut Vec<rask_types::TypeId>) -> bool {
-        if Self::type_is_callable(ty) {
+        self.type_holds(ty, &Self::type_is_callable, seen)
+    }
+
+    /// Is `ty` a `leaf`, or does it hold one anywhere a value can sit: a tuple
+    /// element, an option, a container, a struct or enum field?
+    fn type_holds(
+        &self,
+        ty: &Type,
+        leaf: &dyn Fn(&Type) -> bool,
+        seen: &mut Vec<rask_types::TypeId>,
+    ) -> bool {
+        if leaf(ty) {
             return true;
         }
         let def = |id: rask_types::TypeId, seen: &mut Vec<rask_types::TypeId>| -> bool {
@@ -1830,28 +1876,31 @@ impl<'a> OwnershipChecker<'a> {
             seen.push(id);
             match self.program.types.get(id) {
                 Some(rask_types::TypeDef::Struct { fields, .. }) => {
-                    fields.iter().any(|(_, t)| self.type_holds_callable(t, seen))
+                    fields.iter().any(|(_, t)| self.type_holds(t, leaf, seen))
                 }
                 Some(rask_types::TypeDef::Enum { variants, .. }) => variants
                     .iter()
-                    .any(|(_, payload)| payload.iter().any(|t| self.type_holds_callable(t, seen))),
+                    .any(|(_, payload)| payload.iter().any(|t| self.type_holds(t, leaf, seen))),
                 _ => false,
             }
         };
         match ty {
             Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(|t| self.type_holds_callable(t, seen))
+                elems.iter().any(|t| self.type_holds(t, leaf, seen))
             }
-            Type::Array { elem, .. } => self.type_holds_callable(elem, seen),
+            Type::Array { elem, .. } => self.type_holds(elem, leaf, seen),
             Type::Result { ok, err } => {
-                self.type_holds_callable(ok, seen) || self.type_holds_callable(err, seen)
+                self.type_holds(ok, leaf, seen) || self.type_holds(err, leaf, seen)
             }
             Type::Named(id) => def(*id, seen),
             Type::Generic { base, args } => {
-                args.iter().any(|a| matches!(a, rask_types::GenericArg::Type(t) if self.type_holds_callable(t, seen)))
+                args.iter().any(|a| matches!(a, rask_types::GenericArg::Type(t) if self.type_holds(t, leaf, seen)))
                     || def(*base, seen)
             }
-            _ => ty.as_option().is_some_and(|inner| self.type_holds_callable(inner, seen)),
+            Type::UnresolvedGeneric { args, .. } => args
+                .iter()
+                .any(|a| matches!(a, rask_types::GenericArg::Type(t) if self.type_holds(t, leaf, seen))),
+            _ => ty.as_option().is_some_and(|inner| self.type_holds(inner, leaf, seen)),
         }
     }
 
@@ -1860,6 +1909,8 @@ impl<'a> OwnershipChecker<'a> {
     /// the name was declared, which is what the block-exit check compares the
     /// limit against.
     fn inherit_frame_limit(&mut self, names: &[String], from: &Expr, binding_block: u32) {
+        // PT1: and the pointers it holds, by the same route.
+        self.inherit_pointer_sources(names, from);
         let Some((limit, _)) = self.frame_limit_of(from) else { return };
         for name in names {
             let holds = self
@@ -1882,6 +1933,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => return false,
         };
         let mut hit = self.check_frame_bound_closure(expr, into);
+        hit |= self.check_pointer_escape(expr, into);
         let mut values = Vec::new();
         self.values_reaching(expr, true, &mut values);
         // Two arms returning the same name are one escape, not two.
@@ -1915,7 +1967,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.values_reaching(&arm.body, through_parts, out);
                 }
             }
-            ExprKind::Block(stmts) => {
+            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
                 if let Some(tail) = Self::stmts_tail(stmts) {
                     self.values_reaching(tail, through_parts, out);
                 }
@@ -2257,6 +2309,17 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(place) = self.replaced_place(stmt) {
                     self.report_held_source_change(place, "replace", None, stmt.span);
                 }
+                // PT4: `*p = v` where `p` points into a held place.
+                if let Some(ptr) = Self::written_pointer(target) {
+                    self.check_pointer_write(ptr, stmt.span);
+                }
+                // PT3: storing over something with storage of its own frees
+                // what it held, under any pointer into it.
+                if let (Some(root), Some(ty)) = (Self::assign_root(target), self.node_ty(&target.id)) {
+                    if !Self::has_no_storage(ty) {
+                        self.kill_pointers_into(&root, PointerLoss::Replaced, stmt.span, None);
+                    }
+                }
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
@@ -2366,6 +2429,10 @@ impl<'a> OwnershipChecker<'a> {
                         .get(target_name).copied()
                         .unwrap_or(self.current_block);
                     self.inherit_frame_limit(std::slice::from_ref(target_name), value, decl_block);
+                } else if let Some(root) = Self::assign_root(target) {
+                    // PT1: a pointer stored into part of a value: the value
+                    // now points where it does.
+                    self.add_pointer_sources(&root, value);
                 }
             }
             StmtKind::Return(expr) => {
@@ -2480,6 +2547,9 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let saved_items = self.borrowed_loop_items.clone();
                 let lender = if *mutate { None } else { self.loop_lender(iter) };
+                // PT1: a pointer into an item points into the collection.
+                let lends = *mutate || lender.is_some();
+                self.record_loop_item(&binding_names, iter, lends);
                 for name in &binding_names {
                     match &lender {
                         Some(from) => {
@@ -2554,6 +2624,15 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) => {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {
+                    // PT3: a pointer whose pointee went is reported as that.
+                    if let Some(kind) = Self::unavailable_span(state).and_then(|at| self.pointer_death(name, at)) {
+                        self.errors.push(OwnershipError { kind, span: expr.span });
+                        return;
+                    }
+                    if Self::is_available(state) {
+                        self.check_pointer_use(name, expr.span);
+                    }
+                    let Some(state) = self.bindings.get(name) else { return };
                     match state {
                         BindingState::Moved { at } => {
                             // The binding's own reason first: an `Owned` box reads
@@ -2873,6 +2952,24 @@ impl<'a> OwnershipChecker<'a> {
                 // W2/LP14: a size change to what a `with` or `for mutate`
                 // holds a place in, through the receiver or an argument.
                 self.check_held_sources(expr);
+                // PT1: a pointer handed to a method that keeps it
+                // (`ptrs.push(p)`): the receiver now points where it does.
+                if self.is_mutate_self_method(object, method)
+                    && self.node_ty(&object.id).is_some_and(|t| self.type_holds_pointer(t))
+                {
+                    if let Some(root) = Self::assign_root(object) {
+                        for a in args {
+                            self.add_pointer_sources(&root, &a.expr);
+                        }
+                    }
+                }
+                // PT4: `p.write(v)` where `p` points into a held place.
+                if matches!(self.node_ty(&object.id), Some(Type::RawPtr(_)))
+                    && rask_stdlib::ptr_methods::lookup(method)
+                        .is_some_and(|m| matches!(m.sig, rask_stdlib::PtrSig::Write))
+                {
+                    self.check_pointer_write(object, expr.span);
+                }
                 // A `take self` method consumes its receiver.
                 let takes_self = self.is_take_self_method(object, method);
                 if let (true, Some(ensure_at)) = (takes_self, self.ensure_at) {
@@ -3568,6 +3665,16 @@ impl<'a> OwnershipChecker<'a> {
                 for b in bindings.iter() {
                     let from = Self::with_source_text(&b.source).unwrap_or_else(|| "its source".to_string());
                     self.borrowed_with.insert(b.name.clone(), (b.source.span, from));
+                    // PT1: an element is its collection's storage. A `Shared`
+                    // or a link's payload is reached only inside the block, so
+                    // a pointer into one dies with the binding.
+                    match &b.source.kind {
+                        ExprKind::Index { object, .. } => self.record_pointer_lender(&b.name, object),
+                        _ => {
+                            self.ptr_lenders.remove(&b.name);
+                        }
+                    }
+                    self.ptr_sources.remove(&b.name);
                 }
                 self.check_block(body);
                 self.borrowed_with = saved_with;
@@ -4935,7 +5042,16 @@ impl<'a> OwnershipChecker<'a> {
         };
         for (place, via) in self.resized_places(call) {
             let op = if via.is_some() { "resize".to_string() } else { operation.clone() };
-            self.report_held_source_change(place, &op, via, call.span);
+            self.report_held_source_change(place, &op, via.clone(), call.span);
+            // PT3: and its buffer may have moved under any pointer into it.
+            if let Some(root) = Self::assign_root(place) {
+                self.kill_pointers_into(
+                    &root,
+                    PointerLoss::Resized { operation: operation.clone(), via },
+                    call.span,
+                    None,
+                );
+            }
         }
     }
 
@@ -5985,6 +6101,14 @@ impl<'a> OwnershipChecker<'a> {
                             entry.push((name.clone(), ty));
                         }
                     }
+                }
+            }
+        }
+        // PT2: a pointer into this frame can't cross into a task.
+        if is_task {
+            for name in captures {
+                if let Some(at) = Self::first_use(body, name) {
+                    self.check_pointer_sent(name, at.span);
                 }
             }
         }

@@ -586,6 +586,33 @@ pub enum OwnershipErrorKind {
         in_loop: bool,
     },
 
+    /// mem.unsafe/PT3: a pointer used after what it points into changed
+    /// size, moved, was replaced, or went out of scope.
+    #[error("`{name}` points into `{pointee}`, which is gone or has moved")]
+    PointerDangles {
+        name: String,
+        pointee: String,
+        loss: PointerLoss,
+        lost_at: Span,
+    },
+
+    /// mem.unsafe/PT2: a pointer into this frame going somewhere that
+    /// outlives what it points into.
+    #[error("a pointer into `{pointee}` would outlive it")]
+    PointerEscapes {
+        pointee: String,
+        into: PointerSink,
+    },
+
+    /// mem.unsafe/PT4: a write through a pointer into something a `with` or
+    /// `for mutate` holds a place in.
+    #[error("writing through a pointer into `{pointee}` while it's held")]
+    PointerWriteUnderView {
+        pointee: String,
+        holder_span: Span,
+        in_loop: bool,
+    },
+
     /// LP14: structural mutation during `for mutate`
     #[error("cannot {operation} `{collection}` during `for mutate` — invalidates iteration")]
     ForMutateStructuralMutation {
@@ -702,6 +729,32 @@ pub enum Sink {
     Heap,
     /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
     TakeArg { callee: String },
+}
+
+/// What happened to the value a pointer points into (mem.unsafe/PT3).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PointerLoss {
+    /// It changed size, so its buffer may have moved: `push`, or a call that
+    /// resizes it through a `mutate` parameter (`via` names that call).
+    Resized { operation: String, via: Option<String> },
+    /// It was moved or consumed.
+    Moved,
+    /// An assignment replaced it, freeing what it held.
+    Replaced,
+    /// Its block ended.
+    OutOfScope,
+}
+
+/// Where a pointer into this frame was going (mem.unsafe/PT2).
+#[derive(Debug, Clone)]
+pub enum PointerSink {
+    /// Out of the function.
+    Return,
+    /// Into a place the caller can see: a field of a parameter, a `mutate`
+    /// parameter.
+    Place(String),
+    /// Into a task, as this capture.
+    Task(String),
 }
 
 /// How a link escapes its rack's scope. Drives the E0379 copy.

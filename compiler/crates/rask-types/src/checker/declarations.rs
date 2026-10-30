@@ -2349,7 +2349,8 @@ impl TypeChecker {
     }
 
     /// Whether a type of this shape derives `method`: each field has it,
-    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2).
+    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2):
+    /// whether the pointer owns what it points at is the author's to say.
     fn parts_derive(&self, shape: &DeriveShape, method: &str) -> bool {
         let all = |m: &str| shape.parts.iter().all(|ty| self.type_has_method_in(ty, m, &shape.type_params));
         all(method)
@@ -2435,6 +2436,24 @@ impl TypeChecker {
     /// from it.
     fn is_ordering_method(method: &str) -> bool {
         matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
+    }
+
+    /// CL2: the raw pointer field of a struct with no `clone`, derived or
+    /// written: `.clone()` on it has nothing to call.
+    pub(super) fn pointer_field_without_clone(&self, ty: &Type) -> Option<String> {
+        let id = match ty {
+            Type::Named(id) => *id,
+            Type::Generic { base, .. } => *base,
+            _ => return None,
+        };
+        let TypeDef::Struct { fields, methods, .. } = self.types.get(id)? else { return None };
+        if methods.iter().any(|m| m.name == "clone") {
+            return None;
+        }
+        fields
+            .iter()
+            .find(|(_, t)| matches!(t, Type::RawPtr(_)))
+            .map(|(name, _)| name.clone())
     }
 
     /// Check if a type has a given method (for auto-derive field checking).
@@ -2775,19 +2794,31 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
-                // UT1: implementing an unsafe interface requires `unsafe extend`
-                if let Some(interface) = &i.interface {
-                    let interface_name = interface.to_string();
-                    if let Some(type_id) = self.types.interface_decl(interface) {
-                        if let Some(TypeDef::Interface { is_unsafe: true, .. }) = self.types.get(type_id) {
-                            if !i.is_unsafe {
-                                self.errors.push(TypeError::UnsafeRequired {
-                                    operation: format!("implementing unsafe interface `{}`", interface_name),
-                                    span: decl.span,
-                                });
-                            }
-                        }
+                // UT1: conforming to an unsafe interface is written `unsafe`.
+                // UT3: and `unsafe` is written nowhere else. `None` for an
+                // interface that names nothing: that's reported where it's
+                // resolved.
+                let unsafe_interface = match &i.interface {
+                    Some(interface) => self.types.interface_decl(interface).map(|type_id| {
+                        matches!(self.types.get(type_id), Some(TypeDef::Interface { is_unsafe: true, .. }))
+                    }),
+                    None => Some(false),
+                };
+                match (unsafe_interface, i.is_unsafe) {
+                    (Some(true), false) => {
+                        let interface_name = i.interface.as_ref().map(|t| t.to_string()).unwrap_or_default();
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: format!("implementing unsafe interface `{}`", interface_name),
+                            span: decl.span,
+                        });
                     }
+                    (Some(false), true) => {
+                        self.errors.push(TypeError::UnsafeWithoutContract {
+                            interface: i.interface.as_ref().map(|t| t.to_string()),
+                            span: decl.span,
+                        });
+                    }
+                    _ => {}
                 }
                 // The receiver is written like any other type: `extend Box2<T, U>`
                 // on a one-parameter `Box2` names nothing.

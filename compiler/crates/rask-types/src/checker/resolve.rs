@@ -742,6 +742,20 @@ impl TypeChecker {
             return Ok(true);
         }
 
+        // CL2: a struct holding a raw pointer derives no `clone`. The bound
+        // check already asked; this arm answered every type without asking.
+        if method == "clone" && args.is_empty() {
+            if let Some(field) = self.pointer_field_without_clone(&ty) {
+                self.errors.push(TypeError::CloneOfPointerHolder {
+                    ty: self.types.resolve_type_names(&ty).to_string(),
+                    field,
+                    span,
+                });
+                let _ = self.unify(&ty, &ret, span);
+                return Ok(true);
+            }
+        }
+
         // `v == opt`: the bare value made present, the way `opt == v` makes
         // its right side present, and compared with the optional's `eq`.
         // Equality doesn't care which side was written first.

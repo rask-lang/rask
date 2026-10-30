@@ -2201,6 +2201,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "unsafe operation outside unsafe block")
             }
 
+            UnsafeWithoutContract { interface, span } => {
+                let (headline, primary) = match interface {
+                    Some(name) => (
+                        format!("`{}` isn't an unsafe interface, so `unsafe` on this conformance promises nothing", name),
+                        format!("nothing relies on a promise about `{}`", name),
+                    ),
+                    None => (
+                        "`unsafe` on an `extend` promises nothing".to_string(),
+                        "an `extend` adds methods; it can't make a promise".to_string(),
+                    ),
+                };
+                Diagnostic::error(headline)
+                    .with_code("E0932")
+                    .with_primary(*span, primary)
+                    .with_fix("remove `unsafe` here, and mark the methods that need it `unsafe func` instead")
+                    .with_why("`unsafe` on a conformance is where an author signs for a contract other unsafe code relies on. On an ordinary interface nothing does, and a reader would look for a promise that isn't there [mem.unsafe/UT3]")
+            }
+
             LayoutAttribute { problem, span } => {
                 Diagnostic::error(problem.clone())
                     .with_code("E0923")
@@ -2975,6 +2993,16 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, label)
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
+            }
+            CloneOfPointerHolder { ty, field, span } => {
+                Diagnostic::error(format!("`{}` holds a raw pointer, so it has no derived `clone`", ty))
+                    .with_code("E0933")
+                    .with_primary(*span, format!("`{}.{}` is a raw pointer", ty, field))
+                    .with_fix(format!(
+                        "write the copy yourself, deciding what the pointer's copy points at:\n    {} implements Cloneable {{\n        func clone(self) -> {} {{ … }}\n    }}",
+                        ty, ty
+                    ))
+                    .with_why("a derived clone would copy the address, and if the pointer owns what it points at that's two owners of one block. Only the author knows which it is [type.generics/CL2]")
             }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
@@ -4868,6 +4896,90 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "a node's fields live in the node, and deleting it frees them. Nodes never \
                      move, so deleting a different node is fine, but this one is where the held \
                      element lives [mem.racks/RK1, mem.borrowing/W2]",
+                )
+            }
+
+            PointerDangles { name, pointee, loss, lost_at } => {
+                use rask_ownership::PointerLoss;
+                let (what, at, fix) = match loss {
+                    PointerLoss::Resized { operation, via } => (
+                        "changed size, so its storage may have moved".to_string(),
+                        match via {
+                            Some(callee) => format!("`{}` can resize `{}` here", callee, pointee),
+                            None => format!("`{}` here can move `{}`'s storage", operation, pointee),
+                        },
+                        format!("take the pointer again after the change: `{} = unsafe {}.as_ptr()`", name, pointee),
+                    ),
+                    PointerLoss::Moved => (
+                        "was moved, and its storage went with it".to_string(),
+                        format!("`{}` moves here", pointee),
+                        format!("use `{}` before `{}` moves, or take a pointer into wherever it went", name, pointee),
+                    ),
+                    PointerLoss::Replaced => (
+                        "was replaced, which freed what it held".to_string(),
+                        format!("`{}` is replaced here", pointee),
+                        format!("take the pointer again after the assignment: `{} = unsafe {}.as_ptr()`", name, pointee),
+                    ),
+                    PointerLoss::OutOfScope => (
+                        "went out of scope".to_string(),
+                        format!("`{}` is freed at the end of this block", pointee),
+                        format!("declare `{}` where `{}` is, so it lives as long as the pointer is used", pointee, name),
+                    ),
+                };
+                Diagnostic::error(format!("`{}` points into `{}`, which {}", name, pointee, what))
+                    .with_code("E0929")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*lost_at, at)
+                    .with_fix(fix)
+                    .with_why(
+                        "a raw pointer doesn't keep what it points into alive or in place. The compiler \
+                         knows where each pointer came from, so a read here is an error rather than a \
+                         read of freed memory [mem.unsafe/PT3]",
+                    )
+            }
+
+            PointerEscapes { pointee, into } => {
+                use rask_ownership::PointerSink;
+                let (headline, primary, fix) = match into {
+                    PointerSink::Return => (
+                        format!("this returns a pointer into `{}`, which is freed when the function returns", pointee),
+                        format!("points into `{}`", pointee),
+                        format!("return `{}` itself, or allocate with `alloc` and have the caller free it", pointee),
+                    ),
+                    PointerSink::Place(place) => (
+                        format!("`{}` outlives `{}`, so it can't hold a pointer into it", place, pointee),
+                        format!("points into `{}`, which is freed when the function returns", pointee),
+                        format!("store `{}` itself, or allocate with `alloc` and free it explicitly", pointee),
+                    ),
+                    PointerSink::Task(capture) => (
+                        format!("`{}` points into `{}` and can't cross into a task", capture, pointee),
+                        format!("the task may still run after `{}` is gone", pointee),
+                        format!("move `{}` into the task instead, or share it through a `Shared`", pointee),
+                    ),
+                };
+                Diagnostic::error(headline)
+                    .with_code("E0930")
+                    .with_primary(self.span, primary)
+                    .with_fix(fix)
+                    .with_why(
+                        "a raw pointer doesn't keep what it points into alive. One into this frame's \
+                         own values is good only while the frame is [mem.unsafe/PT2]",
+                    )
+            }
+
+            PointerWriteUnderView { pointee, holder_span, in_loop } => {
+                let holder = if *in_loop { "the `for mutate` loop" } else { "the `with` block" };
+                Diagnostic::error(format!(
+                    "this writes through a pointer into `{}` while {} holds a place in it",
+                    pointee, holder
+                ))
+                .with_code("E0931")
+                .with_primary(self.span, format!("writes into `{}`", pointee))
+                .with_secondary(*holder_span, format!("`{}` is held from here until the block ends", pointee))
+                .with_fix("write through the binding instead, or after the block ends".to_string())
+                .with_why(
+                    "while a binding holds a place, it's the one name that may change it. A write \
+                     through a pointer would land under it and be lost or overwrite it [mem.unsafe/PT4]",
                 )
             }
 

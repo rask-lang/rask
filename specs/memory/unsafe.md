@@ -1,12 +1,12 @@
 <!-- id: mem.unsafe -->
 <!-- status: decided -->
-<!-- summary: Explicit unsafe blocks for raw pointers, FFI, inline assembly; debug-mode runtime checks -->
+<!-- summary: Explicit unsafe blocks for raw pointers, FFI, inline assembly. The compiler still tracks where each pointer points; debug-mode runtime checks for what it can't see -->
 <!-- depends: memory/ownership.md -->
 <!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
 
 # Unsafe Blocks
 
-Explicit `unsafe` blocks quarantine operations that bypass safety checks. Debug mode catches common pointer errors at runtime (Zig-inspired); release mode runs fast.
+Explicit `unsafe` blocks quarantine operations that bypass safety checks. `unsafe` gives up one guarantee: that a dereference lands on live memory of the right type. It gives up nothing else. Ownership, overflow, the borrow rules and the linear rules hold inside the block as they do outside it, and the compiler still knows where each pointer came from, so most pointer mistakes are compile errors (PT1–PT5). Debug mode catches what's left at runtime (Zig-inspired); release mode runs fast.
 
 ## Unsafe Block Rules
 
@@ -19,8 +19,8 @@ Explicit `unsafe` blocks quarantine operations that bypass safety checks. Debug 
 
 <!-- test: skip -->
 ```rask
-let x = 42
-mut ptr: *i32 = &x as *i32
+let xs: Vec<i32> = [42]
+let ptr = unsafe xs.as_ptr()
 
 let value = unsafe { *ptr }
 ```
@@ -31,10 +31,10 @@ let value = unsafe { *ptr }
 |-----------|--------|
 | Raw pointer dereference | `*ptr` may access invalid memory |
 | Raw pointer arithmetic | `ptr.add(n)` may create dangling pointer |
-| Raw pointer to reference | `&*ptr` creates reference from potentially invalid pointer |
+| Taking a pointer (`as_ptr`) | The pointer is the only name for that memory the borrow rules don't see |
 | Calling C functions | C cannot provide Rask's safety guarantees |
 | Calling unsafe Rask functions | Function declares it requires caller verification |
-| Implementing unsafe interfaces | Interface contract cannot be verified by compiler |
+| Conforming to an unsafe interface | Other unsafe code relies on a contract the compiler can't check (UT1) |
 | Transmute | Reinterprets bytes as different type |
 | Inline assembly | Arbitrary machine code |
 | Union field access | Reading wrong variant is undefined |
@@ -43,7 +43,7 @@ let value = unsafe { *ptr }
 
 | Operation | Reason |
 |-----------|--------|
-| Creating raw pointers | Safe; using them is unsafe |
+| Copying, storing or comparing a pointer | To safe code a pointer is a number |
 | Calling safe C wrappers | Wrapper provides safety |
 | Reading immutable statics | No data race possible |
 | Bounds-checked array access | Runtime check provides safety |
@@ -64,12 +64,9 @@ let value = unsafe { *ptr }
 
 <!-- test: skip -->
 ```rask
-// Creating raw pointers (safe)
-let x = 42
-mut ptr: *i32 = &x as *i32
-mut null_ptr: *i32 = nullptr
+mut xs: Vec<i32> = [42, 7]
+let ptr = unsafe xs.as_mut_ptr()
 
-// Using raw pointers (unsafe)
 unsafe {
     let value = *ptr
     *ptr = 100
@@ -115,47 +112,71 @@ unsafe func read_ptr<T>(ptr: *T) -> T {
     return *ptr
 }
 
-func caller() {
-    mut x = 0
+func caller(xs: Vec<i32>) -> i32 {
     unsafe {
-        dangerous_operation(&x)
+        return read_ptr(xs.as_ptr())
     }
 }
 ```
 
-## Unsafe Interfaces
+## Where Pointers Point
+
+A pointer is made by a call, and the call says where it points. The compiler keeps that with the binding the pointer lands in, the way a binding keeps a closure's frame limit (`mem.closures/SL1`), and checks every later use against it. These rules hold inside `unsafe` as well as outside.
 
 | Rule | Description |
 |------|-------------|
-| **UT1: Explicit unsafe conformance** | Implementing an unsafe interface requires `unsafe T implements I` |
-| **UT2: Contract obligation** | Implementer guarantees interface's safety contract |
-| **UT3: Compiler trust** | Compiler trusts extend; soundness is implementer's responsibility |
+| **PT1: A call points into what it borrows** | A call that answers a pointer answers one into the storage of the arguments it borrows, the receiver included: `xs.as_ptr()` points into `xs`, `data(xs)` with `func data(v: Vec<i32>) -> *i32` does too, and `p.add(1)` points wherever `p` does. A `take` argument isn't borrowed, and a number has no storage. A pointer from a C function (`malloc`, or one that hands back an opaque handle), an integer cast or `null` points into nothing the compiler can see: C doesn't say where its pointers point. A loop item or a `with` element is its collection's storage. A struct, tuple, container or closure holding a pointer points where the pointer does |
+| **PT2: It doesn't leave what it points into** | A pointer into a value this function owns (a local, a `take` parameter) can't be returned, stored into a parameter's field or a `mutate` parameter, or sent into a task (E0930). One into a borrowed parameter may be returned or stored into a caller's field: the caller owns what it points into. No pointer into anything of this frame crosses into a task, since the task may outlive the call |
+| **PT3: It dies with its source** | After what a pointer points into changes size (its buffer may move), moves, is replaced, or reaches the end of its block, using the pointer, or anything holding it, is a compile error (E0929). Taking it again afterwards is fine |
+| **PT4: No writes under a view** | While a `with` binding or a `for mutate` loop holds a place in a collection, writing through a pointer into that collection is a compile error (E0931). The binding is the one name that may change that place until the block ends |
+| **PT5: The source stays alive while the pointer is used** | What a pointer points into isn't released before the pointer's last use, however long after its own last use by name that is. PT3 rules out the paths where it's freed on purpose; this one keeps the compiler from freeing it early |
 
-**Built-in unsafe interfaces:**
+<!-- test: skip -->
+```rask
+mut xs: Vec<i32> = [1, 2]
+let p = unsafe xs.as_ptr()
+xs.push(3)                      // may move xs's buffer
+println(unsafe *p)              // error E0929: p points into xs, which changed size
+let q = unsafe xs.as_ptr()      // fine: taken after the push
+```
 
-| Interface | Contract |
-|-------|----------|
-| `Send` | Type can be transferred to another thread |
-| `Sync` | Type can be shared (via &T) between threads |
+What's left for the `unsafe` block to vouch for is what the compiler can't see: memory a C function or `malloc` handed over, an offset from `add` staying inside the block it points into, and inline assembly. The debug-mode checks are for those.
+
+## Unsafe Interfaces
+
+An unsafe interface is one whose contract some unsafe code elsewhere relies on, and that the compiler can't check from a signature. A collection generic over an allocator trusts `dealloc` to free what `alloc` handed out. The person who writes that `dealloc` isn't the person who wrote the collection, so the conformance is where their half of the promise is written down.
+
+| Rule | Description |
+|------|-------------|
+| **UT1: Explicit unsafe conformance** | Conforming to an `unsafe interface` requires `unsafe T implements I` (E0386) |
+| **UT2: Contract obligation** | The conformance promises what the interface's doc comment says. The unsafe code that calls through it may rely on that promise and nothing more |
+| **UT3: Only where it means something** | `unsafe` in front of a conformance to an ordinary interface, or in front of `extend`, is a compile error (E0932). It would read as a promise nobody relies on |
 
 <!-- test: parse -->
 ```rask
-unsafe interface Send {}
-unsafe interface Sync {}
+/// Unsafe code calling `dealloc` relies on it freeing exactly what `alloc`
+/// returned, and on `alloc`'s blocks not overlapping.
+unsafe interface Allocator {
+    func alloc(self, size: usize) -> *u8
+    func dealloc(self, ptr: *u8, size: usize)
+}
 
-struct MyType { ptr: *i32 }
+struct Bump { base: *u8, used: usize }
 
-// Implementer asserts: MyType can safely cross thread boundaries
-unsafe MyType implements Send {}
+unsafe Bump implements Allocator {
+    func alloc(self, size: usize) -> *u8 { return unsafe self.base.add(self.used) }
+    func dealloc(self, ptr: *u8, size: usize) { }
+}
 ```
+
+There's no `Send` or `Sync`. What crosses a task is decided by a value's shape (`conc.async/S5`): copies are copied, owned values move, and borrows, links and `Local` boxes are refused. A raw pointer from `malloc` or C crosses as a number, and touching what it points at on the other side needs `unsafe` again. One into this frame's values is refused (PT2).
 
 ## Safe/Unsafe Boundary
 
 | Exiting Value | Requirement |
 |---------------|-------------|
 | Copy types | Must be valid bit pattern |
-| References | Must point to valid, properly-typed memory |
-| Raw pointers | Can exit; remain unusable outside unsafe |
+| Raw pointers | Can exit; remain unusable outside unsafe, and still bound by PT2–PT4 |
 | Owned values | Must be fully initialized |
 
 **Exit invariants** — when leaving an unsafe block, these MUST hold:
@@ -163,9 +184,7 @@ unsafe MyType implements Send {}
 | Invariant | Description |
 |-----------|-------------|
 | Type validity | All values of Rask types must be valid for their type |
-| Ownership | Ownership invariants must be restored (no double-ownership) |
-| Borrow rules | Borrow checker assumptions must hold for returned values |
-| Linear resources | Linear values must still be tracked (consumed or live) |
+| Ownership | No value has two owners: a value read through a pointer and kept is a copy, or it was moved out and its old place is never read again |
 
 ## Transmute
 
@@ -191,17 +210,16 @@ unsafe {
 | From | To | Notes |
 |------|----|-------|
 | `[u8; N]` | Integer types | If size matches |
-| `*T` | `usize` | Pointer to integer |
+| `*T` | `usize` | Pointer to integer. The result points into nothing the compiler tracks (PT1) |
 | `u32` | `f32` | Bit reinterpretation |
-| `&T` | `*T` | Reference to pointer |
 
 **Invalid transmutes (undefined behavior):**
 
 | From | To | Problem |
 |------|----|---------|
-| Any | `&T` | May create invalid reference |
 | `u8` | `bool` | Values other than 0/1 invalid |
 | Any | Enum | May create invalid discriminant |
+| Any | A type holding a `Vec`, `string`, `Heap` or link | Two owners for one block, or a pointer the runtime never handed out |
 
 ## Inline Assembly
 
@@ -327,20 +345,17 @@ func memory_copy(dst: *u8, src: *u8, len: usize) {
 
 ## Memory Model Inside Unsafe
 
-| Rule | Safe Code | Unsafe Code |
-|------|-----------|-------------|
-| Aliasing | Enforced by borrow checker | Programmer responsibility |
-| Initialization | All values initialized | May access uninitialized |
-| Validity | Types always valid | May have invalid bit patterns |
-| Alignment | Always aligned | May be unaligned |
+Inside an `unsafe` block the language is the same language. Overflow panics the same way, ownership and linearity are checked the same way, and the pointer rules above apply. What changes is that a dereference is trusted.
 
-**Still enforced (even in unsafe):**
+| | Memory the compiler tracks | Memory it doesn't (C, `malloc`, integer casts) |
+|---|---|---|
+| Lifetime | Checked: PT2, PT3, PT5 | The block's to vouch for |
+| Aliasing with a `with` or `for mutate` | Checked: PT4 | The block's to vouch for |
+| Bounds of `ptr.add(n)` | Debug-mode check | Debug-mode check where the allocator knows the block |
+| Initialization, valid bit patterns | The block's to vouch for | The block's to vouch for |
+| Data races | Undefined; use atomics | Undefined; use atomics |
 
-| Invariant | Enforcement |
-|-----------|-------------|
-| Data race = UB | No relaxation; use atomics for concurrent access |
-| Stack discipline | Cannot return pointer to local |
-| Type size/layout | Fixed by type definition |
+Pointer arithmetic wraps rather than panicking, everywhere: a pointer is an address, and only dereferencing one can go wrong.
 
 ## FFI and C Interop
 
@@ -401,12 +416,15 @@ FIX: Add to clobber list or declare as output:
 | Null pointer dereference | U1 | UB in release; panic in debug |
 | Dangling pointer | U1 | UB in release; panic if detectable in debug |
 | Unaligned access | U1 | Platform-dependent (may fault or be slow) |
-| Integer overflow in pointer math | — | Wrapping (no panic in unsafe) |
+| Integer overflow in pointer math | — | Wrapping, inside `unsafe` and out |
+| Pointer used after its source grew | PT3 | Compile error (E0929) |
+| Pointer into a local returned | PT2 | Compile error (E0930) |
 | Double-free | U1 | UB in release; panic if detectable in debug |
 | Use-after-free | U1 | UB in release; panic if detectable in debug |
 | Data race | — | UB even in unsafe; use atomics |
 | Calling unsafe func without unsafe block | U1 | Compile error |
 | Implementing an unsafe interface without `unsafe` | UT1 | Compile error (write `unsafe T implements I`) |
+| `unsafe` on an ordinary conformance or an `extend` | UT3 | Compile error (E0932) |
 | Nested unsafe blocks | U2 | Redundant but allowed |
 | Unsafe in comptime | U1 | Not allowed (no pointers at compile time) |
 
@@ -421,6 +439,10 @@ FIX: Add to clobber list or declare as output:
 **Debug-mode safety:** Instead of "all pointer errors are UB" like Rust, I added debug-mode runtime checks. Cuts debugging time massively without hurting release performance. Philosophy: crash loudly in development, run fast in production. This follows Zig's pragmatic approach.
 
 **Single pointer type (`*T`):** Rust's `*const T` / `*mut T` distinction adds ceremony without real safety — you can cast between them freely. A single `*T` type is simpler and equally honest about what raw pointers are.
+
+**PT1–PT5 (where pointers point):** Rust leaves a raw pointer's lifetime to the programmer, because it can't connect a `*const T` back to the reference it came from. Rask has no references, so every pointer starts at a call, and the call's arguments say what it points into. That makes the common mistakes (a pointer kept across a `push`, returned out of the frame that owns the buffer, written while a `with` holds the element) the same errors a `with` binding or a closure already gets, with no annotation. The rule for a call is a signature rule, like Rust's lifetime elision: it doesn't look into the callee's body, so a function that returns a pointer into fresh memory while borrowing a vector is taken to point into the vector. That's the strict direction, and `take` or a number-only signature says otherwise.
+
+**UT1–UT3 (unsafe interfaces):** The marker exists for one job: a contract that unsafe code on the other side of a generic relies on. `Send` and `Sync` don't qualify. In Rust, safe code can hand an `Rc` or a `&T` to another thread, so the type needs a marker saying it may. In Rask safe code has no such path: what crosses is decided by shape, and every place two tasks could touch one byte goes through an `unsafe` block someone wrote. A marker on the type would be a second signature on that same line.
 
 **UF3 (document invariants):** Every unsafe operation has an implicit contract — preconditions the caller must ensure. The `/// # Safety` convention makes these visible.
 
@@ -615,4 +637,4 @@ This is "information without enforcement" — the data exists for tools that wan
 - [C Interop](../structure/c-interop.md) -- Full FFI details (`struct.c-interop`)
 - [Linearity](linear.md) -- Consume-exactly-once rules (`mem.linear`)
 - [Resource Types](resource-types.md) -- `@resource` annotation (`mem.resources`)
-- [Concurrency](../concurrency/README.md) -- Send/Sync in concurrent contexts (`conc`)
+- [Concurrency](../concurrency/README.md) -- What crosses a task (`conc.async/S5`)

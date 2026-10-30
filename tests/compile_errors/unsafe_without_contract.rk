@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `unsafe` on a conformance means the author signs for a contract other unsafe
+// code relies on (mem.unsafe/UT1–UT3). On an `unsafe interface` it's required;
+// anywhere else it promises nothing, and used to be accepted and ignored.
+
+/// Unsafe code calling `dealloc` relies on it freeing exactly what `alloc`
+/// handed out.
+unsafe interface Pool {
+    func alloc(self, size: i64) -> *u8
+    func dealloc(self, ptr: *u8, size: i64)
+}
+
+interface Shape {
+    func area(self) -> f64
+}
+
+struct Arena {
+    base: *u8
+}
+
+struct Slab {
+    base: *u8
+}
+
+struct Square {
+    side: f64
+}
+
+unsafe Arena implements Pool {
+    func alloc(self, size: i64) -> *u8 {
+        return self.base
+    }
+
+    func dealloc(self, ptr: *u8, size: i64) {
+    }
+}
+
+// ERROR: E0386
+Slab implements Pool {
+    func alloc(self, size: i64) -> *u8 {
+        return self.base
+    }
+
+    func dealloc(self, ptr: *u8, size: i64) {
+    }
+}
+
+// ERROR: E0932
+unsafe Square implements Shape {
+    func area(self) -> f64 {
+        return self.side * self.side
+    }
+}
+
+// ERROR: E0932
+unsafe extend Square {
+    func double(self) -> f64 {
+        return self.side * 2.0
+    }
+}
+
+func main() {
+    let s = Square(side: 2.0)
+    println(s.area())
+}

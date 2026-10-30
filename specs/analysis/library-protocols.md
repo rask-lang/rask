@@ -34,8 +34,8 @@ advisory. That conflates two things. Where the view's scope *ends* is decided by
 compiler, whoever wrote the type: the binding dies at the block's close brace, can't be
 stored, returned or sent, and is lent, not given (`mem.borrowing/W8`). What a library
 could supply is only what runs *around* the block, and that is already what the language
-trusts a library about everywhere else: an `unsafe T implements I` conformance
-(`mem.unsafe/UT1`–`UT3`) and the runtime's own mutex are trusted the same way.
+trusts a library about everywhere else: an `unsafe` block's pointer work and the runtime's
+own mutex are trusted the same way.
 
 So the three hooks are two hooks and a protocol. The hooks stay closed. The protocol is
 the design.
@@ -147,25 +147,23 @@ type, `func drain(q: RingBuf, cs: CriticalSection)`, and the compiler enforces i
 nothing new. Embedded Rust does this with `&CriticalSection<'cs>` and a lifetime; Rask
 does it with a value and no lifetime, and the value can't be forgotten.
 
-### 3. Placement is a conformance
+### 3. Placement: open, and not a conformance
 
 `const RX: IrqCell<RingBuf>` above is refused today: package-level mutable state must
 be `Shared` or `Atomic` (`struct.modules/PS2`), because anything else reached from two
-tasks races. The rule is right and the list is too short. What PS2 actually needs is a
-promise that concurrent access through the type's own methods is safe, and that promise
-has a shape already: a marker interface the library conforms to with `unsafe`, as
-`mem.unsafe/UT1` prescribes for any interface whose contract the compiler can't check.
+tasks races. An earlier draft answered with a marker interface the library conforms to
+with `unsafe`, Rust's `unsafe impl Sync`. That's the wrong shape for Rask.
+`mem.unsafe/UT3` keeps `unsafe` conformances for contracts other unsafe code relies on.
+Placement isn't one: in Rask, safe code has no path to two tasks touching one byte that
+doesn't already go through a `Shared`, an `Atomic` or an `unsafe` block, so a marker on
+the type would sign for a line that's already signed.
 
-<!-- test: skip -->
-```rask
-unsafe IrqCell<T> implements Sync { }   // the author vouches: every access masks
-```
-
-`Shared` and `Atomic` conform to `Sync` by construction; `PS2` says `Sync`; a library
-type that conforms gets the same placement, in a `const` or across a task boundary
-(`mem.ownership/T2`). The trust is exactly Rust's `unsafe impl Sync`, and exactly the
-trust the language already extends to an unsafe conformance. It is contained in one
-auditable line in one package, which is the opposite of a hook.
+That leaves the question open. The candidate I'd try first keeps the trust where it
+already is: the cell's state lives in static storage behind a raw pointer, its methods
+take `self`, and the one line in `write` that touches the state is an `unsafe` block,
+where the author vouches that every access masks. That needs a way to name static
+storage from a `const`, which is [bare-metal.md](bare-metal.md)'s question, and a PS2
+that asks about writes through `self` rather than about type names.
 
 ### 4. Shape is already open
 
@@ -181,9 +179,9 @@ Walking the list in bare-metal.md section 4 and the "where Rask pays more" list:
 
 | Want | Rust | Rask with this |
 |---|---|---|
-| Interrupt-masking cell | `critical_section::Mutex<T>` + lifetime token | `IrqCell<T>` above: `Access` + linear token + `Sync` |
-| Hardware spinlock wrapper | crate, `unsafe impl Sync` | same shape, the `write` body takes and releases the lock |
-| ISR-to-main SPSC queue | crate with `UnsafeCell` and atomics | a struct of `Atomic` indices and an array, `Access` for the slots, `Sync` |
+| Interrupt-masking cell | `critical_section::Mutex<T>` + lifetime token | `IrqCell<T>` above: `Access` + linear token; placement open (section 3) |
+| Hardware spinlock wrapper | crate, `unsafe impl Sync` | same shape, the `write` body takes and releases the lock in an `unsafe` block |
+| ISR-to-main SPSC queue | crate with `UnsafeCell` and atomics | a struct of `Atomic` indices and an array, `Access` for the slots |
 | DMA buffer handoff | `embedded-dma` + `'static` | `Transfer` is `@resource`, `wait` consumes it, `Vec<Transfer>` stays linear |
 | Peripheral ownership | `Peripherals::take()` at runtime | `@unique` struct handed to `main`, checked at compile time (bare-metal.md §2) |
 | Pin typestate | zero-sized generic markers | `take self -> Pin<Output>`; a state left mid-way is a compile error, not a leak |
@@ -220,8 +218,8 @@ Test 1 (cost visible; only the compiler hides it): the library's code runs at `w
 scope exit. Test 2 (the shape of the source decides): `with` on an `Access` type reads
 the same as `with` on `Shared`, and means the same. Test 3 (statically decidable is
 decided statically): the view's extent and the obligation to consume are both compile
-time; the only runtime trust is the `unsafe Sync` line, the same trust as today's unsafe
-conformances. Test 5 (paths, not survival): the `ensure` in `write` runs on every path
+time; the only runtime trust is the `unsafe` block inside the cell, the same trust as any
+other pointer work. Test 5 (paths, not survival): the `ensure` in `write` runs on every path
 out of the block, so a panic in a critical section restores interrupts.
 
 ## What changes if this is accepted
@@ -233,8 +231,8 @@ out of the block, so a panic in a critical section restores interrupts.
   property the desugar preserves rather than a reason closures were rejected.
 - `mem.resources/RC1`, `RC3`: a container of a linear type is linear, with the
   discarding methods withheld.
-- `struct.modules/PS2` and `mem.ownership/T2` name `Sync` instead of listing types;
-  `conc.sync` declares `Shared` and `Atomic` conform.
+- `struct.modules/PS2` asks about writes through `self` rather than listing types
+  (section 3, still open).
 - `conc.sync/WS3` and `DL1` generalize from "sync primitives" to `Access` types.
 
 ## Still open
@@ -247,9 +245,8 @@ out of the block, so a panic in a critical section restores interrupts.
   (`mem.borrowing/E5`). The desugar extends to it (`cell.write(|mutate v| v.count += 1)`),
   but the one-store panic guarantee in `E5` depends on the body being one store, which
   the compiler can check only after inlining. Probably fine; needs a prototype.
-- **Whether `Sync` is the name.** It's Rust's word for Rust's concept. The concept here
-  is "safe to reach from two tasks through its methods", and the Rask-side name should
-  come from how a program reads, not from the cheat sheet (`std.api`).
+- **Placement.** Section 3. No marker interface; what PS2 should ask instead isn't
+  settled.
 - **The scheduler as a library.** Embassy's real trick is that the executor is a crate.
   That's [scheduler-protocol.md](../concurrency/scheduler-protocol.md) now: the runtime
   slot holds a `Scheduler` conformance, and the stack-per-task cost gets its own answer

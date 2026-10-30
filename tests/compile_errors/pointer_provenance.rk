@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Where a raw pointer points, and what that rules out (mem.unsafe/PT1–PT4).
+//
+// A call that answers a pointer answers one into the arguments it borrows:
+// `xs.as_ptr()` points into `xs`, and so does a function handed `xs` that
+// returns a pointer. The compiler keeps that fact with the binding, so a
+// pointer used after `xs` changed size, moved, was replaced or went out of
+// scope is an error, and so is one leaving for somewhere that outlives `xs`.
+// A pointer from `malloc` points into nothing here and is the `unsafe`
+// block's to vouch for.
+
+import thread.Thread
+
+extern "C" func malloc(size: u64) -> *u8
+
+struct Holder {
+    p: *i32
+    n: i32
+}
+
+func data(v: Vec<i32>) -> *i32 {
+    return unsafe v.as_ptr()     // fine: points into the caller's vector
+}
+
+func local_data() -> *i32 {
+    let xs: Vec<i32> = [1, 2]
+    return unsafe xs.as_ptr()    // ERROR: E0930
+}
+
+func taken_data(take xs: Vec<i32>) -> *i32 {
+    return unsafe xs.as_ptr()    // ERROR: E0930
+}
+
+func fill(mutate h: Holder, v: Vec<i32>) {
+    let mine: Vec<i32> = [3]
+    h.p = unsafe v.as_ptr()      // fine: the caller's
+    h.p = unsafe mine.as_ptr()   // ERROR: E0930
+}
+
+func resized() {
+    mut xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    let q = unsafe p.add(1)
+    xs.push(3)
+    println(unsafe *q)           // ERROR: E0929
+    let again = unsafe xs.as_ptr()
+    println(unsafe *again)       // fine: taken after the push
+}
+
+func resized_through_a_call() {
+    mut xs: Vec<i32> = [1, 2]
+    let p = data(xs)
+    xs.push(3)
+    println(unsafe *p)           // ERROR: E0929
+}
+
+func moved() {
+    let xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    let ys = xs
+    println(unsafe *p)           // ERROR: E0929
+    println(ys.len())
+}
+
+func replaced() {
+    mut xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    xs = [5]
+    println(unsafe *p)           // ERROR: E0929
+}
+
+func out_of_scope() {
+    let outer: Vec<i32> = [1]
+    mut keep = unsafe outer.as_ptr()
+    if outer.len() > 0 {
+        let inner: Vec<i32> = [2]
+        keep = unsafe inner.as_ptr()
+    }
+    println(unsafe *keep)        // ERROR: E0929
+}
+
+func held_in_a_struct() {
+    mut xs: Vec<i32> = [1, 2]
+    let h = Holder(p: unsafe xs.as_ptr(), n: 1)
+    xs.clear()
+    println(h.n)                 // ERROR: E0929
+}
+
+func written_under_a_view() {
+    mut xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    with xs[0] as first {
+        unsafe { *p = 9 }        // ERROR: E0931
+        first += 1
+    }
+    for mutate x in xs {
+        unsafe { p.write(7) }    // ERROR: E0931
+        x += 1
+    }
+}
+
+func sent_to_a_task() {
+    let xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    let t = Thread.spawn { return unsafe *p }   // ERROR: E0930
+    let got = t.join() catch _ => 0
+    println(got)
+}
+
+func captured_and_returned() -> func() -> i32 {
+    let xs: Vec<i32> = [1, 2]
+    let p = unsafe xs.as_ptr()
+    return || unsafe *p          // ERROR: E0930
+}
+
+// Fine: items lent by a loop point into the collection, which outlives the
+// loop; a pointer from `malloc` points into nothing here and may cross.
+func allowed() {
+    let names: Vec<string> = ["a", "b"]
+    mut ptrs: Vec<*u8> = Vec.new()
+    for n in names {
+        ptrs.push(unsafe n.as_ptr())
+    }
+    println(ptrs.len())
+    let raw = unsafe malloc(8)
+    let t = Thread.spawn { return raw.is_null() }
+    let null_seen = t.join() catch _ => true
+    println(null_seen)
+}
+
+func main() {
+    resized()
+    resized_through_a_call()
+    moved()
+    replaced()
+    out_of_scope()
+    held_in_a_struct()
+    written_under_a_view()
+    sent_to_a_task()
+    allowed()
+}
