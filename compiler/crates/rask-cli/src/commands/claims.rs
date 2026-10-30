@@ -287,7 +287,7 @@ fn plan_claims(
         DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("claim")) => Some(f),
         _ => None,
     });
-    for (i, f) in claim_fns.enumerate() {
+    for f in claim_fns {
         let mut body = String::new();
         let mut walk: Option<u64> = Some(1);
         let mut distinct: Option<u64> = Some(1);
@@ -300,9 +300,6 @@ fn plan_claims(
                 ok = false;
                 continue;
             };
-            if p.is_take {
-                // A claim owns what it's handed either way.
-            }
             match gen.expr(ty) {
                 Ok((expr, dom)) => {
                     let sep = if k == 0 { "" } else { ", " };
@@ -330,7 +327,6 @@ fn plan_claims(
         ));
         let text = claims_src.get(f.span.start..f.span.end).unwrap_or(&f.name);
         let budget = claim_budget(f).unwrap_or(DEFAULT_BUDGET);
-        let _ = i;
         claims.push(ClaimPlan {
             name: f.name.clone(),
             span: f.span,
