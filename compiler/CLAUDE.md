@@ -146,7 +146,7 @@ the four divergences fixed in #687/#688/#677/#698 lived exactly there.
 - `src/lib.rs` — Diagnostic, Label, LabelStyle types
 - `src/formatter.rs` — rich terminal output with colors and source snippets
 - `src/json.rs` — JSON output for IDE integration
-- `src/convert.rs` — ToDiagnostic trait: converts errors from other crates
+- Depends on nothing but `rask-ast`. Each crate turns its own errors into diagnostics in its `src/diagnostic.rs` (`impl ToDiagnostic`); a new error's message goes there, next to the error type. `crate_layers` in `rask-cli/tests/` fails the build if this crate grows a dependency
 - `src/suggestions.rs` — automated fix suggestions
 - `src/codes.rs` — error code enum (E001, W002, etc.)
 

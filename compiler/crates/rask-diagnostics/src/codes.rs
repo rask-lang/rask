@@ -967,65 +967,85 @@ impl ErrorCodeRegistry {
 // hit "`??` on a value that is always there" and ran `rask explain E0831` got
 // an explanation about `using` clauses on `main` instead (#892).
 //
-// These read `convert.rs` and this file as text, so they're derived from what
-// the compiler actually does rather than from a list someone has to remember
-// to update.
+// These read each crate's `src/diagnostic.rs` and this file as text, so
+// they're derived from what the compiler actually does rather than from a list
+// someone has to remember to update.
 #[cfg(test)]
 mod registry_audit {
     use super::ErrorCodeRegistry;
 
-    const CONVERT_RS: &str = include_str!("convert.rs");
     const CODES_RS: &str = include_str!("codes.rs");
 
-    /// Every `with_code("…")` in `convert.rs`, with the match arm it sits under.
+    /// Every crate's `src/diagnostic.rs`, where its errors become diagnostics,
+    /// as (`crate/src/diagnostic.rs`, text).
+    fn diagnostic_sources() -> Vec<(String, String)> {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut out: Vec<(String, String)> = std::fs::read_dir(crates)
+            .unwrap()
+            .flatten()
+            .filter_map(|c| {
+                let path = c.path().join("src/diagnostic.rs");
+                let text = std::fs::read_to_string(&path).ok()?;
+                Some((format!("{}/src/diagnostic.rs", c.file_name().to_string_lossy()), text))
+            })
+            .collect();
+        out.sort();
+        assert!(out.len() >= 6, "found {} diagnostic.rs files; is the walk finding the crates?", out.len());
+        out
+    }
+
+    /// Every `with_code("…")` in a `diagnostic.rs`, with the match arm it sits
+    /// under and where.
     ///
     /// A `with_code` inside a free helper function belongs to that helper, not
     /// to whichever arm happened to be last: attributing one to the arm above
     /// it reported E0328 as shared with `ConflictingMethods`, which never
     /// emitted it (#992).
-    fn emitted_codes() -> Vec<(String, String, usize)> {
+    fn emitted_codes() -> Vec<(String, String, String)> {
         let mut out = Vec::new();
-        let mut arm = String::from("<none>");
-        for (n, line) in CONVERT_RS.lines().enumerate() {
-            let indent = line.len() - line.trim_start().len();
-            let head = line.trim_start();
-            if head.starts_with("fn ")
-                || head.starts_with("pub fn ")
-                || head.starts_with("pub(crate) fn ")
-                || head.starts_with("pub(super) fn ")
-            {
-                let name: String = head
-                    .rsplit_once("fn ")
-                    .map(|(_, r)| r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
-                    .unwrap_or_default();
-                arm = format!("fn {name}");
-            }
-            // Match arms sit at 8–16 spaces and start with the variant name.
-            if (8..=16).contains(&indent) {
-                let name: String = head
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                let rest = head[name.len()..].trim_start();
-                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                    && (rest.starts_with('{') || rest.starts_with("=>") || rest.starts_with('('))
+        for (file, text) in diagnostic_sources() {
+            let mut arm = String::from("<none>");
+            for (n, line) in text.lines().enumerate() {
+                let indent = line.len() - line.trim_start().len();
+                let head = line.trim_start();
+                if head.starts_with("fn ")
+                    || head.starts_with("pub fn ")
+                    || head.starts_with("pub(crate) fn ")
+                    || head.starts_with("pub(super) fn ")
                 {
-                    arm = name;
+                    let name: String = head
+                        .rsplit_once("fn ")
+                        .map(|(_, r)| r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
+                        .unwrap_or_default();
+                    arm = format!("fn {name}");
                 }
-            }
-            let mut rest = line;
-            while let Some(i) = rest.find("with_code(\"") {
-                rest = &rest[i + "with_code(\"".len()..];
-                if let Some(end) = rest.find('"') {
-                    let code = &rest[..end];
-                    // Runtime codes too. `RuntimeDiagnostic` has its own R00xx
-                    // namespace and the registry never covered it, so `rask
-                    // explain R0001` said the code didn't exist — the same
-                    // wrong answer a shared code gives, arrived at by a
-                    // different route (#992). A reader looking a code up off a
-                    // panic has the question a compile error's reader has.
-                    if matches!(code.as_bytes()[0], b'E' | b'W' | b'R') {
-                        out.push((code.to_string(), arm.clone(), n + 1));
+                // Match arms sit at 8–16 spaces and start with the variant name.
+                if (8..=16).contains(&indent) {
+                    let name: String = head
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    let rest = head[name.len()..].trim_start();
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                        && (rest.starts_with('{') || rest.starts_with("=>") || rest.starts_with('('))
+                    {
+                        arm = name;
+                    }
+                }
+                let mut rest = line;
+                while let Some(i) = rest.find("with_code(\"") {
+                    rest = &rest[i + "with_code(\"".len()..];
+                    if let Some(end) = rest.find('"') {
+                        let code = &rest[..end];
+                        // Runtime codes too. `RuntimeDiagnostic` has its own R00xx
+                        // namespace and the registry never covered it, so `rask
+                        // explain R0001` said the code didn't exist — the same
+                        // wrong answer a shared code gives, arrived at by a
+                        // different route (#992). A reader looking a code up off a
+                        // panic has the question a compile error's reader has.
+                        if matches!(code.as_bytes()[0], b'E' | b'W' | b'R') {
+                            out.push((code.to_string(), arm.clone(), format!("{}:{}", file, n + 1)));
+                        }
                     }
                 }
             }
@@ -1086,7 +1106,7 @@ mod registry_audit {
         );
     }
 
-    /// Codes emitted by `convert.rs` with no `rask explain` entry.
+    /// Codes a `diagnostic.rs` emits with no `rask explain` entry.
     ///
     /// Every one of these is a user who reads a code off a diagnostic, asks the
     /// compiler what it means, and is told the code doesn't exist. This list may
@@ -1114,7 +1134,7 @@ mod registry_audit {
             .filter(|(code, _, _)| {
                 registry.get(code).is_none() && !UNEXPLAINED.contains(&code.as_str())
             })
-            .map(|(code, arm, line)| format!("{} ({} at convert.rs:{})", code, arm, line))
+            .map(|(code, arm, at)| format!("{} ({} at {})", code, arm, at))
             .collect();
         missing.sort();
         missing.dedup();
@@ -1129,7 +1149,7 @@ mod registry_audit {
     /// The code literals every compiler crate's source emits, with where:
     /// `with_code("E…")`, and a `code: "E…"` field on an error struct of its
     /// own. Desugar's format-template errors were E0338 for months while the
-    /// test above, reading `convert.rs` alone, never saw them.
+    /// test above, reading the conversions alone, never saw them.
     fn emitted_anywhere() -> Vec<(String, String)> {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -1233,9 +1253,11 @@ mod registry_audit {
                 found.push(info.code.to_string());
             }
         }
-        for (i, line) in include_str!("convert.rs").lines().enumerate() {
-            if says_own(line) {
-                found.push(format!("convert.rs:{}", i + 1));
+        for (file, text) in diagnostic_sources() {
+            for (i, line) in text.lines().enumerate() {
+                if says_own(line) {
+                    found.push(format!("{}:{}", file, i + 1));
+                }
             }
         }
         assert!(found.is_empty(), "these still tell users to write `own`: {:?}", found);

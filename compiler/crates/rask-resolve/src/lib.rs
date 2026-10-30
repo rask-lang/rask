@@ -24,6 +24,7 @@ pub mod tarball;
 pub mod advisory;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod signing;
+mod diagnostic;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};

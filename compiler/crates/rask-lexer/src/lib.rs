@@ -4,5 +4,6 @@
 //! Tokenizes source code into a stream of tokens for the parser.
 
 mod lexer;
+mod diagnostic;
 
 pub use lexer::{LexError, LexResult, Lexer};

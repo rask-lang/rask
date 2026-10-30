@@ -9,6 +9,7 @@
 mod state;
 mod error;
 mod field_reuse;
+mod diagnostic;
 
 pub use field_reuse::field_reuses;
 

@@ -1367,16 +1367,12 @@ dependencies = [
  "rask-describe",
  "rask-desugar",
  "rask-diagnostics",
- "rask-effects",
  "rask-fmt",
  "rask-interp",
  "rask-lexer",
  "rask-lint",
  "rask-manifest",
  "rask-mir",
- "rask-miri",
- "rask-mono",
- "rask-ownership",
  "rask-parser",
  "rask-resolve",
  "rask-spec-test",
@@ -1417,7 +1413,6 @@ dependencies = [
  "rask-effects",
  "rask-lexer",
  "rask-mir",
- "rask-miri",
  "rask-mono",
  "rask-ownership",
  "rask-parser",
@@ -1460,13 +1455,6 @@ version = "0.6.0"
 dependencies = [
  "colored",
  "rask-ast",
- "rask-interp",
- "rask-lexer",
- "rask-ownership",
- "rask-parser",
- "rask-resolve",
- "rask-stdlib",
- "rask-types",
  "serde",
  "serde_json",
 ]
@@ -1497,6 +1485,7 @@ dependencies = [
  "rask-ast",
  "rask-comptime",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-lexer",
  "rask-mono",
  "rask-parser",
@@ -1514,6 +1503,7 @@ version = "0.6.0"
 dependencies = [
  "logos",
  "rask-ast",
+ "rask-diagnostics",
  "thiserror",
 ]
 
@@ -1522,7 +1512,6 @@ name = "rask-lint"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-effects",
  "rask-lexer",
  "rask-parser",
  "serde",
@@ -1573,8 +1562,8 @@ name = "rask-mir"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-comptime",
  "rask-diagnostics",
+ "rask-interp",
  "rask-mono",
  "rask-parser",
  "rask-stdlib",
@@ -1586,7 +1575,6 @@ name = "rask-miri"
 version = "0.6.0"
 dependencies = [
  "rask-mir",
- "rask-mono",
  "rask-types",
 ]
 
@@ -1606,7 +1594,7 @@ name = "rask-ownership"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-resolve",
+ "rask-diagnostics",
  "rask-stdlib",
  "rask-types",
  "thiserror",
@@ -1617,6 +1605,7 @@ name = "rask-parser"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-diagnostics",
  "rask-lexer",
  "thiserror",
 ]
@@ -1630,6 +1619,7 @@ dependencies = [
  "rand",
  "rask-ast",
  "rask-c-parse",
+ "rask-diagnostics",
  "rask-lexer",
  "rask-parser",
  "rask-stdlib",
@@ -1680,6 +1670,7 @@ name = "rask-types"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-diagnostics",
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",

@@ -10,6 +10,7 @@ mod copy_rule;
 pub mod abi;
 pub mod reflect;
 pub mod layout;
+mod diagnostic;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use copy_rule::CopyVerdict;

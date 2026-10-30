@@ -282,7 +282,7 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |
 | Interpreter bugs | `rask-interp/src/interp/`, `rask-interp/src/stdlib/` |
 | Stdlib types/stubs | `rask-stdlib/src/{stubs,types,builtins}.rs` |
-| Error formatting | `rask-diagnostics/src/{formatter,convert}.rs` |
+| Error formatting | `rask-diagnostics/src/formatter.rs`, each crate's `src/diagnostic.rs` |
 | CLI commands | `rask-cli/src/commands/`, `main.rs` |
 | Formatter | `rask-fmt/src/printer.rs` |
 
