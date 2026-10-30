@@ -55,6 +55,8 @@ pub enum Entry<'a> {
     Tests(&'a [(String, String)]),
     /// `(display name, function name)`, from `extract_benchmarks`.
     Benches(&'a [(String, String)]),
+    /// The claims a claims build runs (type.claims).
+    Claims(&'a [rask_codegen::ClaimRun]),
 }
 
 impl Entry<'_> {
@@ -150,6 +152,9 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
+    }
+    if matches!(entry, Entry::Claims(_)) {
+        rask_mir::transform::claim_steps::instrument(&mut functions);
     }
 
     // Every layout id has to name the layout it claims. One that doesn't sends
@@ -280,6 +285,9 @@ fn emit_inner(
         Entry::Benches(benches) => codegen
             .gen_benchmark_runner(benches, &const_names)
             .map_err(|e| vec![format!("benchmark runner: {}", e)])?,
+        Entry::Claims(claims) => codegen
+            .gen_claim_runner(claims, &const_names)
+            .map_err(|e| vec![format!("claim runner: {}", e)])?,
     }
 
     codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])

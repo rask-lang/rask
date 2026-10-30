@@ -134,6 +134,10 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
 /// Uses the full build pipeline (package resolution, build script, deps)
 /// but compiles with a test runner entry point instead of main().
 pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
+    // The claims run with every build (type.claims/R1), and a test run is one.
+    if super::claims::check_package_claims(path, format, super::claims::ClaimsMode::Run) == super::claims::ClaimsOutcome::Failed {
+        process::exit(1);
+    }
     let bin = match build_package_test_binary(path, filter.as_deref(), format, false) {
         Ok(bin) => bin,
         Err(TestOutcome::Failed) => process::exit(1),

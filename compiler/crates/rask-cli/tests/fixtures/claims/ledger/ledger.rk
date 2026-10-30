@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The package the claims check. `withdraw` has lost its overdraft check, which
+// `never_overdrawn` in claims.rk finds.
+
+public struct Ledger {
+    entries: Vec<i64>
+}
+
+extend Ledger {
+    public func new() -> Ledger {
+        return Ledger(entries: Vec.new())
+    }
+
+    public func deposit(mutate self, amount: u32) {
+        self.entries.push(amount.to<i64>()!)
+    }
+
+    /// Refuses an overdraft and says so. Or did.
+    public func withdraw(mutate self, amount: u32) -> bool {
+        self.entries.push(0 - amount.to<i64>()!)
+        return true
+    }
+
+    public func balance(self) -> i64 {
+        mut total = 0
+        for e in self.entries {
+            total += e
+        }
+        return total
+    }
+}
+
+public struct Entry {
+    public amount: i64
+    public memo: string
+}
+
+public enum Kind {
+    Small
+    Large(u8)
+}
+
+func main() {
+    println("ledger")
+}

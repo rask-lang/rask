@@ -1127,6 +1127,28 @@ void rask_assert_fail_msg_at(const char *msg, const char *file,
 // `check` records and carries on where `assert` unwinds; the message is built
 // by the same formatter either way (std.testing/A1 vs A2).
 void rask_check_fail(const char *msg);
+
+// One call of a test-shaped function with the harness's panic recovery
+// (test.c). `*error_msg` is malloc'd or NULL.
+#define RASK_TEST_PASSED  0
+#define RASK_TEST_FAILED  1
+#define RASK_TEST_SKIPPED 2
+int rask_test_call(void (*fn)(void), char **error_msg, int *expects_fail);
+const char *rask_test_record_mark(void);
+void rask_test_json_escaped(const char *s);
+
+// Claims (type.claims). The generated input code draws from the current
+// input's choices and notes how to print the value it built; the step counter
+// is called from loop back-edges and function entries in a claim build.
+uint64_t rask_claim_draw(uint64_t bound);
+int64_t  rask_claim_int(int64_t bits, int64_t is_signed);
+double   rask_claim_float(void);
+void     rask_claim_note(const RaskStr *text);
+void     rask_claim_step(void);
+void     rask_claim_start(void);
+void     rask_claim_reached_end(void);
+int64_t  rask_claim_run(void (*fn)(void), const char *name, int64_t seed,
+                        int64_t domain, int64_t budget);
 void rask_check_fail_msg_at(const char *msg, const char *file,
                             int32_t line, int32_t col);
 void rask_assert_fail_cmp_bool(int64_t left, int64_t right,

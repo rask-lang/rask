@@ -461,7 +461,7 @@ impl Parser {
                     // `T implements I` starts with a plain identifier too, and its
                     // errors (a second interface after the comma) are the ones
                     // worth keeping over the statement retry's generic line.
-                    let is_conformance = self.at_conformance_header();
+                    let is_conformance = self.at_conformance_header() || self.at_claim_header();
                     if is_annotation_decl || is_conformance || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
@@ -650,6 +650,26 @@ impl Parser {
                 });
             }
             let kind = self.parse_annotation_decl(is_pub, doc)?;
+            let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+            return Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) });
+        }
+
+        // Contextual: `claim name(params) { body }` (type.claims/CL1). A claim
+        // is a function the build calls with generated inputs, so it parses into
+        // one, marked; only a claims source may hold it (CL2).
+        if self.at_claim_header() {
+            if is_pub || is_comptime || is_unsafe {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "a claim can't be `public`, `comptime` or `unsafe`".to_string(),
+                    hint: Some("write `claim name(inputs) { … }` on its own".to_string()),
+                    why: Some("nothing calls a claim but the build, which runs it on generated inputs".to_string()),
+                });
+            }
+            let mut kind = self.parse_claim_decl(attrs, doc)?;
+            if let DeclKind::Fn(f) = &mut kind {
+                f.decl_start = start;
+            }
             let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
             return Ok(Decl { id: self.next_id(), kind, span: self.span(start, end) });
         }
@@ -2578,6 +2598,54 @@ impl Parser {
         self.expect_terminator()?;
         Ok(DeclKind::TypeAlias(TypeAliasDecl {
             name, type_params, target, is_pub, is_transparent, with_interfaces,
+        }))
+    }
+
+    /// `claim` followed by a name and `(`: an identifier can't start a
+    /// declaration any other way, so this never takes a statement.
+    fn at_claim_header(&self) -> bool {
+        matches!(self.current_kind(), TokenKind::Ident(s) if s == "claim")
+            && matches!(self.peek(1), TokenKind::Ident(_))
+            && matches!(self.peek(2), TokenKind::LParen)
+    }
+
+    /// `claim name(params) { body }` (type.claims/CL1), parsed into the
+    /// function it is, with the compiler's `claim` marker.
+    fn parse_claim_decl(&mut self, mut attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        let claim_start = self.current().span.start;
+        self.advance();
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::LParen)?;
+        let params = self.parse_params()?;
+        self.skip_newlines();
+        self.expect(&TokenKind::RParen)?;
+        if self.check(&TokenKind::Arrow) {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "a claim has no return type".to_string(),
+                hint: Some("check with `assert` inside the body, and `return` to discard an input".to_string()),
+                why: Some("a claim holds or it doesn't; a bare `return` skips the input it was given (type.claims/CL5)".to_string()),
+            });
+        }
+        self.skip_newlines();
+        let body = self.parse_block_body()?;
+        attrs.push(rask_ast::attr::Attr::synthetic("claim", None));
+        let claim_end = self.tokens[self.pos.saturating_sub(1)].span.end;
+        Ok(DeclKind::Fn(FnDecl {
+            name,
+            type_params: Vec::new(),
+            params,
+            ret_ty: None,
+            body,
+            is_pub: false,
+            is_private: false,
+            is_comptime: false,
+            is_unsafe: false,
+            abi: None,
+            attrs,
+            doc,
+            span: self.span(claim_start, claim_end),
+            decl_start: claim_start,
         }))
     }
 

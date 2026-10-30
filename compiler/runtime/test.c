@@ -138,6 +138,15 @@ static const char *record_mark(void) {
     return record_mark_value ? record_mark_value : "";
 }
 
+// For the claim runner (claims.c), whose records go to the same reader.
+const char *rask_test_record_mark(void) {
+    return record_mark();
+}
+
+void rask_test_json_escaped(const char *s) {
+    json_print_escaped(s);
+}
+
 // ─── Sim mode ──────────────────────────────────────────────
 //
 // A sim test runs alone in its process (sim/I6): the runner starts the binary
@@ -213,9 +222,12 @@ static int sim_select(const char *name) {
 }
 #endif
 
-// Catch panics, print the JSON result line. Returns 0 on pass, 1 on fail.
-static int test_run_one(test_fn fn, const char *name) {
-    // Reset per-test state
+// Call `fn` once with panic recovery. Returns RASK_TEST_PASSED, _FAILED or
+// _SKIPPED. `*error_msg` (malloc'd, may be NULL) is the failure or the skip
+// reason, and `*expects_fail` whether the test called `expect_fail()`. Shared
+// by the test runner below and the claim runner (claims.c), which calls one
+// claim body per generated input.
+int rask_test_call(test_fn fn, char **error_msg, int *expects_fail) {
     rask_test_skipped = 0;
     rask_test_skip_reason = NULL;
     rask_test_expects_fail = 0;
@@ -226,9 +238,8 @@ static int test_run_one(test_fn fn, const char *name) {
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
 
-    int64_t start = clock_ns();
     int failed = 0;
-    char *error_msg = NULL;
+    char *msg = NULL;
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
@@ -236,15 +247,11 @@ static int test_run_one(test_fn fn, const char *name) {
     } else {
         // Returned via longjmp from rask_panic
         failed = 1;
-        error_msg = rask_panic_take_message();
+        msg = rask_panic_take_message();
     }
 
-    int64_t elapsed_ns = clock_ns() - start;
     rask_panic_remove();
     rask_in_test = 0;
-
-    int was_skipped = rask_test_skipped;
-    int expects_fail = rask_test_expects_fail;
 
     // A failed check is a failure like a panic, and has to count before
     // expect_fail inverts the answer — it was folded in afterwards, so a test
@@ -252,8 +259,28 @@ static int test_run_one(test_fn fn, const char *name) {
     // test passed".
     if (!failed && rask_check_failures > 0) {
         failed = 1;
-        error_msg = strdup(rask_check_last_msg);
+        msg = strdup(rask_check_last_msg);
     }
+
+    *expects_fail = rask_test_expects_fail;
+    if (rask_test_skipped) {
+        if (!msg && rask_test_skip_reason) msg = strdup(rask_test_skip_reason);
+        *error_msg = msg;
+        return RASK_TEST_SKIPPED;
+    }
+    *error_msg = msg;
+    return failed ? RASK_TEST_FAILED : RASK_TEST_PASSED;
+}
+
+// Catch panics, print the JSON result line. Returns 0 on pass, 1 on fail.
+static int test_run_one(test_fn fn, const char *name) {
+    int64_t start = clock_ns();
+    char *error_msg = NULL;
+    int expects_fail = 0;
+    int outcome = rask_test_call(fn, &error_msg, &expects_fail);
+    int64_t elapsed_ns = clock_ns() - start;
+    int failed = outcome == RASK_TEST_FAILED;
+    int was_skipped = outcome == RASK_TEST_SKIPPED;
 
     // Handle skipped tests — use panic message as skip reason
     if (was_skipped) {
@@ -261,7 +288,7 @@ static int test_run_one(test_fn fn, const char *name) {
            json_print_escaped(name);
            printf("\",\"passed\":true,\"duration_ns\":%lld,\"skipped\":\"",
                (long long)elapsed_ns);
-        const char *reason = error_msg ? error_msg : (rask_test_skip_reason ? rask_test_skip_reason : "");
+        const char *reason = error_msg ? error_msg : "";
         for (const char *p = reason; *p; p++) {
             if (*p == '"') printf("\\\"");
             else if (*p == '\\') printf("\\\\");

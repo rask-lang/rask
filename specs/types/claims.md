@@ -2,6 +2,7 @@
 <!-- status: proposed -->
 <!-- summary: Hand-written statements of what code must do, run under sim over generated inputs at build time; a counterexample fails the build -->
 <!-- depends: sim.md, determinism.md, stdlib/testing.md, types/generics.md, stdlib/encoding.md -->
+<!-- implemented-by: compiler/crates/rask-cli/src/commands/claims.rs, compiler/runtime/claims.c, stdlib/claims.rk, compiler/crates/rask-mir/src/transform/claim_steps.rs -->
 
 # Claims
 
@@ -22,6 +23,17 @@ The reason is who writes the code now. When a model writes the code and also the
 I want this without turning Rask into a proof language. Nobody writes a proof. The compiler checks as hard as it can and reports how far it got.
 
 A claim checks what it says and nothing more. A package held to ten claims has ten things checked, not a proof that it's correct.
+
+> **Built so far.** A package's `claims.rk` (W1), checked by `rask build`,
+> `rask run`, `rask test` and `rask check --claims`; `rask check` type-checks
+> it (R1). Inputs are generated for `bool`, the integers up to 64 bits, `f64`,
+> `char`, `string`, `Vec<T>`, `T?`, pairs and triples, and payload-carrying
+> enums and structs whose fields are visible. Exhaustive (V2) and sampled (V3)
+> verdicts, shrinking (V1), the step budget (D2, `@claim_budget`) and the
+> seed (D1) work. Not yet: shared `[claims]` sources (W2, W3), interface claims
+> (G1, G2), cached verdicts and calls (D4, D5), strict mode (V6), hand-written
+> generators (IN2), the `rask claims` tool, and inputs of `f32`, 128-bit
+> integers, `Map` and `T or E`.
 
 ## Declaration
 
