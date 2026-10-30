@@ -1603,7 +1603,7 @@ impl<'a> MirLowerer<'a> {
         &self,
         ty: &MirType,
         field_name: &str,
-    ) -> Option<(usize, rask_check::layout::FieldLayout)> {
+    ) -> Option<(usize, rask_layout::FieldLayout)> {
         let MirType::Struct(crate::types::StructLayoutId { id, .. }) = ty else {
             return None;
         };

@@ -1270,7 +1270,7 @@ impl<'a> OwnershipChecker<'a> {
         // implied ones.
         let mut params = self.header_type_params.clone();
         params.extend(owner_params.iter().map(|p| p.name.clone()));
-        params.extend(rask_check::signature_type_param_names(fn_decl));
+        params.extend(rask_ast::type_params::signature_type_param_names(fn_decl));
         self.type_params_in_scope = params;
         self.copy_params = owner_params
             .iter()

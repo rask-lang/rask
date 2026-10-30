@@ -115,6 +115,15 @@ pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16 + 1;
 /// error rather than letting the two spaces overlap.
 pub const STDLIB_FILE_ID_BASE: u16 = u16::MAX - STDLIB_FILE_COUNT + 1;
 
+/// Was this declaration parsed out of a stdlib stub?
+///
+/// The stdlib's sources occupy the top of the `file_id` range by construction,
+/// so the span answers it: no flag has to be threaded down from whoever
+/// collected the declarations.
+pub fn is_stdlib_span(span: rask_ast::Span) -> bool {
+    span.file_id >= STDLIB_FILE_ID_BASE
+}
+
 /// `(name, source, file_id)` for every stub, so a caller can register them with
 /// a `SourceMap` and have stdlib spans resolve against stdlib text.
 pub fn stub_sources() -> impl Iterator<Item = (&'static str, &'static str, u16)> {

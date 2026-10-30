@@ -9,6 +9,7 @@ rask-mir = { path = "../rask-mir" }
 rask-mono = { path = "../rask-mono" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-types = { path = "../rask-types" }
+rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 
 cranelift = "0.114"

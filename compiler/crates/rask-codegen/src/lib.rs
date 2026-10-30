@@ -86,7 +86,7 @@ pub trait Backend {
     fn declare_extern_functions(
         &mut self,
         extern_decls: &[ExternFuncSig],
-        layouts: &[rask_check::layout::StructLayout],
+        layouts: &[rask_layout::StructLayout],
     ) -> CodegenResult<()>;
 
     /// Declare all MIR functions (signatures only — no codegen yet).

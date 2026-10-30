@@ -23,6 +23,7 @@ pub mod qualify;
 pub mod visit;
 pub mod comptime_if;
 pub mod allow_names;
+pub mod type_params;
 
 pub use span::{Span, LineMap};
 

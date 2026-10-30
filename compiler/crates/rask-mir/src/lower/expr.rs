@@ -3676,7 +3676,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         result_local: crate::LocalId,
         payload_offset: u32,
-        fields: &[rask_check::layout::FieldLayout],
+        fields: &[rask_layout::FieldLayout],
         i: usize,
         value: &Expr,
     ) -> Result<(), LoweringError> {
@@ -10347,9 +10347,9 @@ impl<'a> MirLowerer<'a> {
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_check::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let layout = instance
             .as_deref()
@@ -11050,7 +11050,7 @@ impl<'a> MirLowerer<'a> {
 /// The field a struct literal's store writes, named by its layout and position.
 fn field_slot(
     result_ty: &MirType,
-    layout: Option<&rask_check::layout::StructLayout>,
+    layout: Option<&rask_layout::StructLayout>,
     name: &str,
 ) -> Option<crate::FieldSlot> {
     let MirType::Struct(sid) = result_ty else { return None };

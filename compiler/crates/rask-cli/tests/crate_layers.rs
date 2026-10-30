@@ -76,6 +76,17 @@ fn type_data_depends_only_on_the_ast() {
 }
 
 #[test]
+fn layout_never_reaches_the_checker() {
+    let g = graph();
+    let reached = reaches(&g, "rask-layout");
+    assert!(
+        !reached.contains("rask-check"),
+        "rask-layout reaches rask-check. The checker asks layout for sizes (the copy \
+         rule), so layout can only read type data, never the checker"
+    );
+}
+
+#[test]
 fn the_native_pipeline_never_reaches_the_interpreter() {
     let g = graph();
     let mut found = Vec::new();

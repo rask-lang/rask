@@ -3448,7 +3448,7 @@ impl TypeChecker {
         };
         let params = self.types.get(base).map(|d| d.type_params().to_vec()).unwrap_or_default();
         bound.iter().all(|(leaf, actual)| {
-            super::declarations::is_type_param_name(leaf)
+            rask_ast::type_params::is_type_param_name(leaf)
                 || params.iter().any(|p| p == leaf)
                 || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
                     .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))

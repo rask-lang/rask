@@ -17,7 +17,8 @@ use std::collections::HashMap;
 
 use rask_ast::ty::TypeExpr;
 
-use crate::checker::{is_type_param_name, resolve_type_expr, TypeTable};
+use crate::checker::{resolve_type_expr, TypeTable};
+use rask_ast::type_params::is_type_param_name;
 use rask_types::TypeDef;
 use rask_types::{GenericArg, Type, TypeId};
 

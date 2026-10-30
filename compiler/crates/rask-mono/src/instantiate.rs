@@ -678,15 +678,15 @@ pub fn type_param_names(decl: &Decl, type_args: &[Type]) -> Vec<String> {
     match &decl.kind {
         DeclKind::Fn(f) => {
             if f.type_params.len() < type_args.len() {
-                rask_check::signature_type_param_names(f)
+                rask_ast::type_params::signature_type_param_names(f)
             } else {
                 f.type_params.iter().map(|p| p.name.clone()).collect()
             }
         }
         // PC1 applies to field and payload types too, so a struct that never
         // wrote `<T>` still has parameters to bind (#913).
-        DeclKind::Struct(s) => rask_check::struct_type_param_names(s),
-        DeclKind::Enum(e) => rask_check::enum_type_param_names(e),
+        DeclKind::Struct(s) => rask_ast::type_params::struct_type_param_names(s),
+        DeclKind::Enum(e) => rask_ast::type_params::enum_type_param_names(e),
         _ => Vec::new(),
     }
 }
@@ -778,7 +778,7 @@ pub fn instantiate_function_from(
             if f.type_params.len() < type_args.len() {
                 // PC1: implicit single-letter type params — the checker's
                 // call-site type args are ordered by the same shared list
-                implicit_params = rask_check::signature_type_param_names(f)
+                implicit_params = rask_ast::type_params::signature_type_param_names(f)
                     .into_iter()
                     .map(|name| {
                         f.type_params
@@ -806,11 +806,11 @@ pub fn instantiate_function_from(
         // substitute, so a function returning one handed back an unsubstituted
         // layout and the caller segfaulted reading it (#913).
         DeclKind::Struct(s) => {
-            implicit_params = named_params(rask_check::struct_type_param_names(s), &s.type_params);
+            implicit_params = named_params(rask_ast::type_params::struct_type_param_names(s), &s.type_params);
             &implicit_params
         }
         DeclKind::Enum(e) => {
-            implicit_params = named_params(rask_check::enum_type_param_names(e), &e.type_params);
+            implicit_params = named_params(rask_ast::type_params::enum_type_param_names(e), &e.type_params);
             &implicit_params
         }
         _ => {

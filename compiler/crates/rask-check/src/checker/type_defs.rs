@@ -780,7 +780,7 @@ fn rename_types(
             let span = e.span;
             // A default argument the stdlib wrote, copied into the call: its
             // `MemoryOrder` is the stdlib's, as the checker read it.
-            if crate::layout::is_stdlib_span(span) {
+            if rask_stdlib::is_stdlib_span(span) {
                 return;
             }
             match &mut e.kind {

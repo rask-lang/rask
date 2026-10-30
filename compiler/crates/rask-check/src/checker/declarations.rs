@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pass 1: declaration collection and checking.
 
+use rask_ast::type_params::{declared_type_param_names, enum_type_param_names, is_type_param_name, signature_type_param_names, struct_type_param_names};
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
 use rask_types::{TypeDef, MethodSig, SelfParam};
 use rask_ast::ty::ParamMode;
@@ -3005,33 +3006,6 @@ impl TypeChecker {
     }
 }
 
-/// The runtime type a `@binary` field specifier stands for, or `None` when the
-/// spelling isn't one. Layout asks this too — the specifier is the declared
-/// type string everywhere downstream, and `u16be` names no type, so a `@binary`
-/// struct was laid out with a pointer-sized slot per field and a warning per
-/// compile.
-pub fn binary_field_runtime_type(ty: &TypeExpr) -> Option<Type> {
-    rask_ast::binary::field_spec(ty).ok().map(|spec| held_type(&spec))
-}
-
-fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
-    use rask_ast::binary::Held;
-    match spec.held {
-        Held::Bytes(len) => Type::Array { elem: Box::new(Type::U8), len },
-        Held::Int(name) | Held::Float(name) => match name {
-            "u8" => Type::U8,
-            "i8" => Type::I8,
-            "u16" => Type::U16,
-            "i16" => Type::I16,
-            "u32" => Type::U32,
-            "i32" => Type::I32,
-            "u64" => Type::U64,
-            "i64" => Type::I64,
-            "f32" => Type::F32,
-            _ => Type::F64,
-        },
-    }
-}
 
 /// B1–V4: check a `@binary` struct's fields and give each its runtime type.
 fn parse_binary_struct_fields(
@@ -3055,7 +3029,7 @@ fn parse_binary_struct_fields(
                         field.name_span,
                     ));
                 }
-                typed_fields.push((field.name.clone(), held_type(&spec)));
+                typed_fields.push((field.name.clone(), rask_layout::held_type(&spec)));
                 bit_offset += spec.bits;
             }
             Err(msg) => {
@@ -3080,86 +3054,6 @@ fn parse_binary_struct_fields(
         return Err(errors);
     }
     Ok(typed_fields)
-}
-
-/// PC1: single uppercase ASCII letter — always a type parameter in signatures.
-pub fn is_type_param_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
-}
-
-/// PC1: a function's type params — explicit `<T>` declarations plus every
-/// single uppercase letter in its signature types, in signature order
-/// (params left to right, then return type).
-///
-/// Shared by the type checker and the monomorphizer so both derive the same
-/// ordered list. Uses a fresh TypeTable: results match the populated table
-/// because single-letter names can never be registered types (PC3), and only
-/// single letters are collected.
-pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
-    let mut names: Vec<String> = f.type_params.iter().map(|p| p.name.clone()).collect();
-    let mut add = |n: &str| {
-        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
-            names.push(n.to_string());
-        }
-    };
-    for p in &f.params {
-        if let (false, Some(ty)) = (p.name == "self", &p.ty) {
-            for_each_written_name(ty, &mut add);
-        }
-    }
-    if let Some(rt) = &f.ret_ty {
-        for_each_written_name(rt, &mut add);
-    }
-    names
-}
-
-/// Every single-segment name a written type mentions, heads included, in
-/// written order: `Map<K, Vec<V>>` gives `Map`, `K`, `Vec`, `V`.
-fn for_each_written_name(ty: &TypeExpr, f: &mut impl FnMut(&str)) {
-    ty.walk_paths(&mut |path| {
-        if let [name] = path {
-            f(name);
-        }
-    });
-}
-
-/// PC1 for a type declaration: explicit `<T>` declarations plus every single
-/// uppercase letter appearing in its field or payload types, in declaration
-/// order.
-///
-/// `gradual-constraints` lists struct fields and enum payloads as signature
-/// positions alongside function parameters, but only the function side was
-/// wired up — so `struct Pair { first: T  second: U }` registered with no type
-/// parameters at all, and `Pair<i64, string>` had nothing to match against.
-/// SYNTAX.md's own `Pair` example didn't compile (#913).
-pub fn declared_type_param_names<'a>(
-    explicit: &[rask_ast::decl::TypeParam],
-    member_types: impl Iterator<Item = &'a TypeExpr>,
-) -> Vec<String> {
-    let mut names: Vec<String> = explicit.iter().map(|p| p.name.clone()).collect();
-    let mut add = |n: &str| {
-        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
-            names.push(n.to_string());
-        }
-    };
-    for ty in member_types {
-        for_each_written_name(ty, &mut add);
-    }
-    names
-}
-
-/// PC1 for a struct: explicit `<T>` plus single letters in its field types.
-pub fn struct_type_param_names(s: &StructDecl) -> Vec<String> {
-    declared_type_param_names(&s.type_params, s.fields.iter().map(|f| &f.ty))
-}
-
-/// PC1 for an enum: explicit `<T>` plus single letters in its payload types.
-pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
-    declared_type_param_names(
-        &e.type_params,
-        e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)),
-    )
 }
 
 /// GT1: an interface's own parameters, in scope for every signature it declares.

@@ -23,7 +23,7 @@ use rask_ast::{
     expr::{BinOp, Expr, ExprKind, UnaryOp},
     LineMap, NodeId, Span,
 };
-use rask_check::layout::{StructLayout, EnumLayout};
+use rask_layout::{StructLayout, EnumLayout};
 use rask_types::Type;
 use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
@@ -805,7 +805,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which is right until a type argument is an inline aggregate
     /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
     /// instance layout and falls through to the shared one. The name comes from
-    /// `rask_check::layout::generic_instance_name`, so both sides spell it the same way by
+    /// `rask_layout::generic_instance_name`, so both sides spell it the same way by
     /// construction (#781).
     pub fn generic_instance_mir_type(
         &self,
@@ -834,7 +834,7 @@ impl<'a> MirContext<'a> {
             let rask_types::GenericArg::Type(t) = arg else { return None };
             arg_tys.push((**t).clone());
         }
-        rask_check::layout::generic_instance_name(bare, &arg_tys, self.type_names)
+        rask_layout::generic_instance_name(bare, &arg_tys, self.type_names)
     }
 
     /// The instance layout name for a checker type, in either spelling.
@@ -852,7 +852,7 @@ impl<'a> MirContext<'a> {
                     let rask_types::GenericArg::Type(t) = arg else { return None };
                     arg_tys.push((**t).clone());
                 }
-                rask_check::layout::generic_instance_name(bare, &arg_tys, self.type_names)
+                rask_layout::generic_instance_name(bare, &arg_tys, self.type_names)
             }
             _ => None,
         }
@@ -999,13 +999,13 @@ impl<'a> MirContext<'a> {
                 // aggregate has a layout of its own, not found under the base
                 // name: `first$Big(o: One<Big>)` was given the shared 8-byte
                 // layout while its caller passed 24 bytes (#781).
-                let arg_tys: Vec<Type> = args.iter().map(rask_check::layout::field_type).collect();
+                let arg_tys: Vec<Type> = args.iter().map(rask_layout::field_type).collect();
                 if self.nominal_underlying.contains_key(head) {
                     let generic: Vec<rask_types::GenericArg> =
                         arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
                     return self.resolve_unresolved_generic(head, &generic);
                 }
-                if let Some(name) = rask_check::layout::generic_instance_name(head, &arg_tys, self.type_names) {
+                if let Some(name) = rask_layout::generic_instance_name(head, &arg_tys, self.type_names) {
                     if let Some((idx, sl)) = self.find_struct(&name) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
                     }
@@ -1057,7 +1057,7 @@ impl<'a> MirContext<'a> {
                     })
                     .collect();
                 if let Some(instance) = arg_tys
-                    .and_then(|tys| rask_check::layout::generic_instance_name(name, &tys, self.type_names))
+                    .and_then(|tys| rask_layout::generic_instance_name(name, &tys, self.type_names))
                 {
                     if let Some((idx, sl)) = self.find_struct(&instance) {
                         return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
@@ -1297,7 +1297,7 @@ impl<'a> MirContext<'a> {
     /// parameter, which resolves to no layout and comes out a bare word that
     /// owns nothing.
     pub fn field_types(&self) -> crate::FieldTypes {
-        let field = |f: &rask_check::layout::FieldLayout| self.type_to_mir(&f.ty);
+        let field = |f: &rask_layout::FieldLayout| self.type_to_mir(&f.ty);
         crate::FieldTypes {
             structs: self
                 .struct_layouts
@@ -2326,7 +2326,7 @@ impl<'a> MirLowerer<'a> {
     /// The struct layout of whatever an expression evaluates to, when it's a
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.
-    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_check::layout::StructLayout> {
+    pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_layout::StructLayout> {
         let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match ty {
             Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
             Type::Named(id) => self
@@ -7571,7 +7571,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_construct() {
         // Shape.Circle(5.0) → store tag 0, store payload f64
-        use rask_check::layout::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
             name: "Shape".to_string(),
@@ -7693,7 +7693,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_no_payload() {
         // Color.Red() → store tag only
-        use rask_check::layout::{EnumLayout, VariantLayout};
+        use rask_layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
             name: "Color".to_string(),
@@ -7778,7 +7778,7 @@ mod tests {
     #[test]
     fn lower_enum_variant_multi_field() {
         // Msg.Pair(1, 2) → store tag + 2 payload fields
-        use rask_check::layout::{EnumLayout, VariantLayout, FieldLayout};
+        use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
             name: "Msg".to_string(),

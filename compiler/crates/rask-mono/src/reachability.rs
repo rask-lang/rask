@@ -369,8 +369,8 @@ impl<'a> Monomorphizer<'a> {
         let mut owner_params: HashMap<String, Vec<String>> = HashMap::new();
         for decl in decls {
             let (name, params) = match &decl.kind {
-                DeclKind::Struct(s) => (&s.name, rask_check::struct_type_param_names(s)),
-                DeclKind::Enum(e) => (&e.name, rask_check::enum_type_param_names(e)),
+                DeclKind::Struct(s) => (&s.name, rask_ast::type_params::struct_type_param_names(s)),
+                DeclKind::Enum(e) => (&e.name, rask_ast::type_params::enum_type_param_names(e)),
                 _ => continue,
             };
             if params.is_empty() {
@@ -1009,7 +1009,7 @@ impl<'a> Monomorphizer<'a> {
             // (`BufferedReader$Buffer`) and the body after the method
             // (`BufferedReader_read$Buffer`); codegen joins the two here.
             let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
-            if let Some(layout) = rask_check::layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+            if let Some(layout) = rask_layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
                 let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
                 self.vtable_symbols.insert((layout, method.clone()), symbol);
             }

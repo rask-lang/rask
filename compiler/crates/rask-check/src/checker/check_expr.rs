@@ -530,7 +530,7 @@ impl TypeChecker {
         // it ends up: a default argument is copied into the call, and
         // `MemoryOrder.SeqCst` there means the stdlib's enum even in a program
         // that declares its own `MemoryOrder`.
-        if !self.types.stdlib_mode && crate::layout::is_stdlib_span(expr.span) {
+        if !self.types.stdlib_mode && rask_stdlib::is_stdlib_span(expr.span) {
             self.types.stdlib_mode = true;
             let ty = self.infer_expr(expr);
             self.types.stdlib_mode = false;
@@ -6271,7 +6271,7 @@ impl TypeChecker {
             }
             // A type parameter is asked per call, by ownership's instance walk:
             // the body can't know, each caller's `T` can.
-            if matches!(&payload, Type::UnresolvedNamed(n) if super::declarations::is_type_param_name(n)) {
+            if matches!(&payload, Type::UnresolvedNamed(n) if rask_ast::type_params::is_type_param_name(n)) {
                 continue;
             }
             self.errors.push(TypeError::TakeFromSharedBox {
