@@ -168,7 +168,10 @@ impl Interpreter {
             "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b, arg_kind(args))) }
             "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b, arg_kind(args))) }
             "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b, arg_kind(args))) }
-            "bit_not" => Ok(Value::Int(!a, kind)),
+            // The slot is 64 bits wide, so `!a` flips the bits above the
+            // width too. A narrow unsigned value has to be cut back to it:
+            // `~200u8` is 55, not 18446744073709551415.
+            "bit_not" => Ok(Value::Int(kind.wrap(!a), kind)),
             "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
             // AR3: the floored answer, always non-negative — `(-1).mod(10)` is
             // 9, where `-1 % 10` is -1. This is the expression people write by
