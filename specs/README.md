@@ -107,6 +107,7 @@ Quick navigation by task or concept:
 | [binary.md](types/binary.md) | Binary structs, bit-level layouts |
 | [tuples.md](types/tuples.md) | Anonymous product types, destructuring |
 | [functions.md](types/functions.md) | Function types carry parameter modes |
+| [claims.md](types/claims.md) | Hand-written statements of what code must do, run under sim by every build (proposed) |
 | [type-aliases.md](types/type-aliases.md) | Transparent type aliases |
 
 ## Memory — How values are owned
