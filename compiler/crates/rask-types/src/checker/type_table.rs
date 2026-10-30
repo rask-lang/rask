@@ -110,6 +110,10 @@ pub struct TypeTable {
     /// registered (`ParseError#57` — `#` is in no identifier), and this is how
     /// a message or a printed value still says what the program wrote.
     pub(super) written_names: HashMap<String, String>,
+    /// A dependency's types go by a merged name once the packages are one
+    /// program (`Entry_ledger`); this is the name each was declared with, so
+    /// a printed value reads the same whichever package prints it.
+    declared_names: HashMap<String, String>,
     /// Whether registrations and lookups are on behalf of stdlib code.
     /// Mirrors the resolver's flag of the same name.
     pub(crate) stdlib_mode: bool,
@@ -239,6 +243,7 @@ impl TypeTable {
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
             written_names: HashMap::new(),
+            declared_names: HashMap::new(),
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -498,7 +503,16 @@ impl TypeTable {
     /// A type name as the program wrote it, for a message or a printed value.
     /// The name itself for every type that has no symbol of its own.
     pub fn written_name<'a>(&'a self, name: &'a str) -> &'a str {
-        self.written_names.get(name).map_or(name, String::as_str)
+        self.written_names
+            .get(name)
+            .or_else(|| self.declared_names.get(name))
+            .map_or(name, String::as_str)
+    }
+
+    /// Record the name each merged declaration was written with, from the
+    /// package merge's `(merged, declared)` pairs.
+    pub fn record_declared_names(&mut self, pairs: impl IntoIterator<Item = (String, String)>) {
+        self.declared_names.extend(pairs);
     }
 
     fn def_name_mut(def: &mut TypeDef) -> &mut String {

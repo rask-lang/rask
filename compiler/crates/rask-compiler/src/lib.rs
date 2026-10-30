@@ -929,6 +929,9 @@ fn check_package_scoped(
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
+    typed.types.record_declared_names(
+        exports.values().flat_map(|m| m.iter().map(|(declared, merged)| (merged.clone(), declared.clone()))),
+    );
     PipelineOutput::ok_with_sources(
         CheckResult {
             typed,
