@@ -122,3 +122,79 @@ extend CasFailed<T> {
         return "compare-exchange found a different value"
     }
 }
+
+// --- Atomic: one word, read and written by one instruction (mem.atomics) ---
+//
+// Every method is `@builtin`: the compiler emits the instruction, or the runtime
+// call, for the payload's width. Which payloads may sit in one (GA2), and which
+// operations a payload has (GA3), are rules about the type, so the checker
+// judges them before it reads a signature from here.
+
+/// One word that any number of tasks read and write without a lock.
+@handle(release: "rask_atomic_free")
+public struct Atomic<T> { }
+
+extend Atomic<T> {
+    /// An atomic holding `value`.
+    @builtin
+    public func new(value: T) -> Atomic<T> {}
+
+    /// An atomic holding the payload's zero: 0, `false`, a null pointer. A
+    /// struct payload has no compiler-known default; use `new`.
+    @builtin
+    public func default() -> Atomic<T> {}
+
+    /// Read the value.
+    @builtin
+    public func load(self, order: Ordering) -> T {}
+
+    /// Write the value. Takes `self`, not `mutate self`: the atomic does its
+    /// own synchronizing (AT4).
+    @builtin
+    public func store(self, value: T, order: Ordering) {}
+
+    /// Write `value` and answer what was there.
+    @builtin
+    public func swap(self, value: T, order: Ordering) -> T {}
+
+    /// If the value is `current`, write `new`. The old value on success,
+    /// `CasFailed` holding what was actually there on failure. Compares bits.
+    @builtin
+    public func compare_exchange(self, current: T, new: T, success: Ordering, failure: Ordering) -> T or CasFailed<T> {}
+
+    /// `compare_exchange` that may fail when the value matched. Cheaper on
+    /// some hardware; call it in a loop.
+    @builtin
+    public func compare_exchange_weak(self, current: T, new: T, success: Ordering, failure: Ordering) -> T or CasFailed<T> {}
+
+    // The fetch family answers the old value and wraps on overflow (AT5).
+
+    @builtin
+    public func fetch_add(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_sub(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_max(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_min(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_and(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_or(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_xor(self, value: T, order: Ordering) -> T {}
+
+    @builtin
+    public func fetch_nand(self, value: T, order: Ordering) -> T {}
+
+    /// Consume the atomic and answer what it held. `take self` is what makes
+    /// this safe without an ordering: nobody else can be reading it (AT3).
+    @builtin
+    public func take(take self) -> T {}
+}

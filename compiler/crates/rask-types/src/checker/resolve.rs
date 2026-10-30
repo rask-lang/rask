@@ -807,6 +807,14 @@ impl TypeChecker {
             }
         }
 
+        // mem.atomics: the payload rules (GA2, GA3) come before the declared
+        // signature, whichever spelling of `Atomic<T>` the receiver arrived as.
+        // A typed one is a declared struct and would otherwise take the
+        // general path below, which knows nothing about payloads.
+        if let Some(payload) = self.atomic_payload(&ty) {
+            return self.resolve_atomic_method(payload, &method, &args, &ret, span);
+        }
+
         // RK11. Without this the name falls through to the node type's own
         // derived `lt`, and MIR lowers that as a machine compare on the link
         // word — address order, which moves with whatever the program
@@ -1389,11 +1397,6 @@ impl TypeChecker {
             // Random (no type params — static and instance methods)
             Type::UnresolvedNamed(name) if name == "Random" => {
                 self.resolve_rng_method(&method, &args, &ret, span)
-            }
-            // `Atomic<T>` — one type, one spelling (mem.atomics/GA1).
-            _ if self.atomic_payload(&ty).is_some() => {
-                let payload = self.atomic_payload(&ty).expect("just checked");
-                self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
@@ -2925,15 +2928,21 @@ impl TypeChecker {
     /// exists so a reader never has to wonder whether a named form and the
     /// generic form differ.
     fn atomic_payload(&mut self, ty: &Type) -> Option<Type> {
-        match ty {
-            Type::UnresolvedGeneric { name, args } if name == "Atomic" => match args.first() {
-                Some(GenericArg::Type(t)) => Some((**t).clone()),
-                _ => Some(self.ctx.fresh_var()),
-            },
-            // `Atomic.new(0)` with no written argument — the value settles it.
-            Type::UnresolvedNamed(name) if name == "Atomic" => Some(self.ctx.fresh_var()),
-            _ => None,
+        let (name, args): (String, &[GenericArg]) = match ty {
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            Type::Generic { base, args } => (self.types.type_name(*base), args),
+            Type::UnresolvedNamed(name) => (name.clone(), &[]),
+            Type::Named(id) => (self.types.type_name(*id), &[]),
+            _ => return None,
+        };
+        if name != "Atomic" {
+            return None;
         }
+        // `Atomic.new(0)` with no written argument: the value settles it.
+        Some(match args.first() {
+            Some(GenericArg::Type(t)) => (**t).clone(),
+            _ => self.ctx.fresh_var(),
+        })
     }
 
     /// GA2: why this payload can't go in an atomic, or `None` when it can.
@@ -3026,7 +3035,10 @@ impl TypeChecker {
         )
     }
 
-    /// Resolve methods on `Atomic<T>` (mem.atomics).
+    /// Methods on `Atomic<T>`: what stdlib/sync.rk declares, after the two
+    /// rules that are about the payload rather than the signature. GA2 says
+    /// what may be a payload, and is reported once at the type. GA3 says the
+    /// arithmetic fetches need a payload the hardware can add.
     pub(super) fn resolve_atomic_method(
         &mut self,
         val_ty: Type,
@@ -3039,140 +3051,20 @@ impl TypeChecker {
             name: "Atomic".to_string(),
             args: vec![GenericArg::Type(Box::new(val_ty.clone()))],
         };
-        let ordering_ty = self.ordering_type();
-        // GA2 is a rule about the type, so it's reported once at the type
-        // rather than at every operation on it.
         if let Some(reason) = self.atomic_payload_problem(&val_ty) {
-            return Err(TypeError::AtomicPayload {
-                ty: val_ty,
-                reason,
-                span,
-            });
+            return Err(TypeError::AtomicPayload { ty: val_ty, reason, span });
         }
-
-        match method {
-            // ── Construction ────────────────────────────────
-            "new" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &val_ty, span);
-                self.unify(ret, &self_ty, span)
-            }
-            "default" if args.is_empty() => {
-                self.unify(ret, &self_ty, span)
-            }
-
-            // ── Load / Store / Swap ─────────────────────────
-            "load" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &ordering_ty, span);
-                self.unify(ret, &val_ty, span)
-            }
-            "store" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &val_ty, span);
-                let _ = self.unify(&args[1], &ordering_ty, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-            "swap" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &val_ty, span);
-                let _ = self.unify(&args[1], &ordering_ty, span);
-                self.unify(ret, &val_ty, span)
-            }
-
-            // ── Compare-and-Exchange ────────────────────────
-            "compare_exchange" | "compare_exchange_weak" if args.len() == 4 => {
-                let _ = self.unify(&args[0], &val_ty, span);
-                let _ = self.unify(&args[1], &val_ty, span);
-                let _ = self.unify(&args[2], &ordering_ty, span);
-                let _ = self.unify(&args[3], &ordering_ty, span);
-                // `T or CasFailed<T>`, not `T or T`. Both sides carry a `T` —
-                // the old value on success, the observed one on failure — so
-                // without the wrapper every match arm was ambiguous and `r is
-                // …` had no error type to name.
-                let result_ty = Type::Result {
-                    ok: Box::new(val_ty.clone()),
-                    err: Box::new(Type::UnresolvedGeneric {
-                        name: "CasFailed".to_string(),
-                        args: vec![GenericArg::Type(Box::new(val_ty))],
-                    }),
-                };
-                self.unify(ret, &result_ty, span)
-            }
-
-            // ── Integer fetch operations ────────────────────
-            "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if args.len() == 2 && Self::is_countable_payload(&val_ty) =>
-            {
-                let _ = self.unify(&args[0], &val_ty, span);
-                let _ = self.unify(&args[1], &ordering_ty, span);
-                self.unify(ret, &val_ty, span)
-            }
-
-            // ── Bitwise fetch (integers + bool) ─────────────
-            "fetch_and" | "fetch_or" | "fetch_xor" | "fetch_nand" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &val_ty, span);
-                let _ = self.unify(&args[1], &ordering_ty, span);
-                self.unify(ret, &val_ty, span)
-            }
-
-            // ── Non-atomic access ───────────────────────────
-            "take" if args.is_empty() => {
-                self.unify(ret, &val_ty, span)
-            }
-
-            // GA3: adding two structs, or two bools, means nothing. Reported as
-            // what it is rather than as a missing method — the name is right
-            // there in the source, and the argument count is fine, so both of
-            // those messages sent the reader looking for the wrong thing.
-            "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
-                if !Self::is_countable_payload(&val_ty) =>
-            {
-                Err(TypeError::AtomicOpNeedsNumber {
-                    ty: val_ty,
-                    method: method.to_string(),
-                    span,
-                })
-            }
-
-            _ => Err(Self::wrong_arity_for("Atomic", method, args.len(), span)
-                .unwrap_or(TypeError::NoSuchMethod {
-                    ty: self_ty,
-                    method: method.to_string(),
-                    span,
-                })),
+        // GA3: adding two structs, or two bools, means nothing. Reported as
+        // what it is rather than as a mismatched argument: the name is right
+        // there in the source and the count is fine, so either of those
+        // messages sends the reader looking for the wrong thing.
+        if matches!(method, "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min")
+            && !Self::is_countable_payload(&self.ctx.apply(&val_ty))
+        {
+            return Err(TypeError::AtomicOpNeedsNumber { ty: val_ty, method: method.to_string(), span });
         }
-    }
-
-    /// A method the type has, called with the wrong number of arguments.
-    ///
-    /// `Atomic` has no stdlib file — it is a compiler type, and the resolver
-    /// above is the only description of it — so nothing checks a call's
-    /// argument count against a declared signature the way it does for every
-    /// other builtin. Every arm of that resolver is guarded on the count, so a
-    /// wrong one falls through to "no such method", with the name sitting right
-    /// there in the source:
-    ///
-    /// ```text
-    /// error: no method `load` found for type `Atomic<i64>`  — did you mean `load`?
-    /// ```
-    ///
-    /// So its counts live with its names in `rask_stdlib::registry`. Where a
-    /// name accepts exactly one, say which; where it accepts several, no single
-    /// number is the expected one and the caller falls through to the message
-    /// about what didn't fit (#1150).
-    ///
-    /// Nothing else needs this. `Shared` looked like it did and doesn't:
-    /// `stdlib/sync.rk` declares its signatures, and the fix there was to ask
-    /// them rather than to write the counts down twice.
-    fn wrong_arity_for(
-        type_name: &str,
-        method: &str,
-        found: usize,
-        span: Span,
-    ) -> Option<TypeError> {
-        let counts = rask_stdlib::registry::type_method_arity(type_name, method)?;
-        if counts.contains(&found) {
-            return None;
-        }
-        let [expected] = counts else { return None };
-        Some(TypeError::ArityMismatch { expected: *expected, found, span })
+        self.resolve_declared_stdlib_method("Atomic", &self_ty, &[val_ty.clone()], method, args, ret, span)
+            .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
     }
 
     /// Check whether a type name is a SIMD vector type.

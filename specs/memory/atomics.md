@@ -30,7 +30,7 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 | **GA2: Eligibility** | `T` must be Copy, contain no padding bytes, and be 1, 2, 4, or 8 bytes — or 16 with `target.has_atomic128` (AT7). Float payloads additionally require `target.has_atomic_float`. Violation is a compile error at the type, with the reason named |
 
 Rask gives every struct field its own word, so a struct payload is word-sized when it has *one* field: `{ index: i32, gen: i32 }` is 16 bytes however small the fields are written, and E0384 says so. That's a consequence of the layout model rather than of this rule, and it moves if the layout does.
-| **GA3: Ops follow the payload** | Every eligible payload gets `new`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`, `into_value`, `get_mut`. Integer payloads add the full fetch family; `bool` adds the logical fetches; floats add `fetch_add`/`fetch_sub`/`fetch_max`/`fetch_min`. Struct payloads get none — `fetch_add` on a struct is meaningless |
+| **GA3: Ops follow the payload** | Every eligible payload gets `new`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`, `take`, `get_mut`. Integer payloads add the full fetch family; `bool` adds the logical fetches; floats add `fetch_add`/`fetch_sub`/`fetch_max`/`fetch_min`. Struct payloads get none — `fetch_add` on a struct is meaningless |
 | **GA4: CAS is bitwise** | `compare_exchange` compares raw bytes. This is why GA2 excludes padding: two logically equal values with different padding bytes would spuriously fail CAS. Same rule float CAS already follows (`NaN == NaN` when bit patterns match, `+0.0 != -0.0`) |
 | **GA5: No optional payloads** | `Atomic<T?>` is rejected. An optional payload needs a bit pattern no valid `T` occupies, and nothing here can promise one. Add your own sentinel field, visible in the struct |
 
@@ -204,14 +204,14 @@ unsafe {
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `get_mut()` | `self -> *T` | Get raw pointer to inner value (unsafe to dereference) |
-| `into_value()` | `take self -> T` | Consume atomic, return inner value |
+| `take()` | `take self -> T` | Consume atomic, return inner value |
 
-`into_value` is safe because `take self` guarantees exclusive ownership.
+`take` is safe because `take self` guarantees exclusive ownership.
 
 <!-- test: skip -->
 ```rask
 mut counter = Atomic<u64>.new(0)
-let final_value = counter.into_value()
+let final_value = counter.take()
 ```
 
 ## Memory Fences
@@ -368,7 +368,7 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 | Mixing atomic and non-atomic access to same location | — | Undefined behavior |
 | Overflow on `fetch_add` | AT5 | Wraps (no panic) |
 | `Atomic<*T>` load then deref | AT1 | Load is safe; deref requires `unsafe` |
-| `into_value` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
+| `take` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
 | Atomics at comptime | — | Not available (no meaningful semantics without threads) |
 | Atomic statics | AT1 | Safe to access from multiple threads without `unsafe` |
 | Struct payload with padding bytes | GA2 | Compile error — reorder fields or pad explicitly |

@@ -33,9 +33,6 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
     // `Heap` is codegen's one-pointer indirection (mem.heap); memory.rk
     // declares the rest of the box family but not this one.
     ("memory", &["Heap"]),
-    // The atomics are codegen intrinsics. sync.rk declares `Mutex` and
-    // `Shared`'s strategies, so those come off the file itself.
-    ("sync", &["Atomic"]),
 ];
 
 /// Names a module exports that aren't types — free functions that come into

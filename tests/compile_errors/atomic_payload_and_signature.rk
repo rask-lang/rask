@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an atomic payload that isn't one word, arithmetic on a payload that
+// can't add, and an argument the declaration in sync.rk doesn't take
+//
+// The payload rules (mem.atomics/GA2, GA3) are about the type, so the checker
+// judges them before it reads a signature. The signatures come from sync.rk.
+// A table in the checker answered them before, and it dropped every argument
+// mismatch: `n.store("s", Relaxed)` type-checked.
+
+import sync.{Atomic, Relaxed}
+
+struct Big {
+    a: i64
+    b: i64
+}
+
+func main() {
+    // ERROR: a Vec isn't one word (GA2)
+    let v = Atomic<Vec<i64>>.new([])
+    // ERROR: 16 bytes is two words (GA2)
+    let big = Atomic<Big>.new(Big(a: 1, b: 2))
+    let flag = Atomic<bool>.new(false)
+    // ERROR: a bool can't be added (GA3)
+    let x = flag.fetch_add(true, Relaxed)
+    let n = Atomic<i64>.new(1)
+    // ERROR: store takes the payload type
+    n.store("s", Relaxed)
+}

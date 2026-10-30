@@ -40,7 +40,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 103,
+        today: 91,
         target: 9,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
@@ -57,7 +57,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 105,
+        today: 89,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
               fact about a call stated by its name instead of on its \

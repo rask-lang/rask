@@ -422,7 +422,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 524 sites restate a fact, 508 to go.**
+ratchet at its target. Today: 496 sites restate a fact, 480 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -440,9 +440,9 @@ each pinned at today's count, each with the count it has to reach.
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
 | MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
-| Method names the checker answers by matching the name instead of reading a declaration or interface | 103 | 9 | #1561, #1565 |
+| Method names the checker answers by matching the name instead of reading a declaration or interface | 91 | 9 | #1561, #1565 |
 | `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
-| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 105 | 0 | #1564, #1565 |
+| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
 | Public entry points into the passes | 14 | 7 | #1568 |
 | Interpreters built outside the driver | 11 | 0 | #1568 |
