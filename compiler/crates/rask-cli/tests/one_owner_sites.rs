@@ -39,12 +39,13 @@ const RATCHETS: &[Ratchet] = &[
         count: name_sniffs,
     },
     Ratchet {
-        name: "checker hand tables for stdlib methods",
-        today: 24,
-        target: 0,
-        why: "a stdlib method answered from a Rust table instead of its \
-              declaration in stdlib/*.rk (rask-lang/rask#1561)",
-        count: checker_method_tables,
+        name: "method names the checker answers by hand",
+        today: 135,
+        target: 9,
+        why: "a method answered by matching its name as a string literal in the \
+              checker instead of reading its declaration in stdlib/*.rk, or the \
+              interface it belongs to (rask-lang/rask#1561, #1565)",
+        count: checker_method_arms,
     },
     Ratchet {
         name: "`_Any` wildcards in the checker",
@@ -158,20 +159,40 @@ fn name_sniffs(crates: &Path) -> Vec<String> {
         .collect()
 }
 
-fn checker_method_tables(crates: &Path) -> Vec<String> {
-    source_lines(crates, &["rask-types/src/checker/resolve.rs"], &[])
-        .into_iter()
-        .filter(|(_, _, code)| {
-            let code = code.trim_start();
-            let name = code
-                .strip_prefix("pub(super) fn ")
-                .or_else(|| code.strip_prefix("pub fn "))
-                .or_else(|| code.strip_prefix("fn "));
-            // `resolve_declared_*` reads the .rk declaration: that's the path that stays.
-            name.is_some_and(|n| n.starts_with("resolve_") && n.contains("_method") && !n.starts_with("resolve_declared_"))
-        })
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
+/// Match arms keyed on a method name in the checker: `"len" if args.is_empty() =>`.
+/// Each name in one counts once. Primitive type names (`"i64" =>`) are types,
+/// not methods, and don't count.
+///
+/// The target isn't zero: `removed_string_method` names nine methods `string`
+/// doesn't have (`add`, `push`, `new`, …) to say why instead of "no such
+/// method". Those answer nothing, so they stay.
+fn checker_method_arms(crates: &Path) -> Vec<String> {
+    const TYPE_NAMES: &[&str] = &[
+        "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64",
+        "bool", "char", "string", "usize", "isize", "void", "bytes", "self",
+    ];
+    let mut out = Vec::new();
+    for (rel, line, code) in source_lines(crates, &["rask-types/src/checker"], &[]) {
+        let head = code.trim_start();
+        let Some(arm) = head.split("=>").next().filter(|_| head.contains("=>")) else { continue };
+        let names: Vec<&str> = arm.split('|').map(str::trim).map(|n| n.split(" if ").next().unwrap_or(n).trim()).collect();
+        let all_names = names.iter().all(|n| {
+            n.len() > 2
+                && n.starts_with('"')
+                && n.ends_with('"')
+                && n[1..n.len() - 1].chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && n[1..n.len() - 1].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        });
+        if !all_names {
+            continue;
+        }
+        for n in names {
+            if !TYPE_NAMES.contains(&&n[1..n.len() - 1]) {
+                out.push(format!("{rel}:{line}: {n}"));
+            }
+        }
+    }
+    out
 }
 
 fn any_wildcards(crates: &Path) -> Vec<String> {

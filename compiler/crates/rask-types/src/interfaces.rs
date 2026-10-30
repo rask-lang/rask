@@ -1618,7 +1618,7 @@ pub fn verify_instantiation(
 /// Check if a type implements a specific interface.
 /// True if `ty` stands in for the implementing type in an interface signature:
 /// a builtin-interface type variable, or the written-out `Self`.
-fn is_self_placeholder(ty: &Type) -> bool {
+pub(crate) fn is_self_placeholder(ty: &Type) -> bool {
     matches!(ty, Type::Var(_)) || matches!(ty, Type::UnresolvedNamed(n) if n == "Self")
 }
 

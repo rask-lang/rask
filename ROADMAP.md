@@ -422,7 +422,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 448 sites restate a fact, 441 to go.**
+ratchet at its target. Today: 556 sites restate a fact, 540 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -440,7 +440,7 @@ each pinned at today's count, each with the count it has to reach.
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
 | MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
-| Checker answers a stdlib method from a Rust table (`resolve_*_method`) | 24 | 0 | #1561 |
+| Method names the checker answers by matching the name instead of reading a declaration or interface | 135 | 9 | #1561, #1565 |
 | `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
 | Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 105 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |

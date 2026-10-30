@@ -1322,22 +1322,25 @@ impl TypeChecker {
                     }
                 }
             }
-            Type::String => self
-                .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
-                .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
-            Type::Bytes => self
-                .resolve_declared_primitive_method("bytes", &ty, &method, &args, &ret, call_node, span)
-                .unwrap_or_else(|| self.resolve_bytes_method(&method, &args, &ret, span)),
+            Type::String | Type::Bytes | Type::Char => {
+                let primitive = ty.to_string();
+                self.resolve_declared_primitive_method(&primitive, &ty, &method, &args, &ret, call_node, span)
+                    .or_else(|| self.resolve_provided_method(&ty, &method, &args, &ret, span))
+                    .unwrap_or_else(|| {
+                        let removed = (ty == Type::String).then(|| Self::removed_string_method(&method, &args, span));
+                        Err(removed.flatten().unwrap_or(TypeError::NoSuchMethod { ty, method, span }))
+                    })
+            }
             // `string` used as a type namespace — `string.from_utf8(bytes)`,
             // and the `string.new()` people reach for out of Rust habit. The
             // receiver is the type name, not a value, so it arrives unresolved
             // and used to miss the resolver above entirely.
             Type::UnresolvedNamed(ref name) if name == "string" => self
                 .resolve_declared_primitive_method("string", &ty, &method, &args, &ret, call_node, span)
-                .unwrap_or_else(|| self.resolve_string_method(&method, &args, &ret, span)),
-            Type::Char => self
-                .resolve_declared_primitive_method("char", &ty, &method, &args, &ret, call_node, span)
-                .unwrap_or_else(|| self.resolve_char_method(&method, &args, &ret, span)),
+                .unwrap_or_else(|| {
+                    Err(Self::removed_string_method(&method, &args, span)
+                        .unwrap_or(TypeError::NoSuchMethod { ty: Type::String, method, span }))
+                }),
             Type::Array { .. } => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
             }
@@ -2100,122 +2103,62 @@ impl TypeChecker {
         Some(self.apply_method_sig(ty, method, &sig, Default::default(), args.to_vec(), ret, call_node, span))
     }
 
-    pub(super) fn resolve_char_method(
+    /// A method a primitive answers through a conformance the compiler
+    /// provides for it (`primitive_conformances`) rather than a declaration in
+    /// `stdlib/*.rk`: its comparisons and its hash. The signature is the
+    /// interface's, with `Self` read as the receiver. The operator interfaces
+    /// are left to the integer and float resolvers, which know how to say what
+    /// is wrong with a mixed operand.
+    fn resolve_provided_method(
         &mut self,
+        ty: &Type,
         method: &str,
         args: &[Type],
         ret: &Type,
         span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            // `char` is Comparable in Unicode scalar order (type.operators
-            // ORD1 and the support table). Only `eq`/`ne` were wired up, so
-            // `'a' < 'b'` reported "no method lt found for type char".
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&args[0], &Type::Char, span)?;
-                self.unify(ret, &Type::Bool, span)
+    ) -> Option<Result<bool, TypeError>> {
+        let sig = crate::interfaces::primitive_conformances(ty)
+            .iter()
+            .filter(|i| rask_stdlib::operators::operator_interface_method(i).is_none())
+            .filter_map(|i| crate::interfaces::builtin_interface_methods(i))
+            .flatten()
+            .find(|m| m.name == method && m.params.len() == args.len())?;
+        let resolve = |this: &Self, t: &Type| match t {
+            t if crate::interfaces::is_self_placeholder(t) => ty.clone(),
+            Type::UnresolvedNamed(n) if n == "Ordering" => this.ordering_type(),
+            t => t.clone(),
+        };
+        let want_ret = resolve(self, &sig.ret);
+        for ((param, _), arg) in sig.params.iter().zip(args) {
+            let want = resolve(self, param);
+            if let Err(e) = self.unify(arg, &want, span) {
+                // Pin the answer first, so one error doesn't become two with
+                // the second blaming a binding that's fine.
+                let _ = self.unify(ret, &want_ret, span);
+                return Some(Err(e));
             }
-            "compare" if args.len() == 1 => {
-                self.unify(&args[0], &Type::Char, span)?;
-                self.unify(ret, &self.ordering_type(), span)
-            }
-            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::Char,
-                method: method.to_string(),
-                span,
-            }),
         }
+        Some(self.unify(ret, &want_ret, span))
     }
 
-    /// What `string` answers that its declarations in stdlib/string.rk
-    /// don't: the operators and the removed spellings.
-    pub(super) fn resolve_string_method(
-        &mut self,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
+    /// A method `string` doesn't have that people reach for anyway, with the
+    /// message that says why, or `None` for an ordinary unknown name.
+    fn removed_string_method(method: &str, args: &[Type], span: Span) -> Option<TypeError> {
         match method {
-            "add" => return Err(TypeError::StringAddForbidden { span }),
-            // `a == b` desugars to `a.eq(b)` and there's no `eq` in the string
-            // stubs, so this fell through as "no progress" and the result type
-            // stayed open. In a condition the `Equal(cond, bool)` constraint hid
-            // it; bound to a name (`let same = a == b`) there was nothing to pin
-            // it and the binding was reported as un-inferrable (#620). Ordering
-            // is lexicographic and both backends already do it.
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&Type::String, &args[0], span)?;
-                self.unify(ret, &Type::Bool, span)
-            }
-            "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
-            "contains" if args.len() == 1 => {
-                self.unify(&Type::String, &args[0], span)?;
-                self.unify(ret, &Type::Bool, span)
-            }
-            // std.strings/S7: `string` has no mutation methods. These two were
-            // accepted anyway, and they couldn't be made sound — `string` is an
+            "add" => Some(TypeError::StringAddForbidden { span }),
+            // std.strings/S7: `string` has no mutation methods. These were
+            // accepted once, and they couldn't be made sound: `string` is an
             // immutable 16-byte value that shares its buffer with every copy,
             // so the backends disagreed about whether a push was visible
             // through the other copies (#693). StringBuilder is the mutable
             // one.
-            //
-            // `concat` used to sit here too. It's gone on main, which matches
-            // the spec: interpolation is the one way to combine strings.
             "push" | "push_str" | "push_char" | "push_byte" | "insert" | "clear" | "truncate" => {
-                Err(TypeError::StringIsImmutable { method: method.to_string(), span })
+                Some(TypeError::StringIsImmutable { method: method.to_string(), span })
             }
             // Almost always the opening line of the same mistake, so it gets
             // its own message rather than a bare "no method `new`".
-            "new" if args.is_empty() => Err(TypeError::StringNewRemoved { span }),
-            // `string` is Comparable, same as `char`. This had no signature —
-            // it only worked because the fallthrough below used to accept any
-            // name at all.
-            "compare" if args.len() == 1 => {
-                self.unify(&Type::String, &args[0], span)?;
-                self.unify(ret, &self.ordering_type(), span)
-            }
-            // A method `string` doesn't have is an error here, the way it
-            // already was for `char`. Answering `Ok(false)` accepted any name
-            // at all and left the return type open, so `s.frobnicate()`
-            // type-checked and MIR gave the temp `i64` — which is how
-            // `part.to_owned()` compiled and then segfaulted instead of
-            // saying the method doesn't exist.
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::String,
-                method: method.to_string(),
-                span,
-            }),
-        }
-    }
-
-    /// What `bytes` answers without a declaration: the comparisons and
-    /// hashing every primitive has (std.bytes/BY5). The rest is in
-    /// `stdlib/bytes.rk`.
-    pub(super) fn resolve_bytes_method(
-        &mut self,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            "eq" | "ne" | "lt" | "le" | "gt" | "ge" if args.len() == 1 => {
-                self.unify(&Type::Bytes, &args[0], span)?;
-                self.unify(ret, &Type::Bool, span)
-            }
-            "compare" if args.len() == 1 => {
-                self.unify(&Type::Bytes, &args[0], span)?;
-                self.unify(ret, &self.ordering_type(), span)
-            }
-            "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::Bytes,
-                method: method.to_string(),
-                span,
-            }),
+            "new" if args.is_empty() => Some(TypeError::StringNewRemoved { span }),
+            _ => None,
         }
     }
 
