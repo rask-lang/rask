@@ -3419,6 +3419,19 @@ impl TypeChecker {
     /// integer path does it: leaving `ret` open turns one error into two, the
     /// second being "couldn't work out the type of x" pointing at a binding
     /// that is fine.
+    /// What a `Comparable` method answers, or `None` if `method` isn't one:
+    /// `bool` for `lt` and its siblings, `Ordering` for `compare`. Read from
+    /// the interface, so a name it doesn't require is never mistaken for one.
+    fn comparable_answer(&self, method: &str) -> Option<Type> {
+        let sig = crate::interfaces::builtin_interface_methods("Comparable")?
+            .into_iter()
+            .find(|m| m.name == method)?;
+        Some(match &sig.ret {
+            Type::UnresolvedNamed(n) if n == "Ordering" => self.ordering_type(),
+            other => other.clone(),
+        })
+    }
+
     /// `<` or `compare` on two vectors, fixed arrays, maps or sets.
     ///
     /// None of them is `Comparable` (`Collection::contract`, type.generics/CO1).
@@ -3438,15 +3451,14 @@ impl TypeChecker {
         if args.len() != 1 {
             return None;
         }
-        let ordering = match method {
-            "lt" | "le" | "gt" | "ge" => false,
-            "compare" => true,
-            _ => return None,
-        };
+        let answer = self.comparable_answer(method)?;
         let collection = crate::interfaces::Collection::of(&self.types, recv)?;
-        let answer = if ordering { self.ordering_type() } else { Type::Bool };
         let _ = self.unify(ret, &answer, span);
-        let op = if ordering { "compare" } else { Self::operator_spelling(method) };
+        let op = if rask_ast::expr::binary_op_of_method(method).is_some() {
+            Self::operator_spelling(method)
+        } else {
+            method
+        };
         Some(TypeError::CollectionNotOrderable {
             op: op.to_string(),
             recv: self.types.resolve_type_names(&self.ctx.apply(recv)).to_string(),
@@ -3464,25 +3476,14 @@ impl TypeChecker {
         span: Span,
     ) -> Option<TypeError> {
         if self.link_node_type(recv).is_some() && args.len() == 1 {
-            match method {
-                "lt" | "le" | "gt" | "ge" => {
-                    let _ = self.unify(ret, &Type::Bool, span);
-                    return Some(TypeError::LinkNotOrderable {
-                        op: Self::operator_spelling(method).to_string(),
-                        recv: "Link<T>".to_string(),
-                        span,
-                    });
-                }
-                "compare" => {
-                    let ord = self.ordering_type();
-                    let _ = self.unify(ret, &ord, span);
-                    return Some(TypeError::LinkNotOrderable {
-                        op: "compare".to_string(),
-                        recv: "Link<T>".to_string(),
-                        span,
-                    });
-                }
-                _ => {}
+            if let Some(answer) = self.comparable_answer(method) {
+                let _ = self.unify(ret, &answer, span);
+                let op = if rask_ast::expr::binary_op_of_method(method).is_some() {
+                    Self::operator_spelling(method)
+                } else {
+                    method
+                };
+                return Some(TypeError::LinkNotOrderable { op: op.to_string(), recv: "Link<T>".to_string(), span });
             }
         }
 

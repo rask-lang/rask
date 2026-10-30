@@ -40,7 +40,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 91,
+        today: 81,
         target: 9,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
