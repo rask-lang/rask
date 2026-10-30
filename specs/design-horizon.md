@@ -12,7 +12,9 @@ Not its feature list — what it aimed at. Rust aimed at a durable problem (memo
 
 By 2030 most code is written by a machine and reviewed by a human. Rask already bets the whole design on this — it's why conformance is declared and not inferred, why analysis is function-local, why errors are loud and intent is explicit (principles 5, 8, 9 in [CORE_DESIGN.md](CORE_DESIGN.md)). A language tuned for local reasoning and self-describing signatures is a language tuned for *LLM-generates, human-reviews*.
 
-Frontier abstraction is the anti-bet. Undecidable inference and proof obligations are exactly what models are worst at, and abstraction towers are exactly what a human reviewer can't check at a glance. So the restraint isn't nostalgia — it's the most forward-facing decision in the repo, and every frontier type feature would degrade it.
+Frontier abstraction is the anti-bet. Undecidable inference and proofs the programmer has to write make code expensive to produce and slow to review, whoever wrote it, and abstraction towers are exactly what a human reviewer can't check at a glance. So the restraint isn't nostalgia — it's the most forward-facing decision in the repo, and every frontier type feature would degrade it.
+
+Checking is the other side of the same bet. When a machine writes the code and its tests, the tests show the two agree and nothing more. What the reviewer needs is a short statement of intent they wrote themselves, and a compiler that holds the code to it and fails the build when it doesn't. That's [claims](types/claims.md). The line is who carries the obligation: a proof the user must supply is the anti-bet, a check the compiler runs and reports on is the bet.
 
 ## The test
 
