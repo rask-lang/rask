@@ -1460,6 +1460,24 @@ impl TypeChecker {
                         }
                         return Ok(false);
                     }
+                    // A closure filling a `T or E` slot whose `E` nothing has
+                    // fixed yet: a returned value that can't be the success
+                    // side is the error, and it is what `E` is. A function
+                    // collects these instead (ER39, above).
+                    if site == CoercionSite::Return
+                        && !self.accumulate_errors
+                        && matches!(resolved_err, Type::Var(_))
+                        && !matches!(resolved_ok, Type::Var(_))
+                        && !resolved_ok.is_option()
+                        && !matches!(resolved_ret, Type::Var(_) | Type::Unit | Type::Never | Type::Error)
+                        && resolved_ret != resolved_ok
+                    {
+                        self.unify(&resolved_err, &resolved_ret, span)?;
+                        if let Some(node) = value_node {
+                            self.err_returns.insert(node);
+                        }
+                        return Ok(true);
+                    }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
                         // ER32: `any Interface` error — concrete types implementing the interface go to err

@@ -474,6 +474,11 @@ pub struct TypeChecker {
     /// is checked, so an unannotated parameter has its type while the body is
     /// checked rather than only after.
     pub(super) closure_param_expectations: HashMap<NodeId, Vec<Type>>,
+    /// The return type a closure literal's slot gives it, when that is a
+    /// `T or E`. The body is checked against it the way a function body is
+    /// checked against its declared return: a bare `return`, or a body of
+    /// type `T`, is the success branch.
+    pub(super) closure_return_expectations: HashMap<NodeId, Type>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -694,6 +699,7 @@ impl TypeChecker {
             labeled_calls: Vec::new(),
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
+            closure_return_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_element_uses: Vec::new(),
             pending_shared_fields: Vec::new(),

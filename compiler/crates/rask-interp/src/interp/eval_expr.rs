@@ -2487,6 +2487,13 @@ impl Interpreter {
                     lent: self.env.lent_names(),
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
+                    // A real error side: `T?` is a `Result` whose error is
+                    // `none` to the checker, and its `none` is no success.
+                    wraps_ok: matches!(
+                        self.node_types.get(&expr.id),
+                        Some(rask_types::Type::Fn { ret, .. })
+                            if matches!(&**ret, rask_types::Type::Result { err, .. } if !matches!(**err, rask_types::Type::None))
+                    ),
                 })
             }
 

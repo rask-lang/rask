@@ -1073,7 +1073,7 @@ pub(crate) fn call_keeps_argument(
 /// `Vec` — the call asks every body `ClosureReach` says it might hold, the way
 /// an interface call asks every implementation. Answering "kept" there instead
 /// leaked the argument (#1469).
-fn closure_call_keeps_argument(
+pub(crate) fn closure_call_keeps_argument(
     targets: &ClosureTargets,
     reach: &ClosureReach,
     kept: &HashMap<String, Vec<bool>>,

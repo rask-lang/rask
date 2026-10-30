@@ -255,10 +255,13 @@ impl TypeChecker {
                     Some(elem) => Self::sequence_fn_shape(elem),
                     None => want,
                 };
-                if let Type::Fn { params: want_params, .. } = want {
+                if let Type::Fn { params: want_params, ret: want_ret } = want {
                     if want_params.len() == params.len() {
                         self.closure_param_expectations
                             .insert(expr.id, want_params.into_iter().map(|p| p.ty).collect());
+                        if matches!(self.ctx.apply(&want_ret), Type::Result { .. }) {
+                            self.closure_return_expectations.insert(expr.id, *want_ret);
+                        }
                     }
                 }
             }
@@ -1925,7 +1928,17 @@ impl TypeChecker {
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
-                let closure_return_type = self.ctx.fresh_var();
+                // A slot that wants `T or E` gives the body its return type up
+                // front, as a declaration gives a function's. Unified after the
+                // fact instead, a body of type `void` met `void or E` as a
+                // mismatch, so a consumer that can't fail couldn't fill a slot
+                // whose error type was generic.
+                let expected_ret = if declared_ret.is_none() {
+                    self.closure_return_expectations.remove(&expr.id)
+                } else {
+                    None
+                };
+                let closure_return_type = expected_ret.clone().unwrap_or_else(|| self.ctx.fresh_var());
                 self.current_return_type = Some(closure_return_type.clone());
 
                 let inferred_ret = self.infer_expr(body);
@@ -1943,6 +1956,24 @@ impl TypeChecker {
                 // closure got "couldn't work out the type" on top (#1485).
                 if matches!(self.ctx.apply(&inferred_ret), Type::Error) {
                     self.poison(&closure_return_type);
+                } else if let Some(want) = &expected_ret {
+                    if !matches!(self.ctx.apply(&inferred_ret), Type::Never) {
+                        self.coerce_into_node(
+                            CoercionSite::Return,
+                            inferred_ret.clone(),
+                            want.clone(),
+                            Some(body.id),
+                            body.span,
+                        );
+                    }
+                    // Nothing in the body could fail, so nothing says what `E`
+                    // is: it can't fail. Last resort, the way a diverging body
+                    // defaults its return below; a failure in the body wins.
+                    if let Type::Result { err, .. } = self.ctx.apply(want) {
+                        if let Type::Var(id) = self.ctx.apply(&err) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -4272,6 +4303,14 @@ impl TypeChecker {
                     .and_then(|p| p.get(i))
                     .map(|t| self.ctx.apply(t))
                     .filter(|t| !t.has_unsolved_var());
+                // A closure takes its slot even with open variables in it:
+                // its parameters and its return are read from the slot's
+                // shape, and an open part is filled in by the call later.
+                if matches!(a.expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(want) = declared_params.as_ref().and_then(|p| p.get(i)).cloned() {
+                        return self.infer_expr_expecting(&a.expr, &want);
+                    }
+                }
                 match (&a.expr.kind, slot) {
                     (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     // No declaration to read yet: the receiver is still a
@@ -5987,7 +6026,7 @@ impl TypeChecker {
     /// a parameter mentioning a type parameter needs the instantiation, which
     /// isn't bound yet.
     fn declared_method_params(
-        &self,
+        &mut self,
         object: &rask_ast::expr::Expr,
         obj_ty: &Type,
         method: &str,
@@ -6007,11 +6046,10 @@ impl TypeChecker {
         if type_params.len() != type_args.len() {
             return None;
         }
-        let sig = methods.iter().find(|m| {
-            m.name == method
-                && m.type_params.is_empty()
-                && names_type == matches!(m.self_param, crate::SelfParam::None)
-        })?;
+        let sig = methods
+            .iter()
+            .find(|m| m.name == method && names_type == matches!(m.self_param, crate::SelfParam::None))?
+            .clone();
         // The receiver's arguments stand in for the type's parameters, and an
         // `extend` header's names for their parts: the same substitution the
         // deferred resolution makes, so the slot read here is the one the
@@ -6021,6 +6059,13 @@ impl TypeChecker {
             self.build_owner_pattern_subst(&sig.owner_patterns, type_args).into_iter().collect();
         for (name, bound) in &header {
             subst.insert(name.as_str(), bound.clone());
+        }
+        // The method's own type parameters are open at this call: each gets a
+        // variable, which the deferred resolution later meets with its own.
+        // `consume<E>`'s closure slot is `func(take T) -> void or ?`, so the
+        // closure knows its return is a `T or E` while its body is checked.
+        for (name, _) in &sig.type_params {
+            subst.insert(name.as_str(), self.ctx.fresh_var());
         }
         Some(sig.params.iter().map(|(t, _)| Self::substitute_type_params(t, &subst)).collect())
     }

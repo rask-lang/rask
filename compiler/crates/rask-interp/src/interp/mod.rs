@@ -22,7 +22,7 @@ mod map_keys;
 mod format;
 mod operators;
 pub(crate) mod overflow;
-mod dispatch;
+pub(crate) mod dispatch;
 mod transmute;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};

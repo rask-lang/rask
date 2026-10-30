@@ -759,10 +759,11 @@ fn remap_stmt(
                 .collect(),
             heap: *heap,
         },
-        MirStmtKind::ClosureCall { dst, closure, args } => MirStmtKind::ClosureCall {
+        MirStmtKind::ClosureCall { dst, closure, args, taken } => MirStmtKind::ClosureCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
+            taken: taken.clone(),
         },
         MirStmtKind::LoadCapture {
             dst,
@@ -1399,6 +1400,7 @@ mod tests {
             dst: None,
             closure: LocalId(1),
             args: vec![MirOperand::Local(LocalId(0))],
+            taken: Vec::new(),
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0), "self goes to the closure by address");

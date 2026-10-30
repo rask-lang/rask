@@ -2600,10 +2600,12 @@ impl<'a> MirLowerer<'a> {
                     };
                     let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:885"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
+                    let taken = self.taken_params(func);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(result_local),
                         closure: callee_local,
                         args: arg_operands,
+                        taken,
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2617,10 +2619,12 @@ impl<'a> MirLowerer<'a> {
             // element (#869, #1151, #1241, #1421).
             if let Some((closure_local, ret_ty)) = self.callable_local(func) {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
+                let taken = self.taken_params(func);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                     dst: Some(result_local),
                     closure: closure_local,
                     args: arg_operands,
+                    taken,
                 }));
                 self.flush_elem_writebacks(wb_mark);
                 return Ok((MirOperand::Local(result_local), ret_ty));
@@ -7544,6 +7548,17 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Deref(ptr),
         }));
         (MirOperand::Local(value), want)
+    }
+
+    /// Which parameters of the function value `callee` is are `take`, from the
+    /// checker's type for it. A call through it hands those arguments over.
+    fn taken_params(&self, callee: &Expr) -> Vec<bool> {
+        match self.ctx.lookup_raw_type(callee.id) {
+            Some(rask_types::Type::Fn { params, .. }) => {
+                params.iter().map(|p| p.mode == rask_ast::ty::ParamMode::Take).collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// A null check before going through a raw pointer, unless the function

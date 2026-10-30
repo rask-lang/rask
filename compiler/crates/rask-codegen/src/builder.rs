@@ -1245,7 +1245,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::ClosureCreate { dst, func_name, captures, heap, task_bound } => Self::lower_closure_create(builder, dst, func_name, captures, *heap, *task_bound, ctx)?,
 
-            MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
+            MirStmtKind::ClosureCall { dst, closure, args, .. } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)

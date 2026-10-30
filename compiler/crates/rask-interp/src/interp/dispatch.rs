@@ -27,7 +27,7 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env, lent, generics, .. } = func {
+        if let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = func {
             self.enter_closure(&captured_env, &lent, &generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
@@ -40,8 +40,7 @@ impl Interpreter {
             let final_arg = first.and_then(|name| self.env.get(&name));
             self.leave_closure();
             let value = match result {
-                Ok(v) => v,
-                Err(RuntimeError::Return(v)) => v,
+                Ok(v) | Err(RuntimeError::Return(v)) => closure_result(v, wraps_ok),
                 Err(e) => return Err(e),
             };
             return Ok((value, final_arg));
@@ -109,7 +108,7 @@ impl Interpreter {
         args: Vec<Value>,
         places: Vec<Option<crate::env::Slot>>,
     ) -> Result<Value, RuntimeError> {
-        let Value::Closure { params, body, captured_env, lent, generics, .. } = closure else {
+        let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = closure else {
             return self.call_value(closure, args);
         };
         self.enter_closure(&captured_env, &lent, &generics);
@@ -129,8 +128,7 @@ impl Interpreter {
         });
         self.leave_closure();
         match result {
-            Ok(v) => Ok(v),
-            Err(RuntimeError::Return(v)) => Ok(v),
+            Ok(v) | Err(RuntimeError::Return(v)) => Ok(closure_result(v, wraps_ok)),
             Err(e) => Err(e),
         }
     }
@@ -1021,3 +1019,13 @@ impl Interpreter {
     }
 }
 
+
+/// What a closure call hands back. One whose type returns a `T or E` treats a
+/// bare value as the success side, the way a function declared that way does.
+pub(crate) fn closure_result(value: Value, wraps_ok: bool) -> Value {
+    if wraps_ok && !matches!(&value, Value::Enum { name, .. } if name == "Result") {
+        Value::ok(value)
+    } else {
+        value
+    }
+}

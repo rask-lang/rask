@@ -264,13 +264,24 @@ extend Vec<T> {
     /// Hand every element to `f`, front first, and free the vector. `f` owes
     /// what it's handed, so this is how a vector of resources is consumed
     /// whole, and what an `ensure` commits it with (mem.resources/RC1):
-    /// `ensure files.consume(|take f| f.close() catch _ => {})`. To hear
-    /// about each failure, drain it with `while files.pop()? as f` instead.
-    public func consume(take self, f: func(take T)) -> void {
+    /// `ensure files.consume(|take f| f.close())`. Every element is handed
+    /// over even after one fails, since each is owed either way, and the
+    /// first failure is the answer. A consumer that can't fail makes a call
+    /// that can't either.
+    public func consume<E>(take self, f: func(take T) -> void or E) -> void or E {
         self.reverse()
+        mut failed: E? = none
         while self.pop()? as item {
-            f(item)
+            f(item) catch e => {
+                if failed is none {
+                    failed = e
+                }
+            }
         }
+        if failed? as e {
+            return e
+        }
+        return
     }
 
     /// A sequence over these elements — the chain head a collection stands for
@@ -756,12 +767,21 @@ extend Map<K, V> {
 
     /// Hand every entry to `f` and free the map, the way `Vec.consume` does:
     /// how a map holding resources is consumed (mem.resources/RC3).
-    public func consume(take self, f: func(take K, take V)) -> void {
+    public func consume<E>(take self, f: func(take K, take V) -> void or E) -> void or E {
         mut entries = self.take_all()
+        mut failed: E? = none
         while entries.pop()? as entry {
             let (key, value) = entry
-            f(key, value)
+            f(key, value) catch e => {
+                if failed is none {
+                    failed = e
+                }
+            }
         }
+        if failed? as e {
+            return e
+        }
+        return
     }
 
     /// Iterate over keys.

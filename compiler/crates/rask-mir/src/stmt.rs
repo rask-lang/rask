@@ -105,6 +105,10 @@ pub enum MirStmtKind {
         dst: Option<LocalId>,
         closure: LocalId,
         args: Vec<MirOperand>,
+        /// Which arguments go to a `take` parameter, from the function value's
+        /// type: those the callee owns from here, the rest it borrows. Shorter
+        /// than `args` (or empty) means the rest are borrowed.
+        taken: Vec<bool>,
     },
     /// Get at a captured variable through the closure environment pointer.
     LoadCapture {

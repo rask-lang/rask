@@ -227,7 +227,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, "])")
             }
-            MirStmtKind::ClosureCall { dst, closure, args } => {
+            MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }

@@ -464,10 +464,24 @@ impl<'a> MirLowerer<'a> {
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
             // `return` in the body is converted by `terminate_return` instead.
+            // A closure whose type returns `T or E` with a body of type `T` (a
+            // consumer that can't fail, filling a fallible slot) hands back the
+            // success side, as a function declared that way does.
             let body_result = self.lower_expr(body).map(|(op, ty)| {
                 if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
                     let tag = self.emit_ordering_tag_i64(op);
                     (MirOperand::Local(tag), MirType::I64)
+                } else if matches!(closure_ret, MirType::Result { .. })
+                    && !matches!(ty, MirType::Result { .. })
+                    && self.builder.current_block_unterminated()
+                {
+                    let wrapped = self.coerce_into_wrapper(
+                        rask_ast::coercion::CoercionSite::Return,
+                        op,
+                        &ty,
+                        &closure_ret,
+                    );
+                    (wrapped, closure_ret.clone())
                 } else {
                     (op, ty)
                 }
@@ -832,6 +846,7 @@ impl<'a> MirLowerer<'a> {
             dst: None,
             closure: seq_local,
             args: vec![MirOperand::Local(closure_local)],
+            taken: Vec::new(),
         }));
 
         // SEQ8: the body asked to leave the enclosing function. Test the flag

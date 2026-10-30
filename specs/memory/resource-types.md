@@ -235,7 +235,7 @@ failure is a `pop` loop:
 <!-- test: skip -->
 ```rask
 func close_all(take files: Vec<File>) -> void or Error {
-    ensure files.consume(|take f| f.close() catch _ => {})
+    ensure files.consume(|take f| f.close())
     while files.pop()? as f {
         try f.close()
     }
@@ -243,7 +243,11 @@ func close_all(take files: Vec<File>) -> void or Error {
 ```
 
 If the third `close` fails, `try` leaves and the rest are still in `files`, so
-the `ensure` closes them. A normal exit hands the `ensure` an empty vector. A
+the `ensure` closes them. A normal exit hands the `ensure` an empty vector.
+`consume` hands over every element even after one fails, and answers with the
+first failure, so `try files.consume(|take f| f.close())` closes them all and
+reports one. A consumer that can't fail (`|take h| drop(h)`) makes a call that
+can't either (`type.errors/ER49`). A
 `mutate` parameter needs neither: what the loop doesn't drain is still the
 caller's.
 
@@ -351,7 +355,7 @@ the lot, and each request is served from the vector:
 <!-- test: skip -->
 ```rask
 func serve_all(take conns: Vec<Connection>) -> void or Error {
-    ensure conns.consume(|take c| c.close() catch _ => {})
+    ensure conns.consume(|take c| c.close())
     for c in conns {
         try c.handle_request()
     }

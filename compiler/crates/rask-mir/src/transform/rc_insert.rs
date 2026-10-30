@@ -24,6 +24,10 @@ use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
+/// Whether a call through a function value keeps argument `i` of `n`, asked
+/// with the calling function's name and the local holding the value.
+pub type ClosureKeeps<'a> = dyn Fn(&str, LocalId, usize, usize) -> bool + 'a;
+
 /// Insert explicit RcInc/RcDec for all string-typed locals in a function.
 ///
 /// `kept` says, per callee, which of its parameters it holds on to — see
@@ -32,6 +36,7 @@ pub fn insert_rc_ops(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
+    closure_keeps: &ClosureKeeps,
 ) -> Vec<CarriedSite> {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::Buffer);
 
@@ -86,7 +91,7 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own, &owns_copy)
+    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps)
 }
 
 /// One site that builds a heap closure, and the aggregate captures it handed
@@ -494,8 +499,10 @@ fn insert_aggregate_release(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
+    closure_keeps: &ClosureKeeps,
 ) -> Vec<CarriedSite> {
     let mut sites = heap_create_sites(func);
+    let func_name = func.name.clone();
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
         .iter()
@@ -878,8 +885,31 @@ fn insert_aggregate_release(
                 // does. Counted as nobody's, `match mk()` on a closure that
                 // builds a `Slot.Full(line)` left the line's string to no one
                 // (#1441).
-                MirStmtKind::ClosureCall { dst: Some(dst), .. } if aggregates.contains(dst) => {
-                    ev.push(ownership::Event::Make(*dst));
+                //
+                // An argument goes to the callee the way it does on a direct
+                // call: when the parameter is `take` (the function value's
+                // type says) and the body behind the call keeps it (what
+                // `container_drop` reads). Counted as a loan, a `Heap` read out
+                // of an optional and handed to a `func(take Heap<i64>)` value
+                // was freed by the callee and then again with the optional.
+                // Asking only the bodies counted a lent sequence item put in a
+                // tuple as kept, and the string it came from leaked; asking
+                // only the mode left a `take` argument the body doesn't keep
+                // to nobody.
+                MirStmtKind::ClosureCall { dst, closure, args, taken } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if is_tracked(&id)
+                            && !retained.contains(&id)
+                            && taken.get(i) == Some(&true)
+                            && closure_keeps(&func_name, *closure, i, args.len())
+                        {
+                            ev.push(ownership::Event::HandOver(id));
+                        }
+                    }
+                    if let Some(dst) = dst.filter(|d| aggregates.contains(d)) {
+                        ev.push(ownership::Event::Make(dst));
+                    }
                 }
                 // Released already, by whoever lowered it: `drop(p)` on a
                 // `Heap<T>` releases the payload's contents before giving the
@@ -1928,7 +1958,7 @@ mod tests {
             inline_hint: false,
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -1976,7 +2006,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2029,7 +2059,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2098,7 +2128,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2168,7 +2198,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2201,7 +2231,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2220,7 +2250,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2240,7 +2270,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2265,7 +2295,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2311,7 +2341,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2332,7 +2362,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }

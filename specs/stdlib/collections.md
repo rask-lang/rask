@@ -349,16 +349,16 @@ or copy an element aren't available on it (RC5).
 
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `vec.consume(\|take x\| …)` | `()` | Hands every element over, front first, and frees the vector |
-| `map.consume(\|take k, take v\| …)` | `()` | The same for each entry |
+| `vec.consume(\|take x\| …)` | `void or E` | Hands every element over, front first, and frees the vector. Every element goes even after one fails; the first failure is the answer. A consumer that can't fail makes a call that can't |
+| `map.consume(\|take k, take v\| …)` | `void or E` | The same for each entry |
 
 <!-- surface -->
 ```rask
 extend Vec<T> {
-    func consume(take self, f: func(take T)) -> void
+    func consume<E>(take self, f: func(take T) -> void or E) -> void or E
 }
 extend Map<K, V> {
-    func consume(take self, f: func(take K, take V)) -> void
+    func consume<E>(take self, f: func(take K, take V) -> void or E) -> void or E
 }
 ```
 

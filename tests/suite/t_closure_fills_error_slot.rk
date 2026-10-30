@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure handed to a `func(…) -> T or E` slot is checked against that
+// return type, as a function body is against its declared one
+// (type.errors/ER49). A body of type `T`, or a bare `return`, is the success
+// side. A returned value that can't be `T` is the error, and says what `E`
+// is. An `E` nothing fixes means the call can't fail.
+//
+// The closure's own type used to be inferred first and then matched against
+// the slot, so a `void` body met `void or E` as a mismatch, and a consumer
+// that can't fail couldn't fill a slot whose error type was generic.
+
+import memory.Heap
+
+struct Refused {
+    at: i64
+}
+
+extend Refused {
+    func message(self) -> string {
+        return "refused {self.at}"
+    }
+}
+
+func each<E>(xs: Vec<i64>, f: func(i64) -> void or E) -> void or E {
+    for x in xs {
+        try f(x)
+    }
+}
+
+func screen(x: i64) -> void or Refused {
+    if x == 2 {
+        return Refused(at: x)
+    }
+    return
+}
+
+func run(xs: Vec<i64>, mutate seen: Vec<i64>) -> void or Refused {
+    // Can't fail: `E` is fixed by nothing.
+    try each(xs, |x: i64| seen.push(x))
+    // Fails through a call.
+    try each(xs, |x: i64| screen(x))
+}
+
+func explicit(xs: Vec<i64>) -> i64 {
+    mut seen_at = 0
+    each(xs, |x: i64| {
+        if x == 3 {
+            return Refused(at: x)
+        }
+        return
+    }) catch e => {
+        seen_at = e.at
+    }
+    return seen_at
+}
+
+func eat_one(take h: Heap<i64>) {
+    drop(h)
+}
+
+func give(n: i64) -> Heap<i64>? {
+    return Heap(n)
+}
+
+func hand_on(f: func(take Heap<i64>)) {
+    if give(3)? as h {
+        f(h)
+    }
+}
+
+test "a void body fills a fallible slot, and a failing one fixes the error type" {
+    let xs: Vec<i64> = [1, 2, 3]
+    mut seen: Vec<i64> = Vec.new()
+    mut refused = 0
+    run(xs, mutate seen) catch e => {
+        refused = e.at
+    }
+    assert seen.len() == 3
+    assert refused == 2
+}
+
+test "a bare return is success and a returned error is the error" {
+    let xs: Vec<i64> = [1, 2, 3, 4]
+    assert explicit(xs) == 3
+}
+
+test "a consumer that can't fail takes a vector of heaps" {
+    let hs: Vec<Heap<i64>> = [Heap(1), Heap(2)]
+    hs.consume(|take h| drop(h))
+}
+
+// A `Heap` read out of an optional and handed to a `func(take Heap<i64>)`
+// value was freed by the callee and again with the optional.
+test "a heap handed through a take function value is freed once" {
+    hand_on(eat_one)
+    hand_on(|take h| drop(h))
+}

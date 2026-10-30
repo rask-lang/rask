@@ -39,7 +39,7 @@ func drain(mutate pool: Vec<Conn>, mutate log: Vec<i64>) -> void or Refused {
 
 func open_five(mutate log: Vec<i64>) -> void or Refused {
     mut pool: Vec<Conn> = Vec.new()
-    ensure pool.consume(|take c| c.close(mutate log) catch _ => {})
+    ensure pool.consume(|take c| c.close(mutate log))
     for i in 1..6 {
         pool.push(Conn(id: i))
     }
@@ -71,7 +71,7 @@ test "remove hands one back, the ensure takes the rest" {
 
 func remove_first(mutate log: Vec<i64>) {
     mut pool: Vec<Conn> = Vec.new()
-    ensure pool.consume(|take c| c.close(mutate log) catch _ => {})
+    ensure pool.consume(|take c| c.close(mutate log))
     pool.push(Conn(id: 7))
     pool.push(Conn(id: 8))
     pool.push(Conn(id: 9))
@@ -90,11 +90,26 @@ test "a map of resources hands back the one an insert replaces" {
 
 func replace_in_map(mutate log: Vec<i64>) {
     mut m: Map<string, Conn> = Map.new()
-    ensure m.consume(|take k, take c| c.close(mutate log) catch _ => {})
+    ensure m.consume(|take k, take c| c.close(mutate log))
     if m.insert("a", Conn(id: 1))? as old {
         old.close(mutate log) catch _ => {}
     }
     if m.insert("a", Conn(id: 2))? as old {
         old.close(mutate log) catch _ => {}
     }
+}
+
+func close_both(take a: Conn, take b: Conn, mutate log: Vec<i64>) -> void or Refused {
+    let pool: Vec<Conn> = [a, b]
+    try pool.consume(|take c| c.close(mutate log))
+}
+
+test "consume closes every one and answers with the first failure" {
+    mut log: Vec<i64> = Vec.new()
+    mut refused: i64 = 0
+    close_both(Conn(id: 3), Conn(id: 4), mutate log) catch e => {
+        refused = e.id
+    }
+    assert log.len() == 2
+    assert refused == 3
 }
