@@ -39,12 +39,13 @@ const RATCHETS: &[Ratchet] = &[
         count: name_sniffs,
     },
     Ratchet {
-        name: "checker hand tables for stdlib methods",
-        today: 24,
+        name: "method names the checker answers by hand",
+        today: 26,
         target: 0,
-        why: "a stdlib method answered from a Rust table instead of its \
-              declaration in stdlib/*.rk (rask-lang/rask#1561)",
-        count: checker_method_tables,
+        why: "a method answered by matching its name as a string literal in the \
+              checker instead of reading its declaration in stdlib/*.rk, or the \
+              interface it belongs to (rask-lang/rask#1561, #1565)",
+        count: checker_method_arms,
     },
     Ratchet {
         name: "`_Any` wildcards in the checker",
@@ -56,7 +57,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 105,
+        today: 89,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
               fact about a call stated by its name instead of on its \
@@ -81,8 +82,8 @@ const RATCHETS: &[Ratchet] = &[
         count: pass_entry_points,
     },
     Ratchet {
-        name: "interpreter setups outside the driver",
-        today: 11,
+        name: "interpreters run without the driver's setup",
+        today: 3,
         target: 0,
         why: "a tool built its own interpreter instead of asking the driver for \
               one; the copies skip steps the driver does (rask-lang/rask#1568)",
@@ -158,24 +159,54 @@ fn name_sniffs(crates: &Path) -> Vec<String> {
         .collect()
 }
 
-fn checker_method_tables(crates: &Path) -> Vec<String> {
-    source_lines(crates, &["rask-types/src/checker/resolve.rs"], &[])
-        .into_iter()
-        .filter(|(_, _, code)| {
-            let code = code.trim_start();
-            let name = code
-                .strip_prefix("pub(super) fn ")
-                .or_else(|| code.strip_prefix("pub fn "))
-                .or_else(|| code.strip_prefix("fn "));
-            // `resolve_declared_*` reads the .rk declaration: that's the path that stays.
-            name.is_some_and(|n| n.starts_with("resolve_") && n.contains("_method") && !n.starts_with("resolve_declared_"))
-        })
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
+/// Match arms keyed on a method name in the checker: `"len" if args.is_empty() =>`.
+/// Each name in one counts once. Primitive type names (`"i64" =>`) are types,
+/// not methods, and don't count, and neither do the functions in
+/// `NOT_METHOD_TABLES`, whose string arms aren't answering a method call.
+fn checker_method_arms(crates: &Path) -> Vec<String> {
+    const TYPE_NAMES: &[&str] = &[
+        "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64",
+        "bool", "char", "string", "usize", "isize", "void", "bytes", "self",
+    ];
+    const NOT_METHOD_TABLES: &[(&str, &str)] = &[
+        ("removed_string_method", "names methods `string` doesn't have, to say why"),
+        ("closest_type_name", "other languages' type names, to suggest Rask's"),
+        ("simd_elem_type", "SIMD type names, not methods"),
+        ("check_call", "builtin free functions (`panic`, `todo`), not methods"),
+    ];
+    let mut out = Vec::new();
+    let mut current_fn = String::new();
+    for (rel, line, code) in source_lines(crates, &["rask-check/src/checker"], &[]) {
+        let head = code.trim_start();
+        if let Some(rest) = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "].iter().find_map(|p| head.strip_prefix(p)) {
+            current_fn = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        }
+        if NOT_METHOD_TABLES.iter().any(|(f, _)| *f == current_fn) {
+            continue;
+        }
+        let Some(arm) = head.split("=>").next().filter(|_| head.contains("=>")) else { continue };
+        let names: Vec<&str> = arm.split('|').map(str::trim).map(|n| n.split(" if ").next().unwrap_or(n).trim()).collect();
+        let all_names = names.iter().all(|n| {
+            n.len() > 2
+                && n.starts_with('"')
+                && n.ends_with('"')
+                && n[1..n.len() - 1].chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                && n[1..n.len() - 1].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        });
+        if !all_names {
+            continue;
+        }
+        for n in names {
+            if !TYPE_NAMES.contains(&&n[1..n.len() - 1]) {
+                out.push(format!("{rel}:{line}: {current_fn}: {n}"));
+            }
+        }
+    }
+    out
 }
 
 fn any_wildcards(crates: &Path) -> Vec<String> {
-    source_lines(crates, &["rask-types/src"], &[])
+    source_lines(crates, &["rask-check/src", "rask-types/src"], &[])
         .into_iter()
         .filter(|(_, _, code)| code.contains("\"_Any\""))
         .map(|(rel, line, code)| site(&rel, line, &code))
@@ -223,7 +254,7 @@ fn pass_entry_points(crates: &Path) -> Vec<String> {
         "rask-parser/src/lib.rs",
         "rask-desugar/src/lib.rs",
         "rask-resolve/src/lib.rs",
-        "rask-types/src/lib.rs",
+        "rask-check/src/lib.rs",
         "rask-ownership/src/lib.rs",
         "rask-effects/src/lib.rs",
         "rask-comptime/src/lib.rs",
@@ -241,30 +272,39 @@ fn pass_entry_points(crates: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Interpreters a tool builds without `rask_compiler::prepare_interpreter`
+/// within the next few lines: run on declarations nothing checked, or set up
+/// by hand, which is how the copies drifted (#1177, #1568).
 fn interpreter_setups(crates: &Path) -> Vec<String> {
-    let mut files = Vec::new();
+    let mut dirs = Vec::new();
     for entry in fs::read_dir(crates).unwrap().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        // The two evaluators own their own constructors.
-        if name == "rask-interp" || name == "rask-comptime" {
+        // The two evaluators own their own constructors; the driver is where
+        // the setup lives.
+        if name == "rask-interp" || name == "rask-comptime" || name == "rask-compiler" {
             continue;
         }
-        files.push(format!("{name}/src"));
+        dirs.push(format!("{name}/src"));
     }
-    let dirs: Vec<&str> = files.iter().map(String::as_str).collect();
-    source_lines(crates, &dirs, &[])
-        .into_iter()
-        .filter(|(_, _, code)| {
-            ["Interpreter::new(", "Interpreter::with_args(", "Interpreter::with_captured_output("]
-                .iter()
-                .any(|p| code.contains(p))
-        })
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
+    let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+    let lines = source_lines(crates, &dirs, &[]);
+    let mut out = Vec::new();
+    for (i, (rel, line, code)) in lines.iter().enumerate() {
+        let builds = ["Interpreter::new(", "Interpreter::with_args(", "Interpreter::with_captured_output("]
+            .iter()
+            .any(|p| code.contains(p));
+        let prepared = lines[i..lines.len().min(i + 5)]
+            .iter()
+            .any(|(r, _, c)| r == rel && c.contains("prepare_interpreter("));
+        if builds && !prepared {
+            out.push(site(rel, *line, code));
+        }
+    }
+    out
 }
 
 fn size_models(crates: &Path) -> Vec<String> {
-    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-types/src/copy_rule.rs"];
+    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-check/src/copy_rule.rs"];
     let names = ["fn size(", "fn align(", "fn slot_size(", "fn named_layout_size(", "fn struct_elem_size(", "fn value_size("];
     source_lines(crates, &dirs, &[])
         .into_iter()

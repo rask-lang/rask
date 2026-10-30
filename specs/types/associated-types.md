@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: An interface may name a type its conformance supplies; projections are read off a conformance, never searched for -->
 <!-- depends: types/generics.md, types/interfaces.md -->
-<!-- implemented-by: compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-check/ -->
 
 # Associated Types
 

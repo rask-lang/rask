@@ -46,7 +46,7 @@ pub use rask_effects::{EffectMap, EffectWarning};
 pub use rask_mir::{ComptimeGlobalMeta, Folded};
 pub use rask_mono::MonoProgram;
 pub use rask_resolve::{PackageId, PackageRegistry};
-pub use rask_types::TypedProgram;
+pub use rask_check::TypedProgram;
 
 // ============================================================================
 // Core types
@@ -125,6 +125,9 @@ pub struct CheckResult {
     /// Where `format(…)` was called. Desugar compiles each one into string
     /// building, so `decls` has no call left to find (std.fmt/CM5).
     pub format_calls: Vec<rask_ast::Span>,
+    /// The target and features the program was checked for. Whatever runs it
+    /// next has to agree, so it reads them from here.
+    pub cfg: CfgConfig,
 }
 
 /// Result of the full compilation pipeline (through monomorphization).
@@ -175,6 +178,24 @@ impl<T> PipelineOutput<T> {
 
     fn ok_with_sources(value: T, diagnostics: Vec<Diagnostic>, source_files: Vec<(PathBuf, String)>) -> Self {
         Self { result: Some(value), diagnostics, source_files }
+    }
+}
+
+/// Ready an interpreter to run what `result` checked: the same `cfg`, the
+/// checker's tables, the source for diagnostics, and the packages.
+///
+/// Every tool that runs a program on the interpreter calls this. Each used to
+/// do it by hand, and the copies drifted: the benchmark runner skipped the
+/// `cfg` and the source, and `rask run --interp` and the manifest loader used
+/// the host's `cfg` whatever the check was for.
+pub fn prepare_interpreter(interp: &mut rask_interp::Interpreter, result: &CheckResult) {
+    interp.inject_cfg(&result.cfg);
+    interp.adopt_checker_tables(&result.typed);
+    if let Some((path, source)) = result.source_files.first() {
+        interp.set_source_info(&path.to_string_lossy(), source);
+    }
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
     }
 }
 
@@ -305,7 +326,7 @@ fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOu
 /// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
 ///
 /// Re-exported so callers that render diagnostics don't each need rask-mono.
-pub use rask_types::layout::is_stdlib_span;
+pub use rask_check::layout::is_stdlib_span;
 
 /// The declarations the interpreter runs: the program's, plus the stdlib modules
 /// that are written in Rask.
@@ -504,7 +525,7 @@ pub fn check_loaded(
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -575,6 +596,7 @@ pub fn check_loaded(
             effects,
             effect_warnings,
             format_calls: desugared.format_calls.clone(),
+            cfg: config.cfg.clone(),
         },
         diags,
         source_files,
@@ -601,12 +623,12 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
 
 fn comptime_diagnostics_for(
     decls: &[Decl],
-    typed: &rask_types::TypedProgram,
+    typed: &rask_check::TypedProgram,
     cfg: &CfgConfig,
 ) -> Vec<Diagnostic> {
     // T11 tests need neither typecheck output nor monomorphization — the AST
     // interpreter runs them straight off the decls.
-    let mut diags = evaluate_comptime_tests(decls, Some(cfg));
+    let mut diags = evaluate_comptime_tests(decls, typed, Some(cfg));
 
     if !comptime_eval::has_comptime(decls) {
         return diags;
@@ -615,7 +637,16 @@ fn comptime_diagnostics_for(
     // has no `main`, and the plain one calls that a fatal error — so check said
     // nothing at all about the comptime consts in every test file we have,
     // including ones that would fail to compile.
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, decls) else {
+    //
+    // Laid out over the stdlib too, as the compile path does: a value folded
+    // here can have a stdlib type, and with only the program's declarations
+    // that type had no layout, so a default like `MemoryOrder.SeqCst` failed
+    // on `check` and not on `run`.
+    let mut layout_decls = decls.to_vec();
+    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    typed.rewrite_checked_nodes(&mut stdlib);
+    layout_decls.extend(stdlib);
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
         // Monomorphization has its own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
         return diags;
@@ -872,7 +903,7 @@ fn check_package_scoped(
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(
+        rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut pkg_ctx.all_decls,
             &stdlib_decls,
@@ -942,6 +973,7 @@ fn check_package_scoped(
             effects,
             effect_warnings,
             format_calls: desugared.format_calls.clone(),
+            cfg: config.cfg.clone(),
         },
         diags,
         source_files,
@@ -1186,7 +1218,7 @@ fn finalize_compile_inner(
 
 // The comptime-global evaluator lives in `comptime_eval` — the single source
 // of truth used by both the pipeline (below) and the CLI's test/bench paths.
-pub use crate::comptime_eval::{fold_comptime, evaluate_comptime_tests};
+pub use crate::comptime_eval::{evaluate_comptime_tests, fold_comptime, interpreter as comptime_interpreter};
 
 pub(crate) fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[Decl]) -> bool {
     use rask_ast::expr::ExprKind;
@@ -1352,14 +1384,14 @@ fn visible_packages(
 fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
     let user_error = diags.iter().any(|d| {
         matches!(d.severity, Severity::Error)
-            && d.primary_span().is_some_and(|s| !rask_types::layout::is_stdlib_span(s))
+            && d.primary_span().is_some_and(|s| !rask_check::layout::is_stdlib_span(s))
     });
     if !user_error {
         return;
     }
     diags.retain(|d| {
         !matches!(d.severity, Severity::Error)
-            || d.primary_span().is_none_or(|s| !rask_types::layout::is_stdlib_span(s))
+            || d.primary_span().is_none_or(|s| !rask_check::layout::is_stdlib_span(s))
     });
 }
 

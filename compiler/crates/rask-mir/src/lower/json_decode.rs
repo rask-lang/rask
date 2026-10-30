@@ -13,7 +13,7 @@
 //! matching variant and the runtime's message.
 
 use rask_ast::decl::field_attrs;
-use rask_types::layout::StructLayout;
+use rask_check::layout::StructLayout;
 use rask_types::{GenericArg, Type};
 
 use super::{LoweringError, MirLowerer, TypedOperand};
@@ -354,7 +354,7 @@ impl<'a> MirLowerer<'a> {
     fn decode_default_fill(
         &mut self,
         struct_name: &str,
-        field: &rask_types::layout::FieldLayout,
+        field: &rask_check::layout::FieldLayout,
     ) -> Option<MirOperand> {
         let method = self
             .ctx
@@ -533,7 +533,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let Some(written) = type_args.as_ref().and_then(|a| a.first()) {
-            return Ok(rask_types::layout::field_type(written));
+            return Ok(rask_check::layout::field_type(written));
         }
         Err(LoweringError::InvalidConstruct(
             "json.decode needs to know what to build — write it as \

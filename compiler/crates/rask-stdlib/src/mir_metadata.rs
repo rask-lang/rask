@@ -451,29 +451,8 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
 
 
     // ── `Atomic<T>` ─────────────────────────────────────────────
-    // A compiler type with no stdlib file, so every one of its spellings needs
-    // a line here — and it needs them now that `Atomic_new` is a constructor
-    // the drop pass recognises. Nothing here points into the receiver: an
-    // atomic holds one machine word and every operation hands back a copy of
-    // it (mem.atomics/GA1, GA2).
-    ("Atomic_new", Internal::NoReceiver),
-    ("Atomic_default", Internal::NoReceiver),
-    ("Atomic_load", Internal::FreshFromReceiver),
-    ("Atomic_store", Internal::FreshFromReceiver),
-    ("Atomic_swap", Internal::FreshFromReceiver),
-    ("Atomic_compare_exchange", Internal::FreshFromReceiver),
-    ("Atomic_compare_exchange_weak", Internal::FreshFromReceiver),
-    ("Atomic_fetch_add", Internal::FreshFromReceiver),
-    ("Atomic_fetch_sub", Internal::FreshFromReceiver),
-    ("Atomic_fetch_and", Internal::FreshFromReceiver),
-    ("Atomic_fetch_or", Internal::FreshFromReceiver),
-    ("Atomic_fetch_xor", Internal::FreshFromReceiver),
-    ("Atomic_fetch_nand", Internal::FreshFromReceiver),
-    ("Atomic_fetch_max", Internal::FreshFromReceiver),
-    ("Atomic_fetch_min", Internal::FreshFromReceiver),
-    // `into_inner` reads the word and frees the block in the same call, so the
-    // frame must not free it again.
-    ("Atomic_take", Internal::ConsumesReceiver),
+    // stdlib/sync.rk declares its methods. The release is the one spelling it
+    // doesn't: the frame frees an atomic nobody consumed.
     ("Atomic_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
@@ -1249,11 +1228,10 @@ mod tests {
     /// Two groups. Declared elsewhere and genuinely resolvable: `Never` and
     /// `Ordering` are registered by the checker rather than by a stub;
     /// `Reader`/`Writer` are stdlib interfaces in io.rk, and the stub registry only
-    /// collects structs and enums; `Iterator` is special-cased in the resolver;
-    /// `Self` isn't a type name at all. Genuinely still missing: `Error` is the
+    /// collects structs and enums; `Self` isn't a type name at all. Genuinely still missing: `Error` is the
     /// `any Error` catch-all that ER32 auto-boxing will register (#708).
     const PENDING_STUB_TYPES: &[&str] = &[
-        "Never", "Ordering", "Reader", "Writer", "Iterator", "Self", "Error",
+        "Never", "Ordering", "Reader", "Writer", "Self", "Error",
     ];
 
     /// PascalCase type names a signature string mentions, with generic

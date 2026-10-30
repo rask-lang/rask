@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+[package]
+name = "rask-check"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-diagnostics = { path = "../rask-diagnostics" }
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+rask-resolve = { path = "../rask-resolve" }
+rask-stdlib = { path = "../rask-stdlib" }
+thiserror.workspace = true
+
+[dev-dependencies]
+rask-parser = { path = "../rask-parser" }

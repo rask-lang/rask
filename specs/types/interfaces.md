@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Opt-in runtime polymorphism via `any Interface` with function pointer dispatch -->
 <!-- depends: types/structs.md, types/generics.md -->
-<!-- implemented-by: compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-check/ -->
 
 # Interfaces
 

@@ -401,8 +401,8 @@ struct Metrics {
 }
 
 func record_request(latency: Duration, success: bool) {
-    METRICS.requests.fetch_add(1, Relaxed)
-    if !success { METRICS.errors.fetch_add(1, Relaxed) }
+    METRICS.requests.fetch_add(1)
+    if !success { METRICS.errors.fetch_add(1) }
     METRICS.latencies.write().push(latency)
 }
 ```

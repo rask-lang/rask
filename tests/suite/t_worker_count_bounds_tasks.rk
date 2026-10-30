@@ -19,7 +19,6 @@
 // native divergence of its own (#1311).
 
 import sync.Atomic
-import sync.SeqCst
 
 const RUNNING: Atomic<i64> = Atomic<i64>.new(0)
 const PEAK: Atomic<i64> = Atomic<i64>.new(0)
@@ -38,18 +37,18 @@ func busy() -> i64 {
     mut total: i64 = 0
     mut round: i64 = 0
     while round < 40000 {
-        let now = RUNNING.fetch_add(1, SeqCst) + 1
-        PEAK.fetch_max(now, SeqCst)
+        let now = RUNNING.fetch_add(1) + 1
+        PEAK.fetch_max(now)
         total = total + now
-        RUNNING.fetch_sub(1, SeqCst)
+        RUNNING.fetch_sub(1)
         round = round + 1
     }
     return total
 }
 
 test "workers: 2 runs at most two tasks at once" {
-    PEAK.store(0, SeqCst)
-    RUNNING.store(0, SeqCst)
+    PEAK.store(0)
+    RUNNING.store(0)
     using Multitasking(workers: 2) {
         let a = spawn { return busy() }
         ensure a.detach()
@@ -70,6 +69,6 @@ test "workers: 2 runs at most two tasks at once" {
         let ev = e.join() catch x => { return }
         let fv = f.join() catch x => { return }
     }
-    assert PEAK.load(SeqCst) <= 2
-    assert PEAK.load(SeqCst) >= 1
+    assert PEAK.load() <= 2
+    assert PEAK.load() >= 1
 }

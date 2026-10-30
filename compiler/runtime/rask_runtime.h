@@ -473,7 +473,7 @@ int64_t     rask_string_str_is_ascii(const RaskStr *s);
 
 // Text units (std.strings/U1-U5): bytes index, graphemes display.
 int64_t     rask_string_width(const RaskStr *s);
-RaskVec    *rask_string_graphemes(const RaskStr *s);
+int64_t     rask_string_grapheme_end_at(const RaskStr *s, int64_t start);
 void        rask_string_truncate(RaskStr *out, const RaskStr *s, int64_t cols);
 void        rask_string_normalized(RaskStr *out, const RaskStr *s);
 void        rask_string_from_char(RaskStr *out, int64_t cp);
@@ -499,9 +499,6 @@ int64_t     rask_string_builder_len(int64_t handle);
 int64_t     rask_string_builder_is_empty(int64_t handle);
 
 // Vec-returning operations (elements are RaskStr, elem_size=16)
-RaskVec    *rask_string_bytes(const RaskStr *s);
-RaskVec    *rask_string_chars(const RaskStr *s);
-RaskVec    *rask_string_char_indices(const RaskStr *s);
 
 // Conversion to string (out-param)
 void        rask_i64_to_string(RaskStr *out, int64_t val);

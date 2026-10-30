@@ -5,6 +5,7 @@
 
 mod hints;
 mod parser;
+mod diagnostic;
 
 pub use parser::{ParseError, ParseResult, Parser};
 

@@ -99,6 +99,10 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
+    // Stdlib declarations: the one half of a `MemoryOrder` an atomic operation
+    // can apply. A load only reads, a store only writes (mem.atomics/AT6).
+    ("acquires", ArgForm::Exprs, Writer::Stdlib),
+    ("releases", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written

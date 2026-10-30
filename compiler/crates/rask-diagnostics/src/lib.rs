@@ -2,12 +2,10 @@
 //! Rask compiler diagnostics.
 //!
 //! Provides a unified diagnostic type that both CLI and language server consume.
-//! Each compiler phase's error types are converted to `Diagnostic` via the
-//! `ToDiagnostic` interface, keeping compiler crates lightweight while enabling
-//! rich error display.
+//! Each compiler crate implements `ToDiagnostic` for its own errors, in its
+//! `src/diagnostic.rs`, so this crate depends on nothing but the AST.
 
 pub mod codes;
-pub mod convert;
 pub mod formatter;
 pub mod source_map;
 pub mod json;

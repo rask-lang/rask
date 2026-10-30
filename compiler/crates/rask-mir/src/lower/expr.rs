@@ -2339,36 +2339,6 @@ impl<'a> MirLowerer<'a> {
                 // Not a variable: a function's name used as a value. A generic
                 // one names the copy monomorphization made for this use.
                 Ok(fnval)
-            } else if let Some(tag) = rask_stdlib::ordering_tag(name) {
-                // `import sync.Relaxed` brings the ordering into scope
-                // under its bare name (structure.modules), which is how
-                // mem.atomics writes every one of its examples. The
-                // checker accepted it and lowering had no case for it, so
-                // `counter.load(Relaxed)` came back "unresolved variable".
-                //
-                // `Ordering` is registered by the compiler rather than
-                // declared, so there's no layout to read: the enum type
-                // comes from the checker, and a tag at offset 0 is what
-                // `Ordering.Relaxed` builds too. Fieldless, the tag is the
-                // whole value.
-                let ty = self
-                    .ctx
-                    .lookup_node_type(expr.id)
-                    .filter(|t| matches!(t, MirType::Enum(_)))
-                    .unwrap_or(MirType::I64);
-                if matches!(ty, MirType::Enum(_)) {
-                    let result_local = self.builder.alloc_temp(ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: 0,
-                        value: MirOperand::Constant(MirConst::Int(tag)),
-                        store_size: ty.size(),
-                        field: None,
-                    }));
-                    Ok((MirOperand::Local(result_local), ty))
-                } else {
-                    Ok((MirOperand::Constant(MirConst::Int(tag)), MirType::I64))
-                }
             } else {
                 Err(LoweringError::UnresolvedVariable(name.to_string()))
             }
@@ -3706,7 +3676,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         result_local: crate::LocalId,
         payload_offset: u32,
-        fields: &[rask_types::layout::FieldLayout],
+        fields: &[rask_check::layout::FieldLayout],
         i: usize,
         value: &Expr,
     ) -> Result<(), LoweringError> {
@@ -7207,7 +7177,7 @@ impl<'a> MirLowerer<'a> {
     /// "unresolved variable `reflect`" — a diagnosis pointing at name
     /// resolution, which was fine (#775).
     ///
-    /// The answers come from `rask_types::reflect` so the interpreter folds the
+    /// The answers come from `rask_check::reflect` so the interpreter folds the
     /// same ones. Where neither backend can answer — anything needing layout —
     /// it says so instead of picking a number.
     fn try_lower_reflect_call(
@@ -7217,7 +7187,7 @@ impl<'a> MirLowerer<'a> {
         type_args: &Option<Vec<TypeExpr>>,
         args: &[CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        use rask_types::reflect::{self, ReflectAnswer};
+        use rask_check::reflect::{self, ReflectAnswer};
 
         if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
             return Ok(None);
@@ -7298,7 +7268,7 @@ impl<'a> MirLowerer<'a> {
                     _ => Vec::new(),
                 }
             }
-            fn type_table(&self) -> &rask_types::TypeTable {
+            fn type_table(&self) -> &rask_check::TypeTable {
                 self.0.type_defs
             }
         }
@@ -10262,7 +10232,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The `reflect` queries the checker's type table answers, plus
     /// `variants`. Each folds to constants: the answers are worked out in
-    /// `rask_types::reflect` (and `rask_mono::reflect` for variants), from the
+    /// `rask_check::reflect` (and `rask_mono::reflect` for variants), from the
     /// same table and layouts the interpreter reads.
     fn try_lower_reflect_table_query(
         &mut self,
@@ -10270,7 +10240,7 @@ impl<'a> MirLowerer<'a> {
         type_args: &Option<Vec<TypeExpr>>,
         args: &[CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        use rask_types::reflect;
+        use rask_check::reflect;
         if !matches!(
             method,
             "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants"
@@ -10377,9 +10347,9 @@ impl<'a> MirLowerer<'a> {
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_types::layout::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_types::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_check::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let layout = instance
             .as_deref()
@@ -11080,7 +11050,7 @@ impl<'a> MirLowerer<'a> {
 /// The field a struct literal's store writes, named by its layout and position.
 fn field_slot(
     result_ty: &MirType,
-    layout: Option<&rask_types::layout::StructLayout>,
+    layout: Option<&rask_check::layout::StructLayout>,
     name: &str,
 ) -> Option<crate::FieldSlot> {
     let MirType::Struct(sid) = result_ty else { return None };

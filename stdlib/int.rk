@@ -20,6 +20,12 @@ extend Integer {
     @builtin
     public func to_float(self) -> f64 {}
 
+    /// The floored remainder, always in `[0, other)` for a positive `other`:
+    /// `(-1).mod(10)` is `9` where `-1 % 10` is `-1` (type.operators/AR3).
+    /// Zero panics, like `%`.
+    @builtin
+    public func mod(self, other: Self) -> Self {}
+
     // ── Bits (std.bits/B1) ──────────────────────────────────────
     // Counts answer at the receiver's width: a count can't exceed it.
 

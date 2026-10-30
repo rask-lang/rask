@@ -422,7 +422,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 448 sites restate a fact, 441 to go.**
+ratchet at its target. Today: 424 sites restate a fact, 417 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -440,12 +440,12 @@ each pinned at today's count, each with the count it has to reach.
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
 | MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
-| Checker answers a stdlib method from a Rust table (`resolve_*_method`) | 24 | 0 | #1561 |
+| Method names the checker answers by matching the name instead of reading a declaration or interface | 26 | 0 | #1561, #1565 |
 | `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
-| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 105 | 0 | #1564, #1565 |
+| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
 | Public entry points into the passes | 14 | 7 | #1568 |
-| Interpreters built outside the driver | 11 | 0 | #1568 |
+| Interpreters run without the driver's setup (`prepare_interpreter`) | 4 | 0 | #1568 |
 | Size or alignment computed outside the layout model | 5 | 0 | #1567 |
 | Readers of the pointer-width process global | 15 | 0 | #1568 |
 
@@ -465,40 +465,52 @@ for a checker type by accident, and no grep test has to say so.
    `ToDiagnostic` into the crate whose error it converts. Mechanical, and
    it's what makes the layering in #1568 enforceable.
 
-   Then one crate for the facts about the language, as opposed to facts
-   about a program. The operator table (symbol, binding power, desugared
-   method, interface), the keyword list, the stdlib's declarations, the
-   runtime's constants and C signatures: nobody computes these, so they're
-   stated once and read by every stage. Most are already Rask source
-   (`stdlib/*.rk`, `ops.rk`), so the crate parses them once and hands out
-   tables; the rest (`rask_runtime.h`'s `#define`s and prototypes) it
-   either generates or checks against. Today that role is spread over
-   `rask-ast`, the lexer, `rask-stdlib` and, for the runtime constants,
-   nothing at all. Facts about a program (a `Type`, a layout, a callee) are
-   not definitions, they're a stage's output, and they stay with the stage
-   that produces them; only their shapes are shared.
+   Then the facts about the language, as opposed to facts about a program:
+   the operator table, the keyword list, the stdlib's declarations, the
+   runtime's constants and C signatures. Nobody computes these, so each is
+   stated once and read by every stage. They can't share one crate, because
+   reading the stdlib's declarations takes the parser and the parser needs
+   the keywords. So there are two homes, split by that line: what the
+   lexer, parser and desugarer need lives in `rask-ast` (keywords, binding
+   powers, the methods operators desugar to), and what is declared in Rask
+   lives in `rask-stdlib`, which parses `stdlib/*.rk` once and hands out
+   tables. Most of this was already true when step 1 started; the runtime
+   constants are generated into `rask_abi.h` from one Rust list. The
+   operator interfaces were the last copy: `OPERATOR_TRAITS` restated
+   `ops.rk` with nothing checking them, and `rask_stdlib::operators` now
+   reads the file. Facts about a program (a `Type`, a layout, a callee) are
+   a stage's output and stay with the stage that produces them; only their
+   shapes are shared.
 
    What stops the drift is the dependency direction, not where the tables
-   live. `rask-mir` depends on `rask-parser` today, which is how it ends up
-   parsing. Once it depends only on the type data and mono's output, the
-   only way for it to learn a fact is to be handed one.
+   live. `crate_layers` (`rask-cli/tests`) holds the graph: diagnostics
+   depends on the AST alone, and mono, MIR and codegen can't reach the
+   interpreter. Each later step that takes a crate's reach away adds its
+   edge there.
 2. **#1561** before anything is handed down. Every later step is "carry the
    checker's answer to the next pass". If the checker's answer for
    `Vec.capacity` comes from a table that says `u64` while `collections.rk`
    says `usize?`, a pipe just delivers the wrong fact faster. The `.rk`
    declaration becomes the only source first.
 3. The rest of **#1568**: the LSP and spec-test front ends, the interpreter
-   setups, the config built fifteen times, node ids, and the pointer width
-   out of its global and into the config the driver hands down.
+   setups, the config built fifteen times, and node ids. Every tool readies
+   its interpreter with `rask_compiler::prepare_interpreter` now, from the
+   `cfg` the check recorded; what's left runs on declarations nothing
+   checked (build scripts, spec-test). `rask comptime` checks first now and
+   builds its evaluator the way the compile does.
 4. **#1566 + #1567.** The checker records what it decided per node (which
    variant a pattern names, which side a return goes to, that a call was an
-   operator), and layout moves into its own crate. That needs `rask-types`
-   split into the `Type` data and the checker, since the checker reads sizes
-   for the copy rule and layout reads `Type`. The crate takes `Type`, type
+   operator), and layout moves into its own crate. That needs the `Type`
+   data apart from the checker, since the checker reads sizes for the copy
+   rule and layout reads `Type`. Done: `rask-types` holds `Type` and
+   `TypeDef` on the AST alone, and the checker is `rask-check`. The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
-   `compiler/CLAUDE.md` calls `rask_types::layout` "the one size model"
-   today; it will be right once the other five answers are gone.
+   `compiler/CLAUDE.md` calls `rask_check::layout` "the one size model"
+   today; it will be right once the other five answers are gone. The
+   pointer-width global goes here too, not in step 3: most of its fifty-odd
+   readers are `MirType::size()` and `LayoutCache::new()`, which this step
+   replaces, so threading a `Target` through them first would be done twice.
 5. **#1564 + #1565.** A call carries its callee's identity and signature;
    stdlib facts live only on the `.rk` declarations. #1656 is the first
    consumer of that flow and a good proof it works, but not a gate.

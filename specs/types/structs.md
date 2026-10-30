@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Named product types with value semantics, extend blocks, `private` keyword for encapsulation -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
-<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-check/ -->
 
 # Structs and Product Types
 

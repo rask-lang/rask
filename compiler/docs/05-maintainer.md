@@ -11,7 +11,7 @@ Practical reference for working in the codebase.
 | Add new syntax | `rask-parser/src/parser.rs` |
 | Add a new AST node | `rask-ast/src/expr.rs`, `stmt.rs`, or `decl.rs` |
 | Add a built-in type method | `rask-stdlib/` (type checker) + `rask-interp/src/builtins/` (runtime) |
-| Change type checking rules | `rask-types/src/checker/check_expr.rs`, `check_stmt.rs` |
+| Change type checking rules | `rask-check/src/checker/check_expr.rs`, `check_stmt.rs` |
 | Change ownership rules | `rask-ownership/src/lib.rs` |
 | Change error messages | `rask-diagnostics/` or the stage's error module |
 | Add a CLI command | `rask-cli/src/main.rs` + `rask-cli/src/commands/` |

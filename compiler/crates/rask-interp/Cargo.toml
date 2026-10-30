@@ -5,11 +5,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+rask-diagnostics = { path = "../rask-diagnostics" }
 rask-ast = { path = "../rask-ast" }
 rask-comptime = { path = "../rask-comptime" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
+rask-check = { path = "../rask-check" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-mono = { path = "../rask-mono" }
 indexmap = "2"

@@ -13,7 +13,7 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity};
 use rask_mir::{Folded, MirFunction};
 use rask_mono::MonoProgram;
-use rask_types::TypedProgram;
+use rask_check::TypedProgram;
 
 pub use rask_codegen::BuildMode;
 
@@ -78,7 +78,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let all_mono_decls = mono_decls(input.mono, input.decls);
     let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
-    let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
+    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls, &input.typed.symbols);
     let nominal_underlying = nominal_underlying(input.typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
@@ -260,7 +260,7 @@ fn emit_inner(
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types);
 
-    let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
+    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let vtables = collect_vtables(&functions, &interface_methods, input.mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables).map_err(fail)?;

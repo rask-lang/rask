@@ -24,7 +24,7 @@ fn run_pipeline_with(
     path: &str,
     format: Format,
     cfg: &rask_comptime::CfgConfig,
-    transform: impl FnOnce(&mut Vec<rask_ast::decl::Decl>, &rask_types::TypedProgram),
+    transform: impl FnOnce(&mut Vec<rask_ast::decl::Decl>, &rask_check::TypedProgram),
 ) -> (rask_compiler::CompileResult, Option<String>) {
     let config = crate::compiler_config(cfg.clone());
     let output = rask_compiler::compile_file_with(path, &config, transform);

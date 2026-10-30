@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: A struct declared @temporary makes values that live for the expression that makes them; nothing may keep one -->
 <!-- depends: types/structs.md, types/generics.md -->
-<!-- implemented-by: compiler/crates/rask-types/src/checker/temporary.rs -->
+<!-- implemented-by: compiler/crates/rask-check/src/checker/temporary.rs -->
 
 # Temporary Values
 

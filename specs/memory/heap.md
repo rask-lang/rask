@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Heap<T> — the one-pointer indirection for recursive and large values; linear, zero-overhead -->
 <!-- depends: memory/linear.md, memory/ownership.md, memory/value-semantics.md -->
-<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
+<!-- implemented-by: compiler/crates/rask-check/, compiler/crates/rask-interp/ -->
 
 # Heap Values
 

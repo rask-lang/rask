@@ -10,14 +10,14 @@
 // yields it, so the second task gets its turn and the spinner sees the flag.
 
 import async.{Handles, JoinError}
-import sync.{Atomic, SeqCst}
+import sync.Atomic
 
 const SPIN_DONE: Atomic<bool> = Atomic<bool>.new(false)
 const COUNT_DONE: Atomic<bool> = Atomic<bool>.new(false)
 
 func spin_until_set() -> i64 {
     mut turns: i64 = 0
-    while !SPIN_DONE.load(SeqCst) {
+    while !SPIN_DONE.load() {
         turns += 1
     }
     return turns
@@ -30,7 +30,7 @@ func count_until_set() -> i64 {
     while !seen {
         n += 1
         if n % 100000 == 0 {
-            seen = COUNT_DONE.load(SeqCst)
+            seen = COUNT_DONE.load()
         }
     }
     return n
@@ -54,7 +54,7 @@ test "a spinning task doesn't starve another on the same worker" {
         ensure group.detach()
         group.add(spawn { return spin_until_set() })
         group.add(spawn {
-            SPIN_DONE.store(true, SeqCst)
+            SPIN_DONE.store(true)
             return 0
         })
         assert all_ok(group.join_all())
@@ -67,7 +67,7 @@ test "a loop between checks of the flag is caught at its back edge" {
         ensure group.detach()
         group.add(spawn { return count_until_set() })
         group.add(spawn {
-            COUNT_DONE.store(true, SeqCst)
+            COUNT_DONE.store(true)
             return 0
         })
         assert all_ok(group.join_all())
