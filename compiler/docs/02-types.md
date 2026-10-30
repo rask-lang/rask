@@ -1,6 +1,6 @@
 # Type System Deep Dive
 
-How the Rask type checker works internally. This is `rask-types/src/checker/`—
+How the Rask type checker works internally. This is `rask-check/src/checker/`—
 16 files that figure out the type of every expression and catch type errors.
 
 ## The big picture
@@ -243,7 +243,7 @@ better error messages because we still have expression-level context.
 ## The submodule map
 
 ```
-rask-types/src/checker/
+rask-check/src/checker/
 ├── mod.rs            TypeChecker struct, top-level check() function
 ├── check_expr.rs     Expression type checking
 ├── check_stmt.rs     Statement type checking

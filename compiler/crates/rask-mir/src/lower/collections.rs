@@ -11,7 +11,7 @@ use crate::{
 };
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::ty::TypeExpr;
-use rask_types::layout::StructLayout;
+use rask_check::layout::StructLayout;
 
 impl<'a> MirLowerer<'a> {
     /// Vec.from([a, b, c]) → store elements into stack array, call rask_vec_from_static
@@ -476,7 +476,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_json_encode_enum(
         &mut self,
         enum_op: MirOperand,
-        layout: &rask_types::layout::EnumLayout,
+        layout: &rask_check::layout::EnumLayout,
     ) -> Result<TypedOperand, LoweringError> {
         let tag_field = rask_ast::decl::field_attrs::tag_field(&layout.attrs);
 
@@ -620,8 +620,8 @@ impl<'a> MirLowerer<'a> {
     fn load_variant_field(
         &mut self,
         enum_op: MirOperand,
-        variant: &rask_types::layout::VariantLayout,
-        field: &rask_types::layout::FieldLayout,
+        variant: &rask_check::layout::VariantLayout,
+        field: &rask_check::layout::FieldLayout,
         field_index: u32,
     ) -> crate::LocalId {
         let field_mir_ty = self.ctx.type_to_mir(&field.ty);
@@ -1085,7 +1085,7 @@ impl<'a> MirLowerer<'a> {
     /// then switch on the tag to deep-clone heap fields per variant.
     pub(super) fn lower_enum_clone(
         &mut self,
-        layout: &rask_types::layout::EnumLayout,
+        layout: &rask_check::layout::EnumLayout,
         src: &MirOperand,
         obj_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {

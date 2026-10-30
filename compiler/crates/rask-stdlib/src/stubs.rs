@@ -90,6 +90,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("thread.rk", Layer::Std),
     ("async.rk", Layer::Std),
     ("sim.rk", Layer::Std),
+    ("claims.rk", Layer::Std),
     ("std.rk", Layer::Std),
 ];
 
@@ -185,6 +186,13 @@ fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
             .map(|i| parse_stub(i, &mut next_id))
             .collect()
     })
+}
+
+/// One stub file's parsed declarations by its name (`"ops.rk"`), or `None` if
+/// there is no such file or it doesn't lex.
+pub(crate) fn parsed_file(name: &str) -> Option<&'static [Decl]> {
+    let index = all_sources().iter().position(|(file, _)| *file == name)?;
+    parsed_stdlib()[index].as_deref()
 }
 
 /// One stub file's declarations, parsed with ids from `next_id` (which comes
@@ -389,6 +397,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
     ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
+    ("claims.rk", include_str!("../../../../stdlib/claims.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),

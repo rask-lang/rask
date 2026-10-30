@@ -10,7 +10,7 @@
 //! Only the argument side. A C function returning a struct is rejected in the
 //! checker (#1101).
 
-use rask_types::layout::StructLayout;
+use rask_check::layout::StructLayout;
 
 /// The calling conventions a struct argument is classified for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,7 +297,7 @@ mod tests {
     }
 
     fn layout(name: &str, size: u32, fields: &[(&str, rask_types::Type, u32, u32)]) -> StructLayout {
-        use rask_types::layout::FieldLayout;
+        use rask_check::layout::FieldLayout;
         StructLayout {
             name: name.to_string(),
             size,

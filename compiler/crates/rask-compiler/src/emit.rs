@@ -13,7 +13,7 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity};
 use rask_mir::{Folded, MirFunction};
 use rask_mono::MonoProgram;
-use rask_types::TypedProgram;
+use rask_check::TypedProgram;
 
 pub use rask_codegen::BuildMode;
 
@@ -55,6 +55,8 @@ pub enum Entry<'a> {
     Tests(&'a [(String, String)]),
     /// `(display name, function name)`, from `extract_benchmarks`.
     Benches(&'a [(String, String)]),
+    /// The claims a claims build runs (type.claims).
+    Claims(&'a [rask_codegen::ClaimRun]),
 }
 
 impl Entry<'_> {
@@ -76,7 +78,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let all_mono_decls = mono_decls(input.mono, input.decls);
     let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
-    let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
+    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
@@ -154,6 +156,9 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
+    }
+    if matches!(entry, Entry::Claims(_)) {
+        rask_mir::transform::claim_steps::instrument(&mut functions);
     }
 
     // Every layout id has to name the layout it claims. One that doesn't sends
@@ -268,7 +273,7 @@ fn emit_inner(
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types);
 
-    let interface_methods = rask_types::interface_vtable_methods(&input.typed.types);
+    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let vtables = collect_vtables(&functions, &interface_methods, input.mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables).map_err(fail)?;
@@ -293,6 +298,9 @@ fn emit_inner(
         Entry::Benches(benches) => codegen
             .gen_benchmark_runner(benches, &const_names)
             .map_err(|e| vec![format!("benchmark runner: {}", e)])?,
+        Entry::Claims(claims) => codegen
+            .gen_claim_runner(claims, &const_names)
+            .map_err(|e| vec![format!("claim runner: {}", e)])?,
     }
 
     codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])?;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Type formatting for hover tooltips and completion details.
 
-use rask_types::{GenericArg, Type, TypeTable};
+use rask_types::{GenericArg, Type};
+use rask_check::TypeTable;
 
 /// Formats types for human-readable display in hover tooltips.
 pub struct TypeFormatter<'a> {

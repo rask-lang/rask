@@ -160,7 +160,7 @@ impl<'a> OwnershipChecker<'a> {
                         out.push((object, Some(method.clone())));
                     }
                     for (i, a) in args.iter().enumerate() {
-                        if matches!(sig.params.get(i), Some((_, rask_types::ParamMode::Mutate))) {
+                        if matches!(sig.params.get(i), Some((_, rask_ast::ty::ParamMode::Mutate))) {
                             out.push((&a.expr, Some(method.clone())));
                         }
                     }

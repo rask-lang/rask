@@ -13,5 +13,5 @@ struct Wide {
 
 func main() {
     let s = Atomic<Wide>.new(Wide(index: 0, generation: 0, epoch: 0))
-    println("{s.load(Ordering.SeqCst).index}")
+    println("{s.load().index}")
 }

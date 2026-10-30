@@ -1,6 +1,6 @@
 <!-- summary: A closure that outlives its frame carries what it captured; one that stays points at it, and the compiler decides which -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md -->
-<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-ownership/ -->
+<!-- implemented-by: compiler/crates/rask-check/, compiler/crates/rask-ownership/ -->
 
 # Closures
 

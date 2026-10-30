@@ -143,6 +143,7 @@ and file what you learned — that's a finished piece of work, not a blocker.
 | `rask api <file>` | Show a module's public API (structs, funcs, enums) |
 | `rask fmt <file>` | Format .rk source files |
 | `rask check <file>` | Type-check a .rk file |
+| `rask check --claims <dir>` | Also build and run the package's `claims.rk` ([type.claims](specs/types/claims.md)); `build`, `run` and `test` run them anyway |
 | `rask run <file>` | Execute a .rk program (native) |
 | `rask run --interp <file>` | Execute via interpreter (no codegen) |
 | `rask test <file>` | Run `test` blocks — **native**, like `run` |
@@ -275,15 +276,15 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | AST node types | `rask-ast/src/{decl,expr,stmt}.rs` |
 | Operator desugaring | `rask-desugar/src/lib.rs` |
 | Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
-| Type error / inference | `rask-types/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
-| Interface / generics | `rask-types/src/checker/{generics,resolve}.rs` |
-| Borrow checking | `rask-types/src/checker/borrow.rs`, `rask-ownership/` |
+| Type error / inference | `rask-check/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
+| Interface / generics | `rask-check/src/checker/{generics,resolve}.rs` |
+| Borrow checking | `rask-check/src/checker/borrow.rs`, `rask-ownership/` |
 | Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
 | MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
 | MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |
 | Interpreter bugs | `rask-interp/src/interp/`, `rask-interp/src/stdlib/` |
 | Stdlib types/stubs | `rask-stdlib/src/{stubs,types,builtins}.rs` |
-| Error formatting | `rask-diagnostics/src/{formatter,convert}.rs` |
+| Error formatting | `rask-diagnostics/src/formatter.rs`, each crate's `src/diagnostic.rs` |
 | CLI commands | `rask-cli/src/commands/`, `main.rs` |
 | Formatter | `rask-fmt/src/printer.rs` |
 

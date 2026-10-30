@@ -11,7 +11,7 @@ rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-desugar = { path = "../rask-desugar" }
 rask-resolve = { path = "../rask-resolve" }
-rask-types = { path = "../rask-types" }
+rask-check = { path = "../rask-check" }
 rask-ownership = { path = "../rask-ownership" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-interp = { path = "../rask-interp" }

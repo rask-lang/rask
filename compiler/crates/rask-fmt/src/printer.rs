@@ -518,7 +518,11 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
-        for (i, attr) in f.attrs.iter().enumerate() {
+        // The parser marks a claim with the compiler's `claim` attribute; it's
+        // written as the keyword (type.claims/CL1).
+        let is_claim = f.attrs.iter().any(|a| a.is("claim"));
+        let written: Vec<_> = f.attrs.iter().filter(|a| !a.is("claim")).collect();
+        for (i, attr) in written.iter().enumerate() {
             if i > 0 {
                 self.emit_indent();
             }
@@ -532,7 +536,7 @@ impl<'a> Printer<'a> {
         // out at the next emission point, which is the first statement of the
         // body. `f.span.start` is the `func` keyword, which is the bound that
         // keeps it where it was written.
-        if !f.attrs.is_empty() {
+        if !written.is_empty() {
             self.emit_standalone_comments_before(f.span.start);
             self.emit_indent();
         }
@@ -548,7 +552,7 @@ impl<'a> Printer<'a> {
         if f.is_unsafe {
             self.emit("unsafe ");
         }
-        self.emit("func ");
+        self.emit(if is_claim { "claim " } else { "func " });
         let name = f.name.as_str();
         self.emit(name);
 

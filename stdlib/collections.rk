@@ -722,13 +722,27 @@ extend Map<K, V> {
     @shrinks
     public func take_all(mutate self) -> Vec<(K, V)> {}
 
-    /// Iterate over keys.
-    @native("rask_map_keys")
-    public func keys(self) -> Iterator<K> {}
+    /// The keys, in the map's order, which is unspecified.
+    public func keys(self) -> Sequence<K> {
+        return |yield| {
+            for entry in self {
+                if !yield(entry.0) {
+                    return
+                }
+            }
+        }
+    }
 
-    /// Iterate over values.
-    @native("rask_map_values")
-    public func values(self) -> Iterator<V> {}
+    /// The values, in the same order as `keys`.
+    public func values(self) -> Sequence<V> {
+        return |yield| {
+            for entry in self {
+                if !yield(entry.1) {
+                    return
+                }
+            }
+        }
+    }
 }
 
 // Two maps are equal when they hold the same keys with equal values (EQ4a).

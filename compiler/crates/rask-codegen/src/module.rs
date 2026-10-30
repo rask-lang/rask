@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
-use rask_types::layout::{EnumLayout, StructLayout};
+use rask_check::layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
@@ -1006,6 +1006,34 @@ impl CodeGenerator {
                 .declare_function("rask_test_run", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_test_run".to_string(), id);
+        }
+
+        // rask_claim_step() -> void: the step counter of a claim build
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_claim_step", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(rask_mir::transform::claim_steps::CLAIM_STEP.to_string(), id);
+        }
+
+        // rask_claim_start() -> void and
+        // rask_claim_run(fn, name, seed, domain, budget) -> i64 (1 = a claim failed)
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_claim_start", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_claim_start".to_string(), id);
+            let mut sig = self.module.make_signature();
+            for _ in 0..5 {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_claim_run", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_claim_run".to_string(), id);
         }
 
         // rask_test_start() -> void, ahead of the module constants
@@ -2211,6 +2239,94 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Generate the claim runner entry point (`rask_main`, type.claims).
+    ///
+    /// Each claim's case function builds one input and calls the claim;
+    /// `rask_claim_run` calls it once per input. Exits 1 if any claim failed.
+    pub fn gen_claim_runner(
+        &mut self,
+        claims: &[crate::ClaimRun],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
+        use cranelift::prelude::*;
+
+        for c in claims {
+            self.register_string(&c.name)?;
+        }
+
+        let sig = self.module.make_signature();
+        let main_id = self.module
+            .declare_function("rask_main", Linkage::Export, &sig)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.ctx.clear();
+        self.ctx.func.signature = sig.clone();
+
+        let mut func_refs = HashMap::new();
+        for (name, fid) in &self.func_ids {
+            let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            self.ctx.func.stencil.dfg.ext_funcs[func_ref].colocated = true;
+            func_refs.insert(name.clone(), func_ref);
+        }
+        let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (content, data_id) in &self.string_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            string_globals.insert(content.clone(), gv);
+        }
+
+        let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
+        let mut fn_builder = cranelift::prelude::FunctionBuilder::new(
+            &mut self.ctx.func, &mut fn_builder_ctx,
+        );
+        let entry_block = fn_builder.create_block();
+        fn_builder.switch_to_block(entry_block);
+        fn_builder.seal_block(entry_block);
+
+        let lookup = |name: &str| {
+            func_refs.get(name).copied().ok_or_else(|| CodegenError::FunctionNotFound(name.to_string()))
+        };
+        // Sim starts first, so the constants are built in the world the claims run in.
+        fn_builder.ins().call(lookup("rask_claim_start")?, &[]);
+        Self::emit_const_inits(&mut fn_builder, &func_refs, const_names);
+
+        let run_ref = lookup("rask_claim_run")?;
+        let exit_ref = lookup("rask_exit")?;
+        let mut failures = fn_builder.ins().iconst(types::I64, 0);
+        for c in claims {
+            let fn_addr = fn_builder.ins().func_addr(types::I64, lookup(&c.fn_name)?);
+            let name_gv = string_globals.get(&c.name).ok_or_else(|| {
+                CodegenError::FunctionNotFound(format!("string global for claim '{}'", c.name))
+            })?;
+            let name_ptr = fn_builder.ins().global_value(types::I64, *name_gv);
+            let seed = fn_builder.ins().iconst(types::I64, c.seed as i64);
+            let domain = fn_builder.ins().iconst(types::I64, c.domain);
+            let budget = fn_builder.ins().iconst(types::I64, c.budget);
+            let call = fn_builder.ins().call(run_ref, &[fn_addr, name_ptr, seed, domain, budget]);
+            let failed = fn_builder.inst_results(call)[0];
+            failures = fn_builder.ins().iadd(failures, failed);
+        }
+
+        let zero = fn_builder.ins().iconst(types::I64, 0);
+        let any_failed = fn_builder.ins().icmp(IntCC::NotEqual, failures, zero);
+        let fail_block = fn_builder.create_block();
+        let ok_block = fn_builder.create_block();
+        fn_builder.ins().brif(any_failed, fail_block, &[], ok_block, &[]);
+        fn_builder.switch_to_block(fail_block);
+        fn_builder.seal_block(fail_block);
+        let one = fn_builder.ins().iconst(types::I64, 1);
+        fn_builder.ins().call(exit_ref, &[one]);
+        fn_builder.ins().return_(&[]);
+        fn_builder.switch_to_block(ok_block);
+        fn_builder.seal_block(ok_block);
+        fn_builder.ins().return_(&[]);
+        fn_builder.finalize();
+
+        self.module
+            .define_function(main_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+        Ok(())
+    }
+
     /// Emit the final object file. Consumes self because finish() takes ownership.
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
         let mut product = self.module.finish();
@@ -2317,6 +2433,14 @@ impl crate::Backend for CodeGenerator {
         const_names: &[String],
     ) -> CodegenResult<()> {
         self.gen_test_runner(tests, const_names)
+    }
+
+    fn gen_claim_runner(
+        &mut self,
+        claims: &[crate::ClaimRun],
+        const_names: &[String],
+    ) -> CodegenResult<()> {
+        self.gen_claim_runner(claims, const_names)
     }
 
     fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()> {

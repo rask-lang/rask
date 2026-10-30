@@ -9,8 +9,6 @@
 
 import sync.Atomic
 import sync.CasFailed
-import sync.Relaxed
-import sync.SeqCst
 
 struct Pair {
     public a: u16
@@ -19,42 +17,42 @@ struct Pair {
 
 test "a narrow counter wraps in the cell" {
     let a: Atomic<u8> = Atomic.new(250)
-    assert a.fetch_add(10, Relaxed) == 250
-    assert a.load(Relaxed) == 4
-    let r = a.compare_exchange(4, 9, SeqCst, Relaxed)
+    assert a.fetch_add(10) == 250
+    assert a.load() == 4
+    let r = a.compare_exchange(4, 9)
     assert !(r is CasFailed<u8>)
-    assert a.load(Relaxed) == 9
+    assert a.load() == 9
 }
 
 test "a signed payload keeps its sign" {
     let b: Atomic<i8> = Atomic.new(-1)
-    assert b.fetch_add(-127, Relaxed) == -1
-    assert b.load(Relaxed) == -128
-    assert b.fetch_sub(1, Relaxed) == -128
-    assert b.load(Relaxed) == 127
+    assert b.fetch_add(-127) == -1
+    assert b.load() == -128
+    assert b.fetch_sub(1) == -128
+    assert b.load() == 127
 }
 
 test "an unsigned payload orders unsigned" {
     let m: Atomic<u64> = Atomic.new(5)
-    m.fetch_max(18446744073709551615, Relaxed)
-    assert m.load(Relaxed) == 18446744073709551615
-    m.fetch_min(7, Relaxed)
-    assert m.load(Relaxed) == 7
+    m.fetch_max(18446744073709551615)
+    assert m.load() == 18446744073709551615
+    m.fetch_min(7)
+    assert m.load() == 7
 }
 
 test "floats are floats" {
     let f: Atomic<f32> = Atomic.new(1.5)
-    assert f.fetch_add(0.25, Relaxed) == 1.5
-    assert f.load(Relaxed) == 1.75
+    assert f.fetch_add(0.25) == 1.5
+    assert f.load() == 1.75
     let d: Atomic<f64> = Atomic.new(-2.5)
-    assert d.swap(4.0, Relaxed) == -2.5
-    assert d.load(Relaxed) == 4.0
+    assert d.swap(4.0) == -2.5
+    assert d.load() == 4.0
 }
 
 test "a small struct payload" {
     let p: Atomic<Pair> = Atomic.new(Pair(a: 1, b: 2))
-    p.store(Pair(a: 7, b: 9), Relaxed)
-    let got = p.load(Relaxed)
+    p.store(Pair(a: 7, b: 9))
+    let got = p.load()
     assert got.a == 7
     assert got.b == 9
 }

@@ -1,0 +1,665 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//! Validation for `T or E` type formation (ER3, ER4).
+
+use rask_ast::Span;
+
+use super::errors::TypeError;
+use rask_types::{MethodSig, SelfParam, TypeDef};
+use super::TypeChecker;
+
+use rask_types::Type;
+
+/// ER3a: "after substitution, `left` and `right` must still be different types."
+/// `left`/`right` carry the fresh vars standing in for the call's type args;
+/// `param`/`other` are the source spellings, for the message.
+pub(super) struct DisjointObligation {
+    pub callee: String,
+    pub param: String,
+    pub left: Type,
+    pub right: Type,
+    pub other: Type,
+    pub span: Span,
+}
+
+/// A type argument that has to satisfy its parameter's bounds (#314).
+///
+/// `args` pairs every type parameter of the same instantiation with what stands
+/// in for it, because a bound can name a sibling or the parameter itself:
+/// `T: Mul<T>` at a call where `T` is `Meters` asks for `Mul<Meters>` (#1463).
+pub(super) struct BoundObligation {
+    pub ty: Type,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
+    pub args: Vec<(String, Type)>,
+    /// The bound is a type's, met by building a value of it, not a callee's.
+    pub on_type: bool,
+    pub span: Span,
+}
+
+/// Gather every `T or E` node in a type as an `(ok, err)` pair.
+fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
+    match ty {
+        Type::Result { ok, err } => {
+            out.push((ok, err));
+            collect_result_nodes(ok, out);
+            collect_result_nodes(err, out);
+        }
+        Type::RawPtr(inner) => collect_result_nodes(inner, out),
+        Type::Array { elem, .. } | Type::SimdVector { elem, .. } => collect_result_nodes(elem, out),
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                collect_result_nodes(e, out);
+            }
+        }
+        Type::Fn { params, ret } => {
+            for p in params.iter().map(|p| &p.ty) {
+                collect_result_nodes(p, out);
+            }
+            collect_result_nodes(ret, out);
+        }
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            for a in args {
+                if let rask_types::GenericArg::Type(inner) = a {
+                    collect_result_nodes(inner, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+impl TypeChecker {
+    /// Walk `ty` and validate every `Result { ok, err }` node against ER3, ER4,
+    /// and the duplicate-variant rule (U5 from union-types.md).
+    ///
+    /// ER3: T ≠ E (disjointness).
+    /// ER4: E (or each component of a union E) implements `Error`.
+    /// U5:  flattening the nested `or` tree must not yield a repeated variant
+    ///      (e.g. `(T or E) or E`). `none` is exempt — repeated `none` layers
+    ///      are nested optionals, which stay distinct (type.optionals/OPT28).
+    ///
+    /// Unresolved components (`Var`, `Error`) are skipped to avoid false positives
+    /// during inference.
+    pub(super) fn validate_result_types_in(&mut self, ty: &Type, span: Span) {
+        let mut errs = Vec::new();
+        collect_result_errors(ty, span, self, &mut errs);
+        self.errors.extend(errs);
+    }
+
+    /// #314: verify each generic call's type argument satisfies the interface
+    /// bounds declared on the callee. Runs after constraint solving so the
+    /// type-arg vars are resolved. Type args that are still generic (a bound
+    /// param forwarded to another generic call) or unresolved are skipped —
+    /// they're checked at the outermost concrete call site.
+    pub(super) fn validate_pending_bound_checks(&mut self) {
+        let pending = std::mem::take(&mut self.pending_bound_checks);
+        // Dedup identical (type, interface, span) reports.
+        let mut reported: Vec<(String, String, Span)> = Vec::new();
+        for BoundObligation { ty: var, bounds, args, on_type, span } in pending {
+            // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
+            // can find the type's methods (an unresolved name reports none).
+            let ty = self.resolve_named(&self.ctx.apply(&var));
+            // Only check concrete, registered types — skip vars, errors, and
+            // bare type parameters (unresolved names with no registered type).
+            // A `Vec`, `Map` or `Set` still in its written spelling is checked
+            // for the four contract interfaces, which `check_satisfies` answers
+            // from the type arguments alone. Skipped, `T: Comparable` took a
+            // `Vec` or a `Map` and `vv.sort()` ran on a `Vec<Vec<T>>`, which
+            // has no order (#1491, #1495).
+            let written_collection = match &ty {
+                Type::UnresolvedGeneric { .. } => crate::interfaces::Collection::of(&self.types, &ty),
+                _ => None,
+            };
+            match &ty {
+                Type::Var(_) | Type::Error => continue,
+                Type::UnresolvedGeneric { .. } if written_collection.is_some() => {}
+                Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
+                _ => {}
+            }
+            // The bound as this instantiation reads it: every type parameter it
+            // names replaced by that parameter's argument. One still unsolved
+            // drops the bound rather than checking the literal spelling.
+            let args: Vec<(String, Type)> = args
+                .iter()
+                .map(|(p, t)| (p.clone(), self.resolve_named(&self.ctx.apply(t))))
+                .collect();
+            let interfaces: Vec<rask_ast::ty::TypeExpr> = bounds
+                .iter()
+                .filter(|b| !args.iter().any(|(p, t)| t.has_unsolved_var() && b.mentions(&|n| n == p)))
+                .map(|b| {
+                    b.substitute(&|n| {
+                        args.iter()
+                            .find(|(p, _)| p == n)
+                            .map(|(_, t)| self.types.resolve_type_names(t).to_type_expr())
+                    })
+                })
+                .collect();
+            // XC3: a bound is a place that needs the conformance, so it's a
+            // place two of them collide. Checked before satisfaction — with two
+            // declarations in scope the type does satisfy the bound, it just
+            // isn't said which way.
+            for t in &interfaces {
+                self.check_bound_conformance_ambiguity(&ty, t, span);
+            }
+            // A bound naming no interface was reported at its declaration
+            // (`check_bound_names`), once; nothing can satisfy it here.
+            let interfaces: Vec<_> = {
+                let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+                interfaces
+                    .into_iter()
+                    .filter(|t| checker.names_an_interface(t))
+                    .filter(|t| match &written_collection {
+                        Some(c) => c.contract(&self.types.interface_name(t)).is_some(),
+                        None => true,
+                    })
+                    .collect()
+            };
+            let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
+            if let Err(errs) = crate::interfaces::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
+                for e in errs {
+                    let (ty_name, interface_name) = interface_error_parts(&e);
+                    let key = (ty_name.clone(), interface_name.clone(), span);
+                    if reported.contains(&key) {
+                        continue;
+                    }
+                    reported.push(key);
+                    // An unknown interface has no type to blame, so reporting it as
+                    // "`_` does not implement X" pointed at the wrong thing
+                    // entirely — the name is the problem (#713).
+                    if matches!(e, crate::interfaces::InterfaceError::UnknownInterface(_)) {
+                        self.errors.push(TypeError::NoSuchInterface {
+                            interface_name,
+                            known: self.declared_interface_names(),
+                            span,
+                        });
+                        continue;
+                    }
+                    let mut err = self.bound_error(&ty, ty_name, interface_name, span);
+                    if on_type {
+                        if let TypeError::InterfaceNotSatisfied { context, .. } = &mut err {
+                            let declarable = match context {
+                                super::InterfaceBoundContext::GenericBound => Some(true),
+                                super::InterfaceBoundContext::BuiltinTypeBound => Some(false),
+                                _ => None,
+                            };
+                            if let Some(declarable) = declarable {
+                                *context = super::InterfaceBoundContext::TypeParamBound { declarable };
+                            }
+                        }
+                    }
+                    self.errors.push(err);
+                }
+            }
+        }
+    }
+
+    /// ER3a: read the disjointness obligations off a generic callee's signature
+    /// and record them against this call site.
+    ///
+    /// `sig` is the callee's signature with type params still spelled as
+    /// `UnresolvedNamed`; `subst` maps each param name to the fresh var standing
+    /// in for its type argument. For every `T or E` node in the signature, each
+    /// success leaf is obliged to differ from each error leaf. The obligation
+    /// only bites when a type param is involved — a signature that writes two
+    /// concrete colliding types was already rejected at its declaration.
+    pub(super) fn note_disjointness_obligations(
+        &mut self,
+        callee: &str,
+        sig: &Type,
+        subst: &std::collections::HashMap<&str, Type>,
+        span: Span,
+    ) {
+        let mut nodes = Vec::new();
+        collect_result_nodes(sig, &mut nodes);
+        for (ok, err) in nodes {
+            let mut ok_leaves = Vec::new();
+            let mut err_leaves = Vec::new();
+            collect_or_leaves(ok, &mut ok_leaves);
+            collect_or_leaves(err, &mut err_leaves);
+            for l in &ok_leaves {
+                for r in &err_leaves {
+                    // `none` layers instead of colliding (ER3b).
+                    if matches!(l, Type::None) || matches!(r, Type::None) {
+                        continue;
+                    }
+                    // Blame the type param; if both sides are params, the first.
+                    // Neither being a param means nothing substitution can
+                    // change, and the declaration site already checked it.
+                    let param = [l, r].into_iter().find_map(|t| match t {
+                        Type::UnresolvedNamed(n) if subst.contains_key(n.as_str()) => Some(n.clone()),
+                        _ => None,
+                    });
+                    let Some(param) = param else { continue };
+                    let other = if matches!(l, Type::UnresolvedNamed(n) if *n == param) { r } else { l };
+                    self.pending_disjointness.push(DisjointObligation {
+                        callee: callee.to_string(),
+                        param,
+                        left: TypeChecker::substitute_type_params(l, subst),
+                        right: TypeChecker::substitute_type_params(r, subst),
+                        other: (*other).clone(),
+                        span,
+                    });
+                }
+            }
+        }
+    }
+
+    /// ER3a: report every recorded obligation whose two sides resolved to the
+    /// same concrete type. One error per (call site, parameter).
+    pub(super) fn validate_pending_disjointness(&mut self) {
+        let pending = std::mem::take(&mut self.pending_disjointness);
+        let mut reported: Vec<(Span, String)> = Vec::new();
+        for ob in pending {
+            let left = self.ctx.apply(&ob.left);
+            let right = self.ctx.apply(&ob.right);
+            if is_unresolved(&left) || is_unresolved(&right) || left != right {
+                continue;
+            }
+            if left == Type::None {
+                continue;
+            }
+            let key = (ob.span, ob.param.clone());
+            if reported.contains(&key) {
+                continue;
+            }
+            reported.push(key);
+            self.errors.push(TypeError::ResultNotDisjointAtInstantiation {
+                callee: ob.callee,
+                param: ob.param,
+                arg: left,
+                other: ob.other,
+                span: ob.span,
+            });
+        }
+    }
+
+    /// RC1/RC3: record a site whose type must not be a `Vec`/`Map` of linear
+    /// values. Validated after constraint solving (see
+    /// `validate_pending_linear_containers`) so inferred element types are
+    /// concrete. `ty` may still contain type vars here — they're resolved later.
+    pub(super) fn note_linear_container_site(&mut self, span: Span, ty: Type) {
+        self.pending_linear_containers.push((span, ty));
+    }
+
+    /// RC1/RC3: reject any recorded site whose resolved type embeds a `Vec<T>`
+    /// or `Map<K, V>` with a linear element/key. One error per span.
+    ///
+    /// Also HA1/HA4: a Map key has to be Hashable. Same list of sites and the
+    /// same reason for deferring — a `Map.new()` key type isn't known until the
+    /// inserts have been seen. `Map<f64, V>` was accepted, and then a NaN key
+    /// found its own entry natively and missed on the interpreter (#306), which
+    /// is the contract violation HA4 names.
+    /// conc.sync/SH10: a `Shared` field or payload whose box can hold the
+    /// owner's type again. Two such boxes pointing at each other keep both
+    /// counts above zero for good (#1672). Checked here rather than at the
+    /// declaration because the cycle can close through a type declared later.
+    pub(super) fn validate_shared_cycles(&mut self) {
+        let pending = std::mem::take(&mut self.pending_shared_fields);
+        for (owner, field, ty, span) in pending {
+            let Some(owner_id) = self.types.get_type_id(&owner) else { continue };
+            let ty = self.ctx.apply(&ty);
+            for payload in self.types.direct_shared_payloads(&ty) {
+                if let Some(path) = self.types.shared_cycle(owner_id, &payload) {
+                    self.errors.push(TypeError::SharedCycle {
+                        owner: owner.clone(),
+                        field: field.clone(),
+                        payload: self.types.resolve_type_names(&payload),
+                        path,
+                        span,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+
+    pub(super) fn validate_pending_linear_containers(&mut self) {
+        let pending = std::mem::take(&mut self.pending_linear_containers);
+        let mut reported: Vec<Span> = Vec::new();
+        let mut bad_key_reported: Vec<Span> = Vec::new();
+        let mut rack_reported: Vec<Span> = Vec::new();
+        for (span, ty) in pending {
+            let ty = self.ctx.apply(&ty);
+            // RK14 rides on the same sites: `Rack.new()`'s node type is often
+            // only known once the inserts have been seen.
+            if let Some(node) = self.types.find_rack_of_non_struct(&ty) {
+                if !rack_reported.contains(&span) {
+                    rack_reported.push(span);
+                    self.errors.push(TypeError::RackNodeNotStruct { node, span });
+                }
+            }
+            if let Some((key, fix)) = self.types.find_unhashable_map_key(&ty) {
+                if !bad_key_reported.contains(&span) {
+                    bad_key_reported.push(span);
+                    self.errors.push(TypeError::UnhashableMapKey { key, fix, span });
+                }
+            }
+            if let Some((container, elem)) = self.types.find_linear_container(&ty) {
+                if reported.contains(&span) {
+                    continue;
+                }
+                reported.push(span);
+                self.errors.push(TypeError::LinearInContainer {
+                    container,
+                    elem,
+                    span,
+                });
+            }
+        }
+    }
+}
+
+fn collect_result_errors(
+    ty: &Type,
+    span: Span,
+    checker: &TypeChecker,
+    errs: &mut Vec<TypeError>,
+) {
+    match ty {
+        Type::Result { ok, err } => {
+            validate_single_result(ok, err, span, checker, errs);
+            check_duplicate_sum_variants(ty, ok, err, span, errs);
+            collect_result_errors(ok, span, checker, errs);
+            collect_result_errors(err, span, checker, errs);
+        }
+        Type::RawPtr(inner) => collect_result_errors(inner, span, checker, errs),
+        Type::Array { elem, .. } | Type::SimdVector { elem, .. } => {
+            collect_result_errors(elem, span, checker, errs)
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                collect_result_errors(e, span, checker, errs);
+            }
+        }
+        Type::Fn { params, ret } => {
+            for p in params.iter().map(|p| &p.ty) {
+                collect_result_errors(p, span, checker, errs);
+            }
+            collect_result_errors(ret, span, checker, errs);
+        }
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            for a in args {
+                if let rask_types::GenericArg::Type(inner) = a {
+                    collect_result_errors(inner, span, checker, errs);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// U5: walk an `or`-tree (nested Result/Option/Union) and report any leaf type
+/// that appears more than once. Each unique duplicate is reported once.
+///
+/// `none` is exempt: repeated `none` layers form a nested optional, where the
+/// layers are told apart by position rather than by type (type.optionals/OPT28).
+/// `collect_or_leaves` therefore never descends into an optional.
+///
+/// Skips any variant that disjointness (ER3) already flagged at this span — the
+/// fix is the same and reporting both is noise.
+fn check_duplicate_sum_variants(
+    full_ty: &Type,
+    ok: &Type,
+    err: &Type,
+    span: Span,
+    errs: &mut Vec<TypeError>,
+) {
+    let mut leaves = Vec::new();
+    collect_or_leaves(ok, &mut leaves);
+    collect_or_leaves(err, &mut leaves);
+
+    // Variants already reported by disjointness on this span — skip to avoid
+    // double-reporting the same type.
+    let already_disjoint: Vec<Type> = errs
+        .iter()
+        .filter_map(|e| match e {
+            TypeError::ResultNotDisjoint { ty, span: s } if *s == span => Some(ty.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut seen = Vec::new();
+    let mut reported = Vec::new();
+    for leaf in &leaves {
+        if seen.contains(leaf) {
+            if !reported.contains(leaf) && !already_disjoint.iter().any(|t| t == *leaf) {
+                errs.push(TypeError::DuplicateSumVariant {
+                    ty: full_ty.clone(),
+                    variant: (*leaf).clone(),
+                    span,
+                });
+                reported.push(*leaf);
+            }
+        } else {
+            seen.push(*leaf);
+        }
+    }
+}
+
+/// Gather the leaf types of an `or`-tree. `Result { ok, err }` recurses both
+/// sides; `Union` contributes each component. Anything else is a leaf.
+///
+/// An optional (`X or none`) is a leaf, not a node to flatten. Flattening it
+/// would make `T??` look like two `none` variants of one sum, when it is really
+/// two layers that stay distinct (type.optionals/OPT28).
+fn collect_or_leaves<'a>(ty: &'a Type, out: &mut Vec<&'a Type>) {
+    match ty {
+        Type::Result { err, .. } if **err == Type::None => out.push(ty),
+        Type::Result { ok, err } => {
+            collect_or_leaves(ok, out);
+            collect_or_leaves(err, out);
+        }
+        Type::Union(types) => {
+            for t in types {
+                collect_or_leaves(t, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+fn validate_single_result(
+    ok: &Type,
+    err: &Type,
+    span: Span,
+    checker: &TypeChecker,
+    errs: &mut Vec<TypeError>,
+) {
+    let ok_r = checker.ctx.apply(ok);
+    let err_r = checker.ctx.apply(err);
+
+    if is_unresolved(&ok_r) || is_unresolved(&err_r) {
+        return;
+    }
+
+    // ER3: disjointness — T ≠ E, and T ∉ components of a union E.
+    // ER3b: `none` is exempt. `none?` is a two-layer optional, not a collision.
+    let err_components: Vec<&Type> = match &err_r {
+        Type::Union(types) => types.iter().collect(),
+        other => vec![other],
+    };
+    for comp in err_components.iter().filter(|_| ok_r != Type::None) {
+        if &&ok_r == comp {
+            errs.push(TypeError::ResultNotDisjoint {
+                ty: ok_r.clone(),
+                span,
+            });
+            break;
+        }
+    }
+
+    // ER4: E (or each component of a union E) must implement Error.
+    // `none` is exempt — it's the absent sentinel for `T or none` (the optional
+    // shape), not an error type.
+    for comp in &err_components {
+        if is_unresolved(comp) {
+            continue;
+        }
+        if matches!(comp, Type::None) {
+            continue;
+        }
+        // `any Error` is the interface itself — no need to check it satisfies itself
+        if matches!(comp, Type::InterfaceObject { interface_name, .. } if interface_name == "Error") {
+            continue;
+        }
+        if !implements_error_message(comp, checker) {
+            errs.push(TypeError::ErrorInterfaceMissing {
+                ty: (*comp).clone(),
+                span,
+            });
+        }
+    }
+}
+
+fn is_unresolved(ty: &Type) -> bool {
+    matches!(ty, Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. })
+}
+
+/// Structural check: does `ty` have `func message(self) -> string`?
+///
+/// Primitives and builtins without user methods fail this check.
+/// For nominal aliases, methods are on the alias's `Named` TypeId (registered
+/// via `extend Alias { ... }` → `register_impl_methods`).
+fn implements_error_message(ty: &Type, checker: &TypeChecker) -> bool {
+    let type_id = match ty {
+        Type::Named(id) => *id,
+        Type::Generic { base, .. } => *base,
+        // Primitives, functions, tuples, arrays, etc. cannot have user methods.
+        _ => return false,
+    };
+
+    let def = match checker.types.get(type_id) {
+        Some(d) => d,
+        None => return false,
+    };
+
+    let methods: &[MethodSig] = match def {
+        TypeDef::Struct { methods, .. }
+        | TypeDef::Enum { methods, .. }
+        | TypeDef::NominalAlias { methods, .. } => methods,
+        _ => return false,
+    };
+
+    methods.iter().any(|m| {
+        m.name == "message"
+            && matches!(m.self_param, SelfParam::Value)
+            && m.params.is_empty()
+            && matches!(m.ret, Type::String)
+    })
+}
+
+impl TypeChecker {
+    /// The right error for a failed bound. `Encode`/`Decode` aren't method sets,
+    /// so they get their own shape of message — one that names the field that
+    /// blocked it rather than telling you to implement an interface you can't.
+    /// Every interface the program declares, for a did-you-mean on a misspelt one.
+    pub(super) fn declared_interface_names(&self) -> Vec<String> {
+        self.types
+            .iter()
+            .filter_map(|def| match def {
+                rask_types::TypeDef::Interface { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .chain(
+                crate::COMPILER_PROVIDED_TRAITS
+                    .iter()
+                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode"].iter())
+                    .map(|s| s.to_string()),
+            )
+            .collect()
+    }
+
+    pub(super) fn bound_error(
+        &self,
+        ty: &Type,
+        ty_name: String,
+        interface_name: String,
+        span: Span,
+    ) -> TypeError {
+        // A collection's missing order has its own message: the generic one
+        // offers `Vec<i64> implements Comparable`, which XC1 forbids and CO1
+        // says has no right answer anyway.
+        if interface_name == "Comparable" {
+            if let Some(c) = crate::interfaces::Collection::of(&self.types, ty) {
+                return TypeError::CollectionNotOrderable {
+                    op: "Comparable".to_string(),
+                    recv: ty_name,
+                    noun: c.kind.noun().to_string(),
+                    span,
+                };
+            }
+        }
+        if interface_name != "Encode" && interface_name != "Decode" {
+            let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
+                super::InterfaceBoundContext::NumericBound
+            } else if interface_name == "Copy" {
+                super::InterfaceBoundContext::CopyBound
+            } else if matches!(ty, Type::Named(_) | Type::Generic { .. })
+                // `Set<T>` is a struct, but its contract interfaces are the
+                // stdlib's to declare (XC1): "declare the conformance" would
+                // be advice the compiler then rejects.
+                && crate::interfaces::Collection::of(&self.types, ty).is_none()
+            {
+                super::InterfaceBoundContext::GenericBound
+            } else {
+                super::InterfaceBoundContext::BuiltinTypeBound
+            };
+            let namesake = self.types.conformance_target(ty)
+                .is_some_and(|id| self.types.conforms_to_namesake(id, &interface_name));
+            return TypeError::InterfaceNotSatisfied {
+                ty: ty_name, interface_name, context, missing: None, namesake, span,
+            };
+        }
+        let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
+        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+        // E16: the declaration refused. Reported before the field hunt, because
+        // the fields are usually fine — `@no_encode` goes on a credential whose
+        // `string` would serialize perfectly well, and that's the problem. The
+        // old message named an "offending field" there was none of.
+        if checker.opts_out_of(ty, &interface_name) {
+            let attr = if interface_name == "Encode" { "no_encode" } else { "no_decode" };
+            return TypeError::SerializationOptedOut {
+                ty: ty_name,
+                interface_name,
+                attr: attr.to_string(),
+                span,
+            };
+        }
+        // E13a: a decode blocked by an excluded field with no default is a
+        // different problem with a different fix — the field's type is fine, it
+        // just has nothing to be built from. Report that first, since when both
+        // are true the structural one is the one the reader can't act on.
+        if interface_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
+            if let Some(field) = checker.first_defaultless_excluded_field(ty) {
+                return TypeError::ExcludedFieldNeedsDefault {
+                    ty: ty_name,
+                    field,
+                    span,
+                };
+            }
+        }
+        let (field, field_ty) = match checker.first_unencodable_field(ty) {
+            Some((f, fty)) => (Some(f), Some(fty)),
+            None => (None, None),
+        };
+        TypeError::NotSerializable {
+            ty: ty_name,
+            interface_name,
+            verb: verb.to_string(),
+            field,
+            field_ty,
+            span,
+        }
+    }
+}
+
+/// Best-effort `(type name, interface name)` for reporting a failed bound.
+pub(super) fn interface_error_parts(e: &crate::interfaces::InterfaceError) -> (String, String) {
+    use crate::interfaces::InterfaceError::*;
+    match e {
+        NotSatisfied { ty, interface_name, .. } => (ty.clone(), interface_name.clone()),
+        MissingMethod { ty, interface_name, .. } => (ty.clone(), interface_name.clone()),
+        SignatureMismatch { ty, method, .. } => (ty.clone(), method.clone()),
+        UnknownInterface(name) => (String::from("_"), name.clone()),
+        ConflictingMethods { interface1, .. } => (String::from("_"), interface1.clone()),
+    }
+}

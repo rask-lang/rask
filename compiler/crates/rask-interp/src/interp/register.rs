@@ -193,7 +193,7 @@ impl Interpreter {
                             .as_ref()
                             .zip(self.conformance_interfaces.get(&decl.id))
                             .and_then(|(t, iface)| {
-                                rask_ast::operators::conformance_method_name(
+                                rask_stdlib::operators::conformance_method_name(
                                     &impl_decl.target_ty, t, iface, &method.name,
                                 )
                             })

@@ -156,12 +156,12 @@ pub struct Interpreter {
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
     /// nothing here to compute them from — the interpreter answered 0 for both
-    /// while native answered the truth (#1104). `rask_types::layout::compute_struct_layout`
+    /// while native answered the truth (#1104). `rask_check::layout::compute_struct_layout`
     /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
     pub(crate) type_decls: Vec<Decl>,
     /// Size and alignment of every declared type, so a struct holding another
     /// sees its real size. Computed once, when the declarations are registered.
-    pub(crate) layout_cache: rask_types::layout::LayoutCache,
+    pub(crate) layout_cache: rask_check::layout::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -205,7 +205,7 @@ pub struct Interpreter {
     /// call's type arguments filled in, holds a link or is a `Local` box.
     pub(crate) generic_closure_captures: Arc<HashMap<rask_ast::NodeId, Vec<(String, rask_types::Type)>>>,
     /// The checker's type table, for asking whether a type may cross tasks.
-    pub(crate) types: Arc<rask_types::TypeTable>,
+    pub(crate) types: Arc<rask_check::TypeTable>,
     /// What each generic call's type parameters resolved to, keyed by the call.
     /// Written in the caller's own terms: inside `wrap<U>`, `keep(u)` records
     /// `T = U`, so the caller's frame is substituted in before it's used.
@@ -239,7 +239,7 @@ pub struct Interpreter {
     /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
-    pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_types::OperatorTarget>,
+    pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_check::OperatorTarget>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -346,7 +346,7 @@ impl Interpreter {
     ) -> GenericFrame {
         let outer = self.generic_frames.last().and_then(|f| f.as_deref());
         let concrete = |ty: &rask_types::Type| match outer {
-            Some(outer) => rask_types::substitute_type(ty, outer),
+            Some(outer) => rask_check::substitute_type(ty, outer),
             None => ty.clone(),
         };
         let mut frame: HashMap<String, rask_types::Type> = HashMap::new();
@@ -365,7 +365,7 @@ impl Interpreter {
     /// in: `Box<Vec<i64>>` gives `T = Vec<i64>` to `extend Box<T>`, and
     /// `Pairs<(string, i64)>` gives `K = string, V = i64` to
     /// `extend Pairs<(K, V)>`. The header is matched against the receiver's
-    /// type by `rask_types::bind_header_patterns`, the matcher the checker and
+    /// type by `rask_check::bind_header_patterns`, the matcher the checker and
     /// monomorphization use, so all three bind the same names to the same
     /// types. Nothing binds when the shapes don't line up.
     fn receiver_type_params(
@@ -385,15 +385,15 @@ impl Interpreter {
         let patterns: Vec<TypeExpr> = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
             Some(patterns) => patterns.clone(),
             None => match (self.struct_decls.get(base), self.enums.get(base)) {
-                (Some(s), _) => rask_types::struct_type_param_names(s),
-                (None, Some(e)) => rask_types::enum_type_param_names(e),
+                (Some(s), _) => rask_check::struct_type_param_names(s),
+                (None, Some(e)) => rask_check::enum_type_param_names(e),
                 (None, None) => return Vec::new(),
             }
             .iter()
             .map(TypeExpr::named)
             .collect(),
         };
-        rask_types::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
+        rask_check::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
 
     /// The generic frame for a call written at `call` with no receiver.
@@ -428,7 +428,7 @@ impl Interpreter {
         };
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         self.types.generic_closure_task_bound(captures, |ty| {
-            frame.map(|frame| rask_types::substitute_type(ty, frame))
+            frame.map(|frame| rask_check::substitute_type(ty, frame))
         })
     }
 
@@ -466,7 +466,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_types::layout::LayoutCache::new(),
+            layout_cache: rask_check::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -480,7 +480,7 @@ impl Interpreter {
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
-            types: Arc::new(rask_types::TypeTable::default()),
+            types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
@@ -511,7 +511,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_types::layout::LayoutCache::new(),
+            layout_cache: rask_check::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -523,7 +523,7 @@ impl Interpreter {
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
-            types: Arc::new(rask_types::TypeTable::default()),
+            types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
@@ -558,7 +558,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_types::layout::LayoutCache::new(),
+            layout_cache: rask_check::layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -572,7 +572,7 @@ impl Interpreter {
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
-            types: Arc::new(rask_types::TypeTable::default()),
+            types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
@@ -688,7 +688,7 @@ impl Interpreter {
     /// Four call sites set the same four tables one at a time, so a new one was
     /// four edits and three chances to miss. They pass the whole program here
     /// instead.
-    pub fn adopt_checker_tables(&mut self, typed: &rask_types::TypedProgram) {
+    pub fn adopt_checker_tables(&mut self, typed: &rask_check::TypedProgram) {
         self.node_types = typed.node_types.clone();
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();

@@ -337,7 +337,25 @@ fn main() {
                 process::exit(1);
             }
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
-            commands::analysis::cmd_typecheck(cmd_args[2], format, verbose);
+            let claims = cmd_args.contains(&"--claims");
+            let Some(target) = find_positional_arg(&cmd_args, 2, &[]) else {
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                process::exit(1);
+            };
+            commands::analysis::cmd_typecheck(target, format, verbose);
+            // `rask check` doesn't generate code, so it only type-checks the
+            // claims; `--claims` builds and runs them (type.claims/R1).
+            let mode = if claims {
+                commands::claims::ClaimsMode::Run
+            } else {
+                commands::claims::ClaimsMode::Check
+            };
+            if std::path::Path::new(target).is_dir()
+                && commands::claims::check_package_claims(target, format, mode)
+                    == commands::claims::ClaimsOutcome::Failed
+            {
+                process::exit(1);
+            }
         }
         "ownership" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

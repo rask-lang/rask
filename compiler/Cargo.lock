@@ -1355,28 +1355,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-check"
+version = "0.6.0"
+dependencies = [
+ "rask-ast",
+ "rask-diagnostics",
+ "rask-parser",
+ "rask-resolve",
+ "rask-stdlib",
+ "rask-types",
+ "thiserror",
+]
+
+[[package]]
 name = "rask-cli"
 version = "0.6.0"
 dependencies = [
  "colored",
  "rask-ast",
  "rask-c-parse",
+ "rask-check",
  "rask-codegen",
  "rask-compiler",
  "rask-comptime",
  "rask-describe",
  "rask-desugar",
  "rask-diagnostics",
- "rask-effects",
  "rask-fmt",
  "rask-interp",
  "rask-lexer",
  "rask-lint",
  "rask-manifest",
  "rask-mir",
- "rask-miri",
- "rask-mono",
- "rask-ownership",
  "rask-parser",
  "rask-resolve",
  "rask-spec-test",
@@ -1398,6 +1408,7 @@ dependencies = [
  "gimli",
  "object",
  "rask-ast",
+ "rask-check",
  "rask-mir",
  "rask-mono",
  "rask-stdlib",
@@ -1410,15 +1421,15 @@ name = "rask-compiler"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-c-parse",
+ "rask-check",
  "rask-codegen",
  "rask-comptime",
  "rask-desugar",
  "rask-diagnostics",
  "rask-effects",
+ "rask-interp",
  "rask-lexer",
  "rask-mir",
- "rask-miri",
  "rask-mono",
  "rask-ownership",
  "rask-parser",
@@ -1461,13 +1472,6 @@ version = "0.6.0"
 dependencies = [
  "colored",
  "rask-ast",
- "rask-interp",
- "rask-lexer",
- "rask-ownership",
- "rask-parser",
- "rask-resolve",
- "rask-stdlib",
- "rask-types",
  "serde",
  "serde_json",
 ]
@@ -1496,8 +1500,10 @@ dependencies = [
  "indexmap",
  "libc",
  "rask-ast",
+ "rask-check",
  "rask-comptime",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-lexer",
  "rask-mono",
  "rask-parser",
@@ -1515,6 +1521,7 @@ version = "0.6.0"
 dependencies = [
  "logos",
  "rask-ast",
+ "rask-diagnostics",
  "thiserror",
 ]
 
@@ -1523,7 +1530,6 @@ name = "rask-lint"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-effects",
  "rask-lexer",
  "rask-parser",
  "serde",
@@ -1535,6 +1541,7 @@ name = "rask-lsp"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-compiler",
  "rask-comptime",
  "rask-desugar",
@@ -1574,7 +1581,7 @@ name = "rask-mir"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-comptime",
+ "rask-check",
  "rask-diagnostics",
  "rask-mono",
  "rask-parser",
@@ -1586,9 +1593,8 @@ dependencies = [
 name = "rask-miri"
 version = "0.6.0"
 dependencies = [
+ "rask-check",
  "rask-mir",
- "rask-mono",
- "rask-types",
 ]
 
 [[package]]
@@ -1596,6 +1602,7 @@ name = "rask-mono"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
@@ -1607,7 +1614,8 @@ name = "rask-ownership"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-resolve",
+ "rask-check",
+ "rask-diagnostics",
  "rask-stdlib",
  "rask-types",
  "thiserror",
@@ -1618,6 +1626,7 @@ name = "rask-parser"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-diagnostics",
  "rask-lexer",
  "thiserror",
 ]
@@ -1630,6 +1639,8 @@ dependencies = [
  "flate2",
  "rand",
  "rask-ast",
+ "rask-c-parse",
+ "rask-diagnostics",
  "rask-lexer",
  "rask-parser",
  "rask-stdlib",
@@ -1655,6 +1666,7 @@ name = "rask-spec-test"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-check",
  "rask-desugar",
  "rask-interp",
  "rask-lexer",
@@ -1662,7 +1674,6 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
- "rask-types",
 ]
 
 [[package]]
@@ -1680,10 +1691,6 @@ name = "rask-types"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
- "rask-parser",
- "rask-resolve",
- "rask-stdlib",
- "thiserror",
 ]
 
 [[package]]

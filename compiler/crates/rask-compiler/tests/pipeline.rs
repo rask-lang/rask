@@ -84,7 +84,7 @@ fn call_targets_records_free_and_method_dispatch() {
     // of the receiver *expression*, which is routinely an unresolved variable.
     // Stdlib and primitive receivers are recorded too, not just user types —
     // those were exactly the ones lowering guessed wrong.
-    use rask_types::Callee;
+    use rask_check::Callee;
     let path = tmp_rk(r#"
         struct Counter { n: i32 }
         extend Counter {

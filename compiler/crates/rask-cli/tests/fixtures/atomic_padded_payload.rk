@@ -11,5 +11,5 @@ struct Padded {
 
 func main() {
     let s = Atomic<Padded>.new(Padded(a: 1, b: 2))
-    println("{s.load(Ordering.SeqCst).b}")
+    println("{s.load().b}")
 }

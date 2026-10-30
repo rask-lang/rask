@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: All types are values; ≤16 bytes copies implicitly, larger types move -->
 <!-- depends: memory/ownership.md -->
-<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
+<!-- implemented-by: compiler/crates/rask-check/, compiler/crates/rask-interp/ -->
 
 # Value Semantics
 

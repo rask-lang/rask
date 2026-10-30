@@ -14,7 +14,7 @@ mod reachability;
 pub mod reflect;
 
 pub use instantiate::instantiate_function;
-use rask_types::layout::{
+use rask_check::layout::{
     self, arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
     compute_union_layout, is_stdlib_span, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
 };
@@ -23,7 +23,8 @@ pub use reachability::{mangle_name, Monomorphizer};
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;
 use rask_ast::ty::TypeExpr;
-use rask_types::{Type, TypeBinding, TypedProgram};
+use rask_types::{Type, TypeBinding};
+use rask_check::TypedProgram;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphized program with all generics eliminated
@@ -58,9 +59,9 @@ pub struct MonoProgram {
     pub instantiated_node_types: HashMap<NodeId, Type>,
     /// Which original node each node of an instantiated body copies.
     pub node_origins: HashMap<NodeId, NodeId>,
-    pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    pub instantiated_call_targets: HashMap<NodeId, rask_check::Callee>,
     /// OR1: operator calls a conformance answered, in instantiated bodies.
-    pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
+    pub instantiated_operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
     /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
@@ -93,9 +94,9 @@ pub struct MonoProgram {
 /// nothing about a closure in a generic body.
 pub struct NodeRecords {
     pub node_types: HashMap<NodeId, Type>,
-    pub call_targets: HashMap<NodeId, rask_types::Callee>,
+    pub call_targets: HashMap<NodeId, rask_check::Callee>,
     /// OR1: operator calls a conformance answered.
-    pub operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
+    pub operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
     /// ER31a: `try` sites that wrap their error.
     pub error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape.
@@ -247,12 +248,12 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
         let (name, params, fields): (&str, Vec<String>, Vec<&TypeExpr>) = match &decl.kind {
             DeclKind::Struct(s) => (
                 s.name.as_str(),
-                rask_types::struct_type_param_names(s),
+                rask_check::struct_type_param_names(s),
                 s.fields.iter().map(|f| &f.ty).collect(),
             ),
             DeclKind::Enum(e) => (
                 e.name.as_str(),
-                rask_types::enum_type_param_names(e),
+                rask_check::enum_type_param_names(e),
                 e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
             ),
             _ => continue,
@@ -297,7 +298,7 @@ struct Instantiations<'a> {
     /// Each instantiation the program mentions, as base name and arguments.
     reached: Vec<(String, Vec<Type>)>,
     type_names: &'a HashMap<rask_types::TypeId, String>,
-    types: &'a rask_types::TypeTable,
+    types: &'a rask_check::TypeTable,
 }
 
 /// One layout to compute.
@@ -522,10 +523,10 @@ fn instance_steps(
         .iter()
         .enumerate()
         .filter_map(|(i, d)| match &d.kind {
-            DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
+            DeclKind::Struct(s) if !rask_check::struct_type_param_names(s).is_empty() => {
                 Some((s.name.as_str(), i))
             }
-            DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
+            DeclKind::Enum(e) if !rask_check::enum_type_param_names(e).is_empty() => {
                 Some((e.name.as_str(), i))
             }
             _ => None,
@@ -618,8 +619,8 @@ fn layout_order(
             }
             LayoutStep::Instance { decl, args, .. } => {
                 let params = match &decls[*decl].kind {
-                    DeclKind::Struct(s) => rask_types::struct_type_param_names(s),
-                    DeclKind::Enum(e) => rask_types::enum_type_param_names(e),
+                    DeclKind::Struct(s) => rask_check::struct_type_param_names(s),
+                    DeclKind::Enum(e) => rask_check::enum_type_param_names(e),
                     _ => Vec::new(),
                 };
                 let subst: HashMap<&str, &Type> =
@@ -735,7 +736,7 @@ fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) ->
 fn inline_arg_size(
     ty: &Type,
     type_names: &HashMap<rask_types::TypeId, String>,
-    type_defs: &rask_types::TypeTable,
+    type_defs: &rask_check::TypeTable,
     cache: &LayoutCache,
 ) -> Option<u32> {
     match ty {
@@ -1255,7 +1256,7 @@ mod tests {
             c_fn_pointers: std::collections::HashSet::new(),
             c_contexts: std::collections::HashMap::new(),
             resolutions: std::collections::HashMap::new(),
-            types: rask_types::TypeTable::new(),
+            types: rask_check::TypeTable::new(),
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),

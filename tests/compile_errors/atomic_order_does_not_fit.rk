@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a load given a release order, a store given an acquire one
+//
+// A load only reads, so it has no release half; a store only writes, so it has
+// no acquire half (mem.atomics/AT6). C11 leaves both undefined, and running
+// them as `Relaxed` would hide that the program asked for something else.
+
+import sync.{Atomic, MemoryOrder}
+
+func main() {
+    let ready = Atomic<bool>.new(false)
+    // ERROR: a load has no release half
+    let seen = ready.load(order: MemoryOrder.Release)
+    // ERROR: a store has no acquire half
+    ready.store(true, order: MemoryOrder.Acquire)
+    // ERROR: AcqRel is for read-modify-writes
+    ready.store(seen, order: MemoryOrder.AcqRel)
+    // These fit, and aren't reported.
+    ready.store(true, order: MemoryOrder.Release)
+    let fine = ready.load(order: MemoryOrder.Acquire)
+    let n = Atomic<i64>.new(0)
+    n.fetch_add(1, order: MemoryOrder.AcqRel)
+    println(fine)
+}

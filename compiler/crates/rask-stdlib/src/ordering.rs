@@ -10,7 +10,7 @@
 //!
 //! ## It still gets a layout
 //!
-//! `rask_types::layout::ordering_layout` synthesizes one from that list, so `Ordering`
+//! `rask_check::layout::ordering_layout` synthesizes one from that list, so `Ordering`
 //! lays out like any other fieldless enum: a `u8` tag at offset 0.
 //! `compare` stores its result into a real slot rather than handing back the
 //! bare tag, which is what makes `Ordering implements Displayable` work on
@@ -33,15 +33,10 @@
 //! block. `t55_ordering`, `t61_nominal_interfaces` and `t_sort_by_closure` are the
 //! suites that catch all of this; run `tests/differential.sh`.
 
-/// Comparison results (ORD1) and atomic memory orderings, in tag order.
-/// The two share one enum, matching the resolver's and interpreter's
-/// registrations.
-pub const ORDERING_VARIANTS: &[&str] = &[
-    // Comparison (ORD1)
-    "Less", "Equal", "Greater",
-    // Atomic memory ordering
-    "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst",
-];
+/// Comparison results (ORD1), in tag order. Atomic memory orders are their
+/// own enum, `MemoryOrder` in stdlib/sync.rk; sharing this one let
+/// `a.load(Ordering.Less)` type-check (#1684).
+pub const ORDERING_VARIANTS: &[&str] = &["Less", "Equal", "Greater"];
 
 /// The tag a variant name carries, or `None` if `Ordering` has no such variant.
 pub fn ordering_tag(variant: &str) -> Option<i64> {

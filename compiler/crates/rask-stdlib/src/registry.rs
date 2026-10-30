@@ -3,9 +3,8 @@
 //! the interpreter's drift tests, and which layer each lives in.
 //!
 //! A type declared in `stdlib/*.rk` answers from its declaration, the
-//! primitives included (stdlib/int.rk, float.rk, char.rk). Only the compiler's
-//! own types with no stdlib file — the SIMD vectors, `Atomic` — have lists
-//! here.
+//! primitives included (stdlib/int.rk, float.rk, char.rk). Only the SIMD
+//! vectors, which no stdlib file declares, have a list here.
 
 /// Where a stdlib type or module lives in the compilation pipeline.
 ///
@@ -53,52 +52,12 @@ pub fn module_layer(module: &str) -> StdlibLayer {
 // Instance methods by type
 // ---------------------------------------------------------------------------
 
-/// A compiler type's methods, each with the argument counts it accepts.
-///
-/// Two lists — one of names, one of arities — is one list too many. This
-/// expands to both from a single set of lines, so a method added to a resolver
-/// can't reach the names and miss the counts, or the other way round.
-///
-/// A name can carry more than one count where it has more than one form. Where
-/// it has exactly one, a call that misses it can be told how many it wanted;
-/// where it has several, no single number is the answer and the diagnostic says
-/// what didn't fit instead (#1150).
-macro_rules! methods_with_arity {
-    ($names:ident, $arities:ident, $($m:literal => [$($n:literal),*]),* $(,)?) => {
-        const $names: &[&str] = &[$($m),*];
-        const $arities: &[(&str, &[usize])] = &[$(($m, &[$($n),*])),*];
-    };
-}
-
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
     "add", "sub", "mul", "div", "scale",
     "sum", "product", "min", "max",
     "get", "set",
 ];
-
-// mem.atomics: one type, so one list. Which of these a given payload actually
-// gets is GA3's business — a `bool` has no `fetch_add` — and the checker
-// answers that from the payload rather than from a second list here.
-//
-// `new` and `default` are constructors — they answer on the type, not on a
-// value, the same way `Shared`'s do, so they aren't here.
-methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
-    "load" => [1],
-    "store" => [2],
-    "swap" => [2],
-    "compare_exchange" => [4],
-    "compare_exchange_weak" => [4],
-    "fetch_add" => [2],
-    "fetch_sub" => [2],
-    "fetch_and" => [2],
-    "fetch_or" => [2],
-    "fetch_xor" => [2],
-    "fetch_nand" => [2],
-    "fetch_max" => [2],
-    "fetch_min" => [2],
-    "take" => [0],
-);
 
 // ---------------------------------------------------------------------------
 // Lookup
@@ -159,11 +118,9 @@ pub fn is_rask_implemented(type_name: &str) -> bool {
 /// ones its declaration in `stdlib/*.rk` has. A hand list per type drifted from
 /// the declarations, so "did you mean" offered methods that didn't exist.
 ///
-/// The SIMD vectors and `Atomic` have no declaration — they're the
-/// compiler's own — so they answer from the lists above.
+/// The SIMD vectors have no declaration, so they answer from the list above.
 pub fn type_method_names(type_name: &str) -> Vec<&'static str> {
     let compiler_type: &[&str] = match type_name {
-        "Atomic" => ATOMIC_METHODS,
         "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
         _ => return declared_method_names(type_name),
     };
@@ -191,25 +148,6 @@ fn declared_method_names(name: &str) -> Vec<&'static str> {
         }
     }
     names
-}
-
-/// The argument counts `type_name.method` accepts, where nothing else knows.
-///
-/// Almost every builtin declares its methods in `stdlib/*.rk`, so a wrong count
-/// is caught against the declared signature and the error names the number —
-/// that is why `v.len(3)` has always read correctly. `Atomic` has no stdlib
-/// file at all: it is a compiler type, and its resolver is the only description
-/// of it, so its arities live with its names here and the resolver asks this
-/// before falling through to "no such method" (#1150).
-///
-/// `None` means nothing is known about the name, which is not the same as
-/// "takes no arguments".
-pub fn type_method_arity(type_name: &str, method: &str) -> Option<&'static [usize]> {
-    let table = match type_name {
-        "Atomic" => ATOMIC_ARITIES,
-        _ => return None,
-    };
-    table.iter().find(|(m, _)| *m == method).map(|(_, counts)| *counts)
 }
 
 /// The functions a program can call in a stdlib module, from its declaration.

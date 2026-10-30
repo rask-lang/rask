@@ -296,7 +296,7 @@ fn rust_built_enums_carry_the_declared_tags() {
         ("SelectError", "Cancelled"),
         ("TryReceiveError", "Closed"),
         ("Ordering", "Greater"),
-        ("Ordering", "SeqCst"),
+        ("MemoryOrder", "SeqCst"),
     ] {
         let built = Value::stdlib_enum(enum_name, variant, vec![]);
         let declared = interp.enum_variant(enum_name, variant, vec![]).unwrap();

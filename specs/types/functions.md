@@ -2,7 +2,7 @@
 <!-- status: decided -->
 <!-- summary: Function types carry each parameter's mode; a call through a function value applies it like a direct call -->
 <!-- depends: memory/parameters.md, memory/closures.md -->
-<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/, compiler/crates/rask-ownership/, compiler/crates/rask-mir/, compiler/crates/rask-interp/ -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-check/, compiler/crates/rask-ownership/, compiler/crates/rask-mir/, compiler/crates/rask-interp/ -->
 
 # Function Types
 

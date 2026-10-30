@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A dependency's types print under the names they were declared with. They
+// printed as `Entry_libpkg(...)`, the name the package merge gives them.
+
+import libpkg
+
+func main() {
+    let e = libpkg.Entry(amount: 5, memo: "rent")
+    let k = libpkg.Kind.Large(3)
+    let s = libpkg.Kind.Small
+    println("{e:debug}")
+    println("{k:debug}")
+    println("{s:debug}")
+}

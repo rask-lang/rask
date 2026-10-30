@@ -18,7 +18,7 @@ use colored::Colorize;
 use rask_ast::expr::ExprKind;
 use rask_ast::ty::TypeExpr;
 use rask_spec_test::surface::{self, FnKey, SpecSurface, SurfaceFn, SurfaceType};
-use rask_types::{receiver_name, Callee};
+use rask_check::{receiver_name, Callee};
 
 use crate::output;
 

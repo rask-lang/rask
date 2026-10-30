@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One claim for each verdict a claim can end with (type.claims).
+
+import ledger
+
+enum Op {
+    Deposit(u32)
+    Withdraw(u32)
+}
+
+// False: the shrunk counterexample is a single withdrawal of 1.
+claim never_overdrawn(ops: Vec<Op>) {
+    mut l = ledger.Ledger.new()
+    for op in ops {
+        match op {
+            Op.Deposit(n) => {
+                l.deposit(n)
+            }
+            Op.Withdraw(n) => {
+                l.withdraw(n)
+            }
+        }
+        assert l.balance() >= 0
+    }
+}
+
+// Every input walked, half of them discarded with `return`.
+claim kinds_hold(k: ledger.Kind, skip: bool) {
+    if skip {
+        return
+    }
+    match k {
+        ledger.Kind.Small => {
+            assert true
+        }
+        ledger.Kind.Large(n) => {
+            assert n.to<i64>()! >= 0
+        }
+    }
+}
+
+// Sampled: a struct built from its public fields, an optional and a tuple.
+claim entries_print(e: ledger.Entry, maybe: i64?, pair: (bool, string)) {
+    assert e.memo.len() >= 0
+}
+
+// One input never finishes; it runs out of its step budget.
+@claim_budget(5000)
+claim spins_on_seven(n: u8) {
+    mut i = 0
+    while n == 7 {
+        i += 1
+    }
+    assert i == 0
+}
+
+// A panic in the code under a claim is a counterexample too.
+claim no_bad_index(x: u16) {
+    let v: Vec<i64> = [1, 2, 3]
+    if x > 40000 {
+        let k = v[5]
+    }
+}
+
+// Tasks run under sim, so a claim can spawn and join.
+claim tasks_double(x: i32) {
+    let want = x.to<i64>()! * 2
+    using Multitasking {
+        let h = spawn {
+            return x.to<i64>()! * 2
+        }
+        let got = h.join()!
+        assert got == want
+    }
+}

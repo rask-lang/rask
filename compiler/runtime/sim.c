@@ -853,6 +853,36 @@ void rask_sim_begin(uint64_t seed, int64_t max_steps) {
     g.active = 1;
 }
 
+int rask_sim_reseed(uint64_t seed) {
+    pthread_mutex_lock(&g.lock);
+    reap_locked();
+    for (int64_t i = 1; i < g.count; i++) {
+        if (g.tasks[i]->state != SIM_DONE) {
+            pthread_mutex_unlock(&g.lock);
+            return 0;
+        }
+    }
+    // Spawn order numbers the tasks, and a task's random stream comes from its
+    // number (SD3), so the numbering starts over with the input.
+    for (int64_t i = 1; i < g.count; i++) {
+        free(g.tasks[i]);
+    }
+    g.count = 1;
+    g.seed = seed;
+    g.sched = stream_seed(seed, STREAM_SCHED);
+    g.fault = stream_seed(seed, STREAM_FAULT);
+    g.tasks[0]->random = stream_seed(seed, STREAM_TASK);
+    g.faults = 0;
+    g.wall_jump_ns = 0;
+    g.sick_log[0] = '\0';
+    g.step = 0;
+    g.now_ns = 0;
+    faults_seen = 0;
+    pthread_mutex_unlock(&g.lock);
+    rask_map_set_seed(stream_seed(seed, STREAM_HASH));
+    return 1;
+}
+
 int64_t rask_sim_step(void) {
     return g.step;
 }

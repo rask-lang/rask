@@ -24,7 +24,7 @@ Systematic validation for parser, type checker, codegen, runtime. Multiple test 
 Test individual functions and helper methods directly in source files.
 
 ```rust
-// In compiler/crates/rask-types/src/unify.rs
+// In compiler/crates/rask-check/src/unify.rs
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,7 +335,7 @@ rask/
           parser.rs               # Code + unit tests inline
         tests/
           parser_test.rs          # Component tests
-      rask-types/
+      rask-check/
         src/
           checker.rs              # Code + unit tests
         tests/
