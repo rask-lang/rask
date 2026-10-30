@@ -118,7 +118,7 @@ Linearity is enforced for a `Heap(…)` local: one that nothing consumes is an e
 
 | Rule | Description |
 |------|-------------|
-| **HP6: Context allocator** | `Heap(…)` allocates using the context allocator inherited from the caller |
+| **HP6: Current allocator** | `Heap(…)` allocates from the task's current allocator (`mem.alloc/AL21`) and remembers it, so `drop` frees through the one that allocated |
 
 <!-- test: skip -->
 ```rask
@@ -127,19 +127,13 @@ func build_tree() -> Heap<Tree<i32>> {
 }
 
 func main() {
-    let tree = build_tree()     // Uses default system allocator
+    let tree = build_tree()     // Global
 
-    with context.allocator = arena {
-        let tree2 = build_tree()  // Allocated in arena
-    }
+    using Arena.scoped(1.megabytes()) {
+        let tree2 = build_tree()  // every node in the arena, same code
+    }                             // tree2 can't leave the block (mem.alloc/AL13); the arena frees it
 }
 ```
-
-| Context | Behavior |
-|---------|----------|
-| Default | System allocator (malloc/free equivalent) |
-| Custom allocator | Uses provided allocator |
-| Arena context | Allocated in arena (bulk free on arena drop) |
 
 ## Null-Pointer Optimization
 
@@ -304,7 +298,7 @@ The name a binary heap would want is a casualty I'll take: a priority queue shou
 
 **HP5 (transparent type checking):** I don't want `Heap<T>` to infect every function signature. If a function takes `T`, it should accept `Heap<T>` with auto-deref. The alternative — explicit unwrapping everywhere — adds noise without safety benefit.
 
-**HP6 (context allocator):** `Heap(…)` uses the context allocator so arena allocation works without changing call sites. Build a tree with the system allocator, or build it in an arena — same code.
+**HP6 (current allocator):** `Heap(…)` takes the current allocator so arena allocation works without changing call sites. Build a tree on `Global`, or build it in an arena — same code.
 
 **HP7 (null optimization):** `Heap<T>?` is the natural way to express optional tree children. Null-pointer optimization keeps it at 8 bytes — same as a raw pointer.
 

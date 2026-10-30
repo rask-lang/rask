@@ -25,7 +25,7 @@ concepts — they're the same type with different synchronization — so they're
 | Rule | Description |
 |------|-------------|
 | **SH1: One type** | `Shared<T, S>` holds one value that several names reach. `S` is the access strategy: `Local`, `Readers`, or `Mutex` |
-| **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Readers>`, resolved at monomorphization like the allocator parameter (`mem.alloc/AL4`). Zero cost — no dispatch, no stored tag. Defaulted, not absent: `Shared<T>` *is* `Shared<T, Readers>`, and mixing it with another strategy is a type error (E0381), not a coercion |
+| **SH2: Strategy is a defaulted type parameter** | `Shared<T, S = Readers>`, resolved at monomorphization. Zero cost — no dispatch, no stored tag. Defaulted, not absent: `Shared<T>` *is* `Shared<T, Readers>`, and mixing it with another strategy is a type error (E0381), not a coercion |
 | **SH3: Bare means `Readers`, everywhere** | `Shared<T>` is `Shared<T, Readers>` in a `let`, a parameter, a field and a return type alike. One type expression, one meaning, whatever position it sits in |
 | **SH4: Strategy-agnostic code says so** | A function that works with any strategy writes the parameter: `func serve<S>(c: Shared<Config, S>)`. Leaving it off means `Readers`, so a `Local` one handed to `serve(c: Shared<Config>)` is rejected — the strategy picks which lock the accessors take, and getting it wrong deadlocks rather than misbehaving visibly |
 | **SH5: Two verbs** | `read()` and `write()`, inline or as a `with` block. Both exist under every strategy — `read()` under `Mutex` takes the exclusive lock: slower than `Readers` would be, never wrong |
