@@ -40,8 +40,8 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 70,
-        target: 9,
+        today: 43,
+        target: 0,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
               interface it belongs to (rask-lang/rask#1561, #1565)",
@@ -161,19 +161,29 @@ fn name_sniffs(crates: &Path) -> Vec<String> {
 
 /// Match arms keyed on a method name in the checker: `"len" if args.is_empty() =>`.
 /// Each name in one counts once. Primitive type names (`"i64" =>`) are types,
-/// not methods, and don't count.
-///
-/// The target isn't zero: `removed_string_method` names nine methods `string`
-/// doesn't have (`add`, `push`, `new`, …) to say why instead of "no such
-/// method". Those answer nothing, so they stay.
+/// not methods, and don't count, and neither do the functions in
+/// `NOT_METHOD_TABLES`, whose string arms aren't answering a method call.
 fn checker_method_arms(crates: &Path) -> Vec<String> {
     const TYPE_NAMES: &[&str] = &[
         "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64",
         "bool", "char", "string", "usize", "isize", "void", "bytes", "self",
     ];
+    const NOT_METHOD_TABLES: &[(&str, &str)] = &[
+        ("removed_string_method", "names methods `string` doesn't have, to say why"),
+        ("closest_type_name", "other languages' type names, to suggest Rask's"),
+        ("simd_elem_type", "SIMD type names, not methods"),
+        ("check_call", "builtin free functions (`panic`, `todo`), not methods"),
+    ];
     let mut out = Vec::new();
+    let mut current_fn = String::new();
     for (rel, line, code) in source_lines(crates, &["rask-types/src/checker"], &[]) {
         let head = code.trim_start();
+        if let Some(rest) = ["pub(super) fn ", "pub(crate) fn ", "pub fn ", "fn "].iter().find_map(|p| head.strip_prefix(p)) {
+            current_fn = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        }
+        if NOT_METHOD_TABLES.iter().any(|(f, _)| *f == current_fn) {
+            continue;
+        }
         let Some(arm) = head.split("=>").next().filter(|_| head.contains("=>")) else { continue };
         let names: Vec<&str> = arm.split('|').map(str::trim).map(|n| n.split(" if ").next().unwrap_or(n).trim()).collect();
         let all_names = names.iter().all(|n| {
@@ -188,7 +198,7 @@ fn checker_method_arms(crates: &Path) -> Vec<String> {
         }
         for n in names {
             if !TYPE_NAMES.contains(&&n[1..n.len() - 1]) {
-                out.push(format!("{rel}:{line}: {n}"));
+                out.push(format!("{rel}:{line}: {current_fn}: {n}"));
             }
         }
     }
