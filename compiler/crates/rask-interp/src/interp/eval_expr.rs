@@ -441,6 +441,8 @@ impl Interpreter {
             T::U16 => "u16",
             T::U32 => "u32",
             T::U64 => "u64",
+            T::Usize => "usize",
+            T::Isize => "isize",
             T::F32 => "f32",
             T::F64 => "f64",
             _ => return None,

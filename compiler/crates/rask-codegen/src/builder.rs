@@ -2112,8 +2112,8 @@ impl<'a> FunctionBuilder<'a> {
         match ty {
             // Primitives, opaque pointers — scalar
             RaskType::Unit | RaskType::Bool
-            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64 | RaskType::I128
-            | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
+            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64 | RaskType::I128 | RaskType::Isize
+            | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128 | RaskType::Usize
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
             | RaskType::RawPtr(_)
@@ -4353,6 +4353,7 @@ impl<'a> FunctionBuilder<'a> {
             RaskType::U32 => MirType::U32,
             RaskType::U64 => MirType::U64,
             RaskType::U128 => MirType::U128,
+            RaskType::Usize => MirType::usize_ty(),
             // Both are unsigned as far as the widening is concerned: a bool is
             // 0 or 1, and a char is a Unicode scalar, so neither ever has its
             // top bit set — but saying so beats relying on it.

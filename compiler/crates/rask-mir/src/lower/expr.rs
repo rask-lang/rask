@@ -7449,6 +7449,7 @@ impl<'a> MirLowerer<'a> {
                 | rask_types::Type::Char => Some(4),
                 rask_types::Type::U64 | rask_types::Type::I64 | rask_types::Type::F64 => Some(8),
                 rask_types::Type::U128 | rask_types::Type::I128 => Some(16),
+                rask_types::Type::Usize | rask_types::Type::Isize => Some(MirType::usize_ty().size() as i64),
                 _ => None,
             },
             _ => None,
@@ -7469,6 +7470,8 @@ impl<'a> MirLowerer<'a> {
                 T::I32 => MirType::I32,
                 T::U64 => MirType::U64,
                 T::I64 => MirType::I64,
+                T::Usize => MirType::usize_ty(),
+                T::Isize => MirType::isize_ty(),
                 T::F32 => MirType::F32,
                 T::F64 => MirType::F64,
                 T::Char => MirType::Char,
@@ -7731,6 +7734,7 @@ impl<'a> MirLowerer<'a> {
             .map(|ty| matches!(ty,
                 rask_types::Type::I8 | rask_types::Type::I16 | rask_types::Type::I32 | rask_types::Type::I64
                 | rask_types::Type::U8 | rask_types::Type::U16 | rask_types::Type::U32 | rask_types::Type::U64
+                | rask_types::Type::Usize | rask_types::Type::Isize
                 | rask_types::Type::F32 | rask_types::Type::F64 | rask_types::Type::Bool
             ))
             .unwrap_or(false);

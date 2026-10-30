@@ -7,6 +7,20 @@
 // Now a conversion is implicit exactly when it fits on every target: into
 // `usize` from anything 32 bits or narrower, out of it into anything 64 bits
 // or wider. The rest names a policy, the same everywhere.
+//
+// Natively a `usize` field was taken for a value held by address: a field
+// read printed a stack address and two equal values compared unequal,
+// because codegen and MIR had integer lists of their own that didn't know it.
+
+struct Pos {
+    line: usize
+    col: usize
+}
+
+enum Problem {
+    Count(row: usize, expected: usize, found: usize)
+    Bad(row: usize, why: string)
+}
 
 test "what fits on every target is implicit" {
     let v: Vec<i64> = [1, 2, 3]
@@ -40,4 +54,21 @@ test "usize arithmetic stays usize" {
     }
     assert total == 2
     assert total * 2 == 4
+}
+
+test "a usize field reads and compares by value" {
+    let a = Pos(line: 1, col: 2)
+    let b = Pos(line: 1, col: 2)
+    assert a.line == 1
+    assert a.col == 2
+    assert a == b
+    assert a != Pos(line: 1, col: 3)
+}
+
+test "usize payloads compare field by field" {
+    let p = Problem.Count(row: 4, expected: 3, found: 2)
+    let q = Problem.Count(row: 4, expected: 3, found: 2)
+    assert p == q
+    assert p != Problem.Count(row: 4, expected: 3, found: 1)
+    assert Problem.Bad(row: 1, why: "x") == Problem.Bad(row: 1, why: "x")
 }

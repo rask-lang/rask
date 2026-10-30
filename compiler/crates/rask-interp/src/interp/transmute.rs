@@ -25,7 +25,7 @@ fn align_up(n: u32, align: u32) -> u32 {
 
 /// Width in bytes of an integer type, and whether it's signed.
 fn int_shape(ty: &Type) -> Option<(usize, bool)> {
-    Some(match ty.at_pointer_width(rask_ast::primitives::pointer_bits()) {
+    Some(match ty.at_target_width() {
         Type::I8 => (1, true),
         Type::I16 => (2, true),
         Type::I32 => (4, true),

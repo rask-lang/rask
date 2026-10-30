@@ -6483,8 +6483,8 @@ pub fn builtin_method_prefix(ty: &Type) -> Option<&'static str> {
         Type::F32 | Type::F64 => Some("f64"),
         Type::Bool => Some("bool"),
         Type::Char => Some("char"),
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 => Some("i64"),
-        Type::U8 | Type::U16 | Type::U32 | Type::U64 => Some("u64"),
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize => Some("i64"),
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Usize => Some("u64"),
         // 128-bit dispatches on its own prefix. It used to ride the 64-bit
         // symbols, which was defensible only while no value needed more than 64
         // bits — `abs` on an `i128` truncated the moment that stopped being

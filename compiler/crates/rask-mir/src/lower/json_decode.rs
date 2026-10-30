@@ -544,7 +544,7 @@ impl<'a> MirLowerer<'a> {
 }
 
 fn prim_shape_kind(ty: &Type) -> Option<i64> {
-    let kind = match ty {
+    let kind = match &ty.at_target_width() {
         Type::Bool => JSHAPE_BOOL,
         Type::I8 => JSHAPE_I8,
         Type::I16 => JSHAPE_I16,
@@ -563,12 +563,12 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
             "i16" => JSHAPE_I16,
             "i32" => JSHAPE_I32,
             "i64" => JSHAPE_I64,
-            "isize" => if rask_ast::primitives::pointer_bits() == 32 { JSHAPE_I32 } else { JSHAPE_I64 },
+            "isize" => return prim_shape_kind(&Type::Isize),
             "u8" => JSHAPE_U8,
             "u16" => JSHAPE_U16,
             "u32" => JSHAPE_U32,
             "u64" => JSHAPE_U64,
-            "usize" => if rask_ast::primitives::pointer_bits() == 32 { JSHAPE_U32 } else { JSHAPE_U64 },
+            "usize" => return prim_shape_kind(&Type::Usize),
             "f32" => JSHAPE_F32,
             "f64" => JSHAPE_F64,
             "string" => JSHAPE_STRING,

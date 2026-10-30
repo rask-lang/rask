@@ -258,6 +258,16 @@ impl Type {
     /// Anything else is itself. For layout and the backends; the checker never
     /// asks, so a program type-checks the same for every target.
     pub fn at_pointer_width(&self, bits: u32) -> Type {
+        self.at_width(bits)
+    }
+
+    /// `at_pointer_width` for the target this compilation is for. Reads the
+    /// process-wide width, until a `Target` value is passed down instead.
+    pub fn at_target_width(&self) -> Type {
+        self.at_width(rask_ast::primitives::pointer_bits())
+    }
+
+    fn at_width(&self, bits: u32) -> Type {
         match (self, bits) {
             (Type::Usize, 32) => Type::U32,
             (Type::Usize, _) => Type::U64,
