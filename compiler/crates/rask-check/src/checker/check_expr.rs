@@ -3730,8 +3730,8 @@ impl TypeChecker {
                 };
                 self.errors.push(TypeError::OverlappingArgumentBorrow {
                     callee: callee.to_string(),
-                    written: write_path.join("."),
-                    other: read_path.join("."),
+                    written: path_text(write_path),
+                    other: path_text(read_path),
                     span: *span,
                 });
                 return; // one report per call is enough to act on
@@ -3749,6 +3749,20 @@ impl TypeChecker {
             ExprKind::Field { object, field } => {
                 let mut path = Self::access_path(object)?;
                 path.push(field.clone());
+                Some(path)
+            }
+            // An index the source pins down: a literal, or one variable read
+            // twice in the same call, is the same element both times.
+            // `both(mutate v[0], mutate v[0])` handed the callee two writable
+            // names for one element. A computed index stays unknown.
+            ExprKind::Index { object, index } => {
+                let step = match &index.kind {
+                    ExprKind::Int(n, _) => format!("[{n}]"),
+                    ExprKind::Ident(name) => format!("[{name}]"),
+                    _ => return None,
+                };
+                let mut path = Self::access_path(object)?;
+                path.push(step);
                 Some(path)
             }
             _ => None,
@@ -4339,6 +4353,28 @@ impl TypeChecker {
                     });
                 }
                 return result_ty;
+            }
+        }
+
+        // F3 with the receiver as one of the arguments: `b.absorb(b)` on a
+        // `mutate self` method handed the body a writable `self` and a
+        // read of the same value, and `self.items.clear()` showed through
+        // `other`. Only a receiver whose type is known here; one still open
+        // has nothing to say whether the method writes.
+        if let Some(var_name) = object.name() {
+            if self.method_mutates_self(var_name, method) {
+                if let Some(recv_path) = Self::access_path(object) {
+                    if let Some(arg) = args.iter().find(|a| {
+                        Self::access_path(&a.expr).is_some_and(|p| paths_overlap(&recv_path, &p))
+                    }) {
+                        self.errors.push(TypeError::OverlappingArgumentBorrow {
+                            callee: format!("{}.{}", var_name, method),
+                            written: path_text(&recv_path),
+                            other: path_text(&Self::access_path(&arg.expr).unwrap_or_default()),
+                            span: arg.expr.span,
+                        });
+                    }
+                }
             }
         }
 
@@ -7715,6 +7751,18 @@ fn body_returns_a_value(body: &Expr) -> bool {
 
 /// Two access paths reach the same storage when one is a prefix of the other.
 /// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
+/// An access path as it's written: `v[0].x`, not `v.[0].x`.
+pub(super) fn path_text(path: &[String]) -> String {
+    let mut out = String::new();
+    for (i, step) in path.iter().enumerate() {
+        if i > 0 && !step.starts_with('[') {
+            out.push('.');
+        }
+        out.push_str(step);
+    }
+    out
+}
+
 pub(super) fn paths_overlap(a: &[String], b: &[String]) -> bool {
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }

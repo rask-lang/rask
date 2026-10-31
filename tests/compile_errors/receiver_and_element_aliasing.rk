@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: one value handed to a call twice where one of the two writes,
+// through the receiver or through the same element
+//
+// E0870 compared arguments by field path, and left out two shapes. A
+// `mutate self` receiver wasn't one of the arguments, so `b.absorb(b)` gave
+// the body a writable `self` and a read of the same bag; clearing one showed
+// through the other. And an index was never a path, so `both(mutate v[0],
+// mutate v[0])` handed two writable names for one element.
+
+struct Bag { items: Vec<i32> }
+
+extend Bag {
+    func absorb(mutate self, other: Bag) {
+        self.items.clear()
+        println("{other.items.len()}")
+    }
+}
+
+struct Item { x: i32 }
+
+func both(mutate a: Item, mutate b: Item) {
+    a.x = 1
+    b.x = 2
+}
+
+func main() {
+    mut b = Bag(items: [1, 2])
+    // ERROR: `b` is the receiver and the argument [E0870]
+    b.absorb(b)
+    mut v: Vec<Item> = [Item(x: 1), Item(x: 2)]
+    // ERROR: the same element twice [E0870]
+    both(mutate v[0], mutate v[0])
+
+    // FIX: different elements, or a copy
+    both(mutate v[0], mutate v[1])
+    b.absorb(b.clone())
+}
