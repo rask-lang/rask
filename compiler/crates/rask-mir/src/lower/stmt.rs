@@ -1675,6 +1675,15 @@ impl<'a> MirLowerer<'a> {
             Some(stmt) => self.checked_mir_type(stmt, "annotated binding")?,
             None => inferred_ty.clone(),
         };
+        // The checker's type for the binding, for later uses of the name it
+        // left untyped.
+        let binding_checked = declared
+            .clone()
+            .or_else(|| self.ctx.lookup_raw_type(init.id).cloned())
+            .filter(|t| !crate::fallback::type_is_open(t));
+        if let Some(ty) = binding_checked {
+            self.meta_mut(name).checked_type = Some(ty);
+        }
         if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
                 if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
@@ -1844,10 +1853,10 @@ impl<'a> MirLowerer<'a> {
                     if let Some(prefix) = super::func_return_type_prefix(&func_name) {
                         self.meta_mut(name).type_prefix = Some(prefix.to_string());
                     }
-                    // Propagate full generic type through clone (Shared, Sender, Receiver)
+                    // A clone is the same type (Shared, Sender, Receiver).
                     if method == "clone" {
-                        if let Some(full_ty) = self.meta(obj_name).and_then(|m| m.full_type.clone()) {
-                            self.meta_mut(name).full_type = Some(full_ty);
+                        if let Some(ty) = self.meta(obj_name).and_then(|m| m.checked_type.clone()) {
+                            self.meta_mut(name).checked_type = Some(ty);
                         }
                     }
                 }
@@ -1859,34 +1868,6 @@ impl<'a> MirLowerer<'a> {
                         && super::is_type_constructor_name(module_name)
                     {
                         self.meta_mut(name).type_prefix = Some(type_name.clone());
-                    }
-                }
-            }
-        }
-        // Track full generic type for Shared.new(data) calls:
-        // infer inner type from the constructor argument.
-        if let ExprKind::MethodCall { object, method, args: call_args, .. } = &init.kind {
-            if let Some(obj_name) = object.name() {
-                if obj_name == "Shared" && method == "new" && !call_args.is_empty() {
-                    // Infer inner type from the first arg
-                    let inner_name = match &call_args[0].expr.kind {
-                        ExprKind::StructLit { name: sn, .. } => Some(sn.clone()),
-                        ExprKind::MethodCall { object: inner_obj, .. } => {
-                            if let Some(tn) = inner_obj.name() {
-                                if tn.chars().next().map_or(false, |c| c.is_uppercase()) {
-                                    Some(tn.to_string())
-                                } else { None }
-                            } else { None }
-                        }
-                        ExprKind::Ident(vn) => {
-                            // Look up variable type from local_meta
-                            self.meta(vn).and_then(|m| m.type_prefix.clone())
-                        }
-                        _ => None,
-                    };
-                    if let Some(inner) = inner_name {
-                        self.meta_mut(name).full_type =
-                            Some(TypeExpr::generic("Shared", vec![TypeExpr::named(inner)]));
                     }
                 }
             }
@@ -1933,14 +1914,14 @@ impl<'a> MirLowerer<'a> {
         // and correct for any `const b = a` where `a` is a tracked container.
         if let ExprKind::Ident(src) = &init.kind {
             let carried = self.meta(src).map(|m| {
-                (m.type_prefix.clone(), m.full_type.clone(), m.elem_type.clone())
+                (m.type_prefix.clone(), m.checked_type.clone(), m.elem_type.clone())
             });
             if let Some((prefix, full, elem)) = carried {
                 if let Some(p) = prefix {
                     self.meta_mut(name).type_prefix = Some(p);
                 }
                 if let Some(f) = full {
-                    self.meta_mut(name).full_type = Some(f);
+                    self.meta_mut(name).checked_type = Some(f);
                 }
                 if let Some(e) = elem {
                     self.meta_mut(name).elem_type = Some(e);

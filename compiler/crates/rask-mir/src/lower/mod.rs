@@ -1847,9 +1847,10 @@ pub(crate) struct LocalMeta {
     /// Stdlib type prefix (e.g. "Random", "File", "Vec").
     /// Fallback when the type checker leaves types unresolved.
     pub type_prefix: Option<String>,
-    /// The full written type of a generic one (e.g. `Shared<Database>`).
-    /// Resolves generic inner types when type checker info is incomplete.
-    pub full_type: Option<TypeExpr>,
+    /// The checker's type for the local: a parameter's from the signature, a
+    /// binding's from its statement or initializer. Where a later use of the
+    /// name has no type of its own recorded, this is the answer.
+    pub checked_type: Option<Type>,
     /// Collection element MirType (e.g. the T in Vec<T>).
     /// Propagates element types through for-in iteration after mono.
     pub elem_type: Option<MirType>,
@@ -2160,12 +2161,8 @@ impl<'a> MirLowerer<'a> {
         let Some(type_name) = object.name() else { return };
         let Some(prefix) = type_prefix_from_str(type_name) else { return };
         self.meta_mut(name).type_prefix = Some(prefix.clone());
-        if let Some(inner) = args.first().and_then(|a| {
-            self.ctx.lookup_raw_type(a.expr.id)
-                .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
-        }) {
-            self.meta_mut(name).full_type =
-                Some(TypeExpr::generic(prefix, vec![TypeExpr::named(inner)]));
+        if let Some(ty) = self.ctx.lookup_raw_type(init.id).filter(|t| !crate::fallback::type_is_open(t)) {
+            self.meta_mut(name).checked_type = Some(ty.clone());
         }
     }
 
@@ -2804,20 +2801,16 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        let written = match &collection.kind {
-            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.full_type.as_ref()),
+        let tracked = match &collection.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.checked_type.clone()),
             // `v.take_all()` holds what `v` holds.
             ExprKind::MethodCall { object, method, .. } if method == "take_all" => {
                 return self.handed_over_elem(object, elem);
             }
             _ => None,
         };
-        if let Some(t) = written {
-            if t.name().as_deref() == Some("Vec") {
-                if let Some(arg) = t.args().first() {
-                    return self.ctx.resolve_type_expr(arg);
-                }
-            }
+        if let Some(elem) = tracked.as_ref().and_then(|t| self.ctx.vec_elem_mir(t)) {
+            return elem;
         }
         elem
     }
@@ -2976,11 +2969,8 @@ impl<'a> MirLowerer<'a> {
                 value_of(&f.ty, self)
             }
             ExprKind::Ident(name) => {
-                let full = self.meta(name).and_then(|m| m.full_type.clone())?;
-                match (full.name().as_deref(), full.args()) {
-                    (Some("Map"), [_, value]) => Some(self.ctx.resolve_type_expr(value)),
-                    _ => None,
-                }
+                let checked = self.meta(name).and_then(|m| m.checked_type.clone())?;
+                self.map_kv_of_checker_type(&checked).map(|(_, value)| value)
             }
             _ => None,
         }
@@ -4653,10 +4643,11 @@ impl<'a> MirLowerer<'a> {
                 Some(t) if t.is_name("Self") => self_type.as_ref().or(param.ty.as_ref()),
                 other => other.as_ref(),
             };
-            let checked = own_sig
+            let checked_param: Option<Type> = own_sig
                 .as_ref()
                 .and_then(|sig| sig.params.iter().find(|(n, _)| *n == param.name))
-                .map(|(_, ty)| ctx.type_to_mir(ty));
+                .map(|(_, ty)| ty.clone());
+            let checked = checked_param.as_ref().map(|ty| ctx.type_to_mir(ty));
             let param_ty = match (&checked, written) {
                 (Some(ty), _) => ty.clone(),
                 (None, Some(t)) => ctx.resolve_type_expr(t),
@@ -4689,25 +4680,21 @@ impl<'a> MirLowerer<'a> {
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
                 }
-                // The full written type for generic ones (Shared<T>, Channel<T>, etc.)
-                if let Some(written) = written.filter(|t| !t.args().is_empty()) {
-                    meta.full_type = Some(written.clone());
-                    // Collection element types, so for-loop iteration resolves:
-                    // Vec<Inline> → Struct(Inline).
-                    //
-                    // A `Sequence<T>` parameter carries its element type the
-                    // same way, and this is the only place it survives
-                    // monomorphization: the instantiated copy has fresh node
-                    // ids, so the checker's record is gone, but mono did
-                    // substitute the declared type — `Sequence<(K, V)>`
-                    // arrives here as `Sequence<(i32, i32)>`. Without it
-                    // `for (k, v) in self` inside `Sequence.to_map` had no
-                    // element type and fell back to a machine word (#1046).
-                    if let (Some("Vec" | "Sequence" | "SequenceMut"), [elem]) =
-                        (written.name().as_deref(), written.args())
+                // The checker's type for the parameter, with this instance's
+                // arguments in: `Sequence<(K, V)>` is `Sequence<(i32, i32)>`
+                // in `to_map`'s copy for one. A collection's element type
+                // comes from it, so `for (k, v) in self` has one (#1046).
+                if let Some(checked) = checked_param.clone() {
+                    if let (Some(name), Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) =
+                        (ctx.generic_head(&checked), &checked)
                     {
-                        meta.elem_type = Some(ctx.resolve_type_expr(elem));
+                        if let ("Vec" | "Sequence" | "SequenceMut", [rask_types::GenericArg::Type(elem)]) =
+                            (name.trim(), args.as_slice())
+                        {
+                            meta.elem_type = Some(ctx.type_to_mir(elem));
+                        }
                     }
+                    meta.checked_type = Some(checked);
                 }
             }
         }
