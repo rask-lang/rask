@@ -53,8 +53,10 @@ fn nested_anonymous_members_get_names() {
 
 #[test]
 fn enums_are_integers() {
-    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };");
-    has(&out, "public type alias Color = c_int");
+    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };\ntypedef enum { DOWN = -1, UP = 1 } Dir;");
+    // GCC's and Clang's choice: unsigned with no negative enumerator.
+    has(&out, "public type alias Color = c_uint");
+    has(&out, "public type alias Dir = c_int");
     has(&out, "public const GREEN: Color = 4");
     has(&out, "public const BLUE: Color = 5");
     has(&out, "public const ANON: c_int = 7");
@@ -71,6 +73,14 @@ fn macros_evaluate_or_leave_a_comment() {
     has(&out, "public const NAME: string = \"lib\"");
     has(&out, "public const F: f64 = 1.5");
     has(&out, "// skipped `MAX`: a function-like macro: #define MAX(a, b) ((a) > (b) ? (a) : (b))");
+}
+
+#[test]
+fn constants_through_function_like_macros() {
+    let out = bind("#define U64_C(c) c ## UL\n#define FLAG_A U64_C(0x20)\n#define POS_MASK 0x2FFF0000u\n#define POS_DISPLAY(X) (POS_MASK|(X))\n#define POS_CENTERED POS_DISPLAY(0)\n#define OLD_NAME new_name\n");
+    has(&out, "public const FLAG_A: c_ulong = 32");
+    has(&out, "public const POS_CENTERED: c_uint = 805240832");
+    assert!(!out.contains("OLD_NAME"), "a rename leaves no comment:\n{}", out);
 }
 
 #[test]
@@ -112,4 +122,11 @@ fn the_probe_header() {
     has(&out, "public struct Pair {\n    public a: Point\n");
     has(&out, "public const LIB_FLAG_B: c_int = 2");
     has(&out, "public type alias Cmp_fn = *func(c_int, c_int) -> c_int");
+}
+
+#[test]
+fn pointer_to_pointer_parenthesizes_the_inner_optional() {
+    let out = bind("void get(void **out, int **rows);");
+    has(&out, "out: *(*void?)?");
+    has(&out, "rows: *(*c_int?)?");
 }

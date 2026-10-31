@@ -214,9 +214,8 @@ fn transfer_backward(
     skip_phi_gen: bool,
 ) -> LiveSet {
     let mut state = exit_state.clone();
-    for local_idx in 0..num_locals {
-        let local = LocalId(local_idx as u32);
-        if aliases.terminator_reads(&block.terminator, local) {
+    for local in aliases.terminator_read_set(&block.terminator) {
+        if (local.0 as usize) < num_locals {
             state.set(local);
         }
     }
@@ -227,9 +226,8 @@ fn transfer_backward(
         if skip_phi_gen && matches!(stmt.kind, crate::MirStmtKind::Phi { .. }) {
             continue;
         }
-        for local_idx in 0..num_locals {
-            let local = LocalId(local_idx as u32);
-            if aliases.stmt_reads(stmt, local) {
+        for local in aliases.stmt_read_set(stmt) {
+            if (local.0 as usize) < num_locals {
                 state.set(local);
             }
         }

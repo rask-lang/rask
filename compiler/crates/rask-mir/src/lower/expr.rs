@@ -1652,6 +1652,9 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Field { .. } if self.ctx.field_reuses.contains(&expr.id) => {
                 self.lower_field_move_out(expr)
             }
+            ExprKind::Field { .. } | ExprKind::Index { .. } if self.through_pointer(expr) => {
+                self.read_pointer_place(expr)
+            }
             ExprKind::Field { object, field } => self.lower_field(expr, object, field),
 
             // Dynamic field access: value.(expr) — CT49 resolves this to a
@@ -2360,6 +2363,19 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_unary(&mut self, op: UnaryOp, operand: &Expr) -> Result<TypedOperand, LoweringError> {
+            // `&a.b` / `&v[i]`: the field's or element's own address, not a
+            // copy's. A variable's is `Ref` below, which also keeps a scalar
+            // in memory so writes through the pointer land in it.
+            if op == UnaryOp::Ref && matches!(operand.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+                if let Some(addr) = self.place_address(operand) {
+                    return Ok((addr, MirType::Ptr));
+                }
+                if let ExprKind::Index { object, index } = &operand.kind {
+                    if self.is_vec(object) {
+                        return self.vec_element_address(operand, object, index);
+                    }
+                }
+            }
             let (operand_op, operand_ty) = self.lower_expr(operand)?;
             let (result_ty, rvalue) = match op {
                 UnaryOp::Ref => {
@@ -2423,6 +2439,10 @@ impl<'a> MirLowerer<'a> {
                         let access = self.pointee_size(operand).unwrap_or(1);
                         self.emit_pointer_check(&operand_op, false, access);
                     }
+                    // The pointee: a raw pointer's checker type is the pointer,
+                    // an `Owned<T>`'s is `T` itself. Sizing the pointer read
+                    // `(*p).y` on a `*Pt` as a word load of the struct's bytes,
+                    // then dereferenced those bytes as an address.
                     let pointee_mir_ty = self.ctx.lookup_raw_type(operand.id)
                         .map(|t| match t {
                             rask_types::Type::RawPtr(inner) => self.ctx.type_to_mir(inner),
@@ -3303,6 +3323,73 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: unit, rvalue }));
         let value = self.extract_bits(MirOperand::Local(unit), field_ty, slot);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst, rvalue: MirRValue::Use(value) }));
+    }
+
+    /// Whether `e` is a `Vec`, by the checker's type.
+    fn is_vec(&self, e: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(e.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .is_some_and(|p| p == "Vec")
+    }
+
+    /// `&v[i]`: the element's address in the vector's buffer, bounds-checked
+    /// as `v[i]` is. The buffer moves when the vector grows, which is the
+    /// same "may dangle" every raw pointer carries (mem.unsafe).
+    fn vec_element_address(&mut self, place: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
+        use crate::operand::BinOp as Op;
+        let (vec, _) = self.lower_expr(object)?;
+        let (idx, _) = self.lower_expr(index)?;
+        let elem_size = self
+            .ctx
+            .lookup_raw_type(place.id)
+            .map(|t| self.ctx.type_to_mir(t).size())
+            .unwrap_or(8) as i64;
+
+        let len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![vec.clone()],
+        }));
+        let bin = |this: &mut Self, op: Op, left: MirOperand, right: MirOperand, ty: MirType| {
+            let dst = this.builder.alloc_temp(ty);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op, left, right },
+            }));
+            MirOperand::Local(dst)
+        };
+        let zero = MirOperand::Constant(MirConst::Int(0));
+        let not_negative = bin(self, Op::Ge, idx.clone(), zero, MirType::Bool);
+        let below_len = bin(self, Op::Lt, idx.clone(), MirOperand::Local(len), MirType::Bool);
+        let in_range = bin(self, Op::And, not_negative, below_len, MirType::Bool);
+
+        let fail = self.builder.create_block();
+        let ok = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: in_range,
+            then_block: ok,
+            else_block: fail,
+        }));
+        self.builder.switch_to_block(fail);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic".to_string()),
+            args: vec![MirOperand::Constant(MirConst::String("index out of bounds in `&v[i]`".to_string()))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(ok);
+
+        let data = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(data),
+            func: FunctionRef::internal("Vec_as_mut_ptr".to_string()),
+            args: vec![vec],
+        }));
+        let offset = bin(self, Op::Mul, idx, MirOperand::Constant(MirConst::Int(elem_size)), MirType::I64);
+        let addr = bin(self, Op::Add, MirOperand::Local(data), offset, MirType::Ptr);
+        Ok((addr, MirType::Ptr))
     }
 
     /// A bitfield's value out of its loaded storage unit: shifted down and
@@ -7571,6 +7658,98 @@ impl<'a> MirLowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Is `expr` a place reached through a raw pointer: `(*p).x`, `p.x`,
+    /// `p[i]`, or a field of one of those? Read off the checker's types, so it
+    /// emits nothing and can guard the lowering below.
+    pub(crate) fn through_pointer(&self, expr: &Expr) -> bool {
+        let raw = |e: &Expr| matches!(self.ctx.lookup_raw_type(e.id), Some(rask_types::Type::RawPtr(_)));
+        match &expr.kind {
+            ExprKind::Unary { op: UnaryOp::Deref, operand } => raw(operand),
+            ExprKind::Index { object, .. } => raw(object),
+            ExprKind::Field { object, .. } => raw(object) || self.through_pointer(object),
+            _ => false,
+        }
+    }
+
+    /// The address of a place `through_pointer` accepts, and the place's type.
+    ///
+    /// `p.x` is `(*p).x`, C's `p->x`: the field sits at its offset from the
+    /// pointer. `p[i]` is `*p.add(i)`, `i` elements of the pointee's size on.
+    /// Each step is a new pointer into the block the first one points into,
+    /// so the debug bounds check (mem.unsafe/PT7) sees the address accessed.
+    pub(crate) fn pointer_place_address(&mut self, expr: &Expr) -> Result<(MirOperand, MirType), LoweringError> {
+        use crate::operand::BinOp as Op;
+        let pointee = |this: &Self, e: &Expr| match this.ctx.lookup_raw_type(e.id) {
+            Some(rask_types::Type::RawPtr(inner)) => Some(this.ctx.type_to_mir(inner)),
+            _ => None,
+        };
+        let offset = |this: &mut Self, base: MirOperand, by: MirOperand| {
+            let dst = this.builder.alloc_temp(MirType::Ptr);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op: Op::Add, left: base.clone(), right: by },
+            }));
+            this.carry_ptr_block(&base, dst);
+            MirOperand::Local(dst)
+        };
+        match &expr.kind {
+            ExprKind::Unary { op: UnaryOp::Deref, operand } => {
+                let ty = pointee(self, operand).ok_or_else(|| LoweringError::InvalidConstruct(
+                    "`*p` on something the checker didn't type as a pointer".to_string(),
+                ))?;
+                let (p, _) = self.lower_expr(operand)?;
+                Ok((p, ty))
+            }
+            ExprKind::Index { object, index } => {
+                let ty = pointee(self, object).ok_or_else(|| LoweringError::InvalidConstruct(
+                    "`p[i]` on something the checker didn't type as a pointer".to_string(),
+                ))?;
+                let (p, _) = self.lower_expr(object)?;
+                let (i, _) = self.lower_expr(index)?;
+                let bytes = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: bytes,
+                    rvalue: MirRValue::BinaryOp {
+                        op: Op::Mul,
+                        left: i,
+                        right: MirOperand::Constant(MirConst::Int(ty.size() as i64)),
+                    },
+                }));
+                Ok((offset(self, p, MirOperand::Local(bytes)), ty))
+            }
+            ExprKind::Field { object, field } => {
+                let (base, base_ty) = match pointee(self, object) {
+                    Some(ty) => (self.lower_expr(object)?.0, ty),
+                    None => self.pointer_place_address(object)?,
+                };
+                let (foff, fty, _) = self.field_offset_ty_size(&base_ty, field).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!("no layout for `.{}` through a pointer", field))
+                })?;
+                if foff == 0 {
+                    return Ok((base, fty));
+                }
+                Ok((offset(self, base, MirOperand::Constant(MirConst::Int(foff as i64))), fty))
+            }
+            _ => Err(LoweringError::InvalidConstruct("not a place through a pointer".to_string())),
+        }
+    }
+
+    /// Read a place through a pointer. An aggregate is used where it lies,
+    /// the way `*p` on one is; anything else is loaded at its own width.
+    fn read_pointer_place(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        let (addr, ty) = self.pointer_place_address(expr)?;
+        if ty.passed_by_address() {
+            self.emit_pointer_check(&addr, false, ty.size() as i64);
+            let dst = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Use(addr),
+            }));
+            return Ok((MirOperand::Local(dst), ty));
+        }
+        Ok(self.emit_pointee_load(addr, ty))
     }
 
     /// The pointee's own type, for a pointer to a number, a bool or a char.

@@ -96,6 +96,8 @@ All require unsafe except `==` and `!=`, which compare addresses.
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `*ptr` | Read/write | Dereference (undefined if invalid) |
+| `ptr.field` | Read/write | The field of what `ptr` points at: `(*ptr).field`, C's `ptr->field` |
+| `ptr[i]` | Read/write | The element `i` steps on: `*ptr.add(i)`, C's `ptr[i]`. Nothing checks `i` against the block's end, except the debug check where the source is known (PT7) |
 | `ptr.read()` | `*T -> T` | Copy value from pointer |
 | `ptr.write(v)` | `*T, T -> void` | Write value to pointer |
 | `ptr.add(n)` | `*T, usize -> *T` | Offset by n elements |
@@ -105,6 +107,8 @@ All require unsafe except `==` and `!=`, which compare addresses.
 | `ptr.align_offset(n)` | `*T, usize -> usize` | Bytes to next aligned address |
 | `ptr.is_aligned()` | `*T -> bool` | Check natural alignment |
 | `ptr.is_aligned_to(n)` | `*T, usize -> bool` | Check alignment to n bytes |
+
+`ptr.field` and `ptr[i]` are C's shorthands, and I kept them for the reason C has them: `(*surface).w` and `*keys.add(i)` are noise in code that talks to C all day. The `unsafe` around them is what marks the unchecked read, so the longer spelling bought nothing. Code that isn't a binding shouldn't be doing either: a wrapper takes the `unsafe` once and hands out methods (`keys.down(Scancode.A)`).
 
 ## Unsafe Functions
 
