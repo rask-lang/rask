@@ -5795,6 +5795,64 @@ fn editing_a_sub_package_invalidates_the_build_cache() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Editing a C header, or a file it includes, rebuilds the binary.
+///
+/// `import c` compiles the header's constants and struct layouts in, but the
+/// cache keyed on the Rask files alone, so the old object came back and a
+/// changed `#define` printed its old value (#1705).
+#[test]
+fn editing_an_imported_c_header_invalidates_the_build_cache() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir()
+        .join(format!("rask_cheader_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"cheader\"\nversion = \"0.1.0\"\ndescription = \"cache keying\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib.h"), "#include \"inner.h\"\n#define LIB_VERSION INNER\n").unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import c \"lib.h\"\n\nfunc main() {\n    println(\"version {c.LIB_VERSION}\")\n}\n",
+    )
+    .unwrap();
+
+    let build_and_run = |expected: &str| {
+        let build = Command::new(&rask)
+            .arg("build")
+            .arg(&dir)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask build");
+        let build_out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr),
+        );
+        assert!(build.status.success(), "build failed:\n{build_out}");
+        let run = Command::new(dir.join("build").join("debug").join("cheader"))
+            .output()
+            .expect("failed to run built binary");
+        let out = String::from_utf8_lossy(&run.stdout).to_string();
+        assert!(
+            out.contains(expected),
+            "expected `{expected}` in the output, got:\n{out}\nbuild said:\n{build_out}"
+        );
+    };
+
+    std::fs::write(dir.join("inner.h"), "#define INNER 3\n").unwrap();
+    build_and_run("version 3");
+
+    // Same Rask source and the same `lib.h`; only the file it includes moved.
+    std::fs::write(dir.join("inner.h"), "#define INNER 4\n").unwrap();
+    build_and_run("version 4");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn newtype_value_survives_cross_module_mutex_method() {
     let (ok, out) = build_and_run_package("nt", &[

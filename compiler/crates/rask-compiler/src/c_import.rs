@@ -263,6 +263,36 @@ pub fn translate(
     ))
 }
 
+/// A hash of every C header `decls` imports, as the program will see it.
+///
+/// The build cache keys on this, so editing a header, or anything it
+/// includes, rebuilds (#1705). It hashes what the preprocessor produces, which
+/// is every included file's text after `#if`s are settled: the input the
+/// translation reads. A header that can't be found or preprocessed hashes its
+/// error, and the build that follows reports it.
+pub fn header_fingerprint(decls: &[Decl], cx: &Context) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for d in decls {
+        let DeclKind::CImport(import) = &d.kind else { continue };
+        for header in &import.headers {
+            header.hash(&mut hasher);
+            let text = locate(header, d.span.file_id, cx).and_then(|p| {
+                let p = canonical(&p);
+                match preprocess(&p, &header_dir(&p), cx) {
+                    Some(r) => r,
+                    None => std::fs::read_to_string(&p).map_err(|e| e.to_string()),
+                }
+            });
+            match text {
+                Ok(t) => t.hash(&mut hasher),
+                Err(e) => e.hash(&mut hasher),
+            }
+        }
+    }
+    hasher.finish()
+}
+
 fn header_dir(path: &Path) -> PathBuf {
     match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
