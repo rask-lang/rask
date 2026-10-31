@@ -3159,6 +3159,27 @@ impl<'a> OwnershipChecker<'a> {
                         // to silently cover `p.b` (#828).
                         ExprKind::Field { .. } => {
                             let (root, path) = Self::extract_root_and_fields(object);
+                            // A field of a borrowed parameter isn't the body's
+                            // to consume: `o.bag.finish()` on a plain `o`
+                            // consumed the caller's `bag`, and the caller
+                            // went on reading it.
+                            if let Some(root) = root.as_ref() {
+                                if let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(root) {
+                                    let copy = self.node_ty(&object.id).is_some_and(|t| self.is_copy(t));
+                                    if !copy {
+                                        self.errors.push(OwnershipError {
+                                            kind: OwnershipErrorKind::ConsumeBorrowedParam {
+                                                name: Self::render_place(object).unwrap_or_else(|| root.clone()),
+                                                declared_at,
+                                                is_mutate,
+                                                sink: Some(method.clone()),
+                                                of_closure: self.closure_params.contains(root),
+                                            },
+                                            span: expr.span,
+                                        });
+                                    }
+                                }
+                            }
                             if let (Some(root), Some(path)) = (root, path) {
                                 self.pay_field_debt(&root, &path);
                             }
@@ -5177,8 +5198,13 @@ impl<'a> OwnershipChecker<'a> {
         } else {
             (format!("{}.{}", root, fields.join(".")), root)
         };
-        let Some((declared_at, is_mutate)) =
-            whole_param.or_else(|| self.borrowed_params.get(&root).copied())
+        // A field of a `mutate` parameter, too: the return is the last thing
+        // the body does, so nothing can be put back in the field, and the
+        // caller's value and the returned one share it. `return self.items`
+        // from a `mutate self` method handed back the struct's own vector.
+        let Some((declared_at, is_mutate)) = whole_param
+            .or_else(|| self.borrowed_params.get(&root).copied())
+            .or_else(|| self.mutate_params.get(&root).map(|&at| (at, true)))
         else {
             return false;
         };
