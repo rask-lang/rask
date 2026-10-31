@@ -69,6 +69,7 @@ pub(super) fn stub_type(ty: &TypeExpr) -> Type {
     match ty {
         TypeExpr::Unit => Type::Unit,
         TypeExpr::NoneType => Type::None,
+        TypeExpr::NoReturn => Type::Never,
         TypeExpr::Func { params, ret } => Type::Fn {
             params: params.iter().map(|p| FnParam { mode: p.mode, ty: stub_type(&p.ty) }).collect(),
             ret: Box::new(stub_type(ret)),
@@ -125,7 +126,6 @@ fn stub_name(s: &str) -> Type {
         "isize" => Type::isize_ty(),
         "f32" => Type::F32,
         "f64" => Type::F64,
-        "Never" => Type::Never,
         // The C scalar names, per struct.c-interop/TM1. See `c_type_spelling`.
         _ if rask_ast::primitives::c_type_spelling(s).is_some() => {
             stub_name(rask_ast::primitives::c_type_spelling(s).unwrap())

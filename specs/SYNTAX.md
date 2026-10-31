@@ -1043,7 +1043,7 @@ match direction {
 }
 ```
 
-Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinished code; `unreachable()` marks impossible branches.
+Both are `@noreturn`: they never come back, so an arm made of one needs no value. `todo()` marks unfinished code; `unreachable()` marks impossible branches.
 
 ---
 
@@ -1124,6 +1124,7 @@ test "addition" {
 | `@entry` | Function | Marks non-main function as entry point (optional) |
 | `@inline` | Function | Inline at every call, whatever its size (not a recursive one) |
 | `@no_alloc` | Function | Compile error on heap allocation |
+| `@noreturn` | Function | Never comes back to its caller (`exit`, `panic`); declares no result type (`ctrl.flow/CF34`) |
 | `@deprecated(msg)` | Any | Warn on use |
 | `@layout(C)` | Struct | C-compatible memory layout |
 | `@packed` | Struct | Remove padding |

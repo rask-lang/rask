@@ -64,7 +64,7 @@ func untouched_by_the_borrow() {
     mut xs: Vec<i32> = [1, 2]
     let p = fresh(xs)
     xs.push(3)
-    println(p.is_null())         // fine
+    println(unsafe *p)           // fine
 }
 
 // A linear value with a dead pointer in it still owes its consume.
@@ -157,7 +157,7 @@ func allowed() {
     }
     println(ptrs.len())
     let raw = unsafe malloc(8)
-    let t = Thread.spawn { return raw.is_null() }
+    let t = Thread.spawn { return raw == raw }
     let null_seen = t.join() catch _ => true
     println(null_seen)
 }

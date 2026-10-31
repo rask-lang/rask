@@ -52,13 +52,14 @@ let value = unsafe { *ptr }
 
 | Type | Description |
 |------|-------------|
-| `*T` | Raw pointer to T (read or write access) |
+| `*T` | Raw pointer to T (read or write access). Never null |
+| `*T?` | A raw pointer that may be absent: `none` is the null address |
 
 | Property | Behavior |
 |----------|----------|
 | Size | Same as `usize` (platform pointer size) |
 | Copy | Always Copy (pointer value, not pointee) |
-| Nullable | Can be null; no Option optimization |
+| Null | Not a `*T`. `*T?` is the same word with null for `none` (PT6) |
 | Alignment | May be unaligned |
 | Validity | Not tracked; may dangle |
 
@@ -74,9 +75,23 @@ unsafe {
 }
 ```
 
+| Rule | Description |
+|------|-------------|
+| **PT6: Absence is a type** | A `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, the same word C passes, so a C declaration states whether its pointer can be null (`extern "C" func getenv(name: *u8) -> *u8?`). It's an optional like any other: `p?` tests it, `if p? as q` binds the pointer, `p ?? return e` unwraps or leaves, `none` is the null literal. A pointer from `as_ptr()` or arithmetic on a `*T` is a `*T`. A `?` written after a pointer type is the pointer's; a pointer to an optional is `*(T?)` |
+
+<!-- test: skip -->
+```rask
+extern "C" func getenv(name: *u8) -> *u8?
+
+func home() -> string? {
+    let p = unsafe getenv("HOME\0".as_ptr()) ?? return none
+    return unsafe string.from_raw(p, strlen(p))
+}
+```
+
 ## Pointer Operations
 
-All require unsafe except `is_null()`.
+All require unsafe except `==` and `!=`, which compare addresses.
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -86,7 +101,6 @@ All require unsafe except `is_null()`.
 | `ptr.add(n)` | `*T, usize -> *T` | Offset by n elements |
 | `ptr.sub(n)` | `*T, usize -> *T` | Offset back by n elements |
 | `ptr.offset(n)` | `*T, isize -> *T` | Signed offset |
-| `ptr.is_null()` | `*T -> bool` | Check for null (safe to call) |
 | `ptr.cast<U>()` | `*T -> *U` | Reinterpret pointer type |
 | `ptr.align_offset(n)` | `*T, usize -> usize` | Bytes to next aligned address |
 | `ptr.is_aligned()` | `*T -> bool` | Check natural alignment |
@@ -130,6 +144,7 @@ A pointer is made by a call, and the call says where it points. The compiler kee
 | **PT3: It dies with its source** | After what a pointer points into changes size (its buffer may move), moves, is replaced, or reaches the end of its block, using the pointer, or a value holding it as a whole, is a compile error (E0929). Reading a part of that value with no pointer in it is fine (`h.n` beside a dead `h.p`), and a value that must be consumed still must be. Taking the pointer again afterwards is fine |
 | **PT4: No writes under a view** | While a `with` binding or a `for mutate` loop holds a place in a collection, writing through a pointer into that collection is a compile error (E0931). The binding is the one name that may change that place until the block ends |
 | **PT5: The source stays alive while the pointer is used** | What a pointer points into isn't released before the pointer's last use, however long after its own last use by name that is. PT3 rules out the paths where it's freed on purpose; this one keeps the compiler from freeing it early |
+| **PT7: Debug builds check bounds where the source is known** | A pointer from `as_ptr()` on a local `Vec`, `string` or array, and any pointer made from it by `add`, `sub`, `offset` or `cast`, is checked at each access (`*p`, `*p = v`, `read`, `write`) against that local's storage as it is at the access. Outside it, a debug build panics with the location. That holds while the binding with the pointer is assigned nothing but steps from itself (`p = p.add(1)`). A string's terminator can be read, not written. PT3 is what makes the storage at the access the right block to check against |
 
 <!-- test: skip -->
 ```rask
@@ -140,7 +155,7 @@ println(unsafe *p)              // error E0929: p points into xs, which changed 
 let q = unsafe xs.as_ptr()      // fine: taken after the push
 ```
 
-What's left for the `unsafe` block to vouch for is what the compiler can't see: memory a C function or `malloc` handed over, an offset from `add` staying inside the block it points into, and inline assembly. The debug-mode checks are for those.
+What's left for the `unsafe` block to vouch for is what the compiler can't see: memory a C function or `malloc` handed over, an offset from `add` staying inside a block nothing tracks, and inline assembly. Debug builds check bounds where they can (PT7).
 
 ## Unsafe Interfaces
 
@@ -312,13 +327,13 @@ Instead of "all pointer errors are UB" regardless of build mode, Rask provides d
 
 | Operation | Debug Behavior | Release Behavior |
 |-----------|----------------|------------------|
-| Null pointer deref | Panic with location (built) | UB |
+| Null pointer deref | Panic with location (built). A `*T` can only be null if it came from outside the types: a C declaration that says `*T` where C returns null, or a `transmute` | UB |
 | Out-of-bounds pointer | Panic with location | UB |
 | Use-after-free | Panic (if detectable) | UB |
 | Double-free | Panic (if detectable) | UB |
 | Unaligned access | Panic | Platform-dependent |
 
-Of the debug checks, the null check on `*p`, `*p = v` and `p.read()` is built; the rest aren't yet.
+Of the debug checks, the null check on every access and the bounds check for a pointer whose source is known (PT7) are built. A pointer from C, or one held in a `mut` that is assigned something other than a step from itself, gets the null check only. Use-after-free and double-free aren't built.
 
 **Checked/unchecked attributes** (on a function, for every raw-pointer access in it):
 
@@ -352,7 +367,7 @@ Inside an `unsafe` block the language is the same language. Overflow panics the 
 |---|---|---|
 | Lifetime | Checked: PT2, PT3, PT5 | The block's to vouch for |
 | Aliasing with a `with` or `for mutate` | Checked: PT4 | The block's to vouch for |
-| Bounds of `ptr.add(n)` | Debug-mode check | Debug-mode check where the allocator knows the block |
+| Bounds of an access through `ptr.add(n)` | Debug-mode check (PT7) | The block's to vouch for |
 | Initialization, valid bit patterns | The block's to vouch for | The block's to vouch for |
 | Data races | Undefined; use atomics | Undefined; use atomics |
 
@@ -440,6 +455,10 @@ FIX: Add to clobber list or declare as output:
 **Debug-mode safety:** Instead of "all pointer errors are UB" like Rust, I added debug-mode runtime checks. Cuts debugging time massively without hurting release performance. Philosophy: crash loudly in development, run fast in production. This follows Zig's pragmatic approach.
 
 **Single pointer type (`*T`):** Rust's `*const T` / `*mut T` distinction adds ceremony without real safety — you can cast between them freely. A single `*T` type is simpler and equally honest about what raw pointers are.
+
+**PT6 (null is a type):** C's null pointer is the one value of a pointer type that means "there isn't one", and every C API documents which of its pointers can be it. Writing that into the declaration as `*T?` puts the check where the type says it's needed and nowhere else, and costs nothing: the optional is the same word, null for `none`, the way `Link<T>?` already is. `null` and `is_null()` are gone; `none` and `p?` are what every other optional uses.
+
+**PT7 (bounds from where the pointer came from):** a pointer into a `Vec` doesn't need a fat representation or an allocator registry to be bounds-checked: the compiler knows which local it came from, and PT3 promises that local hasn't moved its storage since, so the local's own length at the access is the bound. That keeps `*T` one word, the same word C sees, and costs a debug build one call per access. What it can't cover is the pointer whose source it doesn't know, which is the same set PT1 can't see.
 
 **PT1–PT5 (where pointers point):** Rust leaves a raw pointer's lifetime to the programmer, because it can't connect a `*const T` back to the reference it came from. Rask has no references, so every pointer starts at a call, and the call's arguments say what it points into. That makes the common mistakes (a pointer kept across a `push`, returned out of the frame that owns the buffer, written while a `with` holds the element) the same errors a `with` binding or a closure already gets, with no annotation. The rule for a call reads the callee's body, the way resize and allocator inference do, so a function that borrows a vector and returns fresh memory isn't tied to the vector. Rust can't do this from a signature and asks for lifetime annotations instead. Only where there's no body to read does the call fall back to the strict reading, every borrowed argument.
 

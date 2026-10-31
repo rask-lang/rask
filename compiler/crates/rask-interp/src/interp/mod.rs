@@ -22,7 +22,7 @@ mod map_keys;
 mod format;
 mod operators;
 pub(crate) mod overflow;
-mod dispatch;
+pub(crate) mod dispatch;
 mod transmute;
 pub(crate) mod union_bits;
 

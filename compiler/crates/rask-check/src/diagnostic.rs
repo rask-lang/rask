@@ -1170,6 +1170,21 @@ impl ToDiagnostic for crate::TypeError {
             .with_fix(format!("add `return` statement with a value of type `{}`", expected_type))
             .with_why("all code paths in a non-void function must produce a value via explicit `return`"),
 
+            NoReturnFinishes { function_name, span } => Diagnostic::error(format!(
+                "`{}` is `@noreturn`, but its body can finish",
+                function_name
+            ))
+            .with_code("E0809")
+            .with_primary(*span, "a path reaches the end of the function here")
+            .with_fix("end every path in something that doesn't come back: `panic(…)`, `exit(…)`, a `loop` with no `break`; or drop `@noreturn`")
+            .with_why("callers rely on `@noreturn`: code after the call is treated as unreachable, and an arm that calls it needs no value"),
+
+            NoReturnReturns { span } => Diagnostic::error("`return` in a `@noreturn` function")
+                .with_code("E0850")
+                .with_primary(*span, "this would come back to the caller")
+                .with_fix("end this path in `panic(…)` or `exit(…)`, or drop `@noreturn`")
+                .with_why("a `@noreturn` function never comes back, so there's nothing for `return` to do"),
+
             GenericError(msg, span) => Diagnostic::error(format!("generic argument error: {}", msg))
                 .with_code("E0319")
                 .with_primary(*span, "invalid generic argument")
@@ -1771,6 +1786,14 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0386")
                     .with_primary(*span, "unsafe operation outside unsafe block")
+            }
+
+            DerefOptionalPointer { found, span } => {
+                Diagnostic::error(format!("`*` on a `{}`, which may be absent", found))
+                    .with_code("E0859")
+                    .with_primary(*span, "this pointer may be null")
+                    .with_fix("unwrap it first: `let q = p ?? return …` or `if p? as q { … *q … }`")
+                    .with_why("a `*T?` is the pointer or `none`, and `none` is the null address. Reading through it would read address 0, so the absent case is handled before the pointer is used [mem.unsafe/PT6]")
             }
 
             UnsafeWithoutContract { interface, span } => {
@@ -3041,33 +3064,64 @@ impl ToDiagnostic for crate::TypeError {
             }
 
             LinearInContainer { container, elem, span } => {
-                let rule = match container.as_str() {
-                    "Map" => "RC3",
-                    "Rack" => "RC2",
-                    _ => "RC1",
-                };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);
-                // A rack fails for the same reason with a different verb:
-                // `delete` frees the node, it never hands it back, so there is
-                // no call that consumes one.
-                let mechanism = if container == "Rack" {
-                    format!("`Rack.delete` frees the node rather than handing it back, so nothing \
-                             can consume `{}` — and it is linear, so it has to be consumed exactly \
-                             once", elem)
-                } else {
-                    format!("`{}` drop can't consume its elements, but `{}` is linear — it must be \
-                             consumed exactly once, so it can't be silently dropped", container, elem)
-                };
                 Diagnostic::error(label.clone())
                     .with_code("E0820")
                     .with_primary(*span, label)
-                    .with_why(format!("{} [mem.resource-types/{}]", mechanism, rule))
-                    .with_fix(
-                        "hold it in an optional `T?` and match to consume it (RC4). No container \
-                         takes a linear value: a Vec or Map drop can't consume its elements, and \
-                         a rack's delete can't give a node back"
+                    .with_why(format!(
+                        "`Rack.delete` frees the node rather than handing it back, so nothing \
+                         can consume `{}`, and it has to be consumed exactly once \
+                         [mem.resource-types/RC2]",
+                        elem
+                    ))
+                    .with_fix(format!(
+                        "keep them in a `Vec<{}>` (which hands each back with `pop` or \
+                         `remove`), or in a field typed `{}?` and match to consume it",
+                        elem, elem
+                    ))
+            }
+            LinearElementLost { container, method, elem, copies, span } => {
+                let (label, why, fix) = if *copies {
+                    (
+                        format!("`{}` would copy a `{}` out of this `{}`", method, elem, container),
+                        format!(
+                            "`{}` must be consumed exactly once, so there can't be a second one \
+                             [mem.resource-types/RC5]",
+                            elem
+                        ),
+                        "look at it where it lives — `with v[i] as x { … }`, `for x in v`, or \
+                         `v.read(i, |x| …)` — or take it out with `remove(i)` or `pop()`"
                             .to_string(),
                     )
+                } else {
+                    let what = if method == "=" {
+                        "assigning over an element".to_string()
+                    } else {
+                        format!("`{}`", method)
+                    };
+                    (
+                        format!("{} would drop a `{}` still in this `{}`", what, elem, container),
+                        format!(
+                            "`{}` must be consumed, and nothing consumes what {} throws away \
+                             [mem.resource-types/RC5]",
+                            elem, what
+                        ),
+                        if method == "=" {
+                            "take the old one out first and consume it: `let old = v.remove(i)`, \
+                             then `v.insert(i, new)`"
+                                .to_string()
+                        } else {
+                            "take each one out and consume it: `while v.pop()? as x { … }`, or \
+                             `v.consume(|take x| …)` for all of them"
+                                .to_string()
+                        },
+                    )
+                };
+                Diagnostic::error(label.clone())
+                    .with_code("E0823")
+                    .with_primary(*span, label)
+                    .with_why(why)
+                    .with_fix(fix)
             }
             IndexTypeMismatch { container, found, kind, span } => {
                 use crate::IndexErrorKind as K;

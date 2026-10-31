@@ -359,7 +359,7 @@ fn rename_stmt(
                 }
             }
         }
-        MirStmtKind::ClosureCall { closure, args, dst } => {
+        MirStmtKind::ClosureCall { closure, args, dst, .. } => {
             *closure = current_version(*closure, version_stack, num_orig_locals);
             for arg in args.iter_mut() {
                 rename_operand(arg, version_stack, num_orig_locals);

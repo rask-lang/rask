@@ -701,6 +701,25 @@ pub enum OwnershipErrorKind {
         take_at: Span,
     },
 
+    /// mem.resources/RC5: `for x in v.take_all()` over elements that must be
+    /// consumed. The loop owns the drained vector, so leaving it early drops
+    /// what's left.
+    #[error("a `for` over `take_all()` drops what's left if it exits early")]
+    DrainLoopOverLinear,
+
+    /// mem.resources/RC5 per instantiation: a generic body calls a method that
+    /// drops or copies elements of a `Vec<T>`/`Map`, and this call makes `T`
+    /// linear.
+    #[error("`{}` would {} a `{type_arg}` with `{method}`", chain.last().map(String::as_str).unwrap_or("?"), if *copies { "copy" } else { "drop" })]
+    ElementLostInGenericInstance {
+        chain: Vec<String>,
+        param: String,
+        type_arg: String,
+        method: String,
+        copies: bool,
+        at: Span,
+    },
+
     /// mem.linear/L1–L2 per instantiation (#1366): a generic body that is fine
     /// for an ordinary `T` drops or reuses one, and this call makes `T` linear.
     /// Reported at the call, since the call is what made it wrong.

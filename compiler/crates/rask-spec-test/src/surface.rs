@@ -355,7 +355,7 @@ pub fn normalize(ty: &TypeExpr) -> TypeExpr {
         },
         TypeExpr::RawPtr(inner) => TypeExpr::RawPtr(boxed(inner)),
         TypeExpr::Any(inner) => TypeExpr::Any(boxed(inner)),
-        TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => ty.clone(),
+        TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => ty.clone(),
     }
 }
 
@@ -374,6 +374,7 @@ pub fn rask_syntax(ty: &TypeExpr) -> String {
         TypeExpr::Tuple(ts) => format!("({})", ts.iter().map(rask_syntax).collect::<Vec<_>>().join(", ")),
         TypeExpr::Unit => "void".to_string(),
         TypeExpr::NoneType => "none".to_string(),
+        TypeExpr::NoReturn => "noreturn".to_string(),
         TypeExpr::Array { elem, len } => format!("[{}; {}]", rask_syntax(elem), len),
         TypeExpr::FixedCount { count, elem } => format!("[{}]{}", count, rask_syntax(elem)),
         TypeExpr::Func { params, ret } => {

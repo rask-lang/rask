@@ -299,7 +299,6 @@ impl TypeTable {
         self.builtins.insert("none".to_string(), Type::None);
         self.builtins.insert("isize".to_string(), Type::isize_ty());
         self.builtins.insert("usize".to_string(), Type::usize_ty());
-        self.builtins.insert("Never".to_string(), Type::Never);
 
         // The C scalar names an `import c` header translates to. Until these
         // were here none of them was a type, so `*i64` passed for a `const int
@@ -1543,12 +1542,18 @@ impl TypeTable {
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
                 let name = full.as_str();
+                if Self::is_obligation_container(name) {
+                    return self.container_holds_linear(args);
+                }
                 !Self::is_nonlinear_wrapper(name)
                     && (self.is_transitive_resource_by_id(*base)
                         || self.instance_slot_owes(*base, args))
             }
-            Type::UnresolvedGeneric { name, .. } => {
+            Type::UnresolvedGeneric { name, args } => {
                 let base = name;
+                if Self::is_obligation_container(base) {
+                    return self.container_holds_linear(args);
+                }
                 !Self::is_nonlinear_wrapper(base)
                     && self
                         .type_names
@@ -1944,6 +1949,20 @@ impl TypeTable {
         false
     }
 
+    /// mem.resources/RC1, RC3: a `Vec` or `Map` holding something that must be
+    /// consumed must be consumed itself, the way a `Heap` must. There are no
+    /// destructors, so dropping one would drop what it holds. It's emptied by
+    /// `pop` and `remove`, which hand the element back, and only the `none`
+    /// answer from `pop` proves it empty (the ownership pass reads that).
+    fn is_obligation_container(name: &str) -> bool {
+        matches!(name, "Vec" | "Map")
+    }
+
+    fn container_holds_linear(&self, args: &[GenericArg]) -> bool {
+        args.iter()
+            .any(|a| matches!(a, GenericArg::Type(t) if self.holds_linear_value(t)))
+    }
+
     /// Container wrappers that hold values without becoming linear themselves.
     /// A `Link` is a copyable reference; `Vec`/`Map`/`Rack` are handled by the
     /// outer walk.
@@ -1957,9 +1976,7 @@ impl TypeTable {
     fn is_nonlinear_wrapper(name: &str) -> bool {
         matches!(
             name,
-            "Vec"
-                | "Map"
-                | "Link"
+            "Link"
                 | "Rack"
                 | "Channel"
                 | "Sender"
@@ -2169,29 +2186,8 @@ impl TypeTable {
             _ => None,
         };
         match name {
-            "Vec" => {
-                let e = elem(0)?;
-                if self.holds_linear_value(e) {
-                    return Some(("Vec".to_string(), e.clone()));
-                }
-                None
-            }
-            "Map" => {
-                // A resource key is as unconsumable on drop as a resource value.
-                if let Some(k) = elem(0) {
-                    if self.holds_linear_value(k) {
-                        return Some(("Map".to_string(), k.clone()));
-                    }
-                }
-                if let Some(v) = elem(1) {
-                    if self.holds_linear_value(v) {
-                        return Some(("Map".to_string(), v.clone()));
-                    }
-                }
-                None
-            }
-            // Same reason as `Vec`: `delete` frees the node, it doesn't hand it
-            // back, so there is no way to consume one. `Pool.remove` answered
+            // RC2: `delete` frees the node, it doesn't hand it back, so there
+            // is no way to consume one. `Pool.remove` answered
             // `T?`, which is what made a pool the one container a linear value
             // could live in — and that went with the pool (rask-lang/rask#908).
             "Rack" => {

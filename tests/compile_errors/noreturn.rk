@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `@noreturn` functions (ctrl.flow/CF34)
+//
+// A function marked `@noreturn` never comes back, and callers rely on it: code
+// after the call is unreachable, and an arm that calls it needs no value. So
+// every path through its body has to end in something that doesn't come back
+// either, and a `return` contradicts it. There's no type to write for it:
+// `Never` is gone.
+
+@noreturn
+func falls_off(n: i64) {
+    println(n)                           // ERROR: E0809
+}
+
+@noreturn
+func returns_early(n: i64) {
+    if n > 0 {
+        return                           // ERROR: E0850
+    }
+    panic("no")
+}
+
+func spelled() {
+    let n: Never = 3                     // ERROR: E0356
+}
+
+// Fine: every path ends in a call that doesn't come back, or a loop.
+@noreturn
+func fine(n: i64) {
+    if n > 0 {
+        panic("positive")
+    }
+    loop {
+        println(n)
+    }
+}
+
+func main() {}

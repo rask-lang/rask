@@ -418,6 +418,7 @@ impl Type {
             Type::InterfaceObject { interface_name, .. } => {
                 TypeExpr::Any(Box::new(TypeExpr::named(interface_name.clone())))
             }
+            Type::Never => TypeExpr::NoReturn,
             other => TypeExpr::named(other.to_string()),
         }
     }
@@ -480,6 +481,8 @@ impl fmt::Display for Type {
             }
             Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
+            // An error side that can't happen: the call can't fail, and is a `T`.
+            Type::Result { ok, err } if **err == Type::Never => write!(f, "{}", ok),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
@@ -488,12 +491,14 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            // `*(u8?)`: written bare, the `?` would be the pointer's.
+            Type::RawPtr(inner) if matches!(**inner, Type::Result { .. }) => write!(f, "*({})", inner),
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
             Type::InterfaceObject { interface_name, .. } => write!(f, "any {}", interface_name),
             Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
-            Type::Never => write!(f, "!"),
+            Type::Never => write!(f, "noreturn"),
             Type::None => write!(f, "none"),
             Type::Error => write!(f, "<error>"),
         }

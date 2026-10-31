@@ -15,15 +15,15 @@ fn has(out: &str, want: &str) {
 #[test]
 fn functions_and_pointers() {
     let out = bind("int open(const char *path, int flags);\nvoid free(void *ptr);\nsize_t strlen(const char *s);");
-    has(&out, "func open(path: *u8, flags: c_int) -> c_int");
-    has(&out, "func free(ptr: *void)\n");
-    has(&out, "func strlen(s: *u8) -> c_size");
+    has(&out, "func open(path: *u8?, flags: c_int) -> c_int");
+    has(&out, "func free(ptr: *void?)\n");
+    has(&out, "func strlen(s: *u8?) -> c_size");
 }
 
 #[test]
 fn variadic_and_void_params() {
     let out = bind("int printf(const char *fmt, ...);\nint getpid(void);");
-    has(&out, "func printf(fmt: *u8, ...) -> c_int");
+    has(&out, "func printf(fmt: *u8?, ...) -> c_int");
     has(&out, "func getpid() -> c_int");
 }
 
@@ -83,8 +83,8 @@ fn static_inline_gets_marked() {
 #[test]
 fn callback_context_is_found() {
     let out = bind("typedef void (*Cb)(void *userdata, int n);\nvoid on_event(Cb cb, void *userdata);\nvoid qsort(void *base, size_t n, size_t sz, int (*cmp)(const void *, const void *));");
-    has(&out, "@context(cb, userdata, at: 0)\nextern \"C\" func on_event(cb: Cb, userdata: *void)");
-    has(&out, "func qsort(base: *void, n: c_size, sz: c_size, cmp: *func(*void, *void) -> c_int)");
+    has(&out, "@context(cb, userdata, at: 0)\nextern \"C\" func on_event(cb: Cb, userdata: *void?)");
+    has(&out, "func qsort(base: *void?, n: c_size, sz: c_size, cmp: *func(*void?, *void?) -> c_int)");
 }
 
 #[test]

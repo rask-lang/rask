@@ -7,7 +7,7 @@ extern "C" func rask_alloc(size: i64) -> *u8
 
 func never_given_back() -> bool {
     let block = unsafe rask_alloc(64)
-    return !block.is_null()
+    return block == block
 }
 
 test "a raw block nothing frees" {
