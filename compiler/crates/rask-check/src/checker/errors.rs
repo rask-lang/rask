@@ -1280,6 +1280,29 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ctrl.ensure: `return`, or a `break`/`continue` leaving the loops
+    /// opened inside it, in an `ensure` body or handler.
+    #[error("`{what}` can't leave an `ensure` block")]
+    ExitInEnsure {
+        what: &'static str,
+        span: Span,
+    },
+
+    /// ctrl.ranges: a range's bounds are numbers or chars.
+    #[error("a range of `{ty}` doesn't count")]
+    RangeNotCountable {
+        ty: Type,
+        span: Span,
+    },
+
+    /// A method with no `self` called on a value.
+    #[error("`{method}` is a static method of `{ty}`, called on a value")]
+    StaticCallOnValue {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// A struct or variant literal that gives one field two values.
     #[error("field `{field}` of `{ty}` is given twice")]
     FieldGivenTwice {
@@ -1782,6 +1805,7 @@ impl TypeError {
 
             PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
             TupleArity { tuple, .. } => *tuple = f(tuple),
+            RangeNotCountable { ty, .. } => *ty = f(ty),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
             LinearElementLost { elem, .. } => *elem = f(elem),
@@ -1988,7 +2012,9 @@ impl TypeError {
             | InvalidConvert { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
-            | EntrySignature { .. } => {}
+            | EntrySignature { .. }
+            | ExitInEnsure { .. }
+            | StaticCallOnValue { .. } => {}
         }
     }
 }

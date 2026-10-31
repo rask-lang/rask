@@ -2787,6 +2787,27 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
             }
+            RangeNotCountable { ty, span } => {
+                Diagnostic::error(format!("a range of `{}` doesn't count", ty))
+                    .with_code("E0945")
+                    .with_primary(*span, "a range's bounds have to be numbers or chars")
+                    .with_help("to walk a list of values, write the list: `for s in [\"a\", \"b\"]`")
+                    .with_why("a range steps from its start toward its end, which needs a type with a next value [ctrl.ranges]")
+            }
+            StaticCallOnValue { ty, method, span } => {
+                Diagnostic::error(format!("`{}` is a static method of `{}`, called on a value", method, ty))
+                    .with_code("E0946")
+                    .with_primary(*span, format!("`{}` takes no `self`", method))
+                    .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
+                    .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
+            }
+            ExitInEnsure { what, span } => {
+                Diagnostic::error(format!("`{}` can't leave an `ensure` block", what))
+                    .with_code("E0944")
+                    .with_primary(*span, "cleanup runs while the block is already leaving")
+                    .with_help("decide the exit outside the `ensure`; inside, finish the cleanup and fall off the end")
+                    .with_why("an `ensure` runs on the way out of its block, after the exit is chosen. Starting another exit from inside it would replace that one and skip the cleanup still to run [ctrl.ensure]")
+            }
             EntrySignature { name, problem, span } => {
                 Diagnostic::error(format!("entry point `{}` {}", name, problem))
                     .with_code("E0942")

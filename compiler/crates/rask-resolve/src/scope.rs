@@ -136,7 +136,7 @@ impl ScopeTree {
             if let ScopeKind::Loop { label: Some(l) } = &scope.kind {
                 labels.push(l.clone());
             }
-            if matches!(scope.kind, ScopeKind::Function(_)) {
+            if matches!(scope.kind, ScopeKind::Function(_) | ScopeKind::Closure) {
                 break;
             }
             scope_id = scope.parent;
@@ -156,8 +156,10 @@ impl ScopeTree {
                         _ => {}
                     }
                 }
-                // Stop at function boundaries for break/continue
-                if matches!(scope.kind, ScopeKind::Function(_)) {
+                // Stop at function boundaries for break/continue. A closure is
+                // one: its body runs when it's called, maybe after the loop
+                // around it has finished, so it can't leave that loop.
+                if matches!(scope.kind, ScopeKind::Function(_) | ScopeKind::Closure) {
                     return None;
                 }
                 scope_id = scope.parent;

@@ -5258,7 +5258,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_origin(object, method, args)? {
+        if let Some(r) = self.try_lower_origin(expr.id, object, method, args)? {
             return Ok(r);
         }
 
@@ -7504,12 +7504,15 @@ impl<'a> MirLowerer<'a> {
     /// `.origin()` on a Result → formatted origin string.
     fn try_lower_origin(
         &mut self,
+        call: rask_ast::NodeId,
         object: &Expr,
         method: &String,
         args: &[CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // ER16: .origin() on Result — read origin fields and format as string
-        if method == "origin" && args.is_empty() {
+        // ER16: .origin() on Result — read origin fields and format as string.
+        // A type with a method of its own by that name (`Point.origin()`)
+        // means that method.
+        if method == "origin" && args.is_empty() && !self.receiver_declares_method(call, "origin") {
             let (obj_op, obj_ty) = self.lower_expr(object)?;
             if matches!(obj_ty, MirType::Result { .. }) {
                 let result_local = self.builder.alloc_temp(MirType::Buffer);

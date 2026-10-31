@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `break` or `return` that leaves an `ensure`, and a plain `break`
+// out of a loop whose value is used
+//
+// An `ensure` body runs while its block is already leaving, so it can't
+// start another exit: native failed the Cranelift verifier on `return` and
+// looped forever on `break`. Closures breaking an outer loop are in
+// break_in_closure.rk, because the resolver stops the pipeline there.
+
+func cleanup() {}
+
+func early() -> i32 {
+    ensure {
+        // ERROR: the function is already returning [E0944]
+        return 5
+    }
+    return 1
+}
+
+func main() {
+    loop {
+        ensure {
+            // ERROR: the loop is already being left [E0944]
+            break
+        }
+        cleanup()
+    }
+    // ERROR: a plain `break` gives the loop `void` [E0308]
+    let n: i32 = loop { break }
+
+    // FIX: a loop opened inside the cleanup can end itself
+    loop {
+        ensure {
+            for i in 0..3 {
+                if i == 1 { break }
+            }
+        }
+        break
+    }
+    println("{early()} {n}")
+}

@@ -1576,6 +1576,7 @@ impl TypeChecker {
                         self.errors.push(e);
                     }
                 }
+                self.pending_range_bounds.push((elem.clone(), expr.span));
                 Type::UnresolvedGeneric {
                     name: "Range".to_string(),
                     args: vec![GenericArg::Type(Box::new(elem))],
@@ -2006,6 +2007,12 @@ impl TypeChecker {
             }
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
+                // A closure's body is its own frame: the loops and the
+                // `ensure` around the closure's definition aren't around its
+                // calls.
+                let outer_loops = std::mem::take(&mut self.loop_forms);
+                let outer_floor = self.ensure_floor.take();
+                let closure_ty = {
                 // A slot type still naming a generic parameter (`func(T)` before
                 // substitution) says nothing the body can use yet.
                 let expected_params = self.closure_param_expectations.remove(&expr.id);
@@ -2131,6 +2138,10 @@ impl TypeChecker {
                         .collect(),
                     ret: Box::new(ret_ty),
                 }
+                };
+                self.loop_forms = outer_loops;
+                self.ensure_floor = outer_floor;
+                closure_ty
             }
 
             // A task block. Its value is the task's result, so the expression
@@ -2242,17 +2253,20 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Loop { body, .. } => {
+            ExprKind::Loop { body, label } => {
                 // Loop-as-expression gets its type from break values — each
                 // `break v` unifies into this.
                 let result = self.ctx.fresh_var();
-                self.loop_value_types.push(result.clone());
-                self.loop_forms.push(("loop", expr.span));
+                self.loop_forms.push(super::LoopFrame {
+                    form: "loop",
+                    header: expr.span,
+                    label: label.clone(),
+                    value: Some(result.clone()),
+                });
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
                 self.loop_forms.pop();
-                self.loop_value_types.pop();
                 result
             }
 
@@ -3965,7 +3979,12 @@ impl TypeChecker {
         };
         self.check_argument_lending(&written, Some(object), args);
         self.note_arg_labels(call_id, written, args, span);
-        self.note_method_call(call_id, span);
+        // A module (`os.args()`, `cli.Parser.new(…)`) is bound like a local
+        // but names a namespace, not a value.
+        let on_value = Self::root_ident_name(object).is_some_and(|root| {
+            self.lookup_local(&root).is_some() && self.types.module_named(&root).is_none()
+        }) || !matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. });
+        self.note_method_call(call_id, span, on_value);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
@@ -6638,6 +6657,30 @@ impl TypeChecker {
 
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now
     /// concrete (literal defaults applied), so `1 as bool` sees `i32`.
+    /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
+    /// `Range<string>` that native walked as nothing and the interpreter
+    /// refused at run time.
+    pub(super) fn validate_pending_range_bounds(&mut self) {
+        for (elem, span) in std::mem::take(&mut self.pending_range_bounds) {
+            let ty = self.resolve_named(&self.ctx.apply(&elem));
+            let countable = matches!(
+                ty,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+                    | Type::F32 | Type::F64 | Type::Char
+                    // Still open, already reported, or a type parameter
+                    // whose bound speaks for it.
+                    | Type::Var(_) | Type::Error | Type::Never | Type::UnresolvedNamed(_)
+            );
+            // A nominal number (`type Meters = i64`) counts as what it wraps
+            // only if it says so; leave those to their conformances.
+            let nominal = matches!(&ty, Type::Named(id) if self.types.get_nominal_name(*id).is_some());
+            if !countable && !nominal {
+                self.errors.push(TypeError::RangeNotCountable { ty, span });
+            }
+        }
+    }
+
     pub(super) fn validate_pending_casts(&mut self) {
         let pending = std::mem::take(&mut self.pending_casts);
         for pc in pending {
