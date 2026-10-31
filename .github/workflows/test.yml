@@ -676,6 +676,13 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/book_gate.sh
 
+    # The opt-in Claude Code hook in editors/claude-code/ parses
+    # `rask check --json`. Nothing else reads that output the same way, so a
+    # format change would break the hook silently without this.
+    - name: Agent hook gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/agent_hook_gate.sh
+
     # Parse-only spec conformance (existing weak signal — snippets parse).
     - name: Spec snippets parse
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}

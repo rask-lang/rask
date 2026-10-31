@@ -206,10 +206,14 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
-    /// The declaration of each struct, enum and union, by registered name, for
-    /// laying it out (`crate::layout`). Sizes come from the layout, so the copy
-    /// rule, `reflect.size_of` and codegen read one number.
-    pub(crate) layout_decls: HashMap<String, rask_ast::decl::Decl>,
+    /// Each struct, enum and union by the name its layout is keyed under
+    /// (`sizes.rs`). Sizes come from the layout, so the copy rule,
+    /// `reflect.size_of` and codegen read one number.
+    pub(crate) layout_types: HashMap<String, TypeId>,
+    /// The type each struct, enum, union and nominal type declaration
+    /// registered. What a later pass holding the declaration reads, so it
+    /// never has to find the type again by its name.
+    declared_types: HashMap<NodeId, TypeId>,
     /// Stdlib generics declared empty because the runtime holds the value.
     pub(crate) layout_stand_ins: std::collections::HashSet<String>,
     /// The bounds a generic struct or enum declares on its parameters, in
@@ -260,7 +264,8 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
-            layout_decls: HashMap::new(),
+            layout_types: HashMap::new(),
+            declared_types: HashMap::new(),
             layout_stand_ins: std::collections::HashSet::new(),
             declared_param_bounds: HashMap::new(),
             declared_by: HashMap::new(),
@@ -341,7 +346,7 @@ impl TypeTable {
             no_decode: false,
             attrs: Vec::new(),
             backing: None,
-            variant_decls: Vec::new(),
+            variant_decls: vec![rask_types::VariantDecl::synthesized(1), rask_types::VariantDecl::synthesized(0)],
         });
         self.option_type_id = Some(option_id);
 
@@ -358,7 +363,7 @@ impl TypeTable {
             no_decode: false,
             attrs: Vec::new(),
             backing: None,
-            variant_decls: Vec::new(),
+            variant_decls: vec![rask_types::VariantDecl::synthesized(1), rask_types::VariantDecl::synthesized(1)],
         });
         self.result_type_id = Some(result_id);
 
@@ -379,7 +384,7 @@ impl TypeTable {
             no_decode: false,
             attrs: Vec::new(),
             backing: None,
-            variant_decls: Vec::new(),
+            variant_decls: rask_stdlib::ORDERING_VARIANTS.iter().map(|_| rask_types::VariantDecl::synthesized(0)).collect(),
         });
     }
 
@@ -546,7 +551,7 @@ impl TypeTable {
     /// shadows it in `type_names`, never in `stdlib_type_names`.
     fn declared_in_stdlib(&self, id: TypeId) -> bool {
         self.get(id)
-            .is_some_and(|def| self.stdlib_type_names.get(Self::def_name(def)) == Some(&id))
+            .is_some_and(|def| self.stdlib_type_names.get(def.name()) == Some(&id))
     }
 
     /// A name as the code that declared `owner` reads it.
@@ -569,6 +574,16 @@ impl TypeTable {
             .get(name)
             .or_else(|| self.fallback_names().get(name))
             .copied()
+    }
+
+    /// Record that the declaration `decl` registered the type `id`.
+    pub(super) fn record_declared_type(&mut self, decl: NodeId, id: TypeId) {
+        self.declared_types.insert(decl, id);
+    }
+
+    /// The type a struct, enum, union or nominal type declaration registered.
+    pub fn declared_type(&self, decl: NodeId) -> Option<TypeId> {
+        self.declared_types.get(&decl).copied()
     }
 
     /// Note that `decl` declares methods on `id`.
@@ -2315,20 +2330,8 @@ impl TypeTable {
         self.types
             .iter()
             .enumerate()
-            .map(|(i, def)| (TypeId(i as u32), Self::def_name(def).to_string()))
+            .map(|(i, def)| (TypeId(i as u32), def.name().to_string()))
             .collect()
-    }
-
-    /// The name a `TypeDef` declares, whatever kind it is.
-    pub fn def_name(def: &TypeDef) -> &str {
-        match def {
-            TypeDef::Struct { name, .. }
-            | TypeDef::Enum { name, .. }
-            | TypeDef::Interface { name, .. }
-            | TypeDef::Union { name, .. }
-            | TypeDef::NominalAlias { name, .. }
-            | TypeDef::Primitive { name, .. } => name,
-        }
     }
 
     /// OR12: note that a conformance method has no body — the compiler answers

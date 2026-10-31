@@ -170,7 +170,7 @@ impl TypedProgram {
                     | TypeDef::NominalAlias { methods, .. } => methods,
                     _ => &[],
                 };
-                let ty = super::type_table::TypeTable::def_name(def);
+                let ty = def.name();
                 methods.iter().map(move |m| format!("{ty}_{}", m.name))
             })
             .collect();
