@@ -2,6 +2,7 @@
 
 //! Rask code generator — MIR → native code via Cranelift.
 
+mod c_entry;
 mod c_header;
 mod types;
 mod builder;

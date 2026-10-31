@@ -15,6 +15,48 @@
 
 import c "c_struct.h"
 
+// C calling Rask. A C caller passes and expects structs by C's rules, so these
+// are entered through a thunk that follows them (SR2).
+extern "C" func area_of(r: c.Rect) -> c_int {
+    return r.width * r.height
+}
+
+extern "C" func vec2_of(v: c.Vec2) -> f32 {
+    return v.x + v.y
+}
+
+extern "C" func stamp_of(s: c.Stamp) -> f64 {
+    return s.t + s.id.round<f64>()
+}
+
+extern "C" func triple_of(t: c.Triple) -> c_long {
+    return t.a + t.b * 10 + t.c * 100
+}
+
+extern "C" func seg_of(s: c.Seg) -> f32 {
+    return s.a.x + s.a.y * 10.0f32 + s.b.x * 100.0f32 + s.b.y * 1000.0f32
+}
+
+extern "C" func make_rect(w: c_int, h: c_int) -> c.Rect {
+    return c.Rect(width: w, height: h)
+}
+
+extern "C" func make_vec2(x: f32, y: f32) -> c.Vec2 {
+    return c.Vec2(x: x, y: y)
+}
+
+extern "C" func make_stamp(t: f64, id: c_long) -> c.Stamp {
+    return c.Stamp(t: t, id: id)
+}
+
+extern "C" func make_triple(a: c_long, b: c_long, c3: c_long) -> c.Triple {
+    return c.Triple(a: a, b: b, c: c3)
+}
+
+extern "C" func make_tri(base: f32) -> c.Tri {
+    return c.Tri(v: [base, base + 1.0f32], w: base + 2.0f32)
+}
+
 func main() {
     let r = c.Rect(width: 6, height: 7)
     let v = c.Vec2(x: 1.5f32, y: 2.25f32)
@@ -63,5 +105,24 @@ func main() {
         println("back tri {mt2.v[0]} {mt2.v[1]} {mt2.w}")
         // Straight back into C: what came out is a struct like any other.
         println("round trip {c.rask_test_area(c.rask_test_make(6, 7))}")
+    }
+
+    // C calls Rask with a struct, and reads one Rask returns.
+    unsafe {
+        println("called area {c.rask_test_call_area(area_of)}")
+        println("called vec2 {c.rask_test_call_vec2(vec2_of)}")
+        println("called stamp {c.rask_test_call_stamp(stamp_of)}")
+        println("called triple {c.rask_test_call_triple(triple_of)}")
+        println("called seg {c.rask_test_call_seg(seg_of)}")
+        println("called make {c.rask_test_call_make(make_rect)}")
+        println("called make vec2 {c.rask_test_call_make_vec2(make_vec2)}")
+        println("called make stamp {c.rask_test_call_make_stamp(make_stamp)}")
+        println("called make triple {c.rask_test_call_make_triple(make_triple)}")
+        println("called make tri {c.rask_test_call_make_tri(make_tri)}")
+        // A closure that captures nothing is a C function too (CB2).
+        let built = c.rask_test_call_make(|w: c_int, h: c_int| -> c.Rect {
+            return c.Rect(width: w + 1, height: h + 1)
+        })
+        println("called closure {built}")
     }
 }

@@ -17,11 +17,11 @@ use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
 
 pub struct CodeGenerator {
-    module: ObjectModule,
-    ctx: codegen::Context,
-    func_ids: HashMap<String, cranelift_module::FuncId>,
+    pub(crate) module: ObjectModule,
+    pub(crate) ctx: codegen::Context,
+    pub(crate) func_ids: HashMap<String, cranelift_module::FuncId>,
     /// Struct layouts from monomorphization
-    struct_layouts: Vec<StructLayout>,
+    pub(crate) struct_layouts: Vec<StructLayout>,
     /// The checker's name for each type id, from monomorphization.
     type_names: HashMap<rask_types::TypeId, String>,
     /// Enum layouts from monomorphization
@@ -57,7 +57,10 @@ pub struct CodeGenerator {
     /// struct parameter. A call site can't read this off the declared signature
     /// — a struct in registers looks like any other `i64` there — so the plan
     /// is kept beside it (#948).
-    c_abi_args: HashMap<String, Vec<rask_mir::c_call::CArg>>,
+    c_abi_plans: HashMap<String, rask_mir::c_call::CallPlan>,
+    /// Rask functions C calls with a struct by value, waiting for their
+    /// C-convention thunks (`c_entry`).
+    pub(crate) c_entries: Vec<crate::c_entry::CEntry>,
     /// Declared param types per Rask function. Call sites need these to pass
     /// aggregates by pointer even when the caller's own local is a scalar.
     fn_param_types: HashMap<String, Vec<rask_mir::MirType>>,
@@ -118,7 +121,8 @@ impl CodeGenerator {
             module,
             ctx: codegen::Context::new(),
             func_ids: HashMap::new(),
-            c_abi_args: HashMap::new(),
+            c_abi_plans: HashMap::new(),
+            c_entries: Vec::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
@@ -191,7 +195,8 @@ impl CodeGenerator {
             module,
             ctx: codegen::Context::new(),
             func_ids: HashMap::new(),
-            c_abi_args: HashMap::new(),
+            c_abi_plans: HashMap::new(),
+            c_entries: Vec::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
@@ -1239,17 +1244,10 @@ impl CodeGenerator {
         extern_decls: &[crate::ExternFuncSig],
         layouts: &[StructLayout],
     ) -> CodegenResult<()> {
-        use rask_mir::c_call::{CArg, CallConv};
+        use rask_mir::c_call::{CArg, CRet, CallConv, CallPlan};
         use cranelift_codegen::ir::ArgumentPurpose;
 
-        let conv = {
-            let triple = self.module.isa().triple();
-            let os = match triple.operating_system {
-                target_lexicon::OperatingSystem::Windows => "windows",
-                _ => "",
-            };
-            CallConv::for_target(&triple.architecture.to_string(), os)
-        };
+        let conv: CallConv = self.c_call_conv();
         for decl in extern_decls {
             // Skip if already declared (e.g. a runtime or stdlib function with the same name)
             if self.func_ids.contains_key(&decl.name) {
@@ -1278,15 +1276,36 @@ impl CodeGenerator {
                 }
                 plan.push(arg);
             }
-            if plan.iter().any(|a| !matches!(a, CArg::Scalar)) {
-                self.c_abi_args.insert(decl.name.clone(), plan);
-            }
-            if let Some(ret) = &decl.ret_ty {
-                let mir_ty = extern_type_to_mir(ret);
-                if !matches!(mir_ty, rask_mir::MirType::Void) {
-                    let cl_ty = mir_to_cranelift_type(&mir_ty)?;
-                    sig.returns.push(AbiParam::new(cl_ty));
+            let ret = match &decl.ret_ty {
+                Some(ret) => rask_mir::c_call::classify_return(conv, ret, layouts),
+                None => CRet::Scalar,
+            };
+            match (&ret, &decl.ret_ty) {
+                (CRet::Registers(pieces), _) => {
+                    for p in pieces {
+                        sig.returns.push(AbiParam::new(piece_type(p.kind)));
+                    }
                 }
+                // The caller's memory for the result. First, where every
+                // convention here wants it, and Cranelift puts it in that
+                // convention's register.
+                (CRet::Indirect, _) => sig.params.insert(0, AbiParam::special(
+                    types::I64,
+                    ArgumentPurpose::StructReturn,
+                )),
+                // Refused at the call, with the function's name.
+                (CRet::Unsupported, _) => {}
+                (CRet::Scalar, Some(ret)) => {
+                    let mir_ty = extern_type_to_mir(ret);
+                    if !matches!(mir_ty, rask_mir::MirType::Void) {
+                        let cl_ty = mir_to_cranelift_type(&mir_ty)?;
+                        sig.returns.push(AbiParam::new(cl_ty));
+                    }
+                }
+                (CRet::Scalar, None) => {}
+            }
+            if plan.iter().any(|a| !matches!(a, CArg::Scalar)) || !matches!(ret, CRet::Scalar) {
+                self.c_abi_plans.insert(decl.name.clone(), CallPlan { args: plan, ret });
             }
             let func_id = self.module
                 .declare_function(decl.link_name.as_deref().unwrap_or(&decl.name), Linkage::Import, &sig)
@@ -1355,9 +1374,17 @@ impl CodeGenerator {
                 &mir_fn.name
             };
 
-            let func_id = self.module
-                .declare_function(export_name, Linkage::Export, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            // C calls it with a struct by value: the exported name goes to a
+            // thunk that follows C's rules, and the body keeps Rask's.
+            let func_id = match self.c_entry_plan(mir_fn) {
+                Some((params, ret)) => {
+                    let export_name = export_name.to_string();
+                    self.declare_c_entry(mir_fn, &export_name, &sig, params, ret)?
+                }
+                None => self.module
+                    .declare_function(export_name, Linkage::Export, &sig)
+                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?,
+            };
 
             // Store under the MIR name so internal calls resolve correctly
             self.func_ids.insert(mir_fn.name.clone(), func_id);
@@ -1368,7 +1395,7 @@ impl CodeGenerator {
             );
             self.fn_ret_types.insert(mir_fn.name.clone(), mir_fn.ret_ty.clone());
         }
-        Ok(())
+        self.gen_c_entries()
     }
 
     /// Scan MIR functions for string constants and create data objects for each unique string.
@@ -1943,7 +1970,7 @@ impl CodeGenerator {
         if let Some(lm) = &self.line_map {
             builder.set_line_map(lm);
         }
-        builder.set_c_abi_args(&self.c_abi_args);
+        builder.set_c_abi_plans(&self.c_abi_plans);
         builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {

@@ -157,8 +157,10 @@ The C ABI and a real object file turned out not to need a build harness either,
 just a test that shells out to `cc`. `compiler/crates/rask-cli/tests/compile_run.rs`
 compiles a `.c` fixture, links it with the Rask binary and runs the result:
 `a_c_struct_goes_by_value` asserts one line per System V argument class, going
-to C and coming back (a struct passed as a pointer, cut into the wrong register
-class, or read from where it wasn't returned, gives a different number), and
+to C and coming back, with Rask calling C and C calling Rask (a struct passed
+as a pointer, cut into the wrong register class, or read from where it wasn't
+returned, gives a different number; `tests/c_abi_gate.sh` runs the same lines
+on aarch64 under qemu), and
 `extern_c_export_returns_through_c_frames`
 calls *into* Rask from C frames. Writing those found #948 — `c.mylib_area(r)`
 returned 364029824 where it should return 42 — and #1101.

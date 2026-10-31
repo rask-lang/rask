@@ -8468,9 +8468,10 @@ fn run_with_c_object(stem: &str) -> (String, bool) {
     (text, out.status.success())
 }
 
-/// One line per System V argument class, both ways. A struct passed as a
-/// pointer, cut into the wrong register class, or read back from where it
-/// wasn't returned, gives a different number here.
+/// One line per System V argument class, both ways and in both directions:
+/// Rask calling C, and C calling Rask. A struct passed as a pointer, cut into
+/// the wrong register class, or read back from where it wasn't returned, gives
+/// a different number here.
 #[test]
 fn a_c_struct_goes_by_value() {
     let (text, ok) = run_with_c_object("c_struct");
@@ -8495,6 +8496,17 @@ fn a_c_struct_goes_by_value() {
         "back seg 1 2 3 4",
         "back tri 5 6 7",
         "round trip 42",
+        "called area 42",
+        "called vec2 3.75",
+        "called stamp 41.5",
+        "called triple 321",
+        "called seg 4321",
+        "called make 34",
+        "called make vec2 26.5",
+        "called make stamp 70.5",
+        "called make triple 321",
+        "called make tri 765",
+        "called closure 45",
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }

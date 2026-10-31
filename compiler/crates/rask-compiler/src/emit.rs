@@ -252,8 +252,6 @@ fn emit_inner(
     }).collect();
     let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
-    let returning = crate::struct_return::route_calls(&mut functions, input.decls)?;
-    extern_sigs.extend(returning.sigs.iter().cloned());
     // Only the externs the program reaches. A header declares far more than
     // a program calls, and each declared import is a symbol the link must
     // find: some of a header's functions exist only on other platforms, or
@@ -261,7 +259,6 @@ fn emit_inner(
     let reached = reached_symbols(&functions);
     extern_sigs.retain(|s| reached.contains(&s.name));
     write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
-    write_companion(obj_path, "sret", returning.source)?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
     codegen.declare_functions(input.mono, &functions).map_err(fail)?;
     codegen.register_strings(&functions).map_err(fail)?;
