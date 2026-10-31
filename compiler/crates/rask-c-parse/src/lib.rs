@@ -6,6 +6,7 @@
 //! constants) into a C-level AST. No libclang dependency. Handles the subset
 //! of C that appears in well-behaved library headers.
 
+pub mod cexpr;
 pub mod consteval;
 pub mod shim;
 mod lexer;

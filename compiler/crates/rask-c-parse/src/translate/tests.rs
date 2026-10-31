@@ -130,3 +130,11 @@ fn pointer_to_pointer_parenthesizes_the_inner_optional() {
     has(&out, "out: *(*void?)?");
     has(&out, "rows: *(*c_int?)?");
 }
+
+#[test]
+fn a_float_constant_keeps_its_c_type() {
+    let out = bind("#define PI_F 3.14159265358979323846f\n#define PI_D 3.14159265358979323846\n#define HALF (PI_F / 2)\n");
+    has(&out, "public const PI_F: f32 = 3.1415927");
+    has(&out, "public const PI_D: f64 = 3.141592653589793");
+    has(&out, "public const HALF: f32 = 1.5707964");
+}

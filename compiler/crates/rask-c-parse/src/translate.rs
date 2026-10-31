@@ -477,7 +477,13 @@ impl<'a> Translator<'a> {
                 let rty = self.ty(&ty);
                 format!("public const {}: {} = {}\n", d.name, rty, v)
             }
-            Some(CValue::Float(f)) => format!("public const {}: f64 = {:?}\n", d.name, f),
+            Some(CValue::Float(f, t)) => {
+                if crate::cexpr::canonical(&t) == CType::Float {
+                    format!("public const {}: f32 = {:?}\n", d.name, f as f32)
+                } else {
+                    format!("public const {}: f64 = {:?}\n", d.name, f)
+                }
+            }
             Some(CValue::Str(s)) => format!("public const {}: string = {}\n", d.name, quote(&s)),
             // `#define SDL_mutex SDL_Mutex`: another name for something. A
             // library's old spellings come in hundreds and say nothing, so
