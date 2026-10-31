@@ -36,6 +36,21 @@ pub fn slot(value: Value) -> Slot {
 }
 
 impl Slot {
+    /// Where this is, as a number: the same for two slots naming one place.
+    pub fn identity(&self) -> u64 {
+        let base = |a: usize| a as u64;
+        match self {
+            Slot::Var(cell) => base(Arc::as_ptr(cell) as *const u8 as usize),
+            Slot::Field(s, field) => {
+                let fields = s.lock().unwrap();
+                let i = fields.fields.get_index_of(field).unwrap_or(0) as u64;
+                base(Arc::as_ptr(s) as *const u8 as usize).wrapping_add(i * 8)
+            }
+            Slot::Elem(v, i) => base(Arc::as_ptr(v) as *const u8 as usize).wrapping_add(*i as u64 * 8),
+            Slot::Entry(m, i) => base(Arc::as_ptr(m) as *const u8 as usize).wrapping_add(*i as u64 * 8),
+        }
+    }
+
     /// The value stored here. `None` only for an element or entry that is no
     /// longer there.
     pub fn get(&self) -> Option<Value> {

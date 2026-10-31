@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `os.exit(code: i32) -> Never` and `os.pid() -> u32` (std.os/P1, P2): an exit
-// status is a C `int`, a pid a positive 32-bit number. `Never` is what lets an
-// exit fill a slot of any type, the way `panic` does.
+// `os.exit(code: i32)` and `os.pid() -> u32` (std.os/P1, P2): an exit status
+// is a C `int`, a pid a positive 32-bit number. `os.exit` is `@noreturn`, which
+// is what lets it fill a slot of any type, the way `panic` does.
 
 import os
 
@@ -9,7 +9,7 @@ func port_or_exit(raw: string) -> u16 {
     return raw.parse<u16>() catch _ => os.exit(2)
 }
 
-test "os.exit is a Never: it fills any slot" {
+test "os.exit never returns, so it fills any slot" {
     assert port_or_exit("8080") == 8080
 }
 

@@ -112,8 +112,8 @@ impl TypeChecker {
     fn is_numeric_primitive(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64
         )
     }
@@ -199,6 +199,20 @@ impl TypeChecker {
         // liveness check: a link that exists points at a live node.
         if let Some(node) = self.link_node_type(&ty) {
             return self.resolve_field(node, field, expected, span, self_type);
+        }
+
+        // `p.x` on a raw pointer is the field of what it points at: C's `p->x`.
+        // Reading or writing it goes through the pointer, so it needs `unsafe`
+        // as `*p` does. The walk recorded whether the site sat inside one.
+        if let Type::RawPtr(inner) = &ty {
+            if !self.ptr_method_sites.get(&span).copied().unwrap_or(true) {
+                return Err(TypeError::UnsafeRequired {
+                    operation: "field access through a pointer".to_string(),
+                    span,
+                });
+            }
+            let inner = (**inner).clone();
+            return self.resolve_field(inner, field, expected, span, self_type);
         }
 
         match &ty {
@@ -791,6 +805,10 @@ impl TypeChecker {
             }
         }
 
+        if matches!(super::receiver_name(&ty, &self.types).as_deref(), Some("Vec" | "Map")) {
+            self.pending_element_uses.push((span, ty.clone(), method.clone()));
+        }
+
         // XC3: a call to a method two visible conformances both supply picks a
         // body just as silently as a bound does, so the call is a use site too.
         if !matches!(ty, Type::Var(_) | Type::Error) {
@@ -1146,11 +1164,20 @@ impl TypeChecker {
                         if matches!(arg_ty, Type::Var(arg_id) if self.ctx.literal_vars.contains_key(&arg_id))
                         {
                             self.unify(&ty, &arg_ty, span)?;
-                            return if Self::is_homogeneous_comparison(&method) {
+                            let progress = if Self::is_homogeneous_comparison(&method) {
                                 self.unify(&ret, &Type::Bool, span)
                             } else {
                                 self.unify(&ret, &ty, span)
-                            };
+                            }?;
+                            // The dispatch record, as for the unary and shift
+                            // cases: with no target, reachability reached every
+                            // `eq` in the program for `1 == 2`, and a program
+                            // importing SDL generated 161 struct comparisons
+                            // nobody made.
+                            self.deferred_methods.push(TypeConstraint::HasMethod {
+                                ty, method, args, ret, span, call_node,
+                            });
+                            return Ok(progress);
                         }
                     }
                 }
@@ -1311,8 +1338,8 @@ impl TypeChecker {
                                 let resolved_arg = self.ctx.apply(arg_ty);
                                 let is_int = matches!(
                                     resolved_arg,
-                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                                 );
                                 if !is_int {
                                     self.unify(arg_ty, &Type::I64, span)?;
@@ -1620,8 +1647,8 @@ impl TypeChecker {
                 }
             }
             // Primitive integer types — resolve operator methods directly
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => {
                 self.resolve_integer_method(&ty, &method, &args, &ret, call_node, span)
             }
             // Primitive float types
@@ -2034,20 +2061,36 @@ impl TypeChecker {
         if let [operand] = args {
             let arithmetic = rask_stdlib::operators::operator_interface(method).is_some();
             let judged = if arithmetic {
-                self.reject_mixed_signedness(method, ty, operand, span)
-                    .and_then(|()| self.reject_int_float_mix(method, ty, operand, span))
-                    .and_then(|()| self.reject_incomparable_operand(method, ty, operand, span))
+                // A shift's amount keeps its own type and never widens the
+                // result, but it still can't cross signedness.
+                let widened = if Self::is_shift(method) {
+                    self.reject_mixed_signedness(method, ty, operand, span).map(|()| None)
+                } else {
+                    self.widened_integer_result(method, ty, operand, span)
+                };
+                widened.and_then(|wider| {
+                    self.reject_int_float_mix(method, ty, operand, span)?;
+                    self.reject_incomparable_operand(method, ty, operand, span)?;
+                    Ok(wider)
+                })
             } else {
-                self.reject_incomparable_operand(method, ty, operand, span)
+                self.reject_incomparable_operand(method, ty, operand, span).map(|()| None)
             };
-            if let Err(bad) = judged {
-                // The answer's type doesn't depend on what's wrong with the
-                // operand, so pin it before reporting. Leaving it open turned
-                // one error into two, the second blaming a `let` that's fine.
-                let _ = self.unify(ret, &want_ret, span);
-                return Some(Err(bad));
-            }
+            let wider = match judged {
+                Ok(wider) => wider,
+                Err(bad) => {
+                    // The answer's type doesn't depend on what's wrong with the
+                    // operand, so pin it before reporting. Leaving it open turned
+                    // one error into two, the second blaming a `let` that's fine.
+                    let _ = self.unify(ret, &want_ret, span);
+                    return Some(Err(bad));
+                }
+            };
             let _ = self.unify(operand, &params[0], span);
+            // The narrower side widens: the answer is the type that holds both.
+            if let Some(wider) = wider.filter(|_| want_ret == *ty) {
+                return Some(self.unify(ret, &wider, span));
+            }
         }
         Some(self.unify(ret, &want_ret, span))
     }
@@ -2758,8 +2801,8 @@ impl TypeChecker {
             // Still open — the value that settles it decides, and rejecting on
             // "don't know" would refuse code the checker later accepts.
             Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char => None,
             Type::I128 | Type::U128 => Some(
                 "a 128-bit payload needs `target.has_atomic128`, which isn't wired up yet (AT7)"
@@ -2828,8 +2871,8 @@ impl TypeChecker {
     fn is_countable_payload(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                 | Type::F32 | Type::F64
                 | Type::Var(_)
         )
@@ -3064,18 +3107,54 @@ impl TypeChecker {
         Err(Self::wrapper_method_cut(self_ty, method, span))
     }
 
-    /// ORD4: arithmetic is homogeneous, so a signed and an unsigned operand
-    /// can't meet under `+ - * / % & | ^ << >>`. There's no result type that
-    /// holds both — `u64` can't hold a negative `i32` and `i32` can't hold a
-    /// large `u64` — so widening one side would be picking a winner silently.
-    /// That's the conversion C makes, and it's why `-1 < 1u` is true there.
+    /// The type integer arithmetic between `recv` and `arg` produces, when the
+    /// two differ: the one that holds every value of the other, with the
+    /// narrower side widened to it (type.primitives/CV1a, the same test an
+    /// assignment uses). `u32 + u64` is a `u64`, and `x += y` then has to fit
+    /// `x` like any assignment, so `u64 += u32` is fine and `u32 += u64` isn't.
     ///
-    /// Comparison keeps crossing signedness (it answers by value, so there's
-    /// nothing to guess) — its arm deliberately doesn't call this.
+    /// The result used to be the receiver's type whatever the operand was, so
+    /// `u32 + u64` was a `u32`: native truncated it silently and the
+    /// interpreter panicked with an overflow.
+    ///
+    /// When neither type holds the other there's no result to pick, and
+    /// widening one side would be choosing a winner silently. That's the
+    /// conversion C makes, and it's why `-1 < 1u` is true there. `u32 + i64`
+    /// has one (`i64`); `u64 + i64` and `i32 + u32` don't.
+    ///
+    /// Comparison crosses signedness and width by value (ORD4), so its arm
+    /// doesn't call this.
     ///
     /// Fires only when both sides are settled integer primitives. An untyped
     /// literal is a variable at this point, and the unify below is what pins it
     /// to the receiver, so `a + 1` on a `u64` still works.
+    fn widened_integer_result(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<Option<Type>, TypeError> {
+        let arg = self.ctx.apply(arg);
+        if Self::integer_is_signed(recv).is_none() || Self::integer_is_signed(&arg).is_none() || *recv == arg {
+            return Ok(None);
+        }
+        if Self::is_integer_widening(&arg, recv) {
+            return Ok(None);
+        }
+        if Self::is_integer_widening(recv, &arg) {
+            return Ok(Some(arg));
+        }
+        Err(TypeError::MixedSignednessArithmetic {
+            op: Self::operator_spelling(method),
+            left: recv.clone(),
+            right: arg,
+            span,
+        })
+    }
+
+    /// A shift's operands can't cross signedness either (ORD4), though the
+    /// amount's width is its own.
     fn reject_mixed_signedness(
         &mut self,
         method: &str,
@@ -3197,8 +3276,8 @@ impl TypeChecker {
     /// Signedness of an integer primitive, `None` for anything else.
     fn integer_is_signed(ty: &Type) -> Option<bool> {
         match ty {
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Some(true),
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Some(false),
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => Some(true),
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => Some(false),
             _ => None,
         }
     }
@@ -3448,7 +3527,7 @@ impl TypeChecker {
         };
         let params = self.types.get(base).map(|d| d.type_params().to_vec()).unwrap_or_default();
         bound.iter().all(|(leaf, actual)| {
-            super::declarations::is_type_param_name(leaf)
+            rask_ast::type_params::is_type_param_name(leaf)
                 || params.iter().any(|p| p == leaf)
                 || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
                     .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))

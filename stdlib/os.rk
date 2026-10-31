@@ -39,7 +39,8 @@ extend os {
     /// Exit the process with a status code.
     @native("rask_os_exit")
     @ambient
-    public func exit(code: i32) -> Never {}
+    @noreturn
+    public func exit(code: i32) {}
 
     /// Get the current process ID.
     @native("rask_os_pid")

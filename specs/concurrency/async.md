@@ -155,9 +155,9 @@ at the call site.
 
 I dropped the free `join_all(a, b)` and `select_first(a, b)`. A call that takes
 any number of handles and hands back a tuple of their results can't be declared
-in Rask, and the `Vec<Handle<T>>` version couldn't be called, since a `Vec`
-can't hold a linear value. Joining two handles is two lines, and a loop is
-what `Handles` is for. Racing tasks for the first result is still open; a
+in Rask, and the `Vec<Handle<T>>` version couldn't be called when a `Vec`
+couldn't hold a linear value. It can now (`mem.resources/RC1`), but joining
+two handles is two lines, and a loop is what `Handles` is for. Racing tasks for the first result is still open; a
 channel both send to covers it today.
 
 ## Runtime Scope

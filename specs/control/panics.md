@@ -71,8 +71,8 @@ costs nothing — it is the line that used to sit at the bottom of the function.
 
 There used to be a leak no static rule could see — a `Pool<Resource>` whose
 contents were a runtime fact — and it had a runtime guard of its own. Pools are
-gone (rask-lang/rask#908), and no container can hold a linear value now
-(`mem.resources/RC1`–RC3), so the guard has nothing to fire on. Every case here
+gone (rask-lang/rask#908), and a container that holds a linear value is
+linear itself (`mem.resources/RC1`), so the guard has nothing to fire on. Every case here
 is static, and nothing fires at a scope exit during unwind: an ensure body is
 the only thing E3 has to contain. A runtime guard that comes back — a
 `Rack.take` handing a linear value out of a container would be one — has to

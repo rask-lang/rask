@@ -15,15 +15,15 @@ fn has(out: &str, want: &str) {
 #[test]
 fn functions_and_pointers() {
     let out = bind("int open(const char *path, int flags);\nvoid free(void *ptr);\nsize_t strlen(const char *s);");
-    has(&out, "func open(path: *u8, flags: c_int) -> c_int");
-    has(&out, "func free(ptr: *void)\n");
-    has(&out, "func strlen(s: *u8) -> c_size");
+    has(&out, "func open(path: *u8?, flags: c_int) -> c_int");
+    has(&out, "func free(ptr: *void?)\n");
+    has(&out, "func strlen(s: *u8?) -> c_size");
 }
 
 #[test]
 fn variadic_and_void_params() {
     let out = bind("int printf(const char *fmt, ...);\nint getpid(void);");
-    has(&out, "func printf(fmt: *u8, ...) -> c_int");
+    has(&out, "func printf(fmt: *u8?, ...) -> c_int");
     has(&out, "func getpid() -> c_int");
 }
 
@@ -53,8 +53,10 @@ fn nested_anonymous_members_get_names() {
 
 #[test]
 fn enums_are_integers() {
-    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };");
-    has(&out, "public type alias Color = c_int");
+    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };\ntypedef enum { DOWN = -1, UP = 1 } Dir;");
+    // GCC's and Clang's choice: unsigned with no negative enumerator.
+    has(&out, "public type alias Color = c_uint");
+    has(&out, "public type alias Dir = c_int");
     has(&out, "public const GREEN: Color = 4");
     has(&out, "public const BLUE: Color = 5");
     has(&out, "public const ANON: c_int = 7");
@@ -74,6 +76,14 @@ fn macros_evaluate_or_leave_a_comment() {
 }
 
 #[test]
+fn constants_through_function_like_macros() {
+    let out = bind("#define U64_C(c) c ## UL\n#define FLAG_A U64_C(0x20)\n#define POS_MASK 0x2FFF0000u\n#define POS_DISPLAY(X) (POS_MASK|(X))\n#define POS_CENTERED POS_DISPLAY(0)\n#define OLD_NAME new_name\n");
+    has(&out, "public const FLAG_A: c_ulong = 32");
+    has(&out, "public const POS_CENTERED: c_uint = 805240832");
+    assert!(!out.contains("OLD_NAME"), "a rename leaves no comment:\n{}", out);
+}
+
+#[test]
 fn static_inline_gets_marked() {
     let out = bind("static inline int twice(int n) { return n * 2; }\nstatic int hidden(void) { return 1; }");
     has(&out, "@inline_from(\"lib.h\")\nextern \"C\" func twice(n: c_int) -> c_int");
@@ -83,8 +93,8 @@ fn static_inline_gets_marked() {
 #[test]
 fn callback_context_is_found() {
     let out = bind("typedef void (*Cb)(void *userdata, int n);\nvoid on_event(Cb cb, void *userdata);\nvoid qsort(void *base, size_t n, size_t sz, int (*cmp)(const void *, const void *));");
-    has(&out, "@context(cb, userdata, at: 0)\nextern \"C\" func on_event(cb: Cb, userdata: *void)");
-    has(&out, "func qsort(base: *void, n: c_size, sz: c_size, cmp: *func(*void, *void) -> c_int)");
+    has(&out, "@context(cb, userdata, at: 0)\nextern \"C\" func on_event(cb: Cb, userdata: *void?)");
+    has(&out, "func qsort(base: *void?, n: c_size, sz: c_size, cmp: *func(*void?, *void?) -> c_int)");
 }
 
 #[test]
@@ -112,4 +122,11 @@ fn the_probe_header() {
     has(&out, "public struct Pair {\n    public a: Point\n");
     has(&out, "public const LIB_FLAG_B: c_int = 2");
     has(&out, "public type alias Cmp_fn = *func(c_int, c_int) -> c_int");
+}
+
+#[test]
+fn pointer_to_pointer_parenthesizes_the_inner_optional() {
+    let out = bind("void get(void **out, int **rows);");
+    has(&out, "out: *(*void?)?");
+    has(&out, "rows: *(*c_int?)?");
 }

@@ -64,7 +64,7 @@ committed.
 | **BI2: Never edited** | The generated file is a function of the header. Regenerate it; don't patch it |
 | **BI3: Fix by override** | A declaration the translator got wrong is corrected by an explicit one in another file (CI4), which regeneration leaves alone |
 | **BI4: Check** | `rask bindc --check header.h sdl.rk` fails when the file isn't what the header now translates to |
-| **BI5: Skips are visible** | What can't be translated is written as a comment where the declaration would have been, carrying the C text |
+| **BI5: Skips are visible** | What can't be translated is written as a comment where the declaration would have been, carrying the C text. A macro that only renames (`#define SDL_mutex SDL_Mutex`) leaves no comment, since a library's old spellings run to hundreds; using one still says what it was |
 | **BI6: Whose declarations** | The header's own directory is the library's: its declarations translate, and another file's only when one of them uses it (opaque when only pointed at). A header straight in a system include directory is the library's alone, since libc shares that directory |
 
 A binding keeps C's names, so the library's own documentation still applies.
@@ -78,8 +78,8 @@ its header.
 ```rask
 // sdl.rk: generated, never edited
 extern "C" {
-    func SDL_CreateWindow(title: *u8, w: c_int, h: c_int, flags: u64) -> *SDL_Window
-    func SDL_DestroyWindow(window: *SDL_Window)
+    func SDL_CreateWindow(title: *u8?, w: c_int, h: c_int, flags: u64) -> *SDL_Window?
+    func SDL_DestroyWindow(window: *SDL_Window?)
 }
 
 // window.rk: written by hand
@@ -89,10 +89,7 @@ public struct Window { raw: *SDL_Window }
 extend Window {
     public func open(title: string, w: i32, h: i32) -> Window or SdlError {
         let t = try title.to_cstring()
-        let raw = unsafe SDL_CreateWindow(t.as_ptr(), w, h, 0)
-        if raw.is_null() {
-            return sdl_error()
-        }
+        let raw = unsafe SDL_CreateWindow(t.as_ptr(), w, h, 0) ?? return sdl_error()
         return Window(raw: raw)
     }
 
@@ -107,7 +104,7 @@ extend Window {
 | Rule | Description |
 |------|-------------|
 | **TM1: Platform types** | `c_int`, `c_long`, etc. resolve to target platform sizes, not host |
-| **TM2: Pointer mapping** | `T*` → `*T`, `void*` → `*void`, function pointers → `*func(...)` |
+| **TM2: Pointer mapping** | `T*` → `*T?`, `void*` → `*void?`, function pointers → `*func(...)`. A header doesn't say which pointers may be NULL, and a `*T` never is (`mem.unsafe/PT6`), so a data pointer is the optional one. A `*T` argument fills it; a returned one is checked before use. An override (BI3) narrows a pointer the library's docs promise is never NULL |
 | **TM3: Composite types** | A C struct is a `@layout(C)` struct, a union a `union` (always C layout), an opaque struct `extern "C" struct Name` with no body |
 | **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
 | **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
@@ -129,14 +126,14 @@ extend Window {
 | `struct S { ... }` | `@layout(C) struct S { ... }` |
 | `struct S;` (no body) | `extern "C" struct S` |
 | `union U { ... }` | `union U { ... }` ([mem.unsafe/UN1–UN3](../memory/unsafe.md#unions)) |
-| `enum E { A, B }` | `type alias E = c_int` plus `const A: E = 0`, `const B: E = 1` |
+| `enum E { A, B }` | `type alias E = c_uint` plus `const A: E = 0`, `const B: E = 1` |
 | `int x : 3;` | `@bits(3) x: c_int` |
 | Anonymous nested struct/union | A named type `Outer_anon0` and a field of it |
 | Packed struct | `@packed` annotation |
 
 | Rule | Description |
 |------|-------------|
-| **TM6: Enums are integers** | A C enum is its integer type, and its enumerators are constants. C stores any value of the type in it (flags, values from newer library versions), so a closed Rask enum would make an unlisted value undefined in a `match` |
+| **TM6: Enums are integers** | A C enum is its integer type, and its enumerators are constants. C stores any value of the type in it (flags, values from newer library versions), so a closed Rask enum would make an unlisted value undefined in a `match`. The integer type is the one GCC and Clang pick: `c_uint` when no enumerator is negative, else `c_int`, wider when a value needs it |
 | **TM7: Bitfields** | `@bits(n)` on an integer field of a `@layout(C)` struct packs it into the field's storage unit as the target's C ABI does: consecutive bitfields share a unit while they fit, low bits first. A read is shift and mask; a write panics if the value doesn't fit in `n` bits (a literal that doesn't fit is a compile error). A bitfield has no address |
 | **TM8: Unions** | Size is the largest member's, alignment the strictest. Building one with a single member is safe and makes it the live one; reading any member is `unsafe`, since nothing records which is live. Members must be C-compatible (EX4), so nothing in a union owns memory |
 
@@ -162,6 +159,17 @@ declaration might want.
 Handing a struct *to* C works; getting one *back* does not, and the call is
 rejected rather than reading a value nobody wrote. Take it through an
 out-parameter instead.
+
+An out-parameter takes the address of a variable, field or element with `&`
+([mem.unsafe](../memory/unsafe.md)). Taking it is safe; C writing through it
+is what the `unsafe` call covers.
+
+<!-- test: skip -->
+```rask
+mut w: c_int = 0
+mut h: c_int = 0
+unsafe c.SDL_GetWindowSize(window, &w, &h)
+```
 
 ## String Interop
 
@@ -198,7 +206,7 @@ func call_c_string_api(name: string) -> void or NullByteError {
 
 | Rule | Description |
 |------|-------------|
-| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, and names of earlier constants and enumerators are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
+| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, names of earlier constants and enumerators, and calls of function-like macros (expanded, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
 | **PP2: No guessing** | A macro the evaluator can't reduce to one integer, float or string is skipped. Macros have no types; a guessed signature is worse than a comment |
 
 ## Inline Functions
@@ -363,7 +371,7 @@ import c "sqlite3.h" as sql
 public struct Database { handle: *sql.sqlite3 }
 
 public func open(path: string) -> Database or Error {
-    mut db: *sql.sqlite3 = nullptr
+    mut db: *sql.sqlite3? = none
     unsafe {
         mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {

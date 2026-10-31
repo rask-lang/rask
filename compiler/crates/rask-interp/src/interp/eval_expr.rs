@@ -441,6 +441,8 @@ impl Interpreter {
             T::U16 => "u16",
             T::U32 => "u32",
             T::U64 => "u64",
+            T::Usize => "usize",
+            T::Isize => "isize",
             T::F32 => "f32",
             T::F64 => "f64",
             _ => return None,
@@ -610,6 +612,11 @@ impl Interpreter {
 
     /// `obj.field`, once `obj` is evaluated.
     fn read_field(&mut self, obj: Value, field: &str, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        // `p.x` is `(*p).x`: the field of what the pointer points at.
+        if let Value::RawPtr(p) = &obj {
+            let pointee = p.read().map_err(|e| RuntimeDiagnostic::new(e, span))?;
+            return self.read_field(pointee, field, span);
+        }
         match obj {
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
@@ -733,6 +740,10 @@ impl Interpreter {
 
     /// `obj[idx]`, once both are evaluated.
     fn read_index(&mut self, obj: Value, idx: Value, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        // `p[i]` is `*p.add(i)`.
+        if let (Value::RawPtr(p), Value::Int(i, _)) = (&obj, &idx) {
+            return p.stepped(*i as i64).read().map_err(|e| RuntimeDiagnostic::new(e, span));
+        }
         match (&obj, &idx) {
             (Value::Vec(v), Value::Int(i, _)) => {
                 let vec = v.lock().unwrap();
@@ -1029,11 +1040,6 @@ impl Interpreter {
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
             // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
             ExprKind::None => Ok(Value::none()),
-
-            // The null pointer. This used to fall through to the catch-all
-            // and evaluate to unit, so `null.is_null()` was "method not found
-            // on `void`" (#935).
-            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
 
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(val) = self.env.get(name) {
@@ -1612,6 +1618,19 @@ impl Interpreter {
                 }
             },
 
+            // `&x`: a pointer to where `x` lives (mem.unsafe). A write
+            // through it is a write to `x`.
+            ExprKind::Unary { op: UnaryOp::Ref, operand } => match self.locate(operand)? {
+                Located::Place(slot) => Ok(Value::RawPtr(crate::ptr::RawPtr {
+                    target: crate::ptr::PtrTarget::Place(slot),
+                    index: 0,
+                    view: None,
+                })),
+                Located::Value(_) => Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError("`&` needs a variable, a field or an element".to_string()),
+                    expr.span,
+                )),
+            },
             ExprKind::Unary { op, operand } => {
                 let val = self.eval_expr(operand)?;
                 match op {
@@ -2497,6 +2516,13 @@ impl Interpreter {
                     lent: self.env.lent_names(),
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
+                    // A real error side: `T?` is a `Result` whose error is
+                    // `none` to the checker, and its `none` is no success.
+                    wraps_ok: matches!(
+                        self.node_types.get(&expr.id),
+                        Some(rask_types::Type::Fn { ret, .. })
+                            if matches!(&**ret, rask_types::Type::Result { err, .. } if !matches!(**err, rask_types::Type::None))
+                    ),
                 })
             }
 

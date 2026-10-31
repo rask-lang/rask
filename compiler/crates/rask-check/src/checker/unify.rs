@@ -24,8 +24,8 @@ use rask_ast::ty::ParamMode;
 fn literal_fits(kind: super::inference::LiteralKind, ty: &Type) -> bool {
     use super::inference::LiteralKind;
     match ty {
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+        | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => {
             kind == LiteralKind::Integer
         }
         Type::F32 | Type::F64 => true,
@@ -253,8 +253,8 @@ impl TypeChecker {
         let is_primitive = |t: &Type| matches!(
             t,
             Type::Bool | Type::Char | Type::String | Type::Bytes | Type::Unit
-            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64
         );
         let is_stdlib_container = |t: &Type| match t {
@@ -399,8 +399,8 @@ impl TypeChecker {
     fn is_operator_on_primitive(ty: &Type, method: &str) -> bool {
         let is_primitive = matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char
         );
         if !is_primitive {
@@ -439,8 +439,8 @@ impl TypeChecker {
         }
         let is_int = |t: &Type| matches!(
             t,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
         );
         let is_float = |t: &Type| matches!(t, Type::F32 | Type::F64);
         let is_concrete_primitive = |t: &Type| is_int(t) || is_float(t)
@@ -989,6 +989,12 @@ impl TypeChecker {
             self.ctx.add_constraint(TypeConstraint::Index { object, index, result, span });
             return Ok(false);
         }
+        if matches!(obj, Type::RawPtr(_)) && !self.ptr_method_sites.get(&span).copied().unwrap_or(true) {
+            return Err(TypeError::UnsafeRequired {
+                operation: "indexing a pointer".to_string(),
+                span,
+            });
+        }
         let progressed = match self.index_result_type(&obj) {
             Some(elem) => {
                 self.unify(&result, &elem, span)?;
@@ -1329,6 +1335,9 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+        if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
+            self.arm_widenings.insert(node, expected.clone());
+        }
 
         // CB1/CB2: a function where C wants a function pointer passes its
         // code address. Which functions can is MIR's to say: it knows whether
@@ -1476,6 +1485,24 @@ impl TypeChecker {
                             self.err_returns.insert(node);
                         }
                         return Ok(false);
+                    }
+                    // A closure filling a `T or E` slot whose `E` nothing has
+                    // fixed yet: a returned value that can't be the success
+                    // side is the error, and it is what `E` is. A function
+                    // collects these instead (ER39, above).
+                    if site == CoercionSite::Return
+                        && !self.accumulate_errors
+                        && matches!(resolved_err, Type::Var(_))
+                        && !matches!(resolved_ok, Type::Var(_))
+                        && !resolved_ok.is_option()
+                        && !matches!(resolved_ret, Type::Var(_) | Type::Unit | Type::Never | Type::Error)
+                        && resolved_ret != resolved_ok
+                    {
+                        self.unify(&resolved_err, &resolved_ret, span)?;
+                        if let Some(node) = value_node {
+                            self.err_returns.insert(node);
+                        }
+                        return Ok(true);
                     }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
@@ -2265,6 +2292,15 @@ impl TypeChecker {
         // handing `Vec<i64>.as_ptr()` to a `const int *` parameter used to pass
         // in silence: the C side then read the 64-bit buffer as 32-bit ints and
         // returned arithmetic that looked fine (#947).
+        // A pointer into a `*T?` slot fills the present side, which is the
+        // pointer the element type is checked against: `*i64` where C wants
+        // a `const int *` is wrong whether or not the header lets it be NULL.
+        if let (Type::RawPtr(_), Type::Result { ok, err }) = (&source, &target) {
+            if matches!(self.ctx.apply(err), Type::None) {
+                let ok = (**ok).clone();
+                return self.check_fits(&source, &ok, span);
+            }
+        }
         if let (Type::RawPtr(from), Type::RawPtr(to)) = (&source, &target) {
             let from_inner = self.resolve_named(&self.ctx.apply(from));
             let to_inner = self.resolve_named(&self.ctx.apply(to));
@@ -2334,20 +2370,24 @@ impl TypeChecker {
         from.into_iter().find(|m| !to.contains(m))
     }
 
-    /// Check if `from` can widen to `to` (same signedness, strictly narrower).
-    /// Width and signedness of an integer type, or `None` if it isn't one.
-    fn int_shape(ty: &Type) -> Option<(u32, bool)> {
+    /// The narrowest and widest an integer type is on any target, and its
+    /// signedness; `None` if it isn't an integer. Only `usize` and `isize`
+    /// differ: 32 bits on a 32-bit target, 64 on a 64-bit one.
+    fn int_shape(ty: &Type) -> Option<(u32, u32, bool)> {
+        let fixed = |bits, signed| (bits, bits, signed);
         Some(match ty {
-            Type::I8 => (8, true),
-            Type::I16 => (16, true),
-            Type::I32 => (32, true),
-            Type::I64 => (64, true),
-            Type::I128 => (128, true),
-            Type::U8 => (8, false),
-            Type::U16 => (16, false),
-            Type::U32 => (32, false),
-            Type::U64 => (64, false),
-            Type::U128 => (128, false),
+            Type::I8 => fixed(8, true),
+            Type::I16 => fixed(16, true),
+            Type::I32 => fixed(32, true),
+            Type::I64 => fixed(64, true),
+            Type::I128 => fixed(128, true),
+            Type::Isize => (32, 64, true),
+            Type::U8 => fixed(8, false),
+            Type::U16 => fixed(16, false),
+            Type::U32 => fixed(32, false),
+            Type::U64 => fixed(64, false),
+            Type::U128 => fixed(128, false),
+            Type::Usize => (32, 64, false),
             _ => return None,
         })
     }
@@ -2366,10 +2406,10 @@ impl TypeChecker {
     /// nobody. `u64` → `i64` stays rejected because a `u64` above `i64::MAX`
     /// doesn't fit, and `i*` → `u*` never coerces because negatives never fit.
     ///
-    /// Positions only — assignment, argument, return, field. Not arithmetic:
-    /// operators are homogeneous, so `a + b` on mixed types is still an error.
-    /// That's the line C's "usual arithmetic conversions" crossed, and it's why
-    /// `-1 < 1u` is true there.
+    /// Asked at positions (assignment, argument, return, field) and between an
+    /// arithmetic operator's operands, where the narrower side widens to the
+    /// other (`widened_integer_result`). Where neither fits the other there's no
+    /// answer: C picks one anyway, and it's why `-1 < 1u` is true there.
     /// A scalar coercion that cannot lose information — the set where a tuple
     /// literal may adopt the annotated element type rather than its own.
     ///
@@ -2389,7 +2429,11 @@ impl TypeChecker {
     }
 
     pub(super) fn is_integer_widening(from: &Type, to: &Type) -> bool {
-        let (Some((from_bits, from_signed)), Some((to_bits, to_signed))) =
+        // On every target: the widest the source can be against the narrowest
+        // the target can be. `usize` → `u64` fits everywhere; `u64` → `usize`
+        // doesn't fit on a 32-bit target, so it isn't implicit on any (VS7a's
+        // reason: a program means the same thing wherever it's built).
+        let (Some((_, from_bits, from_signed)), Some((to_bits, _, to_signed))) =
             (Self::int_shape(from), Self::int_shape(to))
         else {
             return false;

@@ -10,7 +10,7 @@
 // p: *i32 = &x` is "remove the '&' - Rask currently uses owned values" — so
 // `as_ptr()` is the only way to get a pointer, which is what this file uses.
 //
-// Reading past the end of a buffer and dereferencing nullptr aren't here: a test
+// Reading past the end of a buffer and dereferencing null aren't here: a test
 // that panics fails, so neither can be asserted on. mem.unsafe's debug-mode
 // table says both panic with a location in debug and are UB in release. The
 // interpreter is a debug environment by construction and always panics; native
@@ -140,13 +140,12 @@ test "mem.unsafe — eq/ne ask about the address, not the byte there" {
     }
 }
 
-test "mem.unsafe — is_null separates null from a real pointer" {
+test "mem.unsafe — an absent pointer is `none`, a real one is present" {
     let s = "abc"
-    let nothing: *u8 = nullptr
-    assert nothing.is_null()
-    unsafe {
-        assert !s.as_ptr().is_null()
-    }
+    let nothing: *u8? = none
+    assert nothing is none
+    let real: *u8? = unsafe s.as_ptr()
+    assert real?
 }
 
 test "mem.unsafe — alignment questions" {

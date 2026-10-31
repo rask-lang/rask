@@ -99,7 +99,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "readers of the pointer-width global",
-        today: 15,
+        today: 12,
         target: 0,
         why: "the target's pointer width read from a process global instead of \
               the config the driver hands down (rask-lang/rask#1568)",

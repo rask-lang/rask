@@ -485,7 +485,8 @@ impl Interpreter {
             Some(Value::Int(b, k)) => (*b, *k),
             _ => return None,
         };
-        let kind = ka.unify(kb);
+        // A shift keeps the value's width; its amount's width is its own.
+        let kind = if matches!(op, ArithOp::Shl | ArithOp::Shr) { ka.unify(kb) } else { ka.wider(kb) };
         Some(checked_binop(kind, op, a, b).map(|v| Value::Int(v, kind)))
     }
 }

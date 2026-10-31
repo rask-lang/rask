@@ -12,6 +12,7 @@ rask-desugar = { path = "../rask-desugar" }
 rask-comptime = { path = "../rask-comptime" }
 rask-resolve = { path = "../rask-resolve" }
 rask-types = { path = "../rask-types" }
+rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 rask-ownership = { path = "../rask-ownership" }
 rask-effects = { path = "../rask-effects" }

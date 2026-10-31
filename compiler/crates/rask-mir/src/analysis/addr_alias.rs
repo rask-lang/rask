@@ -147,6 +147,27 @@ impl AddrAliases {
             || self.any_points_into(&uses::stmt_uses(stmt), local)
     }
 
+    /// Every local `stmt` reads, by name or through an address of it. The set
+    /// form of `stmt_reads`, for a caller that wants all of them: asking
+    /// `stmt_reads` once per local made liveness cost statements × locals ×
+    /// statement size, and a long `main` calling into C took minutes.
+    pub fn stmt_read_set(&self, stmt: &MirStmt) -> Vec<LocalId> {
+        self.with_pointees(uses::stmt_uses(stmt))
+    }
+
+    /// `stmt_read_set` for a terminator.
+    pub fn terminator_read_set(&self, term: &MirTerminator) -> Vec<LocalId> {
+        self.with_pointees(uses::terminator_uses(term))
+    }
+
+    fn with_pointees(&self, mut read: Vec<LocalId>) -> Vec<LocalId> {
+        let named = read.len();
+        for i in 0..named {
+            read.extend_from_slice(self.pointees(read[i]));
+        }
+        read
+    }
+
     /// True if `term` reads `local`, either by name or through an address of it.
     pub fn terminator_reads(&self, term: &MirTerminator, local: LocalId) -> bool {
         uses::terminator_reads(term, local)

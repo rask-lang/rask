@@ -158,6 +158,7 @@ impl Interpreter {
                 captured_env,
                 lent,
                 generics,
+                wraps_ok,
                 ..
             } => {
                 self.enter_closure(captured_env, lent, generics);
@@ -167,8 +168,9 @@ impl Interpreter {
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
                 self.leave_closure();
                 match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Ok(v) | Err(RuntimeError::Return(v)) => {
+                        Ok(crate::interp::dispatch::closure_result(v, *wraps_ok))
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -191,6 +193,7 @@ impl Interpreter {
                 captured_env,
                 lent,
                 generics,
+                wraps_ok,
                 ..
             } => {
                 if !params.is_empty() {
@@ -204,8 +207,9 @@ impl Interpreter {
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
                 self.leave_closure();
                 match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Ok(v) | Err(RuntimeError::Return(v)) => {
+                        Ok(crate::interp::dispatch::closure_result(v, *wraps_ok))
+                    }
                     Err(e) => Err(e),
                 }
             }

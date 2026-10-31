@@ -230,7 +230,7 @@ out of the block, so a panic in a critical section restores interrupts.
 - `mem.borrowing` gains the `Access` desugar beside `W1`–`W8`, with `W1` stated as a
   property the desugar preserves rather than a reason closures were rejected.
 - `mem.resources/RC1`, `RC3`: a container of a linear type is linear, with the
-  discarding methods withheld.
+  discarding methods withheld. Done (`RC5`, rask-lang/rask#1688).
 - `struct.modules/PS2` asks about writes through `self` rather than listing types
   (section 3, still open).
 - `conc.sync/WS3` and `DL1` generalize from "sync primitives" to `Access` types.

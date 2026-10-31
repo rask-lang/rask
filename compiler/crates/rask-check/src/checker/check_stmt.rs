@@ -209,11 +209,18 @@ impl TypeChecker {
                     );
                     if writes_through_place {
                         if let Some(kind) = self.lookup_binding_kind(&root) {
+                            let mut steps = Vec::new();
+                            let mut place = target;
+                            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                                steps.push(object.id);
+                                place = object;
+                            }
                             self.pending_mutations.push(super::PendingMutation {
                                 root: root.clone(),
                                 ty: self.lookup_local(&root).unwrap_or(Type::Error),
                                 kind,
                                 span: stmt.span,
+                                steps,
                             });
                         }
                     } else {
@@ -252,6 +259,12 @@ impl TypeChecker {
                 let target_ty = self.infer_expr(target);
                 self.in_assign_target = false;
                 self.check_assignment_target(target);
+                // RC5: writing over `v[i]` drops what was there.
+                if let rask_ast::expr::ExprKind::Index { object, .. } = &target.kind {
+                    if let Some(container) = self.node_types.get(&object.id).cloned() {
+                        self.pending_element_uses.push((stmt.span, container, "=".to_string()));
+                    }
+                }
 
                 // `*x = v` requires unsafe only when `x` really is a raw
                 // pointer. Writing through an `Owned` is a mutable borrow
@@ -288,6 +301,13 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
+                // A `@noreturn` function's result is "never comes back", so
+                // there is nothing a `return` could hand back.
+                if let Some(expected) = &self.current_return_type {
+                    if matches!(self.ctx.apply(expected), Type::Never) {
+                        self.errors.push(TypeError::NoReturnReturns { span: stmt.span });
+                    }
+                }
                 let ret_ty = if let Some(expr) = value {
                     if let Some(expected) = &self.current_return_type.clone() {
                         // If expecting Result<T, E>, propagate T as the expected type
@@ -636,8 +656,8 @@ impl TypeChecker {
     fn is_copy_type(&self, ty: &Type) -> bool {
         matches!(
             ty,
-            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Char | Type::Unit
         )
     }

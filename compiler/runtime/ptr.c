@@ -27,11 +27,7 @@ void rask_ptr_write(int64_t ptr, int64_t val, int64_t elem_size) {
     memcpy((void *)(uintptr_t)ptr, &val, (size_t)elem_size);
 }
 
-int64_t rask_ptr_is_null(int64_t ptr) {
-    return ptr == 0;
-}
-
-// Address comparison. `p == null` and `p == q` land here — nothing is read
+// Address comparison. `p == q` lands here — nothing is read
 // through either pointer, so these need no unsafe block.
 int64_t rask_ptr_eq(int64_t a, int64_t b) {
     return a == b;

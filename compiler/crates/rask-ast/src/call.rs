@@ -91,7 +91,6 @@ pub fn runs_code(e: &crate::expr::Expr) -> bool {
         | ExprKind::String(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null
         | ExprKind::None
         | ExprKind::Closure { .. } => false,
         ExprKind::Field { object, .. } => runs_code(object),

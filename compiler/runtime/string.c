@@ -321,6 +321,14 @@ const char *rask_string_ptr(const RaskStr *s) {
     return str_data(s);
 }
 
+// mem.unsafe/PT7, for a pointer from `s.as_ptr()`. The buffer is
+// NUL-terminated, so a read may reach the terminator; a write may not.
+int64_t rask_ptr_in_str(int64_t p, const RaskStr *s, int64_t access, int64_t write) {
+    int64_t off = p - (int64_t)(intptr_t)str_data(s);
+    int64_t end = str_len(s) + (write ? 0 : 1);
+    return off >= 0 && off + access <= end;
+}
+
 int64_t rask_string_is_empty(const RaskStr *s) {
     return str_len(s) == 0 ? 1 : 0;
 }

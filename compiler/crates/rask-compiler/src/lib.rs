@@ -328,7 +328,7 @@ fn collect_package_error<T>(e: &rask_resolve::PackageError, out: &mut PipelineOu
 /// Was this span parsed out of `stdlib/*.rk` rather than the user's program?
 ///
 /// Re-exported so callers that render diagnostics don't each need rask-mono.
-pub use rask_check::layout::is_stdlib_span;
+pub use rask_stdlib::is_stdlib_span;
 
 /// The declarations the interpreter runs: the program's, plus the stdlib modules
 /// that are written in Rask.
@@ -1427,14 +1427,14 @@ fn visible_packages(
 fn drop_stdlib_cascade(diags: &mut Vec<Diagnostic>) {
     let user_error = diags.iter().any(|d| {
         matches!(d.severity, Severity::Error)
-            && d.primary_span().is_some_and(|s| !rask_check::layout::is_stdlib_span(s))
+            && d.primary_span().is_some_and(|s| !rask_stdlib::is_stdlib_span(s))
     });
     if !user_error {
         return;
     }
     diags.retain(|d| {
         !matches!(d.severity, Severity::Error)
-            || d.primary_span().is_none_or(|s| !rask_check::layout::is_stdlib_span(s))
+            || d.primary_span().is_none_or(|s| !rask_stdlib::is_stdlib_span(s))
     });
 }
 

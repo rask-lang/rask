@@ -325,7 +325,7 @@ impl<'a> Walk<'a> {
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { dst, closure, args } => {
+                MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                     let callee = self
                         .locals
                         .get(&(name.to_string(), *closure))

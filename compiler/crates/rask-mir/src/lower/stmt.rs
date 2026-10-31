@@ -169,7 +169,7 @@ impl<'a> MirLowerer<'a> {
         } = &cur.kind {
             let operand_is_raw = matches!(
                 self.ctx.lookup_raw_type(operand.id).map(|t| self.ctx.type_to_mir(t)),
-                Some(MirType::Ptr)
+                Some(MirType::RawPtr)
             );
             if operand_is_raw {
                 return cur;
@@ -298,7 +298,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
     /// aggregate MIR type. Tuple fields carry their size in the layout too.
-    fn field_offset_ty_size(
+    pub(crate) fn field_offset_ty_size(
         &self,
         oty: &MirType,
         field: &str,
@@ -621,6 +621,35 @@ impl<'a> MirLowerer<'a> {
                 // was a slot to record — same gap the binding path closes.
                 let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
                     && matches!(&value.kind, ExprKind::StructLit { .. });
+                // `p.x = v`, `(*p).x = v`, `p[i] = v`: the store lands at the
+                // address the pointer reaches, not in a copy of what it points
+                // at. A copy is what `(*p).y = v` wrote into, and the write
+                // was lost without a word.
+                if matches!(&target.kind, ExprKind::Field { .. } | ExprKind::Index { .. })
+                    && self.through_pointer(target)
+                {
+                    let (addr, ty) = self.pointer_place_address(target)?;
+                    self.emit_pointer_check(&addr, true, ty.size() as i64);
+                    let addr = match addr {
+                        MirOperand::Local(id) => id,
+                        other => {
+                            let tmp = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Use(other),
+                            }));
+                            tmp
+                        }
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr,
+                        offset: 0,
+                        value: val_op,
+                        store_size: ty.size(),
+                        field: None,
+                    }));
+                    return Ok(());
+                }
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self
@@ -999,7 +1028,7 @@ impl<'a> MirLowerer<'a> {
                         let val_op = self.as_slot_value(val_op, &pointee);
                         let store_size = pointee.size();
                         if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
-                            self.emit_pointer_check(&MirOperand::Local(addr_local), true);
+                            self.emit_pointer_check(&MirOperand::Local(addr_local), true, store_size as i64);
                         }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
@@ -1397,9 +1426,9 @@ impl<'a> MirLowerer<'a> {
         // was only ever asking under the written name, so every generic struct
         // answered "not a struct type" (#968).
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_check::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let found = instance.as_deref().and_then(|k| self.ctx.find_struct(k));
 
@@ -1436,7 +1465,7 @@ impl<'a> MirLowerer<'a> {
         // alignment (S1/L4), and reflection reports what the author wrote —
         // which is also what a serializer's key order follows. The two only
         // agreed while every field had the same alignment (#1083).
-        let mut ordered: Vec<&rask_check::layout::FieldLayout> = layout.fields.iter().collect();
+        let mut ordered: Vec<&rask_layout::FieldLayout> = layout.fields.iter().collect();
         ordered.sort_by_key(|fl| fl.decl_index);
 
         Ok(ordered
@@ -1693,6 +1722,13 @@ impl<'a> MirLowerer<'a> {
         }
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
+        // A pointer binding keeps its block (PT7) while every value it holds
+        // came from that block: never reassigned, or only stepped along from
+        // itself. One assigned anything else could point elsewhere by the time
+        // it's read.
+        if !self.pointer_rebound.contains(name) {
+            self.carry_ptr_block(&init_op, local_id);
+        }
         // An annotated binding is a coercion site like any other: `let b: T?? = t`
         // needs both layers built here rather than left for codegen to infer from
         // the depth mismatch, which only ever added Option layers and typed the
@@ -3491,7 +3527,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
 /// own header — `data` overwritten, `len` left from the old vector, which is
 /// why `xs.len()` still answered 1 after the whole thing was replaced.
 pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
-    matches!(ty, MirType::Ptr | MirType::Container(_))
+    matches!(ty, MirType::Ptr | MirType::RawPtr | MirType::Container(_))
 }
 
 /// Does this `mutate` parameter need a pointer of its own?

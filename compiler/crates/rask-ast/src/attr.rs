@@ -84,6 +84,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("entry", ArgForm::Exprs, Writer::Anyone),
     ("no_alloc", ArgForm::Exprs, Writer::Anyone),
     ("inline", ArgForm::Exprs, Writer::Anyone),
+    // The function never comes back: it exits, panics or loops forever.
+    ("noreturn", ArgForm::Exprs, Writer::Anyone),
     // Raw-pointer checks (mem.unsafe, debug-mode safety)
     ("checked_unsafe", ArgForm::Exprs, Writer::Anyone),
     ("unchecked_unsafe", ArgForm::Exprs, Writer::Anyone),
@@ -96,6 +98,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // comp.effects/FX1)
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
+    ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
+    ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),

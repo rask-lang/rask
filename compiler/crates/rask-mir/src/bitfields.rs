@@ -13,7 +13,7 @@
 //! Every field store already names its field (`MirStmtKind::Store::field`),
 //! so this is one walk after lowering rather than a case at each store site.
 
-use rask_check::layout::{BitSlot, StructLayout};
+use rask_layout::{BitSlot, StructLayout};
 
 use crate::operand::{BinOp, FieldAccess, MirConst};
 use crate::{

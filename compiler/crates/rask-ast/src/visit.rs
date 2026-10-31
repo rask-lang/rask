@@ -129,7 +129,6 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         | ExprKind::Bytes(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null
         | ExprKind::None
         | ExprKind::Ident(_)
         | ExprKind::GenericName { .. } => {}

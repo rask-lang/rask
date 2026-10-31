@@ -56,6 +56,10 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/abi.rs` — wrapper layouts and tag offsets the backends share
 - Depends on `rask-ast` alone. The checker produces this data; nothing here checks anything
 
+### rask-layout — Sizes, alignments and field offsets
+- `src/lib.rs` — the one size model. Monomorphization lays out with it, and the checker's copy rule asks it through `TypeTable`
+- Depends on `rask-ast`, `rask-types` and `rask-stdlib`, never on the checker: the checker reads it
+
 ### rask-check — Type checker and inference (largest crate)
 - `src/checker/check_expr.rs` — type checking expressions (biggest file)
 - `src/checker/check_stmt.rs` — type checking statements
@@ -69,7 +73,7 @@ drifted apart. Each disagreement was a bug that only showed on one backend.
 - `src/checker/errors.rs` — TypeError definitions
 - `src/checker/type_defs.rs` — TypedProgram, Callee
 - `src/checker/builtins.rs` — built-in type registrations
-- `src/layout.rs` — memory layouts (size, alignment, field offsets): the one size model. Monomorphization lays out with it, and `TypeTable::size_align` answers the copy rule, `reflect.size_of` and `transmute` from it
+- `src/checker/sizes.rs` — what the checker asks of layout: `TypeTable::size_align` answers the copy rule, `reflect.size_of` and `transmute`
 - Inference bug: start in `unify.rs`, trace through `inference.rs`
 - New built-in type: register in `builtins.rs`, define methods in `rask-stdlib`
 
@@ -113,7 +117,7 @@ an owned block (`Heap(T)`), and aggregates release their parts.
 - `src/closures.rs` — closure codegen
 - `src/dispatch.rs` — stdlib calls into the C runtime: built from `@native("sym")` declarations plus `rask_runtime.h`, and an internal table for names MIR mints. `src/vtable.rs` — vtable layout
 - `src/debug_info.rs` — DWARF debug info
-- Struct layout bug: check `layouts.rs` and `rask_types::layout`
+- Struct layout bug: check `layouts.rs` and `rask_layout`
 
 ### rask-interp — Tree-walking interpreter (the reference backend)
 

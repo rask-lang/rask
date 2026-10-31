@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `usize` literal is checked against the target being built.
+//
+// A literal is a value, so whether it fits depends on the machine, like any
+// constant overflow: five billion fits a 64-bit `usize` and not a 32-bit one.
+// It was held to the 32-bit range everywhere for a while, which no other
+// language does. Conversions stay target-independent (t_usize_own_type.rk).
+//
+// The 32-bit gate rejects this file on purpose; known_target32.txt says so.
+
+test "a literal that fits the 64-bit target" {
+    let n: usize = 5_000_000_000
+    assert n / 1_000_000_000 == 5
+}

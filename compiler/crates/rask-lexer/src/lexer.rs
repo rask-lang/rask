@@ -85,8 +85,6 @@ enum RawToken {
     Type,
     #[token("none")]
     None,
-    #[token("nullptr")]
-    Nullptr,
     #[token("using")]
     Using,
     #[token("export")]
@@ -693,7 +691,6 @@ impl<'a> Lexer<'a> {
             RawToken::Comptime => TokenKind::Comptime,
             RawToken::Type => TokenKind::Type,
             RawToken::None => TokenKind::None,
-            RawToken::Nullptr => TokenKind::Nullptr,
             RawToken::Using => TokenKind::Using,
             RawToken::Export => TokenKind::Export,
             RawToken::Lazy => TokenKind::Lazy,

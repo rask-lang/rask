@@ -45,13 +45,14 @@ extend os {
 
 | Rule | Description |
 |------|-------------|
-| **P1: Exit** | `os.exit(code: i32)` exits the process; return type is `!` (never) |
+| **P1: Exit** | `os.exit(code: i32)` exits the process. It's `@noreturn`: it never comes back (`ctrl.flow/CF34`) |
 | **P2: PID** | `os.pid()` returns `u32` |
 
 <!-- surface -->
 ```rask
 extend os {
-    func exit(code: i32) -> Never
+    @noreturn
+    func exit(code: i32)
     func pid() -> u32
 }
 ```

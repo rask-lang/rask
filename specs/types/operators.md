@@ -163,7 +163,7 @@ interface Equal {
 |------|-------------|
 | **ORD1: Comparable interface** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
 | **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `Type implements Comparable` |
-| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer. The bitwise operators and the shifts go with arithmetic, not with comparison. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
+| **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Arithmetic and the bitwise operators cross signedness only where one type holds every value of the other (`type.primitives/CV1a`): `u32 + i64` is an `i64`, but `u64 + i32` has no type that holds both, while the comparison has an obviously-correct answer. Shifts keep the value's type and can't cross signedness. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
 | **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 
 <!-- test: skip -->
@@ -238,7 +238,9 @@ i.mod(n)       //  9  — the index you wanted (AR3)
 | `[3.0, NaN, 1.0].sort()` | ORD3 | `[1.0, 3.0, NaN]` — total order, no lost elements. A *negative* NaN sorts first, ahead of `-inf`, per IEEE totalOrder |
 | `5u64 > -1i32` | ORD4 | `true` — by value, not by reinterpreting either operand |
 | `u64::MAX > 1i32` | ORD4 | `true` — the bit pattern is not read as a negative number |
-| `5u64 + 1i32` | ORD4 | Compile error (E0371) — comparison is the exception, arithmetic isn't |
+| `5u64 + 1i32` | ORD4 | Compile error (E0371) — no type holds both a `u64` and an `i32` |
+| `5u32 + 1i64` | CV1a | `6i64` — an `i64` holds every `u32` |
+| `small += big` (`u32`, `u64`) | CV1a | Compile error (E0370) — the `u64` result doesn't fit the `u32` |
 | `5u64 << 1i32` | ORD4 | Compile error (E0371) — a shift count's signedness isn't decoration; a negative one is a bug |
 | `-7 / 3` | AR1 | `-2` — truncates toward zero |
 | `-7 % 3` | AR2 | `-1` — the remainder takes the dividend's sign |

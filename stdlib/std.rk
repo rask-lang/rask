@@ -7,5 +7,6 @@ extend std {
     /// Exit the process with the given status code.
     @native("rask_exit")
     @ambient
-    public func exit(code: i64) -> Never {}
+    @noreturn
+    public func exit(code: i64) {}
 }

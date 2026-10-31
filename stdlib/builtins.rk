@@ -14,16 +14,18 @@ public func print(msg: string) {}
 
 /// Abort execution with an error message.
 @native
+@noreturn
 public func panic(msg: string) {}
 
 /// Mark unfinished code. Panics with "not yet implemented" at runtime.
-/// Returns `!` (Never) so it works in any type context.
 @native
+@noreturn
 public func todo(msg: string?) {}
 
 /// Stop this test here and report it skipped, with the reason
-/// (std.testing/T12). Like `panic`, it doesn't return.
+/// (std.testing/T12).
 @native
+@noreturn
 public func skip(reason: string) {}
 
 /// Invert this test's result: it passes only if it fails (std.testing/T13).
@@ -32,8 +34,8 @@ public func skip(reason: string) {}
 public func expect_fail() {}
 
 /// Mark code that should never be reached. Panics if executed.
-/// Returns `!` (Never) so it works in any type context.
 @native
+@noreturn
 public func unreachable(msg: string?) {}
 
 /// Consume a `Heap<T>` and free its heap value (mem.heap/HP3).

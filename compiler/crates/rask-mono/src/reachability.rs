@@ -255,6 +255,8 @@ fn is_primitive_receiver(name: &str) -> bool {
             | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
+            // A raw pointer's methods are the compiler's own (mem.unsafe).
+            | "Ptr"
     )
 }
 
@@ -369,8 +371,8 @@ impl<'a> Monomorphizer<'a> {
         let mut owner_params: HashMap<String, Vec<String>> = HashMap::new();
         for decl in decls {
             let (name, params) = match &decl.kind {
-                DeclKind::Struct(s) => (&s.name, rask_check::struct_type_param_names(s)),
-                DeclKind::Enum(e) => (&e.name, rask_check::enum_type_param_names(e)),
+                DeclKind::Struct(s) => (&s.name, rask_ast::type_params::struct_type_param_names(s)),
+                DeclKind::Enum(e) => (&e.name, rask_ast::type_params::enum_type_param_names(e)),
                 _ => continue,
             };
             if params.is_empty() {
@@ -1009,7 +1011,7 @@ impl<'a> Monomorphizer<'a> {
             // (`BufferedReader$Buffer`) and the body after the method
             // (`BufferedReader_read$Buffer`); codegen joins the two here.
             let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
-            if let Some(layout) = rask_check::layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
+            if let Some(layout) = rask_layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
                 let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
                 self.vtable_symbols.insert((layout, method.clone()), symbol);
             }
@@ -1468,8 +1470,8 @@ impl<'a> Monomorphizer<'a> {
                 let name = bare(name);
                 (!name.is_empty()).then(|| Type::UnresolvedNamed(name))
             }
-            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Bytes => Some(ty.clone()),
             Type::Generic { base, args } => {
                 Self::nameable_generic(&bare(&types.type_name(*base)), args, types)
@@ -2256,9 +2258,10 @@ impl<'a> Monomorphizer<'a> {
                                         })
                                         .unwrap_or_else(|| "unknown".to_string());
                                     eprintln!(
-                                        "[widened] .{}() on {} — {} candidates",
+                                        "[widened] .{}() on {} in {} — {} candidates",
                                         method,
                                         recv,
+                                        self.current.as_ref().map_or("?", |(f, _)| f.as_str()),
                                         qualified_names.len(),
                                     );
                                 }
@@ -2494,7 +2497,6 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::String(_) | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
-            | ExprKind::Null
             | ExprKind::None => {}
 
             // A bare name that resolves to a function is a reference to it —
