@@ -471,6 +471,13 @@ impl<'a> Translator<'a> {
             }
             Some(CValue::Float(f)) => format!("public const {}: f64 = {:?}\n", d.name, f),
             Some(CValue::Str(s)) => format!("public const {}: string = {}\n", d.name, quote(&s)),
+            // `#define SDL_mutex SDL_Mutex`: another name for something. A
+            // library's old spellings come in hundreds and say nothing, so
+            // they're kept out of the file; a use still says what it was.
+            None if matches!(d.body.as_slice(), [CTokenKind::Ident(_)]) => {
+                self.skipped.insert(d.name.clone(), format!("another name for `{}`", d.text.split_whitespace().last().unwrap_or("")));
+                return String::new();
+            }
             None => return self.skip(&d.name, &format!("not a constant: {}", d.text)),
         };
         emitted.insert(d.name.clone());

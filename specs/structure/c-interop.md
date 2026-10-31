@@ -64,7 +64,7 @@ committed.
 | **BI2: Never edited** | The generated file is a function of the header. Regenerate it; don't patch it |
 | **BI3: Fix by override** | A declaration the translator got wrong is corrected by an explicit one in another file (CI4), which regeneration leaves alone |
 | **BI4: Check** | `rask bindc --check header.h sdl.rk` fails when the file isn't what the header now translates to |
-| **BI5: Skips are visible** | What can't be translated is written as a comment where the declaration would have been, carrying the C text |
+| **BI5: Skips are visible** | What can't be translated is written as a comment where the declaration would have been, carrying the C text. A macro that only renames (`#define SDL_mutex SDL_Mutex`) leaves no comment, since a library's old spellings run to hundreds; using one still says what it was |
 | **BI6: Whose declarations** | The header's own directory is the library's: its declarations translate, and another file's only when one of them uses it (opaque when only pointed at). A header straight in a system include directory is the library's alone, since libc shares that directory |
 
 A binding keeps C's names, so the library's own documentation still applies.
@@ -198,7 +198,7 @@ func call_c_string_api(name: string) -> void or NullByteError {
 
 | Rule | Description |
 |------|-------------|
-| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, and names of earlier constants and enumerators are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
+| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, names of earlier constants and enumerators, and calls of function-like macros (expanded, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
 | **PP2: No guessing** | A macro the evaluator can't reduce to one integer, float or string is skipped. Macros have no types; a guessed signature is worse than a comment |
 
 ## Inline Functions

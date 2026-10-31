@@ -24,6 +24,9 @@ pub enum CTokenKind {
     /// A hex literal without a `u` suffix. C gives it `unsigned int` when it
     /// fits there and not in `int`, which a decimal literal never gets.
     HexLit(u64),
+    /// An integer literal with an `L` suffix (`20UL`, `5LL`): `long`, so 64
+    /// bits on every target Rask builds for, and unsigned with a `U`.
+    LongLit(u64, bool),
     FloatLit(f64),
     StringLit(String),
     CharLit(char),
@@ -458,7 +461,11 @@ impl<'a> CLexer<'a> {
             let hex = String::from_utf8_lossy(&self.source[hex_start..self.pos]);
             let val = u64::from_str_radix(&hex, 16)
                 .map_err(|e| ParseError::new(format!("bad hex literal: {}", e), line))?;
-            let kind = if self.skip_int_suffix() { CTokenKind::UIntLit(val) } else { CTokenKind::HexLit(val) };
+            let kind = match self.skip_int_suffix() {
+                (u, true) => CTokenKind::LongLit(val, u),
+                (true, false) => CTokenKind::UIntLit(val),
+                (false, false) => CTokenKind::HexLit(val),
+            };
             return Ok(CToken { kind, line, space_before: false, file: 0 });
         }
 
@@ -510,7 +517,11 @@ impl<'a> CLexer<'a> {
         };
 
         // A decimal literal past `i64::MAX` only fits an unsigned type.
-        let is_unsigned = self.skip_int_suffix() || val > i64::MAX as u64;
+        let (unsigned, long) = self.skip_int_suffix();
+        let is_unsigned = unsigned || val > i64::MAX as u64;
+        if long {
+            return Ok(CToken { kind: CTokenKind::LongLit(val, is_unsigned), line, space_before: false, file: 0 });
+        }
         if is_unsigned {
             Ok(CToken { kind: CTokenKind::UIntLit(val), line, space_before: false, file: 0 })
         } else {
@@ -518,17 +529,17 @@ impl<'a> CLexer<'a> {
         }
     }
 
-    /// Skip integer suffixes (u, U, l, L, ll, LL, etc). Returns true if unsigned.
-    fn skip_int_suffix(&mut self) -> bool {
-        let mut unsigned = false;
+    /// Skip integer suffixes (u, U, l, L, ll, LL, etc): (unsigned, long).
+    fn skip_int_suffix(&mut self) -> (bool, bool) {
+        let (mut unsigned, mut long) = (false, false);
         loop {
             match self.peek() {
                 b'u' | b'U' => { unsigned = true; self.pos += 1; }
-                b'l' | b'L' => { self.pos += 1; }
+                b'l' | b'L' => { long = true; self.pos += 1; }
                 _ => break,
             }
         }
-        unsigned
+        (unsigned, long)
     }
 
     fn read_string_lit(&mut self, line: usize) -> Result<CToken, ParseError> {

@@ -74,6 +74,14 @@ fn macros_evaluate_or_leave_a_comment() {
 }
 
 #[test]
+fn constants_through_function_like_macros() {
+    let out = bind("#define U64_C(c) c ## UL\n#define FLAG_A U64_C(0x20)\n#define POS_MASK 0x2FFF0000u\n#define POS_DISPLAY(X) (POS_MASK|(X))\n#define POS_CENTERED POS_DISPLAY(0)\n#define OLD_NAME new_name\n");
+    has(&out, "public const FLAG_A: c_ulong = 32");
+    has(&out, "public const POS_CENTERED: c_uint = 805240832");
+    assert!(!out.contains("OLD_NAME"), "a rename leaves no comment:\n{}", out);
+}
+
+#[test]
 fn static_inline_gets_marked() {
     let out = bind("static inline int twice(int n) { return n * 2; }\nstatic int hidden(void) { return 1; }");
     has(&out, "@inline_from(\"lib.h\")\nextern \"C\" func twice(n: c_int) -> c_int");
