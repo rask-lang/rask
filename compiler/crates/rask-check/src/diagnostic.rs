@@ -2482,8 +2482,8 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error(format!("`{name}` is a C macro, and this call can't be made: {problem}"))
                     .with_code("E0940")
                     .with_primary(*span, "a C macro")
-                    .with_fix("a macro that isn't arithmetic on numbers is written out in Rask by whoever wraps the library")
-                    .with_why("a C macro has no types of its own, so each call types its arithmetic body from its arguments, as C would; anything but arithmetic on numbers has nothing to type it by [struct.c-interop/PP4]")
+                    .with_fix("pass arguments of the types the macro's body uses them as; a macro whose body can't be typed is written out in Rask by whoever wraps the library")
+                    .with_why("a C macro has no types of its own, so each call types its body from its arguments and the header's declarations, as C would [struct.c-interop/PP4]")
             }
 
             AddressOfValue { span } => {

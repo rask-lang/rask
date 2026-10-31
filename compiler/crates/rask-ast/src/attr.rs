@@ -126,6 +126,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("inline_from", ArgForm::Exprs, Writer::Anyone),        // struct.c-interop/IN1, on an extern
     ("context", ArgForm::Exprs, Writer::Anyone),            // struct.c-interop/CB3, on an extern
     ("c_macro", ArgForm::Exprs, Writer::Anyone),            // struct.c-interop/PP4, on an extern
+    ("c_name", ArgForm::Exprs, Writer::Anyone),             // struct.c-interop/PP4, on a C struct or union
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
     ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
@@ -427,14 +428,41 @@ pub fn context_spec(attrs: &[Attr], params: &[&str]) -> Option<Result<ContextSpe
     }
 }
 
-/// What an extern's `@c_macro` says: the C body a call computes, or why the
-/// macro can't be called (struct.c-interop/PP4). `None` when it has none.
-pub fn c_macro(attrs: &[Attr]) -> Option<Result<String, String>> {
+/// What an extern's `@c_macro` says (struct.c-interop/PP4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CMacroAttr {
+    /// The C body a call computes, or why the macro can't be called.
+    pub body: Result<String, String>,
+    /// The header a macro that reads memory is compiled with.
+    pub header: Option<String>,
+}
+
+/// The extern's `@c_macro`, or `None` when it has none.
+pub fn c_macro(attrs: &[Attr]) -> Option<CMacroAttr> {
     let a = attrs.iter().find(|a| a.is("c_macro"))?;
+    let header = a.arg("header").and_then(|v| v.string());
     if let Some(why) = a.arg("unusable").and_then(|v| v.string()) {
-        return Some(Err(why));
+        return Some(CMacroAttr { body: Err(why), header });
     }
-    Some(a.positional().and_then(|v| v.string()).ok_or_else(|| {
+    let body = a.positional().and_then(|v| v.string()).ok_or_else(|| {
         "`@c_macro` holds the macro's C body as a string, or `unusable:` and why".to_string()
-    }))
+    });
+    Some(CMacroAttr { body, header })
+}
+
+/// How C spells a record: `@c_name("struct point")`, or `@c_name(none)` for
+/// one nested without a tag, which C has no name for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CName {
+    Spelled(String),
+    Nameless,
+}
+
+/// A C record's `@c_name`, where its C spelling isn't its Rask name.
+pub fn c_name(attrs: &[Attr]) -> Option<CName> {
+    let value = attrs.iter().find(|a| a.is("c_name"))?.positional()?;
+    if matches!(value.expr().map(|e| &e.kind), Some(ExprKind::None)) {
+        return Some(CName::Nameless);
+    }
+    value.string().map(CName::Spelled)
 }

@@ -11480,6 +11480,9 @@ fn field_slot(
 /// The MIR type a C macro call answers: the Rask number its C result type is,
 /// as the checker settled it (struct.c-interop/PP4).
 fn c_macro_result(call: &rask_c_parse::cexpr::MacroCall) -> MirType {
+    if let rask_c_parse::CType::Pointer(_) = rask_c_parse::cexpr::canonical(&call.result) {
+        return MirType::Ptr;
+    }
     match rask_c_parse::cexpr::rask_scalar(&call.result) {
         Some("bool") => MirType::Bool,
         Some("i8") => MirType::I8,
@@ -11491,7 +11494,7 @@ fn c_macro_result(call: &rask_c_parse::cexpr::MacroCall) -> MirType {
         Some("u64") => MirType::U64,
         Some("f32") => MirType::F32,
         Some("f64") => MirType::F64,
-        // The checker records only number results; i64 is the last of them.
+        // The checker records only numbers and pointers; i64 is the last.
         _ => MirType::I64,
     }
 }

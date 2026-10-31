@@ -497,6 +497,8 @@ pub struct CMacroDef {
     pub params: Vec<String>,
     /// The parsed body and its text, or why it can't be called.
     pub body: Result<(String, rask_c_parse::cexpr::CExpr), String>,
+    /// The header a macro that reads memory is compiled with.
+    pub header: Option<String>,
 }
 
 #[derive(Debug)]

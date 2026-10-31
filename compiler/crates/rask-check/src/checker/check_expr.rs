@@ -7292,6 +7292,7 @@ impl TypeChecker {
         args: &[CallArg],
         span: Span,
     ) -> Type {
+        use rask_c_parse::{cexpr, CType};
         let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
         let fail = |this: &mut Self, problem: String| {
             this.errors.push(TypeError::CMacroCall { name: def.name.clone(), problem, span });
@@ -7316,34 +7317,160 @@ impl TypeChecker {
                 let _ = self.unify(&ty, &pinned, span);
                 ty = pinned;
             }
-            let ty = self.resolve_named(&ty);
-            let c = scalar_name(&ty).and_then(rask_c_parse::cexpr::from_rask_scalar);
-            match c {
+            match self.c_type_of(&ty) {
                 Some(c) => c_args.push(c),
                 None => {
-                    let shown = self.render_type(&ty);
-                    return fail(self, format!("argument {} is a `{}`, and a C macro computes with numbers", i + 1, shown));
+                    let shown = self.render_type(&self.resolve_named(&ty));
+                    return fail(self, format!("argument {} is a `{}`, and a C macro takes numbers and pointers", i + 1, shown));
                 }
             }
         }
-        let result = match rask_c_parse::cexpr::type_of(&body, &c_args) {
+        let reads_memory = cexpr::touches_memory(&body);
+        if reads_memory && def.header.is_none() {
+            return fail(
+                self,
+                "its body reads memory or calls C, which only works for a macro from an imported header; add `header:` to its `@c_macro`".to_string(),
+            );
+        }
+        let header = CHeader { checker: self };
+        let result = match cexpr::type_of_in(&body, &c_args, &header) {
             Ok(t) => t,
             Err(why) => return fail(self, format!("its body has {}", why)),
         };
-        let Some(rask) = rask_c_parse::cexpr::rask_scalar(&result) else {
-            return fail(self, "it answers a string or a pointer, not a number".to_string());
+        let Some(rask) = self.rask_type_of_c(&result) else {
+            return fail(self, "it answers something that isn't a number or a pointer".to_string());
+        };
+        // Arithmetic is safe; reading memory or calling into C is what
+        // `unsafe` is for, as for any C call.
+        let takes_pointer = c_args.iter().any(|t| matches!(t, CType::Pointer(_)));
+        if reads_memory || takes_pointer {
+            self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
+            if !self.in_unsafe {
+                self.errors.push(TypeError::UnsafeRequired {
+                    operation: "a C macro that reads memory or calls C".to_string(),
+                    span,
+                });
+            }
+        }
+        let spelled: Result<Vec<String>, String> = c_args.iter().map(|t| self.c_spelling(t)).collect();
+        let (arg_c, result_c) = match (spelled, self.c_spelling(&result)) {
+            (Ok(a), Ok(r)) => (a, r),
+            (Err(why), _) | (_, Err(why)) => return fail(self, why),
         };
         self.c_macro_calls.insert(
             call_id,
-            rask_c_parse::cexpr::MacroCall {
+            cexpr::MacroCall {
                 name: def.name.clone(),
                 body: text,
                 params: def.params.clone(),
                 args: c_args,
                 result,
+                header: if reads_memory || takes_pointer { def.header.clone() } else { None },
+                arg_c,
+                result_c,
             },
         );
-        scalar_type(rask)
+        rask
+    }
+
+    /// The C type a Rask type stands for in a macro call: a number, or a
+    /// pointer to one, to a struct, or to bytes (C's `char *`).
+    fn c_type_of(&self, ty: &Type) -> Option<rask_c_parse::CType> {
+        use rask_c_parse::CType;
+        let ty = self.resolve_named(&self.ctx.apply(ty));
+        if let Some(inner) = ty.as_option() {
+            return match self.resolve_named(inner) {
+                p @ Type::RawPtr(_) => self.c_type_of(&p),
+                _ => None,
+            };
+        }
+        match &ty {
+            Type::RawPtr(inner) => {
+                let pointee = match self.resolve_named(inner) {
+                    Type::U8 | Type::I8 => CType::Char,
+                    Type::Unit => CType::Void,
+                    Type::Named(id) => CType::Named(self.types.type_name(id)),
+                    other => self.c_type_of(&other)?,
+                };
+                Some(CType::Pointer(Box::new(pointee)))
+            }
+            other => scalar_name(other).and_then(rask_c_parse::cexpr::from_rask_scalar),
+        }
+    }
+
+    /// The Rask type a C type is, for a macro's result: a number, or a
+    /// pointer that may be absent, as every C pointer is (mem.unsafe/PT6).
+    fn rask_type_of_c(&self, ty: &rask_c_parse::CType) -> Option<Type> {
+        use rask_c_parse::CType;
+        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty) {
+            return Some(scalar_type(name));
+        }
+        let CType::Pointer(inner) = rask_c_parse::cexpr::canonical(ty) else { return None };
+        let pointee = match &*inner {
+            CType::Char | CType::SignedChar | CType::UnsignedChar => Type::U8,
+            CType::Void => Type::Unit,
+            CType::Named(n) => Type::Named(self.types.get_type_id(n)?),
+            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other)?),
+        };
+        Some(Type::option(Type::RawPtr(Box::new(pointee))))
+    }
+
+    /// How C spells a type, for the C function a macro call goes to.
+    fn c_spelling(&self, ty: &rask_c_parse::CType) -> Result<String, String> {
+        use rask_ast::attr::CName;
+        use rask_c_parse::CType;
+        Ok(match ty {
+            CType::Pointer(inner) => format!("{} *", self.c_spelling(inner)?),
+            CType::Void => "void".to_string(),
+            CType::Char => "char".to_string(),
+            CType::Named(n) => {
+                let short = n.rsplit('.').next().unwrap_or(n);
+                match self.c_names.get(short) {
+                    Some(CName::Spelled(c)) => c.clone(),
+                    Some(CName::Nameless) => {
+                        return Err(format!("`{}` is a C record nested without a tag, which C has no name to pass by", short))
+                    }
+                    None => short.to_string(),
+                }
+            }
+            other => rask_c_parse::cexpr::spell(other).to_string(),
+        })
+    }
+}
+
+/// What typing a macro that reads memory asks of the header: its structs'
+/// fields and its functions, as the translation declared them.
+struct CHeader<'a> {
+    checker: &'a TypeChecker,
+}
+
+impl rask_c_parse::cexpr::Header for CHeader<'_> {
+    fn field(&self, record: &rask_c_parse::CType, field: &str) -> Option<rask_c_parse::CType> {
+        let rask_c_parse::CType::Named(name) = record else { return None };
+        let id = self.checker.types.get_type_id(name)?;
+        let fields = match self.checker.types.get(id)? {
+            rask_types::TypeDef::Struct { fields, .. } | rask_types::TypeDef::Union { fields, .. } => fields,
+            _ => return None,
+        };
+        // A C field named like a Rask keyword was renamed with a `_`.
+        let (_, ty) = fields
+            .iter()
+            .find(|(n, _)| n == field)
+            .or_else(|| fields.iter().find(|(n, _)| *n == format!("{}_", field)))?;
+        self.checker.c_type_of(ty)
+    }
+
+    fn function(&self, name: &str) -> Option<(Vec<rask_c_parse::CType>, rask_c_parse::CType, bool)> {
+        let (params, ret, variadic) = self.checker.c_functions.get(name)?;
+        let ps = params
+            .iter()
+            .map(|p| resolve_type_expr(p, &self.checker.types).ok().and_then(|t| self.checker.c_type_of(&t)))
+            .collect::<Option<Vec<_>>>()?;
+        let ret = match ret {
+            None => rask_c_parse::CType::Void,
+            Some(r) => self.checker.c_type_of(&resolve_type_expr(r, &self.checker.types).ok()?)?,
+        };
+        Some((ps, ret, *variadic))
     }
 }
 

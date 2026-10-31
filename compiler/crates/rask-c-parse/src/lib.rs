@@ -63,6 +63,20 @@ pub struct CStructDecl {
     pub fields: Vec<CField>,
     /// True if this is a forward declaration (no body).
     pub is_forward: bool,
+    pub naming: CNaming,
+}
+
+/// What C calls a record, which a macro's C has to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CNaming {
+    /// `struct point`.
+    Tag,
+    /// A typedef's name the anonymous record took
+    /// (`typedef struct { … } Rect;`): C spells it `Rect`.
+    Typedef,
+    /// A record nested in another without a tag. The tag here is made up,
+    /// and C has no name for it.
+    Anonymous,
 }
 
 #[derive(Debug, Clone, PartialEq)]

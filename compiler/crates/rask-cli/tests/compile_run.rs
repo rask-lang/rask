@@ -8561,15 +8561,36 @@ fn c_macros_compute_what_c_would() {
     }
 }
 
-/// A macro that isn't arithmetic, or that's handed something other than a
-/// number, is refused at the call with the reason (E0940).
+/// Macros that read a field through a pointer, follow two pointers, read a
+/// union, call a header function or a compiler builtin. Native code calls
+/// each through a wrapper compiled with the header (PP4).
+#[test]
+fn c_macros_that_read_memory_run_through_their_header() {
+    let (text, ok) = run_with_c_object("c_macro_memory");
+    assert!(ok, "c_macro_memory.rk should run:\n{text}");
+    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "call 41", "swap 13330"] {
+        assert!(text.contains(expected), "missing `{expected}`:\n{text}");
+    }
+}
+
+/// A macro whose body its arguments can't type, or that's handed something
+/// other than a number or a pointer, is refused at the call with the reason
+/// (E0940).
 #[test]
 fn a_c_macro_call_that_cant_be_made_says_why() {
     let (text, ok) = check_in_fixtures("c_macro_misuse.rk");
     assert!(!ok, "the misuse should be refused:\n{text}");
     assert!(text.contains("E0940"), "{text}");
-    assert!(text.contains("`MUSTLOCK`") && text.contains("`->`"), "names the macro and what's in it:\n{text}");
+    assert!(text.contains("`MUSTLOCK`") && text.contains("`->flags` on something that isn't a pointer"), "names the macro and what's in it:\n{text}");
     assert!(text.contains("`BUTTON_MASK`") && text.contains("a `string`"), "names the argument:\n{text}");
+}
+
+/// A macro that reads memory is refused outside `unsafe`.
+#[test]
+fn a_c_macro_that_reads_memory_needs_unsafe() {
+    let (text, ok) = check_in_fixtures("c_macro_needs_unsafe.rk");
+    assert!(!ok, "the call outside `unsafe` should be refused:\n{text}");
+    assert!(text.contains("a C macro that reads memory or calls C"), "{text}");
 }
 
 /// A header is found next to the file that imports it, not next to wherever the

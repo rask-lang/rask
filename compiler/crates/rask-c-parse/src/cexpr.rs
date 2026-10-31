@@ -42,6 +42,53 @@ pub enum CExpr {
     Binary(BinOp, Box<CExpr>, Box<CExpr>),
     Ternary(Box<CExpr>, Box<CExpr>, Box<CExpr>),
     Cast(CType, Box<CExpr>),
+    /// `base->field` (`arrow`) or `base.field`.
+    Member { base: Box<CExpr>, field: String, arrow: bool },
+    /// A call of a function the header declares, or a compiler builtin.
+    Call { func: String, args: Vec<CExpr> },
+}
+
+/// What typing a macro that reads memory asks of the header it came from.
+pub trait Header {
+    /// The type of `field` in the struct or union `record` names.
+    fn field(&self, record: &CType, field: &str) -> Option<CType>;
+    /// A function's parameter types, result type, and whether it's variadic.
+    fn function(&self, name: &str) -> Option<(Vec<CType>, CType, bool)>;
+}
+
+/// No header: arithmetic only.
+pub struct NoHeader;
+
+impl Header for NoHeader {
+    fn field(&self, _: &CType, _: &str) -> Option<CType> {
+        None
+    }
+    fn function(&self, _: &str) -> Option<(Vec<CType>, CType, bool)> {
+        None
+    }
+}
+
+/// The compiler builtins a header's macros reach for, by name.
+fn builtin(name: &str) -> Option<(Vec<CType>, CType, bool)> {
+    let one = |t: CType| Some((vec![t.clone()], t, false));
+    match name {
+        "__builtin_bswap16" => one(CType::UnsignedShort),
+        "__builtin_bswap32" => one(CType::UnsignedInt),
+        "__builtin_bswap64" => one(CType::UnsignedLong),
+        _ => None,
+    }
+}
+
+/// Does evaluating `e` read memory or call into C? Such a macro is computed
+/// by C with its header, and a call to it is `unsafe`.
+pub fn touches_memory(e: &CExpr) -> bool {
+    match e {
+        CExpr::Param(_) | CExpr::Lit(_) => false,
+        CExpr::Member { .. } | CExpr::Call { .. } => true,
+        CExpr::Unary(_, x) | CExpr::Cast(_, x) => touches_memory(x),
+        CExpr::Binary(_, a, b) => touches_memory(a) || touches_memory(b),
+        CExpr::Ternary(c, a, b) => touches_memory(c) || touches_memory(a) || touches_memory(b),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -163,13 +210,19 @@ pub fn usual(a: &CType, b: &CType) -> CType {
 
 /// The type of `e` when its parameters have `params`' types.
 pub fn type_of(e: &CExpr, params: &[CType]) -> Result<CType, String> {
+    type_of_in(e, params, &NoHeader)
+}
+
+/// `type_of`, with the header's structs and functions for a macro that reads
+/// memory or calls into C.
+pub fn type_of_in(e: &CExpr, params: &[CType], header: &dyn Header) -> Result<CType, String> {
     let int_only = |t: &CType, what: &str| {
         if is_float(t) { Err(format!("`{}` on a floating value", what)) } else { Ok(()) }
     };
     // An operand of anything but a bare literal has to be a number: a string
     // is a pointer in C, and pointer arithmetic isn't something to copy.
     let arith = |e: &CExpr| -> Result<CType, String> {
-        let t = type_of(e, params)?;
+        let t = type_of_in(e, params, header)?;
         if int_shape(&t).is_none() && !is_float(&t) {
             return Err("arithmetic on a string or a pointer".to_string());
         }
@@ -215,6 +268,32 @@ pub fn type_of(e: &CExpr, params: &[CType]) -> Result<CType, String> {
         CExpr::Ternary(c, a, b) => {
             arith(c)?;
             usual(&arith(a)?, &arith(b)?)
+        }
+        CExpr::Member { base, field, arrow } => {
+            let t = type_of_in(base, params, header)?;
+            let record = match (canonical(&t), arrow) {
+                (CType::Pointer(inner), true) => *inner,
+                (other, false) => other,
+                (_, true) => return Err(format!("`->{}` on something that isn't a pointer", field)),
+            };
+            header
+                .field(&canonical(&record), field)
+                .ok_or_else(|| format!("`{}`, which the struct it's read from doesn't have", field))?
+        }
+        CExpr::Call { func, args } => {
+            let (ps, ret, variadic) = builtin(func)
+                .or_else(|| header.function(func))
+                .ok_or_else(|| format!("a call to `{}`, which the header doesn't declare", func))?;
+            if args.len() < ps.len() || (!variadic && args.len() > ps.len()) {
+                return Err(format!("a call to `{}` with the wrong number of arguments", func));
+            }
+            for a in args {
+                type_of_in(a, params, header)?;
+            }
+            if ret == CType::Void {
+                return Err(format!("a call to `{}`, which answers nothing", func));
+            }
+            ret
         }
     })
 }
@@ -360,6 +439,8 @@ pub fn eval(e: &CExpr, args: &[CVal]) -> Option<CVal> {
             let chosen = if truth(&eval(c, args)?)? { eval(a, args)? } else { eval(b, args)? };
             convert(&chosen, &ty)?
         }
+        // Memory and calls are C's to compute.
+        CExpr::Member { .. } | CExpr::Call { .. } => return None,
     })
 }
 
@@ -438,6 +519,13 @@ pub fn to_c(e: &CExpr, names: &[String]) -> String {
         }
         CExpr::Binary(op, a, b) => format!("({} {} {})", to_c(a, names), op_text(*op), to_c(b, names)),
         CExpr::Ternary(c, a, b) => format!("({} ? {} : {})", to_c(c, names), to_c(a, names), to_c(b, names)),
+        CExpr::Member { base, field, arrow } => {
+            format!("({}{}{})", to_c(base, names), if *arrow { "->" } else { "." }, field)
+        }
+        CExpr::Call { func, args } => {
+            let a: Vec<String> = args.iter().map(|x| to_c(x, names)).collect();
+            format!("{}({})", func, a.join(", "))
+        }
     }
 }
 
@@ -454,6 +542,13 @@ pub struct MacroCall {
     pub params: Vec<String>,
     pub args: Vec<CType>,
     pub result: CType,
+    /// The header a macro that reads memory or calls into C is compiled
+    /// with; `None` for arithmetic, which needs none.
+    pub header: Option<String>,
+    /// Each argument's type as C spells it, then the result's: what the C
+    /// function a run-time call goes to declares.
+    pub arg_c: Vec<String>,
+    pub result_c: String,
 }
 
 /// No names: a macro body the translation wrote stands on its own.
@@ -781,14 +876,40 @@ impl Parser<'_> {
 
     /// What may follow an operand in C but not in arithmetic: `(s)->flags`
     /// is as much a field read as `s->flags`.
-    fn postfix(&mut self, e: CExpr) -> Result<CExpr, String> {
-        match self.peek() {
-            Some(CTokenKind::Arrow) => Err("`->`, which reads a field through a pointer".to_string()),
-            Some(CTokenKind::Dot) => Err("`.`, which reads a struct's field".to_string()),
-            Some(CTokenKind::LBracket) => Err("`[ ]`, which indexes memory".to_string()),
-            Some(CTokenKind::Eq) => Err("`=`, which assigns".to_string()),
-            _ => Ok(e),
+    fn postfix(&mut self, mut e: CExpr) -> Result<CExpr, String> {
+        loop {
+            match self.peek() {
+                Some(t @ (CTokenKind::Arrow | CTokenKind::Dot)) => {
+                    let arrow = *t == CTokenKind::Arrow;
+                    self.pos += 1;
+                    let Some(CTokenKind::Ident(field)) = self.peek().cloned() else {
+                        return Err("a field access without a field name".to_string());
+                    };
+                    self.pos += 1;
+                    e = CExpr::Member { base: Box::new(e), field, arrow };
+                }
+                Some(CTokenKind::LBracket) => return Err("`[ ]`, which indexes memory".to_string()),
+                Some(CTokenKind::Eq) => return Err("`=`, which assigns".to_string()),
+                _ => return Ok(e),
+            }
         }
+    }
+
+    /// `f(a, b)` after a function's name: each argument an expression.
+    fn call(&mut self, func: String) -> Result<CExpr, String> {
+        use CTokenKind as T;
+        self.expect(&T::LParen, "`(`")?;
+        let mut args = Vec::new();
+        if !self.eat(&T::RParen) {
+            loop {
+                args.push(self.ternary()?);
+                if self.eat(&T::RParen) {
+                    break;
+                }
+                self.expect(&T::Comma, "`,` between arguments")?;
+            }
+        }
+        Ok(CExpr::Call { func, args })
     }
 
     /// An arithmetic type written inside a cast's parentheses, or `None` when
@@ -887,10 +1008,10 @@ impl Parser<'_> {
                 // Every macro call was expanded before parsing; one still
                 // here was switched off inside its own expansion.
                 if self.peek() == Some(&T::LParen) {
-                    return Err(match self.names.function_macro(&name) {
-                        Some(_) => format!("`{}` inside its own expansion", name),
-                        None => format!("a call to `{}`, which is a function, not a macro", name),
-                    });
+                    if self.names.function_macro(&name).is_some() {
+                        return Err(format!("`{}` inside its own expansion", name));
+                    }
+                    return self.call(name);
                 }
                 match self.names.value(&name) {
                     Some(v) => lit(v),
@@ -1027,6 +1148,31 @@ mod tests {
         assert_eq!(eval(&e, &[CVal::Int(300, CType::Int)]), Some(CVal::Int(44, CType::UnsignedInt)));
     }
 
+    struct Surface;
+    impl super::Header for Surface {
+        fn field(&self, record: &CType, field: &str) -> Option<CType> {
+            (*record == CType::Named("Surface".into()) && field == "flags").then_some(CType::UnsignedInt)
+        }
+        fn function(&self, name: &str) -> Option<(Vec<CType>, CType, bool)> {
+            (name == "twice").then(|| (vec![CType::Int], CType::Int, false))
+        }
+    }
+
+    #[test]
+    fn a_macro_that_reads_memory_is_typed_from_the_header() {
+        let ptr = CType::Pointer(Box::new(CType::Named("Surface".into())));
+        let locked = macro_(&["S"], "(((S)->flags & 1) != 0)").unwrap();
+        assert!(touches_memory(&locked));
+        assert_eq!(type_of_in(&locked, &[ptr.clone()], &Surface).unwrap(), CType::Int);
+        // Without the header there's nothing to type it by.
+        assert!(type_of(&locked, &[ptr]).unwrap_err().contains("flags"));
+        let call = macro_(&["x"], "(twice(x) + 1)").unwrap();
+        assert_eq!(type_of_in(&call, &[CType::Int], &Surface).unwrap(), CType::Int);
+        let swap = macro_(&["x"], "__builtin_bswap32(x)").unwrap();
+        assert_eq!(type_of_in(&swap, &[CType::UnsignedInt], &NoHeader).unwrap(), CType::UnsignedInt);
+        assert!(!touches_memory(&macro_(&["x"], "(x + 1)").unwrap()));
+    }
+
     #[test]
     fn the_usual_conversions() {
         assert_eq!(usual(&CType::Int, &CType::UnsignedInt), CType::UnsignedInt);
@@ -1059,11 +1205,10 @@ mod tests {
 
     #[test]
     fn says_what_isnt_arithmetic() {
-        assert!(macro_(&["s"], "s->flags").unwrap_err().contains("->"));
-        assert!(macro_(&["s"], "(((s)->flags & 1) != 0)").unwrap_err().contains("->"));
+        assert!(macro_(&["x"], "x[0]").unwrap_err().contains("[ ]"));
         assert!(macro_(&["p"], "*p").unwrap_err().contains("pointer"));
         assert!(macro_(&["x"], "do { x; } while (0)").unwrap_err().contains("do"));
-        assert!(macro_(&["x"], "foo(x)").unwrap_err().contains("function"));
+
         assert!(macro_(&["type", "e"], "((type)(e))").unwrap_err().contains("as a type"));
     }
 }

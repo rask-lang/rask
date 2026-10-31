@@ -703,7 +703,7 @@ impl Parser {
             }
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
-            TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
+            TokenKind::Union => self.parse_union_decl(is_pub, attrs, doc)?,
             TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
             TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
@@ -1900,7 +1900,7 @@ impl Parser {
         Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, is_pub, doc }))
     }
 
-    fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_union_decl(&mut self, is_pub: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Union)?;
         let name = self.expect_ident()?;
 
@@ -1946,6 +1946,7 @@ impl Parser {
             name,
             fields,
             is_pub,
+            attrs,
             doc,
         }))
     }

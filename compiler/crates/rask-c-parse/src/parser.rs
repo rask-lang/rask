@@ -771,6 +771,7 @@ impl CParser {
                     tag,
                     fields: Vec::new(),
                     is_forward: true,
+                    naming: CNaming::Tag,
                 };
                 return Ok(Some(vec![if is_struct {
                     CDecl::Struct(decl)
@@ -816,6 +817,7 @@ impl CParser {
             tag: tag.clone(),
             fields,
             is_forward: false,
+            naming: CNaming::Tag,
         };
 
         let mut decls = Vec::new();
@@ -875,6 +877,7 @@ impl CParser {
                         tag: Some(adopted.clone()),
                         fields: decl.fields,
                         is_forward: false,
+                        naming: CNaming::Typedef,
                     };
                     // The struct has a name now, so every typedef that pointed
                     // at the placeholder points at it instead. The one that
@@ -926,6 +929,7 @@ impl CParser {
                 None => Err(ParseError::new("struct without a tag or a body".into(), self.line())),
             };
         }
+        let naming = if tag.is_some() { CNaming::Tag } else { CNaming::Anonymous };
         let tag = tag.unwrap_or_else(|| {
             let outer = self.outer.iter().rev().flatten().next().cloned().unwrap_or_else(|| "anon".into());
             self.anon += 1;
@@ -938,7 +942,7 @@ impl CParser {
         self.outer.pop();
         let fields = fields?;
         self.expect(&CTokenKind::RBrace)?;
-        let decl = CStructDecl { tag: Some(tag.clone()), fields, is_forward: false };
+        let decl = CStructDecl { tag: Some(tag.clone()), fields, is_forward: false, naming };
         self.nested.push(CItem {
             decl: if is_struct { CDecl::Struct(decl) } else { CDecl::Union(decl) },
             file: self.file.clone(),

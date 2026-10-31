@@ -255,7 +255,8 @@ fn emit_inner(
     let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
     let macros = crate::c_macros::route_calls(&mut functions)?;
-    extern_sigs.extend(macros.iter().map(|w| w.sig.clone()));
+    extern_sigs.extend(macros.plain.iter().map(|w| w.sig.clone()));
+    extern_sigs.extend(macros.with_header.iter().map(|(_, w)| w.sig.clone()));
     // Only the externs the program reaches. A header declares far more than
     // a program calls, and each declared import is a symbol the link must
     // find: some of a header's functions exist only on other platforms, or
@@ -263,7 +264,7 @@ fn emit_inner(
     let reached = reached_symbols(&functions);
     extern_sigs.retain(|s| reached.contains(&s.name));
     write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
-    write_companion(obj_path, "macro", macros.iter().map(|w| w.source.as_str()).collect::<String>())?;
+    write_companion(obj_path, "macro", macros.plain.iter().map(|w| w.source.as_str()).collect::<String>())?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
     codegen.declare_functions(input.mono, &functions).map_err(fail)?;
     codegen.register_strings(&functions).map_err(fail)?;
@@ -309,7 +310,7 @@ fn emit_inner(
     }
 
     codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])?;
-    write_inline_wrappers(input, target, obj_path)
+    write_inline_wrappers(input, target, obj_path, &macros.with_header)
 }
 
 /// The C companion of an object that calls a header's inline functions:
@@ -319,7 +320,12 @@ fn emit_inner(
 /// Its own file, apart from the variadic wrappers: those declare the C
 /// functions they call without the headers, which a header's own
 /// declaration would contradict.
-fn write_inline_wrappers(input: &BackEnd, target: Option<&str>, obj_path: &str) -> Result<(), Vec<String>> {
+fn write_inline_wrappers(
+    input: &BackEnd,
+    target: Option<&str>,
+    obj_path: &str,
+    macros: &[(String, crate::variadic::Wrapper)],
+) -> Result<(), Vec<String>> {
     let (arch, os) = match target {
         Some(t) => rask_codegen::targets::arch_and_os(t).map_err(|e| vec![e])?,
         None => (std::env::consts::ARCH.to_string(), std::env::consts::OS.to_string()),
@@ -331,7 +337,25 @@ fn write_inline_wrappers(input: &BackEnd, target: Option<&str>, obj_path: &str) 
         .into_iter()
         .collect();
     let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
-    let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
+    let mut src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
+    // A C macro that reads memory or calls into C: compiled with its header,
+    // which its call is made through (struct.c-interop/PP4).
+    let mut included: HashSet<std::path::PathBuf> = HashSet::new();
+    let mut errors = Vec::new();
+    for (header, w) in macros {
+        match crate::c_import::find_header(header, &cx) {
+            Ok(path) => {
+                if included.insert(path.clone()) {
+                    src.push_str(&format!("#include \"{}\"\n", path.display()));
+                }
+                src.push_str(&w.source);
+            }
+            Err(msg) => errors.push(format!("the header of C macro `{}`, `{}`, isn't found ({})", w.sig.name, header, msg)),
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
     write_companion(obj_path, "inline", src)
 }
 

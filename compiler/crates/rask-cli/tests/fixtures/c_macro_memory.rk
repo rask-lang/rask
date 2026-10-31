@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Macros that read through a pointer, call a header function or a compiler
+// builtin. Each call goes to a C wrapper that includes the header and calls
+// the macro by name, so it needs `unsafe` (struct.c-interop/PP4).
+
+import c "c_macro_memory.h"
+
+func main() {
+    mut s = c.Surf(flags: 3, w: 640)
+    let sp = &s
+    println("locked {unsafe c.LOCKED(sp)} width {unsafe c.WIDTH(sp)}")
+    s.flags = 2
+    println("locked {unsafe c.LOCKED(sp)}")
+
+    mut tail = c.Node(value: 42, next: none)
+    mut head = c.Node(value: 1, next: &tail)
+    println("next {unsafe c.NEXT_VALUE(&head)}")
+
+    mut n = c.Num(i: 7)
+    println("union {unsafe c.NUM_INT(&n)}")
+
+    let x: i32 = 20
+    println("call {unsafe c.TWICE_PLUS(x)}")
+    let h: u16 = 0x1234
+    println("swap {unsafe c.SWAP16(h)}")
+}

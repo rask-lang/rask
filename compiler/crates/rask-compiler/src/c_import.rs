@@ -138,6 +138,7 @@ pub fn expand(
                     _ => true,
                 })
                 .collect();
+            keep_c_spelling(&mut new);
             let mut map = package_scope::qualify_declarations(&mut new, &import.alias);
             for d in &new {
                 if let DeclKind::Extern(e) = &d.kind {
@@ -169,6 +170,25 @@ pub fn expand(
     }
     decls.extend(generated);
     out
+}
+
+/// Qualifying renames `Surf` to `Surf_c`, and C still calls it `Surf`. A
+/// record whose C spelling was its Rask name gets that spelling written down
+/// before the rename, for the C a macro call compiles into (PP4).
+fn keep_c_spelling(decls: &mut [Decl]) {
+    for d in decls {
+        let (name, attrs) = match &mut d.kind {
+            DeclKind::Struct(s) => (&s.name, &mut s.attrs),
+            DeclKind::Union(u) => (&u.name, &mut u.attrs),
+            _ => continue,
+        };
+        if rask_ast::attr::c_name(attrs).is_some() {
+            continue;
+        }
+        let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(name.clone()), span: Span::new(0, 0) };
+        let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
+        attrs.push(rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg])));
+    }
 }
 
 /// A reference through a C import's alias to a name it doesn't have.
@@ -333,19 +353,13 @@ pub fn inline_wrappers(decls: &[Decl], cx: &Context) -> Result<Option<String>, V
     let mut out = String::new();
     let mut errors = Vec::new();
     for (header, names) in by_header {
-        let path = if Path::new(&header).is_file() {
-            PathBuf::from(&header)
-        } else {
-            let found = cx.source_dirs.values().map(|d| d.join(&header)).find(|p| p.is_file());
-            match found.map(Ok).unwrap_or_else(|| locate(&header, u16::MAX, cx)) {
-                Ok(p) => p,
-                Err(msg) => {
-                    errors.push(format!("`@inline_from(\"{}\")`: header not found ({})", header, msg));
-                    continue;
-                }
+        let path = match find_header(&header, cx) {
+            Ok(p) => p,
+            Err(msg) => {
+                errors.push(format!("`@inline_from(\"{}\")`: header not found ({})", header, msg));
+                continue;
             }
         };
-        let path = canonical(&path);
         let (parsed, _) = match parse(&path, cx) {
             Ok(p) => p,
             Err(msg) => {
@@ -364,6 +378,22 @@ pub fn inline_wrappers(decls: &[Decl], cx: &Context) -> Result<Option<String>, V
 }
 
 /// The header an extern's `@inline_from("…")` names.
+/// A header a generated declaration names (`@inline_from`, `@c_macro`'s
+/// `header:`), found as written, beside the program's files, or along the
+/// target compiler's search list, the way `import c` finds one.
+pub fn find_header(header: &str, cx: &Context) -> Result<PathBuf, String> {
+    let path = if Path::new(header).is_file() {
+        PathBuf::from(header)
+    } else {
+        let found = cx.source_dirs.values().map(|d| d.join(header)).find(|p| p.is_file());
+        match found {
+            Some(p) => p,
+            None => locate(header, u16::MAX, cx)?,
+        }
+    };
+    Ok(canonical(&path))
+}
+
 pub fn inline_header(e: &rask_ast::decl::ExternDecl) -> Option<String> {
     e.attrs.iter().find(|a| a.is("inline_from"))?.positional()?.string()
 }

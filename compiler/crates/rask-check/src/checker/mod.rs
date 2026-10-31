@@ -367,6 +367,11 @@ pub struct TypeChecker {
     pub(super) c_macros: HashMap<String, type_defs::CMacroDef>,
     /// PP4: each macro call, as typed.
     pub(super) c_macro_calls: HashMap<NodeId, rask_c_parse::cexpr::MacroCall>,
+    /// PP4: C spellings of C structs whose Rask name differs (`@c_name`).
+    pub(super) c_names: HashMap<String, rask_ast::attr::CName>,
+    /// PP4: each extern function, for typing a macro body that calls one:
+    /// parameter types, result type, variadic.
+    pub(super) c_functions: HashMap<String, (Vec<rask_ast::ty::TypeExpr>, Option<rask_ast::ty::TypeExpr>, bool)>,
     /// Externs declared with `...`: a call may pass more than they list.
     pub(super) variadic_externs: std::collections::HashSet<String>,
     /// Variadic arguments whose type isn't settled yet, checked after solving.
@@ -690,6 +695,8 @@ impl TypeChecker {
             c_contexts: HashMap::new(),
             c_macros: HashMap::new(),
             c_macro_calls: HashMap::new(),
+            c_names: HashMap::new(),
+            c_functions: HashMap::new(),
             variadic_externs: std::collections::HashSet::new(),
             pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),

@@ -43,52 +43,95 @@ fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
     })
 }
 
-/// The C function a call with these argument types goes to.
+/// How codegen declares one of a wrapper's types: the Rask number, or a
+/// pointer, which crosses as a word.
+fn sig_type(ty: &rask_c_parse::CType) -> Option<TypeExpr> {
+    match cexpr::canonical(ty) {
+        rask_c_parse::CType::Pointer(_) => Some(TypeExpr::RawPtr(Box::new(TypeExpr::Unit))),
+        other => cexpr::rask_scalar(&other).map(TypeExpr::named),
+    }
+}
+
+/// `unsigned char` → `unsigned_char`, `SDL_Surface *` → `SDL_Surface_p`:
+/// a C type as part of a symbol.
+fn symbol_part(c: &str) -> String {
+    let mut out = String::new();
+    for ch in c.trim().chars() {
+        match ch {
+            '*' => out.push('p'),
+            c if c.is_ascii_alphanumeric() => out.push(c),
+            _ if out.ends_with('_') => {}
+            _ => out.push('_'),
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// The C function a call with these argument types goes to. Arithmetic
+/// computes the body as written; a macro that reads memory or calls into C
+/// is compiled with its header and called by its own name, so C does all of
+/// it.
 fn wrapper(call: &MacroCall) -> Option<Wrapper> {
-    let arg_names: Vec<&str> = call.args.iter().map(cexpr::rask_scalar).collect::<Option<_>>()?;
-    let ret = cexpr::rask_scalar(&call.result)?;
-    let name = if arg_names.is_empty() {
+    let param_types: Vec<TypeExpr> = call.args.iter().map(sig_type).collect::<Option<_>>()?;
+    let ret_ty = sig_type(&call.result)?;
+    let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
+    let name = if parts.is_empty() {
         format!("rask_macro_{}", call.name)
     } else {
-        format!("rask_macro_{}__{}", call.name, arg_names.join("_"))
+        format!("rask_macro_{}__{}", call.name, parts.join("_"))
     };
-    let params: Vec<String> = call
-        .params
-        .iter()
-        .zip(&call.args)
-        .map(|(p, t)| format!("{} {}", cexpr::spell(t), p))
-        .collect();
-    let source = format!(
-        "{ret} {name}({params}) {{ return ({ret})({body}); }}\n",
-        ret = cexpr::spell(&call.result),
-        name = name,
-        params = if params.is_empty() { "void".to_string() } else { params.join(", ") },
-        body = call.body,
-    );
+    let source = if call.header.is_some() {
+        let params: Vec<String> = call.arg_c.iter().enumerate().map(|(i, t)| format!("{} a{}", t, i)).collect();
+        let args: Vec<String> = (0..call.arg_c.len()).map(|i| format!("a{}", i)).collect();
+        format!(
+            "{ret} {name}({params}) {{ return ({ret})({mac}({args})); }}\n",
+            ret = call.result_c,
+            name = name,
+            params = if params.is_empty() { "void".to_string() } else { params.join(", ") },
+            mac = call.name,
+            args = args.join(", "),
+        )
+    } else {
+        let params: Vec<String> =
+            call.params.iter().zip(&call.arg_c).map(|(p, t)| format!("{} {}", t, p)).collect();
+        format!(
+            "{ret} {name}({params}) {{ return ({ret})({body}); }}\n",
+            ret = call.result_c,
+            name = name,
+            params = if params.is_empty() { "void".to_string() } else { params.join(", ") },
+            body = call.body,
+        )
+    };
     Some(Wrapper {
         source,
-        sig: rask_codegen::ExternFuncSig {
-            name: name.clone(),
-            link_name: None,
-            param_types: arg_names.iter().map(|n| TypeExpr::named(*n)).collect(),
-            ret_ty: Some(TypeExpr::named(ret)),
-        },
+        sig: rask_codegen::ExternFuncSig { name: name.clone(), link_name: None, param_types, ret_ty: Some(ret_ty) },
     })
+}
+
+/// The C functions macro calls go to: the arithmetic ones, which need no
+/// header, and the ones compiled with the header they name.
+#[derive(Default)]
+pub struct Routed {
+    pub plain: Vec<Wrapper>,
+    pub with_header: Vec<(String, Wrapper)>,
 }
 
 /// Fold or route every macro call in `functions`, and answer the C functions
 /// the routed ones need (one per macro and argument types).
-pub fn route_calls(functions: &mut [MirFunction]) -> Result<Vec<Wrapper>, Vec<String>> {
-    let mut wrappers: BTreeMap<String, Wrapper> = BTreeMap::new();
+pub fn route_calls(functions: &mut [MirFunction]) -> Result<Routed, Vec<String>> {
+    let mut plain: BTreeMap<String, Wrapper> = BTreeMap::new();
+    let mut with_header: BTreeMap<String, (String, Wrapper)> = BTreeMap::new();
     let mut errors = Vec::new();
     for f in functions.iter_mut() {
         for block in &mut f.blocks {
             for stmt in &mut block.statements {
                 let MirStmtKind::Call { dst, func, args } = &mut stmt.kind else { continue };
                 let Some(call) = func.c_macro.take() else { continue };
-                if let (Some(d), Some(value)) = (*dst, fold(&call, args)) {
-                    stmt.kind = MirStmtKind::Assign { dst: d, rvalue: MirRValue::Use(MirOperand::Constant(value)) };
-                    continue;
+                if call.header.is_none() {
+                    if let (Some(d), Some(value)) = (*dst, fold(&call, args)) {
+                        stmt.kind = MirStmtKind::Assign { dst: d, rvalue: MirRValue::Use(MirOperand::Constant(value)) };
+                        continue;
+                    }
                 }
                 let Some(w) = wrapper(&call) else {
                     errors.push(format!("`{}` is a C macro whose types have no C spelling here", call.name));
@@ -96,11 +139,21 @@ pub fn route_calls(functions: &mut [MirFunction]) -> Result<Vec<Wrapper>, Vec<St
                 };
                 func.name = w.sig.name.clone();
                 func.is_extern = true;
-                wrappers.entry(w.sig.name.clone()).or_insert(w);
+                match &call.header {
+                    Some(h) => {
+                        with_header.entry(w.sig.name.clone()).or_insert((h.clone(), w));
+                    }
+                    None => {
+                        plain.entry(w.sig.name.clone()).or_insert(w);
+                    }
+                }
             }
         }
     }
-    if errors.is_empty() { Ok(wrappers.into_values().collect()) } else { Err(errors) }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(Routed { plain: plain.into_values().collect(), with_header: with_header.into_values().collect() })
 }
 
 #[cfg(test)]
@@ -113,8 +166,11 @@ mod tests {
             name: "MASK".into(),
             body: "(((unsigned int)1) << (X - 1))".into(),
             params: vec!["X".into()],
-            args: vec![arg],
+            args: vec![arg.clone()],
             result: CType::UnsignedInt,
+            header: None,
+            arg_c: vec![cexpr::spell(&arg).to_string()],
+            result_c: "unsigned int".into(),
         }
     }
 
@@ -133,10 +189,10 @@ mod tests {
     #[test]
     fn a_run_time_call_gets_a_function_for_its_types() {
         let w = wrapper(&mask(CType::UnsignedChar)).unwrap();
-        assert_eq!(w.sig.name, "rask_macro_MASK__u8");
+        assert_eq!(w.sig.name, "rask_macro_MASK__unsigned_char");
         assert_eq!(
             w.source,
-            "unsigned int rask_macro_MASK__u8(unsigned char X) { return (unsigned int)((((unsigned int)1) << (X - 1))); }\n"
+            "unsigned int rask_macro_MASK__unsigned_char(unsigned char X) { return (unsigned int)((((unsigned int)1) << (X - 1))); }\n"
         );
     }
 }

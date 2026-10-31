@@ -3475,6 +3475,14 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         use rask_c_parse::cexpr::{self, CVal};
+        // A pointer argument, a field read or a call into C is done by the
+        // macro's own C, which only native code has.
+        if call.header.is_some() {
+            return Err(RuntimeError::TypeError(format!(
+                "`{}` is a C macro that takes a pointer, reads memory or calls C, which only compiled code can run; drop `--interp`",
+                call.name
+            )));
+        }
         let mut vals = Vec::with_capacity(args.len());
         for (v, ty) in args.into_iter().zip(&call.args) {
             let c = match v {

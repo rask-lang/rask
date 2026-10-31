@@ -1966,13 +1966,36 @@ impl TypeChecker {
     /// header's declarations have no entry in `decl_symbols`.
     pub(super) fn collect_c_macros(&mut self, decls: &[rask_ast::decl::Decl]) {
         for decl in decls {
-            let rask_ast::decl::DeclKind::Extern(e) = &decl.kind else { continue };
-            let Some(body) = rask_ast::attr::c_macro(&e.attrs) else { continue };
-            let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
-            let body = body.and_then(|text| {
-                rask_c_parse::cexpr::parse_body(&text, &params).map(|expr| (text, expr))
-            });
-            self.c_macros.insert(e.name.clone(), super::type_defs::CMacroDef { name: e.name.clone(), params, body });
+            match &decl.kind {
+                // How C spells a record, for a macro's C (PP4).
+                rask_ast::decl::DeclKind::Struct(s) => {
+                    if let Some(c) = rask_ast::attr::c_name(&s.attrs) {
+                        self.c_names.insert(s.name.clone(), c);
+                    }
+                }
+                rask_ast::decl::DeclKind::Union(u) => {
+                    if let Some(c) = rask_ast::attr::c_name(&u.attrs) {
+                        self.c_names.insert(u.name.clone(), c);
+                    }
+                }
+                rask_ast::decl::DeclKind::Extern(e) => {
+                    let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
+                        // A function a macro's body may call.
+                        let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
+                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        continue;
+                    };
+                    let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
+                    let body = attr.body.and_then(|text| {
+                        rask_c_parse::cexpr::parse_body(&text, &params).map(|expr| (text, expr))
+                    });
+                    self.c_macros.insert(
+                        e.name.clone(),
+                        super::type_defs::CMacroDef { name: e.name.clone(), params, body, header: attr.header },
+                    );
+                }
+                _ => {}
+            }
         }
     }
 

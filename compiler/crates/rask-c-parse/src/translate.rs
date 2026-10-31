@@ -103,6 +103,9 @@ struct Translator<'a> {
     /// Every function the header declares, so a macro of the same name
     /// doesn't shadow it.
     function_names: HashSet<String>,
+    /// Tags a typedef of the same name points at (`typedef struct X X`), so
+    /// C can spell the type bare.
+    self_typedefs: HashSet<String>,
     /// Where each struct or union tag is defined, else forward-declared.
     records: HashMap<&'a str, usize>,
     typedefs: HashMap<&'a str, usize>,
@@ -151,6 +154,16 @@ impl<'a> Translator<'a> {
                 .iter()
                 .filter_map(|i| match &i.decl {
                     CDecl::Function(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            self_typedefs: items
+                .iter()
+                .filter_map(|i| match &i.decl {
+                    CDecl::Typedef(t) => match strip(&t.target) {
+                        CType::StructTag(tag) | CType::UnionTag(tag) if *tag == t.name => Some(t.name.clone()),
+                        _ => None,
+                    },
                     _ => None,
                 })
                 .collect(),
@@ -354,7 +367,14 @@ impl<'a> Translator<'a> {
         } else {
             crate::cexpr::parse(&d.body, params, &crate::consteval::AsNames(&self.consts))
         };
+        // One that reads memory or calls into C is compiled with its header,
+        // which the call names.
         let attr = match parsed {
+            Ok(e) if crate::cexpr::touches_memory(&e) => format!(
+                "@c_macro({}, header: {})",
+                quote(&crate::cexpr::to_c(&e, &rparams)),
+                quote(self.opts.header)
+            ),
             Ok(e) => format!("@c_macro({})", quote(&crate::cexpr::to_c(&e, &rparams))),
             Err(why) => format!("@c_macro(unusable: {})", quote(&why)),
         };
@@ -439,10 +459,26 @@ extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
         if s.is_forward {
             return format!("extern \"C\" struct {}\n", name);
         }
+        // How C spells it, for the C a macro call is compiled into (PP4):
+        // `Rect` when a typedef names it, `struct rect` when only the tag
+        // does, nothing for one nested without a tag. Written only where it
+        // isn't the Rask name.
+        let tag = s.tag.as_deref().unwrap_or_default();
+        let c_name = match s.naming {
+            CNaming::Anonymous => "@c_name(none)\n".to_string(),
+            naming => {
+                let spelling = if naming == CNaming::Typedef || self.self_typedefs.contains(tag) {
+                    tag.to_string()
+                } else {
+                    format!("{} {}", if is_union { "union" } else { "struct" }, tag)
+                };
+                if spelling == name { String::new() } else { format!("@c_name({})\n", quote(&spelling)) }
+            }
+        };
         let mut out = if is_union {
-            format!("public union {} {{\n", name)
+            format!("{}public union {} {{\n", c_name, name)
         } else {
-            format!("@layout(C)\npublic struct {} {{\n", name)
+            format!("@layout(C)\n{}public struct {} {{\n", c_name, name)
         };
         let mut used: Vec<String> = Vec::new();
         for f in &s.fields {

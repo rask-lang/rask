@@ -30,8 +30,13 @@ fn variadic_and_void_params() {
 #[test]
 fn structs_are_c_layout_and_capitalized() {
     let out = bind("struct point { int x; float y; };\nstruct sqlite3;");
-    has(&out, "@layout(C)\npublic struct Point {\n    public x: c_int\n    public y: f32\n}");
+    // C spells it with its tag, which a macro's C needs (PP4).
+    has(&out, "@layout(C)\n@c_name(\"struct point\")\npublic struct Point {\n    public x: c_int\n    public y: f32\n}");
     has(&out, "extern \"C\" struct Sqlite3");
+    // A typedef'd one is spelled as Rask spells it, so nothing is written.
+    let out = bind("typedef struct Rect { int w; } Rect;\ntypedef struct { int h; } Size;");
+    has(&out, "@layout(C)\npublic struct Rect {");
+    has(&out, "@layout(C)\npublic struct Size {");
 }
 
 #[test]
@@ -39,12 +44,15 @@ fn unions_and_bitfields() {
     let out = bind("typedef union { int i; float f; } Bits;\ntypedef struct { unsigned flag : 1; unsigned kind : 3; } Packed;");
     has(&out, "public union Bits {\n    public i: c_int\n    public f: f32\n}");
     has(&out, "    @bits(1) public flag: c_uint\n    @bits(3) public kind: c_uint\n");
+    // A union C knows only by its tag says how C spells it.
+    let out = bind("union num { int i; float f; };");
+    has(&out, "@c_name(\"union num\")\npublic union Num {");
 }
 
 #[test]
 fn nested_anonymous_members_get_names() {
     let out = bind("struct Ev { int type; union { int key; float axis; }; struct { int x, y; } pos; };");
-    has(&out, "public union Ev_anon0 {");
+    has(&out, "@c_name(none)\npublic union Ev_anon0 {");
     has(&out, "public anon1: Ev_anon0");
     has(&out, "public struct Ev_anon1 {");
     has(&out, "public pos: Ev_anon1");
@@ -145,8 +153,9 @@ fn function_like_macros_become_callable() {
     let out = bind("#define NS_PER_MS 1000000ULL\n#define NS_TO_MS(NS) ((NS) / NS_PER_MS)\n#define LOCKED(S) (((S)->flags & 1) != 0)\n#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)\nint real(int x);\n#define real(x) real(x)\n");
     // Constants go in as typed values, so the body stands on its own.
     has(&out, "@c_macro(\"(NS / ((unsigned long)1000000))\")\nextern \"C\" func NS_TO_MS(NS: _) -> _");
-    // One that isn't arithmetic is still declared, with the reason a call gets.
-    has(&out, "@c_macro(unusable: \"`->`, which reads a field through a pointer\")\nextern \"C\" func LOCKED(S: _) -> _");
+    // One that reads memory names its header, which the call is compiled with.
+    has(&out, "@c_macro(\"(((S->flags) & 1) != 0)\", header: \"lib.h\")\nextern \"C\" func LOCKED(S: _) -> _");
+    // One that isn't an expression is still declared, with the reason a call gets.
     has(&out, "@c_macro(unusable: \"takes a variable number of arguments\")");
     // A macro shadowing a function leaves the function.
     assert!(!out.contains("func real(x: _)"), "{out}");
