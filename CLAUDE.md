@@ -11,7 +11,7 @@ I know the compiler pipeline — MIR, lowering, codegen, and the rest aren't the
 - Don't over-explain things I clearly know. The goal is clarity, not a glossary.
 - Short and clear wins. Three sentences I understand beat a precise paragraph I don't.
 
-(This is about explaining to me. Code comments still follow the style guide below.)
+(This is about explaining to me. Code comments follow `.claude/rules/code-comments.md`.)
 
 ## I work from my phone
 
@@ -102,6 +102,16 @@ Messy is fine. A branch with eight fixes and two written-up dead ends beats thre
 fixes and a status report. If a fix trades one failure for a worse one, revert it
 and file what you learned — that's a finished piece of work, not a blocker.
 
+## Before you push
+
+Hand any change to compiler, runtime or stdlib to the `skeptic` agent before
+pushing. Give it the issue or the goal, not your reasoning, and let it try to
+break the change. Fix what it confirms, or say in the recap why a finding is wrong.
+Skip it for docs-only and config-only changes.
+
+At the end of a long session, `/retro` turns what went wrong into proposed edits
+to this file and the skills.
+
 ## Debugging discipline
 
 - Understand before changing. If you can't explain why something is broken, you're not ready to fix it.
@@ -160,22 +170,11 @@ should be* — it isn't what anyone ships.
 Binary: `compiler/target/release/rask` (build: `cd compiler && cargo build --release -p rask-cli`)
 Releases: https://github.com/rask-lang/rask/releases
 
-**Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
-
-`RASK_POISON_STACK=1 ./binary` fills the stack with `0xAA` before `main`, on each worker thread, and on each task's fiber stack. A slot codegen forgot to write reads as zero on a fresh stack and looks fine, so those bugs only appear once a program has run a while — and vanish the moment you reduce them. Poisoning makes them fire on the first call instead. That's what turned #577 from 40% flaky into 10/10.
-
-If the compiler panics saying a name "belongs to `Vec`" but nothing declares it, MIR has minted an internal spelling nobody accounted for. `INTERNAL_SPELLINGS` in `rask-stdlib/src/mir_metadata.rs` says what each one stands for, and the panic is deliberate — the alternative answer, "no declaration, so the caller owns what came back", frees a string the container still holds. `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each one and carries on instead of stopping at the first, so one sweep over the corpus lists them all.
-
-If a program generates functions nobody calls, `RASK_LIST_WIDENED_CALLS=1`
-prints every method call reachability couldn't pin to one receiver. Each one
-enqueues every method sharing that bare name, so one line there can be twenty
-functions in the output. A four-line program used to print 83 of them (#1062).
-
-SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
+**Debugging a native binary** (segfault, SIGILL, flaky, disagrees with the interpreter): the `debug-native` skill has the env vars and tools.
 
 **Things that will waste your time:**
 
-- In a cloud session `compiler/target/release/rask` comes from the environment snapshot and can be days older than your clone, while `runtime/*.c` is current. Run it as-is and you get raw `ld` undefined-symbol errors for `rask_*` internals, which read like a codegen bug in your program (#1041). Build the compiler before you trust it. [docs/cloud-cache.md](docs/cloud-cache.md) covers what the snapshot does and doesn't cover.
+- In a cloud session `compiler/target/release/rask` comes from the environment snapshot and can be days older than your clone, while `runtime/*.c` is current. A stale binary gives raw `ld` undefined-symbol errors for `rask_*` internals, which read like a codegen bug in your program (#1041). A SessionStart hook rebuilds it in the background (log in `compiler/target/session-start-build.log`); run `cargo build --release -p rask-cli` before trusting the binary, which waits for the hook's build and then returns at once. [docs/cloud-cache.md](docs/cloud-cache.md) covers what the snapshot does and doesn't cover.
 - `stdlib/*.rk` is `include_str!`'d into the compiler (`rask-stdlib/src/stubs.rs`), so editing it does nothing until `cargo build --release -p rask-cli`. `runtime/*.c` is different: the linker compiles those sources itself and caches the objects keyed by size+mtime, so an edit takes effect on the next compile with no rebuild and no `make`. (`librask_runtime.a` isn't linked by anything — `make` in `compiler/runtime` builds it for its own sake.) Cached objects live in `$XDG_CACHE_HOME/rask/runtime`, or `RASK_RUNTIME_CACHE` if set.
 - A **failed** `rask build` exits 1 and leaves the previous binary in `build/debug/`. Run it without checking and you're testing old code — which reads exactly like "my fix didn't work". Don't pipe the build through `tail`; check the exit code.
 - `rask build` caches Rask object files in `build/.cache/*.o` (separate from the runtime object cache above). The key covers source, profile, target **and the compiler binary** (path + size + mtime), so rebuilding `rask` invalidates it on its own — no `rm -rf build/.cache` needed. Two compilers keep separate entries rather than evicting each other, so alternating between builds still hits. `rask build --verbose` prints the compiler fingerprint on a cache hit; `--force` or `--no-cache` bypasses. (`rask run` / `rask compile` on a single file don't cache at all.)
@@ -183,77 +182,11 @@ SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match 
 
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
 
-# Rask Writing Style Guide
+## Writing
 
-**Core principle:** Sound like a developer with a vision, not a committee or AI. Natural flow over perfect grammar.
+Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source files (.rs, .rk), not docs (.md).
 
-Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code files (.rs, .rk), not docs (.md)
-
-## Documentation (Markdown)
-Dont be TOO consistent.
-
-**Use "I" for design choices:**
-- ✅ "I chose handles over pointers—indirection cost is explicit"
-- ❌ "It was decided that handles should be used"
-
-**Keep technical sections neutral:**
-- ✅ "References cannot outlive their lexical scope"
-- ❌ "I make sure references cannot outlive scope"
-
-**Be direct about tradeoffs:**
-- ✅ "This means more `.clone()` calls. I think that's better than lifetime annotations"
-- ❌ "While this may result in additional clones, it provides benefits..."
-
-**Remove filler:** "It should be noted", "In order to", "With regard to". Em-dashes
-too — a full stop or a colon, nearly always.
-
-**Say the thing, don't circle it.** Every sentence owes the reader a fact they
-didn't have. Delete it and see what's lost; if nothing, it was noise. All of
-these came off one pass over the website:
-
-- ❌ Restating the code in prose underneath it
-- ❌ Explaining a default by calling it the default
-- ❌ Three restatements of one abstraction in a row
-- ❌ Throat-clearing before the content: "Not a lint, not a guideline:"
-- ❌ A wink where an instruction belongs: "there's a box below if you want to disagree"
-- ❌ Narrating what the page already shows: "this runs the real interpreter", above a Run button
-
-**Start where the reader already is, one concept at a time.** The parameter
-chapter opened on ownership and left "small values just copy" for the end, so a
-reader carried ownership anxiety through four sections before finding out it
-mostly didn't apply. Lead with the half they already understand. Same reason a
-page says what you get before what it costs.
-
-**Natural language OK:** Contractions, slight grammar quirks, Scandinavian English flow
-
-## Code Comments (Rust)
-
-**Neutral and direct - no "I":**
-- ✅ `// Skip to next declaration after error`
-- ❌ `// I skip to the next declaration`
-
-**Remove:**
-- Obvious docs: `/// Get current token`
-- Restating code: `// Check for X` when obvious
-- Statement markers: `// While loop`
-- AI explanations
-
-**Keep:**
-- Section headers
-- Non-obvious algorithms
-- Important constraints (tightened)
-- "Why" not "what"
-
-**Tighten everything:**
-- ✅ `/// Record error, return if should continue`
-- ❌ `/// Record an error and return a boolean indicating whether we should continue`
-
-## Summary
-
-**Docs:** "I" for design, neutral for tech specs, be direct, natural flow over grammar
-**Code:** Neutral/direct, remove obvious, tighten verbose, no "I"
-**Overall:** Sound like a developer with vision, own tradeoffs, no corporate speak
-
+The style guide for docs and code comments lives in `.claude/rules/` and loads when you touch matching files. Short version: docs say "I" for design choices and stay neutral for technical rules; comments say why, not what; no filler.
 
 ## Rask Syntax
 
@@ -266,50 +199,7 @@ Key differences from Rust: `let`/`mut` (never `let mut`; `const` is module-level
 
 Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Comptime → Ownership → MIR → Codegen/Interp`
 
-For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
-
-**Each pass hands its results down as data. No pass re-derives them from text.** A type is a `TypeExpr` or `Type` and never a string to `split('<')`. When a later pass needs a fact, give the earlier pass a field to carry it. Details are in compiler/CLAUDE.md, and a test enforces it.
-
-| Task | Start here |
-|------|-----------|
-| Parse error / new syntax | `rask-parser/src/parser.rs` |
-| AST node types | `rask-ast/src/{decl,expr,stmt}.rs` |
-| Operator desugaring | `rask-desugar/src/lib.rs` |
-| Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
-| Type error / inference | `rask-check/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
-| Interface / generics | `rask-check/src/checker/{generics,resolve}.rs` |
-| Borrow checking | `rask-check/src/checker/borrow.rs`, `rask-ownership/` |
-| Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
-| MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
-| MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |
-| Interpreter bugs | `rask-interp/src/interp/`, `rask-interp/src/stdlib/` |
-| Stdlib types/stubs | `rask-stdlib/src/{stubs,types,builtins}.rs` |
-| Error formatting | `rask-diagnostics/src/formatter.rs`, each crate's `src/diagnostic.rs` |
-| CLI commands | `rask-cli/src/commands/`, `main.rs` |
-| Formatter | `rask-fmt/src/printer.rs` |
-
-## Stdlib design
-
-The stdlib should feel Rask, not Rust-with-different-keywords. Don't lift names, shapes, or layering from `std::*` just because they're familiar.
-
-- Pick names from how Rask programs read, not from Rust precedent. `Vec`/`Map` survive because they fit; `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` do not — Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>`.
-- Method names follow Rask conventions, not Rust's (`unwrap`, `expect`, `ok_or`, `and_then` are Rust idioms; design from the actual operation, not the cheat sheet).
-- Layering should reflect `Shared`/`Rack`/`Heap` and the linearity rules — don't import Rust's trait hierarchy (`Deref`, `Borrow`, `AsRef`, `Iterator` adapters) by reflex.
-- When in doubt, sketch how the call site reads in a real Rask program first, then pick the name.
-
-If a Rust name genuinely is the right one, fine — but justify it from Rask's side, not from "that's what `std` calls it."
-
-Formal rules (one screen per module, the guess test, SD1–SD5): [specs/stdlib/api-design.md](specs/stdlib/api-design.md).
-
-## Error messages
-
-Diagnostics are a first-class feature, not an afterthought. A confusing error is a bug.
-
-- All user-facing compiler errors go through `rask-diagnostics` (`compiler/crates/rask-diagnostics/src/`). Don't `eprintln!` or `panic!` your way out of an error path.
-- Every diagnostic must explain **what's wrong, where, and what to do next** — not just restate the failed check. If the message is "expected `T`, found `U`", that's a starting point, not the finished message.
-- Prefer suggestions (`suggestions.rs`) over prose when there's an obvious fix. Show the fix as code, not as a sentence.
-- Use stable error codes (`codes.rs`) so messages can be looked up and improved over time.
-- When you add a new error path, write the message before writing the check — if you can't phrase it clearly, the check probably isn't the right shape.
+**Each pass hands its results down as data. No pass re-derives them from text.** A type is a `TypeExpr` or `Type` and never a string to `split('<')`. When a later pass needs a fact, give the earlier pass a field to carry it. [compiler/CLAUDE.md](compiler/CLAUDE.md) has the per-crate file map and the rules for error messages, and loads when you work under `compiler/`.
 
 ## Goal
 
@@ -364,12 +254,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | OS | Env, args, subprocess spawning, signal handling | [os.md](specs/stdlib/os.md) |
 | Compiler architecture | IR layers, SSA pipeline, analysis framework, pass manager, CTFE, debug info | [architecture.md](specs/compiler/architecture.md) |
 | Code generation | MIR-based pipeline, Cranelift backend, runtime library | [codegen.md](specs/compiler/codegen.md) |
-| Raido | Deterministic scripting VM — 32.32 fixed-point, serializable state, content-addressed bytecode. Independent project, also serves as verification engine for Allgard's verifiable transforms | [raido/](projects/raido/) |
-| Leden | Capability-based networking protocol — sessions, capabilities, object references, gossip discovery | [leden/](projects/leden/) |
-| Allgard | Federation model — primitives, conservation laws, domain sovereignty, bilateral trust, owner presence, distributed beacon | [allgard/](projects/allgard/) |
-| GDL | Gard Description Language — content schema for describing gards over Leden. Regions, entities, affordances, appearance, style system, spatial protocol | [gdl/](projects/gdl/) |
-| Midgard | Virtual world example — uses Raido, Allgard, Leden, GDL together | [midgard/](projects/midgard/) |
-| Apeiron | Federated space game — seed-generated galaxy, player-hosted star systems, ships as domains. Sub-specs: combat, economy, elements, exploration, factions, physics, transformation, salvage, reputation, contracts, knowledge, sensors, social, navigation, market | [apeiron/](projects/apeiron/) |
+| Projects | Raido, Leden, Allgard, GDL, Midgard, Apeiron. Decisions in `.claude/rules/projects.md` | [projects/](projects/) |
 
 ### Open
 
