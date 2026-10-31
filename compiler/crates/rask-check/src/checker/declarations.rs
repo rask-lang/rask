@@ -238,6 +238,7 @@ impl TypeChecker {
             DeclKind::Struct(s) => {
                 self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
                 let id = self.register_struct(s);
+                self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &s.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
@@ -245,6 +246,7 @@ impl TypeChecker {
             DeclKind::Enum(e) => {
                 self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
+                self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &e.type_params);
                 self.types.record_method_decl(id, decl.id);
                 self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
@@ -262,7 +264,8 @@ impl TypeChecker {
             }
             DeclKind::Union(u) => {
                 self.check_declared_type_name(&u.name, "union", decl.span, false);
-                self.register_union(u);
+                let id = self.register_union(u);
+                self.types.record_declared_type(decl.id, id);
             }
             // AN6: annotations register as nominal struct types so
             // `field.has<validate>()` can name them as type arguments.
@@ -290,6 +293,7 @@ impl TypeChecker {
                 if let Some(id) = self.types.get_type_id(&a.name) {
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                     if !a.is_transparent {
+                        self.types.record_declared_type(decl.id, id);
                         self.types.record_param_bounds(id, &a.type_params);
                     }
                 }
@@ -1603,7 +1607,7 @@ impl TypeChecker {
         for m in &s.methods {
             self.note_method_access(type_id, m);
         }
-        self.types.note_layout_decl(type_id, rask_ast::decl::DeclKind::Struct(s.clone()));
+        self.types.note_layout_type(type_id);
         type_id
     }
 
@@ -1756,7 +1760,7 @@ impl TypeChecker {
         for m in &e.methods {
             self.note_method_access(enum_id, m);
         }
-        self.types.note_layout_decl(enum_id, rask_ast::decl::DeclKind::Enum(e.clone()));
+        self.types.note_layout_type(enum_id);
         enum_id
     }
 
@@ -2093,7 +2097,7 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_union(&mut self, u: &UnionDecl) {
+    pub(super) fn register_union(&mut self, u: &UnionDecl) -> rask_types::TypeId {
         let field_tys: Vec<(String, Span, Type)> = u
             .fields
             .iter()
@@ -2113,7 +2117,8 @@ impl TypeChecker {
             fields,
             field_decls: u.fields.iter().map(rask_types::MemberDecl::of).collect(),
         });
-        self.types.note_layout_decl(union_id, rask_ast::decl::DeclKind::Union(u.clone()));
+        self.types.note_layout_type(union_id);
+        union_id
     }
 
     /// The type parameter names in a target type spelling: `Ring<T>` → `["T"]`.

@@ -136,13 +136,11 @@ impl Interpreter {
             return None;
         }
         let type_args: Vec<rask_types::Type> = args.iter().map(rask_layout::field_type).collect();
-        // `compute_struct_layout` wants the declaration in its `Decl` wrapper,
-        // which is why the list is kept: the span decides whether the type
-        // counts as stdlib, and a synthesized one would answer that wrong.
         let owner = self.type_decls.iter().find(|d| {
             matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
         })?;
-        Some(rask_layout::compute_struct_layout(owner, &type_args, &self.layout_cache))
+        let def = self.types.get(self.types.declared_type(owner.id)?)?;
+        Some(rask_layout::compute_struct_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache))
     }
 
     /// reflect.fields<T>() → []FieldInfo
@@ -246,14 +244,14 @@ impl Interpreter {
         // `enums` rather than `type_decls`: it holds the stdlib's enums too,
         // `Ordering` among them.
         let base = ty.name().ok_or_else(not_enum)?;
-        let decl = self.enums.get(&base).ok_or_else(not_enum)?;
-        let decl = rask_ast::decl::Decl {
-            id: rask_ast::NodeId(0),
-            kind: rask_ast::decl::DeclKind::Enum(decl.clone()),
-            span: rask_ast::Span::new(0, 0),
-        };
+        let def = self
+            .types
+            .get_type_id(&base)
+            .and_then(|id| self.types.get(id))
+            .filter(|def| matches!(def, rask_types::TypeDef::Enum { .. }))
+            .ok_or_else(not_enum)?;
         let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let layout = rask_layout::compute_enum_layout(&decl, &type_args, &self.layout_cache);
+        let layout = rask_layout::compute_enum_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache);
         let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }
