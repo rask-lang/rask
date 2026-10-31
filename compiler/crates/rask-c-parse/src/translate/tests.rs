@@ -123,3 +123,10 @@ fn the_probe_header() {
     has(&out, "public const LIB_FLAG_B: c_int = 2");
     has(&out, "public type alias Cmp_fn = *func(c_int, c_int) -> c_int");
 }
+
+#[test]
+fn pointer_to_pointer_parenthesizes_the_inner_optional() {
+    let out = bind("void get(void **out, int **rows);");
+    has(&out, "out: *(*void?)?");
+    has(&out, "rows: *(*c_int?)?");
+}

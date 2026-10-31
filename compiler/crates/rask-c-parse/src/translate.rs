@@ -526,10 +526,10 @@ impl<'a> Translator<'a> {
                 // A C string, by convention.
                 CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8?".into(),
                 CType::FuncPtr { .. } => self.ty(strip(inner)),
-                other => format!("*{}?", self.ty(other)),
+                other => optional_pointer_to(self.ty(other)),
             },
             CType::Array(elem, Some(n)) => format!("[{}; {}]", self.ty(elem), n),
-            CType::Array(elem, None) => format!("*{}?", self.ty(elem)),
+            CType::Array(elem, None) => optional_pointer_to(self.ty(elem)),
             CType::Named(n) => match builtin_typedef(n) {
                 Some(t) => self.ty(&t),
                 None => type_name(n),
@@ -674,3 +674,14 @@ fn decl_name(decl: &CDecl) -> Option<&str> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// `*T?` for a pointee spelled `pointee`. A `?` after a pointer type is the
+/// pointer's own, so a pointee that is itself optional takes parentheses:
+/// C's `void **` is `*(*void?)?`, where `**void??` doesn't parse.
+fn optional_pointer_to(pointee: String) -> String {
+    if pointee.ends_with('?') {
+        format!("*({})?", pointee)
+    } else {
+        format!("*{}?", pointee)
+    }
+}
