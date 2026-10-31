@@ -1385,6 +1385,14 @@ impl ToDiagnostic for crate::TypeError {
                         .with_help("add `mutate` to the loop to write through the element")
                         .with_fix(format!("for mutate {} in … {{ … }}", name))
                         .with_why("a plain `for` yields elements read-only; `for mutate x in xs` is the mode whose writes reach the collection. Without it the two backends disagreed about what the write meant — the interpreter wrote through and native dropped it [std.iteration/I1, I4]"),
+                    BoundFrom::ReadOnlySource => d
+                        .with_primary(*span, format!(
+                            "`{}` is an element of a read-only binding",
+                            name
+                        ))
+                        .with_help("a `with` block writes its binding back into the source at the end, so the source has to be writable")
+                        .with_fix("declare the collection `mut`, or take the parameter as `mutate`")
+                        .with_why("`let` is deep and a plain parameter is read-only, element by element; `with` is a way to reach an element, not a way around that [mem.borrowing]"),
                 }
             }
 

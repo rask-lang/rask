@@ -374,6 +374,27 @@ impl TypeChecker {
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
                 if *mutate {
                     self.pending_for_mutate.push((iter.id, iter_ty.clone(), iter.span));
+                    // The loop writes into what it walks, so that has to be
+                    // writable: `for mutate x in v` on a `let v` changed `v`.
+                    // Judged after solving, like any write through a place.
+                    if let Some(root) = Self::root_ident_name(iter) {
+                        if let Some(kind) = self.lookup_binding_kind(&root) {
+                            let mut steps = Vec::new();
+                            let mut place: &rask_ast::expr::Expr = iter;
+                            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                                steps.push(object.id);
+                                place = object;
+                            }
+                            self.pending_mutations.push(super::PendingMutation {
+                                root: root.clone(),
+                                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                                kind,
+                                span: iter.span,
+                                steps,
+                                call: None,
+                            });
+                        }
+                    }
                 }
                 // std.iteration/I1: a plain `for` yields elements read-only;
                 // `for mutate x in xs` is the mode whose writes reach the

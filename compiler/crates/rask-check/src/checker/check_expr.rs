@@ -2477,8 +2477,28 @@ impl TypeChecker {
                             if method == "read" && self.expr_is_shared(object)
                     );
                     guard_elem_types.insert(binding.name.clone(), elem_ty.clone());
+                    // An element of a read-only binding is read-only too: the
+                    // block writes it back into the source. `with m[1] as p
+                    // { p.x = 9 }` on a `let m` changed `m`.
+                    let read_only_source = indexes
+                        && Self::root_ident_name(&binding.source).is_some_and(|root| {
+                            matches!(
+                                self.lookup_binding_kind(&root),
+                                Some(super::BindingKind::Let
+                                    | super::BindingKind::Param
+                                    | super::BindingKind::ModuleConst
+                                    | super::BindingKind::WithRead
+                                    | super::BindingKind::Bound(_))
+                            )
+                        });
                     if is_read_lock {
                         self.define_local_with_read(binding.name.clone(), elem_ty);
+                    } else if read_only_source {
+                        self.define_local_bound(
+                            binding.name.clone(),
+                            elem_ty,
+                            super::BoundFrom::ReadOnlySource,
+                        );
                     } else {
                         self.define_local(binding.name.clone(), elem_ty);
                     }

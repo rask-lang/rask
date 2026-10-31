@@ -7,6 +7,7 @@
 // was writable. A private method's plain `self` has the same shape: it's
 // read-only unless the body writes through it (type.gradual-constraints/GC9),
 // and `self.items.push(n)` didn't count as a write, so a `let` receiver grew.
+// `for mutate` over a `let` and `with` on one of its elements wrote too.
 
 struct Bag {
     items: Vec<i32>
@@ -43,6 +44,17 @@ func main() {
     w[0].bump()
     // ERROR: through a method that writes a field [E0302]
     b.add(3)
+
+    let nums: Vec<i32> = [1, 2]
+    // ERROR: a `for mutate` loop writes into what it walks [E0302]
+    for mutate n in nums {
+        n += 1
+    }
+    let pairs: Vec<Item> = [Item(n: 1)]
+    with pairs[0] as p {
+        // ERROR: a `with` block writes its element back into a `let` [E0372]
+        p.n = 3
+    }
 
     // FIX: `mut` says it changes, and a reading method is fine either way
     mut c = Bag(items: [1])

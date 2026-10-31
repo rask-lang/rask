@@ -87,6 +87,9 @@ pub enum BoundFrom {
     /// A `for` element in the default mode. `for mutate x in xs` is the form
     /// that writes back (std.iteration/I1, I4).
     Element,
+    /// `with v[i] as p` where `v` itself is read-only: a `let`, a plain
+    /// parameter. Writing `p` writes back into `v`.
+    ReadOnlySource,
 }
 
 /// A deferred read-only-binding check. See `pending_mutations`.

@@ -796,30 +796,49 @@ impl TypeChecker {
     /// them. Missing it left the method read-only while the body grew the
     /// caller's vector, through a `let`.
     pub(super) fn body_mutates_self_place(&self, body: &[Stmt], self_ty: &Type) -> bool {
-        let mut found = false;
-        rask_ast::visit::walk_body(body, &mut |e| {
-            if found {
-                return;
+        struct Scan<'c> {
+            checker: &'c TypeChecker,
+            self_ty: &'c Type,
+            found: bool,
+        }
+        impl<'a> rask_ast::visit::Visit<'a> for Scan<'_> {
+            fn expr(&mut self, e: &'a Expr) -> bool {
+                let place = |x: &Expr| self.checker.self_place_type(x, self.self_ty);
+                match &e.kind {
+                    ExprKind::MethodCall { object, method, .. }
+                        if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. })
+                            && place(object).is_some_and(|ty| self.checker.method_mutates_self_ty(&ty, method)) =>
+                    {
+                        self.found = true;
+                    }
+                    ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }
+                        if args.iter().any(|a| {
+                            matches!(a.mode, rask_ast::expr::ArgMode::Mutate)
+                                && TypeChecker::expr_targets_self(&a.expr)
+                                && place(&a.expr).is_some()
+                        }) =>
+                    {
+                        self.found = true;
+                    }
+                    _ => {}
+                }
+                !self.found
             }
-            match &e.kind {
-                ExprKind::MethodCall { object, method, .. }
-                    if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) =>
-                {
-                    if let Some(ty) = self.self_place_type(object, self_ty) {
-                        found = self.method_mutates_self_ty(&ty, method);
+            fn stmt(&mut self, st: &'a Stmt) -> bool {
+                // `for mutate x in self.items` writes the items.
+                if let StmtKind::For { mutate: true, iter, .. } = &st.kind {
+                    if TypeChecker::expr_targets_self(iter)
+                        && self.checker.self_place_type(iter, self.self_ty).is_some()
+                    {
+                        self.found = true;
                     }
                 }
-                ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
-                    found = args.iter().any(|a| {
-                        matches!(a.mode, rask_ast::expr::ArgMode::Mutate)
-                            && Self::expr_targets_self(&a.expr)
-                            && self.self_place_type(&a.expr, self_ty).is_some()
-                    });
-                }
-                _ => {}
+                !self.found
             }
-        });
-        found
+        }
+        let mut scan = Scan { checker: self, self_ty, found: false };
+        rask_ast::visit::visit_body(body, &mut scan);
+        scan.found
     }
 
     /// The declared type of a place reached from `self` by fields and
