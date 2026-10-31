@@ -527,13 +527,27 @@ impl TypeChecker {
                         span,
                     ));
                     // Check each field pattern
-                    let struct_fields = self.types.get(type_id).and_then(|def| {
-                        if let TypeDef::Struct { fields, .. } = def {
-                            Some(fields.clone())
-                        } else {
-                            None
+                    let (struct_fields, private) = match self.types.get(type_id) {
+                        Some(TypeDef::Struct { fields, private_fields, .. }) => {
+                            (Some(fields.clone()), private_fields.clone())
                         }
-                    });
+                        _ => (None, Vec::new()),
+                    };
+                    // SV4: outside the type's own extend blocks a private
+                    // field is reached by `..`, never by name. `let Acct(bal,
+                    // name) = a` read the private balance anywhere.
+                    let own = matches!(&self.current_self_type, Some(Type::Named(id)) if *id == type_id);
+                    if !own {
+                        for (field_name, _) in fields {
+                            if private.contains(field_name) {
+                                self.errors.push(TypeError::PrivateFieldAccess {
+                                    ty: name.clone(),
+                                    field: field_name.clone(),
+                                    span,
+                                });
+                            }
+                        }
+                    }
                     let mut bindings = vec![];
                     if let Some(struct_fields) = struct_fields {
                         for (field_name, field_pattern) in fields {

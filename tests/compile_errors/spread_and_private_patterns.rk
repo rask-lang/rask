@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a struct-update base of the wrong type, and private fields reached
+// through a pattern or a spread
+//
+// `..base` was never type-checked: `Point(x: 5, ..q)` with a `Label` copied
+// `q`'s fields across by name, and native read a string's bytes as an `i32`.
+// And a private field was only guarded against `a.bal` and against naming it
+// in a literal. A pattern bound it by name, and a spread wrote it, from
+// anywhere (structure.modules/SV4).
+
+struct Point { x: i32, y: i32 }
+struct Label { x: i32, y: string }
+
+struct Acct {
+    private bal: i64
+    name: string
+}
+
+extend Acct {
+    func open(name: string) -> Acct {
+        return Acct(bal: 0, name: name)
+    }
+    // FIX: inside its own extend block, a private field is the type's to use
+    func balance(self) -> i64 {
+        let Acct(bal, ..) = self
+        return bal
+    }
+}
+
+func main() {
+    let q = Label(x: 1, y: "hello")
+    // ERROR: the base has to be a `Point` [E0308]
+    let p = Point(x: 5, ..q)
+
+    let a = Acct.open("a")
+    // ERROR: `bal` is private, so a pattern can't name it [E0396]
+    let Acct(bal, name) = a
+    // ERROR: nor can a spread fill it in [E0396]
+    let b = Acct(name: "b", ..a)
+
+    // FIX: `..` passes over what you can't see
+    let Acct(name: n, ..) = a
+    println("{p.y} {bal} {name} {b.name} {n} {a.balance()}")
+}

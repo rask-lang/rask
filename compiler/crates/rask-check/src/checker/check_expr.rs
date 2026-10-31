@@ -1185,6 +1185,7 @@ impl TypeChecker {
             }
 
             ExprKind::StructLit { name, type_args, fields, spread } => {
+                let built = {
                 // `Point(x: 1, x: 2)`: the last one won, silently.
                 let mut given: Vec<&str> = Vec::new();
                 for field in fields.iter() {
@@ -1298,6 +1299,21 @@ impl TypeChecker {
                                         ty: name.clone(),
                                         field: field_init.name.clone(),
                                         span: field_init.value.span,
+                                    });
+                                }
+                            }
+                            // `..base` writes every field nobody listed, the
+                            // private ones too: `Acct(name: "b", ..a)` built
+                            // an `Acct` outside its extend blocks.
+                            if let Some(base) = spread {
+                                if let Some(private) = private_fields
+                                    .iter()
+                                    .find(|p| !fields.iter().any(|f| &f.name == *p))
+                                {
+                                    self.errors.push(TypeError::PrivateFieldAccess {
+                                        ty: name.clone(),
+                                        field: private.clone(),
+                                        span: base.span,
                                     });
                                 }
                             }
@@ -1492,6 +1508,18 @@ impl TypeChecker {
                 } else {
                     Type::UnresolvedNamed(name.clone())
                 }
+                };
+                // `..base` supplies the fields nobody listed, so it has to be
+                // the type being built. Nothing inferred it: `Pt(x: 5, ..q)`
+                // with a `Qt` copied `q`'s fields across by name, and native
+                // read a string's bytes as an `i32`.
+                if let Some(base) = spread {
+                    let base_ty = self.infer_expr(base);
+                    if !matches!(built, Type::UnresolvedNamed(_) | Type::Error) {
+                        self.ctx.add_constraint(TypeConstraint::Equal(built.clone(), base_ty, base.span));
+                    }
+                }
+                built
             }
 
             ExprKind::Array(elements) => {
