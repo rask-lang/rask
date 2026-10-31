@@ -155,6 +155,8 @@ to this file and the skills.
 | `rask check <file>` | Type-check a .rk file |
 | `rask check --claims <dir>` | Also build and run the package's `claims.rk` ([type.claims](specs/types/claims.md)); `build`, `run` and `test` run them anyway |
 | `rask claims <dir>` | List a package's claims and verdicts; `--since <rev>` and `--mutate` for review |
+| `rask help agents` | The language card plus how to work in a Rask project, for a coding agent; `rask init --agents` points AGENTS.md at it |
+| `rask mcp` | Serve check, claims, explain, api and the briefing to an agent harness over MCP (opt-in) |
 | `rask run <file>` | Execute a .rk program (native) |
 | `rask run --interp <file>` | Execute via interpreter (no codegen) |
 | `rask test <file>` | Run `test` blocks — **native**, like `run` |
