@@ -225,6 +225,8 @@ fn source_text(lines: &[&str], line: usize) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct Constants {
     pub macros: std::collections::HashMap<String, Vec<CTokenKind>>,
+    /// Function-like macros: parameters and body.
+    pub function_macros: std::collections::HashMap<String, (Vec<String>, Vec<CTokenKind>)>,
     pub enumerators: std::collections::HashMap<String, i64>,
     pub typedefs: std::collections::HashMap<String, CType>,
 }
@@ -240,9 +242,14 @@ impl Constants {
 
     pub fn note(&mut self, decl: &CDecl) {
         match decl {
-            CDecl::Define(d) if d.params.is_none() => {
-                self.macros.insert(d.name.clone(), d.body.clone());
-            }
+            CDecl::Define(d) => match &d.params {
+                None => {
+                    self.macros.insert(d.name.clone(), d.body.clone());
+                }
+                Some(params) => {
+                    self.function_macros.insert(d.name.clone(), (params.clone(), d.body.clone()));
+                }
+            },
             CDecl::Enum(e) => {
                 for v in &e.variants {
                     if let Some(x) = v.value {
@@ -276,6 +283,10 @@ impl consteval::Env for Constants {
 
     fn int_type(&self, name: &str) -> Option<CType> {
         int_type_of(self, name, 0)
+    }
+
+    fn function_macro(&self, name: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
+        self.function_macros.get(name).cloned()
     }
 }
 
@@ -313,6 +324,10 @@ impl consteval::Env for Nested<'_> {
 
     fn int_type(&self, name: &str) -> Option<CType> {
         int_type_of(self.c, name, 0)
+    }
+
+    fn function_macro(&self, name: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
+        self.c.function_macros.get(name).cloned()
     }
 }
 

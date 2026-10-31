@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `p.x` is the field of what `p` points at, and `p[i]` is the element `i`
+// steps past it: C's `p->x` and `p[i]`, the same as `(*p).x` and
+// `*p.add(i)`. Both read or write through the pointer, so both need `unsafe`
+// (mem.unsafe). A write lands in the memory pointed at.
+
+struct Size {
+    w: i32
+    h: i32
+}
+
+struct Frame {
+    size: Size
+    id: i64
+}
+
+test "p.x reads and writes the field" {
+    mut s = Size(w: 640, h: 480)
+    let p = &s
+    assert unsafe p.h == 480
+    unsafe {
+        p.w = 800
+    }
+    assert s.w == 800
+}
+
+test "(*p).x = v is the same write" {
+    mut s = Size(w: 1, h: 2)
+    let p = &s
+    unsafe {
+        (*p).h = 40
+    }
+    assert s.h == 40
+}
+
+test "a field of a field" {
+    mut f = Frame(size: Size(w: 1, h: 2), id: 7)
+    let p = &f
+    assert unsafe p.size.h == 2
+    unsafe {
+        p.size.w = 10
+        p.id = 8
+    }
+    assert f.size.w == 10
+    assert f.id == 8
+}
+
+test "p[i] reads and writes the element" {
+    mut v: Vec<i32> = [1, 2, 3]
+    let p = unsafe v.as_mut_ptr()
+    assert unsafe p[2] == 3
+    unsafe {
+        p[1] = 20
+    }
+    assert v[1] == 20
+}
+
+test "p[i] steps by the element's size" {
+    mut v: Vec<Size> = [Size(w: 1, h: 2), Size(w: 3, h: 4)]
+    let p = unsafe v.as_mut_ptr()
+    assert unsafe p[1].h == 4
+    unsafe {
+        p[1].w = 30
+    }
+    assert v[1].w == 30
+    assert v[0].w == 1
+}
+
+func main() {
+    mut s = Size(w: 1, h: 2)
+    let p = &s
+    unsafe {
+        p.h = 5
+    }
+    println("{s.h}")
+}

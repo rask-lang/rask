@@ -298,7 +298,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
     /// aggregate MIR type. Tuple fields carry their size in the layout too.
-    fn field_offset_ty_size(
+    pub(crate) fn field_offset_ty_size(
         &self,
         oty: &MirType,
         field: &str,
@@ -621,6 +621,35 @@ impl<'a> MirLowerer<'a> {
                 // was a slot to record — same gap the binding path closes.
                 let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
                     && matches!(&value.kind, ExprKind::StructLit { .. });
+                // `p.x = v`, `(*p).x = v`, `p[i] = v`: the store lands at the
+                // address the pointer reaches, not in a copy of what it points
+                // at. A copy is what `(*p).y = v` wrote into, and the write
+                // was lost without a word.
+                if matches!(&target.kind, ExprKind::Field { .. } | ExprKind::Index { .. })
+                    && self.through_pointer(target)
+                {
+                    let (addr, ty) = self.pointer_place_address(target)?;
+                    self.emit_pointer_check(&addr, true, ty.size() as i64);
+                    let addr = match addr {
+                        MirOperand::Local(id) => id,
+                        other => {
+                            let tmp = self.builder.alloc_temp(MirType::Ptr);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Use(other),
+                            }));
+                            tmp
+                        }
+                    };
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                        addr,
+                        offset: 0,
+                        value: val_op,
+                        store_size: ty.size(),
+                        field: None,
+                    }));
+                    return Ok(());
+                }
                 match &target.kind {
                     ExprKind::Ident(name) => {
                         let (local_id, dst_ty) = self

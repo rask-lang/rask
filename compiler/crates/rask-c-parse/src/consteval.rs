@@ -25,11 +25,25 @@ pub trait Env {
     fn value(&self, name: &str) -> Option<CValue>;
     /// The integer type a typedef name stands for, for casts.
     fn int_type(&self, name: &str) -> Option<CType>;
+    /// A function-like macro's parameters and body, to expand at a call.
+    fn function_macro(&self, _name: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
+        None
+    }
 }
 
 /// Evaluate `tokens` as one constant expression.
 pub fn eval(tokens: &[CTokenKind], env: &dyn Env) -> Option<CValue> {
-    let mut p = Eval { toks: tokens, pos: 0, env };
+    eval_in(tokens, env, &[])
+}
+
+/// `tokens`, inside the expansions of the macros in `expanding`. C doesn't
+/// expand a macro again inside its own expansion, which also stops a
+/// recursive one.
+fn eval_in(tokens: &[CTokenKind], env: &dyn Env, expanding: &[String]) -> Option<CValue> {
+    if expanding.len() > 32 {
+        return None;
+    }
+    let mut p = Eval { toks: tokens, pos: 0, env, expanding };
     let v = p.ternary()?;
     if p.pos != tokens.len() {
         return None;
@@ -114,6 +128,7 @@ struct Eval<'a> {
     toks: &'a [CTokenKind],
     pos: usize,
     env: &'a dyn Env,
+    expanding: &'a [String],
 }
 
 impl Eval<'_> {
@@ -301,6 +316,9 @@ impl Eval<'_> {
             T::IntLit(v) => Some(CValue::Int(v as i128, literal_type(v as i128, false, false))),
             T::UIntLit(v) => Some(CValue::Int(v as i128, literal_type(v as i128, true, false))),
             T::HexLit(v) => Some(CValue::Int(v as i128, literal_type(v as i128, false, true))),
+            T::LongLit(v, unsigned) => {
+                Some(CValue::Int(v as i128, if unsigned { CType::UnsignedLong } else { CType::Long }))
+            }
             T::CharLit(c) => Some(CValue::Int(c as i128, CType::Int)),
             T::FloatLit(f) => Some(CValue::Float(f)),
             T::StringLit(mut s) => {
@@ -311,9 +329,116 @@ impl Eval<'_> {
                 }
                 Some(CValue::Str(s))
             }
+            T::Ident(name) if self.peek() == Some(&T::LParen) && !self.expanding.contains(&name) => {
+                match self.env.function_macro(&name) {
+                    Some((params, body)) => {
+                        let args = self.call_args()?;
+                        let expanded = substitute(&params, &body, &args)?;
+                        let mut inside = self.expanding.to_vec();
+                        inside.push(name);
+                        eval_in(&expanded, self.env, &inside)
+                    }
+                    None => None,
+                }
+            }
+            T::Ident(name) if self.expanding.contains(&name) => None,
             T::Ident(name) => self.env.value(&name),
             _ => None,
         }
+    }
+}
+
+impl Eval<'_> {
+    /// `( a, b )` after a function-like macro's name: each argument's tokens,
+    /// split at the commas outside brackets.
+    fn call_args(&mut self) -> Option<Vec<Vec<CTokenKind>>> {
+        use CTokenKind as T;
+        if !self.eat(&T::LParen) {
+            return None;
+        }
+        let mut args = vec![Vec::new()];
+        let mut depth = 0;
+        loop {
+            let tok = self.peek()?.clone();
+            self.pos += 1;
+            match tok {
+                T::RParen if depth == 0 => break,
+                T::Comma if depth == 0 => args.push(Vec::new()),
+                T::LParen => {
+                    depth += 1;
+                    args.last_mut()?.push(tok);
+                }
+                T::RParen => {
+                    depth -= 1;
+                    args.last_mut()?.push(tok);
+                }
+                other => args.last_mut()?.push(other),
+            }
+        }
+        if args.len() == 1 && args[0].is_empty() {
+            args.clear();
+        }
+        Some(args)
+    }
+}
+
+/// A function-like macro's body with its arguments in place of its
+/// parameters, and `##` pasted. A paste that makes anything but a name or a
+/// suffixed number is more preprocessor than a constant needs: `None`.
+fn substitute(params: &[String], body: &[CTokenKind], args: &[Vec<CTokenKind>]) -> Option<Vec<CTokenKind>> {
+    use CTokenKind as T;
+    if params.len() != args.len() || params.iter().any(|p| p == "...") {
+        return None;
+    }
+    let mut out: Vec<CTokenKind> = Vec::new();
+    let mut paste = false;
+    for tok in body {
+        if *tok == T::DoubleHash {
+            paste = true;
+            continue;
+        }
+        let pieces: Vec<CTokenKind> = match tok {
+            T::Ident(n) => match params.iter().position(|p| p == n) {
+                Some(i) => args[i].clone(),
+                None => vec![tok.clone()],
+            },
+            T::Hash => return None,
+            other => vec![other.clone()],
+        };
+        if paste {
+            paste = false;
+            let left = out.pop()?;
+            let mut rest = pieces.into_iter();
+            let right = rest.next()?;
+            out.push(paste_tokens(left, right)?);
+            out.extend(rest);
+        } else {
+            out.extend(pieces);
+        }
+    }
+    Some(out)
+}
+
+fn paste_tokens(left: CTokenKind, right: CTokenKind) -> Option<CTokenKind> {
+    use CTokenKind as T;
+    match (left, right) {
+        (T::Ident(a), T::Ident(b)) => Some(T::Ident(a + &b)),
+        // `0x20 ## UL`: a number given its suffix.
+        (num, T::Ident(suffix)) if suffix.chars().all(|c| matches!(c, 'u' | 'U' | 'l' | 'L')) => {
+            let unsigned = suffix.contains(['u', 'U']);
+            let long = suffix.contains(['l', 'L']);
+            let v = match num {
+                T::IntLit(v) => v as u64,
+                T::UIntLit(v) | T::HexLit(v) | T::LongLit(v, _) => v,
+                _ => return None,
+            };
+            Some(match (unsigned, long) {
+                (u, true) => T::LongLit(v, u),
+                (true, false) => T::UIntLit(v),
+                (false, false) => T::IntLit(v as i64),
+            })
+        }
+        _ => None,
     }
 }
 
@@ -393,6 +518,18 @@ mod tests {
         fn int_type(&self, name: &str) -> Option<CType> {
             (name == "Uint32").then_some(CType::FixedInt { bits: 32, signed: false })
         }
+        fn function_macro(&self, name: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
+            let toks = |src: &str| -> Vec<CTokenKind> {
+                CLexer::new(src).tokenize().unwrap().into_iter().map(|t| t.kind)
+                    .filter(|k| !matches!(k, CTokenKind::Eof | CTokenKind::Newline)).collect()
+            };
+            match name {
+                "U64" => Some((vec!["c".into()], toks("c ## UL"))),
+                "MASK" => Some((vec!["X".into()], toks("(1u << ((X)-1))"))),
+                "LOOP" => Some((vec!["x".into()], toks("LOOP(x)"))),
+                _ => None,
+            }
+        }
     }
 
     fn ev(src: &str) -> Option<CValue> {
@@ -431,6 +568,16 @@ mod tests {
         assert_eq!(ev("sizeof(int)"), None);
         assert_eq!(ev("1 / 0"), None);
         assert_eq!(ev("1 1"), None);
+    }
+
+    #[test]
+    fn function_like_macros_expand() {
+        assert_eq!(ev("U64(0x20)"), Some(CValue::Int(32, CType::UnsignedLong)));
+        assert_eq!(ev("~U64(0)"), Some(CValue::Int(u64::MAX as i128, CType::UnsignedLong)));
+        assert_eq!(ev("MASK(3)"), Some(CValue::Int(4, CType::UnsignedInt)));
+        assert_eq!(ev("MASK(A) | 1"), Some(CValue::Int(9, CType::UnsignedInt)));
+        assert_eq!(ev("LOOP(1)"), None);
+        assert_eq!(ev("5UL"), Some(CValue::Int(5, CType::UnsignedLong)));
     }
 
     #[test]

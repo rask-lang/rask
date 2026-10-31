@@ -237,6 +237,15 @@ impl crate::TypeTable {
                 visiting.pop();
                 let size_align = type_size_align(&wrapped, cache);
                 cache.insert(key, size_align);
+            } else if let Some(target) = self.alias_target(name) {
+                // `type alias U32 = u32` is its target: a field typed by the
+                // alias is laid out as the target, not a guessed word.
+                let target = field_type(target);
+                visiting.push(key.clone());
+                self.fill_layouts(&target, cache, visiting);
+                visiting.pop();
+                let size_align = type_size_align(&target, cache);
+                cache.insert(key, size_align);
             }
             return;
         };

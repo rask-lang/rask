@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `&` needs storage, and going through a pointer needs `unsafe`
+// (mem.unsafe).
+//
+// `&x` is the address of a variable, field or element. A call's result lives
+// nowhere until it's put somewhere, so it has no address to take.
+//
+// `p[i]` and `p.x` read through the pointer, like `*p`: nothing checks the
+// memory is there, so each one is written inside `unsafe`.
+
+func make() -> i32 {
+    return 3
+}
+
+func fill(p: *i32) {
+    unsafe {
+        *p = 1
+    }
+}
+
+// ERROR: [E0939]
+func address_of_a_call() {
+    fill(&make())
+}
+
+// ERROR: indexing a pointer requires an `unsafe` block [E0386]
+func index_a_pointer(argv: **u8) -> *u8 {
+    return argv[0]
+}
+
+struct Pt {
+    x: i32
+}
+
+// ERROR: field access through a pointer requires an `unsafe` block [E0386]
+func field_of_a_pointer(p: *Pt) -> i32 {
+    return p.x
+}
+
+func main() {
+}

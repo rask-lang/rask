@@ -989,6 +989,12 @@ impl TypeChecker {
             self.ctx.add_constraint(TypeConstraint::Index { object, index, result, span });
             return Ok(false);
         }
+        if matches!(obj, Type::RawPtr(_)) && !self.ptr_method_sites.get(&span).copied().unwrap_or(true) {
+            return Err(TypeError::UnsafeRequired {
+                operation: "indexing a pointer".to_string(),
+                span,
+            });
+        }
         let progressed = match self.index_result_type(&obj) {
             Some(elem) => {
                 self.unify(&result, &elem, span)?;

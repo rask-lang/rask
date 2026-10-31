@@ -209,11 +209,18 @@ impl TypeChecker {
                     );
                     if writes_through_place {
                         if let Some(kind) = self.lookup_binding_kind(&root) {
+                            let mut steps = Vec::new();
+                            let mut place = target;
+                            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                                steps.push(object.id);
+                                place = object;
+                            }
                             self.pending_mutations.push(super::PendingMutation {
                                 root: root.clone(),
                                 ty: self.lookup_local(&root).unwrap_or(Type::Error),
                                 kind,
                                 span: stmt.span,
+                                steps,
                             });
                         }
                     } else {

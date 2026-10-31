@@ -255,6 +255,8 @@ fn is_primitive_receiver(name: &str) -> bool {
             | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
+            // A raw pointer's methods are the compiler's own (mem.unsafe).
+            | "Ptr"
     )
 }
 
@@ -2221,9 +2223,10 @@ impl<'a> Monomorphizer<'a> {
                                         })
                                         .unwrap_or_else(|| "unknown".to_string());
                                     eprintln!(
-                                        "[widened] .{}() on {} — {} candidates",
+                                        "[widened] .{}() on {} in {} — {} candidates",
                                         method,
                                         recv,
+                                        self.current.as_ref().map_or("?", |(f, _)| f.as_str()),
                                         qualified_names.len(),
                                     );
                                 }

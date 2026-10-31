@@ -663,6 +663,15 @@ impl TypeChecker {
             ExprKind::Unary { op, operand } => {
                 let operand_ty = self.infer_expr(operand);
                 match op {
+                    // `&x` is `x`'s address, a `*T`. Only storage has one: a
+                    // variable, or a field or element inside one.
+                    rask_ast::expr::UnaryOp::Ref => {
+                        if !is_place(operand) {
+                            self.errors.push(TypeError::AddressOfValue { span: expr.span });
+                            return Type::Error;
+                        }
+                        Type::RawPtr(Box::new(operand_ty))
+                    }
                     rask_ast::expr::UnaryOp::Deref => {
                         // What `*x` means depends on what `x` is, not on the
                         // `*`. mem.unsafe's rule is about raw pointers; on an
@@ -872,6 +881,23 @@ impl TypeChecker {
                 // operator.
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
+                // `p[i]` is `*p.add(i)`: C's indexing, and as unchecked, so it
+                // needs `unsafe`. A container still open records the flag for
+                // the solver.
+                if matches!(obj_ty, Type::RawPtr(_) | Type::Var(_)) {
+                    self.ptr_method_sites.insert(expr.span, self.in_unsafe);
+                }
+                if let Type::RawPtr(inner) = &obj_ty {
+                    self.unsafe_ops.push((expr.span, super::UnsafeCategory::PointerDeref));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: "indexing a pointer".to_string(),
+                            span: expr.span,
+                        });
+                    }
+                    self.check_index_types(&obj_ty, &idx_ty, index.span);
+                    return (**inner).clone();
+                }
                 // A rejected index has no result to constrain, and registering
                 // one would report the same error a second time when the
                 // deferred check runs.
@@ -2773,7 +2799,7 @@ impl TypeChecker {
 
     pub(super) fn index_result_type(&self, obj_ty: &Type) -> Option<Type> {
         match obj_ty {
-            Type::Array { elem, .. } => Some(*elem.clone()),
+            Type::Array { elem, .. } | Type::RawPtr(elem) => Some(*elem.clone()),
             // `s[i]` reads one byte (std.strings/U1b). It used to yield a
             // `char` at a *character* index, so the same bracket counted two
             // different units and `s[i]` in a loop scanned from byte zero.
@@ -4395,6 +4421,16 @@ impl TypeChecker {
         }
         if let Type::RawPtr(ref inner) = resolved_obj {
             if let Some(ret) = self.check_raw_ptr_method(inner, method, &arg_types, span) {
+                // Recorded like any method call, so reachability knows it's a
+                // pointer operation and doesn't reach every `is_null` there is.
+                self.call_targets.insert(
+                    call_id,
+                    super::Callee::Method {
+                        recv: resolved_obj.clone(),
+                        method: method.to_string(),
+                        package: None,
+                    },
+                );
                 return ret;
             }
         }
@@ -5170,6 +5206,14 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
+        // `p.x` through a raw pointer needs `unsafe`; the solver may only
+        // learn that `p` is one later, so the site's flag goes where it reads.
+        if matches!(self.ctx.apply(&obj_ty), Type::RawPtr(_) | Type::Var(_)) {
+            self.ptr_method_sites.insert(span, self.in_unsafe);
+        }
+        if matches!(self.ctx.apply(&obj_ty), Type::RawPtr(_)) {
+            self.unsafe_ops.push((span, super::UnsafeCategory::PointerDeref));
+        }
 
         // UN2: union field reads require unsafe (UN3: writes are safe)
         if !self.in_assign_target {
@@ -6600,7 +6644,7 @@ impl TypeChecker {
     /// whose index type we don't police (user generics, type vars, `Handle`).
     fn classify_index_container(&self, ty: &Type) -> Option<IndexContainer> {
         match ty {
-            Type::Array { .. } | Type::String | Type::Bytes => Some(IndexContainer::Sequence),
+            Type::Array { .. } | Type::String | Type::Bytes | Type::RawPtr(_) => Some(IndexContainer::Sequence),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),
@@ -6806,6 +6850,16 @@ impl TypeChecker {
             }
             let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
             if self.link_node_type(&ty).is_some() {
+                continue;
+            }
+            // `p.x = v` and `s.buf[i] = v` past a raw pointer write what it
+            // points at; the binding holding the pointer is unchanged.
+            let through_pointer = pm.steps.iter().any(|id| {
+                self.node_types
+                    .get(id)
+                    .is_some_and(|t| matches!(self.ctx.apply(t), Type::RawPtr(_)))
+            });
+            if through_pointer {
                 continue;
             }
             // Still unknown after solving — stay quiet rather than guess. An
@@ -7223,6 +7277,15 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+/// A variable, or a field or element of one: storage `&` can point at.
+fn is_place(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => is_place(object),
+        _ => false,
+    }
 }
 
 impl TypeChecker {

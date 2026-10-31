@@ -2458,6 +2458,11 @@ impl TypeTable {
                 base: Box::new(self.named(base, written)),
                 name: name.clone(),
             },
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(self.named(inner, written))),
+            Type::SimdVector { elem, lanes } => Type::SimdVector {
+                elem: Box::new(self.named(elem, written)),
+                lanes: *lanes,
+            },
             other => other.clone(),
         }
     }
