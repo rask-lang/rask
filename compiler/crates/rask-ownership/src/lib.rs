@@ -3159,33 +3159,27 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(index);
                 // Index creates an instant borrow for growable types
             }
-            ExprKind::StructLit { fields, spread, .. } => {
-                for field in fields {
-                    self.check_expr(&field.value);
-                }
+            ExprKind::StructLit { spread, .. } => {
+                // Each part moves in as soon as it's read, in written order,
+                // so a second mention of the same value sees it gone:
+                // `Pair(a: v, b: v)` had two owners of one vector and native
+                // freed it twice. Marking a part moved before reading it would
+                // turn its own read into a use-after-move.
+                self.check_and_consume_parts(expr);
                 if let Some(spread) = spread {
                     self.check_expr(spread);
                 }
-                // Storing a box or a resource in a field hands ownership to the
-                // aggregate. After the reads, not before — marking it moved first
-                // turns the very read that moves it into a use-after-move.
-                self.consume_owned_into_aggregate(expr);
+                self.consume_spread(expr);
             }
-            ExprKind::Array(elements) => {
-                for elem in elements {
-                    self.check_expr(elem);
-                }
-                self.consume_owned_into_aggregate(expr);
+            ExprKind::Array(_) => {
+                self.check_and_consume_parts(expr);
             }
             ExprKind::ArrayRepeat { value, count } => {
                 self.check_expr(value);
                 self.check_expr(count);
             }
-            ExprKind::Tuple(elements) => {
-                for elem in elements {
-                    self.check_expr(elem);
-                }
-                self.consume_owned_into_aggregate(expr);
+            ExprKind::Tuple(_) => {
+                self.check_and_consume_parts(expr);
             }
             ExprKind::Range { start, end, inclusive: _ } => {
                 if let Some(start) = start {
@@ -8239,31 +8233,45 @@ impl<'a> OwnershipChecker<'a> {
     /// A struct field, a tuple or array element, or an enum variant payload
     /// belongs to the aggregate now. A nested aggregate is its own expression
     /// and was handed its parts when it was checked.
-    fn consume_owned_into_aggregate(&mut self, expr: &Expr) {
+    /// Read each part of a tuple, array or struct literal and move it in,
+    /// one part at a time.
+    fn check_and_consume_parts(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for e in elems {
+                    self.check_expr(e);
                     self.consume_into_owner(e, Sink::Element);
                 }
             }
-            ExprKind::StructLit { name, fields, spread, .. } => {
+            ExprKind::StructLit { name, fields, .. } => {
                 let ty = self
                     .node_ty(&expr.id)
                     .map(|t| self.resource_type_display(t))
                     .unwrap_or_else(|| name.clone());
                 for f in fields {
+                    self.check_expr(&f.value);
                     let into = Sink::StructField { ty: ty.clone(), field: f.name.clone() };
                     self.consume_into_owner(&f.value, into);
                 }
-                // A spread reads the fields nobody listed (type.structs/FD5),
-                // so `Config { port, ..base }` works on a borrowed `base`. Only
-                // a box or a resource has to go along with what it holds.
-                if let Some(ExprKind::Ident(name)) = spread.as_deref().map(|s| &s.kind) {
-                    if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
-                        self.consume_binding(name, expr.span, None);
-                    }
-                }
             }
+            _ => {}
+        }
+    }
+
+    /// A spread reads the fields nobody listed (type.structs/FD5), so
+    /// `Config(port, ..base)` works on a borrowed `base`. Only a box or a
+    /// resource has to go along with what it holds.
+    fn consume_spread(&mut self, expr: &Expr) {
+        let ExprKind::StructLit { spread, .. } = &expr.kind else { return };
+        if let Some(ExprKind::Ident(name)) = spread.as_deref().map(|s| &s.kind) {
+            if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
+                self.consume_binding(name, expr.span, None);
+            }
+        }
+    }
+
+    fn consume_owned_into_aggregate(&mut self, expr: &Expr) {
+        match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. }
                 if self.names_a_variant(object, method) =>
             {

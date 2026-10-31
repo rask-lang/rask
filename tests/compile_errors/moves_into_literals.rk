@@ -24,6 +24,21 @@ func into_tuple() {
     println(t.1)
 }
 
+// Each part moves in as it's read, so the second mention finds it gone.
+// All of them used to check, and native freed the one vector twice.
+func twice_in_one_literal() {
+    let a: Vec<i64> = [1]
+    // ERROR: the first `a` already moved into the tuple (E0800)
+    let t = (a, a)
+    let b: Vec<i64> = [1]
+    // ERROR: same in a list (E0800)
+    let l = [b, b]
+    let c: Vec<i64> = [1]
+    // ERROR: and reading it after it moved, in the same literal (E0800)
+    let r = (c, c.len())
+    println("{t.0.len()} {l.len()} {r.1}")
+}
+
 func into_struct() {
     let v: Vec<i64> = [1]
     let h = Holder(v: v)
