@@ -2778,6 +2778,29 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
             }
+            EntrySignature { name, problem, span } => {
+                Diagnostic::error(format!("entry point `{}` {}", name, problem))
+                    .with_code("E0942")
+                    .with_primary(*span, "the program starts here")
+                    .with_help("an entry point is `func main()`, `func main() -> void or Error`, or `func main(args: Args)`")
+                    .with_why("the runtime calls the entry point with nothing but the command line, and does nothing with a value it returns other than an error [struct.targets]")
+            }
+            TupleArity { names, tuple, span } => {
+                // Element types may still be open; the count is what matters.
+                let len = match tuple { rask_types::Type::Tuple(e) => e.len(), _ => 0 };
+                Diagnostic::error(format!("{} names for a tuple of {} values", names, len))
+                    .with_code("E0943")
+                    .with_primary(*span, format!("this tuple has {} values", len))
+                    .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
+                    .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
+            }
+            FieldGivenTwice { ty, field, span } => {
+                Diagnostic::error(format!("field `{}` of `{}` is given twice", field, ty))
+                    .with_code("E0941")
+                    .with_primary(*span, format!("`{}` already has a value", field))
+                    .with_fix("drop one of them")
+                    .with_why("each field takes exactly one value; with two, one of them is never stored")
+            }
             PatternVariantMismatch { pattern, scrutinee, variants, span } => {
                 let diag = Diagnostic::error(format!("pattern `{}` can't match a `{}`", pattern, scrutinee))
                     .with_code("E0940")

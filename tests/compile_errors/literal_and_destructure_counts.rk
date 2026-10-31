@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a literal or a destructure whose names don't line up with the value
+//
+// `Pair(x: 1, x: 2, y: 3)` kept the last `x`. `let (a, b) = (1, 2, 3)`
+// dropped the `3` natively and failed at run time on the interpreter, and a
+// `for` over pairs with three names gave the third nothing at all.
+
+struct Pair { x: i32, y: i32 }
+
+func main() {
+    // ERROR: `x` given twice in a literal [E0941]
+    let p = Pair(x: 1, x: 2, y: 3)
+
+    // ERROR: two names for three values [E0943]
+    let (b, c) = (1, 2, 3)
+
+    // ERROR: three names for two [E0943]
+    for (d, e, g) in [(1, 2)] {
+        println("{d}")
+    }
+
+    // FIX: one name per position, `_` for the ones you don't need
+    let (h, _, _) = (1, 2, 3)
+    println("{p.x} {b} {c} {h}")
+}

@@ -99,6 +99,14 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("each name can only be defined once in a scope")
             }
 
+            RepeatedBinding { name } => {
+                Diagnostic::error(format!("`{}` is bound twice", name))
+                    .with_code("E0218")
+                    .with_primary(self.span, format!("`{}` appears more than once here", name))
+                    .with_fix("rename one, or use `_` for a value you don't need")
+                    .with_why("each name in one pattern or parameter list holds one value; with two, the first could never be read")
+            }
+
             DuplicateTest { kind, name, previous } => {
                 Diagnostic::error(format!("two {kind}s named \"{name}\""))
                     .with_code("E0217")

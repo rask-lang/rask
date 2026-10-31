@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an entry point the runtime has no way to call
+//
+// The runtime calls `main` with the command line at most, and does nothing
+// with a returned value except report an error. `func main(x: i64)` ran
+// with garbage in `x` natively and failed on the interpreter.
+
+// ERROR: a parameter nothing supplies [E0942]
+func main(x: i64) -> i64 {
+    return x
+}

@@ -1185,6 +1185,18 @@ impl TypeChecker {
             }
 
             ExprKind::StructLit { name, type_args, fields, spread } => {
+                // `Point(x: 1, x: 2)`: the last one won, silently.
+                let mut given: Vec<&str> = Vec::new();
+                for field in fields.iter() {
+                    if given.contains(&field.name.as_str()) {
+                        self.errors.push(TypeError::FieldGivenTwice {
+                            ty: name.clone(),
+                            field: field.name.clone(),
+                            span: field.value.span,
+                        });
+                    }
+                    given.push(&field.name);
+                }
                 // A struct-lit name may carry the module that exports it. Types are filed
                 // under the bare name, so `http.Response { … }` missed the
                 // lookup and skipped *everything* below — the field types went

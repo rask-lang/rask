@@ -386,6 +386,14 @@ impl TypeChecker {
                         // last of the nine dispatch fallbacks (#425).
                         let elems: Vec<Type> = match self.ctx.apply(&elem_ty) {
                             Type::Tuple(elems) if elems.len() == names.len() => elems,
+                            tuple @ Type::Tuple(_) => {
+                                self.errors.push(TypeError::TupleArity {
+                                    names: names.len(),
+                                    tuple,
+                                    span: iter.span,
+                                });
+                                names.iter().map(|_| Type::Error).collect()
+                            }
                             // Still open: the element comes from a chain like
                             // `.lines().enumerate()`, whose tuple only appears
                             // once the solver runs. Fresh variables alone left
@@ -601,6 +609,15 @@ impl TypeChecker {
 
         let resolved = self.ctx.apply(init_ty);
         if let Type::Tuple(elems) = &resolved {
+            // `let (a, b) = (1, 2, 3)` dropped the `3` natively and failed
+            // at run time on the interpreter.
+            if elems.len() != patterns.len() {
+                self.errors.push(TypeError::TupleArity {
+                    names: patterns.len(),
+                    tuple: resolved.clone(),
+                    span,
+                });
+            }
             for (i, pat) in patterns.iter().enumerate() {
                 let elem_ty = elems.get(i).cloned().unwrap_or(Type::Error);
                 match pat {
@@ -623,7 +640,9 @@ impl TypeChecker {
                 .map(|_| self.ctx.fresh_var())
                 .collect();
             let tuple_ty = Type::Tuple(elem_vars.clone());
-            let _ = self.unify(init_ty, &tuple_ty, span);
+            if let Err(e) = self.unify(init_ty, &tuple_ty, span) {
+                self.errors.push(e);
+            }
             for (pat, var) in patterns.iter().zip(elem_vars) {
                 match pat {
                     TuplePat::Name(name) => {

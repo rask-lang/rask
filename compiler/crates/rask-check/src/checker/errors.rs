@@ -1261,6 +1261,31 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// struct.targets: an entry point with a signature the runtime can't
+    /// call.
+    #[error("`{name}` {problem}")]
+    EntrySignature {
+        name: String,
+        problem: &'static str,
+        span: Span,
+    },
+
+    /// A tuple destructure whose names don't match the tuple's length.
+    #[error("{names} names for a `{tuple}`")]
+    TupleArity {
+        names: usize,
+        tuple: Type,
+        span: Span,
+    },
+
+    /// A struct or variant literal that gives one field two values.
+    #[error("field `{field}` of `{ty}` is given twice")]
+    FieldGivenTwice {
+        ty: String,
+        field: String,
+        span: Span,
+    },
+
     /// A pattern names a variant the matched value can't be: `Size.Big`
     /// against a `Color`, or a `Color.Blue` that `Color` doesn't declare.
     /// `variants` is what the value's enum does declare, empty for a struct.
@@ -1754,6 +1779,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
+            TupleArity { tuple, .. } => *tuple = f(tuple),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
             LinearElementLost { elem, .. } => *elem = f(elem),
@@ -1958,7 +1984,9 @@ impl TypeError {
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | InvalidConvert { .. }
-            | AtomicOrderDoesNotFit { .. } => {}
+            | AtomicOrderDoesNotFit { .. }
+            | FieldGivenTwice { .. }
+            | EntrySignature { .. } => {}
         }
     }
 }

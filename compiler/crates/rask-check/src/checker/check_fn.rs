@@ -24,6 +24,38 @@ impl TypeChecker {
         f.name == "main" && self.current_self_type.is_none()
     }
 
+    /// struct.targets: what an entry point may look like. No parameters or
+    /// one `Args`, and nothing back or `void or E`. Anything else has no
+    /// caller to supply it: `func main(x: i64)` ran with garbage in `x`
+    /// natively and failed on the interpreter.
+    fn check_entry_signature(&mut self, f: &FnDecl) {
+        let params: Vec<_> = f.params.iter().filter(|p| p.name != "self").collect();
+        let args_ok = match params.as_slice() {
+            [] => true,
+            [p] => p.ty.as_ref().is_some_and(|t| t.is_name("Args")),
+            _ => false,
+        };
+        if !args_ok {
+            self.errors.push(TypeError::EntrySignature {
+                name: f.name.clone(),
+                problem: "takes parameters nothing supplies",
+                span: f.span,
+            });
+        }
+        let ret_ok = match &f.ret_ty {
+            None | Some(TypeExpr::Unit) => true,
+            Some(TypeExpr::Result { ok, .. }) => matches!(**ok, TypeExpr::Unit),
+            Some(_) => false,
+        };
+        if !ret_ok {
+            self.errors.push(TypeError::EntrySignature {
+                name: f.name.clone(),
+                problem: "returns a value nothing receives",
+                span: f.span,
+            });
+        }
+    }
+
     /// PM6c: a written type that is Copy at every instantiation.
     ///
     /// Only the spelling is asked, and only for the types whose Copy-ness is
@@ -115,11 +147,19 @@ impl TypeChecker {
             }
         } else if let Some(t) = &f.ret_ty {
             self.resolve_written(t, f.span).unwrap_or(Type::Error)
+        } else if self.is_entry_point(f) {
+            // An entry point returns nothing or `void or E` (struct.targets);
+            // with nothing written it's the first, not whatever the body
+            // returns.
+            Type::Unit
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
         } else {
             Type::Unit
         };
+        if self.is_entry_point(f) {
+            self.check_entry_signature(f);
+        }
         // #314: record interface bounds so the body can call interface methods on a
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
