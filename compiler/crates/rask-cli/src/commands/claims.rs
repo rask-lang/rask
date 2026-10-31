@@ -808,9 +808,9 @@ fn point_at_input(
     }
     if let Some((claim, name)) = input {
         diag.notes.push(format!(
-            "the build makes input `{name}` of claim `{claim}` the way `json.decode` builds a value, \
-             and `char`, tuples and enums too; a type it can't build is made inside the claim, \
-             from inputs it can (type.claims/IN1)"
+            "the build makes input `{name}` of claim `{claim}` the way `json.decode` builds a value; \
+             a type it can't build that way can build itself, with `T implements claims.Generate` \
+             in a claims file, or be made inside the claim from inputs it can (type.claims/IN1, IN2)"
         ));
     }
     diag

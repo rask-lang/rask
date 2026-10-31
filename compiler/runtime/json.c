@@ -632,6 +632,12 @@ RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int
     return s;
 }
 
+RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_GENERATED, size);
+    s->generate = (RaskJsonFill)generate;
+    return s;
+}
+
 void rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key) {
     rask_json_shape_free(map->key);
     map->key = key;
@@ -856,6 +862,7 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         case RASK_JSHAPE_U128:
         case RASK_JSHAPE_ENUM:
         case RASK_JSHAPE_RESULT:
+        case RASK_JSHAPE_GENERATED:
             json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
             return 0;
         case RASK_JSHAPE_STRING: {

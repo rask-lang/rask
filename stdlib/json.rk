@@ -503,6 +503,11 @@ extend json {
     @native("rask_json_shape_map_key")
     func shape_map_key(map: i64, key: i64) {}
 
+    /// The shape of a type that builds itself (`claims.Generate`): its size,
+    /// and the function that writes one. Claims only.
+    @native("rask_json_shape_generated")
+    func shape_generated(size: i64, generate: i64) -> i64 {}
+
     /// Convert a typed value to a JsonValue tree.
     @unimplemented
     public func to_value<T: Encode>(value: T) -> JsonValue {}

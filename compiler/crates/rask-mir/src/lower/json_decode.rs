@@ -267,6 +267,9 @@ impl<'a> MirLowerer<'a> {
             ]));
         }
         if purpose == ShapeFor::Claims {
+            if let Some(shape) = self.emit_generated_shape(ty) {
+                return Some(shape);
+            }
             if let Some(shape) = self.emit_claim_only_shape(ty) {
                 return Some(shape);
             }
@@ -500,6 +503,53 @@ impl<'a> MirLowerer<'a> {
         Some(shape)
     }
 
+    /// A type with its own `claims.Generate` (type.claims/IN2): a function
+    /// that calls its `generate` and writes the result where the runtime
+    /// says, wrapped in a shape. `None` for any other type.
+    fn emit_generated_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        let Type::Named(id) = ty else { return None };
+        let method = self.ctx.claim_generators.get(self.ctx.type_names.get(id)?)?.clone();
+        let ty_mir = self.ctx.type_to_mir(ty);
+        let choices = *self.ctx.type_names.iter().find(|(_, n)| n.as_str() == "Choices")?.0;
+        let choices_mir = self.ctx.type_to_mir(&Type::Named(choices));
+        let name = format!("{}__claim_generate_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let mut wb = crate::builder::BlockBuilder::new(name.clone(), MirType::Void);
+        let slot = wb.add_param("__slot".to_string(), MirType::Ptr);
+        let from = wb.alloc_temp(choices_mir);
+        let value = wb.alloc_temp(ty_mir.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal(method),
+            args: vec![MirOperand::Local(from)],
+        }));
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: 0,
+            value: MirOperand::Local(value),
+            store_size: ty_mir.size(),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(name),
+        }));
+        Some(self.emit_shape_call("json_shape_generated", vec![
+            MirOperand::Constant(MirConst::Int(ty_mir.size() as i64)),
+            MirOperand::Local(addr),
+        ]))
+    }
+
     /// A positional field: no key, no flags, no default.
     fn add_shape_field(&mut self, shape: crate::LocalId, offset: i64, field_shape: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -524,6 +574,26 @@ impl<'a> MirLowerer<'a> {
         name: &rask_ast::expr::Expr,
         target: &Type,
     ) -> Result<TypedOperand, LoweringError> {
+        let (value, target_mir) = self.build_claim_value(target)?;
+        let (name_op, _) = self.lower_expr(name)?;
+        let shown = self.debug_render_value(&MirOperand::Local(value), &target_mir, Some(target), 0)?;
+        let text = self.concat_all(vec![
+            name_op,
+            MirOperand::Constant(MirConst::String(" = ".to_string())),
+            shown,
+        ]);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("claims_note_input".to_string()),
+            args: vec![text],
+        }));
+        Ok((MirOperand::Local(value), target_mir))
+    }
+
+    /// A `T` built from the claim's choices, through the shape a decode of
+    /// `T` would read: what `claims.input<T>` and a generator's
+    /// `Choices.make<T>()` both are.
+    pub(super) fn build_claim_value(&mut self, target: &Type) -> Result<(crate::LocalId, MirType), LoweringError> {
         let target_mir = self.ctx.type_to_mir(target);
         let Some(shape) = self.emit_shape_for(target, ShapeFor::Claims) else {
             return Err(LoweringError::InvalidConstruct(format!(
@@ -566,20 +636,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             dst
         };
-
-        let (name_op, _) = self.lower_expr(name)?;
-        let shown = self.debug_render_value(&MirOperand::Local(value), &target_mir, Some(target), 0)?;
-        let text = self.concat_all(vec![
-            name_op,
-            MirOperand::Constant(MirConst::String(" = ".to_string())),
-            shown,
-        ]);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("claims_note_input".to_string()),
-            args: vec![text],
-        }));
-        Ok((MirOperand::Local(value), target_mir))
+        Ok((value, target_mir))
     }
 
     fn emit_shape_call(&mut self, name: &str, args: Vec<MirOperand>) -> crate::LocalId {
@@ -634,6 +691,14 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         self.ctx.find_struct(&name).map(|(_, l)| l.clone())
+    }
+
+    /// Is `object` a generator's `claims.Choices`?
+    pub(super) fn is_claim_choices(&self, object: &rask_ast::expr::Expr) -> bool {
+        matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(Type::Named(id)) if self.ctx.type_names.get(&id).map(String::as_str) == Some("Choices")
+        )
     }
 
     pub(super) fn is_map_type(&self, ty: &Type) -> bool {

@@ -170,6 +170,9 @@ runtime_constants! {
     /// A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
     /// build these; JSON has no form for a result.
     RASK_JSHAPE_RESULT = 20;
+    /// A type that builds itself through `claims.Generate`: the shape holds
+    /// the function that calls its `generate`. Claims only.
+    RASK_JSHAPE_GENERATED = 21;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;

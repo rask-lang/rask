@@ -51,6 +51,8 @@ pub struct MonoProgram {
     /// (struct, field) → the method a `json.decode` calls for that field's
     /// default when the input leaves it out (std.encoding/E20).
     pub decode_defaults: HashMap<(String, String), String>,
+    /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
+    pub claim_generators: HashMap<String, String>,
     /// Types and dispatch targets for the nodes of instantiated generic bodies.
     ///
     /// Those nodes don't exist in the checker's output — they were created
@@ -1046,6 +1048,7 @@ fn monomorphize_inner(
         call_rewrites: mono.call_rewrites,
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
+        claim_generators: mono.claim_generators,
         instantiated_node_types: mono.instantiated_node_types,
         node_origins: mono.node_origins,
         instantiated_call_targets: mono.instantiated_call_targets,

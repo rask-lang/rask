@@ -350,3 +350,15 @@ fn since_lists_commits_that_changed_a_claim_and_code_it_reaches() {
     assert!(run.stdout.contains("changed claim `wide_pass_through` and `limit`, which it reaches"), "{}", run.stdout);
     assert!(!run.stdout.contains("move the edge"), "{}", run.stdout);
 }
+
+#[test]
+fn a_type_with_its_own_generator_is_built_through_it_and_shrinks() {
+    let dir = copy_of("generated");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    // Built through `generate` wherever it sits, so always sorted, though
+    // its one field is private.
+    assert!(run.stdout.contains("generated_are_sorted     held for 1,000 inputs"), "{}", run.stdout);
+    // And shrunk like any other input.
+    assert!(run.stderr.contains("counterexample: s = Sorted(items: [0]), x = -1"), "{}", run.stderr);
+}

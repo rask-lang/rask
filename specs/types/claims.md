@@ -24,9 +24,8 @@ I want this without turning Rask into a proof language. Nobody writes a proof. T
 
 A claim checks what it says and nothing more. A package held to ten claims has ten things checked, not a proof that it's correct.
 
-> **Built so far.** Everything below except cached calls (D5), hand-written
-> generators (IN2, whose spelling is open), the solver (V4) and registry
-> claims sources (W3). Claims run in `rask build`, `rask run`, `rask test` and
+> **Built so far.** Everything below except cached calls (D5), the solver
+> (V4) and registry claims sources (W3). Claims run in `rask build`, `rask run`, `rask test` and
 > `rask check --claims`; `rask check` type-checks them (R1).
 
 ## Declaration
@@ -68,8 +67,22 @@ The stdlib's interface laws are a claims source every package is held to without
 | Rule | Description |
 |------|-------------|
 | **IN1: Built like a decode** | A claim's inputs are the values `json.decode` could build, so a parameter's type must be `Decode` (`std.encoding/E12`–`E17`). Some `Decode` types have no JSON form yet and are built anyway: `char`, 128-bit integers, tuples, enums, `T or E`, and maps keyed by a number, `bool` or `char`. Both walk one description of the type, so a field the wire form leaves out takes its default here as it does in a decode (`E13a`). A type a decode can't build is made inside the claim instead, through the package's API, usually by applying a generated list of operations. A map keyed by a struct or enum isn't built yet |
-| **IN2: Own generator** | A type with an invariant its fields don't express (a sorted `Vec`, a valid AST) supplies its own generator in a claim file. Spelling open, see below |
+| **IN2: Own generator** | A type with an invariant its fields don't express (a sorted `Vec`, a valid AST) builds itself: a claims file declares `T implements claims.Generate`, and a claim given a `T` gets what its `generate` returns, wherever the `T` sits in the input. `generate` draws from a `claims.Choices`: `make<U>()` builds a `U` the way an input is built, `below(n)` and `one_of(items)` pick. Those are the claim's own choices, so a generated input shrinks and replays like any other. A type that builds itself is always sampled, since its walk isn't known before it runs |
 | **IN3: Not generatable in v1** | `@resource` types, `Shared`, `Rack`/`Link`, and `any I` can't be claim parameters. A claim can still build them in its body from generated parts |
+
+<!-- test: skip -->
+```rask
+// claims.rk: the only way to a `SortedVec` is through `insert`
+ledger.SortedVec implements claims.Generate {
+    func generate(from: claims.Choices) -> ledger.SortedVec {
+        mut v = ledger.SortedVec.new()
+        for x in from.make<Vec<i64>>() {
+            v.insert(x)
+        }
+        return v
+    }
+}
+```
 
 ## Verdicts
 
@@ -184,7 +197,6 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 
 ## Open
 
-- **Generator spelling** (IN2). An interface the type conforms to in its claim file is the likely shape. The name isn't picked.
 - **Solver backend** (V4). Rask's memory model is what makes this tractable. With no storable references, single ownership, and mutable borrows that exclude everything else, a prover rarely has to ask what else a write changed. Loops are the hard part. A proof needs an invariant, and when the solver can't infer one the verdict falls back to V2 or V3. Nobody is asked to write one, and whether they *may* is open.
 - **Function contracts.** A guarantee written on a function signature would read better than a separate claim for simple cases. `ensure` is taken (cleanup), so contracts would need their own word, and they would break CL2 by putting intent next to code an agent edits.
 - **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for the package's own `claims.rk`, and only that.

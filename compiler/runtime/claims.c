@@ -274,6 +274,9 @@ static void fill(void *dst, RaskJsonShape *shape, int depth) {
             fill((char *)dst + f->offset, f->shape, depth);
         }
         return;
+    case RASK_JSHAPE_GENERATED:
+        if (shape->generate) shape->generate(dst);
+        return;
     case RASK_JSHAPE_RESULT: {
         uint64_t failed = draw(2);
         *(uint8_t *)dst = failed ? RASK_TAG_ABSENT : RASK_TAG_PRESENT;
@@ -372,6 +375,10 @@ void rask_claim_fill(void *dst, RaskJsonShape *shape) {
         input_distinct *= d;
     }
     fill(dst, shape, 0);
+}
+
+uint64_t rask_claim_below(uint64_t n) {
+    return draw(n);
 }
 
 // The last statement of every claim body calls this (type.claims/CL5): a body

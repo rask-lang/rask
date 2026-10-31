@@ -358,6 +358,7 @@ mod empty {
     empty_of!(nominal_map, HashMap<String, Type>);
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
     empty_of!(decode_defaults, HashMap<(String, String), String>);
+    empty_of!(claim_generators, HashMap<String, String>);
 }
 
 impl<'a> MirContext<'a> {
@@ -419,6 +420,7 @@ impl<'a> MirContext<'a> {
             call_rewrites: empty::node_names(),
             map_key_fns: empty::map_key_fns(),
             decode_defaults: empty::decode_defaults(),
+            claim_generators: empty::claim_generators(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -462,6 +464,7 @@ impl<'a> MirContext<'a> {
         self.call_rewrites = &mono.call_rewrites;
         self.map_key_fns = &mono.map_key_fns;
         self.decode_defaults = &mono.decode_defaults;
+        self.claim_generators = &mono.claim_generators;
         self
     }
 
@@ -578,6 +581,8 @@ pub struct MirContext<'a> {
     pub map_key_fns: &'a HashMap<NodeId, rask_mono::MapKeyFns>,
     /// (struct, field) → the method that builds that field's decode default.
     pub decode_defaults: &'a HashMap<(String, String), String>,
+    /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
+    pub claim_generators: &'a HashMap<String, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -707,6 +712,7 @@ impl<'a> MirContext<'a> {
             call_rewrites: &EMPTY_REWRITES,
             map_key_fns: empty::map_key_fns(),
             decode_defaults: empty::decode_defaults(),
+            claim_generators: empty::claim_generators(),
             call_targets: &EMPTY_TARGETS,
             operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -7694,6 +7700,7 @@ mod tests {
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
             decode_defaults: empty::decode_defaults(),
+            claim_generators: empty::claim_generators(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7783,6 +7790,7 @@ mod tests {
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
             decode_defaults: empty::decode_defaults(),
+            claim_generators: empty::claim_generators(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7879,6 +7887,7 @@ mod tests {
             call_rewrites: &empty_rewrites,
             map_key_fns: empty::map_key_fns(),
             decode_defaults: empty::decode_defaults(),
+            claim_generators: empty::claim_generators(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,

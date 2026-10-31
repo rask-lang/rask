@@ -1051,6 +1051,9 @@ RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int
 // A map's key, when it isn't a string: a primitive, compared by its bytes.
 // The map shape takes the key shape over. Claims only; JSON keys are strings.
 void           rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key);
+// A type that builds itself (`claims.Generate`): `generate` writes one into
+// the slot it's given. Claims only.
+RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
@@ -1153,6 +1156,8 @@ void     rask_claim_note_input(const RaskStr *text);
 void     rask_claim_step(void);
 void     rask_claim_start(void);
 void     rask_claim_reached_end(void);
+// `Choices.below(n)`: a choice below `n`, drawn like every other.
+uint64_t rask_claim_below(uint64_t n);
 int64_t  rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t budget);
 void rask_check_fail_msg_at(const char *msg, const char *file,
                             int32_t line, int32_t col);
