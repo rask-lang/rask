@@ -30,20 +30,20 @@ func write_i64le(mutate buf: Vec<u8>, offset: i64, val: i64) {
 // --- Read ---
 
 func read_u8(buf: Vec<u8>, offset: i64) -> i64 {
-    return buf.get(offset) as i64 & 0xFF
+    return buf[offset] as i64 & 0xFF
 }
 
 func read_u16le(buf: Vec<u8>, offset: i64) -> i64 {
-    let lo = buf.get(offset) as i64 & 0xFF
-    let hi = buf.get(offset + 1) as i64 & 0xFF
+    let lo = buf[offset] as i64 & 0xFF
+    let hi = buf[offset + 1] as i64 & 0xFF
     return lo | hi << 8
 }
 
 func read_u32le(buf: Vec<u8>, offset: i64) -> i64 {
-    let b0 = buf.get(offset) as i64 & 0xFF
-    let b1 = buf.get(offset + 1) as i64 & 0xFF
-    let b2 = buf.get(offset + 2) as i64 & 0xFF
-    let b3 = buf.get(offset + 3) as i64 & 0xFF
+    let b0 = buf[offset] as i64 & 0xFF
+    let b1 = buf[offset + 1] as i64 & 0xFF
+    let b2 = buf[offset + 2] as i64 & 0xFF
+    let b3 = buf[offset + 3] as i64 & 0xFF
     return b0 | b1 << 8 | b2 << 16 | b3 << 24
 }
 
