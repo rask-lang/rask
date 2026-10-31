@@ -4355,6 +4355,16 @@ impl TypeChecker {
         }
         if let Type::RawPtr(ref inner) = resolved_obj {
             if let Some(ret) = self.check_raw_ptr_method(inner, method, &arg_types, span) {
+                // Recorded like any method call, so reachability knows it's a
+                // pointer operation and doesn't reach every `is_null` there is.
+                self.call_targets.insert(
+                    call_id,
+                    super::Callee::Method {
+                        recv: resolved_obj.clone(),
+                        method: method.to_string(),
+                        package: None,
+                    },
+                );
                 return ret;
             }
         }

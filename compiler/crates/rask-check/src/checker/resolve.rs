@@ -1146,11 +1146,20 @@ impl TypeChecker {
                         if matches!(arg_ty, Type::Var(arg_id) if self.ctx.literal_vars.contains_key(&arg_id))
                         {
                             self.unify(&ty, &arg_ty, span)?;
-                            return if Self::is_homogeneous_comparison(&method) {
+                            let progress = if Self::is_homogeneous_comparison(&method) {
                                 self.unify(&ret, &Type::Bool, span)
                             } else {
                                 self.unify(&ret, &ty, span)
-                            };
+                            }?;
+                            // The dispatch record, as for the unary and shift
+                            // cases: with no target, reachability reached every
+                            // `eq` in the program for `1 == 2`, and a program
+                            // importing SDL generated 161 struct comparisons
+                            // nobody made.
+                            self.deferred_methods.push(TypeConstraint::HasMethod {
+                                ty, method, args, ret, span, call_node,
+                            });
+                            return Ok(progress);
                         }
                     }
                 }
