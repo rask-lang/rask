@@ -101,6 +101,9 @@ go down.
 | [break_in_closure.rk](break_in_closure.rk) | `break`/`continue` in a closure aimed at a loop outside it. Native failed in lowering; the interpreter broke the outer loop through the call |
 | [numbers_where_they_dont_fit.rk](numbers_where_they_dont_fit.rk) | A float literal in integer arithmetic (`x += 1.5`, E0401), `for i in 5` (E0827), and a range of strings (E0945) |
 | [static_method_and_unknown_annotation.rk](static_method_and_unknown_annotation.rk) | A static method called through a value (E0946), and an annotation nothing declares, such as the typo `@resouce` (E0854) |
+| [values_that_go_nowhere.rk](values_that_go_nowhere.rk) | `let a = if c: 1` with no `else` (E0947), `?.` on a plain struct, `[0; -1]`, type arguments on a non-generic function (E0885), and `discard` twice |
+| [assign_to_a_name_that_isnt_a_variable.rk](assign_to_a_name_that_isnt_a_variable.rk) | `f = g` on a function and `Color.Red = …` on a variant (E0916) |
+| [tuple_match_exhaustiveness.rk](tuple_match_exhaustiveness.rk) | A `match` on a tuple missing a combination of its parts (E0340), with the missing one named |
 | [generic_body_uses_concrete_type.rk](generic_body_uses_concrete_type.rk) | A generic body that treats `T` as a concrete type: `return 5` from `-> T`, a `U` returned as a `T`, `v.push(5)` into a `Vec<T>`. A number literal becomes a `T` only under `Integer`, `Float` or `Numeric` |
 | [pattern_names_wrong_variant.rk](pattern_names_wrong_variant.rk) | A pattern naming another enum's variant or one that doesn't exist (E0940), a qualified arm counted as a catch-all (E0340), a `bool` match missing `false`, and `c is Blue` that binds and so is always true |
 | [struct_pattern_shared_name.rk](struct_pattern_shared_name.rk) | A struct pattern by position (E0416) where an enum's variant shares the struct's name. The bare pattern is settled by the matched value's type, so the checker reports it rather than the desugarer |

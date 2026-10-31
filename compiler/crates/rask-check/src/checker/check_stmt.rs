@@ -629,7 +629,14 @@ impl TypeChecker {
                 self.pop_scope();
             }
             StmtKind::Discard { name, name_span } => {
-                if let Some(ty) = self.lookup_local(name) {
+                // D1: a discarded binding is gone, for `discard` too.
+                if let Some(&discarded_at) = self.discarded_bindings.get(name.as_str()) {
+                    self.errors.push(TypeError::UseAfterDiscard {
+                        name: name.clone(),
+                        discarded_at,
+                        span: *name_span,
+                    });
+                } else if let Some(ty) = self.lookup_local(name) {
                     let resolved = self.ctx.apply(&ty);
                     // D3: @resource types cannot be discarded
                     if self.is_resource_type(&resolved) {
@@ -806,6 +813,21 @@ impl TypeChecker {
     /// interpreter and a lowering error natively.
     fn check_assignment_target(&mut self, target: &Expr) {
         use rask_ast::expr::UnaryOp;
+        // A place is rooted at a variable. A function, a type or a variant
+        // isn't one: `f = g` and `Color.Red = Color.Green` type-checked and
+        // then failed in lowering on one backend and at run time on the other.
+        let rooted_at_nothing = matches!(target.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
+            && Self::root_ident_name(target).is_some_and(|root| self.lookup_local(&root).is_none());
+        if rooted_at_nothing {
+            let root = Self::root_ident_name(target).unwrap_or_default();
+            let what = if self.types.get_type_id(&root).is_some() {
+                "a type or one of its variants"
+            } else {
+                "a function or a module"
+            };
+            self.errors.push(TypeError::NotAPlace { what, span: target.span });
+            return;
+        }
         let what = match &target.kind {
             ExprKind::Ident(_)
             | ExprKind::Field { .. }

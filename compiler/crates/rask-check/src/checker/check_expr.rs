@@ -1007,6 +1007,20 @@ impl TypeChecker {
                         )
                     }
                 } else {
+                    // CF7: with no `else`, the `if` is `void`, so a value from
+                    // the then-branch has nowhere to go. `let a = if c: 1`
+                    // printed `()` on the interpreter and 0 natively.
+                    if !is_stmt {
+                        let then_resolved = self.ctx.apply(&then_ty);
+                        if !matches!(then_resolved, Type::Never | Type::Error)
+                            && self.unify(&then_ty, &Type::Unit, expr.span).is_err()
+                        {
+                            self.errors.push(TypeError::IfWithoutElseValue {
+                                found: self.ctx.apply(&then_ty),
+                                span: expr.span,
+                            });
+                        }
+                    }
                     Type::Unit
                 }
             }
@@ -2546,7 +2560,12 @@ impl TypeChecker {
 
             ExprKind::ArrayRepeat { value, count } => {
                 let elem_ty = self.infer_expr(value);
-                self.infer_expr(count);
+                // A length is a `usize`: `[0; -1]` asked the interpreter for
+                // a capacity that overflowed and got native killed for memory.
+                let count_ty = self.infer_expr_expecting(count, &Type::Usize);
+                if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
+                    self.errors.push(e);
+                }
                 // Extract literal size when available, otherwise use 0 as placeholder
                 let len = match &count.kind {
                     ExprKind::Int(n, _) => *n as usize,
@@ -2636,6 +2655,16 @@ impl TypeChecker {
             ExprKind::OptionalField { object, field } => {
                 let inferred = self.infer_expr(object);
                 let obj_ty = self.ctx.apply(&inferred);
+                // `?.` is for optionals (OPT3). On a plain value it read the
+                // field and wrapped it, so native gave 0 for `p?.x` on a
+                // `Point` and the interpreter failed at run time.
+                if !matches!(obj_ty, Type::Var(_) | Type::Error | Type::Result { .. }) && obj_ty.as_option().is_none() {
+                    self.errors.push(TypeError::TryOnNonResult {
+                        found: obj_ty.clone(),
+                        op: "?.",
+                        span: expr.span,
+                    });
+                }
                 // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
                 let inner_ty = match obj_ty.as_option() {
                     Some(inner) => inner.clone(),
@@ -3144,6 +3173,31 @@ impl TypeChecker {
             .iter()
             .map(|t| self.resolve_type_arg(t, span))
             .collect();
+        // Type arguments on a function that declares fewer: `g<i32>(1)` on a
+        // non-generic `g` ran, and on a method failed to link a mangled name
+        // nothing defines.
+        if !written_type_args.is_empty() {
+            if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
+                let is_fn = self
+                    .resolved
+                    .symbols
+                    .get(sym_id)
+                    .is_some_and(|sym| matches!(sym.kind, SymbolKind::Function { .. }));
+                if is_fn {
+                    let params = self.fn_type_params.get(&sym_id).cloned().unwrap_or_default();
+                    if params.len() < written_type_args.len() {
+                        self.errors.push(TypeError::TypeArgCount {
+                            name: func.name().unwrap_or_default().to_string(),
+                            expected: params.len(),
+                            params,
+                            found: written_type_args.len(),
+                            site: super::errors::TypeArgSite::Type,
+                            span,
+                        });
+                    }
+                }
+            }
+        }
         let generic_subst: Option<Vec<(String, Type)>> = if func.name().is_some() {
             // Resolve the callee's SymbolId, then look up its type params
             self.resolved.resolutions.get(&func.id).copied()
@@ -5764,6 +5818,33 @@ impl TypeChecker {
             return;
         }
 
+        // A tuple is covered when every combination of its parts is.
+        if let Type::Tuple(parts) = &resolved {
+            let rows: Vec<Vec<&Pattern>> = arms
+                .iter()
+                .flat_map(|a| match &a.pattern {
+                    Pattern::Or(alts) => alts.iter().collect::<Vec<_>>(),
+                    p => vec![p],
+                })
+                .filter_map(|p| match p {
+                    Pattern::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
+                    Pattern::Wildcard | Pattern::Ident(_) if !matches!(p, Pattern::Ident(n) if n.contains('.')) => {
+                        Some(vec![&Pattern::Wildcard; parts.len()])
+                    }
+                    _ => None,
+                })
+                .collect();
+            let parts: Vec<Type> = parts.iter().map(|t| self.resolve_named(&self.ctx.apply(t))).collect();
+            if let Some(witness) = self.tuple_gap(&rows, &parts) {
+                self.errors.push(TypeError::NonExhaustiveMatch {
+                    missing: vec![format!("({})", witness.join(", "))],
+                    guarded,
+                    span,
+                });
+            }
+            return;
+        }
+
         // A bool has two values, so `true` and `false` close the match
         // without a wildcard, and one of them alone doesn't.
         if matches!(resolved, Type::Bool) {
@@ -5972,6 +6053,76 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A combination of tuple parts no row matches, written out, or `None`
+    /// when the rows cover them all. A part whose values can be listed (a
+    /// `bool`, a fieldless or any enum by variant) is split per value;
+    /// anything else is covered only by a row that doesn't test it. A row that
+    /// tests a payload covers less than its variant, so it counts for none.
+    fn tuple_gap(&self, rows: &[Vec<&Pattern>], parts: &[Type]) -> Option<Vec<String>> {
+        let Some((first, rest)) = parts.split_first() else {
+            return if rows.is_empty() { Some(Vec::new()) } else { None };
+        };
+        let wild = |p: &Pattern| match p {
+            Pattern::Wildcard => true,
+            Pattern::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
+            _ => false,
+        };
+        let values: Option<Vec<String>> = match first {
+            Type::Bool => Some(vec!["true".to_string(), "false".to_string()]),
+            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
+                Some(TypeDef::Enum { variants, .. }) => Some(variants.iter().map(|(v, _)| v.clone()).collect()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let tests = |p: &Pattern, value: &str| -> bool {
+            match p {
+                Pattern::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
+                Pattern::Ident(n) => n.rsplit('.').next() == Some(value),
+                Pattern::Constructor { name, fields } => {
+                    name.rsplit('.').next() == Some(value)
+                        && fields.iter().all(|f| matches!(f, Pattern::Wildcard) || matches!(f, Pattern::Ident(n) if !n.contains('.')))
+                }
+                _ => false,
+            }
+        };
+        match values {
+            Some(values) => {
+                for value in values {
+                    let sub: Vec<Vec<&Pattern>> = rows
+                        .iter()
+                        .filter(|r| wild(r[0]) || tests(r[0], &value))
+                        .map(|r| r[1..].to_vec())
+                        .collect();
+                    if let Some(mut gap) = self.tuple_gap(&sub, rest) {
+                        gap.insert(0, value);
+                        return Some(gap);
+                    }
+                }
+                None
+            }
+            None => {
+                let sub: Vec<Vec<&Pattern>> =
+                    rows.iter().filter(|r| wild(r[0])).map(|r| r[1..].to_vec()).collect();
+                let mut gap = self.tuple_gap(&sub, rest)?;
+                gap.insert(0, "_".to_string());
+                Some(gap)
+            }
+        }
+    }
+
+    /// Whether `name` is a variant of `ty`'s enum, so a bare name tests
+    /// rather than binds.
+    fn names_variant_of(&self, ty: &Type, name: &str) -> bool {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => matches!(
+                self.types.get(*id),
+                Some(TypeDef::Enum { variants, .. }) if variants.iter().any(|(v, _)| v == name)
+            ),
+            _ => false,
         }
     }
 

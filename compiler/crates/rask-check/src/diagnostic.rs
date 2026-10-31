@@ -2801,6 +2801,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
             }
+            IfWithoutElseValue { found, span } => {
+                Diagnostic::error("an `if` without `else` has no value".to_string())
+                    .with_code("E0947")
+                    .with_primary(*span, format!("the then-branch gives a `{}`, and nothing says what the `if` is when the condition is false", found))
+                    .with_fix("add the other branch: `if c: a else: b`")
+                    .with_why("without `else` an `if` is a statement and is `void`; a value from one branch would be dropped [ctrl.flow/CF7]")
+            }
             ExitInEnsure { what, span } => {
                 Diagnostic::error(format!("`{}` can't leave an `ensure` block", what))
                     .with_code("E0944")

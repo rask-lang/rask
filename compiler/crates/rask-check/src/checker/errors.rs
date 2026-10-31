@@ -1303,6 +1303,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ctrl.flow/CF7: an `if` with no `else`, used for a value.
+    #[error("an `if` without `else` has no value")]
+    IfWithoutElseValue {
+        found: Type,
+        span: Span,
+    },
+
     /// A struct or variant literal that gives one field two values.
     #[error("field `{field}` of `{ty}` is given twice")]
     FieldGivenTwice {
@@ -1806,6 +1813,7 @@ impl TypeError {
             PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
             TupleArity { tuple, .. } => *tuple = f(tuple),
             RangeNotCountable { ty, .. } => *ty = f(ty),
+            IfWithoutElseValue { found, .. } => *found = f(found),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
             LinearElementLost { elem, .. } => *elem = f(elem),
