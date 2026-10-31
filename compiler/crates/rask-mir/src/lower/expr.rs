@@ -2423,8 +2423,15 @@ impl<'a> MirLowerer<'a> {
                     if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
                         self.emit_pointer_check(&operand_op, false);
                     }
+                    // The pointee: a raw pointer's checker type is the pointer,
+                    // an `Owned<T>`'s is `T` itself. Sizing the pointer read
+                    // `(*p).y` on a `*Pt` as a word load of the struct's bytes,
+                    // then dereferenced those bytes as an address.
                     let pointee_mir_ty = self.ctx.lookup_raw_type(operand.id)
-                        .map(|t| self.ctx.type_to_mir(t));
+                        .map(|t| match t {
+                            rask_types::Type::RawPtr(inner) => self.ctx.type_to_mir(inner),
+                            other => self.ctx.type_to_mir(other),
+                        });
                     match pointee_mir_ty {
                         Some(ty) if ty.passed_by_address() => (ty, MirRValue::Use(operand_op)),
                         _ => (operand_ty.clone(), MirRValue::Deref(operand_op)),

@@ -43,6 +43,17 @@ test "an element's address writes the element" {
     assert v[2] == 3
 }
 
+test "a struct's fields read through its pointer" {
+    let s = Size(w: 640, h: 480)
+    let p = &s
+    assert unsafe (*p).h == 480
+    let v: Vec<Size> = [Size(w: 1, h: 2)]
+    let q = unsafe v.as_ptr()
+    let copy = unsafe *q
+    assert unsafe (*q).w == 1
+    assert copy.h == 2
+}
+
 func main() {
     mut w: i32 = 0
     mut h: i32 = 0
