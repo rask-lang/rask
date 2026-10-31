@@ -551,7 +551,7 @@ impl TypeTable {
     /// shadows it in `type_names`, never in `stdlib_type_names`.
     fn declared_in_stdlib(&self, id: TypeId) -> bool {
         self.get(id)
-            .is_some_and(|def| self.stdlib_type_names.get(Self::def_name(def)) == Some(&id))
+            .is_some_and(|def| self.stdlib_type_names.get(def.name()) == Some(&id))
     }
 
     /// A name as the code that declared `owner` reads it.
@@ -2320,20 +2320,8 @@ impl TypeTable {
         self.types
             .iter()
             .enumerate()
-            .map(|(i, def)| (TypeId(i as u32), Self::def_name(def).to_string()))
+            .map(|(i, def)| (TypeId(i as u32), def.name().to_string()))
             .collect()
-    }
-
-    /// The name a `TypeDef` declares, whatever kind it is.
-    pub fn def_name(def: &TypeDef) -> &str {
-        match def {
-            TypeDef::Struct { name, .. }
-            | TypeDef::Enum { name, .. }
-            | TypeDef::Interface { name, .. }
-            | TypeDef::Union { name, .. }
-            | TypeDef::NominalAlias { name, .. }
-            | TypeDef::Primitive { name, .. } => name,
-        }
     }
 
     /// OR12: note that a conformance method has no body — the compiler answers
