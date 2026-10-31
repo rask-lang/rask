@@ -52,7 +52,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     ty_str
                         .as_ref()
-                        .map(|t| self.ctx.resolve_type_expr(t))
+                        .map(|t| self.ctx.type_to_mir(t))
                         .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"))
                 };
                 let id = wb.add_param(format!("__a{}", i), ty);
@@ -125,7 +125,7 @@ impl<'a> MirLowerer<'a> {
             for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
                     .as_ref()
-                    .map(|t| self.ctx.resolve_type_expr(t))
+                    .map(|t| self.ctx.type_to_mir(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
                 let id = wb.add_param(format!("__c{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -333,7 +333,7 @@ impl<'a> MirLowerer<'a> {
         ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
-        expected_param_tys: &[TypeExpr],
+        expected_param_tys: &[MirType],
         closure_id: Option<NodeId>,
         for_spawn: bool,
     ) -> Result<TypedOperand, LoweringError> {
@@ -444,10 +444,10 @@ impl<'a> MirLowerer<'a> {
             // What the checker inferred first, then the written annotation,
             // then the type the callee declares for this position — the last
             // two only for a closure made after checking.
-            let written = param.ty.clone()
-                .or_else(|| expected_param_tys.get(i).cloned());
+            let written = param.ty.clone();
             let param_ty = checked_params.get(i).cloned()
                 .or_else(|| written.as_ref().map(|t| self.ctx.resolve_type_expr(t)))
+                .or_else(|| expected_param_tys.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             // A `mutate` parameter takes the caller's address the way a
             // declared function's does, so one function type means one calling

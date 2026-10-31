@@ -13,6 +13,7 @@ use crate::{
     MirTerminatorKind, MirType,
 };
 use rask_ast::ty::TypeExpr;
+use rask_types::Type;
 use rask_ast::{
     expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, FieldInit, Pattern, UnaryOp, WithBinding},
     stmt::{Stmt, StmtKind},
@@ -958,9 +959,9 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         op: MirOperand,
         mir_ty: MirType,
-        declared: Option<&TypeExpr>,
+        declared: Option<&Type>,
     ) -> (MirOperand, MirType) {
-        let Some(dst_ty) = declared.map(|t| self.ctx.resolve_type_expr(t)) else {
+        let Some(dst_ty) = declared.map(|t| self.ctx.type_to_mir(t)) else {
             return (op, mir_ty);
         };
         let op = self.coerce_into_wrapper(
@@ -975,12 +976,9 @@ impl<'a> MirLowerer<'a> {
     /// Parameter types a closure argument at position `i` should take, read off
     /// the callee's declared `func(...)` parameter. Empty when the callee is
     /// unknown or that parameter isn't a function type.
-    fn expected_closure_param_tys(
-        callee_params: &[Option<TypeExpr>],
-        i: usize,
-    ) -> Vec<TypeExpr> {
+    fn expected_closure_param_tys(&self, callee_params: &[Option<Type>], i: usize) -> Vec<MirType> {
         match callee_params.get(i) {
-            Some(Some(TypeExpr::Func { params, .. })) => params.iter().map(|p| p.ty.clone()).collect(),
+            Some(Some(Type::Fn { params, .. })) => params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect(),
             _ => Vec::new(),
         }
     }
@@ -1002,7 +1000,7 @@ impl<'a> MirLowerer<'a> {
     /// body picks its index from whatever struct happens to declare that field
     /// name — `|a, b| a.priority.compare(b.priority)` on a `Vec<Ranked>`
     /// compiled to field 2 of an unrelated struct and a string comparison.
-    fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<TypeExpr> {
+    fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<MirType> {
         let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
         // The checker's element type first. Push tracking only sees what was
         // lowered, and a float literal lowers as an f64 wherever it lands, so
@@ -1011,19 +1009,8 @@ impl<'a> MirLowerer<'a> {
         let elem = self.collection_elem_of_expr(object).or_else(|| {
             Self::vec_tracking_key(object).and_then(|key| self.tracked_elem_for_key(&key))
         });
-        // `mir_type_name` answers the method prefix, and f32 shares f64's
-        // methods. The parameter needs the element's own type. A buffer's name
-        // is the checker's to give.
-        let name = match elem {
-            Some(MirType::F32) => Some("f32".to_string()),
-            Some(ty) => self.mir_type_name(&ty).or_else(|| {
-                self.collection_elem_type_of_expr(object)
-                    .and_then(|t| super::MirContext::type_prefix(&t, self.ctx.type_names))
-            }),
-            None => None,
-        };
-        let Some(name) = name else { return Vec::new() };
-        vec![TypeExpr::named(name); arity]
+        let Some(elem) = elem else { return Vec::new() };
+        vec![elem; arity]
     }
 
     /// Derive a tracking key for Vec element type inference.
@@ -1291,7 +1278,7 @@ impl<'a> MirLowerer<'a> {
         let declared = sig
             .and_then(|s| s.param_tys.get(param))
             .and_then(|o| o.as_ref())
-            .map(|t| self.ctx.resolve_type_expr(t));
+            .map(|t| self.ctx.type_to_mir(t));
         let op = match declared {
             Some(dst_ty) => self.coerce_into_wrapper(
                 rask_ast::coercion::CoercionSite::Argument,
@@ -2542,7 +2529,7 @@ impl<'a> MirLowerer<'a> {
                     self.func_sigs.get(&key).cloned()
                 })
             });
-            let callee_params: Vec<Option<TypeExpr>> = callee_sig
+            let callee_params: Vec<Option<Type>> = callee_sig
                 .as_ref()
                 .map(|s| s.param_tys.clone())
                 .unwrap_or_default();
@@ -2554,7 +2541,7 @@ impl<'a> MirLowerer<'a> {
                 let (op, mir_ty) = if let (ExprKind::Closure { params, ret_ty, body }, false) =
                     (&a.expr.kind, self.ctx.c_fn_pointers.contains(&a.expr.id))
                 {
-                    let expected = Self::expected_closure_param_tys(&callee_params, i);
+                    let expected = self.expected_closure_param_tys(&callee_params, i);
                     let carries = self.closure_carries(Some(a.expr.id));
                     let lowered = self.lower_closure_expecting(
                         params, ret_ty.as_ref(), body,
@@ -5884,7 +5871,7 @@ impl<'a> MirLowerer<'a> {
                                 .and_then(|k| self.func_sigs.get(k))
                                 .or_else(|| self.func_sigs.get(&func_name))
                                 .cloned();
-                            let callee_params: Vec<Option<TypeExpr>> = callee_sig
+                            let callee_params: Vec<Option<Type>> = callee_sig
                                 .as_ref()
                                 .map(|s| s.param_tys.clone())
                                 .unwrap_or_default();
@@ -5898,7 +5885,7 @@ impl<'a> MirLowerer<'a> {
                                 let (op, _) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
                                     (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
                                 {
-                                    let expected = Self::expected_closure_param_tys(&callee_params, i);
+                                    let expected = self.expected_closure_param_tys(&callee_params, i);
                                     let carries = self.closure_carries(Some(arg.expr.id));
                                     let lowered = self.lower_closure_expecting(
                                         params, ret_ty.as_ref(), body,
@@ -6163,7 +6150,7 @@ impl<'a> MirLowerer<'a> {
         // lowered, but a closure argument needs its parameter types up front.
         // A module-style receiver (`http.serve(…)`) mangles
         // predictably, so try that key for the callee's signature.
-        let tentative_params: Vec<Option<TypeExpr>> = match &object.kind {
+        let tentative_params: Vec<Option<Type>> = match &object.kind {
             ExprKind::Ident(recv) => self
                 .func_sigs
                 .get(&format!("{}_{}", recv, method))
@@ -6226,7 +6213,7 @@ impl<'a> MirLowerer<'a> {
             }
             keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
-        let callee_params: Vec<Option<TypeExpr>> = callee_sig
+        let callee_params: Vec<Option<Type>> = callee_sig
             .as_ref()
             .map(|s| s.param_tys.clone())
             .unwrap_or_default();
@@ -6247,7 +6234,7 @@ impl<'a> MirLowerer<'a> {
             let (op, ty) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
                 (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
             {
-                let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
+                let mut expected = self.expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }

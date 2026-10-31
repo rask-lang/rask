@@ -152,6 +152,14 @@ fn param_mir_type(p: &rask_ast::decl::Param, sig: Option<&rask_types::FnSignatur
     }
 }
 
+/// The checker's type for each of `params`, in order.
+fn sig_param_tys(params: &[rask_ast::decl::Param], sig: Option<&rask_types::FnSignature>) -> Vec<Option<Type>> {
+    params
+        .iter()
+        .map(|p| sig.and_then(|s| s.params.iter().find(|(n, _)| *n == p.name)).map(|(_, t)| t.clone()))
+        .collect()
+}
+
 fn scalar_mutate_params(
     f: &rask_ast::decl::FnDecl,
     sig: Option<&rask_types::FnSignature>,
@@ -225,12 +233,12 @@ struct FuncSig {
     /// from once the checker's node types are out of reach (a closure body, an
     /// instantiated copy) — the declared return type is the remaining record.
     ret_vec_elem: Option<MirType>,
-    /// Declared parameter types, positionally. Used to type an
-    /// unannotated closure argument's parameters: `|req| { … }` passed to a
-    /// `func(Request) -> Response` parameter has nothing else to go on, and
-    /// defaulting them to i64 made field access and method dispatch inside the
-    /// closure body operate on the wrong type.
-    param_tys: Vec<Option<TypeExpr>>,
+    /// The checker's parameter types, positionally. What an argument is
+    /// coerced into, and what an unannotated closure argument's parameters
+    /// are: `|req| { … }` passed to a `func(Request) -> Response` parameter
+    /// has nothing else to go on when the closure has no checked type of its
+    /// own. `None` for a function made after checking.
+    param_tys: Vec<Option<Type>>,
 }
 
 /// Loop context for break/continue
@@ -4432,7 +4440,7 @@ impl<'a> MirLowerer<'a> {
                         scalar_mutate_params: scalar_mutate_params(f, sig.as_ref(), ctx),
                         aggregate_mutate_params: aggregate_mutate_params(&f.params, sig.as_ref(), ctx),
                         ret_vec_elem,
-                        param_tys: f.params.iter().map(|p| p.ty.clone()).collect(),
+                        param_tys: sig_param_tys(&f.params, sig.as_ref()),
                     });
                 }
                 DeclKind::Extern(ext) => {
@@ -4459,7 +4467,7 @@ impl<'a> MirLowerer<'a> {
                             scalar_mutate_params: scalar_mutate_params(m, sig.as_ref(), ctx),
                             aggregate_mutate_params: aggregate_mutate_params(&m.params, sig.as_ref(), ctx),
                             ret_vec_elem,
-                            param_tys: m.params.iter().map(|p| p.ty.clone()).collect(),
+                            param_tys: sig_param_tys(&m.params, sig.as_ref()),
                         });
                     }
                 }
