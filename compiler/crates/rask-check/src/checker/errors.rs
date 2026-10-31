@@ -1592,8 +1592,6 @@ pub enum IndexErrorKind {
     /// A range indexed a Vec or a fixed array. There is no slice type for the
     /// result to have — only a string slices to another string.
     NoSliceType,
-    /// A raw pointer was indexed. Its offset is `p.add(i)`, read through `*`.
-    RawPointer,
 }
 
 /// Where an interface requirement came from — drives the advice.

@@ -94,6 +94,10 @@ pub struct PendingMutation {
     pub ty: rask_types::Type,
     pub kind: BindingKind,
     pub span: rask_ast::Span,
+    /// The object of each field or index step between the root and the
+    /// written place. A write past a raw pointer lands in what it points at,
+    /// not in the root, and only their solved types say where that is.
+    pub steps: Vec<NodeId>,
 }
 
 /// A deferred `mutate self` check on a receiver whose type wasn't solved yet.

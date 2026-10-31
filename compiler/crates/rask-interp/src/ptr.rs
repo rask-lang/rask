@@ -150,6 +150,13 @@ impl RawPtr {
         }
     }
 
+    /// `p.add(n)`: the same target, `n` steps on.
+    pub fn stepped(&self, n: i64) -> RawPtr {
+        let mut q = self.clone();
+        q.index += n;
+        q
+    }
+
     pub fn is_null(&self) -> bool {
         matches!(self.target, PtrTarget::Foreign(0)) && self.index == 0
     }

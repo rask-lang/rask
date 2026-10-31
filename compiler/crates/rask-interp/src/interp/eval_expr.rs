@@ -610,6 +610,11 @@ impl Interpreter {
 
     /// `obj.field`, once `obj` is evaluated.
     fn read_field(&mut self, obj: Value, field: &str, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        // `p.x` is `(*p).x`: the field of what the pointer points at.
+        if let Value::RawPtr(p) = &obj {
+            let pointee = p.read().map_err(|e| RuntimeDiagnostic::new(e, span))?;
+            return self.read_field(pointee, field, span);
+        }
         match obj {
             Value::Struct(ref s) => {
                 let guard = s.lock().unwrap();
@@ -733,6 +738,10 @@ impl Interpreter {
 
     /// `obj[idx]`, once both are evaluated.
     fn read_index(&mut self, obj: Value, idx: Value, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
+        // `p[i]` is `*p.add(i)`.
+        if let (Value::RawPtr(p), Value::Int(i, _)) = (&obj, &idx) {
+            return p.stepped(*i as i64).read().map_err(|e| RuntimeDiagnostic::new(e, span));
+        }
         match (&obj, &idx) {
             (Value::Vec(v), Value::Int(i, _)) => {
                 let vec = v.lock().unwrap();

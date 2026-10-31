@@ -201,6 +201,20 @@ impl TypeChecker {
             return self.resolve_field(node, field, expected, span, self_type);
         }
 
+        // `p.x` on a raw pointer is the field of what it points at: C's `p->x`.
+        // Reading or writing it goes through the pointer, so it needs `unsafe`
+        // as `*p` does. The walk recorded whether the site sat inside one.
+        if let Type::RawPtr(inner) = &ty {
+            if !self.ptr_method_sites.get(&span).copied().unwrap_or(true) {
+                return Err(TypeError::UnsafeRequired {
+                    operation: "field access through a pointer".to_string(),
+                    span,
+                });
+            }
+            let inner = (**inner).clone();
+            return self.resolve_field(inner, field, expected, span, self_type);
+        }
+
         match &ty {
             // Source error already reported. The field is an error too, so
             // nothing downstream reports it again (#1485).

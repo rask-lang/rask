@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: `&` needs storage, and a raw pointer has no `[i]` (mem.unsafe).
+// Compile Error: `&` needs storage, and going through a pointer needs `unsafe`
+// (mem.unsafe).
 //
 // `&x` is the address of a variable, field or element. A call's result lives
 // nowhere until it's put somewhere, so it has no address to take.
 //
-// A raw pointer isn't indexed: it knows where its memory starts but not where
-// it ends, so `[i]` would read like a checked access and check nothing. The
-// offset is `p.add(i)` and the read is `*`. A field is read the same way,
-// through `*`: `(*p).x`.
+// `p[i]` and `p.x` read through the pointer, like `*p`: nothing checks the
+// memory is there, so each one is written inside `unsafe`.
 
 func make() -> i32 {
     return 3
@@ -24,18 +23,18 @@ func address_of_a_call() {
     fill(&make())
 }
 
-// ERROR: cannot index the raw pointer `**u8` [E0819]
+// ERROR: indexing a pointer requires an `unsafe` block [E0386]
 func index_a_pointer(argv: **u8) -> *u8 {
-    return unsafe argv[0]
+    return argv[0]
 }
 
 struct Pt {
     x: i32
 }
 
-// ERROR: a raw pointer has no field `x` [E0312]
+// ERROR: field access through a pointer requires an `unsafe` block [E0386]
 func field_of_a_pointer(p: *Pt) -> i32 {
-    return unsafe p.x
+    return p.x
 }
 
 func main() {
