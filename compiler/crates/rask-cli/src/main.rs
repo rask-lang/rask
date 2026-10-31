@@ -71,7 +71,13 @@ pub(crate) fn show_diagnostic_multi(
                 .with_sources(&sources);
             eprintln!("{}", fmt.format(diagnostic));
         }
-        None => eprintln!("{}: {}", output::error_label(), diagnostic.message),
+        // No span to head the report with — an error about the program as a
+        // whole, like an instantiation that never ends. The formatter still
+        // gives it its code, notes and help; only the snippet is missing.
+        None => {
+            let fmt = DiagnosticFormatter::new("").with_sources(&sources);
+            eprintln!("{}", fmt.format(diagnostic));
+        }
     }
 }
 
