@@ -2003,6 +2003,15 @@ pub(crate) struct CatchFrame {
 }
 
 impl<'a> MirLowerer<'a> {
+    /// The checker's type for `node`, as MIR. `what` names the node for the
+    /// error, which only a node made after checking can hit.
+    pub(crate) fn checked_mir_type(&self, node: NodeId, what: &str) -> Result<MirType, LoweringError> {
+        self.ctx
+            .lookup_raw_type(node)
+            .map(|ty| self.ctx.type_to_mir(ty))
+            .ok_or_else(|| LoweringError::no_checked_type(what))
+    }
+
     /// Lower a monomorphized function declaration to MIR.
     ///
     /// Get the metadata entry for a variable, creating a default if absent.
@@ -6803,6 +6812,16 @@ pub enum LoweringError {
     UnknownType(Vec<(&'static str, u32)>),
 }
 
+impl LoweringError {
+    /// The checker records a type for every `what` it checks, so one without
+    /// is a node made after checking that nothing typed: a compiler bug.
+    pub fn no_checked_type(what: &str) -> Self {
+        LoweringError::InvalidConstruct(format!(
+            "internal compiler error: the checker recorded no type for this {what}"
+        ))
+    }
+}
+
 impl std::fmt::Display for LoweringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -7081,8 +7100,46 @@ mod tests {
         }
     }
 
+    /// What the checker would record for a hand-built body: the type of each
+    /// annotated binding and each cast, for the primitive types these tests
+    /// write.
+    fn checked_types(decl: &Decl) -> HashMap<NodeId, Type> {
+        struct Collect(HashMap<NodeId, Type>);
+        fn primitive(ty: &TypeExpr) -> Option<Type> {
+            Some(match ty.to_string().as_str() {
+                "i32" => Type::I32,
+                "i64" => Type::I64,
+                "f64" => Type::F64,
+                "bool" => Type::Bool,
+                "string" => Type::String,
+                _ => return None,
+            })
+        }
+        impl rask_ast::rewrite::Rewrite for Collect {
+            fn expr(&mut self, e: &mut Expr) {
+                if let ExprKind::Cast { ty, .. } = &e.kind {
+                    if let Some(t) = primitive(ty) {
+                        self.0.insert(e.id, t);
+                    }
+                }
+            }
+            fn body(&mut self, b: &mut Vec<Stmt>) {
+                for s in b.iter() {
+                    if let StmtKind::Mut { ty: Some(ty), .. } | StmtKind::Let { ty: Some(ty), .. } = &s.kind {
+                        if let Some(t) = primitive(ty) {
+                            self.0.insert(s.id, t);
+                        }
+                    }
+                }
+            }
+        }
+        let mut c = Collect(HashMap::new());
+        rask_ast::rewrite::rewrite_decl(&mut decl.clone(), &mut c);
+        c.0
+    }
+
     fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
-        let node_types = HashMap::new();
+        let node_types = checked_types(decl);
         let ctx = MirContext::empty_with_map(&node_types);
         let mut fns = MirLowerer::lower_function(decl, all_decls, &ctx).expect("lowering failed");
         fns.remove(0) // Return the main function (first element)
@@ -7264,11 +7321,12 @@ mod tests {
 
     #[test]
     fn lower_let_binding() {
-        let decl = make_fn("f", vec![], None, vec![
-            let_stmt("x", Some("i32"), int_expr(10)),
-            return_stmt(None),
-        ]);
-        let f = lower_one(&decl);
+        let binding = let_stmt("x", Some("i32"), int_expr(10));
+        // The checker files an annotated binding's type under its statement.
+        let node_types = HashMap::from([(binding.id, Type::I32)]);
+        let decl = make_fn("f", vec![], None, vec![binding, return_stmt(None)]);
+        let ctx = MirContext::empty_with_map(&node_types);
+        let f = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx).expect("lowering failed").remove(0);
         let x_local = f.locals.iter().find(|l| l.name.as_deref() == Some("x"));
         assert!(x_local.is_some());
         assert_eq!(x_local.unwrap().ty, MirType::I32);

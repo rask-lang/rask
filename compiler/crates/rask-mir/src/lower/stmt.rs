@@ -1672,10 +1672,7 @@ impl<'a> MirLowerer<'a> {
         // `o? as v` took the `none` branch.
         let declared = annotated.and_then(|stmt| self.ctx.lookup_raw_type(stmt)).cloned();
         let var_ty = match annotated {
-            Some(stmt) => match self.ctx.lookup_raw_type(stmt) {
-                Some(checked) => self.ctx.type_to_mir(checked),
-                None => crate::fallback::unknown_type("lower/stmt:annotated_binding"),
-            },
+            Some(stmt) => self.checked_mir_type(stmt, "annotated binding")?,
             None => inferred_ty.clone(),
         };
         if matches!(var_ty, MirType::Heap(_)) {

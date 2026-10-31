@@ -2159,10 +2159,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
-            let target_ty = match self.ctx.lookup_raw_type(cast) {
-                Some(checked) => self.ctx.type_to_mir(checked),
-                None => crate::fallback::unknown_type("lower/expr:cast_target"),
-            };
+            let target_ty = self.checked_mir_type(cast, "cast")?;
 
             // E18: `e as i64` on a fieldless enum extracts the discriminant.
             // An enum value is passed by address, so casting it directly
@@ -2200,8 +2197,7 @@ impl<'a> MirLowerer<'a> {
     fn lower_convert(&mut self, convert: rask_ast::NodeId, expr: &Expr, kind: ConvertKind) -> Result<TypedOperand, LoweringError> {
             let (val, source_ty) = self.lower_expr(expr)?;
             let Some(checked) = self.ctx.lookup_raw_type(convert).cloned() else {
-                let guess = crate::fallback::unknown_type("lower/expr:convert_target");
-                return Ok((val, guess));
+                return Err(LoweringError::no_checked_type("conversion"));
             };
             let result_ty = self.ctx.type_to_mir(&checked);
             // A conversion's target is a number, never a wrapper itself, so a
