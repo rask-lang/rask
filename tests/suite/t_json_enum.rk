@@ -111,7 +111,7 @@ test "std.encoding/E25 — @rename overrides a variant's serialized name" {
 }
 
 @tag("kind")
-enum Signal { Ready  Done }
+enum Signal { Ready, Done }
 
 test "std.encoding/E24 — a unit variant under @tag is still an object" {
     assert json.encode(Signal.Ready) == "{{\"kind\":\"Ready\"}}"

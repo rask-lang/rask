@@ -22,6 +22,8 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `&`), `const` in a body. Parser errors only — a rule the checker enforces can never fire here, so those markers moved to files of their own |
+| [member_separators.rk](member_separators.rk) | Two struct fields or enum variants on one line with no comma between them. `..` and `...` inside a struct body were skipped as well; they're a parse error now |
+| [modifier_on_wrong_declaration.rk](modifier_on_wrong_declaration.rk) | `comptime`, `unsafe`, `public` or an attribute on a declaration that doesn't read it (`comptime struct`, `public import`) |
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 | [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 | [interface_body_members.rk](interface_body_members.rk) | Anything an interface body doesn't hold — `const`, a nested `struct`, a bare `public`, an attribute (#1164). All of them used to hang the parser: the body loop had no branch for them, so nothing consumed the token and the condition never went false. `type` was on this list and no longer is — an interface body holds methods and associated types (TD4) |

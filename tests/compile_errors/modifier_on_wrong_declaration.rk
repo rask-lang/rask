@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a modifier the declaration it's on doesn't read
+//
+// `public`, `comptime`, `unsafe` and attributes were parsed in front of any
+// declaration and dropped by the ones that don't use them, so `comptime
+// struct`, `unsafe enum` and `public import` all compiled and meant nothing.
+// Re-exporting a name is `export`.
+
+// ERROR: a struct isn't compile-time or not [E0100]
+comptime struct Point { x: i32 }
+
+func main() {}
