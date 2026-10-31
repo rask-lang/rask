@@ -180,7 +180,7 @@ Releases: https://github.com/rask-lang/rask/releases
 - `rask build` caches Rask object files in `build/.cache/*.o` (separate from the runtime object cache above). The key covers source, profile, target **and the compiler binary** (path + size + mtime), so rebuilding `rask` invalidates it on its own — no `rm -rf build/.cache` needed. Two compilers keep separate entries rather than evicting each other, so alternating between builds still hits. `rask build --verbose` prints the compiler fingerprint on a cache hit; `--force` or `--no-cache` bypasses. (`rask run` / `rask compile` on a single file don't cache at all.)
 - `println` is fully buffered to a pipe, so output before a crash is lost. Always `stdbuf -o0 -e0 ./binary > log 2>&1`, or you'll place the crash earlier than it is.
 
-Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
+Hooks auto-run `rask lint` and `rask check` after editing `.rk` files (check skips files that fail on purpose; the list is in `.claude/hooks/post-edit.sh`) and `rask test-specs` after editing `specs/*.md`.
 
 ## Writing
 

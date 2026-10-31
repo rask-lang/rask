@@ -6,7 +6,7 @@ them in if you want them, and nothing changes if you don't.
 - `rask-check.sh` runs `rask check --json` after every edit to a `.rk` file and
   hands any type errors straight back to Claude, one line each, with the fix the
   compiler suggests. Claude sees a broken build the moment it causes it, instead
-  of three edits later. This repo does the same for itself with `rask lint`.
+  of three edits later. This repo runs the same script on itself, next to `rask lint`.
 - `install-rask.sh` puts `rask` on PATH at session start. You need it for cloud
   sessions, which is where a session started from the mobile app runs: the
   container starts without rask, so it downloads the latest Linux release once.
