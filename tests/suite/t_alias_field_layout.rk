@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A field typed by a `type alias` is laid out as the alias's target. Layout
+// used to know nominal types (`type X = u32`) but not aliases, so a `U32`
+// field got a guessed 8-byte slot: `Pair` came out 16 bytes, not 8, and a C
+// struct declared with the header's own typedefs disagreed with C about
+// every offset.
+
+import reflect
+
+type alias U8 = u8
+type alias U32 = u32
+type alias Id = U32
+
+struct Pair {
+    kind: U32
+    code: U32
+}
+
+@layout(C)
+struct Mixed {
+    tag: U8
+    id: Id
+    stamp: u64
+}
+
+test "an alias field takes its target's size" {
+    assert reflect.size_of<Pair>() == 8
+    assert reflect.size_of<Mixed>() == 16
+}
+
+test "fields read back at the alias-sized offsets" {
+    let p = Pair(kind: 1, code: 2)
+    assert p.kind == 1
+    assert p.code == 2
+    let m = Mixed(tag: 7, id: 300, stamp: 1 << 40)
+    assert m.tag == 7
+    assert m.id == 300
+    assert m.stamp == 1 << 40
+}
+
+func main() {
+    println("{reflect.size_of<Pair>()} {reflect.size_of<Mixed>()}")
+}
