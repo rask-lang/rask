@@ -2993,21 +2993,6 @@ impl TypeChecker {
                         SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),
                         _ => None,
                     };
-                    // A struct handed *to* C rides in registers or on the
-                    // stack; one handed *back* is a separate ABI rule that
-                    // isn't built (#1101). Say so, rather than reading a value
-                    // nobody wrote.
-                    if let SymbolKind::ExternFunction { ret_ty: Some(ret), .. } = &sym.kind {
-                        if let Ok(Type::Named(id)) = super::parse_type::resolve_type_expr(ret, &self.types) {
-                            if matches!(self.types.get(id), Some(TypeDef::Struct { .. } | TypeDef::Union { .. })) {
-                                self.errors.push(TypeError::CStructReturn {
-                                    func: sym.name.clone(),
-                                    ty: self.types.type_name(id),
-                                    span,
-                                });
-                            }
-                        }
-                    }
                     if let Some(category) = unsafe_category {
                         self.unsafe_ops.push((span, category));
                         if !self.in_unsafe {

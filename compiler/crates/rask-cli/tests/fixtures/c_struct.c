@@ -22,3 +22,19 @@ Rect rask_test_make(int w, int h) {
     r.height = h;
     return r;
 }
+Vec2 rask_test_make_vec2(float x, float y) { Vec2 v = { x, y }; return v; }
+Vec2d rask_test_make_vec2d(double x, double y) { Vec2d v = { x, y }; return v; }
+Stamp rask_test_make_stamp(double t, long id) { Stamp s = { t, id }; return s; }
+Triple rask_test_make_triple(long a, long b, long c) { Triple t = { a, b, c }; return t; }
+Rgba rask_test_make_rgba(int base) {
+    Rgba c = { (unsigned char)base, (unsigned char)(base + 1), (unsigned char)(base + 2), (unsigned char)(base + 3) };
+    return c;
+}
+Seg rask_test_make_seg(float base) {
+    Seg s = { { base, base + 1 }, { base + 2, base + 3 } };
+    return s;
+}
+Tri rask_test_make_tri(float base) {
+    Tri t = { { base, base + 1 }, base + 2 };
+    return t;
+}

@@ -107,7 +107,8 @@ extend Window {
 | **TM2: Pointer mapping** | `T*` → `*T?`, `void*` → `*void?`, function pointers → `*func(...)`. A header doesn't say which pointers may be NULL, and a `*T` never is (`mem.unsafe/PT6`), so a data pointer is the optional one. A `*T` argument fills it; a returned one is checked before use. An override (BI3) narrows a pointer the library's docs promise is never NULL |
 | **TM3: Composite types** | A C struct is a `@layout(C)` struct, a union a `union` (always C layout), an opaque struct `extern "C" struct Name` with no body |
 | **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
-| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
+| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. A returned one comes back through a wrapper (SR1) |
+| **SR1: Returned through C** | A call to a C function that returns a struct or union by value goes through a C function the compiler writes, which makes the call and stores the result where the caller's value lives. Its struct is declared from the Rask declaration, field by field, so where the result travels (registers by field class, or memory the caller lends) is the C compiler's to decide, as for VA3. Compiled at link, like IN2 |
 
 ### Primitive Types
 
@@ -156,9 +157,9 @@ func main() {
 argument. The bare `Rect` is not in scope: a header must not claim a name a Rask
 declaration might want.
 
-Handing a struct *to* C works; getting one *back* does not, and the call is
-rejected rather than reading a value nobody wrote. Take it through an
-out-parameter instead.
+A struct goes to C and comes back by value: `let g = unsafe c.SDL_StringToGUID(text)`.
+I didn't teach codegen each target's return rules. The C compiler already
+knows them, and a one-line wrapper per function asks it (SR1).
 
 An out-parameter takes the address of a variable, field or element with `&`
 ([mem.unsafe](../memory/unsafe.md)). Taking it is safe; C writing through it

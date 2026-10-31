@@ -8468,8 +8468,9 @@ fn run_with_c_object(stem: &str) -> (String, bool) {
     (text, out.status.success())
 }
 
-/// One line per System V argument class. A struct passed as a pointer, or cut
-/// into the wrong register class, gives a different number here.
+/// One line per System V argument class, both ways. A struct passed as a
+/// pointer, cut into the wrong register class, or read back from where it
+/// wasn't returned, gives a different number here.
 #[test]
 fn a_c_struct_goes_by_value() {
     let (text, ok) = run_with_c_object("c_struct");
@@ -8485,6 +8486,15 @@ fn a_c_struct_goes_by_value() {
         "mixed 50",
         "seg 4321",
         "tri 321",
+        "back rect 3 4",
+        "back vec2 1.5 2.5",
+        "back vec2d 1.25 2.5",
+        "back stamp 0.5 7",
+        "back triple 1 2 3",
+        "back rgba 10 11 12 13",
+        "back seg 1 2 3 4",
+        "back tri 5 6 7",
+        "round trip 42",
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }
@@ -8526,16 +8536,6 @@ fn callbacks_and_variadics_reach_c() {
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }
-}
-
-#[test]
-fn a_c_function_returning_a_struct_is_rejected() {
-    let (text, ok) = check_in_fixtures("c_struct_return.rk");
-    assert!(!ok, "a by-value struct return must be rejected:\n{text}");
-    assert!(
-        text.contains("E0858") && text.contains("c.Rect"),
-        "expected the struct-return error naming the type, got:\n{text}"
-    );
 }
 
 /// A header is found next to the file that imports it, not next to wherever the

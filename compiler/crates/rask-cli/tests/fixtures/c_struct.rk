@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A struct out of a C header: built, read, and handed to C by value.
+// A struct out of a C header: built, read, handed to C by value, and handed
+// back.
 //
 // The type resolved in a signature and nothing else — no way to construct one,
 // no fields to read, and `c.Nonexistent` type-checked just as happily, so a
@@ -39,5 +40,28 @@ func main() {
         println("mixed {c.rask_test_mixed(r, 5, vd)}")
         println("seg {c.rask_test_seg(seg)}")
         println("tri {c.rask_test_tri(tri)}")
+    }
+
+    // Coming back, through a C wrapper the compiler writes (SR1): each class
+    // again, read field by field.
+    unsafe {
+        let mr = c.rask_test_make(3, 4)
+        println("back rect {mr.width} {mr.height}")
+        let mv = c.rask_test_make_vec2(1.5f32, 2.5f32)
+        println("back vec2 {mv.x} {mv.y}")
+        let mvd = c.rask_test_make_vec2d(1.25, 2.5)
+        println("back vec2d {mvd.x} {mvd.y}")
+        let ms = c.rask_test_make_stamp(0.5, 7i64)
+        println("back stamp {ms.t} {ms.id}")
+        let mt = c.rask_test_make_triple(1i64, 2i64, 3i64)
+        println("back triple {mt.a} {mt.b} {mt.c}")
+        let mc = c.rask_test_make_rgba(10)
+        println("back rgba {mc.r} {mc.g} {mc.b} {mc.a}")
+        let ms2 = c.rask_test_make_seg(1.0f32)
+        println("back seg {ms2.a.x} {ms2.a.y} {ms2.b.x} {ms2.b.y}")
+        let mt2 = c.rask_test_make_tri(5.0f32)
+        println("back tri {mt2.v[0]} {mt2.v[1]} {mt2.w}")
+        // Straight back into C: what came out is a struct like any other.
+        println("round trip {c.rask_test_area(c.rask_test_make(6, 7))}")
     }
 }

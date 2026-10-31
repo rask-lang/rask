@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: (MIT OR Apache-2.0) */
-/* Structs crossing the C ABI by value — one per System V class, so a
+/* Structs crossing the C ABI by value, both ways — one per System V class, so a
    misclassification shows up as a wrong number rather than a crash.
 
    Rect      8 bytes, one integer piece
@@ -29,4 +29,13 @@ int rask_test_rgba(Rgba c);
 int rask_test_mixed(Rect r, int k, Vec2d v);
 float rask_test_seg(Seg s);
 float rask_test_tri(Tri t);
+/* The same classes coming back: a returned struct travels by its own rule
+   (registers by class, or a hidden pointer for Triple). */
 Rect rask_test_make(int w, int h);
+Vec2 rask_test_make_vec2(float x, float y);
+Vec2d rask_test_make_vec2d(double x, double y);
+Stamp rask_test_make_stamp(double t, long id);
+Triple rask_test_make_triple(long a, long b, long c);
+Rgba rask_test_make_rgba(int base);
+Seg rask_test_make_seg(float base);
+Tri rask_test_make_tri(float base);

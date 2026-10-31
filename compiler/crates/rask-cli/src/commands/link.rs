@@ -498,8 +498,8 @@ pub fn link_executable_with(
 
 /// The C files codegen may write beside an object, by suffix: `<obj>.inline.c`
 /// wraps a header's inline functions (struct.c-interop/IN2), `<obj>.va.c`
-/// makes its variadic calls.
-pub const COMPANIONS: &[&str] = &["inline", "va"];
+/// makes its variadic calls, `<obj>.sret.c` its calls that return a struct.
+pub const COMPANIONS: &[&str] = &["inline", "va", "sret"];
 
 /// Compile the object's C companions that exist, with the runtime's compiler
 /// and flags, so they're built for the same target.

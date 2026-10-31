@@ -629,12 +629,6 @@ pub enum TypeError {
         from: Type,
         span: Span,
     },
-    #[error("`{func}` returns the struct `{ty}` by value, which isn't supported yet")]
-    CStructReturn {
-        func: String,
-        ty: String,
-        span: Span,
-    },
     #[error("method `{method}` returns Self and cannot be called through `any {interface_name}`")]
     InterfaceObjectSelfReturn {
         interface_name: String,
@@ -1868,7 +1862,6 @@ impl TypeError {
             | UnsafeRequired { .. }
             | UnsafeWithoutContract { .. }
             | LayoutAttribute { .. }
-            | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }
             | InterfaceObjectGenericMethod { .. }
             | ErrorInterfaceMember { .. }
