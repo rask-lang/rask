@@ -1391,9 +1391,8 @@ impl TypeChecker {
                                 self.note_type_bounds(&ty, expr.span);
                                 (declared, ty)
                             };
-                            let names = self.types.variant_field_names
-                                .get(&(type_id, variant_name.to_string()))
-                                .cloned()
+                            let names = self.types.variant_field_names(type_id, variant_name)
+                                .map(<[String]>::to_vec)
                                 .unwrap_or_default();
                             for field_init in fields.iter() {
                                 let want = names.iter()
@@ -4054,7 +4053,7 @@ impl TypeChecker {
                 // A variant's field names are its parameter names. The parser
                 // spells an unnamed field `_0`, `_1`, …: that variant has no
                 // names, so any label on it is reported.
-                if let Some(names) = self.types.variant_field_names.get(&(type_id, method.to_string())) {
+                if let Some(names) = self.types.variant_field_names(type_id, method).map(<[String]>::to_vec) {
                     let positional = |n: &String| {
                         n.strip_prefix('_').is_some_and(|d| d.parse::<usize>().is_ok())
                     };

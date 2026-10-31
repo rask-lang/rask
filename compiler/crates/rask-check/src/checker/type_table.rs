@@ -161,7 +161,6 @@ pub struct TypeTable {
     /// (`Outer.Named { code, kind }`), so matching them to types needs the names
     /// too — without them the checker gave every field a fresh variable and
     /// `let x: i64 = kind` type-checked (#809).
-    pub(super) variant_field_names: HashMap<(TypeId, String), Vec<String>>,
     /// AST declarations contributing methods to each type: the `struct`/`enum`
     /// itself plus every `extend` block bound to it.
     ///
@@ -254,7 +253,6 @@ impl TypeTable {
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
-            variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
             conformances: HashMap::new(),
@@ -342,6 +340,9 @@ impl TypeTable {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            attrs: Vec::new(),
+            backing: None,
+            variant_decls: Vec::new(),
         });
         self.option_type_id = Some(option_id);
 
@@ -356,6 +357,9 @@ impl TypeTable {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            attrs: Vec::new(),
+            backing: None,
+            variant_decls: Vec::new(),
         });
         self.result_type_id = Some(result_id);
 
@@ -374,6 +378,9 @@ impl TypeTable {
             is_transitive_resource: false,
             no_encode: false,
             no_decode: false,
+            attrs: Vec::new(),
+            backing: None,
+            variant_decls: Vec::new(),
         });
     }
 
@@ -706,13 +713,21 @@ impl TypeTable {
         self.resolve_name(name).map(Type::Named)
     }
 
+    /// The payload field names of `variant` of the enum `enum_id`, as declared.
+    /// The parser spells a positional field `_0`, `_1`, ….
+    pub fn variant_field_names(&self, enum_id: TypeId, variant: &str) -> Option<&[String]> {
+        let TypeDef::Enum { variants, variant_decls, .. } = self.get(enum_id)? else { return None };
+        let at = variants.iter().position(|(v, _)| v == variant)?;
+        variant_decls.get(at).map(|d| d.field_names.as_slice())
+    }
+
     /// The `(field name, type)` pairs of a struct-shaped enum variant named
     /// `Enum.Variant`, in declaration order. `None` for anything else — a plain
     /// struct, a tuple variant, an unknown name.
     pub fn struct_variant_fields(&self, qualified: &str) -> Option<Vec<(String, Type)>> {
         let (enum_name, variant) = qualified.rsplit_once('.')?;
         let enum_id = self.get_type_id(enum_name)?;
-        let names = self.variant_field_names.get(&(enum_id, variant.to_string()))?;
+        let names = self.variant_field_names(enum_id, variant)?.to_vec();
         let TypeDef::Enum { variants, .. } = self.get(enum_id)? else { return None };
         let (_, types) = variants.iter().find(|(v, _)| v == variant)?;
         if names.len() != types.len() {

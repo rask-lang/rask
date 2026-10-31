@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pass 1: declaration collection and checking.
 
-use rask_ast::type_params::{declared_type_param_names, enum_type_param_names, is_type_param_name, signature_type_param_names, struct_type_param_names};
+use rask_ast::type_params::{enum_type_param_names, is_type_param_name, signature_type_param_names, struct_type_param_names};
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
 use rask_types::{TypeDef, MethodSig, SelfParam};
 use rask_ast::ty::ParamMode;
@@ -1596,6 +1596,8 @@ impl TypeChecker {
             no_decode,
             reads_as,
             temporary,
+            attrs: s.attrs.clone(),
+            field_decls: s.fields.iter().map(rask_types::MemberDecl::of).collect(),
         });
 
         for m in &s.methods {
@@ -1734,19 +1736,6 @@ impl TypeChecker {
             .map(|m| self.method_signature(m, &enum_params, &Self::named_all(&enum_params)))
             .collect();
 
-        // Field names for the struct-shaped variants, so a pattern that names
-        // them can be matched against the positional payload types (#809).
-        let variant_names: Vec<(String, Vec<String>)> = e
-            .variants
-            .iter()
-            .map(|v| {
-                (
-                    v.name.clone(),
-                    v.fields.iter().map(|f| f.name.clone()).collect(),
-                )
-            })
-            .collect();
-
         // PC1: explicit `<T>` plus single letters appearing in payload types.
         let type_params = enum_type_param_names(e);
         let enum_id = self.types.register_type(TypeDef::Enum {
@@ -1760,12 +1749,10 @@ impl TypeChecker {
             // E16, as on a struct.
             no_encode: e.attrs.iter().any(|a| a.is("no_encode")),
             no_decode: e.attrs.iter().any(|a| a.is("no_decode")),
+            attrs: e.attrs.clone(),
+            backing: e.backing_type.as_ref().and_then(|t| resolve_type_expr(t, &self.types).ok()),
+            variant_decls: e.variants.iter().map(rask_types::VariantDecl::of).collect(),
         });
-        for (variant, field_names) in variant_names {
-            self.types
-                .variant_field_names
-                .insert((enum_id, variant), field_names);
-        }
         for m in &e.methods {
             self.note_method_access(enum_id, m);
         }
@@ -2106,6 +2093,7 @@ impl TypeChecker {
         let union_id = self.types.register_type(TypeDef::Union {
             name: u.name.clone(),
             fields,
+            field_decls: u.fields.iter().map(rask_types::MemberDecl::of).collect(),
         });
         self.types.note_layout_decl(union_id, rask_ast::decl::DeclKind::Union(u.clone()));
     }
@@ -2759,7 +2747,7 @@ impl TypeChecker {
                         name.clone(),
                         variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
                     ),
-                    Some(TypeDef::Union { name, fields }) => (
+                    Some(TypeDef::Union { name, fields, .. }) => (
                         name.clone(),
                         fields.iter().map(|(_, t)| t.clone()).collect(),
                     ),

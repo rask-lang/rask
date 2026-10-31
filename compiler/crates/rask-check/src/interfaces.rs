@@ -2022,6 +2022,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
         let coin = types.register_type(TypeDef::Struct {
             name: "Coin".to_string(),
@@ -2039,6 +2041,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
         let blob = types.register_type(TypeDef::Struct {
             name: "Blob".to_string(),
@@ -2056,6 +2060,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
 
         // Ring<T> implements Show where T: Show
