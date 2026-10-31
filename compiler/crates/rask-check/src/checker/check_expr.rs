@@ -1585,7 +1585,7 @@ impl TypeChecker {
                     self.record_try_placement(expr.id, step_id, &err_ty, expr.span);
                     return inner_ty;
                 }
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     // ER16 on an optional: the `none` leaves to the caller.
                     Type::Result { ok, err } if **err == Type::None => {
@@ -1736,6 +1736,7 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
+                            op: "try",
                             span: expr.span,
                         });
                         Type::Error
@@ -1757,7 +1758,7 @@ impl TypeChecker {
                 }
 
                 let val_ty = self.infer_expr(value);
-                let resolved = self.ctx.apply(&val_ty);
+                let resolved = self.settle_number(&val_ty);
                 let (ok_ty, err_ty) = match &resolved {
                     Type::Result { err, .. } if **err == Type::None => {
                         self.errors.push(TypeError::CatchOnOptional {
@@ -1774,13 +1775,16 @@ impl TypeChecker {
                             ok: Box::new(ok.clone()),
                             err: Box::new(err.clone()),
                         };
-                        let _ = self.unify(&val_ty, &shape, expr.span);
+                        if let Err(e) = self.unify(&val_ty, &shape, expr.span) {
+                            self.errors.push(e);
+                        }
                         (ok, err)
                     }
                     Type::Error => return Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved.clone(),
+                            op: "catch",
                             span: expr.span,
                         });
                         return Type::Error;
@@ -1907,7 +1911,7 @@ impl TypeChecker {
             // narrows nothing; the payload comes from the `as v` bind.
             ExprKind::IsPresent { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     // ER12: `?` marks absence. A result's other branch is an
                     // error, which is tested with `is` and handled with `catch`.
@@ -1933,6 +1937,7 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
+                            op: "?",
                             span: expr.span,
                         });
                         Type::Error
@@ -1942,7 +1947,7 @@ impl TypeChecker {
 
             ExprKind::Unwrap { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     Type::Result { ok, err: _ } => {
                         // Extract the ok type (works for T? and T or E)
@@ -2142,14 +2147,17 @@ impl TypeChecker {
                             });
                         }
                     }
-                } else if is_scalar_ty(&target) {
+                } else if is_scalar_ty(&target) || matches!(self.ctx.apply(&inner_ty), Type::Var(_)) {
                     // CV1–CV4, CH5, BL3: `as` is lossless widening only. Defer the
-                    // check until literal defaults resolve `inner_ty`.
+                    // check until literal defaults resolve `inner_ty` — for a
+                    // non-number target too, or `5 as string` slipped past
+                    // while the `5` was still a variable.
                     self.pending_casts.push(PendingCast {
                         source: inner_ty,
                         target: target.clone(),
                         target_name: ty.to_string(),
                         convert: None,
+                        in_unsafe: self.in_unsafe,
                         span: expr.span,
                     });
                 } else if !matches!(target, Type::Error)
@@ -2187,6 +2195,7 @@ impl TypeChecker {
                     target: target_ty.clone(),
                     target_name: target.to_string(),
                     convert: Some(*kind),
+                    in_unsafe: self.in_unsafe,
                     span: expr.span,
                 });
                 // CV7/CV10 yield `T?`. CV11/CV15/CV16 — and CV14 to an integer
@@ -5793,6 +5802,21 @@ impl TypeChecker {
         }
     }
 
+    /// `ty` as far as it's known, with a number literal's variable read as
+    /// the number it has to become. Such a variable can only ever settle on
+    /// a numeric type, so `?`, `!`, `catch` and `try` on it are already
+    /// wrong: `let x = 5; if x? { … }` passed as "not known yet" and native
+    /// segfaulted reading a tag the `5` doesn't have.
+    pub(super) fn settle_number(&self, ty: &Type) -> Type {
+        let resolved = self.ctx.apply(ty);
+        if let Type::Var(id) = resolved {
+            if let Some(kind) = self.ctx.literal_vars.get(&id).copied() {
+                return self.ctx.literal_default(id, kind);
+            }
+        }
+        resolved
+    }
+
     /// An `is` test that can't fail: `_`, or a bare name that isn't a variant
     /// and so binds. `c is Blue` on a `Color` with no `Blue` was always true.
     fn reject_irrefutable_test(
@@ -6558,6 +6582,34 @@ impl TypeChecker {
     /// CV1–CV4, CH5, BL3: reject any `as` cast that isn't lossless widening.
     fn check_as_cast(&mut self, src: &Type, pc: &PendingCast) {
         let (Some(s), Some(t)) = (prim_of(src), prim_of(&pc.target)) else {
+            // Not two numbers. What's left that `as` does: a fieldless
+            // enum's discriminant (type.enums/E18), and a raw pointer's
+            // address. Anything else reinterprets bits, which only `unsafe`
+            // may do. Unchecked, `"5" as i64` printed the string's pointer
+            // natively and 5 on the interpreter, and `opt as i64` read the
+            // optional's tag.
+            let to_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
+            let fieldless_enum = match src {
+                Type::Named(id) => matches!(
+                    self.types.get(*id),
+                    Some(TypeDef::Enum { variants, .. }) if variants.iter().all(|(_, f)| f.is_empty())
+                ),
+                _ => false,
+            };
+            let pointer = matches!(src, Type::RawPtr(_)) || matches!(pc.target, Type::RawPtr(_));
+            if *src == pc.target
+                || pc.in_unsafe
+                || pointer
+                || (to_int && fieldless_enum)
+                || matches!(src, Type::InterfaceObject { .. } | Type::Never)
+            {
+                return;
+            }
+            self.errors.push(TypeError::AsCastNotConvertible {
+                src_ty: src.clone(),
+                target_name: pc.target_name.clone(),
+                span: pc.span,
+            });
             return;
         };
         if as_cast_is_lossless(src, &pc.target, s, t) {
@@ -7198,6 +7250,8 @@ pub(super) struct PendingCast {
     pub target_name: String,
     /// `None` = `as` cast; `Some` = explicit conversion form.
     pub convert: Option<ConvertKind>,
+    /// Written inside `unsafe`, where `as` may reinterpret bits.
+    pub in_unsafe: bool,
     pub span: Span,
 }
 

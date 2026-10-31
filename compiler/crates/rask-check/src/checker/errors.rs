@@ -598,9 +598,11 @@ pub enum TypeError {
         other: String,
         span: Span,
     },
-    #[error("`try` requires a Result or Option type, found {found}")]
+    /// `try`, `catch` or `?` on a value with no absent or error branch.
+    #[error("`{op}` on `{found}`, which has no absent or error branch")]
     TryOnNonResult {
         found: Type,
+        op: &'static str,
         span: Span,
     },
     #[error("`{found}` can't be iterated")]

@@ -1342,8 +1342,9 @@ impl TypeChecker {
                 ty: ctx.apply(&ty),
                 span,
             },
-            TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
+            TypeError::TryOnNonResult { found, op, span } => TypeError::TryOnNonResult {
                 found: ctx.apply(&found),
+                op,
                 span,
             },
             TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {

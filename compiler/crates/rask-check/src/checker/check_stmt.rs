@@ -231,6 +231,17 @@ impl TypeChecker {
                                     span: stmt.span,
                                 });
                             }
+                            // PS2: `AA = 3` in a function rebound a module
+                            // `const` for every task at once.
+                            Some(super::BindingKind::ModuleConst) => {
+                                let ty = self.lookup_local(&root).unwrap_or(Type::Error);
+                                let ty = self.render_type(&self.ctx.apply(&ty));
+                                self.errors.push(TypeError::MutatePackageState {
+                                    name: root.clone(),
+                                    ty,
+                                    span: stmt.span,
+                                });
+                            }
                             Some(super::BindingKind::WithRead) => {
                                 self.errors.push(TypeError::MutateWithBinding {
                                     name: root.clone(),

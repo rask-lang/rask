@@ -1672,10 +1672,11 @@ impl ToDiagnostic for crate::TypeError {
                 )
             }
 
-            TryOnNonResult { found, span } => {
-                Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
+            TryOnNonResult { found, op, span } => {
+                Diagnostic::error(format!("`{}` on `{}`, which has no absent or error branch", op, found))
                     .with_code("E0369")
-                    .with_primary(*span, "not a Result type")
+                    .with_primary(*span, format!("a `{}` is always there", found))
+                    .with_help(format!("`{}` works on a `T?` or a `T or E`; a plain value needs none of it", op))
             }
 
             DynamicFieldNameNotComptime { span } => {

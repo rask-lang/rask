@@ -615,7 +615,9 @@ impl TypeChecker {
                     return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
                 }
                 let narrow_ty = normalize_type(&resolve_type_name(ty, &self.types), &self.types);
-                let resolved = self.ctx.apply(scrutinee_ty);
+                // A number literal's variable is a number: `x is none` on
+                // `let x = 5` can't be true.
+                let resolved = self.settle_number(scrutinee_ty);
                 // ER23 at variant granularity. `match` already dispatches on one
                 // variant of a `T or E` — `error-types.md` shows exactly that with
                 // `IoError.NotFound(p)` arms, and ER30 makes covering every

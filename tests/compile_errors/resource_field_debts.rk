@@ -98,8 +98,8 @@ func hands_it_over() -> i64 {
     return takes_pair(p)
 }
 
-func main() -> i64 {
+func main() {
     let n = closes_both() + closes_through_a_nested_path() + hands_it_over()
     println(closes_the_one_field())
-    return n
+    println("{n}")
 }

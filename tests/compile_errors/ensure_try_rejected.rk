@@ -21,7 +21,7 @@ extend Sink9 {
         return true
     }
 }
-func main() -> i32 or CloseErr9 {
+func run() -> i32 or CloseErr9 {
     let s = Sink9(id: 3)
     // ER4: in the body.
     ensure {
@@ -48,3 +48,5 @@ func main() -> i32 or CloseErr9 {
     }
     return 0
 }
+
+func main() {}
