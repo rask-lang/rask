@@ -565,7 +565,7 @@ impl<'a> InterfaceChecker<'a> {
                         _ => None,
                     })
                     .collect();
-                let name = self.types.get(*base).map(Self::type_def_name);
+                let name = self.types.get(*base).map(TypeDef::name);
                 self.container_or_named_encodable(name.as_deref(), Some(*base), &targs, visited)
             }
             Type::UnresolvedGeneric { name, args } => {
@@ -705,17 +705,6 @@ impl<'a> InterfaceChecker<'a> {
         match id {
             Some(id) => self.named_is_encodable(id, targs, visited),
             None => false,
-        }
-    }
-
-    fn type_def_name(def: &TypeDef) -> &str {
-        match def {
-            TypeDef::Struct { name, .. }
-            | TypeDef::Enum { name, .. }
-            | TypeDef::Interface { name, .. }
-            | TypeDef::Union { name, .. }
-            | TypeDef::NominalAlias { name, .. }
-            | TypeDef::Primitive { name, .. } => name,
         }
     }
 

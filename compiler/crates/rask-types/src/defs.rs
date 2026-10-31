@@ -57,6 +57,16 @@ pub struct VariantDecl {
 }
 
 impl VariantDecl {
+    /// A variant the compiler registers itself, with `arity` unnamed payload
+    /// fields and nothing else written about it.
+    pub fn synthesized(arity: usize) -> Self {
+        VariantDecl {
+            field_names: vec![String::new(); arity],
+            fields: vec![MemberDecl::default(); arity],
+            ..Default::default()
+        }
+    }
+
     pub fn of(variant: &rask_ast::decl::Variant) -> Self {
         VariantDecl {
             attrs: variant.attrs.clone(),
@@ -205,6 +215,28 @@ pub fn conformance_symbol(base: &str, package: &str) -> String {
 }
 
 impl TypeDef {
+    pub fn name(&self) -> &str {
+        match self {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Interface { name, .. }
+            | TypeDef::Union { name, .. }
+            | TypeDef::Primitive { name, .. }
+            | TypeDef::NominalAlias { name, .. } => name,
+        }
+    }
+
+    /// Every type this one's layout is made of: a struct's or union's fields,
+    /// each variant's payload, what a newtype wraps.
+    pub fn held_types(&self) -> Vec<&Type> {
+        match self {
+            TypeDef::Struct { fields, .. } | TypeDef::Union { fields, .. } => fields.iter().map(|(_, t)| t).collect(),
+            TypeDef::Enum { variants, .. } => variants.iter().flat_map(|(_, payload)| payload).collect(),
+            TypeDef::NominalAlias { underlying, .. } => vec![underlying],
+            TypeDef::Interface { .. } | TypeDef::Primitive { .. } => Vec::new(),
+        }
+    }
+
     /// The type's declared parameters: a generic struct's, enum's or
     /// newtype's. Empty for anything else.
     pub fn type_params(&self) -> &[String] {
