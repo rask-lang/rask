@@ -2413,6 +2413,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.store_target = t_root.map(|r| (r, t_fields.unwrap_or_default()));
                 self.check_expr(value);
                 self.store_target = None;
+                self.give_away_if_lent(value, "this assignment");
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
                 if let Some(place) = self.replaced_place(stmt) {
@@ -2570,6 +2571,7 @@ impl<'a> OwnershipChecker<'a> {
                         self.return_moves.insert(expr.id, moved);
                     }
                     self.consume_returned_resources(expr);
+                    self.give_away_if_lent(expr, "return");
                     self.check_flow(expr, Sink::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -3242,6 +3244,16 @@ impl<'a> OwnershipChecker<'a> {
                 let mut captures = Vec::new();
                 let mut capture_projections: HashMap<String, Option<Vec<String>>> = HashMap::new();
                 self.collect_free_vars_with_projections(body, &param_names, &mut captures, &mut capture_projections);
+
+                // A capture is a use of the outer binding where the closure is
+                // made: `let w = v; let f = || v.len()` gave the closure the
+                // vector `w` now owned.
+                for name in &captures {
+                    if matches!(self.bindings.get(name), Some(BindingState::Moved { .. })) {
+                        let read = Expr { id: expr.id, span: expr.span, kind: ExprKind::Ident(name.clone()) };
+                        self.check_expr(&read);
+                    }
+                }
 
                 // CB6: C calls a function pointer with only its own arguments,
                 // so there's nowhere for captures to come from.
@@ -7696,6 +7708,29 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// A lent name handed on whole — returned, or stored over another
+    /// variable — leaves two owners: the lender still has it. `with v[0] as
+    /// p { return p }` gave the caller the element `v` still held. Only a
+    /// non-Copy value; a Copy one is copied out.
+    fn give_away_if_lent(&mut self, expr: &Expr, sink: &str) {
+        let ExprKind::Ident(name) = &expr.kind else { return };
+        // A borrowed match payload is E0872's already, by type.
+        let lent = self.borrowed_with.contains_key(name) || self.borrowed_loop_items.contains_key(name);
+        if !lent {
+            return;
+        }
+        // A type parameter is left alone, as E0872 leaves it: whether `T`
+        // is Copy is the instantiation's to say, and generic bodies are
+        // re-checked per instantiation only for linear ones.
+        if self
+            .node_ty(&expr.id)
+            .is_some_and(|t| self.is_copy(t) || matches!(t, Type::UnresolvedNamed(_)))
+        {
+            return;
+        }
+        self.consume_binding(name, expr.span, Some(sink));
+    }
+
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
@@ -8278,11 +8313,33 @@ impl<'a> OwnershipChecker<'a> {
     /// `Config(port, ..base)` works on a borrowed `base`. Only a box or a
     /// resource has to go along with what it holds.
     fn consume_spread(&mut self, expr: &Expr) {
-        let ExprKind::StructLit { spread, .. } = &expr.kind else { return };
-        if let Some(ExprKind::Ident(name)) = spread.as_deref().map(|s| &s.kind) {
+        let ExprKind::StructLit { spread, fields, .. } = &expr.kind else { return };
+        let Some(base) = spread.as_deref() else { return };
+        if let ExprKind::Ident(name) = &base.kind {
             if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
                 self.consume_binding(name, expr.span, None);
+                return;
             }
+        }
+        // A field the spread fills that isn't Copy moves out of the base
+        // (mem.ownership/O2), so the base is gone after. Treated as a read,
+        // `Holder(n: 2, ..a)` left `a` and the new value sharing one vector,
+        // and a push through one showed in the other.
+        let takes_owned = self
+            .node_ty(&expr.id)
+            .and_then(|t| match t {
+                Type::Named(id) | Type::Generic { base: id, .. } => self.program.types.get(*id),
+                _ => None,
+            })
+            .is_some_and(|def| match def {
+                rask_types::TypeDef::Struct { fields: declared, .. } => declared
+                    .iter()
+                    .filter(|(n, _)| !fields.iter().any(|f| &f.name == n))
+                    .any(|(_, t)| !self.is_copy(t)),
+                _ => false,
+            });
+        if takes_owned {
+            self.consume_arg(base, None);
         }
     }
 

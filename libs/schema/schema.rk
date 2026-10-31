@@ -355,7 +355,7 @@ func edit_field_type(fields: Vec<Field>, name: string, at: Vec<Step>, depth: usi
         if f.name == name {
             found = true
             let inner = try edit_fields_at(f.ty, at, depth + 1, c, first)
-            out.push(Field(ty: inner, ..f))
+            out.push(Field(ty: inner, ..f.clone()))
         } else {
             out.push(f.clone())
         }
