@@ -28,9 +28,11 @@ struct RaskJsonVariant {
 struct RaskJsonShape {
     int64_t kind;
     int64_t slot;                 // struct/enum byte size, or element/value slot width
-    int64_t payload_offset;       // T?: where the payload sits, past the tag
+    int64_t payload_offset;       // T? and T or E: where the payload sits, past the tag
     int      is_static;           // primitive singletons are never freed
-    RaskJsonShape *elem;          // Vec element / Map value / T? payload
+    RaskJsonShape *elem;          // Vec element / Map value / T? payload / T of `T or E`
+    RaskJsonShape *err;           // E of `T or E`
+    RaskJsonShape *key;           // Map key; NULL for a string key, all JSON has
     // What a Vec element or Map value owns, in the form every container
     // constructor takes, so the container the decoder builds frees it.
     const int32_t *elem_owned;

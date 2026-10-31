@@ -1730,7 +1730,11 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            Type::Result { ok, .. } => self.queue_decode_defaults(ok, seen),
+            // A claim builds either side of a `T or E`.
+            Type::Result { ok, err } => {
+                self.queue_decode_defaults(ok, seen);
+                self.queue_decode_defaults(err, seen);
+            }
             Type::Tuple(elems) => {
                 for e in elems {
                     self.queue_decode_defaults(e, seen);

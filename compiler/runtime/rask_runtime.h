@@ -1045,6 +1045,12 @@ void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 RaskJsonShape *rask_json_shape_enum(int64_t size, int64_t tag_offset, int64_t tag_width);
 void           rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload);
+// A `T or E`'s shape: either side, at the payload offset. Claims only.
+RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int64_t total_size,
+                                      int64_t payload_offset);
+// A map's key, when it isn't a string: a primitive, compared by its bytes.
+// The map shape takes the key shape over. Claims only; JSON keys are strings.
+void           rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);

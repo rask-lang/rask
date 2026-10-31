@@ -194,10 +194,16 @@ static void fill_container_elems(RaskJsonShape *shape, int depth, void *containe
     while (another(depth)) {
         memset(cell, 0, (size_t)slot);
         if (is_map) {
-            RaskStr key;
-            fill_string(&key, depth + 1);
+            // A string key unless the shape names another; those are
+            // primitives, at most 16 bytes.
+            _Alignas(16) char key[16] = { 0 };
+            if (shape->key) {
+                fill(key, shape->key, depth + 1);
+            } else {
+                fill_string(key, depth + 1);
+            }
             fill(cell, shape->elem, depth + 1);
-            rask_map_insert((RaskMap *)container, &key, cell);
+            rask_map_insert((RaskMap *)container, key, cell);
         } else {
             fill(cell, shape->elem, depth + 1);
             rask_vec_push((RaskVec *)container, cell);
@@ -238,9 +244,12 @@ static void fill(void *dst, RaskJsonShape *shape, int depth) {
         return;
     }
     case RASK_JSHAPE_MAP: {
-        RaskMap *m = rask_map_new_string_keys(16, shape->slot, rask_elem_strs_one, 1, 0,
-                                              shape->elem_owned, shape->n_elem_owned,
-                                              shape->elem_align);
+        RaskMap *m = shape->key
+            ? rask_map_new(shape->key->slot, shape->slot, NULL, 0, shape->key->slot,
+                           shape->elem_owned, shape->n_elem_owned, shape->elem_align)
+            : rask_map_new_string_keys(16, shape->slot, rask_elem_strs_one, 1, 0,
+                                       shape->elem_owned, shape->n_elem_owned,
+                                       shape->elem_align);
         fill_container_elems(shape, depth, m, 1);
         memcpy(dst, &m, sizeof m);
         return;
@@ -265,6 +274,23 @@ static void fill(void *dst, RaskJsonShape *shape, int depth) {
             fill((char *)dst + f->offset, f->shape, depth);
         }
         return;
+    case RASK_JSHAPE_RESULT: {
+        uint64_t failed = draw(2);
+        *(uint8_t *)dst = failed ? RASK_TAG_ABSENT : RASK_TAG_PRESENT;
+        fill((char *)dst + shape->payload_offset, failed ? shape->err : shape->elem, depth + 1);
+        return;
+    }
+    case RASK_JSHAPE_I128:
+    case RASK_JSHAPE_U128: {
+        int is_signed = shape->kind == RASK_JSHAPE_I128;
+        int64_t low = draw_int(64, is_signed);
+        int64_t high = is_signed && low < 0 ? -1 : 0;
+        // Now and then a value past 64 bits, where a narrowing bug shows.
+        if (!ch_by_index && draw(8) == 0) high = (int64_t)raw_bits(64);
+        memcpy(dst, &low, 8);
+        memcpy((char *)dst + 8, &high, 8);
+        return;
+    }
     case RASK_JSHAPE_ENUM: {
         if (shape->nvariants == 0) return;
         struct RaskJsonVariant *v = &shape->variants[draw((uint64_t)shape->nvariants)];
@@ -306,6 +332,14 @@ static uint64_t walk_of(RaskJsonShape *shape, uint64_t *distinct) {
         }
         *distinct = n;
         return w;
+    }
+    case RASK_JSHAPE_RESULT: {
+        uint64_t dok, dfail;
+        uint64_t wok = walk_of(shape->elem, &dok), wfail = walk_of(shape->err, &dfail);
+        if (!wok || !wfail) return 0;
+        *distinct = dok + dfail;
+        uint64_t widest = wok > wfail ? wok : wfail;
+        return widest > UINT64_MAX / 2 ? 0 : 2 * widest;
     }
     case RASK_JSHAPE_ENUM: {
         uint64_t widest = 1, n = 0;
@@ -379,6 +413,7 @@ static int64_t cfg_shrink_claim = -1;
 static int64_t cfg_shrink_input = -1;
 static char   *cfg_shrink_path;
 static uint64_t cfg_seed_offset;
+static char    *cfg_only;   // ",2,5,": run only these claims; NULL runs all
 
 __attribute__((constructor)) static void claim_config_take(void) {
     const char *n = getenv("RASK_CLAIM_SAMPLES");
@@ -395,6 +430,14 @@ __attribute__((constructor)) static void claim_config_take(void) {
     // `--claim-seeds`: the k-th seed past the build's own.
     const char *offset = getenv("RASK_CLAIM_SEED_OFFSET");
     if (offset && *offset) cfg_seed_offset = strtoull(offset, NULL, 10);
+    // The claims whose verdicts weren't cached (type.claims/D4), by index.
+    const char *only = getenv("RASK_CLAIM_ONLY");
+    if (only && *only) {
+        size_t n = strlen(only);
+        cfg_only = malloc(n + 3);
+        if (cfg_only) snprintf(cfg_only, n + 3, ",%s,", only);
+    }
+    unsetenv("RASK_CLAIM_ONLY");
     unsetenv("RASK_CLAIM_SAMPLES");
     unsetenv("RASK_CLAIM_SHRINK");
     unsetenv("RASK_CLAIM_SEED_OFFSET");
@@ -533,6 +576,11 @@ void rask_claim_start(void) {
 int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t budget) {
     static int64_t claim_index;
     int64_t me = claim_index++;
+    if (cfg_only) {
+        char want[32];
+        snprintf(want, sizeof want, ",%lld,", (long long)me);
+        if (!strstr(cfg_only, want)) return 0;
+    }
     if (cfg_seed_offset) seed = (int64_t)mix((uint64_t)seed ^ mix(cfg_seed_offset));
     if (cfg_shrink_claim >= 0) {
         if (me != cfg_shrink_claim) return 0;

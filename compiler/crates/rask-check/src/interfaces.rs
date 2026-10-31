@@ -548,6 +548,11 @@ impl<'a> InterfaceChecker<'a> {
             Type::Result { ok, err } if matches!(**err, Type::None) => {
                 self.type_is_encodable(ok, visited)
             }
+            // `T or E`, when both sides are. A claim builds one (type.claims);
+            // JSON has no form for it yet, and a decode that reaches one says so.
+            Type::Result { ok, err } => {
+                self.type_is_encodable(ok, visited) && self.type_is_encodable(err, visited)
+            }
             Type::Array { elem, .. } => self.type_is_encodable(elem, visited),
             Type::Tuple(elems) => elems.iter().all(|e| self.type_is_encodable(e, visited)),
             Type::Named(id) => self.named_is_encodable(*id, &[], visited),

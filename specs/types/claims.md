@@ -56,14 +56,14 @@ A package's own claims sit in one reserved file. A repo's, a company's, and an o
 | Rule | Description |
 |------|-------------|
 | **W1: `claims.rk` is reserved** | `claims.rk` in a package directory is always that package's claims, with nothing to configure, the way `build.rk` is always its build script. It's taken out of the package's own sources (an exception to `struct.modules/PO1`) and compiled as its own package. A package without a manifest still gets one |
-| **W2: Shared claims** | A package lists further claims sources it's held to under `[claims]`, each a file or a directory of claim files, wherever the repo or company keeps them. Every claim in `claims.rk` and in the listed sources is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims source importing the package that applies it is not a cycle |
-| **W3: Locked like dependencies** | A claims source from a registry or git is pinned in `rask.lock` with its checksum (`struct.packages/LK3`). Editing it locally fails the build, so the only way to change one is a visible lock update |
+| **W2: Shared claims** | A package lists further claims sources it's held to under `[claims]`, each a file or a directory of claim files, wherever the repo or company keeps them. Every claim in `claims.rk` and in the listed sources is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims source importing the package that applies it is not a cycle. All of a package's claims sources compile together, as one package, so two of them can't declare the same name |
+| **W3: Locked like dependencies** | A claims source from git names a `rev` (or a `branch`), is fetched once into the user's cache, and is pinned in `rask.lock` with its checksum (`struct.packages/LK3`), under `[[claims]]`. Editing the checkout fails the build, so the only way to change one is a new `rev` in rask.toml, where review sees it. Claims sources from a registry wait for the registry |
 
 <!-- test: skip -->
 ```toml
 [claims]
 repo = { path = "../shared-claims" }                                # repo-wide
-acme = { git = "https://git.acme.dev/claims", version = "2.1" }     # company-wide
+acme = { git = "https://git.acme.dev/claims", rev = "v2.1" }        # company-wide
 ```
 
 The stdlib's interface laws are a claims source every package is held to without listing it.
@@ -72,7 +72,7 @@ The stdlib's interface laws are a claims source every package is held to without
 
 | Rule | Description |
 |------|-------------|
-| **IN1: Built like a decode** | A claim's inputs are the values `json.decode` could build, so a parameter's type must be `Decode` (`std.encoding/E12`–`E17`), and `char`, tuples and enums are built too. Both walk one description of the type, so a field the wire form leaves out takes its default here as it does in a decode (`E13a`). A type a decode can't build is made inside the claim instead, through the package's API, usually by applying a generated list of operations |
+| **IN1: Built like a decode** | A claim's inputs are the values `json.decode` could build, so a parameter's type must be `Decode` (`std.encoding/E12`–`E17`). Some `Decode` types have no JSON form yet and are built anyway: `char`, 128-bit integers, tuples, enums, `T or E`, and maps keyed by a number, `bool` or `char`. Both walk one description of the type, so a field the wire form leaves out takes its default here as it does in a decode (`E13a`). A type a decode can't build is made inside the claim instead, through the package's API, usually by applying a generated list of operations. A map keyed by a struct or enum isn't built yet |
 | **IN2: Own generator** | A type with an invariant its fields don't express (a sorted `Vec`, a valid AST) supplies its own generator in a claim file. Spelling open, see below |
 | **IN3: Not generatable in v1** | `@resource` types, `Shared`, `Rack`/`Link`, and `any I` can't be claim parameters. A claim can still build them in its body from generated parts |
 
@@ -115,7 +115,7 @@ A build failure that comes and goes between builds is worse than none, so checki
 | **D1: Seed from the claim** | The claim's seed derives from its name and the tokens of its body. Each input's sim seed derives from (claim seed, input index), so the inputs, schedules and faults are the same every build. Editing the claim draws new ones |
 | **D2: Step budget** | Each input gets a budget counted in steps, never wall-clock time. A claim build counts loop back-edges and calls; ordinary builds don't carry the counter. `@claim_budget(N)` on a claim raises it |
 | **D3: Toolchain-pinned** | A new compiler may change the generators and draw different inputs. That's a toolchain change like any other, and it can turn up a counterexample nobody saw before. That's the point of it |
-| **D4: Cached verdicts** | A verdict is cached under the claim's text and the semantic hashes of every function it reaches (`comp.architecture/IC2`). A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build |
+| **D4: Cached verdicts** | A verdict is cached under the claim's text, its seed and budget, the MIR of every function it reaches, the runtime and the compiler. A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build. Only a claim that held is cached: a false one runs and shrinks again until it holds |
 | **D5: Cached calls** | Calls a claim makes into the package it checks are memoized when the effects analysis finds them pure (no I/O, no scheduling point); an effectful call's result also depends on the sim state, not only its arguments. Pure calls are memoized on (the callee's semantic hash, the receiver and argument values), and the result holds the returned value and, for a `mutate` parameter, the value after the call. A pure call with the same inputs always gives the same result, and owned values mean nothing else can change behind it. Sampled operation lists share prefixes, so the state after `[Deposit(5), Withdraw(2)]` is computed once for every input that starts that way. The memo table is stored with the verdict cache (D4), keyed the same way, so it survives between builds until the callee changes |
 
 Deep random search belongs outside the build, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `--claim-seeds N` runs every sampled claim on N more seeds after the build's own. A claim checked in full has nothing left to find and is skipped. The flag goes on the command line, never in a manifest, so what a plain build decides doesn't change.
@@ -191,4 +191,3 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 - **Function contracts.** A guarantee written on a function signature would read better than a separate claim for simple cases. `ensure` is taken (cleanup), so contracts would need their own word, and they would break CL2 by putting intent next to code an agent edits.
 - **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for the package's own `claims.rk`, and only that.
 - **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
-- **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).

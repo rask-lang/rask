@@ -763,6 +763,7 @@ impl PackageRegistry {
                 metadata: Vec::new(),
                 list_metadata: Vec::new(),
                 profiles: Vec::new(),
+                claims: Vec::new(),
             })
         });
 

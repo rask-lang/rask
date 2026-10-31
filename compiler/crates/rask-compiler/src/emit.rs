@@ -205,23 +205,85 @@ pub fn emit(
     build_mode: BuildMode,
     obj_path: &str,
 ) -> Emitted {
+    match lower(input, entry) {
+        Ok(lowered) => emit_lowered(input, entry, lowered, target, build_mode, obj_path),
+        Err(errors) => Emitted { diagnostics: Vec::new(), errors },
+    }
+}
+
+/// `emit`, from MIR the caller already lowered and looked at.
+pub fn emit_lowered(
+    input: &BackEnd,
+    entry: &Entry,
+    lowered: Lowered,
+    target: Option<&str>,
+    build_mode: BuildMode,
+    obj_path: &str,
+) -> Emitted {
     let mut diagnostics = Vec::new();
-    let errors = match emit_inner(input, entry, target, build_mode, obj_path, &mut diagnostics) {
+    let errors = match emit_inner(input, entry, lowered, target, build_mode, obj_path, &mut diagnostics) {
         Ok(()) => Vec::new(),
         Err(errors) => errors,
     };
     Emitted { diagnostics, errors }
 }
 
+/// Every function `root` can reach, by name, in name order: what it calls,
+/// takes the address of, or builds a closure or ensure hook from; the methods
+/// of any interface object it boxes; and the helpers lowering synthesized for
+/// it (named `<fn>__…`). A claim's verdict depends on these and on nothing
+/// else the program holds (type.claims/D4).
+pub fn reached_from<'f>(
+    lowered: &'f Lowered,
+    input: &BackEnd,
+    root: &str,
+) -> std::collections::BTreeMap<&'f str, &'f MirFunction> {
+    use rask_mir::{MirRValue, MirStmtKind};
+    let by_name: HashMap<&str, &MirFunction> =
+        lowered.functions.iter().map(|f| (f.name.as_str(), f)).collect();
+    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
+    let mut reached = std::collections::BTreeMap::new();
+    let mut queue = vec![root.to_string()];
+    while let Some(name) = queue.pop() {
+        let Some(f) = by_name.get(name.as_str()) else { continue };
+        if reached.insert(f.name.as_str(), *f).is_some() {
+            continue;
+        }
+        let helpers = format!("{}__", f.name);
+        queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
+        for stmt in f.blocks.iter().flat_map(|b| &b.statements) {
+            match &stmt.kind {
+                MirStmtKind::Call { func, .. } => queue.push(func.name.clone()),
+                MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => queue.push(n.clone()),
+                MirStmtKind::ClosureCreate { func_name, .. } => queue.push(func_name.clone()),
+                MirStmtKind::EnsureHookRegister { thunk, .. } => queue.push(thunk.clone()),
+                MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
+                    for method in interface_methods.get(interface_name).into_iter().flatten() {
+                        queue.push(
+                            input.mono.vtable_symbols
+                                .get(&(concrete_type.clone(), method.clone()))
+                                .cloned()
+                                .unwrap_or_else(|| format!("{concrete_type}_{method}")),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    reached
+}
+
 fn emit_inner(
     input: &BackEnd,
     entry: &Entry,
+    lowered: Lowered,
     target: Option<&str>,
     build_mode: BuildMode,
     obj_path: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), Vec<String>> {
-    let Lowered { mut functions, pipeline, field_types } = lower(input, entry)?;
+    let Lowered { mut functions, pipeline, field_types } = lowered;
     let has_errors = pipeline.diagnostics.iter().any(|d| d.severity == Severity::Error);
     diagnostics.extend(pipeline.diagnostics);
     if has_errors {

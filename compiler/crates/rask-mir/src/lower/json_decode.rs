@@ -28,7 +28,7 @@ use rask_mono::runtime_abi::{
     RASK_JFIELD_NOT_SERIALIZED as FIELD_NOT_SERIALIZED, RASK_JSHAPE_BOOL as JSHAPE_BOOL,
     RASK_JSHAPE_F32 as JSHAPE_F32, RASK_JSHAPE_F64 as JSHAPE_F64, RASK_JSHAPE_I16 as JSHAPE_I16,
     RASK_JSHAPE_I32 as JSHAPE_I32, RASK_JSHAPE_I64 as JSHAPE_I64, RASK_JSHAPE_I8 as JSHAPE_I8,
-    RASK_JSHAPE_CHAR as JSHAPE_CHAR, RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
+    RASK_JSHAPE_CHAR as JSHAPE_CHAR, RASK_JSHAPE_I128 as JSHAPE_I128, RASK_JSHAPE_U128 as JSHAPE_U128, RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
     RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
     RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
     RASK_JSON_ERR_TYPE as ERR_TYPE,
@@ -145,7 +145,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(dst),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::Sized(target_mir.size()),
+                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
                 },
             }));
             v
@@ -407,12 +407,58 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(addr))
     }
 
-    /// The shapes only a claim's inputs use: `char`, tuples and enums. JSON's
-    /// form for an enum is still open (std.json), so a decode never asks.
+    /// The shapes only a claim's inputs use: `char`, 128-bit integers, tuples,
+    /// enums, `T or E`, and maps with a key that isn't a string. JSON has no
+    /// form for any of them yet (std.json), so a decode never asks.
     fn emit_claim_only_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
         let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
-        if matches!(ty, Type::Char) || matches!(ty, Type::UnresolvedNamed(n) if n == "char") {
+        let named = |want: &str| matches!(ty, Type::UnresolvedNamed(n) if n == want);
+        if matches!(ty, Type::Char) || named("char") {
             return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_CHAR)]));
+        }
+        if matches!(ty, Type::I128) || named("i128") {
+            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_I128)]));
+        }
+        if matches!(ty, Type::U128) || named("u128") {
+            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_U128)]));
+        }
+        // `T or E`, either side. (`T?` is a result with `none` for its error,
+        // and JSON reads that one.)
+        if let Type::Result { ok, err } = ty {
+            if **err != Type::None {
+                let ok_shape = self.emit_shape_for(ok, ShapeFor::Claims)?;
+                let err_shape = self.emit_shape_for(err, ShapeFor::Claims)?;
+                let mir = self.ctx.type_to_mir(ty);
+                return Some(self.emit_shape_call("json_shape_result", vec![
+                    MirOperand::Local(ok_shape),
+                    MirOperand::Local(err_shape),
+                    int(mir.size() as i64),
+                    int(mir.payload_offset() as i64),
+                ]));
+            }
+        }
+        // A map keyed by a primitive. JSON keys are strings; a claim's map
+        // can have any key a map compares by its bytes. A key with its own
+        // `eq` and `hash` (a struct, an enum) isn't built yet.
+        if let Some(key) = self.collection_arg(ty, "Map", 0) {
+            if compared_by_bytes(&key) {
+                let key_shape = self.emit_shape_for(&key, ShapeFor::Claims)?;
+                let val = self.collection_arg(ty, "Map", 1)?;
+                let val_shape = self.emit_shape_for(&val, ShapeFor::Claims)?;
+                let slot = self.slot_size_for_type(&val)?;
+                let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
+                let map = self.emit_shape_call("json_shape_map", vec![
+                    MirOperand::Local(val_shape),
+                    int(slot),
+                    owned,
+                ]);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("json_shape_map_key".to_string()),
+                    args: vec![MirOperand::Local(map), MirOperand::Local(key_shape)],
+                }));
+                return Some(map);
+            }
         }
         if let Type::Tuple(elems) = ty {
             let MirType::Tuple(fields) = self.ctx.type_to_mir(ty) else { return None };
@@ -482,7 +528,8 @@ impl<'a> MirLowerer<'a> {
         let Some(shape) = self.emit_shape_for(target, ShapeFor::Claims) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "a claim can't be given a `{}` — its inputs are built the way \
-                 json.decode builds a value, plus char, tuples and enums",
+                 json.decode builds a value, plus char, 128-bit integers, tuples, enums, \
+                 `T or E` and maps with primitive keys",
                 type_label(target)
             )));
         };
@@ -512,7 +559,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(dst),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::Sized(target_mir.size()),
+                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
                 },
             }));
             v
@@ -724,6 +771,18 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
         _ => return None,
     };
     Some(kind)
+}
+
+/// A key a map compares by its bytes (`Map_new`): a number, a `bool`, a
+/// `char`. Not a string, which compares by contents.
+fn compared_by_bytes(ty: &Type) -> bool {
+    let named = |n: &str| matches!(ty, Type::UnresolvedNamed(x) if x == n);
+    let kind = prim_shape_kind(ty);
+    (kind.is_some() && kind != Some(JSHAPE_STRING))
+        || matches!(ty, Type::Char | Type::I128 | Type::U128)
+        || named("char")
+        || named("i128")
+        || named("u128")
 }
 
 fn type_label(ty: &Type) -> String {

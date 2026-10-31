@@ -66,38 +66,191 @@ fn options() -> ClaimsOptions {
 /// Check the claims of the package at `path`, if it has any.
 pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> ClaimsOutcome {
     let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
-    let claims_path = root.join(rask_resolve::package::CLAIMS_FILE);
-    let Ok(claims_src) = std::fs::read_to_string(&claims_path) else {
-        return ClaimsOutcome::NoClaims;
+    let sources = match claims_sources(&root) {
+        Ok(sources) => sources,
+        Err(e) => {
+            eprintln!("{}: {e}", output::error_label());
+            return ClaimsOutcome::Failed;
+        }
     };
-    let plan = match plan_claims(&claims_src) {
+    if sources.is_empty() {
+        return ClaimsOutcome::NoClaims;
+    }
+    let plan = match plan_claims(&sources) {
         Ok(plan) => plan,
         Err(diags) => {
-            let sources = vec![(claims_path.clone(), claims_src.clone())];
             for d in &diags {
                 crate::show_diagnostic_multi(d, &sources);
             }
             return ClaimsOutcome::Failed;
         }
     };
-    let Some(compiled) = compile_claims(path, &claims_path, &claims_src, &plan) else {
+    let Some(compiled) = compile_claims(path, &sources, &plan) else {
         return ClaimsOutcome::Failed;
     };
     if plan.claims.is_empty() || mode == ClaimsMode::Check {
         return ClaimsOutcome::Held;
     }
-    let Some(bin) = link_claims(&compiled, &plan) else {
-        return ClaimsOutcome::Failed;
+    let runs = claim_runs(&plan);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let entry = rask_compiler::emit::Entry::Claims(&runs);
+    let lowered = match rask_compiler::emit::lower(&input, &entry) {
+        Ok(lowered) => lowered,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{}: compile claims: {}", output::error_label(), e);
+            }
+            return ClaimsOutcome::Failed;
+        }
     };
-    let ok = run_claims(&bin, &plan, &compiled, &claims_path, format);
-    // Same switch as a test binary's: a claims process that dies takes the
-    // evidence with it.
-    if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
-        eprintln!("{}: claims binary kept at {}", output::warning_label(), bin.display());
+
+    // A claim nothing it reaches changed in keeps its verdict (D4).
+    let keys: Vec<u64> = plan.claims.iter().enumerate()
+        .map(|(i, c)| verdict_key(c, &rask_compiler::emit::reached_from(&lowered, &input, &case_fn(i))))
+        .collect();
+    let cache_path = root.join("build").join(".cache").join("claims");
+    let mut cache = VerdictCache::load(&cache_path);
+    let cached: Vec<Option<Record>> = plan.claims.iter().zip(&keys)
+        .map(|(c, k)| cache.get(&c.name, *k))
+        .collect();
+    let to_run: Vec<usize> = (0..plan.claims.len()).filter(|i| cached[*i].is_none()).collect();
+    let opts = options();
+
+    let bin = if to_run.is_empty() && opts.extra_seeds == 0 {
+        None
     } else {
-        let _ = std::fs::remove_file(&bin);
+        match link_claims(&input, &entry, lowered, &compiled.link_opts) {
+            Some(bin) => Some(bin),
+            None => return ClaimsOutcome::Failed,
+        }
+    };
+    let ran = match (&bin, to_run.is_empty()) {
+        (Some(bin), false) => {
+            let only = to_run.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            run_bin(bin, &[("RASK_CLAIM_ONLY", only)])
+        }
+        _ => (Vec::new(), String::new(), process::ExitStatus::default()),
+    };
+    let mut records = ran.0;
+    for (i, c) in cached.into_iter().enumerate() {
+        if let Some(r) = c {
+            debug_assert_eq!(r.claim, plan.claims[i].name);
+            records.push(r);
+        }
     }
-    if ok { ClaimsOutcome::Held } else { ClaimsOutcome::Failed }
+    let ok = run_claims(bin.as_deref(), (records, ran.1, ran.2), &plan, &compiled, &root, format);
+
+    // Only a claim that held is kept: a false one is what's being worked on,
+    // and it runs and shrinks again until it holds.
+    for (i, claim) in plan.claims.iter().enumerate() {
+        if to_run.contains(&i) {
+            if let Some(r) = ok.held.iter().find(|r| r.claim == claim.name) {
+                cache.put(&claim.name, keys[i], r);
+            }
+        }
+    }
+    cache.save(&cache_path, &plan);
+
+    if let Some(bin) = bin {
+        // Same switch as a test binary's: a claims process that dies takes the
+        // evidence with it.
+        if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
+            eprintln!("{}: claims binary kept at {}", output::warning_label(), bin.display());
+        } else {
+            let _ = std::fs::remove_file(&bin);
+        }
+    }
+    if ok.all_held { ClaimsOutcome::Held } else { ClaimsOutcome::Failed }
+}
+
+// ─── Cached verdicts (type.claims/D4) ───────────────────────
+
+/// What a claim's verdict depends on: the claim itself, its seed and budget,
+/// the MIR of every function it reaches, the runtime it links against, and
+/// the compiler that made the rest. A comment edit elsewhere in the package
+/// leaves it alone; a change to anything the claim calls doesn't.
+fn verdict_key(claim: &ClaimPlan, reached: &std::collections::BTreeMap<&str, &rask_mir::MirFunction>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    claim.name.hash(&mut h);
+    claim.seed.hash(&mut h);
+    claim.budget.hash(&mut h);
+    for f in reached.values() {
+        f.to_string().hash(&mut h);
+    }
+    runtime_fingerprint().hash(&mut h);
+    super::cache::compiler_fingerprint().hash(&mut h);
+    h.finish()
+}
+
+/// The runtime's sources, by content: the linker compiles them per build, so
+/// an edit there changes what a claim runs without changing the compiler.
+fn runtime_fingerprint() -> u64 {
+    use std::hash::{Hash, Hasher};
+    static PRINT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *PRINT.get_or_init(|| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Ok(dir) = super::link::find_runtime_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "c" || x == "h"))
+                .collect();
+            files.sort();
+            for f in files {
+                f.file_name().hash(&mut h);
+                std::fs::read(&f).unwrap_or_default().hash(&mut h);
+            }
+        }
+        h.finish()
+    })
+}
+
+/// `build/.cache/claims`: one line per claim that held, `name<TAB>key<TAB>record`.
+struct VerdictCache {
+    entries: Vec<(String, u64, String)>,
+}
+
+impl VerdictCache {
+    fn load(path: &Path) -> VerdictCache {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let entries = text
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(3, '\t');
+                let name = parts.next()?.to_string();
+                let key = u64::from_str_radix(parts.next()?, 16).ok()?;
+                Some((name, key, parts.next()?.to_string()))
+            })
+            .collect();
+        VerdictCache { entries }
+    }
+
+    fn get(&self, name: &str, key: u64) -> Option<Record> {
+        let (_, _, raw) = self.entries.iter().find(|(n, k, _)| n == name && *k == key)?;
+        Record::parse(raw)
+    }
+
+    fn put(&mut self, name: &str, key: u64, r: &Record) {
+        self.entries.retain(|(n, _, _)| n != name);
+        self.entries.push((name.to_string(), key, r.raw.clone()));
+    }
+
+    /// Keeps the claims the plan still has, so a deleted claim's line goes.
+    fn save(&self, path: &Path, plan: &Plan) {
+        let text: String = self
+            .entries
+            .iter()
+            .filter(|(n, _, _)| plan.claims.iter().any(|c| &c.name == n))
+            .map(|(n, k, raw)| format!("{n}\t{k:016x}\t{raw}\n"))
+            .collect();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, text);
+    }
 }
 
 // ─── Planning: the case functions ───────────────────────────
@@ -105,7 +258,9 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
 /// One claim, as `claims.rk` declares it.
 struct ClaimPlan {
     name: String,
-    /// Within `claims.rk`; the file id is whatever the compile gives the file.
+    /// Which source declares it, by index into the sources.
+    file: usize,
+    /// Within that source; the file id is whatever the compile gives the file.
     span: Span,
     params: Vec<(String, Span)>,
     seed: u64,
@@ -113,6 +268,8 @@ struct ClaimPlan {
 }
 
 struct Plan {
+    /// Each claims source's path, in source order.
+    files: Vec<PathBuf>,
     claims: Vec<ClaimPlan>,
     /// The generated source: the end-of-body marker and a case function per claim.
     runner: String,
@@ -125,17 +282,55 @@ fn case_fn(i: usize) -> String {
     format!("__claim_case_{i}")
 }
 
-/// The claims `claims.rk` declares and the code that calls them. A file that
-/// doesn't parse plans nothing: the compile reports why.
-fn plan_claims(claims_src: &str) -> Result<Plan, Vec<rask_diagnostics::Diagnostic>> {
-    let mut lexer = rask_lexer::Lexer::new_with_file_id(claims_src, 0);
-    let tokens = lexer.tokenize().tokens;
-    let decls = rask_parser::Parser::new_with_file_id(tokens, 0, 0).parse().decls;
+/// The claims sources of the package at `root`: its own `claims.rk`, then
+/// each `[claims]` entry of its manifest, a file or every `.rk` file under a
+/// directory (type.claims/W1, W2). They compile together as one package.
+fn claims_sources(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut sources = Vec::new();
+    let own = root.join(rask_resolve::package::CLAIMS_FILE);
+    if let Ok(text) = std::fs::read_to_string(&own) {
+        sources.push((own, text));
+    }
+    let manifest = root.join("rask.toml");
+    if !manifest.is_file() {
+        return Ok(sources);
+    }
+    let decl = rask_manifest::load(&manifest)?;
+    for c in &decl.claims {
+        let dir = match (&c.path, &c.git) {
+            (Some(p), _) => root.join(p),
+            (None, Some(_)) => super::claims_git::checkout(root, c)?,
+            (None, None) => continue,
+        };
+        let files = if dir.is_dir() {
+            crate::collect_rk_files(&dir).into_iter().map(PathBuf::from).collect()
+        } else if dir.is_file() {
+            vec![dir.clone()]
+        } else {
+            return Err(format!("[claims] {}: `{}` doesn't exist", c.name, dir.display()));
+        };
+        if files.is_empty() {
+            return Err(format!("[claims] {}: `{}` holds no `.rk` files", c.name, dir.display()));
+        }
+        for f in files {
+            let text = std::fs::read_to_string(&f).map_err(|e| format!("[claims] {}: reading `{}`: {e}", c.name, f.display()))?;
+            sources.push((f, text));
+        }
+    }
+    Ok(sources)
+}
 
+/// The claims the sources declare and the code that calls them. A file that
+/// doesn't parse plans nothing: the compile reports why.
+fn plan_claims(sources: &[(PathBuf, String)]) -> Result<Plan, Vec<rask_diagnostics::Diagnostic>> {
     let mut claims = Vec::new();
     let mut errors = Vec::new();
     let mut runner = format!("import claims\n\nfunc {}() {{\n    claims.reached_end()\n}}\n\n", rask_desugar::CLAIM_END_MARKER);
     let mut input_lines: Vec<Option<(usize, usize)>> = vec![None; runner.lines().count()];
+    for (file, (_, src)) in sources.iter().enumerate() {
+    let mut lexer = rask_lexer::Lexer::new_with_file_id(src, file as u16);
+    let tokens = lexer.tokenize().tokens;
+    let decls = rask_parser::Parser::new_with_file_id(tokens, 0, file as u16).parse().decls;
     for f in decls.iter().filter_map(claim_fn) {
         if let Some(p) = f.params.iter().find(|p| p.is_mutate) {
             errors.push(
@@ -156,14 +351,16 @@ fn plan_claims(claims_src: &str) -> Result<Plan, Vec<rask_diagnostics::Diagnosti
         }
         runner.push_str("    )\n}\n\n");
         input_lines.extend([None, None, None]);
-        let text = claims_src.get(f.span.start..f.span.end).unwrap_or(&f.name);
+        let text = src.get(f.span.start..f.span.end).unwrap_or(&f.name);
         claims.push(ClaimPlan {
             name: f.name.clone(),
+            file,
             span: f.span,
             params: f.params.iter().map(|p| (p.name.clone(), p.name_span)).collect(),
             seed: fnv1a(text),
             budget: claim_budget(f).unwrap_or(DEFAULT_BUDGET),
         });
+    }
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -177,7 +374,8 @@ fn plan_claims(claims_src: &str) -> Result<Plan, Vec<rask_diagnostics::Diagnosti
     if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
         eprintln!("{runner}");
     }
-    Ok(Plan { claims, runner, input_lines })
+    let files = sources.iter().map(|(p, _)| p.clone()).collect();
+    Ok(Plan { files, claims, runner, input_lines })
 }
 
 fn claim_fn(d: &Decl) -> Option<&FnDecl> {
@@ -215,13 +413,13 @@ struct Compiled {
     link_opts: super::link::LinkOptions,
     /// Every source in the compile, by file id, for rendering diagnostics.
     sources: Vec<(PathBuf, String)>,
-    /// The id the compile gave `claims.rk`.
-    claims_file: u16,
+    /// The id the compile gave each claims source, in source order.
+    claims_files: Vec<u16>,
 }
 
-/// Compile `claims.rk` and the plan's case functions as a package that
-/// imports the package at `path`.
-fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan) -> Option<Compiled> {
+/// Compile the claims sources and the plan's case functions as one package
+/// that imports the package at `path`.
+fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &Plan) -> Option<Compiled> {
     let opts = super::build::BuildOptions {
         profile: "debug".to_string(),
         verbose: false,
@@ -244,10 +442,11 @@ fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan)
     }
     let claims_id = match prepared.registry.add_source_package(
         &format!("{root_name}_claims"),
-        vec![
-            (claims_path.to_path_buf(), claims_src.to_string()),
-            (PathBuf::from(RUNNER_FILE), plan.runner.clone()),
-        ],
+        claim_sources
+            .iter()
+            .cloned()
+            .chain([(PathBuf::from(RUNNER_FILE), plan.runner.clone())])
+            .collect(),
         vec![root_id],
         false,
     ) {
@@ -259,7 +458,8 @@ fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan)
     };
 
     let mut sources: Vec<(PathBuf, String)> = Vec::new();
-    let (mut claims_file, mut runner_file) = (0u16, u16::MAX);
+    let mut claims_files = vec![0u16; claim_sources.len()];
+    let mut runner_file = u16::MAX;
     for pkg in prepared.registry.packages() {
         for f in &pkg.files {
             let slot = f.file_id as usize;
@@ -267,8 +467,10 @@ fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan)
                 sources.resize(slot + 1, (PathBuf::new(), String::new()));
             }
             sources[slot] = (f.path.clone(), f.source.clone());
-            if pkg.id == claims_id && f.path == claims_path {
-                claims_file = f.file_id;
+            if pkg.id == claims_id {
+                if let Some(i) = claim_sources.iter().position(|(p, _)| *p == f.path) {
+                    claims_files[i] = f.file_id;
+                }
             }
             if pkg.id == claims_id && f.path == Path::new(RUNNER_FILE) {
                 runner_file = f.file_id;
@@ -285,11 +487,11 @@ fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan)
     };
     let output = rask_compiler::compile_package_with(&mut pkg_ctx, &config, |_, _| {});
     for diag in &output.diagnostics {
-        let diag = point_at_input(diag, plan, runner_file, claims_file);
+        let diag = point_at_input(diag, plan, runner_file, &claims_files);
         crate::show_diagnostic_multi(&diag, &sources);
     }
     let result = output.result?;
-    Some(Compiled { result, link_opts: prepared.link_opts, sources, claims_file })
+    Some(Compiled { result, link_opts: prepared.link_opts, sources, claims_files })
 }
 
 /// An error inside a generated case function is about one of the claim's
@@ -298,7 +500,7 @@ fn point_at_input(
     diag: &rask_diagnostics::Diagnostic,
     plan: &Plan,
     runner_file: u16,
-    claims_file: u16,
+    claims_files: &[u16],
 ) -> rask_diagnostics::Diagnostic {
     let mut diag = diag.clone();
     let mut input = None;
@@ -310,7 +512,7 @@ fn point_at_input(
         if let Some(Some((c, k))) = plan.input_lines.get(line) {
             let claim = &plan.claims[*c];
             let (name, span) = &claim.params[*k];
-            label.span = Span { file_id: claims_file, ..*span };
+            label.span = Span { file_id: claims_files[claim.file], ..*span };
             input = Some((claim.name.clone(), name.clone()));
         }
     }
@@ -324,16 +526,8 @@ fn point_at_input(
     diag
 }
 
-/// Build and link the claim binary under sim. Returns its path.
-fn link_claims(compiled: &Compiled, plan: &Plan) -> Option<PathBuf> {
-    static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = NEXT_BIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let bin_path = std::env::temp_dir().join(format!("rask_claims_{}_{n}", process::id()));
-    let bin_str = bin_path.to_string_lossy().to_string();
-    let obj_path = format!("{bin_str}.o");
-
-    let runs: Vec<rask_codegen::ClaimRun> = plan
-        .claims
+fn claim_runs(plan: &Plan) -> Vec<rask_codegen::ClaimRun> {
+    plan.claims
         .iter()
         .enumerate()
         .map(|(i, c)| rask_codegen::ClaimRun {
@@ -342,26 +536,45 @@ fn link_claims(compiled: &Compiled, plan: &Plan) -> Option<PathBuf> {
             seed: c.seed,
             budget: c.budget,
         })
-        .collect();
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
-    if let Err(errors) = super::compile::emit_object(
-        &input,
-        &rask_compiler::emit::Entry::Claims(&runs),
+        .collect()
+}
+
+/// Build and link the claim binary under sim. Returns its path.
+fn link_claims(
+    input: &rask_compiler::emit::BackEnd,
+    entry: &rask_compiler::emit::Entry,
+    lowered: rask_compiler::emit::Lowered,
+    link: &super::link::LinkOptions,
+) -> Option<PathBuf> {
+    static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT_BIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let bin_path = std::env::temp_dir().join(format!("rask_claims_{}_{n}", process::id()));
+    let bin_str = bin_path.to_string_lossy().to_string();
+    let obj_path = format!("{bin_str}.o");
+
+    let emitted = rask_compiler::emit::emit_lowered(
+        input,
+        entry,
+        lowered,
         None,
         rask_compiler::emit::BuildMode::Debug,
         &obj_path,
-    ) {
-        for e in &errors {
+    );
+    if !emitted.succeeded() {
+        for e in &emitted.errors {
             eprintln!("{}: compile claims: {}", output::error_label(), e);
+        }
+        for d in &emitted.diagnostics {
+            eprintln!("{}: compile claims: {}", output::error_label(), d.message);
         }
         let _ = std::fs::remove_file(&obj_path);
         return None;
     }
     let link_opts = super::link::LinkOptions {
         sim: true,
-        libs: compiled.link_opts.libs.clone(),
-        objects: compiled.link_opts.objects.clone(),
-        search_paths: compiled.link_opts.search_paths.clone(),
+        libs: link.libs.clone(),
+        objects: link.objects.clone(),
+        search_paths: link.search_paths.clone(),
         keeps_binary: false,
     };
     let linked = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None);
@@ -393,6 +606,8 @@ struct Record {
     /// Met another task, the clock or simulated I/O, so the schedule was sampled.
     scheduled: bool,
     budget_input: String,
+    /// The line it came from, for the verdict cache.
+    raw: String,
 }
 
 impl Record {
@@ -415,6 +630,7 @@ impl Record {
             over_budget: n("over_budget"),
             scheduled: json.contains("\"scheduled\":true"),
             budget_input: s("budget_input"),
+            raw: json.to_string(),
         })
     }
 }
@@ -442,14 +658,33 @@ fn run_bin(bin: &Path, env: &[(&str, String)]) -> (Vec<Record>, String, process:
     (records, String::from_utf8_lossy(&out.stderr).into_owned(), out.status)
 }
 
-fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, format: Format) -> bool {
+/// How the claims came out, and the summaries of those that held.
+struct RunOutcome {
+    all_held: bool,
+    held: Vec<Record>,
+}
+
+/// Report every claim from its records, cached ones included. `bin` is
+/// there when anything ran: shrinking and extra seeds re-run it.
+fn run_claims(
+    bin: Option<&Path>,
+    (records, stderr, status): (Vec<Record>, String, process::ExitStatus),
+    plan: &Plan,
+    compiled: &Compiled,
+    root: &Path,
+    format: Format,
+) -> RunOutcome {
     let opts = options();
-    let (records, stderr, status) = run_bin(bin, &[]);
-    let shown = claims_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let shown = |claim: &ClaimPlan| -> String {
+        let path = &plan.files[claim.file];
+        path.strip_prefix(root).unwrap_or(path).display().to_string()
+    };
     if format == Format::Human {
-        println!("{} {}", "Claims".green().bold(), claims_path.display());
+        let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+        println!("{} {}", "Claims".green().bold(), files.join(", "));
     }
     let mut all_held = true;
+    let mut held = Vec::new();
     for (i, claim) in plan.claims.iter().enumerate() {
         let summary = records.iter().find(|r| r.done && r.claim == claim.name);
         let failure = records.iter().find(|r| !r.done && r.claim == claim.name && r.result == "fail");
@@ -460,10 +695,14 @@ fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, 
         };
         if let Some(fail) = failure {
             all_held = false;
-            let (input, error) = shrink(bin, i, fail, &[]);
-            report_false(claim, &input, &error, &shown, compiled, None);
+            let (input, error) = match bin {
+                Some(bin) => shrink(bin, i, fail, &[]),
+                None => (fail.input.clone(), fail.error.clone()),
+            };
+            report_false(claim, &input, &error, &shown(claim), compiled, None);
             continue;
         }
+        held.push(summary.clone());
         if format == Format::Human {
             println!("  {:<24} {}", claim.name, verdict(summary));
             if summary.over_budget > 0 {
@@ -480,16 +719,23 @@ fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, 
             report_not_strict(claim, summary, compiled);
         }
     }
-    if all_held && opts.extra_seeds > 0 {
+    if let Some(bin) = bin.filter(|_| all_held && opts.extra_seeds > 0) {
         all_held = run_extra_seeds(bin, plan, compiled, &shown, format, opts.extra_seeds);
     }
-    all_held
+    RunOutcome { all_held, held }
 }
 
 /// `--claim-seeds N`: every sampled claim again, on N seeds the build never
 /// uses. A claim checked in full has nothing left to find, and the runtime
 /// skips it.
-fn run_extra_seeds(bin: &Path, plan: &Plan, compiled: &Compiled, shown: &str, format: Format, n: u64) -> bool {
+fn run_extra_seeds(
+    bin: &Path,
+    plan: &Plan,
+    compiled: &Compiled,
+    shown: &dyn Fn(&ClaimPlan) -> String,
+    format: Format,
+    n: u64,
+) -> bool {
     for k in 1..=n {
         let env = [("RASK_CLAIM_SEED_OFFSET", k.to_string())];
         let (records, stderr, status) = run_bin(bin, &env);
@@ -501,7 +747,7 @@ fn run_extra_seeds(bin: &Path, plan: &Plan, compiled: &Compiled, shown: &str, fo
             if let Some(fail) = records.iter().find(|r| !r.done && r.claim == claim.name && r.result == "fail") {
                 let (input, error) = shrink(bin, i, fail, &env);
                 let found = format!("found on extra seed {k} of {n} (`--claim-seeds`); a plain build doesn't draw it");
-                report_false(claim, &input, &error, shown, compiled, Some(found));
+                report_false(claim, &input, &error, &shown(claim), compiled, Some(found));
                 return false;
             }
         }
@@ -662,7 +908,7 @@ fn unhex(s: &str) -> Vec<u8> {
 
 /// E0950, with the counterexample.
 fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compiled: &Compiled, found: Option<String>) {
-    let span = Span { file_id: compiled.claims_file, ..claim.span };
+    let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
     let mut diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` is false", claim.name))
         .with_code("E0950")
         .with_primary(span, "doesn't hold for this input")
@@ -677,7 +923,7 @@ fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compil
 
 /// E0953: under `--claims=strict`, a claim that held but wasn't checked in full.
 fn report_not_strict(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
-    let span = Span { file_id: compiled.claims_file, ..claim.span };
+    let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
     let why = if r.over_budget > 0 {
         format!("{} ran past the step budget, so it isn't known to hold for those", count(r.over_budget, "input"))
     } else if r.scheduled {
