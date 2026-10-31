@@ -46,7 +46,6 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
         | ExprKind::StringInterp(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null
         | ExprKind::None => true,
 
         // Negated literal: -1, -3.14
@@ -132,7 +131,6 @@ fn clone_expr_kind(
         ExprKind::Bytes(b) => ExprKind::Bytes(b.clone()),
         ExprKind::Char(c) => ExprKind::Char(*c),
         ExprKind::Bool(b) => ExprKind::Bool(*b),
-        ExprKind::Null => ExprKind::Null,
         ExprKind::None => ExprKind::None,
         ExprKind::Ident(n) => ExprKind::Ident(n.clone()),
         ExprKind::Field { object, field } => ExprKind::Field {
@@ -374,7 +372,7 @@ impl DefaultDesugarer {
             // Terminals
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_)
-            | ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Null | ExprKind::None => {}
+            | ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::None => {}
         }
     }
 

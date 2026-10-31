@@ -180,6 +180,7 @@ comptime test "factorial" {
 
 <!-- surface -->
 ```rask
+@noreturn
 func skip(reason: string)
 func expect_fail()
 ```

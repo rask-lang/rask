@@ -66,6 +66,7 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
     match ty {
         TypeExpr::Unit => Ok(Type::Unit),
         TypeExpr::NoneType => Ok(Type::None),
+        TypeExpr::NoReturn => Ok(Type::Never),
         TypeExpr::Union(parts) => {
             Ok(Type::union_named(resolve_all(parts)?, |id| Some(types.type_name(id))))
         }

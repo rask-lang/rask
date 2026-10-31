@@ -54,8 +54,8 @@ This is what keeps the cost honest. `to_vec` copies `Copy` elements and moves ow
 
 <!-- test: skip -->
 ```rask
-for file in files.take_all() {     // drained Vec — the loop owns each file
-    try file.close()
+for job in queue.take_all() {      // drained Vec — the loop owns each job
+    run(job)
 }
 
 let stale = files.filter(|f| f.stale).to_vec()    // borrowed — adapt freely
@@ -667,14 +667,14 @@ FIX: do the work in the loop, where each item is still just lent:
   for f in files.filter(|f| f.is_open) { use(f) }
 
   // or take ownership of all of them by draining the source:
-  for f in files.take_all() { try f.close() }
+  while files.pop()? as f { try f.close() }
 ```
 
 **Adapting a drained collection [type.sequence/SEQ35]:**
 ```
-ERROR [type.sequence/SEQ35]: no method `filter` on Vec<File>
+ERROR [type.sequence/SEQ35]: no method `filter` on Vec<Job>
    |
-3  |  for f in files.take_all().filter(|f| f.stale) {
+3  |  for j in jobs.take_all().filter(|j| j.stale) {
    |                            ^^^^^^ take_all hands back a Vec, not a sequence
 
 WHY: adapters lend what they were lent, and `take_all` exists to give the
@@ -683,8 +683,8 @@ WHY: adapters lend what they were lent, and `take_all` exists to give the
 
 FIX: test inside the loop, where the item is yours:
 
-  for f in files.take_all() {
-      if f.stale { try f.close() }
+  for j in jobs.take_all() {
+      if !j.stale { run(j) }
   }
 ```
 

@@ -159,11 +159,11 @@ Emptying in place keeps the binding, its bound and its buffer.
 
 <!-- test: skip -->
 ```rask
-for file in files.take_all() {
-    if file.is_locked() {
-        break  // Remaining files cleaned up (LIFO order)
+for job in queue.take_all() {
+    if job.cancelled {
+        break  // the remaining jobs are dropped (LIFO order)
     }
-    try file.close()
+    run(job)
 }
 ```
 
@@ -201,16 +201,16 @@ for entity in entities {
 
 | Rule | Description |
 |------|-------------|
-| **L1: No value iteration** | `Vec<Linear>` forbids value iteration (would alias). Use `.take_all()` |
-| **L2: No linear elements to iterate** | No container holds a linear value (`mem.resources/RC1`–RC3), so this only ever concerns a `Vec` being drained |
+| **L1: Value iteration lends** | `for file in files` over a `Vec<Linear>` lends each element, as for any `Vec`. Consuming one inside the loop is the usual "can't give away a borrowed value" error |
+| **L2: No take-all loop** | `for x in v.take_all()` is refused when the elements must be consumed: the loop owns the drained vector, and an early exit drops what's left (`mem.resources/RC5`). Drain with `while v.pop()? as x`, which leaves the rest in `v` |
 
 <!-- test: skip -->
 ```rask
-// COMPILE ERROR: value iteration on Vec<Linear> would alias
-for file in files { try file.close() }
-
-// Required: take_all consumes each element
+// COMPILE ERROR: a `try` out of the loop drops the files it hasn't reached
 for file in files.take_all() { try file.close() }
+
+// The rest stay in `files`, still owed
+while files.pop()? as file { try file.close() }
 ```
 
 ## Map Key Constraints
@@ -242,8 +242,9 @@ for (key, value) in config {
 
 <!-- test: skip -->
 ```rask
-for file in files.take_all() {
-    ensure file.close()   // Runs if try exits
+// Elements that must be consumed can't be left to the drop (L2):
+while files.pop()? as file {
+    ensure file.close()   // Runs if try exits; the rest stay in `files`
     try file.write(data)
 }
 ```
@@ -251,16 +252,12 @@ for file in files.take_all() {
 ## Error Messages
 
 ```
-ERROR [std.iteration/L1]: cannot iterate over Vec<Linear> by value
+ERROR [std.iteration/L2]: a `for` over `take_all()` would drop what's left if it exits early
    |
-3  |  for file in files { try file.close() }
-   |              ^^^^^ Linear types cannot be borrowed in loops
+3  |  for file in files.take_all() { try file.close() }
+   |              ^^^^^^^^^^^^^^^^ the loop owns these, and a `try` leaves the rest
 
-WHY: Value iteration borrows each item, but linear types must be consumed.
-
-FIX: Use take_all to consume:
-
-  for file in files.take_all() { try file.close() }
+FIX: drain with `while files.pop()? as file { try file.close() }`
 ```
 
 ```

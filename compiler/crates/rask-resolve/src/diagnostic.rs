@@ -43,6 +43,16 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why(why)
             }
 
+            // C's and Rust's null spellings. A pointer that may be absent is an
+            // optional like any other (mem.unsafe/PT6).
+            UndefinedSymbol { name } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
+                Diagnostic::error(format!("there is no `{}`: absence is `none`", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, "write `none` here")
+                    .with_fix("`none`, at a pointer type that may be absent: `let p: *u8? = none`")
+                    .with_why("a `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, and it's tested with `p?` or `p is none` like any other optional [mem.unsafe/PT6]")
+            }
+
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")

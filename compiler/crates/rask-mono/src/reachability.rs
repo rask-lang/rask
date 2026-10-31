@@ -2462,7 +2462,6 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::String(_) | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
-            | ExprKind::Null
             | ExprKind::None => {}
 
             // A bare name that resolves to a function is a reference to it —

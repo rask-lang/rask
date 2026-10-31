@@ -517,14 +517,19 @@ impl<'a> Translator<'a> {
             CType::FixedInt { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
             CType::IntPtr { signed } => (if *signed { "isize" } else { "usize" }).into(),
             CType::Const(inner) => self.ty(inner),
+            // A header doesn't say which of its pointers may be NULL, and a
+            // `*T` never is (mem.unsafe/PT6), so a data pointer is `*T?`. A
+            // `*T` argument still fills one; a returned one is checked before
+            // it's used. An override declaration (BI3) narrows one that the
+            // library's docs promise is never NULL.
             CType::Pointer(inner) => match strip(inner) {
                 // A C string, by convention.
-                CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8".into(),
+                CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8?".into(),
                 CType::FuncPtr { .. } => self.ty(strip(inner)),
-                other => format!("*{}", self.ty(other)),
+                other => format!("*{}?", self.ty(other)),
             },
             CType::Array(elem, Some(n)) => format!("[{}; {}]", self.ty(elem), n),
-            CType::Array(elem, None) => format!("*{}", self.ty(elem)),
+            CType::Array(elem, None) => format!("*{}?", self.ty(elem)),
             CType::Named(n) => match builtin_typedef(n) {
                 Some(t) => self.ty(&t),
                 None => type_name(n),

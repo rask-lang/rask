@@ -60,6 +60,9 @@ pub(crate) const OV_DIV_ZERO: &str = "division by zero";
 /// as the interpreter words it.
 pub(crate) const PTR_NULL_READ: &str = "null pointer read";
 pub(crate) const PTR_NULL_WRITE: &str = "null pointer write";
+/// mem.unsafe/PT7: an access through a pointer outside the block it came from.
+pub(crate) const PTR_OOB_READ: &str = "raw pointer read outside the storage it points into";
+pub(crate) const PTR_OOB_WRITE: &str = "raw pointer write outside the storage it points into";
 
 /// Which check fired, for picking the message.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,6 +91,8 @@ macro_rules! overflow_messages {
             OV_DIV_ZERO,
             PTR_NULL_READ,
             PTR_NULL_WRITE,
+            PTR_OOB_READ,
+            PTR_OOB_WRITE,
             $(
                 concat!("integer overflow: addition exceeds ", $ty, " range ", $range),
                 concat!("integer overflow: subtraction exceeds ", $ty, " range ", $range),
@@ -1240,7 +1245,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::ClosureCreate { dst, func_name, captures, heap, task_bound } => Self::lower_closure_create(builder, dst, func_name, captures, *heap, *task_bound, ctx)?,
 
-            MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
+            MirStmtKind::ClosureCall { dst, closure, args, .. } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
@@ -2132,6 +2137,8 @@ impl<'a> FunctionBuilder<'a> {
             ty if ty.is_option() && matches!(ty.as_option().unwrap(),
                 RaskType::UnresolvedGeneric { name, .. } if name == "Link")
                 => false,
+            // `*T?` is the same: the pointer, null for `none` (mem.unsafe/PT6).
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::RawPtr(_)) => false,
             // The same option with its payload already resolved to a `TypeId`.
             // `Generic`/`Named` payloads are the runtime-opaque pointer types
             // (line above), and an option over one of those is the niche — one
@@ -2813,6 +2820,7 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Tuple(_)
                         | MirType::Array { .. }
                         | MirType::Ptr
+                        | MirType::RawPtr
                         | MirType::Container(_)
                         // A `Heap<T>` standing where a `T` is expected (HP5):
                         // the block's address is the aggregate's address, so
@@ -3993,7 +4001,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Ptr | MirType::Container(_) => {
+            | MirType::Char | MirType::Ptr | MirType::RawPtr | MirType::Container(_) => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -4632,6 +4640,43 @@ impl<'a> FunctionBuilder<'a> {
                 let is_null = builder.ins().icmp_imm(IntCC::Equal, ptr, 0);
                 let msg = if flag(2) { PTR_NULL_WRITE } else { PTR_NULL_READ };
                 Self::guard_overflow(builder, ctx, is_null, msg);
+                // PT7: `ptr_check(p, always, write, access, kind, root, bytes)`
+                // when lowering knows the block: 1 a `Vec`, 2 a `string`, 3 an
+                // array of `bytes` at `root`.
+                if args.len() == 7 {
+                    let int = |i: usize| match args.get(i) {
+                        Some(MirOperand::Constant(MirConst::Int(n))) => *n,
+                        _ => 0,
+                    };
+                    let access = builder.ins().iconst(types::I64, int(3).max(1));
+                    let root = Self::lower_operand_typed(builder, &args[5], Some(types::I64), ctx)?;
+                    let inside = match int(4) {
+                        1 => {
+                            let f = ctx.func_refs.get("ptr_in_vec")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("ptr_in_vec".into()))?;
+                            let call = builder.ins().call(*f, &[ptr, root, access]);
+                            builder.inst_results(call)[0]
+                        }
+                        2 => {
+                            let f = ctx.func_refs.get("ptr_in_str")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("ptr_in_str".into()))?;
+                            let write = builder.ins().iconst(types::I64, flag(2) as i64);
+                            let call = builder.ins().call(*f, &[ptr, root, access, write]);
+                            builder.inst_results(call)[0]
+                        }
+                        _ => {
+                            let off = builder.ins().isub(ptr, root);
+                            let end = builder.ins().iadd(off, access);
+                            let lo = builder.ins().icmp_imm(IntCC::SignedGreaterThanOrEqual, off, 0);
+                            let hi = builder.ins().icmp_imm(IntCC::SignedLessThanOrEqual, end, int(6));
+                            let ok = builder.ins().band(lo, hi);
+                            builder.ins().uextend(types::I64, ok)
+                        }
+                    };
+                    let outside = builder.ins().icmp_imm(IntCC::Equal, inside, 0);
+                    let msg = if flag(2) { PTR_OOB_WRITE } else { PTR_OOB_READ };
+                    Self::guard_overflow(builder, ctx, outside, msg);
+                }
             }
             return Ok(true);
         } else if func.name == "panic" || func.name == "todo" || func.name == "unreachable" {
@@ -4910,15 +4955,6 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 builder.ins().iadd(ptr_val, byte_offset)
             };
-            if let Some(dst_id) = dst {
-                if let Some(var) = ctx.var_map.get(dst_id) {
-                    builder.def_var(*var, result);
-                }
-            }
-        } else if func.name == "Ptr_is_null" {
-            // ptr.is_null() → ptr == 0 (returns I8 boolean)
-            let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
-            let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
             if let Some(dst_id) = dst {
                 if let Some(var) = ctx.var_map.get(dst_id) {
                     builder.def_var(*var, result);

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `@noreturn` on a function says it never comes back to its caller
+// (ctrl.flow/CF34). A call to one needs no value: it fills an `if` arm or a
+// `??` fallback of any type, and a function whose last statement is one has
+// returned. `panic`, `todo`, `unreachable` and `os.exit` are declared that way.
+//
+// It used to be a return type, `-> Never`, written in exactly two places, both
+// `exit`.
+
+@noreturn
+func refuse(what: string) {
+    panic("refused: {what}")
+}
+
+func port(raw: string?) -> u16 {
+    let text = raw ?? refuse("no port")
+    return text.parse<u16>() catch _ => refuse(text)
+}
+
+func sign(n: i64) -> string {
+    if n > 0 {
+        return "+"
+    } else if n < 0 {
+        return "-"
+    }
+    refuse("zero")
+}
+
+func pick(c: bool) -> i64 {
+    let n: i64 = if c { 7 } else { refuse("false") }
+    return n
+}
+
+test "a @noreturn call fills any slot" {
+    assert port("8080") == 8080
+    assert pick(true) == 7
+}
+
+test "a function that ends in a @noreturn call has returned" {
+    assert sign(3) == "+"
+    assert sign(-3) == "-"
+}

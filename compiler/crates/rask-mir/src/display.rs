@@ -36,6 +36,7 @@ impl fmt::Display for MirType {
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
             MirType::Link(sid) => write!(f, "link<#{}>", sid.id),
+            MirType::RawPtr => write!(f, "rawptr"),
             MirType::Tuple(fields) => {
                 write!(f, "(")?;
                 for (i, field) in fields.iter().enumerate() {
@@ -226,7 +227,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, "])")
             }
-            MirStmtKind::ClosureCall { dst, closure, args } => {
+            MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }

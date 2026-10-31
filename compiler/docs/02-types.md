@@ -38,7 +38,7 @@ enum Type {
 
     // Inference
     Var(TypeVarId),                 // unknown type, to be solved
-    Never,                          // ! type (diverges)
+    Never,                          // doesn't finish: return, panic, a @noreturn call
     // ...
 }
 ```

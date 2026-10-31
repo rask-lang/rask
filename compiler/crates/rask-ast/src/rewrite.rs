@@ -269,7 +269,6 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         | ExprKind::Bytes(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
-        | ExprKind::Null
         | ExprKind::None
         | ExprKind::Ident(_) => {}
         ExprKind::GenericName { type_args, .. } => {

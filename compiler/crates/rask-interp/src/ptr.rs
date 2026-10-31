@@ -444,7 +444,6 @@ pub(crate) fn call_ptr_method(
             Ok(Value::RawPtr(p.moved_by(step)))
         }
         PtrSig::Predicate => match method {
-            "is_null" => Ok(Value::Bool(p.is_null())),
             "is_aligned" => Ok(Value::Bool(p.addr() % 8 == 0)),
             _ => Err(unimplemented_ptr_method(method)),
         },

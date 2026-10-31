@@ -255,10 +255,13 @@ impl TypeChecker {
                     Some(elem) => Self::sequence_fn_shape(elem),
                     None => want,
                 };
-                if let Type::Fn { params: want_params, .. } = want {
+                if let Type::Fn { params: want_params, ret: want_ret } = want {
                     if want_params.len() == params.len() {
                         self.closure_param_expectations
                             .insert(expr.id, want_params.into_iter().map(|p| p.ty).collect());
+                        if matches!(self.ctx.apply(&want_ret), Type::Result { .. }) {
+                            self.closure_return_expectations.insert(expr.id, *want_ret);
+                        }
                     }
                 }
             }
@@ -599,7 +602,6 @@ impl TypeChecker {
             ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
-            ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
             // OPT3: `none` is `T?` with inner type inferred from context.
             ExprKind::None => Type::option(self.ctx.fresh_var()),
 
@@ -707,6 +709,18 @@ impl TypeChecker {
                                 t.heap_payload().expect("just checked").clone()
                             }
                             Type::RawPtr(inner) => *inner,
+                            // PT6: `*T?` may be the null address; the payload
+                            // is reached through `??` or `as`, not `*`.
+                            ref t if matches!(t.as_option(), Some(Type::RawPtr(_))) => {
+                                self.errors.push(TypeError::DerefOptionalPointer {
+                                    found: t.clone(),
+                                    span: expr.span,
+                                });
+                                match t.as_option() {
+                                    Some(Type::RawPtr(inner)) => (**inner).clone(),
+                                    _ => unreachable!("matched above"),
+                                }
+                            }
                             // The operand's type isn't settled yet — it came
                             // out of another call, as in `*nums.as_ptr()`.
                             // Returning the open var left the whole binding
@@ -970,12 +984,10 @@ impl TypeChecker {
                         // don't need to agree. Return unit.
                         Type::Unit
                     } else {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            then_ty.clone(),
-                            else_ty,
+                        self.join_arms(
+                            vec![(then_ty, then_branch.id), (else_ty, else_branch.id)],
                             expr.span,
-                        ));
-                        then_ty
+                        )
                     }
                 } else {
                     Type::Unit
@@ -1101,7 +1113,7 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
-                let result_ty = self.ctx.fresh_var();
+                let mut arm_types: Vec<(Type, rask_ast::NodeId)> = Vec::new();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
                     self.push_scope();
@@ -1123,11 +1135,7 @@ impl TypeChecker {
                     // In statement position, arm types don't need to agree.
                     if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
                         every_arm_diverges = false;
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            result_ty.clone(),
-                            arm_ty,
-                            expr.span,
-                        ));
+                        arm_types.push((arm_ty, arm.body.id));
                     }
                 }
 
@@ -1143,7 +1151,7 @@ impl TypeChecker {
                     // failure leaves behind (#1026).
                     Type::Never
                 } else {
-                    result_ty
+                    self.join_arms(arm_types, expr.span)
                 }
             }
 
@@ -1976,7 +1984,17 @@ impl TypeChecker {
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
-                let closure_return_type = self.ctx.fresh_var();
+                // A slot that wants `T or E` gives the body its return type up
+                // front, as a declaration gives a function's. Unified after the
+                // fact instead, a body of type `void` met `void or E` as a
+                // mismatch, so a consumer that can't fail couldn't fill a slot
+                // whose error type was generic.
+                let expected_ret = if declared_ret.is_none() {
+                    self.closure_return_expectations.remove(&expr.id)
+                } else {
+                    None
+                };
+                let closure_return_type = expected_ret.clone().unwrap_or_else(|| self.ctx.fresh_var());
                 self.current_return_type = Some(closure_return_type.clone());
 
                 let inferred_ret = self.infer_expr(body);
@@ -1994,6 +2012,24 @@ impl TypeChecker {
                 // closure got "couldn't work out the type" on top (#1485).
                 if matches!(self.ctx.apply(&inferred_ret), Type::Error) {
                     self.poison(&closure_return_type);
+                } else if let Some(want) = &expected_ret {
+                    if !matches!(self.ctx.apply(&inferred_ret), Type::Never) {
+                        self.coerce_into_node(
+                            CoercionSite::Return,
+                            inferred_ret.clone(),
+                            want.clone(),
+                            Some(body.id),
+                            body.span,
+                        );
+                    }
+                    // Nothing in the body could fail, so nothing says what `E`
+                    // is: it can't fail. Last resort, the way a diverging body
+                    // defaults its return below; a failure in the body wins.
+                    if let Type::Result { err, .. } = self.ctx.apply(want) {
+                        if let Type::Var(id) = self.ctx.apply(&err) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -2882,10 +2918,16 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
+                // What the declaration in `builtins.rk` says it returns: a
+                // `@noreturn` one (`panic`, `exit`) never comes back.
                 return match name {
-                    "panic" | "todo" | "unreachable" | "skip" => Type::Never,
                     "format" => Type::String,
-                    _ => Type::Unit,
+                    _ => rask_stdlib::StubRegistry::load()
+                        .functions()
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| super::builtins::stub_type(&f.ret_ty))
+                        .unwrap_or(Type::Unit),
                 };
             }
 
@@ -4249,6 +4291,14 @@ impl TypeChecker {
                     .and_then(|p| p.get(i))
                     .map(|t| self.ctx.apply(t))
                     .filter(|t| !t.has_unsolved_var());
+                // A closure takes its slot even with open variables in it:
+                // its parameters and its return are read from the slot's
+                // shape, and an open part is filled in by the call later.
+                if matches!(a.expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(want) = declared_params.as_ref().and_then(|p| p.get(i)).cloned() {
+                        return self.infer_expr_expecting(&a.expr, &want);
+                    }
+                }
                 match (&a.expr.kind, slot) {
                     (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     // No declaration to read yet: the receiver is still a
@@ -5977,7 +6027,7 @@ impl TypeChecker {
     /// a parameter mentioning a type parameter needs the instantiation, which
     /// isn't bound yet.
     fn declared_method_params(
-        &self,
+        &mut self,
         object: &rask_ast::expr::Expr,
         obj_ty: &Type,
         method: &str,
@@ -5997,11 +6047,10 @@ impl TypeChecker {
         if type_params.len() != type_args.len() {
             return None;
         }
-        let sig = methods.iter().find(|m| {
-            m.name == method
-                && m.type_params.is_empty()
-                && names_type == matches!(m.self_param, rask_types::SelfParam::None)
-        })?;
+        let sig = methods
+            .iter()
+            .find(|m| m.name == method && names_type == matches!(m.self_param, rask_types::SelfParam::None))?
+            .clone();
         // The receiver's arguments stand in for the type's parameters, and an
         // `extend` header's names for their parts: the same substitution the
         // deferred resolution makes, so the slot read here is the one the
@@ -6011,6 +6060,13 @@ impl TypeChecker {
             self.build_owner_pattern_subst(&sig.owner_patterns, type_args).into_iter().collect();
         for (name, bound) in &header {
             subst.insert(name.as_str(), bound.clone());
+        }
+        // The method's own type parameters are open at this call: each gets a
+        // variable, which the deferred resolution later meets with its own.
+        // `consume<E>`'s closure slot is `func(take T) -> void or ?`, so the
+        // closure knows its return is a `T or E` while its body is checked.
+        for (name, _) in &sig.type_params {
+            subst.insert(name.as_str(), self.ctx.fresh_var());
         }
         Some(sig.params.iter().map(|(t, _)| Self::substitute_type_params(t, &subst)).collect())
     }
@@ -7190,5 +7246,47 @@ fn is_place(e: &Expr) -> bool {
         ExprKind::Ident(_) => true,
         ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => is_place(object),
         _ => false,
+    }
+}
+
+impl TypeChecker {
+    /// The type of an `if` or `match` from its arms' types. The arms agree,
+    /// except that when one is a `T?` and another a bare `T`, the whole is the
+    /// `T?` and the bare arm gains the layer, as it would at an assignment
+    /// (type.optionals/OPT6): `if c { none } else { 5 }` is an `i64?`.
+    ///
+    /// Each arm used to be made equal to the others before anything knew the
+    /// target, so `none` and `5` never met in the middle (#1692).
+    pub(super) fn join_arms(&mut self, arms: Vec<(Type, rask_ast::NodeId)>, span: Span) -> Type {
+        let Some((first, _)) = arms.first().cloned() else {
+            return self.ctx.fresh_var();
+        };
+        let optional_arm = arms
+            .iter()
+            .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
+        let Some(target_at) = optional_arm else {
+            for (ty, _) in arms.into_iter().skip(1) {
+                self.ctx.add_constraint(TypeConstraint::Equal(first.clone(), ty, span));
+            }
+            return first;
+        };
+        let target = arms[target_at].0.clone();
+        for (i, (ty, node)) in arms.into_iter().enumerate() {
+            if i == target_at {
+                continue;
+            }
+            if self.ctx.apply(&ty).as_option().is_some() {
+                self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
+            } else {
+                self.coerce_into_node(
+                    rask_ast::coercion::CoercionSite::Branch,
+                    ty,
+                    target.clone(),
+                    Some(node),
+                    span,
+                );
+            }
+        }
+        target
     }
 }

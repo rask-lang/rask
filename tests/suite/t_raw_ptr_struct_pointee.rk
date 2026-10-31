@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A pointer to a struct steps by the struct and reads the struct. `p.add(1)`
+// on a `*Pt` used to step one word, because only a scalar pointee had a size,
+// and `*p` loaded the struct's first word and read fields off that as an
+// address. `p.read()` and `p.write(v)` went through C helpers that move one
+// word.
+
+struct Pt {
+    a: i64
+    b: i64
+    c: i64
+}
+
+test "add steps by the struct" {
+    let xs: Vec<Pt> = [Pt(a: 1, b: 2, c: 3), Pt(a: 4, b: 5, c: 6)]
+    let p = unsafe xs.as_ptr()
+    let q = unsafe p.add(1)
+    assert unsafe (*q).a == 4
+    assert unsafe (*q).c == 6
+    assert unsafe (*p).b == 2
+}
+
+test "read and write move the whole struct" {
+    mut xs: Vec<Pt> = [Pt(a: 1, b: 2, c: 3), Pt(a: 4, b: 5, c: 6)]
+    let p = unsafe xs.as_mut_ptr()
+    let second = unsafe p.add(1).read()
+    assert second.b == 5
+    unsafe {
+        p.write(Pt(a: 7, b: 8, c: 9))
+    }
+    assert xs[0].a == 7
+    assert xs[0].c == 9
+    assert xs[1].a == 4
+}
