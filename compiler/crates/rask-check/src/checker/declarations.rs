@@ -131,6 +131,11 @@ impl TypeChecker {
                 self.with_type_params(params, |this| this.register_impl_methods(i, decl.id, decl.span));
             }
         }
+        for decl in decls {
+            if let DeclKind::Impl(i) = &decl.kind {
+                self.infer_mutate_self_from_places(i, decl.id);
+            }
+        }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
         // that all `extend` methods are registered — an error type's `message()`
         // may be defined in an `extend` block declared after the type that uses it.
@@ -2132,6 +2137,46 @@ impl TypeChecker {
     ///
     /// The signature is read with the method's own parameters in scope on top
     /// of the owner's, which the caller has already pushed.
+    /// GC9 for the writes `method_signature`'s syntactic scan can't see:
+    /// `self.items.push(n)` writes when the field's type says `push` does,
+    /// and `self.inner.bump()` when `bump` is `mutate self`. That needs every
+    /// field and every method registered, so it runs after both, and turns
+    /// a private plain `self` into `mutate self` where the body writes
+    /// through a place. Callers then refuse a `let` receiver. check_fn asks
+    /// the same question (`body_mutates_self_place`) for the body.
+    fn infer_mutate_self_from_places(&mut self, i: &rask_ast::decl::ImplDecl, decl_id: rask_ast::NodeId) {
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else { return };
+        let self_ty = Type::Named(type_id);
+        let mut upgrade: Vec<String> = Vec::new();
+        for m in &i.methods {
+            let plain = m.params.iter().any(|p| p.name == "self" && !p.is_mutate && !p.is_take);
+            if m.is_pub || !plain || Self::body_writes_self(&m.body) {
+                continue;
+            }
+            if self.body_mutates_self_place(&m.body, &self_ty) {
+                let filed = self
+                    .filed_methods
+                    .decls
+                    .get(&(decl_id, m.name.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| m.name.clone());
+                upgrade.push(filed);
+            }
+        }
+        if upgrade.is_empty() {
+            return;
+        }
+        if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+            self.types.get_mut(type_id)
+        {
+            for sig in methods.iter_mut() {
+                if upgrade.contains(&sig.name) && matches!(sig.self_param, SelfParam::Value) {
+                    sig.self_param = SelfParam::Mutate;
+                }
+            }
+        }
+    }
+
     pub(super) fn method_signature(
         &mut self,
         m: &FnDecl,

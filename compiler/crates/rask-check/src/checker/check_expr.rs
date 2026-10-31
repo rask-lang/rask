@@ -4328,6 +4328,32 @@ impl TypeChecker {
         }
 
         let obj_ty_raw = self.infer_expr(object);
+        // A mutating method on a field or element of a binding mutates the
+        // binding: `b.items.push(2)` on a `let b`, `v[0].bump()` on a
+        // read-only parameter. Only a bare receiver was checked, so a `let`
+        // grew through any place one step down. Judged after solving, like
+        // a field write, when the receiver's type says whether the method
+        // writes and the steps say whether a link or pointer is in the way.
+        if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            if let Some(root) = Self::root_ident_name(object) {
+                if let Some(kind) = self.lookup_binding_kind(&root) {
+                    let mut steps = vec![object.id];
+                    let mut place: &Expr = object;
+                    while let ExprKind::Field { object: o, .. } | ExprKind::Index { object: o, .. } = &place.kind {
+                        steps.push(o.id);
+                        place = o;
+                    }
+                    self.pending_mutations.push(super::PendingMutation {
+                        root: root.clone(),
+                        ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                        kind,
+                        span: object.span,
+                        steps,
+                        call: Some((obj_ty_raw.clone(), method.to_string())),
+                    });
+                }
+            }
+        }
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let obj_ty = match (&object.kind, &obj_ty) {
             (ExprKind::Ident(name) | ExprKind::GenericName { name, .. }, Type::Named(id))
@@ -7066,6 +7092,25 @@ impl TypeChecker {
             });
             if through_pointer {
                 continue;
+            }
+            // A method call writes only if the method does, and a link on the
+            // way means it writes the node, not this binding.
+            if let Some((recv, method)) = &pm.call {
+                let recv = self.resolve_named(&self.ctx.apply(recv));
+                if matches!(recv, Type::Var(_) | Type::Error)
+                    || !self.method_mutates_self_ty(&recv, method)
+                    || self.link_node_type(&recv).is_some()
+                {
+                    continue;
+                }
+                let through_link = pm.steps.iter().any(|id| {
+                    self.node_types
+                        .get(id)
+                        .is_some_and(|t| self.link_node_type(&self.resolve_named(&self.ctx.apply(t))).is_some())
+                });
+                if through_link || (matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&recv)) {
+                    continue;
+                }
             }
             // Still unknown after solving — stay quiet rather than guess. An
             // unresolved root has its own diagnostic; guessing here would stack

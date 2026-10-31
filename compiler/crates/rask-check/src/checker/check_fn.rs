@@ -208,6 +208,7 @@ impl TypeChecker {
             if !sp.is_mutate && !sp.is_take && !f.is_pub {
                 // Scan body for self mutations
                 Self::body_writes_self(&f.body)
+                    || self.current_self_type.clone().is_some_and(|t| self.body_mutates_self_place(&f.body, &t))
             } else {
                 sp.is_mutate || sp.is_take
             }
@@ -786,6 +787,82 @@ impl TypeChecker {
     /// error; use `body_assigns_self` for that.
     pub(super) fn body_writes_self(body: &[Stmt]) -> bool {
         body.iter().any(|stmt| Self::stmt_writes_self(stmt, true))
+    }
+
+    /// GC9 for a write the syntactic scan can't see: a mutating method on a
+    /// field or element of `self`, `self.lines.push(t)`, or one handed on as
+    /// `mutate self.lines`. Whether `push` writes depends on the field's
+    /// type, and the declarations are registered by now, so it's read off
+    /// them. Missing it left the method read-only while the body grew the
+    /// caller's vector, through a `let`.
+    pub(super) fn body_mutates_self_place(&self, body: &[Stmt], self_ty: &Type) -> bool {
+        let mut found = false;
+        rask_ast::visit::walk_body(body, &mut |e| {
+            if found {
+                return;
+            }
+            match &e.kind {
+                ExprKind::MethodCall { object, method, .. }
+                    if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) =>
+                {
+                    if let Some(ty) = self.self_place_type(object, self_ty) {
+                        found = self.method_mutates_self_ty(&ty, method);
+                    }
+                }
+                ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+                    found = args.iter().any(|a| {
+                        matches!(a.mode, rask_ast::expr::ArgMode::Mutate)
+                            && Self::expr_targets_self(&a.expr)
+                            && self.self_place_type(&a.expr, self_ty).is_some()
+                    });
+                }
+                _ => {}
+            }
+        });
+        found
+    }
+
+    /// The declared type of a place reached from `self` by fields and
+    /// indexes. `None` past a link or pointer — writing there writes the
+    /// node, not `self` — or where the declarations don't say.
+    fn self_place_type(&self, e: &Expr, self_ty: &Type) -> Option<Type> {
+        let ty = match &e.kind {
+            ExprKind::Ident(n) if n == "self" => return Some(self_ty.clone()),
+            ExprKind::Field { object, field } => {
+                let base = self.self_place_type(object, self_ty)?;
+                let id = match base {
+                    Type::Named(id) | Type::Generic { base: id, .. } => id,
+                    _ => return None,
+                };
+                match self.types.get(id)? {
+                    rask_types::TypeDef::Struct { fields, .. } => {
+                        fields.iter().find(|(n, _)| n == field)?.1.clone()
+                    }
+                    _ => return None,
+                }
+            }
+            ExprKind::Index { object, .. } => match self.resolve_named(&self.self_place_type(object, self_ty)?) {
+                Type::Array { elem, .. } => *elem,
+                Type::Generic { base, args } => {
+                    let pick = match self.types.type_name(base).as_str() {
+                        "Vec" => 0,
+                        "Map" => 1,
+                        _ => return None,
+                    };
+                    match args.get(pick)? {
+                        rask_types::GenericArg::Type(t) => (**t).clone(),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let ty = self.resolve_named(&ty);
+        if self.link_node_type(&ty).is_some() || matches!(ty, Type::RawPtr(_)) {
+            return None;
+        }
+        Some(ty)
     }
 
     /// Definite writes only — an actual assignment into `self`.

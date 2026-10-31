@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `let` or read-only binding mutated by a method on one of its
+// fields or elements
+//
+// `b.items.push(2)` on a `let b` compiled, and so did `v[0].bump()`. Only a
+// method called on the bare binding was checked, so anything one step down
+// was writable. A private method's plain `self` has the same shape: it's
+// read-only unless the body writes through it (type.gradual-constraints/GC9),
+// and `self.items.push(n)` didn't count as a write, so a `let` receiver grew.
+
+struct Bag {
+    items: Vec<i32>
+}
+
+struct Item {
+    n: i32
+}
+
+extend Item {
+    func bump(mutate self) {
+        self.n += 1
+    }
+}
+
+extend Bag {
+    // `push` writes, so this is `mutate self` (GC9)
+    func add(self, n: i32) {
+        self.items.push(n)
+    }
+}
+
+func peek(v: Vec<Item>) {
+    // ERROR: `v` is read-only here [E0321]
+    v[0].bump()
+}
+
+func main() {
+    let b = Bag(items: [1])
+    // ERROR: through a field [E0302]
+    b.items.push(2)
+    let w: Vec<Item> = [Item(n: 1)]
+    // ERROR: through an element [E0302]
+    w[0].bump()
+    // ERROR: through a method that writes a field [E0302]
+    b.add(3)
+
+    // FIX: `mut` says it changes, and a reading method is fine either way
+    mut c = Bag(items: [1])
+    c.items.push(2)
+    c.add(3)
+    println("{b.items.len()} {w.len()} {c.items.len()}")
+    peek(w)
+}

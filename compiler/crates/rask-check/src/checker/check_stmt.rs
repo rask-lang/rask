@@ -221,6 +221,7 @@ impl TypeChecker {
                                 kind,
                                 span: stmt.span,
                                 steps,
+                                call: None,
                             });
                         }
                     } else {

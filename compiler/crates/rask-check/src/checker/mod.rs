@@ -100,6 +100,9 @@ pub struct PendingMutation {
     /// written place. A write past a raw pointer lands in what it points at,
     /// not in the root, and only their solved types say where that is.
     pub steps: Vec<NodeId>,
+    /// For a method call on the place: the receiver's type and the method.
+    /// `None` for an assignment, which always writes.
+    pub call: Option<(rask_types::Type, String)>,
 }
 
 /// A deferred `mutate self` check on a receiver whose type wasn't solved yet.
