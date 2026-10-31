@@ -1330,6 +1330,25 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
 
+        // CB1/CB2: a function where C wants a function pointer passes its
+        // code address. Which functions can is MIR's to say: it knows whether
+        // a closure captured anything.
+        if let Type::RawPtr(pointee) = self.resolve_named(&resolved_expected) {
+            if let Type::Fn { params: want, ret: want_ret } = self.resolve_named(&pointee) {
+                if let Type::Fn { params: got, ret: got_ret } = self.resolve_named(&self.ctx.apply(&ret_ty)) {
+                    if got.len() == want.len() {
+                        for (g, w) in got.iter().zip(want.iter()) {
+                            self.unify(&g.ty, &w.ty, span)?;
+                        }
+                        self.unify(&got_ret, &want_ret, span)?;
+                        if let Some(node) = value_node {
+                            self.c_fn_pointers.insert(node, span);
+                        }
+                        return Ok(true);
+                    }
+                }
+            }
+        }
 
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {

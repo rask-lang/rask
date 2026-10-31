@@ -1072,14 +1072,37 @@ impl Parser {
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ParseError> {
+        let (params, variadic) = self.parse_params_or_variadic()?;
+        if let Some(span) = variadic {
+            return Err(ParseError {
+                span,
+                message: "only an `extern \"C\"` declaration can take `...`".to_string(),
+                hint: Some("a Rask function takes a `Vec` for any number of arguments".to_string()),
+                why: None,
+            });
+        }
+        Ok(params)
+    }
+
+    /// The parameters, and where a trailing `...` was written, if one was.
+    fn parse_params_or_variadic(&mut self) -> Result<(Vec<Param>, Option<Span>), ParseError> {
         let mut params = Vec::new();
 
         self.skip_newlines();
         if self.check(&TokenKind::RParen) {
-            return Ok(params);
+            return Ok((params, None));
         }
 
         loop {
+            // `...`, which lexes as `..` then `.`: a C variadic tail.
+            if self.check(&TokenKind::DotDot) && matches!(self.peek(1), TokenKind::Dot) {
+                let start = self.current().span.start;
+                self.advance();
+                let end = self.current().span.end;
+                self.advance();
+                self.skip_newlines();
+                return Ok((params, Some(self.span(start, end))));
+            }
             let is_take = self.match_token(&TokenKind::Take);
             let is_mutate = if !is_take { self.match_token(&TokenKind::MutateKw) } else { false };
             // `deleting` is contextual: only a mode when another identifier
@@ -1142,7 +1165,7 @@ impl Parser {
             }
         }
 
-        Ok(params)
+        Ok((params, None))
     }
 
     /// Parse one parameter inside a function type: `T`, `name: T`, or `mutate name: T`.
@@ -2686,6 +2709,29 @@ impl Parser {
         self.expect(&TokenKind::Extern)?;
         let abi = self.expect_string()?;
 
+        // `extern "C" struct Name`: a C type known only by name, used behind a
+        // pointer (struct.c-interop/TM3).
+        if self.check(&TokenKind::Struct) {
+            let start = self.current().span.start;
+            self.advance();
+            let name = self.expect_ident()?;
+            let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+            let mut attrs = attrs;
+            attrs.push(rask_ast::attr::Attr::synthetic(rask_ast::attr::OPAQUE, None));
+            return Ok(vec![(
+                DeclKind::Struct(StructDecl {
+                    name,
+                    type_params: vec![],
+                    fields: vec![],
+                    methods: vec![],
+                    is_pub: true,
+                    attrs,
+                    doc,
+                }),
+                self.span(start, end),
+            )]);
+        }
+
         // Block form: extern "C" { func ...; func ... }
         self.skip_newlines();
         if self.check(&TokenKind::LBrace) {
@@ -2727,7 +2773,7 @@ impl Parser {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
-        let params = self.parse_params()?;
+        let (params, variadic) = self.parse_params_or_variadic()?;
         // A foreign signature has no body to infer a type from.
         if let Some(p) = params.iter().find(|p| p.ty.is_none()) {
             return Err(ParseError {
@@ -2748,6 +2794,14 @@ impl Parser {
         // If followed by a body, this is an exported function definition
         self.skip_newlines();
         if self.check(&TokenKind::LBrace) {
+            if let Some(span) = variadic {
+                return Err(ParseError {
+                    span,
+                    message: "Rask can't define a variadic C function, only call one".to_string(),
+                    hint: Some("take the extra arguments as a pointer and a count".to_string()),
+                    why: None,
+                });
+            }
             let body = self.parse_block_body()?;
             return Ok(DeclKind::Fn(FnDecl {
                 name,
@@ -2767,7 +2821,16 @@ impl Parser {
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc, attrs, block_start }))
+        Ok(DeclKind::Extern(ExternDecl {
+            abi: abi.to_string(),
+            name,
+            params,
+            is_variadic: variadic.is_some(),
+            ret_ty,
+            doc,
+            attrs,
+            block_start,
+        }))
     }
 
 

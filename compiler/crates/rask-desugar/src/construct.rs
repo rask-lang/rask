@@ -39,9 +39,6 @@ struct Shapes {
     named_variants: HashMap<String, Vec<String>>,
     /// Variant names with positional fields, in any enum.
     positional_variants: HashSet<String>,
-    /// `import c "…" as ns` namespaces. Their structs come from the header,
-    /// read after this pass.
-    c_namespaces: HashSet<String>,
 }
 
 impl Shapes {
@@ -53,6 +50,11 @@ impl Shapes {
                 DeclKind::Struct(s) => {
                     let fields = s.fields.iter().map(|f| f.name.clone()).collect();
                     shapes.structs.insert(last_segment(&s.name).to_string(), fields);
+                }
+                // Built the same way, from the one member that's live (UN1).
+                DeclKind::Union(u) => {
+                    let fields = u.fields.iter().map(|f| f.name.clone()).collect();
+                    shapes.structs.insert(last_segment(&u.name).to_string(), fields);
                 }
                 DeclKind::Enum(e) => {
                     let mut variants = HashMap::new();
@@ -75,9 +77,6 @@ impl Shapes {
                         }
                     }
                     shapes.enums.insert(last_segment(&e.name).to_string(), variants);
-                }
-                DeclKind::CImport(c) => {
-                    shapes.c_namespaces.insert(c.alias.clone());
                 }
                 _ => {}
             }
@@ -117,13 +116,7 @@ impl Shapes {
         if self.named_variants.contains_key(last.as_str()) || self.positional_variants.contains(last.as_str()) {
             return self.bare_named_variant(last, labelled);
         }
-        // `c.Rect(width: 2)`: a C function takes no labels, so a labelled
-        // call through a C namespace builds one of its structs. The header is
-        // read later, and the checker has the fields.
-        match path {
-            [ns, _] if labelled && self.c_namespaces.contains(ns.as_str()) => Some(Vec::new()),
-            _ => None,
-        }
+        None
     }
 
     /// The fields the pattern `path(…)`, written without labels, matches by

@@ -35,6 +35,8 @@ use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod emit;
+pub mod c_import;
+mod variadic;
 pub mod package_scope;
 pub mod runners;
 mod comptime_aggregate;
@@ -434,6 +436,17 @@ pub fn check_loaded(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
+    let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let mut out = check_loaded_scoped(files, config, &mut exports);
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
+    out
+}
+
+fn check_loaded_scoped(
+    files: &[(PathBuf, String)],
+    config: &CompilerConfig,
+    exports: &mut HashMap<String, HashMap<String, String>>,
+) -> PipelineOutput<CheckResult> {
     config.declare_target();
 
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -476,6 +489,27 @@ pub fn check_loaded(
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
 
+    // `import c "x.h"` looks beside the file that imports it, so resolution has
+    // to know where each file came from (#1096). `file_id` is the index above.
+    let source_dirs: HashMap<u16, PathBuf> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
+        .collect();
+
+    // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
+    let c = c_import::expand(
+        &mut decls,
+        &mut source_files,
+        &mut next_id,
+        &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
+    );
+    exports.extend(c.exports);
+    diags.extend(c.diagnostics);
+    if diags.iter().any(|d| d.severity == Severity::Error) {
+        return PipelineOutput::fail_with_sources(diags, source_files);
+    }
+
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
     // --- Build configuration into `comptime` code (CC1) ---
@@ -499,18 +533,9 @@ pub fn check_loaded(
     // into every program, so their names have to bind for anything downstream
     // to know what a call inside them refers to (#425).
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    // `import c "x.h"` looks beside the file that imports it, so resolution has
-    // to know where each file came from (#1096). `file_id` is the index above.
-    let source_dirs: HashMap<u16, PathBuf> = paths
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
-        .collect();
-    let resolved = match rask_resolve::resolve_with_stdlib_and_dirs(
+    let resolved = match rask_resolve::resolve_with_stdlib(
         &parse_result.decls,
         &stdlib_bodies,
-        source_dirs,
-        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -591,7 +616,7 @@ pub fn check_loaded(
             typed,
             decls: parse_result.decls,
             package_names,
-            qualified_names: HashMap::new(),
+            qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,
             effect_warnings,
@@ -793,6 +818,25 @@ fn check_package_scoped(
         pkg_ctx.all_decls.extend(decls);
     }
 
+    // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
+    {
+        let source_dirs: HashMap<u16, PathBuf> = pkg_ctx
+            .registry
+            .packages()
+            .iter()
+            .flat_map(|p| p.files.iter())
+            .filter_map(|f| Some((f.file_id, f.path.parent()?.to_path_buf())))
+            .collect();
+        let c = c_import::expand(
+            &mut pkg_ctx.all_decls,
+            &mut source_files,
+            pkg_ctx.registry.next_node_id_mut(),
+            &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
+        );
+        exports.extend(c.exports);
+        diags.extend(c.diagnostics);
+    }
+
     // --- Build configuration into `comptime` code (CC1) ---
     // After the merge, so a dependency's `comptime if` is settled too.
     rask_comptime::apply_cfg(&mut pkg_ctx.all_decls, &config.cfg);
@@ -829,7 +873,6 @@ fn check_package_scoped(
         &pkg_ctx.registry,
         pkg_ctx.root_id,
         &stdlib_bodies,
-        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {

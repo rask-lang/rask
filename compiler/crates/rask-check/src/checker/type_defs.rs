@@ -481,14 +481,19 @@ pub enum PlacedArg {
 }
 
 /// Result of type checking.
+/// An extern's callback and context pair (struct.c-interop/CB3).
+#[derive(Debug, Clone)]
+pub struct CContext {
+    pub spec: rask_ast::attr::ContextSpec,
+    /// The callback's parameters as C declares them, context included.
+    pub c_params: Vec<Type>,
+    pub ret: Type,
+}
+
 #[derive(Debug)]
 pub struct TypedProgram {
     /// Resolved symbols from name resolution.
     pub symbols: rask_resolve::SymbolTable,
-    /// Struct declarations synthesized from `import c` headers. Not in the
-    /// source, so monomorphization has to be handed them or a C struct gets no
-    /// layout (#948).
-    pub c_type_decls: Vec<rask_ast::decl::Decl>,
     /// Symbol resolutions from name resolution.
     pub resolutions: HashMap<NodeId, SymbolId>,
     /// Type table with all type definitions.
@@ -513,6 +518,13 @@ pub struct TypedProgram {
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,
+    /// CB1/CB2: a function value handed where C wants a function pointer. MIR
+    /// passes its code address instead of a closure (struct.c-interop).
+    pub c_fn_pointers: std::collections::HashSet<NodeId>,
+    /// CB3: each extern whose callback takes a closure through its context
+    /// pointer, by name: which parameters, and the callback's C signature
+    /// for the trampoline MIR builds.
+    pub c_contexts: HashMap<String, CContext>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after
     /// the checker — the merged decl list has no packages left in it.
