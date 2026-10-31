@@ -137,7 +137,7 @@ impl Interpreter {
         // declarations because a generic instantiation's layout is computed on
         // demand, with the arguments the call site wrote.
         self.type_decls = decls.to_vec();
-        let (_, _, cache) = rask_mono::compute_declared_layouts(decls);
+        let (_, _, cache) = rask_mono::compute_declared_layouts(decls, &self.types);
         self.layout_cache = cache;
 
         for decl in decls {

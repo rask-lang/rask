@@ -4,67 +4,24 @@
 
 use std::collections::HashMap;
 
-use rask_ast::decl::Decl;
-use rask_ast::ty::TypeExpr;
 use rask_layout::{
     compute_enum_layout, compute_shared_enum_layout, compute_shared_struct_layout, compute_struct_layout,
-    compute_union_layout, field_type, generic_instance_name, generic_is_one_word, known_size_align,
-    ordering_layout, substitute_inside, type_size_align, FieldLayout, LayoutCache, StructLayout,
+    compute_union_layout, generic_instance_name, generic_is_one_word, known_size_align, ordering_layout,
+    spelled, substitute_inside, type_size_align, FieldLayout, LayoutCache, StructLayout, Unsolved,
 };
-use rask_types::{GenericArg, Type};
+use rask_types::{GenericArg, Type, TypeDef};
 
+/// A checked type spelled by name, as the layout cache is keyed, or `None`
+/// for one with no layout yet (a type parameter, an open variable).
 pub fn layout_spelling(ty: &Type, types: &crate::TypeTable) -> Option<Type> {
-    spell(ty, types, false)
+    spelled(ty, &|id| types.type_name(id), Unsolved::Refuse)
 }
 
 /// `layout_spelling` for a question that has to be answered whatever the type
 /// holds — the copy rule inside a generic body. A type parameter or an open
 /// variable stands in as a word, the size the shared layout gives it.
 fn spell_lenient(ty: &Type, types: &crate::TypeTable) -> Type {
-    spell(ty, types, true).expect("a lenient spelling always answers")
-}
-
-fn spell(ty: &Type, types: &crate::TypeTable, lenient: bool) -> Option<Type> {
-    let each = |tys: &[Type]| tys.iter().map(|t| spell(t, types, lenient)).collect::<Option<Vec<_>>>();
-    let args_of = |args: &[GenericArg]| {
-        args.iter()
-            .map(|a| match a {
-                GenericArg::Type(t) => {
-                    Some(GenericArg::Type(Box::new(spell(t, types, lenient)?)))
-                }
-                other => Some(other.clone()),
-            })
-            .collect::<Option<Vec<_>>>()
-    };
-    let layout_spelling = |t: &Type, types: &crate::TypeTable| spell(t, types, lenient);
-    Some(match ty {
-        Type::Var(_) | Type::Assoc { .. } | Type::Error if lenient => Type::I64,
-        Type::UnresolvedNamed(name) if lenient && rask_ast::type_params::is_type_param_name(name) => Type::I64,
-        Type::Var(_) | Type::Assoc { .. } | Type::Error => return None,
-        Type::UnresolvedNamed(name) if rask_ast::type_params::is_type_param_name(name) => return None,
-        Type::Named(id) => Type::UnresolvedNamed(types.type_name(*id)),
-        Type::Generic { base, args } => Type::UnresolvedGeneric {
-            name: types.type_name(*base),
-            args: args_of(args)?,
-        },
-        Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
-            name: name.clone(),
-            args: args_of(args)?,
-        },
-        Type::Tuple(elems) => Type::Tuple(each(elems)?),
-        Type::Union(members) => Type::Union(each(members)?),
-        Type::Array { elem, len } => Type::Array { elem: Box::new(layout_spelling(elem, types)?), len: *len },
-        Type::Result { ok, err } => Type::Result {
-            ok: Box::new(layout_spelling(ok, types)?),
-            err: Box::new(layout_spelling(err, types)?),
-        },
-        Type::RawPtr(inner) => Type::RawPtr(Box::new(layout_spelling(inner, types)?)),
-        Type::SimdVector { elem, lanes } => Type::SimdVector {
-            elem: Box::new(layout_spelling(elem, types)?),
-            lanes: *lanes,
-        },
-        other => other.clone(),
-    })
+    spelled(ty, &|id| types.type_name(id), Unsolved::Word).expect("a lenient spelling always answers")
 }
 
 /// The layout name of one instantiation of a generic type — `One$Big`,
@@ -80,19 +37,28 @@ fn spell(ty: &Type, types: &crate::TypeTable, lenient: bool) -> Option<Type> {
 /// construction rather than by convention.
 
 impl crate::TypeTable {
-    /// Record a struct, enum or union declaration for laying out.
-    pub(crate) fn note_layout_decl(&mut self, id: crate::TypeId, kind: rask_ast::decl::DeclKind) {
+    /// Record a struct, enum or union for laying out, under the name its
+    /// layout is keyed by.
+    ///
+    /// By id rather than looked up by name later: a program's `interface
+    /// Parser` takes the name from the stdlib's `cli.Parser` struct, and the
+    /// struct still needs its layout.
+    pub(crate) fn note_layout_type(&mut self, id: crate::TypeId) {
         // A stdlib generic with no fields (`Sequence<T>`) stands in for a
         // value the runtime holds: one word, whatever its declaration says.
         let stand_in = self.stdlib_mode
-            && matches!(&kind, rask_ast::decl::DeclKind::Struct(s)
-                if s.fields.is_empty() && !rask_ast::type_params::struct_type_param_names(s).is_empty());
+            && matches!(self.get(id), Some(TypeDef::Struct { fields, type_params, .. })
+                if fields.is_empty() && !type_params.is_empty());
         if stand_in {
             self.layout_stand_ins.insert(self.type_name(id));
             return;
         }
-        let decl = Decl { id: rask_ast::NodeId(0), kind, span: rask_ast::Span::new(0, 0) };
-        self.layout_decls.insert(self.type_name(id), decl);
+        self.layout_types.insert(self.type_name(id), id);
+    }
+
+    /// The struct, enum or union laid out under `name`.
+    fn layout_def(&self, name: &str) -> Option<&TypeDef> {
+        self.get(*self.layout_types.get(name)?)
     }
 
     /// Size and alignment of `ty`, or `None` for a type with no layout yet: one
@@ -135,13 +101,13 @@ impl crate::TypeTable {
     }
 
     fn struct_layout_in(&self, name: &str, args: &[Type], mut cache: LayoutCache) -> Option<StructLayout> {
-        let decl = self.layout_decls.get(name)?;
-        let rask_ast::decl::DeclKind::Struct(_) = &decl.kind else { return None };
+        let def = self.layout_def(name)?;
+        let TypeDef::Struct { .. } = def else { return None };
         for ty in args {
             self.fill_layouts(ty, &mut cache, &mut Vec::new());
         }
-        self.fill_decl_fields(decl, args, &mut cache, &mut vec![name.to_string()]);
-        Some(compute_struct_layout(decl, args, &cache))
+        self.fill_decl_fields(def, args, &mut cache, &mut vec![name.to_string()]);
+        Some(compute_struct_layout(def, args, &|id| self.type_name(id), &cache))
     }
 
     /// The field of struct `ty` that runs past byte `limit` first, in memory
@@ -189,7 +155,7 @@ impl crate::TypeTable {
                 // `Expr` out while `Holder` was half-done, and `Expr`'s
                 // `Boxed(Holder)` payload got a guessed word (#1436's cycle,
                 // on demand).
-                if !self.layout_decls.contains_key(name.as_str()) {
+                if !self.layout_types.contains_key(name.as_str()) {
                     for arg in &args {
                         self.fill_layouts(arg, cache, visiting);
                     }
@@ -220,7 +186,7 @@ impl crate::TypeTable {
             cache.insert(key, (w, w));
             return;
         }
-        let Some(decl) = self.layout_decls.get(name) else {
+        let Some(def) = self.layout_def(name) else {
             // The compiler registers `Ordering` without a declaration.
             let ordering = ordering_layout();
             if name == ordering.name {
@@ -228,55 +194,39 @@ impl crate::TypeTable {
                 return;
             }
             // A nominal newtype is laid out as what it wraps.
-            if let Some(rask_types::TypeDef::NominalAlias { underlying, .. }) =
-                self.get_type_id(name).and_then(|id| self.get(id))
-            {
+            if let Some(TypeDef::NominalAlias { underlying, .. }) = self.get_type_id(name).and_then(|id| self.get(id)) {
                 let wrapped = spell_lenient(underlying, self);
                 visiting.push(key.clone());
                 self.fill_layouts(&wrapped, cache, visiting);
                 visiting.pop();
                 let size_align = type_size_align(&wrapped, cache);
                 cache.insert(key, size_align);
-            } else if let Some(target) = self.alias_target(name) {
-                // `type alias U32 = u32` is its target: a field typed by the
-                // alias is laid out as the target, not a guessed word.
-                let target = field_type(target);
-                visiting.push(key.clone());
-                self.fill_layouts(&target, cache, visiting);
-                visiting.pop();
-                let size_align = type_size_align(&target, cache);
-                cache.insert(key, size_align);
             }
             return;
         };
         visiting.push(key.clone());
-        self.fill_decl_fields(decl, args, cache, visiting);
+        self.fill_decl_fields(def, args, cache, visiting);
         visiting.pop();
-        use rask_ast::decl::DeclKind;
-        let generic = match &decl.kind {
-            DeclKind::Struct(s) => !rask_ast::type_params::struct_type_param_names(s).is_empty(),
-            DeclKind::Enum(e) => !rask_ast::type_params::enum_type_param_names(e).is_empty(),
-            _ => false,
-        };
-        let size_align = match &decl.kind {
-            DeclKind::Struct(_) if generic && args.is_empty() => {
-                let l = compute_shared_struct_layout(decl, cache);
+        let name_of = &|id| self.type_name(id);
+        let size_align = match def {
+            TypeDef::Struct { type_params, .. } if !type_params.is_empty() && args.is_empty() => {
+                let l = compute_shared_struct_layout(def, name_of, cache);
                 (l.size, l.align)
             }
-            DeclKind::Struct(_) => {
-                let l = compute_struct_layout(decl, args, cache);
+            TypeDef::Struct { .. } => {
+                let l = compute_struct_layout(def, args, name_of, cache);
                 (l.size, l.align)
             }
-            DeclKind::Enum(_) if generic && args.is_empty() => {
-                let l = compute_shared_enum_layout(decl, cache);
+            TypeDef::Enum { type_params, .. } if !type_params.is_empty() && args.is_empty() => {
+                let l = compute_shared_enum_layout(def, name_of, cache);
                 (l.size, l.align)
             }
-            DeclKind::Enum(_) => {
-                let l = compute_enum_layout(decl, args, cache);
+            TypeDef::Enum { .. } => {
+                let l = compute_enum_layout(def, args, name_of, cache);
                 (l.size, l.align)
             }
-            DeclKind::Union(_) => {
-                let l = compute_union_layout(decl, cache);
+            TypeDef::Union { .. } => {
+                let l = compute_union_layout(def, name_of, cache);
                 (l.size, l.align)
             }
             _ => return,
@@ -285,21 +235,20 @@ impl crate::TypeTable {
     }
 
     /// The layouts a declaration's fields need, with `args` written in.
-    fn fill_decl_fields(&self, decl: &Decl, args: &[Type], cache: &mut LayoutCache, visiting: &mut Vec<String>) {
-        use rask_ast::decl::DeclKind;
-        let (params, fields): (Vec<String>, Vec<&TypeExpr>) = match &decl.kind {
-            DeclKind::Struct(s) => (rask_ast::type_params::struct_type_param_names(s), s.fields.iter().map(|f| &f.ty).collect()),
-            DeclKind::Enum(e) => (
-                rask_ast::type_params::enum_type_param_names(e),
-                e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
-            ),
-            DeclKind::Union(u) => (Vec::new(), u.fields.iter().map(|f| &f.ty).collect()),
+    fn fill_decl_fields(&self, def: &TypeDef, args: &[Type], cache: &mut LayoutCache, visiting: &mut Vec<String>) {
+        let (params, fields): (&[String], Vec<&Type>) = match def {
+            TypeDef::Struct { type_params, fields, .. } => (type_params, fields.iter().map(|(_, t)| t).collect()),
+            TypeDef::Enum { type_params, variants, .. } => {
+                (type_params, variants.iter().flat_map(|(_, payload)| payload).collect())
+            }
+            TypeDef::Union { fields, .. } => (&[], fields.iter().map(|(_, t)| t).collect()),
             _ => return,
         };
         let subst: HashMap<&str, &Type> = params.iter().map(String::as_str).zip(args.iter()).collect();
         for field in fields {
-            let ty = substitute_inside(&field_type(field), &subst);
-            self.fill_layouts(&ty, cache, visiting);
+            let declared = spelled(field, &|id| self.type_name(id), Unsolved::KeepParams)
+                .expect("keeping parameters always answers");
+            self.fill_layouts(&substitute_inside(&declared, &subst), cache, visiting);
         }
     }
 }

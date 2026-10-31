@@ -3,10 +3,69 @@
 //! Memory layout: sizes, alignments and field offsets. The one size model;
 //! the checker's copy rule, monomorphization and the backends all read it.
 
-use rask_ast::decl::Decl;
 use rask_ast::ty::TypeExpr;
-use rask_types::{FnParam, GenericArg, Type, TypeId};
+use rask_types::{FnParam, GenericArg, Type, TypeDef, TypeId};
 use std::collections::HashMap;
+
+/// The name each `TypeId` goes by. The cache is keyed by name, so a checked
+/// type is respelled by name before layout reads it (`spelled`).
+pub type NameOf<'a> = &'a dyn Fn(TypeId) -> String;
+
+/// What `spelled` does with a part of a type that has no layout: a type
+/// parameter, an inference variable nobody solved, a projection, an error.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Unsolved {
+    /// No answer: the type has no layout yet.
+    Refuse,
+    /// A word, the size the shared layout gives a parameter. For a question
+    /// that has to be answered inside a generic body (the copy rule).
+    Word,
+    /// Keep a parameter's name, so a declaration's field types can have the
+    /// arguments written in. Anything else unsolved is a word.
+    KeepParams,
+}
+
+/// A checked type respelled the way the layout cache is keyed: by name, not by
+/// `TypeId`. `None` only under `Unsolved::Refuse`, for a type with no layout.
+pub fn spelled(ty: &Type, name_of: NameOf, unsolved: Unsolved) -> Option<Type> {
+    let go = |t: &Type| spelled(t, name_of, unsolved);
+    let each = |tys: &[Type]| tys.iter().map(go).collect::<Option<Vec<_>>>();
+    let args_of = |args: &[GenericArg]| {
+        args.iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => Some(GenericArg::Type(Box::new(go(t)?))),
+                other => Some(other.clone()),
+            })
+            .collect::<Option<Vec<_>>>()
+    };
+    let is_param = |name: &str| rask_ast::type_params::is_type_param_name(name);
+    Some(match ty {
+        Type::Var(_) | Type::Assoc { .. } | Type::Error => match unsolved {
+            Unsolved::Refuse => return None,
+            Unsolved::Word | Unsolved::KeepParams => Type::I64,
+        },
+        Type::UnresolvedNamed(name) if is_param(name) => match unsolved {
+            Unsolved::Refuse => return None,
+            Unsolved::Word => Type::I64,
+            Unsolved::KeepParams => ty.clone(),
+        },
+        Type::Named(id) => Type::UnresolvedNamed(name_of(*id)),
+        Type::Generic { base, args } => Type::UnresolvedGeneric { name: name_of(*base), args: args_of(args)? },
+        Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric { name: name.clone(), args: args_of(args)? },
+        Type::Tuple(elems) => Type::Tuple(each(elems)?),
+        Type::Union(members) => Type::Union(each(members)?),
+        Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)?), len: *len },
+        Type::Result { ok, err } => Type::Result { ok: Box::new(go(ok)?), err: Box::new(go(err)?) },
+        Type::RawPtr(inner) => Type::RawPtr(Box::new(go(inner)?)),
+        Type::SimdVector { elem, lanes } => Type::SimdVector { elem: Box::new(go(elem)?), lanes: *lanes },
+        other => other.clone(),
+    })
+}
+
+/// A declaration's field type as layout reads it: by name, parameters kept.
+fn declared(ty: &Type, name_of: NameOf) -> Type {
+    spelled(ty, name_of, Unsolved::KeepParams).expect("keeping parameters always answers")
+}
 
 /// Already-computed type layouts, keyed by type name, for one pointer width.
 ///
@@ -581,10 +640,11 @@ fn build_subst<'a>(
 /// returned type is a substitution rather than what the source wrote — see
 /// `FieldLayout::is_type_param`.
 fn resolve_field_type(
-    field_ty: &TypeExpr,
+    field_ty: &Type,
     subst: &std::collections::HashMap<&str, &Type>,
+    name_of: NameOf,
 ) -> (Type, bool) {
-    let parsed = field_type(field_ty);
+    let parsed = declared(field_ty, name_of);
     match &parsed {
         Type::UnresolvedNamed(name) => {
             if let Some(concrete) = subst.get(name.as_str()) {
@@ -659,27 +719,26 @@ fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
-pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
-    struct_layout(struct_def, type_args, cache, true)
+pub fn compute_struct_layout(def: &TypeDef, type_args: &[Type], name_of: NameOf, cache: &LayoutCache) -> StructLayout {
+    struct_layout(def, type_args, name_of, cache, true)
 }
 
 /// A generic struct's shared layout: a word standing in for each type
 /// parameter. The stand-in sizes the fields and isn't recorded in them —
 /// `Vec<T>` stays `Vec<T>`, or reflection on `Ring<string>` read `Vec<i64>`.
-pub fn compute_shared_struct_layout(struct_def: &Decl, cache: &LayoutCache) -> StructLayout {
-    struct_layout(struct_def, &stand_ins(struct_def), cache, false)
+pub fn compute_shared_struct_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> StructLayout {
+    struct_layout(def, &stand_ins(def), name_of, cache, false)
 }
 
 /// The enum version of `compute_shared_struct_layout`.
-pub fn compute_shared_enum_layout(enum_def: &Decl, cache: &LayoutCache) -> EnumLayout {
-    enum_layout(enum_def, &stand_ins(enum_def), cache, false)
+pub fn compute_shared_enum_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> EnumLayout {
+    enum_layout(def, &stand_ins(def), name_of, cache, false)
 }
 
-fn stand_ins(decl: &Decl) -> Vec<Type> {
-    use rask_ast::decl::DeclKind;
-    let n = match &decl.kind {
-        DeclKind::Struct(s) => rask_ast::type_params::struct_type_param_names(s).len(),
-        DeclKind::Enum(e) => rask_ast::type_params::enum_type_param_names(e).len(),
+/// A word per type parameter.
+fn stand_ins(def: &TypeDef) -> Vec<Type> {
+    let n = match def {
+        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params.len(),
         _ => 0,
     };
     vec![Type::I64; n]
@@ -690,51 +749,38 @@ fn stand_ins(decl: &Decl) -> Vec<Type> {
 /// the field's own instance is found. A bare `T` field is substituted either
 /// way and marked as coming from a parameter.
 fn struct_layout(
-    struct_def: &Decl,
+    def: &TypeDef,
     type_args: &[Type],
+    name_of: NameOf,
     cache: &LayoutCache,
     record_arguments: bool,
 ) -> StructLayout {
-    use rask_ast::decl::DeclKind;
-
-    let struct_decl = match &struct_def.kind {
-        DeclKind::Struct(s) => s,
-        _ => panic!("Expected struct declaration"),
+    let TypeDef::Struct { name, type_params, fields, is_resource, attrs, field_decls, .. } = def else {
+        panic!("struct layout of a non-struct: {def:?}");
     };
 
-    let param_names = rask_ast::type_params::struct_type_param_names(struct_decl);
-    let subst = build_subst(&param_names, type_args);
-    let c_layout = has_c_layout(&struct_decl.attrs);
-    // A `@binary` struct's declared field types are wire specifiers
-    // (type.binary/F2), not type names — `u16be` says "16 bits, big-endian".
-    // The in-memory layout is the runtime type each one stands for; reading the
-    // specifier as a type name gave every field a pointer-sized slot and a
-    // warning per compile.
-    let is_binary = struct_decl.attrs.iter().any(|a| a.is("binary"));
+    assert_eq!(fields.len(), field_decls.len(), "`{name}`: a field without its declaration");
+    let subst = build_subst(type_params, type_args);
+    let c_layout = has_c_layout(attrs);
 
-    // Resolve types and compute sizes for all fields first
-    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = struct_decl.fields.iter()
+    // Resolve types and compute sizes for all fields first. A `@binary`
+    // struct's fields are already the runtime types its wire specifiers hold.
+    let mut resolved: Vec<(String, Type, u32, u32, Vec<rask_ast::attr::Attr>, bool, bool, bool, u32)> = fields.iter()
+        .zip(field_decls)
         .enumerate()
-        .map(|(decl_index, field)| {
-            let (field_ty, from_param) = if is_binary {
-                match binary_field_runtime_type(&field.ty) {
-                    Some(ty) => (ty, false),
-                    None => resolve_field_type(&field.ty, &subst),
-                }
-            } else {
-                resolve_field_type(&field.ty, &subst)
-            };
+        .map(|(decl_index, ((field_name, field_ty), member))| {
+            let (field_ty, from_param) = resolve_field_type(field_ty, &subst, name_of);
             let sized = substitute_inside(&field_ty, &subst);
             let (field_size, field_align) = type_size_align(&sized, cache);
             let field_ty = if record_arguments { sized } else { field_ty };
             (
-                field.name.clone(),
+                field_name.clone(),
                 field_ty,
                 field_size,
                 field_align,
-                field.attrs.clone(),
-                field.default.is_some(),
-                field.visibility.is_pub(),
+                member.attrs.clone(),
+                member.has_default,
+                member.is_public,
                 from_param,
                 decl_index as u32,
             )
@@ -745,7 +791,7 @@ fn struct_layout(
     // written — with no padding to save there is nothing to reorder for.
     // `@align(N)` raises the struct's own alignment and so its tail padding.
     // A malformed request is the checker's error; here it reads as none.
-    let request = rask_ast::attr::layout_request(&struct_decl.attrs).unwrap_or_default();
+    let request = rask_ast::attr::layout_request(attrs).unwrap_or_default();
     if request.packed {
         for field in &mut resolved {
             field.3 = 1;
@@ -829,44 +875,42 @@ fn struct_layout(
     let total_size = align_up(offset, max_align);
 
     StructLayout {
-        name: struct_decl.name.clone(),
+        name: name.clone(),
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_resource: struct_decl.attrs.iter().any(|a| a.is("resource")),
+        is_resource: *is_resource,
     }
 }
 
 /// Compute union layout — all fields at offset 0, size = max field size (spec rules UN1-UN3).
 /// Returns a StructLayout since unions reuse the same representation.
-pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayout {
-    use rask_ast::decl::DeclKind;
-
-    let union_decl = match &union_def.kind {
-        DeclKind::Union(u) => u,
-        _ => panic!("Expected union declaration"),
+pub fn compute_union_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> StructLayout {
+    let TypeDef::Union { name, fields, field_decls } = def else {
+        panic!("union layout of a non-union: {def:?}");
     };
+    assert_eq!(fields.len(), field_decls.len(), "`{name}`: a field without its declaration");
 
     let mut field_layouts = Vec::new();
     let mut max_size = 0u32;
     let mut max_align = 1u32;
 
-    for (decl_index, field) in union_decl.fields.iter().enumerate() {
-        let field_ty = field_type(&field.ty);
+    for (decl_index, ((field_name, field_ty), member)) in fields.iter().zip(field_decls).enumerate() {
+        let field_ty = declared(field_ty, name_of);
         let (field_size, field_align) = type_size_align(&field_ty, cache);
         max_size = max_size.max(field_size);
         max_align = max_align.max(field_align);
 
         // All union fields at offset 0
         field_layouts.push(FieldLayout {
-            name: field.name.clone(),
+            name: field_name.clone(),
             ty: field_ty,
             offset: 0,
             size: field_size,
             align: field_align,
-            attrs: field.attrs.clone(),
-            has_declared_default: field.default.is_some(),
-            is_public: field.visibility.is_pub(),
+            attrs: member.attrs.clone(),
+            has_declared_default: member.has_default,
+            is_public: member.is_public,
             decl_index: decl_index as u32,
             is_type_param: false,
             bits: None,
@@ -876,7 +920,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
     let total_size = align_up(max_size, max_align);
 
     StructLayout {
-        name: union_decl.name.clone(),
+        name: name.clone(),
         size: total_size,
         align: max_align,
         fields: field_layouts,
@@ -923,38 +967,30 @@ pub fn ordering_layout() -> EnumLayout {
 }
 
 /// Compute enum layout with tag and variant payloads (spec rules E1-E6)
-pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> EnumLayout {
-    enum_layout(enum_def, type_args, cache, true)
+pub fn compute_enum_layout(def: &TypeDef, type_args: &[Type], name_of: NameOf, cache: &LayoutCache) -> EnumLayout {
+    enum_layout(def, type_args, name_of, cache, true)
 }
 
 fn enum_layout(
-    enum_def: &Decl,
+    def: &TypeDef,
     type_args: &[Type],
+    name_of: NameOf,
     cache: &LayoutCache,
     record_arguments: bool,
 ) -> EnumLayout {
-    use rask_ast::decl::DeclKind;
-
-    let enum_decl = match &enum_def.kind {
-        DeclKind::Enum(e) => e,
-        _ => panic!("Expected enum declaration"),
+    let TypeDef::Enum { name, type_params, variants, attrs, backing, variant_decls, .. } = def else {
+        panic!("enum layout of a non-enum: {def:?}");
     };
 
-    let param_names = rask_ast::type_params::enum_type_param_names(enum_decl);
-    let subst = build_subst(&param_names, type_args);
+    assert_eq!(variants.len(), variant_decls.len(), "`{name}`: a variant without its declaration");
+    let subst = build_subst(type_params, type_args);
 
-    let variant_count = enum_decl.variants.len();
+    let variant_count = variants.len();
 
     // E2/E14: Determine discriminant type
-    let tag_ty = if let Some(ref bt) = enum_decl.backing_type {
-        match bt.bare_name().unwrap_or_default() {
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" => Type::I64,
+    let tag_ty = if let Some(bt) = backing {
+        match bt {
+            Type::U8 | Type::U16 | Type::U32 | Type::I8 | Type::I16 | Type::I32 | Type::I64 => bt.clone(),
             _ => if variant_count <= 256 { Type::U8 } else { Type::U16 },
         }
     } else if variant_count <= 256 {
@@ -971,17 +1007,19 @@ fn enum_layout(
     let mut max_payload_align = 1u32;
     let mut variant_layouts = Vec::new();
 
-    for (tag, variant) in enum_decl.variants.iter().enumerate() {
+    for (tag, ((variant_name, payload), variant)) in variants.iter().zip(variant_decls).enumerate() {
         // Compute payload size for this variant
         let mut payload_size = 0u32;
         let mut payload_align = 1u32;
 
         let mut variant_fields = Vec::new();
 
-        if !variant.fields.is_empty() {
+        if !payload.is_empty() {
             let mut field_offset = 0u32;
-            for (decl_index, field) in variant.fields.iter().enumerate() {
-                let (field_ty, from_param) = resolve_field_type(&field.ty, &subst);
+            for (decl_index, (field_ty, (field_name, member))) in
+                payload.iter().zip(variant.field_names.iter().zip(&variant.fields)).enumerate()
+            {
+                let (field_ty, from_param) = resolve_field_type(field_ty, &subst, name_of);
                 let sized = substitute_inside(&field_ty, &subst);
                 let (size, align) = type_size_align(&sized, cache);
                 let field_ty = if record_arguments { sized } else { field_ty };
@@ -990,13 +1028,13 @@ fn enum_layout(
                 field_offset = align_up(field_offset, align);
 
                 variant_fields.push(FieldLayout {
-                    name: field.name.clone(),
+                    name: field_name.clone(),
                     ty: field_ty,
                     offset: field_offset,
                     size,
                     align,
                     attrs: Vec::new(),
-                    has_declared_default: field.default.is_some(),
+                    has_declared_default: member.has_default,
                     // A variant's payload has no visibility of its own.
                     is_public: true,
                     decl_index: decl_index as u32,
@@ -1013,7 +1051,7 @@ fn enum_layout(
         max_payload_align = max_payload_align.max(payload_align);
 
         variant_layouts.push(VariantLayout {
-            name: variant.name.clone(),
+            name: variant_name.clone(),
             tag: variant.discriminant.unwrap_or(tag as i128) as u64,
             payload_offset: 0, // Will be computed from tag
             payload_size,
@@ -1037,13 +1075,13 @@ fn enum_layout(
     let total_size = align_up(payload_offset + max_payload_size, enum_align);
 
     EnumLayout {
-        name: enum_decl.name.clone(),
+        name: name.clone(),
         size: total_size,
         align: enum_align,
         tag_ty,
         tag_offset: 0, // E1: Tag is first
         variants: variant_layouts,
-        attrs: enum_decl.attrs.clone(),
+        attrs: attrs.clone(),
     }
 }
 
@@ -1144,15 +1182,6 @@ fn type_arg_key(
 /// `transmute` size test all read it, and codegen lays values out by the same
 /// functions, so a type has one size everywhere.
 
-/// The runtime type a `@binary` field specifier stands for, or `None` when the
-/// spelling isn't one. Layout asks this too — the specifier is the declared
-/// type string everywhere downstream, and `u16be` names no type, so a `@binary`
-/// struct was laid out with a pointer-sized slot per field and a warning per
-/// compile.
-pub fn binary_field_runtime_type(ty: &TypeExpr) -> Option<Type> {
-    rask_ast::binary::field_spec(ty).ok().map(|spec| held_type(&spec))
-}
-
 /// The runtime type a `@binary` field specifier holds.
 pub fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
     use rask_ast::binary::Held;
@@ -1176,77 +1205,40 @@ pub fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rask_ast::decl::{Decl, DeclKind, EnumDecl, Field, FieldVisibility, StructDecl, Variant};
-    use rask_ast::{NodeId, Span};
-
-    fn dummy_span() -> Span {
-        Span::new(0, 0)
+    fn written(ty: &str) -> Type {
+        field_type(&rask_parser::parse_type(ty).unwrap())
     }
 
-    fn make_struct(name: &str, fields: Vec<(&str, &str)>) -> Decl {
-        Decl {
-            id: NodeId(0),
-            kind: DeclKind::Struct(StructDecl {
-                name: name.to_string(),
-                type_params: vec![],
-                fields: fields
-                    .into_iter()
-                    .map(|(n, ty)| Field {
-                        name: n.to_string(),
-                        name_span: dummy_span(),
-                        ty: rask_parser::parse_type(ty).unwrap(),
-                        ty_span: dummy_span(),
-                        visibility: FieldVisibility::Package,
-                        attrs: vec![],
-                        default: None,
-                        doc: None,
-                    })
-                    .collect(),
-                methods: vec![],
-                is_pub: false,
-                attrs: vec![],
-                doc: None,
-            }),
-            span: dummy_span(),
-        }
+    /// Field types here are written by name, so no id ever needs one.
+    fn no_ids(id: TypeId) -> String {
+        panic!("no TypeId expected in a test layout, got {id:?}")
     }
 
-    fn make_enum(name: &str, variants: Vec<(&str, Vec<&str>)>) -> Decl {
-        Decl {
-            id: NodeId(0),
-            kind: DeclKind::Enum(EnumDecl {
-                name: name.to_string(),
-                type_params: vec![],
-                variants: variants
-                    .into_iter()
-                    .map(|(vname, field_tys)| Variant {
-                        name: vname.to_string(),
-                        name_span: dummy_span(),
-                        fields: field_tys
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, ty)| Field {
-                                name: format!("f{}", i),
-                                name_span: dummy_span(),
-                                ty: rask_parser::parse_type(ty).unwrap(),
-                                ty_span: dummy_span(),
-                                visibility: FieldVisibility::Package,
-                                attrs: vec![],
-                                default: None,
-                                doc: None,
-                            })
-                            .collect(),
-                        attrs: vec![],
-                        discriminant: None,
-                    })
-                    .collect(),
-                methods: vec![],
-                is_pub: false,
-                attrs: vec![],
-                doc: None,
-                backing_type: None,
-            }),
-            span: dummy_span(),
+    fn make_struct(name: &str, fields: Vec<(&str, &str)>) -> TypeDef {
+        make_struct_with_attrs(name, fields, vec![])
+    }
+
+    fn make_enum(name: &str, variants: Vec<(&str, Vec<&str>)>) -> TypeDef {
+        TypeDef::Enum {
+            name: name.to_string(),
+            type_params: vec![],
+            variant_decls: variants
+                .iter()
+                .map(|(_, tys)| rask_types::VariantDecl {
+                    field_names: (0..tys.len()).map(|i| format!("f{i}")).collect(),
+                    ..rask_types::VariantDecl::synthesized(tys.len())
+                })
+                .collect(),
+            variants: variants
+                .into_iter()
+                .map(|(vname, tys)| (vname.to_string(), tys.into_iter().map(written).collect()))
+                .collect(),
+            methods: vec![],
+            is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
+            attrs: vec![],
+            backing: None,
         }
     }
 
@@ -1282,11 +1274,11 @@ mod tests {
     fn pointers_follow_the_cache_word() {
         let three = make_struct("Three", vec![("x", "i64"), ("p", "*u8"), ("q", "*u8")]);
         let narrow = LayoutCache::with_word(4);
-        assert_eq!(compute_struct_layout(&three, &[], &narrow).size, 16);
-        assert_eq!(compute_struct_layout(&three, &[], &LayoutCache::for_copy_rule()).size, 24);
+        assert_eq!(compute_struct_layout(&three, &[], &no_ids, &narrow).size, 16);
+        assert_eq!(compute_struct_layout(&three, &[], &no_ids, &LayoutCache::for_copy_rule()).size, 24);
 
         let holder = make_struct("Holder", vec![("v", "Vec<i64>"), ("tag", "u8")]);
-        assert_eq!(compute_struct_layout(&holder, &[], &narrow).size, 8);
+        assert_eq!(compute_struct_layout(&holder, &[], &no_ids, &narrow).size, 8);
         // The runtime's string is 16 bytes on every target.
         assert_eq!(type_size_align(&Type::String, &narrow), (16, 8));
         assert_eq!(type_size_align(&Type::RawPtr(Box::new(Type::U8)), &narrow), (4, 4));
@@ -1462,7 +1454,7 @@ mod tests {
         let mut cache = LayoutCache::new();
         cache.insert("Inner".to_string(), (16, 8));
         let decl = make_struct("Outer", vec![("inner", "Inner"), ("z", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &cache);
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
         assert_eq!(layout.fields[0].size, 16); // Inner
         assert_eq!(layout.fields[0].align, 8);
         assert_eq!(layout.fields[1].offset, 16); // z at offset 16
@@ -1475,7 +1467,7 @@ mod tests {
     #[test]
     fn empty_struct() {
         let decl = make_struct("Empty", vec![]);
-        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.name, "Empty");
         assert_eq!(layout.size, 0);
         assert_eq!(layout.align, 1);
@@ -1485,7 +1477,7 @@ mod tests {
     #[test]
     fn single_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.name, "Point");
         assert_eq!(layout.size, 4);
         assert_eq!(layout.align, 4);
@@ -1498,7 +1490,7 @@ mod tests {
     #[test]
     fn two_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32"), ("y", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.size, 8);
         assert_eq!(layout.align, 4);
         assert_eq!(layout.fields[0].offset, 0);
@@ -1514,7 +1506,7 @@ mod tests {
             "Color",
             vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])],
         );
-        let layout = compute_enum_layout(&decl, &[], &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.name, "Color");
         assert_eq!(layout.tag_offset, 0); // E1: tag first
         assert_eq!(layout.variants.len(), 3);
@@ -1532,7 +1524,7 @@ mod tests {
             "Shape",
             vec![("Circle", vec!["i32"]), ("Rect", vec!["i32", "i32"])],
         );
-        let layout = compute_enum_layout(&decl, &[], &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
@@ -1560,7 +1552,7 @@ mod tests {
                 ("Pair", vec!["i32", "i32"]),
             ],
         );
-        let layout = compute_enum_layout(&decl, &[], &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
         assert_eq!(layout.variants[1].payload_size, 4);
@@ -1572,31 +1564,25 @@ mod tests {
 
     // ── Field reordering (S1/L4) ──────────────────────────────────
 
-    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<rask_ast::attr::Attr>) -> Decl {
-        Decl {
-            id: NodeId(0),
-            kind: DeclKind::Struct(StructDecl {
-                name: name.to_string(),
-                type_params: vec![],
-                fields: fields
-                    .into_iter()
-                    .map(|(n, ty)| Field {
-                        name: n.to_string(),
-                        name_span: dummy_span(),
-                        ty: rask_parser::parse_type(ty).unwrap(),
-                        ty_span: dummy_span(),
-                        visibility: FieldVisibility::Package,
-                        attrs: vec![],
-                        default: None,
-                        doc: None,
-                    })
-                    .collect(),
-                methods: vec![],
-                is_pub: false,
-                attrs,
-                doc: None,
-            }),
-            span: dummy_span(),
+    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<rask_ast::attr::Attr>) -> TypeDef {
+        TypeDef::Struct {
+            name: name.to_string(),
+            type_params: vec![],
+            field_decls: vec![rask_types::MemberDecl::default(); fields.len()],
+            fields: fields.into_iter().map(|(n, ty)| (n.to_string(), written(ty))).collect(),
+            methods: vec![],
+            is_resource: false,
+            is_unique: false,
+            is_binary: false,
+            private_fields: vec![],
+            skipped_fields: vec![],
+            undecodable_fields: vec![],
+            is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
+            reads_as: None,
+            temporary: None,
+            attrs,
         }
     }
 
@@ -1607,7 +1593,7 @@ mod tests {
         // used to assert source order, because every scalar had the same
         // alignment and the stable sort never moved anything (#1083).
         let decl = make_struct("Mixed", vec![("a", "u8"), ("b", "u64"), ("c", "u16")]);
-        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.fields[0].name, "b");
         assert_eq!(layout.fields[1].name, "c");
         assert_eq!(layout.fields[2].name, "a");
@@ -1631,7 +1617,7 @@ mod tests {
         let decl = make_struct("Ordered", vec![
             ("s", "Small"), ("m", "Medium"), ("l", "Large"),
         ]);
-        let layout = compute_struct_layout(&decl, &[], &cache);
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
 
         // Reordered: Large (align 8), Medium (align 4), Small (align 1)
         assert_eq!(layout.fields[0].name, "l");
@@ -1651,7 +1637,7 @@ mod tests {
         let decl = make_struct("Padded", vec![
             ("s1", "Small"), ("b", "Big"), ("s2", "Small"),
         ]);
-        let layout = compute_struct_layout(&decl, &[], &cache);
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
         assert_eq!(layout.fields[0].name, "b");
         // s1, s2 have equal alignment — stable sort preserves relative order
         assert_eq!(layout.fields[1].name, "s1");
@@ -1675,7 +1661,7 @@ mod tests {
                 }]),
             )],
         );
-        let layout = compute_struct_layout(&decl, &[], &cache);
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
 
         // @layout(C): source order preserved
         assert_eq!(layout.fields[0].name, "s");
@@ -1685,7 +1671,7 @@ mod tests {
     #[test]
     fn empty_struct_reorder_noop() {
         let decl = make_struct("Empty", vec![]);
-        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
         assert_eq!(layout.size, 0);
         assert_eq!(layout.fields.len(), 0);
     }
