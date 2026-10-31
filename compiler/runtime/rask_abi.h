@@ -149,11 +149,19 @@
 #define RASK_JSHAPE_F32 9
 #define RASK_JSHAPE_F64 10
 #define RASK_JSHAPE_STRING 11
-#define RASK_JSHAPE_PRIM_COUNT 12
-#define RASK_JSHAPE_VEC 12
-#define RASK_JSHAPE_MAP 13
-#define RASK_JSHAPE_OPT 14
-#define RASK_JSHAPE_STRUCT 15
+
+// A `char`, as its code point in four bytes. Claims build these; JSON
+// has no `char` yet.
+#define RASK_JSHAPE_CHAR 12
+#define RASK_JSHAPE_PRIM_COUNT 13
+#define RASK_JSHAPE_VEC 13
+#define RASK_JSHAPE_MAP 14
+#define RASK_JSHAPE_OPT 15
+#define RASK_JSHAPE_STRUCT 16
+
+// An enum: a tag, and per variant a struct of its payload. Claims build
+// these; JSON's enum form is still open (std.json).
+#define RASK_JSHAPE_ENUM 17
 
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1

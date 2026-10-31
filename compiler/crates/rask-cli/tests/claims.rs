@@ -109,3 +109,22 @@ fn a_claim_outside_a_claims_file_is_refused() {
     assert!(all.contains("E0951"), "{all}");
     assert!(all.contains("claim `never_negative` is outside a claims file"), "{all}");
 }
+
+#[test]
+fn an_input_the_build_cant_make_is_reported_at_the_parameter() {
+    let dir = copy_of("inputs");
+    let run = rask(&dir, &["check", "."]);
+    assert_ne!(run.code, 0);
+    let all = format!("{}{}", run.stdout, run.stderr);
+    // At the parameter in claims.rk, not in the generated code.
+    assert!(all.contains("claims.rk:6:"), "{all}");
+    assert!(!all.contains("<claims runner>"), "{all}");
+    assert!(all.contains("input `v` of claim `opens`"), "{all}");
+
+    // A `mutate` input is refused before anything compiles.
+    std::fs::write(dir.join("claims.rk"), "claim drains(mutate q: Vec<i64>) {\n    assert true\n}\n").unwrap();
+    let run = rask(&dir, &["check", "."]);
+    let all = format!("{}{}", run.stdout, run.stderr);
+    assert_ne!(run.code, 0);
+    assert!(all.contains("E0952"), "{all}");
+}

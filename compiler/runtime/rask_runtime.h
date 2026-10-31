@@ -1045,6 +1045,8 @@ RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
                                    int64_t payload_offset);
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
+RaskJsonShape *rask_json_shape_enum(int64_t size, int64_t tag_offset, int64_t tag_width);
+void           rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
@@ -1139,18 +1141,15 @@ int rask_test_call(void (*fn)(void), char **error_msg, int *expects_fail);
 const char *rask_test_record_mark(void);
 void rask_test_json_escaped(const char *s);
 
-// Claims (type.claims). The generated input code draws from the current
-// input's choices and notes how to print the value it built; the step counter
-// is called from loop back-edges and function entries in a claim build.
-uint64_t rask_claim_draw(uint64_t bound);
-int64_t  rask_claim_int(int64_t bits, int64_t is_signed);
-double   rask_claim_float(void);
-void     rask_claim_note(const RaskStr *text);
+// Claims (type.claims). `claims.input<T>` lowers to a shape of T and a call
+// to rask_claim_fill, then notes how the value prints; the step counter is
+// called from loop back-edges and function entries in a claim build.
+void     rask_claim_fill(void *dst, RaskJsonShape *shape);
+void     rask_claim_note_input(const RaskStr *text);
 void     rask_claim_step(void);
 void     rask_claim_start(void);
 void     rask_claim_reached_end(void);
-int64_t  rask_claim_run(void (*fn)(void), const char *name, int64_t seed,
-                        int64_t domain, int64_t budget);
+int64_t  rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t budget);
 void rask_check_fail_msg_at(const char *msg, const char *file,
                             int32_t line, int32_t col);
 void rask_assert_fail_cmp_bool(int64_t left, int64_t right,

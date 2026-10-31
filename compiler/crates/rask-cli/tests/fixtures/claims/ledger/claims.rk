@@ -73,3 +73,12 @@ claim tasks_double(x: i32) {
         assert got == want
     }
 }
+
+// A map of entries, built through the same shape a JSON decode reads.
+claim map_sizes_agree(m: Map<string, i64>, c: char) {
+    mut n = 0
+    for k in m.keys() {
+        n += 1
+    }
+    assert n == m.len()
+}
