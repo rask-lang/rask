@@ -1,29 +1,24 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Claims (type.claims): a package's `claims.rk`, checked by the build.
 //!
-//! Two passes over the package. The first compiles `claims.rk` as a package
-//! of its own that imports the one it checks, which is what limits it to that
-//! package's `public` items, and reads each claim's parameter types off the
-//! checker. Those types say what the input code looks like, so the second pass
-//! compiles the claims again with that code beside them and links the result
-//! under sim. One process runs every claim; a counterexample is cut down by
-//! re-running it on smaller choices before it's reported.
+//! `claims.rk` compiles as a package of its own that imports the one it
+//! checks, which is what limits it to that package's `public` items. Beside
+//! it goes one generated case function per claim, which calls the claim with
+//! one `claims.input(...)` per parameter: the parameter's type says what to
+//! build, and lowering builds it through the shape `json.decode` would read.
+//! The result links under sim. One process runs every claim; a
+//! counterexample is cut down by re-running it on smaller choices before it's
+//! reported.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process;
 
 use colored::Colorize;
-use rask_ast::decl::{Decl, DeclKind, FieldVisibility};
-use rask_check::TypedProgram;
-use rask_types::{GenericArg, Type, TypeDef};
+use rask_ast::decl::{Decl, DeclKind, FnDecl};
+use rask_ast::Span;
 
 use crate::output;
 use crate::Format;
-
-/// How many index values an exhaustive walk may take before a claim is
-/// sampled instead (type.claims/V2).
-const MAX_EXHAUSTIVE: u64 = 65_536;
 
 /// Default per-input step budget (type.claims/D2).
 const DEFAULT_BUDGET: i64 = 10_000_000;
@@ -55,36 +50,26 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
     let Ok(claims_src) = std::fs::read_to_string(&claims_path) else {
         return ClaimsOutcome::NoClaims;
     };
-
-    // Pass 1: what the claims take.
-    let probe_runner = format!("{}\nfunc main() {{}}\n", runner_prelude(""));
-    let Some(probe) = compile_claims(path, &claims_path, &claims_src, &probe_runner, |decls, typed, ctx| {
-        plan_claims(decls, typed, ctx, &claims_src)
-    }) else {
-        return ClaimsOutcome::Failed;
-    };
-    let (plan, _) = probe;
-    let plan = match plan {
+    let plan = match plan_claims(&claims_src) {
         Ok(plan) => plan,
-        Err(errors) => {
-            for e in errors {
-                eprintln!("{}: {}", output::error_label(), e);
+        Err(diags) => {
+            let sources = vec![(claims_path.clone(), claims_src.clone())];
+            for d in &diags {
+                crate::show_diagnostic_multi(d, &sources);
             }
             return ClaimsOutcome::Failed;
         }
     };
+    let Some(compiled) = compile_claims(path, &claims_path, &claims_src, &plan) else {
+        return ClaimsOutcome::Failed;
+    };
     if plan.claims.is_empty() || mode == ClaimsMode::Check {
         return ClaimsOutcome::Held;
     }
-
-    // Pass 2: the claims with their input code, as a runnable binary.
-    let Some(((), compiled)) = compile_claims(path, &claims_path, &claims_src, &plan.runner, |_, _, _| ()) else {
+    let Some(bin) = link_claims(&compiled, &plan) else {
         return ClaimsOutcome::Failed;
     };
-    let Some(bin) = link_claims(compiled, &plan) else {
-        return ClaimsOutcome::Failed;
-    };
-    let ok = run_claims(&bin, &plan, &claims_path, format);
+    let ok = run_claims(&bin, &plan, &compiled, &claims_path, format);
     // Same switch as a test binary's: a claims process that dies takes the
     // evidence with it.
     if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
@@ -95,39 +80,128 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
     if ok { ClaimsOutcome::Held } else { ClaimsOutcome::Failed }
 }
 
-// ─── Compiling ──────────────────────────────────────────────
+// ─── Planning: the case functions ───────────────────────────
 
-/// What a hook over the claims package's checked program is told about the
-/// package being checked.
-struct PackageNames {
-    /// The checked package's name, as `claims.rk` imports it.
-    root: String,
-    /// The name each of its declarations has once merged, back to the name
-    /// it was declared with.
-    declared: HashMap<String, String>,
+/// One claim, as `claims.rk` declares it.
+struct ClaimPlan {
+    name: String,
+    /// Within `claims.rk`; the file id is whatever the compile gives the file.
+    span: Span,
+    params: Vec<(String, Span)>,
+    seed: u64,
+    budget: i64,
 }
+
+struct Plan {
+    claims: Vec<ClaimPlan>,
+    /// The generated source: the end-of-body marker and a case function per claim.
+    runner: String,
+    /// For each line of `runner`, the claim and parameter it builds an input
+    /// for, so an error there can point at the parameter instead.
+    input_lines: Vec<Option<(usize, usize)>>,
+}
+
+fn case_fn(i: usize) -> String {
+    format!("__claim_case_{i}")
+}
+
+/// The claims `claims.rk` declares and the code that calls them. A file that
+/// doesn't parse plans nothing: the compile reports why.
+fn plan_claims(claims_src: &str) -> Result<Plan, Vec<rask_diagnostics::Diagnostic>> {
+    let mut lexer = rask_lexer::Lexer::new_with_file_id(claims_src, 0);
+    let tokens = lexer.tokenize().tokens;
+    let decls = rask_parser::Parser::new_with_file_id(tokens, 0, 0).parse().decls;
+
+    let mut claims = Vec::new();
+    let mut errors = Vec::new();
+    let mut runner = format!("import claims\n\nfunc {}() {{\n    claims.reached_end()\n}}\n\n", rask_desugar::CLAIM_END_MARKER);
+    let mut input_lines: Vec<Option<(usize, usize)>> = vec![None; runner.lines().count()];
+    for f in decls.iter().filter_map(claim_fn) {
+        if let Some(p) = f.params.iter().find(|p| p.is_mutate) {
+            errors.push(
+                rask_diagnostics::Diagnostic::error(format!("claim `{}` takes `{}` as `mutate`", f.name, p.name))
+                    .with_code("E0952")
+                    .with_primary(p.name_span, "a claim's input can't be `mutate`")
+                    .with_help("take it as a plain input, and make a `mut` copy inside the claim if it needs changing"),
+            );
+            continue;
+        }
+        let i = claims.len();
+        runner.push_str(&format!("func {}() {{\n    {}(\n", case_fn(i), f.name));
+        input_lines.extend([None, None]);
+        for (k, p) in f.params.iter().enumerate() {
+            let sep = if k + 1 == f.params.len() { "" } else { "," };
+            runner.push_str(&format!("        claims.input(\"{}\"){sep}\n", p.name));
+            input_lines.push(Some((i, k)));
+        }
+        runner.push_str("    )\n}\n\n");
+        input_lines.extend([None, None, None]);
+        let text = claims_src.get(f.span.start..f.span.end).unwrap_or(&f.name);
+        claims.push(ClaimPlan {
+            name: f.name.clone(),
+            span: f.span,
+            params: f.params.iter().map(|p| (p.name.clone(), p.name_span)).collect(),
+            seed: fnv1a(text),
+            budget: claim_budget(f).unwrap_or(DEFAULT_BUDGET),
+        });
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    // Monomorphization keeps what `main` reaches; the claim runner replaces it.
+    runner.push_str("func main() {\n");
+    for i in 0..claims.len() {
+        runner.push_str(&format!("    {}()\n", case_fn(i)));
+    }
+    runner.push_str("}\n");
+    if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
+        eprintln!("{runner}");
+    }
+    Ok(Plan { claims, runner, input_lines })
+}
+
+fn claim_fn(d: &Decl) -> Option<&FnDecl> {
+    match &d.kind {
+        DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("claim")) => Some(f),
+        _ => None,
+    }
+}
+
+fn claim_budget(f: &FnDecl) -> Option<i64> {
+    let attr = f.attrs.iter().find(|a| a.is("claim_budget"))?;
+    let arg = attr.args.as_ref()?.first()?;
+    match arg.value.expr().map(|e| &e.kind) {
+        Some(rask_ast::expr::ExprKind::Int(n, _)) => i64::try_from(*n).ok(),
+        _ => None,
+    }
+}
+
+fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+// ─── Compiling ──────────────────────────────────────────────
 
 /// The claims package's file of generated code.
 const RUNNER_FILE: &str = "<claims runner>";
 
-/// The alias the generated code imports the checked package under, so it
-/// can't collide with however `claims.rk` imports it.
-const PKG_ALIAS: &str = "__claims_pkg";
-
 struct Compiled {
     result: rask_compiler::CompileResult,
     link_opts: super::link::LinkOptions,
+    /// Every source in the compile, by file id, for rendering diagnostics.
+    sources: Vec<(PathBuf, String)>,
+    /// The id the compile gave `claims.rk`.
+    claims_file: u16,
 }
 
-/// Compile `claims.rk` plus `runner` as a package that imports the package at
-/// `path`. `hook` sees the checked program before monomorphization.
-fn compile_claims<T>(
-    path: &str,
-    claims_path: &Path,
-    claims_src: &str,
-    runner: &str,
-    hook: impl FnOnce(&[Decl], &TypedProgram, &PackageNames) -> T,
-) -> Option<(T, Compiled)> {
+/// Compile `claims.rk` and the plan's case functions as a package that
+/// imports the package at `path`.
+fn compile_claims(path: &str, claims_path: &Path, claims_src: &str, plan: &Plan) -> Option<Compiled> {
     let opts = super::build::BuildOptions {
         profile: "debug".to_string(),
         verbose: false,
@@ -142,15 +216,7 @@ fn compile_claims<T>(
         return None;
     }
     let root_id = prepared.root_id;
-    let (root_name, declared) = {
-        let root_pkg = prepared.registry.get(root_id)?;
-        let declared = root_pkg
-            .all_decls()
-            .filter_map(|d| d.name())
-            .map(|n| (rask_compiler::package_scope::qualified(&root_pkg.name, n), n.to_string()))
-            .collect();
-        (root_pkg.name.clone(), declared)
-    };
+    let root_name = prepared.registry.get(root_id)?.name.clone();
     // Seen from the claims, the package is a dependency like any other: its
     // names are its own, and only what it made `public` is reachable.
     if let Some(root_pkg) = prepared.registry.get_mut(root_id) {
@@ -160,7 +226,7 @@ fn compile_claims<T>(
         &format!("{root_name}_claims"),
         vec![
             (claims_path.to_path_buf(), claims_src.to_string()),
-            (PathBuf::from(RUNNER_FILE), runner.to_string()),
+            (PathBuf::from(RUNNER_FILE), plan.runner.clone()),
         ],
         vec![root_id],
         false,
@@ -172,14 +238,21 @@ fn compile_claims<T>(
         }
     };
 
-    let mut source_files: Vec<(PathBuf, String)> = Vec::new();
+    let mut sources: Vec<(PathBuf, String)> = Vec::new();
+    let (mut claims_file, mut runner_file) = (0u16, u16::MAX);
     for pkg in prepared.registry.packages() {
         for f in &pkg.files {
             let slot = f.file_id as usize;
-            if source_files.len() <= slot {
-                source_files.resize(slot + 1, (PathBuf::new(), String::new()));
+            if sources.len() <= slot {
+                sources.resize(slot + 1, (PathBuf::new(), String::new()));
             }
-            source_files[slot] = (f.path.clone(), f.source.clone());
+            sources[slot] = (f.path.clone(), f.source.clone());
+            if pkg.id == claims_id && f.path == claims_path {
+                claims_file = f.file_id;
+            }
+            if pkg.id == claims_id && f.path == Path::new(RUNNER_FILE) {
+                runner_file = f.file_id;
+            }
         }
     }
     let all_decls: Vec<Decl> = prepared.registry.get(claims_id)?.all_decls().cloned().collect();
@@ -190,21 +263,49 @@ fn compile_claims<T>(
         root_id: claims_id,
         all_decls,
     };
-    let names = PackageNames { root: root_name, declared };
-    let mut answer = None;
-    let output = rask_compiler::compile_package_with(&mut pkg_ctx, &config, |decls, typed| {
-        answer = Some(hook(decls, typed, &names));
-    });
-    let sources = if output.source_files.is_empty() { source_files } else { output.source_files.clone() };
+    let output = rask_compiler::compile_package_with(&mut pkg_ctx, &config, |_, _| {});
     for diag in &output.diagnostics {
-        crate::show_diagnostic_multi(diag, &sources);
+        let diag = point_at_input(diag, plan, runner_file, claims_file);
+        crate::show_diagnostic_multi(&diag, &sources);
     }
     let result = output.result?;
-    Some((answer?, Compiled { result, link_opts: prepared.link_opts }))
+    Some(Compiled { result, link_opts: prepared.link_opts, sources, claims_file })
+}
+
+/// An error inside a generated case function is about one of the claim's
+/// inputs: say which, at the parameter that asked for it.
+fn point_at_input(
+    diag: &rask_diagnostics::Diagnostic,
+    plan: &Plan,
+    runner_file: u16,
+    claims_file: u16,
+) -> rask_diagnostics::Diagnostic {
+    let mut diag = diag.clone();
+    let mut input = None;
+    for label in &mut diag.labels {
+        if label.span.file_id != runner_file {
+            continue;
+        }
+        let line = plan.runner.get(..label.span.start).map_or(0, |t| t.matches('\n').count());
+        if let Some(Some((c, k))) = plan.input_lines.get(line) {
+            let claim = &plan.claims[*c];
+            let (name, span) = &claim.params[*k];
+            label.span = Span { file_id: claims_file, ..*span };
+            input = Some((claim.name.clone(), name.clone()));
+        }
+    }
+    if let Some((claim, name)) = input {
+        diag.notes.push(format!(
+            "the build makes input `{name}` of claim `{claim}` the way `json.decode` builds a value, \
+             and `char`, tuples and enums too; a type it can't build is made inside the claim, \
+             from inputs it can (type.claims/IN1)"
+        ));
+    }
+    diag
 }
 
 /// Build and link the claim binary under sim. Returns its path.
-fn link_claims(compiled: Compiled, plan: &Plan) -> Option<PathBuf> {
+fn link_claims(compiled: &Compiled, plan: &Plan) -> Option<PathBuf> {
     static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = NEXT_BIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let bin_path = std::env::temp_dir().join(format!("rask_claims_{}_{n}", process::id()));
@@ -219,7 +320,6 @@ fn link_claims(compiled: Compiled, plan: &Plan) -> Option<PathBuf> {
             name: c.name.clone(),
             fn_name: case_fn(i),
             seed: c.seed,
-            domain: c.walk.map_or(0, |w| w as i64),
             budget: c.budget,
         })
         .collect();
@@ -237,7 +337,13 @@ fn link_claims(compiled: Compiled, plan: &Plan) -> Option<PathBuf> {
         let _ = std::fs::remove_file(&obj_path);
         return None;
     }
-    let link_opts = super::link::LinkOptions { sim: true, ..compiled.link_opts };
+    let link_opts = super::link::LinkOptions {
+        sim: true,
+        libs: compiled.link_opts.libs.clone(),
+        objects: compiled.link_opts.objects.clone(),
+        search_paths: compiled.link_opts.search_paths.clone(),
+        keeps_binary: false,
+    };
     let linked = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None);
     let _ = std::fs::remove_file(&obj_path);
     if let Err(e) = linked {
@@ -245,455 +351,6 @@ fn link_claims(compiled: Compiled, plan: &Plan) -> Option<PathBuf> {
         return None;
     }
     Some(bin_path)
-}
-
-// ─── Planning: the input code ───────────────────────────────
-
-/// One claim and how its inputs are made.
-struct ClaimPlan {
-    name: String,
-    span: rask_ast::Span,
-    seed: u64,
-    /// Index values an exhaustive walk takes, when the inputs can be walked.
-    walk: Option<u64>,
-    /// How many distinct inputs that walk covers.
-    distinct: Option<u64>,
-    budget: i64,
-}
-
-struct Plan {
-    claims: Vec<ClaimPlan>,
-    /// The generated source: the prelude, a generator per named type, and a
-    /// case function per claim.
-    runner: String,
-}
-
-fn case_fn(i: usize) -> String {
-    format!("__claim_case_{i}")
-}
-
-/// What generated code the claims need, from the checked program.
-fn plan_claims(
-    decls: &[Decl],
-    typed: &TypedProgram,
-    names: &PackageNames,
-    claims_src: &str,
-) -> Result<Plan, Vec<String>> {
-    let mut gen = Generators::new(typed, decls, names);
-    let mut claims = Vec::new();
-    let mut cases = String::new();
-    let mut errors = Vec::new();
-
-    let claim_fns = decls.iter().filter_map(|d| match &d.kind {
-        DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("claim")) => Some(f),
-        _ => None,
-    });
-    for f in claim_fns {
-        let mut body = String::new();
-        let mut walk: Option<u64> = Some(1);
-        let mut distinct: Option<u64> = Some(1);
-        let mut args = Vec::new();
-        let mut ok = true;
-        for (k, p) in f.params.iter().enumerate() {
-            let key = (p.name_span.start, p.name_span.end, p.name_span.file_id);
-            let Some(ty) = typed.span_types.get(&key) else {
-                errors.push(format!("claim `{}`: no type for input `{}`", f.name, p.name));
-                ok = false;
-                continue;
-            };
-            match gen.expr(ty) {
-                Ok((expr, dom)) => {
-                    let binding = if p.is_mutate { "mut" } else { "let" };
-                    body.push_str(&format!("    {binding} __arg{k} = {expr}\n"));
-                    args.push(format!("__arg{k}"));
-                    walk = walk.zip(dom.walk).and_then(|(a, b)| a.checked_mul(b));
-                    distinct = distinct.zip(dom.distinct).and_then(|(a, b)| a.checked_mul(b));
-                }
-                Err(why) => {
-                    errors.push(format!("claim `{}`: input `{}` can't be generated: {why}", f.name, p.name));
-                    ok = false;
-                }
-            }
-        }
-        if !ok {
-            continue;
-        }
-        // The input prints the way any value does, through its derived
-        // `Debug`, before the claim can take it apart.
-        let shown: Vec<String> = f.params.iter().enumerate().map(|(k, p)| format!("{} = {{__arg{k}:debug}}", p.name)).collect();
-        body.push_str(&format!("    __claims.note(\"{}\")\n", shown.join(", ")));
-        cases.push_str(&format!(
-            "func {}() {{\n{body}    {}({})\n}}\n\n",
-            case_fn(claims.len()),
-            f.name,
-            args.join(", ")
-        ));
-        let text = claims_src.get(f.span.start..f.span.end).unwrap_or(&f.name);
-        let budget = claim_budget(f).unwrap_or(DEFAULT_BUDGET);
-        claims.push(ClaimPlan {
-            name: f.name.clone(),
-            span: f.span,
-            seed: fnv1a(text),
-            walk: walk.filter(|w| *w <= MAX_EXHAUSTIVE),
-            distinct,
-            budget,
-        });
-    }
-    errors.extend(gen.errors.drain(..));
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-
-    let mut runner = runner_prelude(&names.root);
-    runner.push('\n');
-    for g in &gen.functions {
-        runner.push_str(g);
-        runner.push('\n');
-    }
-    runner.push_str(&cases);
-    // Monomorphization keeps what `main` reaches; the claim runner replaces it.
-    runner.push_str("func main() {\n");
-    for i in 0..claims.len() {
-        runner.push_str(&format!("    {}()\n", case_fn(i)));
-    }
-    runner.push_str("}\n");
-    if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
-        eprintln!("{runner}");
-    }
-    Ok(Plan { claims, runner })
-}
-
-fn claim_budget(f: &rask_ast::decl::FnDecl) -> Option<i64> {
-    let attr = f.attrs.iter().find(|a| a.is("claim_budget"))?;
-    let arg = attr.args.as_ref()?.first()?;
-    match arg.value.expr().map(|e| &e.kind) {
-        Some(rask_ast::expr::ExprKind::Int(n, _)) => i64::try_from(*n).ok(),
-        _ => None,
-    }
-}
-
-/// The part of the runner every claims package gets: the end-of-body marker
-/// the desugarer calls (type.claims/CL5) and the generic generators.
-fn runner_prelude(root: &str) -> String {
-    let import_root = if root.is_empty() { String::new() } else { format!("import {root} as {PKG_ALIAS}\n") };
-    format!(
-        r#"import claims as __claims
-import string.StringBuilder
-{import_root}
-func {end}() {{
-    __claims.reached_end()
-}}
-
-func __claim_bool() -> bool {{
-    let coin: u64 = __claims.draw(2)
-    return coin == 1
-}}
-
-func __claim_f64() -> f64 {{
-    return __claims.float()
-}}
-
-func __claim_char() -> char {{
-    let pick: u64 = __claims.draw(8)
-    mut c = 'a'
-    if pick == 1 {{ c = 'b' }}
-    if pick == 2 {{ c = 'Z' }}
-    if pick == 3 {{ c = '0' }}
-    if pick == 4 {{ c = ' ' }}
-    if pick == 5 {{ c = '\n' }}
-    if pick == 6 {{ c = 'é' }}
-    if pick == 7 {{ c = '"' }}
-    return c
-}}
-
-func __claim_string() -> string {{
-    mut s = StringBuilder.new()
-    while __claims.draw(4) != 0 {{
-        s.push_char(__claim_char())
-    }}
-    return s.build()
-}}
-
-func __claim_vec<T>(elem: func() -> T) -> Vec<T> {{
-    mut v: Vec<T> = Vec.new()
-    while __claims.draw(4) != 0 {{
-        v.push(elem())
-    }}
-    return v
-}}
-
-func __claim_optional<T>(some: func() -> T) -> T? {{
-    if __claims.draw(4) == 0 {{
-        return none
-    }}
-    return some()
-}}
-
-func __claim_tuple2<A, B>(a: func() -> A, b: func() -> B) -> (A, B) {{
-    let x = a()
-    return (x, b())
-}}
-
-func __claim_tuple3<A, B, C>(a: func() -> A, b: func() -> B, c: func() -> C) -> (A, B, C) {{
-    let x = a()
-    let y = b()
-    return (x, y, c())
-}}
-{ints}"#,
-        end = rask_desugar::CLAIM_END_MARKER,
-        ints = int_generators(),
-    )
-}
-
-/// One generator per integer type: `__claim_u32()` and so on.
-fn int_generators() -> String {
-    let mut out = String::new();
-    for (name, bits, signed) in INT_TYPES {
-        out.push_str(&format!(
-            "\nfunc __claim_{name}() -> {name} {{\n    return __claims.int({bits}, {}).wrap<{name}>()\n}}\n",
-            *signed as i64,
-        ));
-    }
-    out
-}
-
-const INT_TYPES: &[(&str, u32, bool)] = &[
-    ("i8", 8, true),
-    ("i16", 16, true),
-    ("i32", 32, true),
-    ("i64", 64, true),
-    ("u8", 8, false),
-    ("u16", 16, false),
-    ("u32", 32, false),
-    ("u64", 64, false),
-];
-
-/// The input space of a type, for an exhaustive walk (type.claims/V2).
-#[derive(Clone, Copy)]
-struct Domain {
-    /// Index values the walk takes; a sum type's branches leave unused digits.
-    walk: Option<u64>,
-    /// Distinct inputs among them.
-    distinct: Option<u64>,
-}
-
-impl Domain {
-    const INFINITE: Domain = Domain { walk: None, distinct: None };
-
-    fn finite(n: u64) -> Domain {
-        Domain { walk: Some(n), distinct: Some(n) }
-    }
-}
-
-/// Writes the generator code for each type a claim takes.
-struct Generators<'a> {
-    typed: &'a TypedProgram,
-    names: &'a PackageNames,
-    /// Field visibility of each struct, by its merged name.
-    field_vis: HashMap<String, Vec<FieldVisibility>>,
-    /// Generator function for each named type, once written.
-    named: HashMap<rask_types::TypeId, (String, Domain)>,
-    functions: Vec<String>,
-    errors: Vec<String>,
-}
-
-impl<'a> Generators<'a> {
-    fn new(typed: &'a TypedProgram, decls: &[Decl], names: &'a PackageNames) -> Self {
-        let field_vis = decls
-            .iter()
-            .filter_map(|d| match &d.kind {
-                DeclKind::Struct(s) => Some((s.name.clone(), s.fields.iter().map(|f| f.visibility).collect())),
-                _ => None,
-            })
-            .collect();
-        Generators { typed, names, field_vis, named: HashMap::new(), functions: Vec::new(), errors: Vec::new() }
-    }
-
-    /// An expression that builds a value of `ty`, and the type's domain.
-    fn expr(&mut self, ty: &Type) -> Result<(String, Domain), String> {
-        if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
-            eprintln!("claim input type: {ty:?}");
-        }
-        let int = |name: &str, bits: u32| {
-            let dom = if bits <= 8 { Domain::finite(1 << bits) } else { Domain::INFINITE };
-            Ok((format!("__claim_{name}()"), dom))
-        };
-        match ty {
-            Type::Bool => Ok(("__claim_bool()".to_string(), Domain::finite(2))),
-            Type::I8 => int("i8", 8),
-            Type::I16 => int("i16", 16),
-            Type::I32 => int("i32", 32),
-            Type::I64 => int("i64", 64),
-            Type::U8 => int("u8", 8),
-            Type::U16 => int("u16", 16),
-            Type::U32 => int("u32", 32),
-            Type::U64 => int("u64", 64),
-            Type::F64 => Ok(("__claim_f64()".to_string(), Domain::INFINITE)),
-            Type::Char => Ok(("__claim_char()".to_string(), Domain::INFINITE)),
-            Type::String => Ok(("__claim_string()".to_string(), Domain::INFINITE)),
-            Type::Tuple(elems) if elems.len() == 2 || elems.len() == 3 => {
-                let mut parts = Vec::new();
-                let mut dom = Domain::finite(1);
-                for e in elems {
-                    let (x, d) = self.expr(e)?;
-                    parts.push(format!("|| {x}"));
-                    dom = product(dom, d);
-                }
-                Ok((format!("__claim_tuple{}({})", elems.len(), parts.join(", ")), dom))
-            }
-            Type::Named(id) => self.named(*id),
-            // `T?` is `T or none`.
-            Type::Result { ok, err } if matches!(**err, Type::None) => {
-                let (x, d) = self.expr(ok)?;
-                Ok((format!("__claim_optional(|| {x})"), sum(&[Domain::finite(1), d])))
-            }
-            _ => self.wrapper(ty),
-        }
-    }
-
-    /// `Vec<T>`: the stdlib's generic collection.
-    fn wrapper(&mut self, ty: &Type) -> Result<(String, Domain), String> {
-        let unsupported = || Err(format!("`{ty}` isn't a type claims can generate yet"));
-        let Type::Generic { base, args } = ty else { return unsupported() };
-        let elem = match args.as_slice() {
-            [GenericArg::Type(t)] => (**t).clone(),
-            _ => return unsupported(),
-        };
-        if self.typed.types.type_name(*base) != "Vec" {
-            return unsupported();
-        }
-        let (x, _) = self.expr(&elem)?;
-        Ok((format!("__claim_vec(|| {x})"), Domain::INFINITE))
-    }
-
-    /// How generated code names a user type: through the import for one the
-    /// checked package declared, by its own name for one `claims.rk` did.
-    fn path(&self, merged: &str) -> String {
-        match self.names.declared.get(merged) {
-            Some(declared) => format!("{PKG_ALIAS}.{declared}"),
-            None => merged.to_string(),
-        }
-    }
-
-    fn named(&mut self, id: rask_types::TypeId) -> Result<(String, Domain), String> {
-        if let Some((f, d)) = self.named.get(&id) {
-            return Ok((format!("{f}()"), *d));
-        }
-        let fn_name = format!("__claim_gen_{}", self.named.len());
-        let def = self.typed.types.get(id).cloned().ok_or("unknown type")?;
-        // Recursive types meet themselves here; the walk can't be finite then.
-        self.named.insert(id, (fn_name.clone(), Domain::INFINITE));
-        let (body, dom) = match &def {
-            TypeDef::Struct { name, type_params, fields, private_fields, .. } => {
-                if !type_params.is_empty() {
-                    return Err(format!("`{name}` is generic, which claims can't generate yet"));
-                }
-                let visible = self.field_vis.get(name).cloned().unwrap_or_default();
-                let foreign = self.names.declared.contains_key(name);
-                let hidden = !private_fields.is_empty()
-                    || (foreign && visible.iter().any(|v| *v != FieldVisibility::Public));
-                if hidden {
-                    return Err(format!(
-                        "`{}` has fields claims can't see, so it can't be built from them; \
-                         build it through its public API in the claim, from inputs that can \
-                         be generated (type.claims/IN1)",
-                        self.names.declared.get(name).unwrap_or(name)
-                    ));
-                }
-                self.struct_body(name, fields)?
-            }
-            TypeDef::Enum { name, type_params, variants, .. } => {
-                if !type_params.is_empty() {
-                    return Err(format!("`{name}` is generic, which claims can't generate yet"));
-                }
-                self.enum_body(name, variants)?
-            }
-            _ => return Err(format!("`{}` isn't a type claims can generate yet", self.typed.types.type_name(id))),
-        };
-        let path = match &def {
-            TypeDef::Struct { name, .. } | TypeDef::Enum { name, .. } => self.path(name),
-            _ => unreachable!(),
-        };
-        self.functions.push(format!("func {fn_name}() -> {path} {{\n{body}}}\n"));
-        self.named.insert(id, (fn_name.clone(), dom));
-        Ok((format!("{fn_name}()"), dom))
-    }
-
-    fn struct_body(&mut self, name: &str, fields: &[(String, Type)]) -> Result<(String, Domain), String> {
-        let mut body = String::new();
-        let mut dom = Domain::finite(1);
-        let mut args = Vec::new();
-        for (i, (field, fty)) in fields.iter().enumerate() {
-            let (x, d) = self.expr(fty)?;
-            body.push_str(&format!("    let f{i} = {x}\n"));
-            args.push(format!("{field}: f{i}"));
-            dom = product(dom, d);
-        }
-        body.push_str(&format!("    return {}({})\n", self.path(name), args.join(", ")));
-        Ok((body, dom))
-    }
-
-    fn enum_body(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Result<(String, Domain), String> {
-        if variants.is_empty() {
-            return Err(format!("`{name}` has no variants, so there's nothing to generate"));
-        }
-        let path = self.path(name);
-        let mut body = format!("    match __claims.draw({}) {{\n", variants.len());
-        let mut doms = Vec::new();
-        for (i, (variant, payload)) in variants.iter().enumerate() {
-            let arm = if i + 1 == variants.len() { "_".to_string() } else { i.to_string() };
-            body.push_str(&format!("        {arm} => {{\n"));
-            if payload.is_empty() {
-                body.push_str(&format!("            return {path}.{variant}\n"));
-                doms.push(Domain::finite(1));
-            } else {
-                let mut dom = Domain::finite(1);
-                let mut args = Vec::new();
-                for (k, pty) in payload.iter().enumerate() {
-                    let (x, d) = self.expr(pty)?;
-                    body.push_str(&format!("            let p{k} = {x}\n"));
-                    args.push(format!("p{k}"));
-                    dom = product(dom, d);
-                }
-                body.push_str(&format!("            return {path}.{variant}({})\n", args.join(", ")));
-                doms.push(dom);
-            }
-            body.push_str("        }\n");
-        }
-        body.push_str("    }\n");
-        Ok((body, sum(&doms)))
-    }
-}
-
-fn product(a: Domain, b: Domain) -> Domain {
-    Domain {
-        walk: a.walk.zip(b.walk).and_then(|(x, y)| x.checked_mul(y)),
-        distinct: a.distinct.zip(b.distinct).and_then(|(x, y)| x.checked_mul(y)),
-    }
-}
-
-/// A choice among branches: the walk spends one digit on the branch and
-/// as many as the widest branch needs after it.
-fn sum(branches: &[Domain]) -> Domain {
-    let mut widest = Some(0u64);
-    let mut distinct = Some(0u64);
-    for b in branches {
-        widest = widest.zip(b.walk).map(|(w, x)| w.max(x));
-        distinct = distinct.zip(b.distinct).and_then(|(d, x)| d.checked_add(x));
-    }
-    Domain {
-        walk: widest.and_then(|w| w.checked_mul(branches.len() as u64)),
-        distinct,
-    }
-}
-
-fn fnv1a(s: &str) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    for b in s.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
 }
 
 // ─── Running ────────────────────────────────────────────────
@@ -710,6 +367,7 @@ struct Record {
     index: i64,
     mode: String,
     tried: u64,
+    distinct: u64,
     discarded: u64,
     over_budget: u64,
     budget_input: String,
@@ -730,6 +388,7 @@ impl Record {
             index: parse_json_i64(json, "index").unwrap_or(-1),
             mode: s("mode"),
             tried: n("tried"),
+            distinct: n("distinct"),
             discarded: n("discarded"),
             over_budget: n("over_budget"),
             budget_input: s("budget_input"),
@@ -760,7 +419,7 @@ fn run_bin(bin: &Path, env: &[(&str, String)]) -> (Vec<Record>, String, process:
     (records, String::from_utf8_lossy(&out.stderr).into_owned(), out.status)
 }
 
-fn run_claims(bin: &Path, plan: &Plan, claims_path: &Path, format: Format) -> bool {
+fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, format: Format) -> bool {
     let (records, stderr, status) = run_bin(bin, &[]);
     let shown = claims_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if format == Format::Human {
@@ -782,11 +441,11 @@ fn run_claims(bin: &Path, plan: &Plan, claims_path: &Path, format: Format) -> bo
             } else {
                 shrink(bin, i, fail)
             };
-            report_false(claim, &input, &error, &shown, claims_path);
+            report_false(claim, &input, &error, &shown, compiled);
             continue;
         }
         if format == Format::Human {
-            println!("  {:<24} {}", claim.name, verdict(summary, claim));
+            println!("  {:<24} {}", claim.name, verdict(summary));
             if summary.over_budget > 0 {
                 println!(
                     "  {:<24} {} ran past the step budget; the first was {}",
@@ -817,10 +476,10 @@ fn thousands(n: u64) -> String {
 }
 
 /// The verdict line for a claim that held (type.claims/V2, V3).
-fn verdict(r: &Record, claim: &ClaimPlan) -> String {
+fn verdict(r: &Record) -> String {
     let held = r.tried - r.discarded - r.over_budget;
     let mut line = if r.mode == "all" {
-        format!("checked all {}", count(claim.distinct.unwrap_or(r.tried), "input"))
+        format!("checked all {}", count(r.distinct, "input"))
     } else {
         format!("held for {} (sampled, not proven)", count(held, "input"))
     };
@@ -940,18 +599,15 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// E0950, with the counterexample.
-fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, claims_path: &Path) {
+fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compiled: &Compiled) {
+    let span = Span { file_id: compiled.claims_file, ..claim.span };
     let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` is false", claim.name))
         .with_code("E0950")
-        .with_primary(claim.span, "doesn't hold for this input")
+        .with_primary(span, "doesn't hold for this input")
         .with_note(format!("counterexample: {input}"))
         .with_note(error.to_string())
         .with_help(format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review"));
-    let mut sources: Vec<(PathBuf, String)> = Vec::new();
-    let slot = claim.span.file_id as usize;
-    sources.resize(slot + 1, (PathBuf::new(), String::new()));
-    sources[slot] = (claims_path.to_path_buf(), std::fs::read_to_string(claims_path).unwrap_or_default());
-    crate::show_diagnostic_multi(&diag, &sources);
+    crate::show_diagnostic_multi(&diag, &compiled.sources);
 }
 
 /// The binary ended before it reported on `claim`: a deadlock under sim, or

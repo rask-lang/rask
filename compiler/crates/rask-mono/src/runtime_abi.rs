@@ -153,11 +153,17 @@ runtime_constants! {
     RASK_JSHAPE_F32 = 9;
     RASK_JSHAPE_F64 = 10;
     RASK_JSHAPE_STRING = 11;
-    RASK_JSHAPE_PRIM_COUNT = 12;
-    RASK_JSHAPE_VEC = 12;
-    RASK_JSHAPE_MAP = 13;
-    RASK_JSHAPE_OPT = 14;
-    RASK_JSHAPE_STRUCT = 15;
+    /// A `char`, as its code point in four bytes. Claims build these; JSON
+    /// has no `char` yet.
+    RASK_JSHAPE_CHAR = 12;
+    RASK_JSHAPE_PRIM_COUNT = 13;
+    RASK_JSHAPE_VEC = 13;
+    RASK_JSHAPE_MAP = 14;
+    RASK_JSHAPE_OPT = 15;
+    RASK_JSHAPE_STRUCT = 16;
+    /// An enum: a tag, and per variant a struct of its payload. Claims build
+    /// these; JSON's enum form is still open (std.json).
+    RASK_JSHAPE_ENUM = 17;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;
