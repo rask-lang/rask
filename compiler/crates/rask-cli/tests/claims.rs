@@ -285,3 +285,21 @@ fn a_package_is_held_to_claims_from_a_path_and_from_git() {
     assert_eq!(edited.code, 1, "{}{}", edited.stdout, edited.stderr);
     assert!(edited.stderr.contains("[claims] company: the checkout at"), "{}", edited.stderr);
 }
+
+#[test]
+fn a_generic_claim_and_the_stdlib_laws_hold_each_conforming_type() {
+    let dir = copy_of("generic");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    // Every public type that conforms and can be built: `Size` holds, the
+    // hand-written order on `Score` doesn't, and `Vault` can't be built.
+    assert!(run.stdout.contains("antisymmetric<generic.Size> checked all 4 inputs"), "{}", run.stdout);
+    assert!(run.stderr.contains("claim `antisymmetric<generic.Score>` is false"), "{}", run.stderr);
+    assert!(!format!("{}{}", run.stdout, run.stderr).contains("Vault"), "{}{}", run.stdout, run.stderr);
+    // The stdlib's laws hold the type that wrote its own conformance, and
+    // only that one.
+    assert!(run.stderr.contains("claim `compare_is_reflexive<generic.Score>` is false"), "{}", run.stderr);
+    assert!(run.stderr.contains("counterexample: a = Score(points: 0)"), "{}", run.stderr);
+    assert!(run.stderr.contains("fix its `implements` block"), "{}", run.stderr);
+    assert!(!run.stderr.contains("compare_is_reflexive<generic.Size>"), "{}", run.stderr);
+}

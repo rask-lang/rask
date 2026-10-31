@@ -76,7 +76,7 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
     if sources.is_empty() {
         return ClaimsOutcome::NoClaims;
     }
-    let plan = match plan_claims(&sources) {
+    let mut plan = match plan_claims(&sources) {
         Ok(plan) => plan,
         Err(diags) => {
             for d in &diags {
@@ -85,7 +85,7 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
             return ClaimsOutcome::Failed;
         }
     };
-    let Some(compiled) = compile_claims(path, &sources, &plan) else {
+    let Some(compiled) = compile_claims(path, &sources, &mut plan) else {
         return ClaimsOutcome::Failed;
     };
     if plan.claims.is_empty() || mode == ClaimsMode::Check {
@@ -255,9 +255,14 @@ impl VerdictCache {
 
 // ─── Planning: the case functions ───────────────────────────
 
-/// One claim, as `claims.rk` declares it.
+/// One claim to run: a claim as declared, or one instantiation of a
+/// generic claim (G1).
+#[derive(Clone)]
 struct ClaimPlan {
+    /// How it's reported: `antisymmetric<ledger.Entry>` for an instantiation.
     name: String,
+    /// What its case function calls, type arguments included.
+    callee: String,
     /// Which source declares it, by index into the sources.
     file: usize,
     /// Within that source; the file id is whatever the compile gives the file.
@@ -267,25 +272,164 @@ struct ClaimPlan {
     budget: i64,
 }
 
+/// A claim with type parameters, before it's instantiated.
+struct GenericClaim {
+    claim: ClaimPlan,
+    type_params: usize,
+    /// For a stdlib law, the interface it's the law of: it's instantiated
+    /// only with the types that declare their own conformance to it.
+    law_of: Option<String>,
+}
+
 struct Plan {
     /// Each claims source's path, in source order.
     files: Vec<PathBuf>,
     claims: Vec<ClaimPlan>,
+    generics: Vec<GenericClaim>,
     /// The generated source: the end-of-body marker and a case function per claim.
     runner: String,
     /// For each line of `runner`, the claim and parameter it builds an input
     /// for, so an error there can point at the parameter instead.
     input_lines: Vec<Option<(usize, usize)>>,
+    /// For each line of `runner`, the claim whose case function it's in.
+    case_lines: Vec<Option<usize>>,
+}
+
+impl Plan {
+    /// The case functions and the `main` that calls them.
+    fn write_runner(&mut self) {
+        let mut runner = format!(
+            "import claims\n\nfunc {}() {{\n    claims.reached_end()\n}}\n\n",
+            rask_desugar::CLAIM_END_MARKER
+        );
+        let mut input_lines: Vec<Option<(usize, usize)>> = vec![None; runner.lines().count()];
+        let mut case_lines: Vec<Option<usize>> = vec![None; runner.lines().count()];
+        for (i, c) in self.claims.iter().enumerate() {
+            runner.push_str(&format!("func {}() {{\n    {}(\n", case_fn(i), c.callee));
+            input_lines.extend([None, None]);
+            case_lines.extend([Some(i), Some(i)]);
+            for (k, (name, _)) in c.params.iter().enumerate() {
+                let sep = if k + 1 == c.params.len() { "" } else { "," };
+                runner.push_str(&format!("        claims.input(\"{name}\"){sep}\n"));
+                input_lines.push(Some((i, k)));
+                case_lines.push(Some(i));
+            }
+            runner.push_str("    )\n}\n\n");
+            input_lines.extend([None, None, None]);
+            case_lines.extend([Some(i), Some(i), None]);
+        }
+        // Monomorphization keeps what `main` reaches; the claim runner replaces it.
+        runner.push_str("func main() {\n");
+        for i in 0..self.claims.len() {
+            runner.push_str(&format!("    {}()\n", case_fn(i)));
+        }
+        runner.push_str("}\n");
+        if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
+            eprintln!("{runner}");
+        }
+        self.runner = runner;
+        self.input_lines = input_lines;
+        self.case_lines = case_lines;
+    }
+
+    /// Every generic claim at every combination of `types`, after the
+    /// claims as declared. A law takes only the types that declare their own
+    /// conformance to its interface (`declared`: type, interface).
+    fn instantiate(&mut self, types: &[String], declared: &[(String, String)]) {
+        for g in &self.generics {
+            let law_types: Vec<String>;
+            let types = match &g.law_of {
+                Some(iface) => {
+                    law_types = declared.iter().filter(|(_, i)| i == iface).map(|(t, _)| t.clone()).collect();
+                    &law_types[..]
+                }
+                None => types,
+            };
+            let mut combos: Vec<Vec<&String>> = vec![Vec::new()];
+            for _ in 0..g.type_params {
+                combos = combos
+                    .into_iter()
+                    .flat_map(|c| types.iter().map(move |t| {
+                        let mut c = c.clone();
+                        c.push(t);
+                        c
+                    }))
+                    .collect();
+            }
+            for args in combos {
+                let args = args.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(", ");
+                let mut c = g.claim.clone();
+                c.name = format!("{}<{args}>", g.claim.name);
+                c.callee = c.name.clone();
+                c.seed = fnv1a(&format!("{}{}", g.claim.seed, args));
+                self.claims.push(c);
+            }
+        }
+        self.write_runner();
+    }
+
+    /// The claim a line of the runner belongs to.
+    fn claim_at(&self, offset: usize) -> Option<usize> {
+        let line = self.runner.get(..offset).map_or(0, |t| t.matches('\n').count());
+        self.case_lines.get(line).copied().flatten()
+    }
 }
 
 fn case_fn(i: usize) -> String {
     format!("__claim_case_{i}")
 }
 
+/// The stdlib's interface laws, a claims source every package is held to.
+const LAWS_FILE: &str = "<stdlib laws>";
+const LAWS: &str = include_str!("laws.rk");
+
+/// The conformances the package at `root` writes out itself, as (type,
+/// interface): `Score implements Comparable` is `("Score", "Comparable")`.
+/// Only a public type's; the laws see the package from outside.
+fn declared_conformances(root: &Path) -> Vec<(String, String)> {
+    let mut public = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    for (id, path) in rask_resolve::package::package_source_files(root).iter().enumerate() {
+        let Ok(src) = std::fs::read_to_string(path) else { continue };
+        let tokens = rask_lexer::Lexer::new_with_file_id(&src, id as u16).tokenize().tokens;
+        for d in rask_parser::Parser::new_with_file_id(tokens, 0, id as u16).parse().decls {
+            match &d.kind {
+                DeclKind::Struct(s) if s.is_pub && s.type_params.is_empty() => {
+                    public.insert(s.name.clone());
+                }
+                DeclKind::Enum(e) if e.is_pub && e.type_params.is_empty() => {
+                    public.insert(e.name.clone());
+                }
+                DeclKind::Impl(i) => {
+                    if let (Some(iface), Some(ty)) = (i.interface.as_ref().and_then(|t| t.name()), i.target_ty.name()) {
+                        found.push((ty, iface));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found.retain(|(t, _)| public.contains(t));
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// The claims sources of the package at `root`: its own `claims.rk`, then
 /// each `[claims]` entry of its manifest, a file or every `.rk` file under a
-/// directory (type.claims/W1, W2). They compile together as one package.
+/// directory (type.claims/W1, W2), then the stdlib's laws when the package
+/// declares a conformance they're about. They compile together as one
+/// package.
 fn claims_sources(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
+    let mut sources = shared_sources(root)?;
+    let laws = ["Equal", "Comparable", "Hashable", "Cloneable"];
+    if declared_conformances(root).iter().any(|(_, i)| laws.contains(&i.as_str())) {
+        sources.push((PathBuf::from(LAWS_FILE), LAWS.to_string()));
+    }
+    Ok(sources)
+}
+
+fn shared_sources(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     let mut sources = Vec::new();
     let own = root.join(rask_resolve::package::CLAIMS_FILE);
     if let Ok(text) = std::fs::read_to_string(&own) {
@@ -324,58 +468,56 @@ fn claims_sources(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
 /// doesn't parse plans nothing: the compile reports why.
 fn plan_claims(sources: &[(PathBuf, String)]) -> Result<Plan, Vec<rask_diagnostics::Diagnostic>> {
     let mut claims = Vec::new();
+    let mut generics = Vec::new();
     let mut errors = Vec::new();
-    let mut runner = format!("import claims\n\nfunc {}() {{\n    claims.reached_end()\n}}\n\n", rask_desugar::CLAIM_END_MARKER);
-    let mut input_lines: Vec<Option<(usize, usize)>> = vec![None; runner.lines().count()];
     for (file, (_, src)) in sources.iter().enumerate() {
-    let mut lexer = rask_lexer::Lexer::new_with_file_id(src, file as u16);
-    let tokens = lexer.tokenize().tokens;
-    let decls = rask_parser::Parser::new_with_file_id(tokens, 0, file as u16).parse().decls;
-    for f in decls.iter().filter_map(claim_fn) {
-        if let Some(p) = f.params.iter().find(|p| p.is_mutate) {
-            errors.push(
-                rask_diagnostics::Diagnostic::error(format!("claim `{}` takes `{}` as `mutate`", f.name, p.name))
-                    .with_code("E0952")
-                    .with_primary(p.name_span, "a claim's input can't be `mutate`")
-                    .with_help("take it as a plain input, and make a `mut` copy inside the claim if it needs changing"),
-            );
-            continue;
+        let mut lexer = rask_lexer::Lexer::new_with_file_id(src, file as u16);
+        let tokens = lexer.tokenize().tokens;
+        let decls = rask_parser::Parser::new_with_file_id(tokens, 0, file as u16).parse().decls;
+        for f in decls.iter().filter_map(claim_fn) {
+            if let Some(p) = f.params.iter().find(|p| p.is_mutate) {
+                errors.push(
+                    rask_diagnostics::Diagnostic::error(format!("claim `{}` takes `{}` as `mutate`", f.name, p.name))
+                        .with_code("E0952")
+                        .with_primary(p.name_span, "a claim's input can't be `mutate`")
+                        .with_help("take it as a plain input, and make a `mut` copy inside the claim if it needs changing"),
+                );
+                continue;
+            }
+            let text = src.get(f.span.start..f.span.end).unwrap_or(&f.name);
+            let claim = ClaimPlan {
+                name: f.name.clone(),
+                callee: f.name.clone(),
+                file,
+                span: f.span,
+                params: f.params.iter().map(|p| (p.name.clone(), p.name_span)).collect(),
+                seed: fnv1a(text),
+                budget: claim_budget(f).unwrap_or(DEFAULT_BUDGET),
+            };
+            if f.type_params.is_empty() {
+                claims.push(claim);
+            } else {
+                let law_of = (sources[file].0 == Path::new(LAWS_FILE))
+                    .then(|| f.type_params.first()?.bounds.first()?.ty.name())
+                    .flatten();
+                generics.push(GenericClaim { claim, type_params: f.type_params.len(), law_of });
+            }
         }
-        let i = claims.len();
-        runner.push_str(&format!("func {}() {{\n    {}(\n", case_fn(i), f.name));
-        input_lines.extend([None, None]);
-        for (k, p) in f.params.iter().enumerate() {
-            let sep = if k + 1 == f.params.len() { "" } else { "," };
-            runner.push_str(&format!("        claims.input(\"{}\"){sep}\n", p.name));
-            input_lines.push(Some((i, k)));
-        }
-        runner.push_str("    )\n}\n\n");
-        input_lines.extend([None, None, None]);
-        let text = src.get(f.span.start..f.span.end).unwrap_or(&f.name);
-        claims.push(ClaimPlan {
-            name: f.name.clone(),
-            file,
-            span: f.span,
-            params: f.params.iter().map(|p| (p.name.clone(), p.name_span)).collect(),
-            seed: fnv1a(text),
-            budget: claim_budget(f).unwrap_or(DEFAULT_BUDGET),
-        });
-    }
     }
     if !errors.is_empty() {
         return Err(errors);
     }
-    // Monomorphization keeps what `main` reaches; the claim runner replaces it.
-    runner.push_str("func main() {\n");
-    for i in 0..claims.len() {
-        runner.push_str(&format!("    {}()\n", case_fn(i)));
-    }
-    runner.push_str("}\n");
-    if std::env::var_os("RASK_CLAIMS_DUMP").is_some() {
-        eprintln!("{runner}");
-    }
     let files = sources.iter().map(|(p, _)| p.clone()).collect();
-    Ok(Plan { files, claims, runner, input_lines })
+    let mut plan = Plan {
+        files,
+        claims,
+        generics,
+        runner: String::new(),
+        input_lines: Vec::new(),
+        case_lines: Vec::new(),
+    };
+    plan.write_runner();
+    Ok(plan)
 }
 
 fn claim_fn(d: &Decl) -> Option<&FnDecl> {
@@ -417,9 +559,10 @@ struct Compiled {
     claims_files: Vec<u16>,
 }
 
-/// Compile the claims sources and the plan's case functions as one package
-/// that imports the package at `path`.
-fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &Plan) -> Option<Compiled> {
+/// The package at `path`, prepared to build, with the root package opened up
+/// as a dependency: seen from the claims, its names are its own and only
+/// what it made `public` is reachable.
+fn prepare(path: &str) -> Option<(super::build::PreparedBuild, String)> {
     let opts = super::build::BuildOptions {
         profile: "debug".to_string(),
         verbose: false,
@@ -435,17 +578,37 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &Plan) 
     }
     let root_id = prepared.root_id;
     let root_name = prepared.registry.get(root_id)?.name.clone();
-    // Seen from the claims, the package is a dependency like any other: its
-    // names are its own, and only what it made `public` is reachable.
     if let Some(root_pkg) = prepared.registry.get_mut(root_id) {
         root_pkg.is_external = true;
     }
+    Some((prepared, root_name))
+}
+
+/// The claims package added to `prepared`: the claims sources and the runner.
+struct ClaimsPackage {
+    ctx: rask_compiler::PackageContext,
+    config: rask_compiler::CompilerConfig,
+    link_opts: super::link::LinkOptions,
+    /// Every source in the compile, by file id.
+    sources: Vec<(PathBuf, String)>,
+    claims_files: Vec<u16>,
+    runner_file: u16,
+}
+
+fn add_claims_package(
+    prepared: super::build::PreparedBuild,
+    root_name: &str,
+    claim_sources: &[(PathBuf, String)],
+    runner: &str,
+) -> Option<ClaimsPackage> {
+    let mut prepared = prepared;
+    let root_id = prepared.root_id;
     let claims_id = match prepared.registry.add_source_package(
         &format!("{root_name}_claims"),
         claim_sources
             .iter()
             .cloned()
-            .chain([(PathBuf::from(RUNNER_FILE), plan.runner.clone())])
+            .chain([(PathBuf::from(RUNNER_FILE), runner.to_string())])
             .collect(),
         vec![root_id],
         false,
@@ -471,27 +634,107 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &Plan) 
                 if let Some(i) = claim_sources.iter().position(|(p, _)| *p == f.path) {
                     claims_files[i] = f.file_id;
                 }
-            }
-            if pkg.id == claims_id && f.path == Path::new(RUNNER_FILE) {
-                runner_file = f.file_id;
+                if f.path == Path::new(RUNNER_FILE) {
+                    runner_file = f.file_id;
+                }
             }
         }
     }
     let all_decls: Vec<Decl> = prepared.registry.get(claims_id)?.all_decls().cloned().collect();
     let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names.clone());
-    let config = crate::compiler_config(cfg).with_claims();
-    let mut pkg_ctx = rask_compiler::PackageContext {
-        registry: prepared.registry,
-        root_id: claims_id,
-        all_decls,
-    };
-    let output = rask_compiler::compile_package_with(&mut pkg_ctx, &config, |_, _| {});
+    Some(ClaimsPackage {
+        ctx: rask_compiler::PackageContext { registry: prepared.registry, root_id: claims_id, all_decls },
+        config: crate::compiler_config(cfg).with_claims(),
+        link_opts: prepared.link_opts,
+        sources,
+        claims_files,
+        runner_file,
+    })
+}
+
+/// The package's public types a generic claim may be instantiated with:
+/// structs and enums without type parameters of their own, spelled the way
+/// a claims source names them.
+fn public_types(prepared: &super::build::PreparedBuild, root_name: &str) -> Vec<String> {
+    let mut out: Vec<String> = prepared
+        .registry
+        .all_decls(prepared.root_id)
+        .into_iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Struct(s) if s.is_pub && s.type_params.is_empty() => Some(&s.name),
+            DeclKind::Enum(e) if e.is_pub && e.type_params.is_empty() => Some(&e.name),
+            _ => None,
+        })
+        .map(|n| format!("{root_name}.{n}"))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Instantiate every generic claim with every public type (G1, G2), and
+/// keep the instantiations the checker accepts: the type conforms to the
+/// claim's bounds and a claim can be given one (IN1). The checker decides
+/// both, the same way it would for a call written by hand.
+fn instantiate_generics(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Plan) -> Option<()> {
+    let (prepared, root_name) = prepare(path)?;
+    let types = public_types(&prepared, &root_name);
+    let conformances: Vec<(String, String)> = declared_conformances(&prepared.root)
+        .into_iter()
+        .map(|(t, i)| (format!("{root_name}.{t}"), i))
+        .collect();
+    let declared = plan.claims.len();
+    plan.instantiate(&types, &conformances);
+    let mut pkg = add_claims_package(prepared, &root_name, claim_sources, &plan.runner)?;
+    let output = rask_compiler::check_package(&mut pkg.ctx, &pkg.config);
+
+    let mut rejected = std::collections::HashSet::new();
+    let mut failed = false;
+    for d in output.diagnostics.iter().filter(|d| d.severity == rask_diagnostics::Severity::Error) {
+        let at = d
+            .labels
+            .iter()
+            .find(|l| l.span.file_id == pkg.runner_file)
+            .and_then(|l| plan.claim_at(l.span.start));
+        match at {
+            Some(i) if i >= declared => {
+                rejected.insert(i);
+            }
+            _ => {
+                failed = true;
+                let d = point_at_input(d, plan, pkg.runner_file, &pkg.claims_files);
+                crate::show_diagnostic_multi(&d, &pkg.sources);
+            }
+        }
+    }
+    if failed {
+        return None;
+    }
+    let mut i = 0;
+    plan.claims.retain(|_| {
+        let keep = !rejected.contains(&i);
+        i += 1;
+        keep
+    });
+    plan.write_runner();
+    Some(())
+}
+
+/// Compile the claims sources and the plan's case functions as one package
+/// that imports the package at `path`.
+fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Plan) -> Option<Compiled> {
+    if !plan.generics.is_empty() {
+        instantiate_generics(path, claim_sources, plan)?;
+    }
+    let (prepared, root_name) = prepare(path)?;
+    let mut pkg = add_claims_package(prepared, &root_name, claim_sources, &plan.runner)?;
+    let output = rask_compiler::compile_package_with(&mut pkg.ctx, &pkg.config, |_, _| {});
     for diag in &output.diagnostics {
-        let diag = point_at_input(diag, plan, runner_file, &claims_files);
-        crate::show_diagnostic_multi(&diag, &sources);
+        let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
+        crate::show_diagnostic_multi(&diag, &pkg.sources);
     }
     let result = output.result?;
-    Some(Compiled { result, link_opts: prepared.link_opts, sources, claims_files })
+    Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
 }
 
 /// An error inside a generated case function is about one of the claim's
@@ -719,6 +962,16 @@ fn run_claims(
             report_not_strict(claim, summary, compiled);
         }
     }
+    // A generic claim of the package's own that nothing instantiated says so,
+    // rather than passing without a word.
+    if format == Format::Human {
+        for g in plan.generics.iter().filter(|g| g.law_of.is_none()) {
+            let prefix = format!("{}<", g.claim.name);
+            if !plan.claims.iter().any(|c| c.name.starts_with(&prefix)) {
+                println!("  {:<24} no public type of the package meets its bounds and can be built", g.claim.name);
+            }
+        }
+    }
     if let Some(bin) = bin.filter(|_| all_held && opts.extra_seeds > 0) {
         all_held = run_extra_seeds(bin, plan, compiled, &shown, format, opts.extra_seeds);
     }
@@ -917,7 +1170,14 @@ fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compil
     if let Some(found) = found {
         diag = diag.with_note(found);
     }
-    let diag = diag.with_help(format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review"));
+    let help = if shown == LAWS_FILE {
+        "this is the stdlib's law for the interface, and the type's own conformance breaks it: \
+         fix its `implements` block"
+            .to_string()
+    } else {
+        format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review")
+    };
+    let diag = diag.with_help(help);
     crate::show_diagnostic_multi(&diag, &compiled.sources);
 }
 

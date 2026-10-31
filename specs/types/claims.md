@@ -66,7 +66,7 @@ repo = { path = "../shared-claims" }                                # repo-wide
 acme = { git = "https://git.acme.dev/claims", rev = "v2.1" }        # company-wide
 ```
 
-The stdlib's interface laws are a claims source every package is held to without listing it.
+The stdlib's interface laws are a claims source every package is held to without listing it (G3).
 
 ## Inputs
 
@@ -146,8 +146,9 @@ claim antisymmetric<T: Comparable>(a: T, b: T) {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Per conformance** | A claim with an interface bound is instantiated for each type in the applying package (W2) that conforms to the bound and is generatable (IN1). Each instantiation gets its own verdict |
+| **G1: Per conformance** | A claim with an interface bound is instantiated for each public type of the applying package (W2), a struct or enum without type parameters of its own, that conforms to the bound and is generatable (IN1). The checker decides both, the way it would for a call written by hand, and a type it refuses is left out. Each instantiation gets its own verdict, reported as `claim<pkg.Type>`. A generic claim nothing instantiates says so |
 | **G2: Across packages** | A generic claim applied through W2 reaches every conformance in the applying package, whichever package declared the interface |
+| **G3: The stdlib's laws** | The core interfaces' laws (`Equal` reflexive and symmetric, `Comparable` reflexive, antisymmetric and agreeing with `Equal`, `Hashable` agreeing with `Equal`, a clone equal to its original) are a claims source every package is held to. They're instantiated only for public types that declare their own conformance: a derived one meets them by construction |
 
 Finding every conformance is whole-program knowledge, which `std.reflect` refuses to hand user code (R2). Here the checker does it, the way monomorphization finds instantiations, and user code never sees the list.
 

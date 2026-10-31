@@ -182,6 +182,12 @@ pub const CLAIMS_FILE: &str = "claims.rk";
 
 /// Collect .rk source file paths from a directory (excluding build.rk and
 /// claims.rk). Also includes any .rk files from the .rk-gen/ subdirectory.
+/// The source files of the package in `dir`, the same ones the registry
+/// reads; its subpackages' aren't among them.
+pub fn package_source_files(dir: &Path) -> Vec<PathBuf> {
+    collect_rk_files(dir).map(|(files, _)| files).unwrap_or_default()
+}
+
 fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageError> {
     let mut files = Vec::new();
     let mut subdirs = Vec::new();
