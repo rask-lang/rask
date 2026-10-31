@@ -378,6 +378,7 @@ static int64_t cfg_samples = DEFAULT_SAMPLES;
 static int64_t cfg_shrink_claim = -1;
 static int64_t cfg_shrink_input = -1;
 static char   *cfg_shrink_path;
+static uint64_t cfg_seed_offset;
 
 __attribute__((constructor)) static void claim_config_take(void) {
     const char *n = getenv("RASK_CLAIM_SAMPLES");
@@ -391,8 +392,12 @@ __attribute__((constructor)) static void claim_config_take(void) {
         if (*end == ':') cfg_shrink_input = strtoll(end + 1, &end, 10);
         if (*end == ':') cfg_shrink_path = strdup(end + 1);
     }
+    // `--claim-seeds`: the k-th seed past the build's own.
+    const char *offset = getenv("RASK_CLAIM_SEED_OFFSET");
+    if (offset && *offset) cfg_seed_offset = strtoull(offset, NULL, 10);
     unsetenv("RASK_CLAIM_SAMPLES");
     unsetenv("RASK_CLAIM_SHRINK");
+    unsetenv("RASK_CLAIM_SEED_OFFSET");
 }
 
 static uint64_t mix(uint64_t x) {
@@ -425,6 +430,16 @@ static const char *outcome_name(int out) {
     case OUT_BUDGET: return "budget";
     default: return "repeat";
     }
+}
+
+// Whether the input just run met another task, the clock or simulated I/O:
+// each of those is a step of sim's scheduler.
+static int reached_scheduling_point(void) {
+#ifdef RASK_SIM
+    return rask_sim_step() > 0;
+#else
+    return 0;
+#endif
 }
 
 // One input, from choices already in place. `*msg` is malloc'd or NULL.
@@ -518,6 +533,7 @@ void rask_claim_start(void) {
 int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t budget) {
     static int64_t claim_index;
     int64_t me = claim_index++;
+    if (cfg_seed_offset) seed = (int64_t)mix((uint64_t)seed ^ mix(cfg_seed_offset));
     if (cfg_shrink_claim >= 0) {
         if (me != cfg_shrink_claim) return 0;
         ch_by_index = 0;
@@ -534,6 +550,7 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
     int64_t tried = 0, discarded = 0, budget_hits = 0;
     char *budget_input = NULL;
     int failed = 0;
+    int scheduled = 0;
 
     for (int64_t i = 0; i < walk; i++) {
         if (exhaustive) {
@@ -547,10 +564,28 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
         input_distinct = 1;
         char *msg;
         int out = run_input(fn, input_sim_seed((uint64_t)seed, i), budget, &msg);
-        if (i == 0) {
+        if (i == 0 && !scheduled) {
             exhaustive = input_walk > 0 && input_walk <= MAX_WALK;
             walk = exhaustive ? (int64_t)input_walk : cfg_samples;
             distinct = input_distinct;
+        }
+        if (out != OUT_FAIL && reached_scheduling_point()) scheduled = 1;
+        // Every input under one schedule isn't every input: the schedule and
+        // the faults are choices too, and they're sampled (type.claims/V2).
+        if (exhaustive && scheduled && out != OUT_FAIL) {
+            free(msg);
+            exhaustive = 0;
+            walk = cfg_samples;
+            tried = discarded = budget_hits = 0;
+            free(budget_input);
+            budget_input = NULL;
+            i = -1;
+            continue;
+        }
+        // Another seed changes nothing about a claim walked in full.
+        if (cfg_seed_offset && exhaustive) {
+            free(msg);
+            break;
         }
         if (out == OUT_REPEAT) {
             free(msg);
@@ -576,9 +611,9 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
     printf("%s{\"claim\":\"", rask_test_record_mark());
     rask_test_json_escaped(name);
     printf("\",\"done\":true,\"mode\":\"%s\",\"tried\":%lld,\"distinct\":%llu,\"discarded\":%lld,"
-           "\"over_budget\":%lld,\"budget_input\":\"",
+           "\"over_budget\":%lld,\"scheduled\":%s,\"budget_input\":\"",
            exhaustive ? "all" : "sampled", (long long)tried, (unsigned long long)distinct,
-           (long long)discarded, (long long)budget_hits);
+           (long long)discarded, (long long)budget_hits, scheduled ? "true" : "false");
     rask_test_json_escaped(budget_input ? budget_input : "");
     printf("\",\"failed\":%s}\n", failed ? "true" : "false");
     fflush(stdout);

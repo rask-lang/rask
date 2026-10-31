@@ -43,6 +43,26 @@ pub enum ClaimsMode {
     Run,
 }
 
+/// How this invocation runs claims, from its flags. Set once by `main`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClaimsOptions {
+    /// `--claims=strict` (type.claims/V6): only "checked all" passes.
+    pub strict: bool,
+    /// `--claim-seeds N`: sampled claims run on N more seeds after the
+    /// build's own, looking further without changing what a build decides.
+    pub extra_seeds: u64,
+}
+
+static OPTIONS: std::sync::OnceLock<ClaimsOptions> = std::sync::OnceLock::new();
+
+pub fn set_options(opts: ClaimsOptions) {
+    let _ = OPTIONS.set(opts);
+}
+
+fn options() -> ClaimsOptions {
+    OPTIONS.get().copied().unwrap_or_default()
+}
+
 /// Check the claims of the package at `path`, if it has any.
 pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> ClaimsOutcome {
     let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
@@ -370,6 +390,8 @@ struct Record {
     distinct: u64,
     discarded: u64,
     over_budget: u64,
+    /// Met another task, the clock or simulated I/O, so the schedule was sampled.
+    scheduled: bool,
     budget_input: String,
 }
 
@@ -391,6 +413,7 @@ impl Record {
             distinct: n("distinct"),
             discarded: n("discarded"),
             over_budget: n("over_budget"),
+            scheduled: json.contains("\"scheduled\":true"),
             budget_input: s("budget_input"),
         })
     }
@@ -420,6 +443,7 @@ fn run_bin(bin: &Path, env: &[(&str, String)]) -> (Vec<Record>, String, process:
 }
 
 fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, format: Format) -> bool {
+    let opts = options();
     let (records, stderr, status) = run_bin(bin, &[]);
     let shown = claims_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if format == Format::Human {
@@ -436,12 +460,8 @@ fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, 
         };
         if let Some(fail) = failure {
             all_held = false;
-            let (input, error) = if fail.choices.is_empty() {
-                (fail.input.clone(), fail.error.clone())
-            } else {
-                shrink(bin, i, fail)
-            };
-            report_false(claim, &input, &error, &shown, compiled);
+            let (input, error) = shrink(bin, i, fail, &[]);
+            report_false(claim, &input, &error, &shown, compiled, None);
             continue;
         }
         if format == Format::Human {
@@ -455,8 +475,41 @@ fn run_claims(bin: &Path, plan: &Plan, compiled: &Compiled, claims_path: &Path, 
                 );
             }
         }
+        if opts.strict && !(summary.mode == "all" && summary.over_budget == 0) {
+            all_held = false;
+            report_not_strict(claim, summary, compiled);
+        }
+    }
+    if all_held && opts.extra_seeds > 0 {
+        all_held = run_extra_seeds(bin, plan, compiled, &shown, format, opts.extra_seeds);
     }
     all_held
+}
+
+/// `--claim-seeds N`: every sampled claim again, on N seeds the build never
+/// uses. A claim checked in full has nothing left to find, and the runtime
+/// skips it.
+fn run_extra_seeds(bin: &Path, plan: &Plan, compiled: &Compiled, shown: &str, format: Format, n: u64) -> bool {
+    for k in 1..=n {
+        let env = [("RASK_CLAIM_SEED_OFFSET", k.to_string())];
+        let (records, stderr, status) = run_bin(bin, &env);
+        for (i, claim) in plan.claims.iter().enumerate() {
+            if !records.iter().any(|r| r.done && r.claim == claim.name) {
+                report_death(claim, &stderr, &status);
+                return false;
+            }
+            if let Some(fail) = records.iter().find(|r| !r.done && r.claim == claim.name && r.result == "fail") {
+                let (input, error) = shrink(bin, i, fail, &env);
+                let found = format!("found on extra seed {k} of {n} (`--claim-seeds`); a plain build doesn't draw it");
+                report_false(claim, &input, &error, shown, compiled, Some(found));
+                return false;
+            }
+        }
+    }
+    if format == Format::Human {
+        println!("  {} more: every sampled claim held", count(n, "seed"));
+    }
+    true
 }
 
 fn count(n: u64, what: &str) -> String {
@@ -486,12 +539,19 @@ fn verdict(r: &Record) -> String {
     if r.discarded > 0 {
         line.push_str(&format!(", {} discarded", r.discarded));
     }
+    if r.scheduled {
+        line.push_str(", schedules sampled too");
+    }
     line
 }
 
 /// Cut a failing input down: the smallest choices that still fail. Returns
 /// how that input prints and what it failed with.
-fn shrink(bin: &Path, claim: usize, fail: &Record) -> (String, String) {
+fn shrink(bin: &Path, claim: usize, fail: &Record, env: &[(&str, String)]) -> (String, String) {
+    // Built by an exhaustive walk: nothing smaller comes before it.
+    if fail.choices.is_empty() {
+        return (fail.input.clone(), fail.error.clone());
+    }
     let mut best = Best { bytes: unhex(&fail.choices), input: fail.input.clone(), error: fail.error.clone() };
     let path = std::env::temp_dir().join(format!("rask_claims_shrink_{}", process::id()));
     for _round in 0..200 {
@@ -504,7 +564,9 @@ fn shrink(bin: &Path, claim: usize, fail: &Record) -> (String, String) {
             break;
         }
         let spec = format!("{claim}:{}:{}", fail.index, path.display());
-        let (records, _, _) = run_bin(bin, &[("RASK_CLAIM_SHRINK", spec)]);
+        let mut with = env.to_vec();
+        with.push(("RASK_CLAIM_SHRINK", spec));
+        let (records, _, _) = run_bin(bin, &with);
         let smaller = records
             .iter()
             .filter(|r| r.result == "fail")
@@ -599,14 +661,38 @@ fn unhex(s: &str) -> Vec<u8> {
 }
 
 /// E0950, with the counterexample.
-fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compiled: &Compiled) {
+fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compiled: &Compiled, found: Option<String>) {
     let span = Span { file_id: compiled.claims_file, ..claim.span };
-    let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` is false", claim.name))
+    let mut diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` is false", claim.name))
         .with_code("E0950")
         .with_primary(span, "doesn't hold for this input")
         .with_note(format!("counterexample: {input}"))
-        .with_note(error.to_string())
-        .with_help(format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review"));
+        .with_note(error.to_string());
+    if let Some(found) = found {
+        diag = diag.with_note(found);
+    }
+    let diag = diag.with_help(format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review"));
+    crate::show_diagnostic_multi(&diag, &compiled.sources);
+}
+
+/// E0953: under `--claims=strict`, a claim that held but wasn't checked in full.
+fn report_not_strict(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
+    let span = Span { file_id: compiled.claims_file, ..claim.span };
+    let why = if r.over_budget > 0 {
+        format!("{} ran past the step budget, so it isn't known to hold for those", count(r.over_budget, "input"))
+    } else if r.scheduled {
+        "it meets another task, the clock or simulated I/O, so its schedules can only be sampled".to_string()
+    } else {
+        "its inputs are too many to walk, so they were sampled".to_string()
+    };
+    let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` held, but wasn't checked in full", claim.name))
+        .with_code("E0953")
+        .with_primary(span, verdict(r))
+        .with_note(why)
+        .with_help(
+            "`--claims=strict` passes only claims checked for every input; narrow the inputs \
+             (a `u8` instead of a `u32`, an enum instead of a string) or build without `strict`",
+        );
     crate::show_diagnostic_multi(&diag, &compiled.sources);
 }
 

@@ -128,3 +128,25 @@ fn an_input_the_build_cant_make_is_reported_at_the_parameter() {
     assert_ne!(run.code, 0);
     assert!(all.contains("E0952"), "{all}");
 }
+
+#[test]
+fn strict_mode_fails_a_sampled_claim_and_more_seeds_look_further() {
+    let dir = copy_of("strict");
+    let plain = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(plain.code, 0, "{}{}", plain.stdout, plain.stderr);
+    assert!(plain.stdout.contains("small_pass_through       checked all 256 inputs"), "{}", plain.stdout);
+
+    // Only "checked all" passes under strict.
+    let strict = rask(&dir, &["check", "--claims=strict", "."]);
+    assert_eq!(strict.code, 1, "{}{}", strict.stdout, strict.stderr);
+    assert!(strict.stderr.contains("E0953"), "{}", strict.stderr);
+    assert!(strict.stderr.contains("claim `wide_pass_through` held, but wasn't checked in full"), "{}", strict.stderr);
+    assert!(!strict.stderr.contains("small_pass_through"), "{}", strict.stderr);
+
+    // The build's own thousand inputs miss the few above 65,500; more seeds
+    // find one, and it shrinks to the smallest.
+    let seeds = rask(&dir, &["check", "--claim-seeds", "20", "."]);
+    assert_eq!(seeds.code, 1, "{}{}", seeds.stdout, seeds.stderr);
+    assert!(seeds.stderr.contains("counterexample: x = 65501"), "{}", seeds.stderr);
+    assert!(seeds.stderr.contains("found on extra seed"), "{}", seeds.stderr);
+}

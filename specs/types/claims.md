@@ -41,7 +41,7 @@ A claim checks what it says and nothing more. A package held to ten claims has t
 | **CL1: Shape** | `claim name(params) { body }`. The parameters are the inputs the claim holds for, all of them. The body checks with `assert` and `check` (`std.testing/A1`, `A2`) and returns nothing |
 | **CL2: Claims sources only** | A claim is declared only in a claims source: a package's `claims.rk` (W1) or a file or directory its manifest lists under `[claims]` (W2). `claim` anywhere else is a compile error |
 | **CL3: Nothing depends on a claims source** | A claims source may also hold helper functions (a reference model, a generator). Code can't import it; it's reached only through `[claims]` (W2), and release builds strip it, like tests |
-| **CL4: Runs under sim** | A claim is compiled to native code and run on the sim runtime (`sim`): one thread at a time, with scheduling, the clock, I/O and faults all drawn from a seed. So a claim can do what a sim test can, `spawn` and I/O included. What sim refuses (`Thread.spawn`, C that escapes to the real world, `sim/B1`, `B2`) a claim can't reach either |
+| **CL4: Runs under sim** | A claim is compiled to native code and run on the sim runtime (`sim`): one thread at a time, with scheduling, the clock, I/O and faults all drawn from a seed. So a claim can do what a sim test can, `spawn` and I/O included. Each input starts in a fresh world: no tasks, no files written, no sockets. What sim refuses (`Thread.spawn`, C that escapes to the real world, `sim/B1`, `B2`) a claim can't reach either |
 | **CL5: Discarding an input** | A `return` before the end of the body discards that input. It counts neither for nor against the claim. That's how a claim states a precondition: `if !is_valid(x) { return }` |
 | **CL6: A panic is a failure** | If the code under the claim panics on an input (out of bounds, overflow, `unreachable()`), that input is a counterexample. A claim that just calls a function claims it never panics |
 
@@ -87,7 +87,7 @@ Every claim ends with a verdict. Only a counterexample fails the build.
 | **V3: Sampled** | The claim held for N generated inputs (default 1,000). Reported, not an error. The verdict says the number and never rounds up to proven |
 | **V4: Proven** | Reserved for a solver backend, for claims that touch no scheduling point or I/O. Same claims, stronger verdict. Not part of v1 |
 | **V5: Out of budget** | An input ran past the claim's step budget. Reported with the input, not an error. Not finishing isn't the same as being shown false |
-| **V6: Strict mode** | `--claims strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
+| **V6: Strict mode** | `--claims=strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
 
 ```
 claims: game (held to game/claims)
@@ -118,7 +118,7 @@ A build failure that comes and goes between builds is worse than none, so checki
 | **D4: Cached verdicts** | A verdict is cached under the claim's text and the semantic hashes of every function it reaches (`comp.architecture/IC2`). A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build |
 | **D5: Cached calls** | Calls a claim makes into the package it checks are memoized when the effects analysis finds them pure (no I/O, no scheduling point); an effectful call's result also depends on the sim state, not only its arguments. Pure calls are memoized on (the callee's semantic hash, the receiver and argument values), and the result holds the returned value and, for a `mutate` parameter, the value after the call. A pure call with the same inputs always gives the same result, and owned values mean nothing else can change behind it. Sampled operation lists share prefixes, so the state after `[Deposit(5), Withdraw(2)]` is computed once for every input that starts that way. The memo table is stored with the verdict cache (D4), keyed the same way, so it survives between builds until the callee changes |
 
-Deep random search belongs in `rask test`, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `rask test --claims --seeds N` runs every claim on N more seeds without changing what the build decides.
+Deep random search belongs outside the build, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `--claim-seeds N` runs every sampled claim on N more seeds after the build's own. A claim checked in full has nothing left to find and is skipped. The flag goes on the command line, never in a manifest, so what a plain build decides doesn't change.
 
 ## When claims run
 
