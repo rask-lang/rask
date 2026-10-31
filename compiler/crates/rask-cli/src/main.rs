@@ -821,7 +821,7 @@ fn main() {
                 return;
             }
             let name = find_positional_arg(&cmd_args, 2, &[]);
-            commands::init::cmd_init(name);
+            commands::init::cmd_init(name, cmd_args.contains(&"--agents"));
         }
         "fetch" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -932,6 +932,13 @@ fn main() {
             } else {
                 commands::tools::cmd_fmt(&paths, check_only, write_in_place);
             }
+        }
+        "mcp" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_mcp_help();
+                return;
+            }
+            commands::mcp::cmd_mcp();
         }
         "claims" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -1054,6 +1061,16 @@ fn main() {
         "help" | "--help" | "-h" => {
             if cmd_args.len() > 2 && (cmd_args[2] == "--help" || cmd_args[2] == "-h") {
                 help::print_help_help();
+                return;
+            }
+            // For people who work with coding agents: the language and how to
+            // work in a Rask project, for an agent to read.
+            if cmd_args.get(2) == Some(&"agents") {
+                if cmd_args.contains(&"--snippet") {
+                    print!("{}", commands::agents::SNIPPET);
+                } else {
+                    print!("{}", commands::agents::briefing());
+                }
                 return;
             }
             help::print_usage();
