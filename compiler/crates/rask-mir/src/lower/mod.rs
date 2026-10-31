@@ -415,6 +415,7 @@ impl<'a> MirContext<'a> {
             arm_widenings: &typed.arm_widenings,
             c_fn_pointers: &typed.c_fn_pointers,
             c_contexts: &typed.c_contexts,
+            c_macro_calls: &typed.c_macro_calls,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -488,6 +489,8 @@ impl<'a> MirContext<'a> {
 /// No extern takes a closure through a context pointer.
 pub(crate) static EMPTY_C_CONTEXTS: std::sync::LazyLock<HashMap<String, rask_check::CContext>> =
     std::sync::LazyLock::new(HashMap::new);
+pub(crate) static EMPTY_C_MACRO_CALLS: std::sync::LazyLock<HashMap<NodeId, rask_c_parse::cexpr::MacroCall>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 /// No function value coerced to a C function pointer.
 pub(crate) static EMPTY_C_FN_POINTERS: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
@@ -556,6 +559,8 @@ pub struct MirContext<'a> {
     pub c_fn_pointers: &'a std::collections::HashSet<NodeId>,
     /// CB3: externs whose callback takes a closure through its context.
     pub c_contexts: &'a HashMap<String, rask_check::CContext>,
+    /// struct.c-interop/PP4: each call of a C macro, as the checker typed it.
+    pub c_macro_calls: &'a HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
@@ -706,6 +711,7 @@ impl<'a> MirContext<'a> {
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &EMPTY_ESCAPING,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
+            c_macro_calls: &crate::lower::EMPTY_C_MACRO_CALLS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             err_returns: &EMPTY_COALESCE_SHAPE,
@@ -7778,6 +7784,7 @@ mod tests {
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
+            c_macro_calls: &crate::lower::EMPTY_C_MACRO_CALLS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7868,6 +7875,7 @@ mod tests {
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
+            c_macro_calls: &crate::lower::EMPTY_C_MACRO_CALLS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7965,6 +7973,7 @@ mod tests {
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
+            c_macro_calls: &crate::lower::EMPTY_C_MACRO_CALLS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,

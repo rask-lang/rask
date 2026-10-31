@@ -241,6 +241,8 @@ fn emit_inner(
     codegen.declare_runtime_functions().map_err(fail)?;
     codegen.declare_stdlib_functions().map_err(fail)?;
     let mut extern_sigs: Vec<_> = input.decls.iter().filter_map(|d| match &d.kind {
+        // A C macro is no symbol; its calls are routed below (PP4).
+        DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => None,
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
             link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
@@ -252,6 +254,8 @@ fn emit_inner(
     }).collect();
     let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
+    let macros = crate::c_macros::route_calls(&mut functions)?;
+    extern_sigs.extend(macros.iter().map(|w| w.sig.clone()));
     // Only the externs the program reaches. A header declares far more than
     // a program calls, and each declared import is a symbol the link must
     // find: some of a header's functions exist only on other platforms, or
@@ -259,6 +263,7 @@ fn emit_inner(
     let reached = reached_symbols(&functions);
     extern_sigs.retain(|s| reached.contains(&s.name));
     write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
+    write_companion(obj_path, "macro", macros.iter().map(|w| w.source.as_str()).collect::<String>())?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
     codegen.declare_functions(input.mono, &functions).map_err(fail)?;
     codegen.register_strings(&functions).map_err(fail)?;

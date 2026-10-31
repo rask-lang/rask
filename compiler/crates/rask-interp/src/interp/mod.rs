@@ -255,6 +255,9 @@ pub struct Interpreter {
     pub(crate) fallback_keeps_shape: std::collections::HashSet<rask_ast::NodeId>,
     /// ER9: `return` values that go to the error side (`TypedProgram::err_returns`).
     pub(crate) err_returns: std::collections::HashSet<rask_ast::NodeId>,
+    /// struct.c-interop/PP4: each call of a C macro, as the checker typed it.
+    /// Computed here directly; no C compiler is involved.
+    pub(crate) c_macro_calls: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` propagates at the
     /// call and hands `.len()` the payload.
@@ -496,6 +499,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
+            c_macro_calls: HashMap::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -539,6 +543,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
+            c_macro_calls: HashMap::new(),
             build_state: None,
             source_info: None,
             lent_args: None,
@@ -588,6 +593,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
+            c_macro_calls: HashMap::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         };
@@ -695,6 +701,7 @@ impl Interpreter {
         self.else_binding_types = typed.else_binding_types.clone();
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.err_returns = typed.err_returns.clone();
+        self.c_macro_calls = typed.c_macro_calls.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();

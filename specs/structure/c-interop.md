@@ -204,13 +204,15 @@ func call_c_string_api(name: string) -> void or NullByteError {
 | Integer constant (`#define FOO 42`) | `const FOO: c_int = 42` |
 | Constant expression (`(1 << 3)`, `((Uint32)0x20)`, `A \| B`) | Evaluated: `const FOO: c_int = 8` |
 | String constant (`#define V "1.0"`) | `const V: string = "1.0"` |
-| Function-like (`#define MAX(a, b) …`) | Skipped, written as a comment (BI5) |
-| Token pasting, stringification | Skipped, written as a comment |
+| Float constant (`#define PI_F 3.14159f`) | `const PI_F: f32 = 3.1415927`: the literal's own type |
+| Function-like (`#define MAX(a, b) …`) | `@c_macro("…") extern "C" func MAX(a: _, b: _) -> _`, typed at each call (PP4) |
+| Token pasting, stringification | Expanded where they make a name or a suffixed number; otherwise the macro can't be called, and says why |
 
 | Rule | Description |
 |------|-------------|
-| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, names of earlier constants and enumerators, and calls of function-like macros (expanded, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
-| **PP2: No guessing** | A macro the evaluator can't reduce to one integer, float or string is skipped. Macros have no types; a guessed signature is worse than a comment |
+| **PP1: Constant expressions** | Integer and floating literals, `+ - * / % << >> & \| ^ ~ ! && \|\| ?:`, comparisons, parentheses, casts to arithmetic types, names of earlier constants and enumerators, and calls of function-like macros (expanded as the preprocessor does: arguments first, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation, with C's integer promotion and usual arithmetic conversions. The constant takes C's type for the expression |
+| **PP2: No guessing** | An object-like macro that doesn't reduce to one integer, float or string is skipped with a comment. One that's another name for something says so where it's used |
+| **PP4: Function-like macros** | A function-like macro whose body is arithmetic is callable: `c.SDL_NS_TO_MS(t)`. It has no types of its own, so each call types the body from its arguments by C's rules, an unsuffixed literal argument being C's `int` or `double`, and the call is the Rask number that result type is. Arithmetic needs no `unsafe`. Called with constants it's evaluated at compile time; otherwise native code calls a C function made for those argument types, compiled at link like VA3's, and the interpreter computes it. A macro that reads a field, calls a function, takes a type or a variable number of arguments still has a declaration, `@c_macro(unusable: "…")`, and a call to it is an error that quotes the reason (E0940) |
 
 ## Inline Functions
 

@@ -100,6 +100,9 @@ struct Translator<'a> {
     items: &'a [CItem],
     opts: &'a Options<'a>,
     consts: Constants,
+    /// Every function the header declares, so a macro of the same name
+    /// doesn't shadow it.
+    function_names: HashSet<String>,
     /// Where each struct or union tag is defined, else forward-declared.
     records: HashMap<&'a str, usize>,
     typedefs: HashMap<&'a str, usize>,
@@ -144,6 +147,13 @@ impl<'a> Translator<'a> {
             items,
             opts,
             consts: Constants::from_items(items),
+            function_names: items
+                .iter()
+                .filter_map(|i| match &i.decl {
+                    CDecl::Function(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect(),
             records,
             typedefs,
             enums,
@@ -324,6 +334,37 @@ impl<'a> Translator<'a> {
     }
 
     /// The comment a skipped declaration leaves (BI5), and the record of why.
+    /// A function-like macro, callable from Rask (PP4). Its body is expanded
+    /// and written out as self-contained C: other macros expanded, constants
+    /// in as typed values, casts to plain C types. Its parameter and result
+    /// types come from each call. One that isn't an arithmetic expression
+    /// still gets a declaration, carrying the reason, so a call says why
+    /// rather than "no such name".
+    fn function_macro(&mut self, d: &CDefine, params: &[String], emitted: &mut HashSet<String>) -> String {
+        // A function of the same name is the real thing; the macro is often
+        // only a shortcut to it.
+        if emitted.contains(&d.name) || self.function_names.contains(&d.name) {
+            return String::new();
+        }
+        emitted.insert(d.name.clone());
+        let variadic = params.iter().any(|p| p == "...");
+        let rparams: Vec<String> = params.iter().filter(|p| *p != "...").map(|p| value_name(p)).collect();
+        let parsed = if variadic {
+            Err("takes a variable number of arguments".to_string())
+        } else {
+            crate::cexpr::parse(&d.body, params, &crate::consteval::AsNames(&self.consts))
+        };
+        let attr = match parsed {
+            Ok(e) => format!("@c_macro({})", quote(&crate::cexpr::to_c(&e, &rparams))),
+            Err(why) => format!("@c_macro(unusable: {})", quote(&why)),
+        };
+        let ps: Vec<String> = rparams.iter().map(|p| format!("{}: _", p)).collect();
+        self.counts.functions += 1;
+        format!("// {}
+{}
+extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
+    }
+
     fn skip(&mut self, name: &str, why: &str) -> String {
         self.skipped.insert(name.to_string(), why.to_string());
         self.counts.skipped += 1;
@@ -466,8 +507,8 @@ impl<'a> Translator<'a> {
     }
 
     fn define(&mut self, d: &CDefine, emitted: &mut HashSet<String>) -> String {
-        if d.params.is_some() {
-            return self.skip(&d.name, &format!("a function-like macro: {}", d.text));
+        if let Some(params) = &d.params {
+            return self.function_macro(d, params, emitted);
         }
         if emitted.contains(&d.name) {
             return String::new();

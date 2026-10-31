@@ -490,6 +490,15 @@ pub struct CContext {
     pub ret: Type,
 }
 
+/// An extern that stands for a C function-like macro (PP4).
+#[derive(Debug, Clone)]
+pub struct CMacroDef {
+    pub name: String,
+    pub params: Vec<String>,
+    /// The parsed body and its text, or why it can't be called.
+    pub body: Result<(String, rask_c_parse::cexpr::CExpr), String>,
+}
+
 #[derive(Debug)]
 pub struct TypedProgram {
     /// Resolved symbols from name resolution.
@@ -529,6 +538,11 @@ pub struct TypedProgram {
     /// pointer, by name: which parameters, and the callback's C signature
     /// for the trampoline MIR builds.
     pub c_contexts: HashMap<String, CContext>,
+    /// struct.c-interop/PP4: each call of a C function-like macro, keyed by the
+    /// call node: the body, and the C types its arguments and result have at
+    /// that call. Lowering folds a constant one and routes the rest to a C
+    /// function for those types.
+    pub c_macro_calls: HashMap<NodeId, rask_c_parse::cexpr::MacroCall>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after
     /// the checker — the merged decl list has no packages left in it.

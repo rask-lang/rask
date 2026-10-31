@@ -2984,6 +2984,22 @@ impl TypeChecker {
             }
         }
 
+        // PP4: a C function-like macro. Arithmetic, so no `unsafe`; typed per
+        // call from its arguments.
+        if func.name().is_some() {
+            let def = self
+                .resolved
+                .resolutions
+                .get(&func.id)
+                .and_then(|&sym| self.resolved.symbols.get(sym))
+                .filter(|sym| matches!(sym.kind, SymbolKind::ExternFunction { .. }))
+                .and_then(|sym| self.c_macros.get(&sym.name))
+                .cloned();
+            if let Some(def) = def {
+                return self.check_c_macro_call(call_id, &def, args, span);
+            }
+        }
+
         // Extern and unsafe function calls require unsafe context
         if let Some(_) = func.name() {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
@@ -7262,6 +7278,107 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+impl TypeChecker {
+    /// PP4: type a call of a C function-like macro. Each argument's Rask type
+    /// is the C type it stands for, an unsuffixed literal is C's `int` or
+    /// `double` as it would be in C, and the body is typed from those by C's
+    /// rules. The call is the Rask number that result type is.
+    fn check_c_macro_call(
+        &mut self,
+        call_id: rask_ast::NodeId,
+        def: &super::type_defs::CMacroDef,
+        args: &[CallArg],
+        span: Span,
+    ) -> Type {
+        let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+        let fail = |this: &mut Self, problem: String| {
+            this.errors.push(TypeError::CMacroCall { name: def.name.clone(), problem, span });
+            Type::Error
+        };
+        let (text, body) = match &def.body {
+            Ok(b) => b.clone(),
+            Err(why) => return fail(self, format!("its body has {}", why)),
+        };
+        if args.len() != def.params.len() {
+            return fail(self, format!("it takes {} arguments and this passes {}", def.params.len(), args.len()));
+        }
+        let mut c_args = Vec::with_capacity(args.len());
+        for (i, ty) in arg_types.iter().enumerate() {
+            let mut ty = self.ctx.apply(ty);
+            if let Type::Var(id) = ty {
+                let pinned = match self.ctx.literal_vars.get(&id) {
+                    Some(super::inference::LiteralKind::Integer) => Type::I32,
+                    Some(super::inference::LiteralKind::Float) => Type::F64,
+                    None => return fail(self, format!("the type of argument {} isn't known yet; give it one", i + 1)),
+                };
+                let _ = self.unify(&ty, &pinned, span);
+                ty = pinned;
+            }
+            let ty = self.resolve_named(&ty);
+            let c = scalar_name(&ty).and_then(rask_c_parse::cexpr::from_rask_scalar);
+            match c {
+                Some(c) => c_args.push(c),
+                None => {
+                    let shown = self.render_type(&ty);
+                    return fail(self, format!("argument {} is a `{}`, and a C macro computes with numbers", i + 1, shown));
+                }
+            }
+        }
+        let result = match rask_c_parse::cexpr::type_of(&body, &c_args) {
+            Ok(t) => t,
+            Err(why) => return fail(self, format!("its body has {}", why)),
+        };
+        let Some(rask) = rask_c_parse::cexpr::rask_scalar(&result) else {
+            return fail(self, "it answers a string or a pointer, not a number".to_string());
+        };
+        self.c_macro_calls.insert(
+            call_id,
+            rask_c_parse::cexpr::MacroCall {
+                name: def.name.clone(),
+                body: text,
+                params: def.params.clone(),
+                args: c_args,
+                result,
+            },
+        );
+        scalar_type(rask)
+    }
+}
+
+/// The Rask spelling of a scalar type, as `cexpr` maps C types to and from.
+fn scalar_name(ty: &Type) -> Option<&'static str> {
+    Some(match ty {
+        Type::Bool => "bool",
+        Type::I8 => "i8",
+        Type::U8 => "u8",
+        Type::I16 => "i16",
+        Type::U16 => "u16",
+        Type::I32 => "i32",
+        Type::U32 => "u32",
+        Type::I64 => "i64",
+        Type::U64 => "u64",
+        Type::F32 => "f32",
+        Type::F64 => "f64",
+        _ => return None,
+    })
+}
+
+fn scalar_type(name: &str) -> Type {
+    match name {
+        "bool" => Type::Bool,
+        "i8" => Type::I8,
+        "u8" => Type::U8,
+        "i16" => Type::I16,
+        "u16" => Type::U16,
+        "i32" => Type::I32,
+        "u32" => Type::U32,
+        "i64" => Type::I64,
+        "u64" => Type::U64,
+        "f32" => Type::F32,
+        _ => Type::F64,
+    }
 }
 
 /// A variable, or a field or element of one: storage `&` can point at.

@@ -72,7 +72,8 @@ fn macros_evaluate_or_leave_a_comment() {
     has(&out, "public const BIG: c_uint = 2147483648");
     has(&out, "public const NAME: string = \"lib\"");
     has(&out, "public const F: f64 = 1.5");
-    has(&out, "// skipped `MAX`: a function-like macro: #define MAX(a, b) ((a) > (b) ? (a) : (b))");
+    // A function-like macro is callable, its types from each call (PP4).
+    has(&out, "@c_macro(\"((a > b) ? a : b)\")\nextern \"C\" func MAX(a: _, b: _) -> _");
 }
 
 #[test]
@@ -137,4 +138,16 @@ fn a_float_constant_keeps_its_c_type() {
     has(&out, "public const PI_F: f32 = 3.1415927");
     has(&out, "public const PI_D: f64 = 3.141592653589793");
     has(&out, "public const HALF: f32 = 1.5707964");
+}
+
+#[test]
+fn function_like_macros_become_callable() {
+    let out = bind("#define NS_PER_MS 1000000ULL\n#define NS_TO_MS(NS) ((NS) / NS_PER_MS)\n#define LOCKED(S) (((S)->flags & 1) != 0)\n#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)\nint real(int x);\n#define real(x) real(x)\n");
+    // Constants go in as typed values, so the body stands on its own.
+    has(&out, "@c_macro(\"(NS / ((unsigned long)1000000))\")\nextern \"C\" func NS_TO_MS(NS: _) -> _");
+    // One that isn't arithmetic is still declared, with the reason a call gets.
+    has(&out, "@c_macro(unusable: \"`->`, which reads a field through a pointer\")\nextern \"C\" func LOCKED(S: _) -> _");
+    has(&out, "@c_macro(unusable: \"takes a variable number of arguments\")");
+    // A macro shadowing a function leaves the function.
+    assert!(!out.contains("func real(x: _)"), "{out}");
 }

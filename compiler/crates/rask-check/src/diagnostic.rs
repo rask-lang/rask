@@ -2478,6 +2478,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("C reads each variadic argument as the type its format says, with nothing in the call to check it against [struct.c-interop]")
             }
 
+            CMacroCall { name, problem, span } => {
+                Diagnostic::error(format!("`{name}` is a C macro, and this call can't be made: {problem}"))
+                    .with_code("E0940")
+                    .with_primary(*span, "a C macro")
+                    .with_fix("a macro that isn't arithmetic on numbers is written out in Rask by whoever wraps the library")
+                    .with_why("a C macro has no types of its own, so each call types its arithmetic body from its arguments, as C would; anything but arithmetic on numbers has nothing to type it by [struct.c-interop/PP4]")
+            }
+
             AddressOfValue { span } => {
                 Diagnostic::error("`&` takes the address of somewhere a value is stored")
                     .with_code("E0939")

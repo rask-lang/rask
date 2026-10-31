@@ -1025,6 +1025,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// PP4: a call to a C function-like macro that can't be made.
+    #[error("`{name}` is a C macro that can't be called here: {problem}")]
+    CMacroCall {
+        name: String,
+        problem: String,
+        span: Span,
+    },
+
     /// `&` on something that isn't stored anywhere: `&f()`, `&(a + b)`.
     #[error("`&` needs a variable, a field or an element")]
     AddressOfValue {
@@ -1900,6 +1908,7 @@ impl TypeError {
             | UnionOwningMember { .. }
             | NotCCallable { .. }
             | AddressOfValue { .. }
+            | CMacroCall { .. }
             | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }

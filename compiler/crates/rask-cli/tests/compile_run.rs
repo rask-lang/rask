@@ -4004,13 +4004,12 @@ fn c_import_missing_header() {
     assert!(output.contains("not found"), "should mention header not found: {}", output);
 }
 
-// PP2, BI5: a function-like macro and a static function aren't translated, and
-// using one says which and why.
+// BI5: a global variable and a static function aren't translated, and using
+// one says which and why. A function-like macro is callable (PP4).
 #[test]
 fn c_import_skipped_names_say_why() {
-    let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let m = c.MYLIB_MAX(1, 2)\n}");
-    assert!(!ok);
-    assert!(out.contains("function-like macro"), "{}", out);
+    let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let m: i32 = c.MYLIB_MAX(1, 2)\n}");
+    assert!(ok, "an arithmetic macro is callable: {}", out);
     let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let e = c.mylib_errno\n}");
     assert!(!ok);
     assert!(out.contains("C global variable"), "{}", out);
@@ -4034,7 +4033,7 @@ fn bindc_writes_and_checks() {
         "extern \"C\" struct Mylib_ctx",
         "public const MYLIB_VERSION: c_int = 42",
         "public const MYLIB_ERR: Mylib_status = -1",
-        "// skipped `MYLIB_MAX`",
+        "@c_macro(\"((a > b) ? a : b)\")\nextern \"C\" func MYLIB_MAX(a: _, b: _) -> _",
     ] {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
@@ -8548,6 +8547,29 @@ fn callbacks_and_variadics_reach_c() {
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }
+}
+
+/// A header's function-like macros, called with constants and with run-time
+/// values of several widths, give C's answers on both backends (PP4).
+#[test]
+fn c_macros_compute_what_c_would() {
+    let expected = "ms 2\nmask 4 1\nmask runtime 64\nfourcc 1263747410\nfourcc runtime 1263747410\nhalf 2.5\nbyte 44\nbelow 0\n";
+    for mode in ["--native", "--interp"] {
+        let (stdout, stderr, code) = run_capture(mode, "c_macros.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, expected, "{mode}");
+    }
+}
+
+/// A macro that isn't arithmetic, or that's handed something other than a
+/// number, is refused at the call with the reason (E0940).
+#[test]
+fn a_c_macro_call_that_cant_be_made_says_why() {
+    let (text, ok) = check_in_fixtures("c_macro_misuse.rk");
+    assert!(!ok, "the misuse should be refused:\n{text}");
+    assert!(text.contains("E0940"), "{text}");
+    assert!(text.contains("`MUSTLOCK`") && text.contains("`->`"), "names the macro and what's in it:\n{text}");
+    assert!(text.contains("`BUTTON_MASK`") && text.contains("a `string`"), "names the argument:\n{text}");
 }
 
 /// A header is found next to the file that imports it, not next to wherever the

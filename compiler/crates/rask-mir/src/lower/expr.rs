@@ -2819,11 +2819,16 @@ impl<'a> MirLowerer<'a> {
                 _ => {}
             }
 
-            let ret_ty = self
-                .func_sigs
-                .get(&func_name)
-                .map(|s| s.ret_ty.clone())
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156"));
+            // A C macro's declaration says `_`: the type is this call's.
+            let c_macro = self.ctx.c_macro_calls.get(&expr.id).cloned();
+            let ret_ty = match &c_macro {
+                Some(call) => c_macro_result(call),
+                None => self
+                    .func_sigs
+                    .get(&func_name)
+                    .map(|s| s.ret_ty.clone())
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156")),
+            };
 
             let result_local = self.builder.alloc_temp(ret_ty.clone());
 
@@ -2831,11 +2836,12 @@ impl<'a> MirLowerer<'a> {
                 Some(cc) => self.thread_context(&func_name, cc, arg_operands),
                 None => arg_operands,
             };
-            let func_ref = if self.ctx.extern_funcs.contains(&func_name) {
+            let mut func_ref = if self.ctx.extern_funcs.contains(&func_name) {
                 FunctionRef::extern_c(func_name)
             } else {
                 FunctionRef::internal(func_name)
             };
+            func_ref.c_macro = c_macro.map(Box::new);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
                 func: func_ref,
@@ -11469,4 +11475,23 @@ fn field_slot(
     let MirType::Struct(sid) = result_ty else { return None };
     let index = layout?.fields.iter().position(|f| f.name == name)?;
     Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+}
+
+/// The MIR type a C macro call answers: the Rask number its C result type is,
+/// as the checker settled it (struct.c-interop/PP4).
+fn c_macro_result(call: &rask_c_parse::cexpr::MacroCall) -> MirType {
+    match rask_c_parse::cexpr::rask_scalar(&call.result) {
+        Some("bool") => MirType::Bool,
+        Some("i8") => MirType::I8,
+        Some("u8") => MirType::U8,
+        Some("i16") => MirType::I16,
+        Some("u16") => MirType::U16,
+        Some("i32") => MirType::I32,
+        Some("u32") => MirType::U32,
+        Some("u64") => MirType::U64,
+        Some("f32") => MirType::F32,
+        Some("f64") => MirType::F64,
+        // The checker records only number results; i64 is the last of them.
+        _ => MirType::I64,
+    }
 }

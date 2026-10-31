@@ -1089,6 +1089,14 @@ impl Interpreter {
             }
 
             ExprKind::Call { func, args } => {
+                // PP4: a C macro, computed here the way C would.
+                if let Some(call) = self.c_macro_calls.get(&expr.id).cloned() {
+                    let mut vals = Vec::with_capacity(args.len());
+                    for a in args {
+                        vals.push(self.eval_expr(&a.expr)?);
+                    }
+                    return self.c_macro_value(&call, vals).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
                 // mem.unsafe: the checker gave the call its target type.
                 if func.name() == Some("transmute") && args.len() == 1 {
                     let arg = &args[0].expr;
@@ -3456,3 +3464,60 @@ fn annotation_value(value: &rask_ast::attr::AttrValue, ty: &str) -> Value {
     }
 }
 
+
+impl Interpreter {
+    /// PP4: a C macro call's value. The arguments go in at the C types the
+    /// checker gave them, the body is evaluated by C's rules, and the result
+    /// comes back as the Rask number that type is.
+    fn c_macro_value(
+        &self,
+        call: &rask_c_parse::cexpr::MacroCall,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        use rask_c_parse::cexpr::{self, CVal};
+        let mut vals = Vec::with_capacity(args.len());
+        for (v, ty) in args.into_iter().zip(&call.args) {
+            let c = match v {
+                Value::Int(i, _) => CVal::Int(i as i128, ty.clone()),
+                Value::Bool(b) => CVal::Int(b as i128, ty.clone()),
+                Value::Float(f, _) => CVal::Float(f, ty.clone()),
+                other => {
+                    return Err(RuntimeError::TypeError(format!(
+                        "`{}` is a C macro, and got a {}",
+                        call.name,
+                        other.type_name()
+                    )))
+                }
+            };
+            vals.push(cexpr::convert(&c, ty).ok_or_else(|| {
+                RuntimeError::TypeError(format!("`{}` got an argument C can't convert", call.name))
+            })?);
+        }
+        let body = cexpr::parse_body(&call.body, &call.params).map_err(RuntimeError::TypeError)?;
+        let undefined = || {
+            RuntimeError::Panic(format!(
+                "`{}` did what C leaves undefined: a division by zero or a shift past the width",
+                call.name
+            ))
+        };
+        let result = cexpr::eval(&body, &vals).ok_or_else(undefined)?;
+        let result = cexpr::convert(&result, &call.result).ok_or_else(undefined)?;
+        let kind = |name: &str| match name {
+            "i8" => crate::value::IntKind::I8,
+            "u8" => crate::value::IntKind::U8,
+            "i16" => crate::value::IntKind::I16,
+            "u16" => crate::value::IntKind::U16,
+            "i32" => crate::value::IntKind::I32,
+            "u32" => crate::value::IntKind::U32,
+            "u64" => crate::value::IntKind::U64,
+            _ => crate::value::IntKind::I64,
+        };
+        Ok(match (cexpr::rask_scalar(&call.result), result) {
+            (Some("bool"), CVal::Int(v, _)) => Value::Bool(v != 0),
+            (Some("f32"), CVal::Float(f, _)) => Value::Float(f, crate::value::FloatKind::F32),
+            (_, CVal::Float(f, _)) => Value::Float(f, crate::value::FloatKind::F64),
+            (Some(name), CVal::Int(v, _)) => Value::Int(v as i64, kind(name)),
+            _ => return Err(RuntimeError::TypeError(format!("`{}` doesn't answer a number", call.name))),
+        })
+    }
+}

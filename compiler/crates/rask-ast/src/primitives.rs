@@ -79,7 +79,7 @@ pub fn set_c_char_unsigned(unsigned: bool) {
     C_CHAR.store(if unsigned { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn c_char_unsigned() -> bool {
+pub fn c_char_unsigned() -> bool {
     match C_CHAR.load(std::sync::atomic::Ordering::Relaxed) {
         0 => cfg!(any(target_arch = "aarch64", target_arch = "arm")),
         n => n == 2,

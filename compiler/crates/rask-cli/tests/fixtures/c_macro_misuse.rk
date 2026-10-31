@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A C macro that isn't arithmetic, and one handed something that isn't a
+// number: each call says why it can't be made (struct.c-interop/PP4).
+
+import c "c_macros.h"
+
+func main() {
+    let name = "x"
+    println("{c.MUSTLOCK(1)}")
+    println("{c.BUTTON_MASK(name)}")
+}

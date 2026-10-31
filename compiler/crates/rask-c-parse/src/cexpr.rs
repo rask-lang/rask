@@ -421,6 +421,8 @@ fn op_text(op: BinOp) -> &'static str {
 pub fn to_c(e: &CExpr, names: &[String]) -> String {
     match e {
         CExpr::Param(i) => names.get(*i).cloned().unwrap_or_default(),
+        // An `int` is what a bare literal already is.
+        CExpr::Lit(CVal::Int(v, CType::Int)) if *v >= 0 => v.to_string(),
         CExpr::Lit(CVal::Int(v, t)) => format!("(({}){})", spell(t), v),
         CExpr::Lit(CVal::Float(f, t)) => format!("(({}){:?})", spell(t), f),
         CExpr::Lit(CVal::Str(s)) => format!("{:?}", s),
@@ -437,6 +439,86 @@ pub fn to_c(e: &CExpr, names: &[String]) -> String {
         CExpr::Binary(op, a, b) => format!("({} {} {})", to_c(a, names), op_text(*op), to_c(b, names)),
         CExpr::Ternary(c, a, b) => format!("({} ? {} : {})", to_c(c, names), to_c(a, names), to_c(b, names)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Function-like macros called from Rask
+
+/// One call of a function-like macro, as the checker typed it: the body the
+/// translation wrote (`@c_macro`), its parameter names, and the C types the
+/// arguments and the result have at this call (struct.c-interop/PP4).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroCall {
+    pub name: String,
+    pub body: String,
+    pub params: Vec<String>,
+    pub args: Vec<CType>,
+    pub result: CType,
+}
+
+/// No names: a macro body the translation wrote stands on its own.
+struct NoNames;
+
+impl Names for NoNames {
+    fn value(&self, _: &str) -> Option<CVal> {
+        None
+    }
+    fn arith_type(&self, _: &str) -> Option<CType> {
+        None
+    }
+    fn function_macro(&self, _: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
+        None
+    }
+}
+
+/// A `@c_macro` body, parsed against its parameter names.
+pub fn parse_body(body: &str, params: &[String]) -> Result<CExpr, String> {
+    let toks: Vec<CTokenKind> = crate::CLexer::new(body)
+        .tokenize()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|t| t.kind)
+        .filter(|k| !matches!(k, CTokenKind::Eof | CTokenKind::Newline))
+        .collect();
+    parse(&toks, params, &NoNames)
+}
+
+/// The Rask scalar a C arithmetic type is: `int` is `i32`, `unsigned long`
+/// is `u64`. `None` for anything that isn't a number.
+pub fn rask_scalar(ty: &CType) -> Option<&'static str> {
+    Some(match canonical(ty) {
+        CType::Bool => "bool",
+        CType::Char => if rask_ast::primitives::c_char_unsigned() { "u8" } else { "i8" },
+        CType::SignedChar => "i8",
+        CType::UnsignedChar => "u8",
+        CType::Short => "i16",
+        CType::UnsignedShort => "u16",
+        CType::Int => "i32",
+        CType::UnsignedInt => "u32",
+        CType::Long | CType::LongLong => "i64",
+        CType::UnsignedLong | CType::UnsignedLongLong => "u64",
+        CType::Float => "f32",
+        CType::Double => "f64",
+        _ => return None,
+    })
+}
+
+/// The C arithmetic type a Rask scalar is.
+pub fn from_rask_scalar(name: &str) -> Option<CType> {
+    Some(match name {
+        "bool" => CType::Bool,
+        "i8" => CType::SignedChar,
+        "u8" => CType::UnsignedChar,
+        "i16" => CType::Short,
+        "u16" => CType::UnsignedShort,
+        "i32" => CType::Int,
+        "u32" => CType::UnsignedInt,
+        "i64" | "isize" => CType::Long,
+        "u64" | "usize" => CType::UnsignedLong,
+        "f32" => CType::Float,
+        "f64" => CType::Double,
+        _ => return None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -461,22 +543,14 @@ pub fn literal_type(v: i128, unsigned: bool, hex: bool) -> CType {
 }
 
 /// Parse `tokens` as one expression in which `params` are the macro's
-/// parameters.
+/// parameters. Function-like macros in it are expanded first, the way the
+/// preprocessor would.
 pub fn parse(tokens: &[CTokenKind], params: &[String], names: &dyn Names) -> Result<CExpr, String> {
-    parse_in(tokens, params, names, &[])
-}
-
-/// `tokens` inside the expansions of the macros in `expanding`. C doesn't
-/// expand a macro again inside its own expansion, which also stops a
-/// recursive one.
-fn parse_in(tokens: &[CTokenKind], params: &[String], names: &dyn Names, expanding: &[String]) -> Result<CExpr, String> {
-    if expanding.len() > 32 {
-        return Err("macros nested more than 32 deep".to_string());
-    }
+    let tokens = expand(tokens, params, names, &[])?;
     if tokens.is_empty() {
         return Err("an empty body".to_string());
     }
-    let mut p = Parser { toks: tokens, pos: 0, params, names, expanding };
+    let mut p = Parser { toks: &tokens, pos: 0, params, names };
     let e = p.ternary()?;
     match p.peek() {
         None => Ok(e),
@@ -504,7 +578,74 @@ struct Parser<'a> {
     pos: usize,
     params: &'a [String],
     names: &'a dyn Names,
-    expanding: &'a [String],
+}
+
+/// Expand every function-like macro call in `tokens`, as the preprocessor
+/// does: each argument is expanded before it's substituted (except beside a
+/// `##`), and the result is scanned again with the macro itself switched off,
+/// which is what stops a recursive one. `params` are never macros: they're
+/// the expression's own parameters.
+fn expand(tokens: &[CTokenKind], params: &[String], names: &dyn Names, expanding: &[String]) -> Result<Vec<CTokenKind>, String> {
+    use CTokenKind as T;
+    if expanding.len() > 32 {
+        return Err("macros nested more than 32 deep".to_string());
+    }
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        if let (T::Ident(n), Some(T::LParen)) = (&tokens[i], tokens.get(i + 1)) {
+            if !params.contains(n) && !expanding.contains(n) {
+                if let Some((mparams, body)) = names.function_macro(n) {
+                    let (args, next) = split_args(tokens, i + 1)
+                        .ok_or_else(|| format!("a call to `{}` without its `)`", n))?;
+                    let expanded = args
+                        .iter()
+                        .map(|a| expand(a, params, names, expanding))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let subst = substitute(&mparams, &body, &args, &expanded)
+                        .ok_or_else(|| format!("a call to `{}` that doesn't expand", n))?;
+                    let mut inside = expanding.to_vec();
+                    inside.push(n.clone());
+                    out.extend(expand(&subst, params, names, &inside)?);
+                    i = next;
+                    continue;
+                }
+            }
+        }
+        out.push(tokens[i].clone());
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// The arguments of the call whose `(` is at `open`, split at the commas
+/// outside brackets, and the index after its `)`.
+fn split_args(tokens: &[CTokenKind], open: usize) -> Option<(Vec<Vec<CTokenKind>>, usize)> {
+    use CTokenKind as T;
+    let mut args = vec![Vec::new()];
+    let mut depth = 0;
+    let mut i = open + 1;
+    loop {
+        let tok = tokens.get(i)?.clone();
+        i += 1;
+        match tok {
+            T::RParen if depth == 0 => break,
+            T::Comma if depth == 0 => args.push(Vec::new()),
+            T::LParen => {
+                depth += 1;
+                args.last_mut()?.push(tok);
+            }
+            T::RParen => {
+                depth -= 1;
+                args.last_mut()?.push(tok);
+            }
+            other => args.last_mut()?.push(other),
+        }
+    }
+    if args.len() == 1 && args[0].is_empty() {
+        args.clear();
+    }
+    Some((args, i))
 }
 
 impl Parser<'_> {
@@ -615,16 +756,32 @@ impl Parser<'_> {
                     return Ok(CExpr::Cast(ty, Box::new(e)));
                 }
                 self.pos = save + 1;
+                // `(type)(x)` with `type` a parameter: the macro takes a type,
+                // which no call from Rask can pass.
+                if let (Some(T::Ident(n)), Some(T::RParen)) = (self.peek().cloned(), self.peek2()) {
+                    let next = self.toks.get(self.pos + 2);
+                    let operand_follows = matches!(
+                        next,
+                        Some(T::LParen | T::Ident(_) | T::IntLit(_) | T::UIntLit(_) | T::HexLit(_) | T::LongLit(..) | T::FloatLit(..))
+                    );
+                    if self.params.contains(&n) && operand_follows {
+                        return Err(format!("its parameter `{}` used as a type, and a call passes values", n));
+                    }
+                }
                 let e = self.ternary()?;
                 self.expect(&T::RParen, "`)`")?;
-                Ok(e)
+                self.postfix(e)
             }
-            _ => self.postfix(),
+            _ => {
+                let e = self.primary()?;
+                self.postfix(e)
+            }
         }
     }
 
-    fn postfix(&mut self) -> Result<CExpr, String> {
-        let e = self.primary()?;
+    /// What may follow an operand in C but not in arithmetic: `(s)->flags`
+    /// is as much a field read as `s->flags`.
+    fn postfix(&mut self, e: CExpr) -> Result<CExpr, String> {
         match self.peek() {
             Some(CTokenKind::Arrow) => Err("`->`, which reads a field through a pointer".to_string()),
             Some(CTokenKind::Dot) => Err("`.`, which reads a struct's field".to_string()),
@@ -727,21 +884,13 @@ impl Parser<'_> {
                 if let Some(i) = self.params.iter().position(|p| *p == name) {
                     return Ok(CExpr::Param(i));
                 }
-                if self.peek() == Some(&T::LParen) && !self.expanding.contains(&name) {
-                    return match self.names.function_macro(&name) {
-                        Some((params, body)) => {
-                            let args = self.call_args()?;
-                            let expanded = substitute(&params, &body, &args)
-                                .ok_or_else(|| format!("a call to `{}` that doesn't expand", name))?;
-                            let mut inside = self.expanding.to_vec();
-                            inside.push(name);
-                            parse_in(&expanded, self.params, self.names, &inside)
-                        }
-                        None => Err(format!("a call to `{}`, which is a function, not a macro", name)),
-                    };
-                }
-                if self.expanding.contains(&name) {
-                    return Err(format!("`{}` inside its own expansion", name));
+                // Every macro call was expanded before parsing; one still
+                // here was switched off inside its own expansion.
+                if self.peek() == Some(&T::LParen) {
+                    return Err(match self.names.function_macro(&name) {
+                        Some(_) => format!("`{}` inside its own expansion", name),
+                        None => format!("a call to `{}`, which is a function, not a macro", name),
+                    });
                 }
                 match self.names.value(&name) {
                     Some(v) => lit(v),
@@ -751,56 +900,35 @@ impl Parser<'_> {
             other => Err(format!("`{}`, which isn't part of an arithmetic expression", describe(&other))),
         }
     }
-
-    /// `( a, b )` after a function-like macro's name: each argument's tokens,
-    /// split at the commas outside brackets.
-    fn call_args(&mut self) -> Result<Vec<Vec<CTokenKind>>, String> {
-        use CTokenKind as T;
-        self.expect(&T::LParen, "`(`")?;
-        let mut args = vec![Vec::new()];
-        let mut depth = 0;
-        loop {
-            let tok = self.peek().ok_or("a macro call without its `)`")?.clone();
-            self.pos += 1;
-            match tok {
-                T::RParen if depth == 0 => break,
-                T::Comma if depth == 0 => args.push(Vec::new()),
-                T::LParen => {
-                    depth += 1;
-                    args.last_mut().expect("never empty").push(tok);
-                }
-                T::RParen => {
-                    depth -= 1;
-                    args.last_mut().expect("never empty").push(tok);
-                }
-                other => args.last_mut().expect("never empty").push(other),
-            }
-        }
-        if args.len() == 1 && args[0].is_empty() {
-            args.clear();
-        }
-        Ok(args)
-    }
 }
 
 /// A function-like macro's body with its arguments in place of its
-/// parameters, and `##` pasted. A paste that makes anything but a name or a
-/// suffixed number is more preprocessor than an expression needs: `None`.
-fn substitute(params: &[String], body: &[CTokenKind], args: &[Vec<CTokenKind>]) -> Option<Vec<CTokenKind>> {
+/// parameters, and `##` pasted. A parameter beside a `##` takes its argument
+/// as written, any other the argument already expanded, as C does. A paste
+/// that makes anything but a name or a suffixed number is more preprocessor
+/// than an expression needs: `None`.
+fn substitute(
+    params: &[String],
+    body: &[CTokenKind],
+    raw: &[Vec<CTokenKind>],
+    expanded: &[Vec<CTokenKind>],
+) -> Option<Vec<CTokenKind>> {
     use CTokenKind as T;
-    if params.len() != args.len() || params.iter().any(|p| p == "...") {
+    if params.len() != raw.len() || params.iter().any(|p| p == "...") {
         return None;
     }
     let mut out: Vec<CTokenKind> = Vec::new();
     let mut paste = false;
-    for tok in body {
+    for (k, tok) in body.iter().enumerate() {
         if *tok == T::DoubleHash {
             paste = true;
             continue;
         }
+        let beside_paste = paste || body.get(k + 1) == Some(&T::DoubleHash);
         let pieces: Vec<CTokenKind> = match tok {
             T::Ident(n) => match params.iter().position(|p| p == n) {
-                Some(i) => args[i].clone(),
+                Some(i) if beside_paste => raw[i].clone(),
+                Some(i) => expanded[i].clone(),
                 None => vec![tok.clone()],
             },
             T::Hash => return None,
@@ -857,7 +985,11 @@ mod tests {
             (name == "Uint8").then_some(CType::FixedInt { bits: 8, signed: false })
         }
         fn function_macro(&self, name: &str) -> Option<(Vec<String>, Vec<CTokenKind>)> {
-            (name == "MASK").then(|| (vec!["X".into()], toks("(1u << ((X)-1))")))
+            match name {
+                "MASK" => Some((vec!["X".into()], toks("(1u << ((X)-1))"))),
+                "CAST" => Some((vec!["type".into(), "e".into()], toks("((type)(e))"))),
+                _ => None,
+            }
         }
     }
 
@@ -883,6 +1015,16 @@ mod tests {
         assert_eq!(type_of(&half, &[CType::Double]).unwrap(), CType::Double);
         let mask = macro_(&["b"], "MASK(b)").unwrap();
         assert_eq!(type_of(&mask, &[CType::Int]).unwrap(), CType::UnsignedInt);
+    }
+
+    #[test]
+    fn an_argument_is_expanded_before_it_goes_in() {
+        // SDL_FOURCC's shape: the macro again inside its own argument. C
+        // expands the argument first, so the inner call isn't "inside its own
+        // expansion".
+        let e = macro_(&["A"], "CAST(unsigned int, CAST(Uint8, (A)))").unwrap();
+        assert_eq!(type_of(&e, &[CType::Int]).unwrap(), CType::UnsignedInt);
+        assert_eq!(eval(&e, &[CVal::Int(300, CType::Int)]), Some(CVal::Int(44, CType::UnsignedInt)));
     }
 
     #[test]
@@ -918,8 +1060,10 @@ mod tests {
     #[test]
     fn says_what_isnt_arithmetic() {
         assert!(macro_(&["s"], "s->flags").unwrap_err().contains("->"));
+        assert!(macro_(&["s"], "(((s)->flags & 1) != 0)").unwrap_err().contains("->"));
         assert!(macro_(&["p"], "*p").unwrap_err().contains("pointer"));
         assert!(macro_(&["x"], "do { x; } while (0)").unwrap_err().contains("do"));
         assert!(macro_(&["x"], "foo(x)").unwrap_err().contains("function"));
+        assert!(macro_(&["type", "e"], "((type)(e))").unwrap_err().contains("as a type"));
     }
 }

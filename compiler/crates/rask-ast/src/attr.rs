@@ -125,6 +125,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("bits", ArgForm::Exprs, Writer::Anyone),               // struct.c-interop/TM7, on a field
     ("inline_from", ArgForm::Exprs, Writer::Anyone),        // struct.c-interop/IN1, on an extern
     ("context", ArgForm::Exprs, Writer::Anyone),            // struct.c-interop/CB3, on an extern
+    ("c_macro", ArgForm::Exprs, Writer::Anyone),            // struct.c-interop/PP4, on an extern
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
     ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
@@ -424,4 +425,16 @@ pub fn context_spec(attrs: &[Attr], params: &[&str]) -> Option<Result<ContextSpe
         (_, None) => Some(Err((a.span, format!("`@context` names `{}`, which isn't a parameter", ctx)))),
         _ => Some(Err((a.span, "`@context` needs two different parameters".to_string()))),
     }
+}
+
+/// What an extern's `@c_macro` says: the C body a call computes, or why the
+/// macro can't be called (struct.c-interop/PP4). `None` when it has none.
+pub fn c_macro(attrs: &[Attr]) -> Option<Result<String, String>> {
+    let a = attrs.iter().find(|a| a.is("c_macro"))?;
+    if let Some(why) = a.arg("unusable").and_then(|v| v.string()) {
+        return Some(Err(why));
+    }
+    Some(a.positional().and_then(|v| v.string()).ok_or_else(|| {
+        "`@c_macro` holds the macro's C body as a string, or `unusable:` and why".to_string()
+    }))
 }

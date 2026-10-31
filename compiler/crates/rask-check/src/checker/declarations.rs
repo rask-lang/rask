@@ -1957,6 +1957,21 @@ impl TypeChecker {
         }
     }
 
+    /// PP4: every extern that stands for a C function-like macro, with its
+    /// body parsed once. By name, as `@context` externs are: an imported
+    /// header's declarations have no entry in `decl_symbols`.
+    pub(super) fn collect_c_macros(&mut self, decls: &[rask_ast::decl::Decl]) {
+        for decl in decls {
+            let rask_ast::decl::DeclKind::Extern(e) = &decl.kind else { continue };
+            let Some(body) = rask_ast::attr::c_macro(&e.attrs) else { continue };
+            let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
+            let body = body.and_then(|text| {
+                rask_c_parse::cexpr::parse_body(&text, &params).map(|expr| (text, expr))
+            });
+            self.c_macros.insert(e.name.clone(), super::type_defs::CMacroDef { name: e.name.clone(), params, body });
+        }
+    }
+
     /// CB3: the signature a program calls a `@context` extern through: the
     /// context parameter gone, and the callback a closure without it. The
     /// closure is `take`: C keeps it, so it outlives this frame and carries
