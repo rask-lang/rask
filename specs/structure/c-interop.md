@@ -163,6 +163,17 @@ Handing a struct *to* C works; getting one *back* does not, and the call is
 rejected rather than reading a value nobody wrote. Take it through an
 out-parameter instead.
 
+An out-parameter takes the address of a variable, field or element with `&`
+([mem.unsafe](../memory/unsafe.md)). Taking it is safe; C writing through it
+is what the `unsafe` call covers.
+
+<!-- test: skip -->
+```rask
+mut w: c_int = 0
+mut h: c_int = 0
+unsafe c.SDL_GetWindowSize(window, &w, &h)
+```
+
 ## String Interop
 
 | Rule | Description |

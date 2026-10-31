@@ -2463,6 +2463,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("C reads each variadic argument as the type its format says, with nothing in the call to check it against [struct.c-interop]")
             }
 
+            AddressOfValue { span } => {
+                Diagnostic::error("`&` takes the address of somewhere a value is stored")
+                    .with_code("E0939")
+                    .with_primary(*span, "this is a value, not a place")
+                    .with_help("put it in a variable first: `mut out = f()` then `&out`")
+                    .with_why("an address points at storage: a variable, or a field or element of one. A computed value has none until it's put somewhere")
+            }
+
             NotCCallable { name, span } => {
                 Diagnostic::error(format!("`{name}` can't be handed to C as a function pointer"))
                     .with_code("E0935")

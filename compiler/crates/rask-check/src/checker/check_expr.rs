@@ -661,6 +661,15 @@ impl TypeChecker {
             ExprKind::Unary { op, operand } => {
                 let operand_ty = self.infer_expr(operand);
                 match op {
+                    // `&x` is `x`'s address, a `*T`. Only storage has one: a
+                    // variable, or a field or element inside one.
+                    rask_ast::expr::UnaryOp::Ref => {
+                        if !is_place(operand) {
+                            self.errors.push(TypeError::AddressOfValue { span: expr.span });
+                            return Type::Error;
+                        }
+                        Type::RawPtr(Box::new(operand_ty))
+                    }
                     rask_ast::expr::UnaryOp::Deref => {
                         // What `*x` means depends on what `x` is, not on the
                         // `*`. mem.unsafe's rule is about raw pointers; on an
@@ -7154,4 +7163,13 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+/// A variable, or a field or element of one: storage `&` can point at.
+fn is_place(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => is_place(object),
+        _ => false,
+    }
 }

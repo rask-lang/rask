@@ -44,12 +44,11 @@ public struct Message {
     public reliable: bool
 }
 
-/// Where C writes what it hands back: a packet or a message, the address it
-/// goes to or came from, and whether a message was reliable.
+/// Where C writes what it hands back: a packet or a message, and the address
+/// it goes to or came from.
 struct Scratch {
     bytes: Vec<u8>
     addr: Vec<u8>
-    reliable: Vec<i64>
 }
 
 @resource
@@ -77,7 +76,7 @@ extend Endpoint {
         mut ep = Endpoint(
             socket: socket
             quic: nullptr
-            out: Scratch(bytes: zeroed(BUF), addr: zeroed(ADDR), reliable: [0])
+            out: Scratch(bytes: zeroed(BUF), addr: zeroed(ADDR))
         )
         ensure ep.close()
         let local = ep.socket.local_addr()
@@ -140,14 +139,15 @@ extend Endpoint {
         }
         mut got: Vec<Message> = []
         loop {
-            let n = unsafe ting_quic_next_message(self.quic, self.out.bytes.as_mut_ptr(), BUF, self.out.addr.as_mut_ptr(), ADDR, self.out.reliable.as_mut_ptr())
+            mut reliable: i64 = 0
+            let n = unsafe ting_quic_next_message(self.quic, self.out.bytes.as_mut_ptr(), BUF, self.out.addr.as_mut_ptr(), ADDR, &reliable)
             if n < 0 {
                 return got
             }
             got.push(Message(
                 from: unsafe string.from_c(self.out.addr.as_ptr())
                 data: self.out.bytes.take(n.wrap<usize>()).to_vec()
-                reliable: self.out.reliable[0] == 1
+                reliable: reliable == 1
             ))
         }
     }

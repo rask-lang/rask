@@ -1017,6 +1017,12 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `&` on something that isn't stored anywhere: `&f()`, `&(a + b)`.
+    #[error("`&` needs a variable, a field or an element")]
+    AddressOfValue {
+        span: Span,
+    },
+
     /// UN1: a union literal names other than exactly one member.
     #[error("a `{ty}` is built from one member")]
     UnionMemberCount {
@@ -1872,6 +1878,7 @@ impl TypeError {
             | UnionMemberCount { .. }
             | UnionOwningMember { .. }
             | NotCCallable { .. }
+            | AddressOfValue { .. }
             | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }

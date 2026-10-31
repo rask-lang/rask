@@ -2348,6 +2348,19 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_unary(&mut self, op: UnaryOp, operand: &Expr) -> Result<TypedOperand, LoweringError> {
+            // `&a.b` / `&v[i]`: the field's or element's own address, not a
+            // copy's. A variable's is `Ref` below, which also keeps a scalar
+            // in memory so writes through the pointer land in it.
+            if op == UnaryOp::Ref && matches!(operand.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+                if let Some(addr) = self.place_address(operand) {
+                    return Ok((addr, MirType::Ptr));
+                }
+                if let ExprKind::Index { object, index } = &operand.kind {
+                    if self.is_vec(object) {
+                        return self.vec_element_address(operand, object, index);
+                    }
+                }
+            }
             let (operand_op, operand_ty) = self.lower_expr(operand)?;
             let (result_ty, rvalue) = match op {
                 UnaryOp::Ref => {
@@ -3283,6 +3296,73 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: unit, rvalue }));
         let value = self.extract_bits(MirOperand::Local(unit), field_ty, slot);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst, rvalue: MirRValue::Use(value) }));
+    }
+
+    /// Whether `e` is a `Vec`, by the checker's type.
+    fn is_vec(&self, e: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(e.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .is_some_and(|p| p == "Vec")
+    }
+
+    /// `&v[i]`: the element's address in the vector's buffer, bounds-checked
+    /// as `v[i]` is. The buffer moves when the vector grows, which is the
+    /// same "may dangle" every raw pointer carries (mem.unsafe).
+    fn vec_element_address(&mut self, place: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
+        use crate::operand::BinOp as Op;
+        let (vec, _) = self.lower_expr(object)?;
+        let (idx, _) = self.lower_expr(index)?;
+        let elem_size = self
+            .ctx
+            .lookup_raw_type(place.id)
+            .map(|t| self.ctx.type_to_mir(t).size())
+            .unwrap_or(8) as i64;
+
+        let len = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(len),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![vec.clone()],
+        }));
+        let bin = |this: &mut Self, op: Op, left: MirOperand, right: MirOperand, ty: MirType| {
+            let dst = this.builder.alloc_temp(ty);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op, left, right },
+            }));
+            MirOperand::Local(dst)
+        };
+        let zero = MirOperand::Constant(MirConst::Int(0));
+        let not_negative = bin(self, Op::Ge, idx.clone(), zero, MirType::Bool);
+        let below_len = bin(self, Op::Lt, idx.clone(), MirOperand::Local(len), MirType::Bool);
+        let in_range = bin(self, Op::And, not_negative, below_len, MirType::Bool);
+
+        let fail = self.builder.create_block();
+        let ok = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: in_range,
+            then_block: ok,
+            else_block: fail,
+        }));
+        self.builder.switch_to_block(fail);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic".to_string()),
+            args: vec![MirOperand::Constant(MirConst::String("index out of bounds in `&v[i]`".to_string()))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(ok);
+
+        let data = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(data),
+            func: FunctionRef::internal("Vec_as_mut_ptr".to_string()),
+            args: vec![vec],
+        }));
+        let offset = bin(self, Op::Mul, idx, MirOperand::Constant(MirConst::Int(elem_size)), MirType::I64);
+        let addr = bin(self, Op::Add, MirOperand::Local(data), offset, MirType::Ptr);
+        Ok((addr, MirType::Ptr))
     }
 
     /// A bitfield's value out of its loaded storage unit: shifted down and

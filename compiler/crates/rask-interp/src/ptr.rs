@@ -36,6 +36,8 @@ pub enum PtrTarget {
     /// An address with no interpreter object behind it — `null`, or anything
     /// that arrived from C. Reading through one is an error, not a guess.
     Foreign(u64),
+    /// `&x`: one variable, field or element, where it lives.
+    Place(crate::env::Slot),
 }
 
 /// A `*T`. `index` counts elements, matching the way native's pointer
@@ -80,7 +82,7 @@ impl RawPtr {
                 Some(view) => view_width(view).unwrap_or(8),
                 None => elem_kind(v).and_then(view_width).unwrap_or(8),
             },
-            PtrTarget::Foreign(_) => 1,
+            PtrTarget::Foreign(_) | PtrTarget::Place(_) => 1,
         }
     }
 
@@ -125,6 +127,7 @@ impl RawPtr {
             PtrTarget::Bytes(s) => Arc::as_ptr(s) as *const u8 as u64,
             PtrTarget::Elements(v) => Arc::as_ptr(v) as *const u8 as u64,
             PtrTarget::Foreign(a) => *a,
+            PtrTarget::Place(slot) => slot.identity(),
         };
         base.wrapping_add((self.index.wrapping_mul(self.stride() as i64)) as u64)
     }
@@ -142,6 +145,7 @@ impl RawPtr {
             (PtrTarget::Bytes(a), PtrTarget::Bytes(b)) => Arc::ptr_eq(a, b),
             (PtrTarget::Elements(a), PtrTarget::Elements(b)) => Arc::ptr_eq(a, b),
             (PtrTarget::Foreign(a), PtrTarget::Foreign(b)) => a == b,
+            (PtrTarget::Place(a), PtrTarget::Place(b)) => a.identity() == b.identity(),
             _ => false,
         }
     }
@@ -160,6 +164,7 @@ impl RawPtr {
                 format!("a {}-element Vec", v.lock().unwrap().items.len())
             }
             PtrTarget::Foreign(_) => "memory outside the interpreter".to_string(),
+            PtrTarget::Place(_) => "one value (`&x`)".to_string(),
         }
     }
 
@@ -212,6 +217,8 @@ impl RawPtr {
                 Ok(Value::Int(from_width(&raw, raw.len(), view.signed()), view))
             }
             PtrTarget::Foreign(_) => Err(self.out_of_range("read")),
+            PtrTarget::Place(slot) if self.index == 0 => slot.get().ok_or_else(|| self.out_of_range("read")),
+            PtrTarget::Place(_) => Err(self.out_of_range("read")),
         }
     }
 
@@ -328,6 +335,10 @@ impl RawPtr {
                 Ok(())
             }
             PtrTarget::Foreign(_) => Err(self.out_of_range("write")),
+            PtrTarget::Place(slot) if self.index == 0 => {
+                if slot.set(val) { Ok(()) } else { Err(self.out_of_range("write")) }
+            }
+            PtrTarget::Place(_) => Err(self.out_of_range("write")),
         }
     }
 
@@ -358,6 +369,9 @@ impl RawPtr {
                 "reading a string through a pointer that came from outside the \
                  interpreter — there are no bytes behind it to read"
                     .to_string(),
+            )),
+            PtrTarget::Place(_) => Err(RuntimeError::TypeError(
+                "reading a string through `&x` — it points at one value, not at bytes".to_string(),
             )),
         }
     }

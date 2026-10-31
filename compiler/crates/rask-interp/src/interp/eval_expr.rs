@@ -1612,6 +1612,19 @@ impl Interpreter {
                 }
             },
 
+            // `&x`: a pointer to where `x` lives (mem.unsafe). A write
+            // through it is a write to `x`.
+            ExprKind::Unary { op: UnaryOp::Ref, operand } => match self.locate(operand)? {
+                Located::Place(slot) => Ok(Value::RawPtr(crate::ptr::RawPtr {
+                    target: crate::ptr::PtrTarget::Place(slot),
+                    index: 0,
+                    view: None,
+                })),
+                Located::Value(_) => Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError("`&` needs a variable, a field or an element".to_string()),
+                    expr.span,
+                )),
+            },
             ExprKind::Unary { op, operand } => {
                 let val = self.eval_expr(operand)?;
                 match op {

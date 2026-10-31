@@ -4062,12 +4062,13 @@ impl Parser {
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: self.span(start, end) })
             }
+            // `&x`: the raw address of a variable, field or element
+            // (mem.unsafe). Making one is safe; reading through it isn't.
             TokenKind::Amp => {
-                return Err(ParseError::not_implemented(
-                    "reference expressions",
-                    "remove the '&' - Rask currently uses owned values",
-                    self.current().span,
-                ));
+                self.advance();
+                let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Ref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
             TokenKind::Star => {
                 self.advance();
