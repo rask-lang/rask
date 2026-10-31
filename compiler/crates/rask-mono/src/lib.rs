@@ -14,10 +14,11 @@ mod reachability;
 pub mod reflect;
 
 pub use instantiate::instantiate_function;
-use rask_check::layout::{
-    self, arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
-    compute_union_layout, is_stdlib_span, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
+use rask_layout::{
+    arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
+    compute_union_layout, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
 };
+use rask_stdlib::is_stdlib_span;
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
@@ -186,7 +187,7 @@ fn collect_type_deps(
 ) {
     let go = |t: &Type, out: &mut HashSet<String>| collect_type_deps(t, inline_params, type_names, out);
     let generic = |name: &str, args: &[rask_types::GenericArg], out: &mut HashSet<String>| {
-        if layout::generic_is_one_word(name) {
+        if rask_layout::generic_is_one_word(name) {
             return;
         }
         out.insert(name.to_string());
@@ -250,12 +251,12 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
         let (name, params, fields): (&str, Vec<String>, Vec<&TypeExpr>) = match &decl.kind {
             DeclKind::Struct(s) => (
                 s.name.as_str(),
-                rask_check::struct_type_param_names(s),
+                rask_ast::type_params::struct_type_param_names(s),
                 s.fields.iter().map(|f| &f.ty).collect(),
             ),
             DeclKind::Enum(e) => (
                 e.name.as_str(),
-                rask_check::enum_type_param_names(e),
+                rask_ast::type_params::enum_type_param_names(e),
                 e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
             ),
             _ => continue,
@@ -265,7 +266,7 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
         }
         let mut held = HashSet::new();
         for ty in fields {
-            collect_type_deps(&layout::field_type(ty), &HashMap::new(), &HashMap::new(), &mut held);
+            collect_type_deps(&rask_layout::field_type(ty), &HashMap::new(), &HashMap::new(), &mut held);
         }
         out.insert(name.to_string(), params.iter().map(|p| held.contains(p)).collect());
     }
@@ -362,7 +363,7 @@ fn compute_layouts(
             // The 8-byte-everything model means every scalar argument gives the
             // same field sizes, so a word stands in for each type parameter.
             DeclKind::Struct(s) => {
-                let mut layout = layout::compute_shared_struct_layout(decl, &layout_cache);
+                let mut layout = rask_layout::compute_shared_struct_layout(decl, &layout_cache);
                 // Strip type params from name so struct literals ("Box") match
                 let base_name = s.name.to_string();
                 layout.name = base_name.clone();
@@ -372,7 +373,7 @@ fn compute_layouts(
                 struct_layouts.push(layout);
             }
             DeclKind::Enum(e) => {
-                let mut layout = layout::compute_shared_enum_layout(decl, &layout_cache);
+                let mut layout = rask_layout::compute_shared_enum_layout(decl, &layout_cache);
                 let base_name = e.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
@@ -392,7 +393,7 @@ fn compute_layouts(
             // struct's later fields overlapped it (#445).
             DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
                 let (size, align) = type_size_align(
-                    &layout::field_type(&a.target),
+                    &rask_layout::field_type(&a.target),
                     &layout_cache,
                 );
                 layout_cache.insert(a.name.clone(), (size, align));
@@ -474,7 +475,7 @@ fn lay_out_instance(
         DeclKind::Struct(_) => {
             let mut layout = compute_struct_layout(decl, &named_args, layout_cache);
             if !overflows && !owns {
-                let shared = layout::compute_shared_struct_layout(decl, layout_cache);
+                let shared = rask_layout::compute_shared_struct_layout(decl, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && same_shape(&shared.fields, &layout.fields)
                 {
@@ -488,7 +489,7 @@ fn lay_out_instance(
         DeclKind::Enum(_) => {
             let mut layout = compute_enum_layout(decl, &named_args, layout_cache);
             if !overflows && !owns {
-                let shared = layout::compute_shared_enum_layout(decl, layout_cache);
+                let shared = rask_layout::compute_shared_enum_layout(decl, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && shared.variants.len() == layout.variants.len()
                     && shared
@@ -525,10 +526,10 @@ fn instance_steps(
         .iter()
         .enumerate()
         .filter_map(|(i, d)| match &d.kind {
-            DeclKind::Struct(s) if !rask_check::struct_type_param_names(s).is_empty() => {
+            DeclKind::Struct(s) if !rask_ast::type_params::struct_type_param_names(s).is_empty() => {
                 Some((s.name.as_str(), i))
             }
-            DeclKind::Enum(e) if !rask_check::enum_type_param_names(e).is_empty() => {
+            DeclKind::Enum(e) if !rask_ast::type_params::enum_type_param_names(e).is_empty() => {
                 Some((e.name.as_str(), i))
             }
             _ => None,
@@ -616,19 +617,19 @@ fn layout_order(
         match node {
             LayoutStep::Decl(idx) => {
                 for ty in layout_field_types(&decls[*idx]) {
-                    collect_type_deps(&layout::field_type(ty), inline_params, type_names, &mut keys);
+                    collect_type_deps(&rask_layout::field_type(ty), inline_params, type_names, &mut keys);
                 }
             }
             LayoutStep::Instance { decl, args, .. } => {
                 let params = match &decls[*decl].kind {
-                    DeclKind::Struct(s) => rask_check::struct_type_param_names(s),
-                    DeclKind::Enum(e) => rask_check::enum_type_param_names(e),
+                    DeclKind::Struct(s) => rask_ast::type_params::struct_type_param_names(s),
+                    DeclKind::Enum(e) => rask_ast::type_params::enum_type_param_names(e),
                     _ => Vec::new(),
                 };
                 let subst: HashMap<&str, &Type> =
                     params.iter().map(String::as_str).zip(args.iter()).collect();
                 for ty in layout_field_types(&decls[*decl]) {
-                    let ty = layout::substitute_inside(&layout::field_type(ty), &subst);
+                    let ty = rask_layout::substitute_inside(&rask_layout::field_type(ty), &subst);
                     collect_type_deps(&ty, inline_params, type_names, &mut keys);
                 }
             }
@@ -1018,7 +1019,7 @@ fn monomorphize_inner(
         };
         if concrete {
             for ty in layout_field_types(decl) {
-                collect_generic_instances(&layout::field_type(ty), &type_names, &mut reached);
+                collect_generic_instances(&rask_layout::field_type(ty), &type_names, &mut reached);
             }
         }
     }
@@ -1037,7 +1038,7 @@ fn monomorphize_inner(
     // than a bare tag, and `{}` on one reaches whatever Displayable was
     // written for it (#729).
     if !enum_layouts.iter().any(|l| l.name == "Ordering") {
-        enum_layouts.push(layout::ordering_layout());
+        enum_layouts.push(rask_layout::ordering_layout());
     }
 
     Ok(MonoProgram {
@@ -1265,6 +1266,7 @@ mod tests {
             call_targets: std::collections::HashMap::new(),
             operator_targets: std::collections::HashMap::new(),
             interface_coercions: std::collections::HashMap::new(),
+            arm_widenings: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),
             conformance_disambiguation: std::collections::HashMap::new(),
             conformance_interfaces: std::collections::HashMap::new(),

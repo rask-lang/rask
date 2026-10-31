@@ -255,10 +255,13 @@ impl TypeChecker {
                     Some(elem) => Self::sequence_fn_shape(elem),
                     None => want,
                 };
-                if let Type::Fn { params: want_params, .. } = want {
+                if let Type::Fn { params: want_params, ret: want_ret } = want {
                     if want_params.len() == params.len() {
                         self.closure_param_expectations
                             .insert(expr.id, want_params.into_iter().map(|p| p.ty).collect());
+                        if matches!(self.ctx.apply(&want_ret), Type::Result { .. }) {
+                            self.closure_return_expectations.insert(expr.id, *want_ret);
+                        }
                     }
                 }
             }
@@ -507,8 +510,8 @@ impl TypeChecker {
     }
 
     fn is_integer_type(ty: &Type) -> bool {
-        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
+        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize)
     }
 
     fn is_float_type(ty: &Type) -> bool {
@@ -530,7 +533,7 @@ impl TypeChecker {
         // it ends up: a default argument is copied into the call, and
         // `MemoryOrder.SeqCst` there means the stdlib's enum even in a program
         // that declares its own `MemoryOrder`.
-        if !self.types.stdlib_mode && crate::layout::is_stdlib_span(expr.span) {
+        if !self.types.stdlib_mode && rask_stdlib::is_stdlib_span(expr.span) {
             self.types.stdlib_mode = true;
             let ty = self.infer_expr(expr);
             self.types.stdlib_mode = false;
@@ -552,7 +555,7 @@ impl TypeChecker {
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
-                    Some(IntSuffix::Isize) => Type::isize_ty(),
+                    Some(IntSuffix::Isize) => Type::Isize,
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
@@ -564,7 +567,7 @@ impl TypeChecker {
                     // so it stays open like any other unsuffixed literal and
                     // `validate_pending_int_literals` catches a bad landing.
                     Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => Type::U128,
-                    Some(IntSuffix::Usize) => Type::usize_ty(),
+                    Some(IntSuffix::Usize) => Type::Usize,
                     None
                     | Some(IntSuffix::U64ByMagnitude)
                     | Some(IntSuffix::I128ByMagnitude) => {
@@ -599,7 +602,6 @@ impl TypeChecker {
             ExprKind::Bytes(_) => Type::Bytes,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
-            ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
             // OPT3: `none` is `T?` with inner type inferred from context.
             ExprKind::None => Type::option(self.ctx.fresh_var()),
 
@@ -661,6 +663,15 @@ impl TypeChecker {
             ExprKind::Unary { op, operand } => {
                 let operand_ty = self.infer_expr(operand);
                 match op {
+                    // `&x` is `x`'s address, a `*T`. Only storage has one: a
+                    // variable, or a field or element inside one.
+                    rask_ast::expr::UnaryOp::Ref => {
+                        if !is_place(operand) {
+                            self.errors.push(TypeError::AddressOfValue { span: expr.span });
+                            return Type::Error;
+                        }
+                        Type::RawPtr(Box::new(operand_ty))
+                    }
                     rask_ast::expr::UnaryOp::Deref => {
                         // What `*x` means depends on what `x` is, not on the
                         // `*`. mem.unsafe's rule is about raw pointers; on an
@@ -698,6 +709,18 @@ impl TypeChecker {
                                 t.heap_payload().expect("just checked").clone()
                             }
                             Type::RawPtr(inner) => *inner,
+                            // PT6: `*T?` may be the null address; the payload
+                            // is reached through `??` or `as`, not `*`.
+                            ref t if matches!(t.as_option(), Some(Type::RawPtr(_))) => {
+                                self.errors.push(TypeError::DerefOptionalPointer {
+                                    found: t.clone(),
+                                    span: expr.span,
+                                });
+                                match t.as_option() {
+                                    Some(Type::RawPtr(inner)) => (**inner).clone(),
+                                    _ => unreachable!("matched above"),
+                                }
+                            }
                             // The operand's type isn't settled yet — it came
                             // out of another call, as in `*nums.as_ptr()`.
                             // Returning the open var left the whole binding
@@ -858,6 +881,23 @@ impl TypeChecker {
                 // operator.
                 // Resolve type variables so Generic{} is visible
                 let obj_ty = self.ctx.apply(&raw_obj_ty);
+                // `p[i]` is `*p.add(i)`: C's indexing, and as unchecked, so it
+                // needs `unsafe`. A container still open records the flag for
+                // the solver.
+                if matches!(obj_ty, Type::RawPtr(_) | Type::Var(_)) {
+                    self.ptr_method_sites.insert(expr.span, self.in_unsafe);
+                }
+                if let Type::RawPtr(inner) = &obj_ty {
+                    self.unsafe_ops.push((expr.span, super::UnsafeCategory::PointerDeref));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: "indexing a pointer".to_string(),
+                            span: expr.span,
+                        });
+                    }
+                    self.check_index_types(&obj_ty, &idx_ty, index.span);
+                    return (**inner).clone();
+                }
                 // A rejected index has no result to constrain, and registering
                 // one would report the same error a second time when the
                 // deferred check runs.
@@ -961,12 +1001,10 @@ impl TypeChecker {
                         // don't need to agree. Return unit.
                         Type::Unit
                     } else {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            then_ty.clone(),
-                            else_ty,
+                        self.join_arms(
+                            vec![(then_ty, then_branch.id), (else_ty, else_branch.id)],
                             expr.span,
-                        ));
-                        then_ty
+                        )
                     }
                 } else {
                     Type::Unit
@@ -1092,7 +1130,7 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
 
                 let scrutinee_ty = self.infer_expr(scrutinee);
-                let result_ty = self.ctx.fresh_var();
+                let mut arm_types: Vec<(Type, rask_ast::NodeId)> = Vec::new();
                 let mut every_arm_diverges = !arms.is_empty();
                 for arm in arms {
                     self.push_scope();
@@ -1114,11 +1152,7 @@ impl TypeChecker {
                     // In statement position, arm types don't need to agree.
                     if !is_stmt && !matches!(resolved_arm_ty, Type::Never) {
                         every_arm_diverges = false;
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            result_ty.clone(),
-                            arm_ty,
-                            expr.span,
-                        ));
+                        arm_types.push((arm_ty, arm.body.id));
                     }
                 }
 
@@ -1134,7 +1168,7 @@ impl TypeChecker {
                     // failure leaves behind (#1026).
                     Type::Never
                 } else {
-                    result_ty
+                    self.join_arms(arm_types, expr.span)
                 }
             }
 
@@ -1391,9 +1425,8 @@ impl TypeChecker {
                                 self.note_type_bounds(&ty, expr.span);
                                 (declared, ty)
                             };
-                            let names = self.types.variant_field_names
-                                .get(&(type_id, variant_name.to_string()))
-                                .cloned()
+                            let names = self.types.variant_field_names(type_id, variant_name)
+                                .map(<[String]>::to_vec)
                                 .unwrap_or_default();
                             for field_init in fields.iter() {
                                 let want = names.iter()
@@ -1967,7 +2000,17 @@ impl TypeChecker {
                 let outer_accumulate = self.accumulate_errors;
                 let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
                 self.accumulate_errors = false;
-                let closure_return_type = self.ctx.fresh_var();
+                // A slot that wants `T or E` gives the body its return type up
+                // front, as a declaration gives a function's. Unified after the
+                // fact instead, a body of type `void` met `void or E` as a
+                // mismatch, so a consumer that can't fail couldn't fill a slot
+                // whose error type was generic.
+                let expected_ret = if declared_ret.is_none() {
+                    self.closure_return_expectations.remove(&expr.id)
+                } else {
+                    None
+                };
+                let closure_return_type = expected_ret.clone().unwrap_or_else(|| self.ctx.fresh_var());
                 self.current_return_type = Some(closure_return_type.clone());
 
                 let inferred_ret = self.infer_expr(body);
@@ -1985,6 +2028,24 @@ impl TypeChecker {
                 // closure got "couldn't work out the type" on top (#1485).
                 if matches!(self.ctx.apply(&inferred_ret), Type::Error) {
                     self.poison(&closure_return_type);
+                } else if let Some(want) = &expected_ret {
+                    if !matches!(self.ctx.apply(&inferred_ret), Type::Never) {
+                        self.coerce_into_node(
+                            CoercionSite::Return,
+                            inferred_ret.clone(),
+                            want.clone(),
+                            Some(body.id),
+                            body.span,
+                        );
+                    }
+                    // Nothing in the body could fail, so nothing says what `E`
+                    // is: it can't fail. Last resort, the way a diverging body
+                    // defaults its return below; a failure in the body wins.
+                    if let Type::Result { err, .. } = self.ctx.apply(want) {
+                        if let Type::Var(id) = self.ctx.apply(&err) {
+                            self.ctx.default_var_to(id, Type::Never);
+                        }
+                    }
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -2738,7 +2799,7 @@ impl TypeChecker {
 
     pub(super) fn index_result_type(&self, obj_ty: &Type) -> Option<Type> {
         match obj_ty {
-            Type::Array { elem, .. } => Some(*elem.clone()),
+            Type::Array { elem, .. } | Type::RawPtr(elem) => Some(*elem.clone()),
             // `s[i]` reads one byte (std.strings/U1b). It used to yield a
             // `char` at a *character* index, so the same bracket counted two
             // different units and `s[i]` in a loop scanned from byte zero.
@@ -2873,10 +2934,16 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
+                // What the declaration in `builtins.rk` says it returns: a
+                // `@noreturn` one (`panic`, `exit`) never comes back.
                 return match name {
-                    "panic" | "todo" | "unreachable" | "skip" => Type::Never,
                     "format" => Type::String,
-                    _ => Type::Unit,
+                    _ => rask_stdlib::StubRegistry::load()
+                        .functions()
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| super::builtins::stub_type(&f.ret_ty))
+                        .unwrap_or(Type::Unit),
                 };
             }
 
@@ -4054,7 +4121,7 @@ impl TypeChecker {
                 // A variant's field names are its parameter names. The parser
                 // spells an unnamed field `_0`, `_1`, …: that variant has no
                 // names, so any label on it is reported.
-                if let Some(names) = self.types.variant_field_names.get(&(type_id, method.to_string())) {
+                if let Some(names) = self.types.variant_field_names(type_id, method).map(<[String]>::to_vec) {
                     let positional = |n: &String| {
                         n.strip_prefix('_').is_some_and(|d| d.parse::<usize>().is_ok())
                     };
@@ -4240,6 +4307,14 @@ impl TypeChecker {
                     .and_then(|p| p.get(i))
                     .map(|t| self.ctx.apply(t))
                     .filter(|t| !t.has_unsolved_var());
+                // A closure takes its slot even with open variables in it:
+                // its parameters and its return are read from the slot's
+                // shape, and an open part is filled in by the call later.
+                if matches!(a.expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(want) = declared_params.as_ref().and_then(|p| p.get(i)).cloned() {
+                        return self.infer_expr_expecting(&a.expr, &want);
+                    }
+                }
                 match (&a.expr.kind, slot) {
                     (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     // No declaration to read yet: the receiver is still a
@@ -4346,6 +4421,16 @@ impl TypeChecker {
         }
         if let Type::RawPtr(ref inner) = resolved_obj {
             if let Some(ret) = self.check_raw_ptr_method(inner, method, &arg_types, span) {
+                // Recorded like any method call, so reachability knows it's a
+                // pointer operation and doesn't reach every `is_null` there is.
+                self.call_targets.insert(
+                    call_id,
+                    super::Callee::Method {
+                        recv: resolved_obj.clone(),
+                        method: method.to_string(),
+                        package: None,
+                    },
+                );
                 return ret;
             }
         }
@@ -5121,6 +5206,14 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
+        // `p.x` through a raw pointer needs `unsafe`; the solver may only
+        // learn that `p` is one later, so the site's flag goes where it reads.
+        if matches!(self.ctx.apply(&obj_ty), Type::RawPtr(_) | Type::Var(_)) {
+            self.ptr_method_sites.insert(span, self.in_unsafe);
+        }
+        if matches!(self.ctx.apply(&obj_ty), Type::RawPtr(_)) {
+            self.unsafe_ops.push((span, super::UnsafeCategory::PointerDeref));
+        }
 
         // UN2: union field reads require unsafe (UN3: writes are safe)
         if !self.in_assign_target {
@@ -5238,13 +5331,13 @@ impl TypeChecker {
             "u16" => Type::U16,
             "u32" => Type::U32,
             "u64" => Type::U64,
-            "usize" => Type::usize_ty(),
+            "usize" => Type::Usize,
             "u128" => Type::U128,
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
             "i64" => Type::I64,
-            "isize" => Type::isize_ty(),
+            "isize" => Type::Isize,
             "i128" => Type::I128,
             "f32" => Type::F32,
             "f64" => Type::F64,
@@ -5636,8 +5729,8 @@ impl TypeChecker {
     fn match_needs_wildcard(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                 | Type::F32 | Type::F64
                 | Type::String | Type::Bytes | Type::Char
         )
@@ -5958,7 +6051,7 @@ impl TypeChecker {
     /// a parameter mentioning a type parameter needs the instantiation, which
     /// isn't bound yet.
     fn declared_method_params(
-        &self,
+        &mut self,
         object: &rask_ast::expr::Expr,
         obj_ty: &Type,
         method: &str,
@@ -5978,11 +6071,10 @@ impl TypeChecker {
         if type_params.len() != type_args.len() {
             return None;
         }
-        let sig = methods.iter().find(|m| {
-            m.name == method
-                && m.type_params.is_empty()
-                && names_type == matches!(m.self_param, rask_types::SelfParam::None)
-        })?;
+        let sig = methods
+            .iter()
+            .find(|m| m.name == method && names_type == matches!(m.self_param, rask_types::SelfParam::None))?
+            .clone();
         // The receiver's arguments stand in for the type's parameters, and an
         // `extend` header's names for their parts: the same substitution the
         // deferred resolution makes, so the slot read here is the one the
@@ -5992,6 +6084,13 @@ impl TypeChecker {
             self.build_owner_pattern_subst(&sig.owner_patterns, type_args).into_iter().collect();
         for (name, bound) in &header {
             subst.insert(name.as_str(), bound.clone());
+        }
+        // The method's own type parameters are open at this call: each gets a
+        // variable, which the deferred resolution later meets with its own.
+        // `consume<E>`'s closure slot is `func(take T) -> void or ?`, so the
+        // closure knows its return is a `T or E` while its body is checked.
+        for (name, _) in &sig.type_params {
+            subst.insert(name.as_str(), self.ctx.fresh_var());
         }
         Some(sig.params.iter().map(|(t, _)| Self::substitute_type_params(t, &subst)).collect())
     }
@@ -6232,7 +6331,7 @@ impl TypeChecker {
             }
             // A type parameter is asked per call, by ownership's instance walk:
             // the body can't know, each caller's `T` can.
-            if matches!(&payload, Type::UnresolvedNamed(n) if super::declarations::is_type_param_name(n)) {
+            if matches!(&payload, Type::UnresolvedNamed(n) if rask_ast::type_params::is_type_param_name(n)) {
                 continue;
             }
             self.errors.push(TypeError::TakeFromSharedBox {
@@ -6545,7 +6644,7 @@ impl TypeChecker {
     /// whose index type we don't police (user generics, type vars, `Handle`).
     fn classify_index_container(&self, ty: &Type) -> Option<IndexContainer> {
         match ty {
-            Type::Array { .. } | Type::String | Type::Bytes => Some(IndexContainer::Sequence),
+            Type::Array { .. } | Type::String | Type::Bytes | Type::RawPtr(_) => Some(IndexContainer::Sequence),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),
@@ -6751,6 +6850,16 @@ impl TypeChecker {
             }
             let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
             if self.link_node_type(&ty).is_some() {
+                continue;
+            }
+            // `p.x = v` and `s.buf[i] = v` past a raw pointer write what it
+            // points at; the binding holding the pointer is unchanged.
+            let through_pointer = pm.steps.iter().any(|id| {
+                self.node_types
+                    .get(id)
+                    .is_some_and(|t| matches!(self.ctx.apply(t), Type::RawPtr(_)))
+            });
+            if through_pointer {
                 continue;
             }
             // Still unknown after solving — stay quiet rather than guess. An
@@ -6970,7 +7079,9 @@ pub(super) struct PendingCast {
 /// Primitive scalar classification for conversion rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Prim {
-    Int { bits: u32, signed: bool },
+    /// `lo` and `hi`: the narrowest and widest it is on any target. They
+    /// differ only for `usize` and `isize` (32 and 64).
+    Int { lo: u32, hi: u32, signed: bool },
     Float { bits: u32 },
     Bool,
     Char,
@@ -6978,16 +7089,18 @@ enum Prim {
 
 fn prim_of(ty: &Type) -> Option<Prim> {
     Some(match ty {
-        Type::I8 => Prim::Int { bits: 8, signed: true },
-        Type::I16 => Prim::Int { bits: 16, signed: true },
-        Type::I32 => Prim::Int { bits: 32, signed: true },
-        Type::I64 => Prim::Int { bits: 64, signed: true },
-        Type::I128 => Prim::Int { bits: 128, signed: true },
-        Type::U8 => Prim::Int { bits: 8, signed: false },
-        Type::U16 => Prim::Int { bits: 16, signed: false },
-        Type::U32 => Prim::Int { bits: 32, signed: false },
-        Type::U64 => Prim::Int { bits: 64, signed: false },
-        Type::U128 => Prim::Int { bits: 128, signed: false },
+        Type::I8 => Prim::Int { lo: 8, hi: 8, signed: true },
+        Type::I16 => Prim::Int { lo: 16, hi: 16, signed: true },
+        Type::I32 => Prim::Int { lo: 32, hi: 32, signed: true },
+        Type::I64 => Prim::Int { lo: 64, hi: 64, signed: true },
+        Type::I128 => Prim::Int { lo: 128, hi: 128, signed: true },
+        Type::U8 => Prim::Int { lo: 8, hi: 8, signed: false },
+        Type::U16 => Prim::Int { lo: 16, hi: 16, signed: false },
+        Type::U32 => Prim::Int { lo: 32, hi: 32, signed: false },
+        Type::U64 => Prim::Int { lo: 64, hi: 64, signed: false },
+        Type::U128 => Prim::Int { lo: 128, hi: 128, signed: false },
+        Type::Isize => Prim::Int { lo: 32, hi: 64, signed: true },
+        Type::Usize => Prim::Int { lo: 32, hi: 64, signed: false },
         Type::F32 => Prim::Float { bits: 32 },
         Type::F64 => Prim::Float { bits: 64 },
         Type::Bool => Prim::Bool,
@@ -7002,12 +7115,17 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// that range needs 128-bit literals to reach anyway.
 /// The inclusive range of an integer type. The top is a `u128` because
 /// `u128::MAX` is the one bound no signed type can hold.
+///
+/// A literal is a value, so it's checked against the target being built, the
+/// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
+/// a 32-bit one. Conversions are about types and stay target-independent
+/// (`is_integer_widening`). The one place the checker asks the target.
 fn int_range(ty: &Type) -> Option<(i128, u128)> {
-    Some(match prim_of(ty)? {
-        Prim::Int { bits: 128, signed: false } => (0, u128::MAX),
-        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX as u128),
-        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1u128 << (bits - 1)) - 1),
-        Prim::Int { bits, signed: false } => (0, (1u128 << bits) - 1),
+    Some(match prim_of(&ty.at_target_width())? {
+        Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
+        Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
+        Prim::Int { lo, signed: true, .. } => (-(1i128 << (lo - 1)), (1u128 << (lo - 1)) - 1),
+        Prim::Int { lo, signed: false, .. } => (0, (1u128 << lo) - 1),
         _ => return None,
     })
 }
@@ -7028,14 +7146,19 @@ fn as_cast_is_lossless(src_ty: &Type, tgt_ty: &Type, s: Prim, t: Prim) -> bool {
         return true;
     }
     match (s, t) {
-        (Prim::Int { bits: sb, signed: ss }, Prim::Int { bits: tb, signed: ts }) => {
-            tb > sb && (ss == ts || !ss)
-        }
-        (Prim::Int { bits, signed }, Prim::Float { bits: fb }) => {
-            int_fits_float_exactly(bits, signed, fb)
+        // On every target: the source at its widest into the target at its
+        // narrowest. Two distinct types of one width and sign only meet here as
+        // `usize` and `u64` (or `isize` and `i64`), which fit one way.
+        (Prim::Int { hi: sb, signed: ss, .. }, Prim::Int { lo: tb, signed: ts, .. }) => match (ss, ts) {
+            (true, true) | (false, false) => tb >= sb,
+            (false, true) => tb > sb,
+            (true, false) => false,
+        },
+        (Prim::Int { hi, signed, .. }, Prim::Float { bits: fb }) => {
+            int_fits_float_exactly(hi, signed, fb)
         }
         (Prim::Float { bits: sb }, Prim::Float { bits: tb }) => tb >= sb,
-        (Prim::Char, Prim::Int { bits, .. }) => bits >= 32,
+        (Prim::Char, Prim::Int { lo, .. }) => lo >= 32,
         _ => false,
     }
 }
@@ -7154,4 +7277,55 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+/// A variable, or a field or element of one: storage `&` can point at.
+fn is_place(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => is_place(object),
+        _ => false,
+    }
+}
+
+impl TypeChecker {
+    /// The type of an `if` or `match` from its arms' types. The arms agree,
+    /// except that when one is a `T?` and another a bare `T`, the whole is the
+    /// `T?` and the bare arm gains the layer, as it would at an assignment
+    /// (type.optionals/OPT6): `if c { none } else { 5 }` is an `i64?`.
+    ///
+    /// Each arm used to be made equal to the others before anything knew the
+    /// target, so `none` and `5` never met in the middle (#1692).
+    pub(super) fn join_arms(&mut self, arms: Vec<(Type, rask_ast::NodeId)>, span: Span) -> Type {
+        let Some((first, _)) = arms.first().cloned() else {
+            return self.ctx.fresh_var();
+        };
+        let optional_arm = arms
+            .iter()
+            .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
+        let Some(target_at) = optional_arm else {
+            for (ty, _) in arms.into_iter().skip(1) {
+                self.ctx.add_constraint(TypeConstraint::Equal(first.clone(), ty, span));
+            }
+            return first;
+        };
+        let target = arms[target_at].0.clone();
+        for (i, (ty, node)) in arms.into_iter().enumerate() {
+            if i == target_at {
+                continue;
+            }
+            if self.ctx.apply(&ty).as_option().is_some() {
+                self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
+            } else {
+                self.coerce_into_node(
+                    rask_ast::coercion::CoercionSite::Branch,
+                    ty,
+                    target.clone(),
+                    Some(node),
+                    span,
+                );
+            }
+        }
+        target
+    }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pass 1: declaration collection and checking.
 
+use rask_ast::type_params::{enum_type_param_names, is_type_param_name, signature_type_param_names, struct_type_param_names};
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
 use rask_types::{TypeDef, MethodSig, SelfParam};
 use rask_ast::ty::ParamMode;
@@ -1432,7 +1433,7 @@ impl TypeChecker {
         let c_layout = s.attrs.iter().any(|a| a.is("layout") && a.positional().and_then(|v| v.ident()) == Some("C"));
         for f in &s.fields {
             let Some(a) = f.attrs.iter().find(|a| a.is("bits")) else { continue };
-            let width = crate::layout::bit_width(&f.attrs);
+            let width = rask_layout::bit_width(&f.attrs);
             let ty = resolve_type_expr(&f.ty, &self.types).unwrap_or(Type::Error);
             let type_bits = match ty {
                 Type::I8 | Type::U8 => Some(8),
@@ -1595,6 +1596,8 @@ impl TypeChecker {
             no_decode,
             reads_as,
             temporary,
+            attrs: s.attrs.clone(),
+            field_decls: s.fields.iter().map(rask_types::MemberDecl::of).collect(),
         });
 
         for m in &s.methods {
@@ -1733,19 +1736,6 @@ impl TypeChecker {
             .map(|m| self.method_signature(m, &enum_params, &Self::named_all(&enum_params)))
             .collect();
 
-        // Field names for the struct-shaped variants, so a pattern that names
-        // them can be matched against the positional payload types (#809).
-        let variant_names: Vec<(String, Vec<String>)> = e
-            .variants
-            .iter()
-            .map(|v| {
-                (
-                    v.name.clone(),
-                    v.fields.iter().map(|f| f.name.clone()).collect(),
-                )
-            })
-            .collect();
-
         // PC1: explicit `<T>` plus single letters appearing in payload types.
         let type_params = enum_type_param_names(e);
         let enum_id = self.types.register_type(TypeDef::Enum {
@@ -1759,12 +1749,10 @@ impl TypeChecker {
             // E16, as on a struct.
             no_encode: e.attrs.iter().any(|a| a.is("no_encode")),
             no_decode: e.attrs.iter().any(|a| a.is("no_decode")),
+            attrs: e.attrs.clone(),
+            backing: e.backing_type.as_ref().and_then(|t| resolve_type_expr(t, &self.types).ok()),
+            variant_decls: e.variants.iter().map(rask_types::VariantDecl::of).collect(),
         });
-        for (variant, field_names) in variant_names {
-            self.types
-                .variant_field_names
-                .insert((enum_id, variant), field_names);
-        }
         for m in &e.methods {
             self.note_method_access(enum_id, m);
         }
@@ -2055,7 +2043,7 @@ impl TypeChecker {
                     self.errors.push(TypeError::UnionOwningMember {
                         union_name: u.name.clone(),
                         member: f.name.clone(),
-                        ty,
+                        ty: self.types.resolve_type_names(&ty),
                         span: f.ty_span,
                     });
                 }
@@ -2075,6 +2063,9 @@ impl TypeChecker {
             // Reported where it's resolved; one error is enough.
             Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } | Type::Error | Type::Var(_) => true,
             Type::Array { elem, .. } => self.plain_data(elem, depth + 1),
+            // `*T?` is one word with null for `none` (mem.unsafe/PT6): a C
+            // pointer that may be absent, as plain as `*T`.
+            t if matches!(t.as_option(), Some(Type::RawPtr(_))) => true,
             Type::Named(id) => match self.types.get(*id) {
                 Some(TypeDef::Struct { fields, is_resource, .. }) => {
                     !is_resource && fields.iter().all(|(_, t)| self.plain_data(t, depth + 1))
@@ -2105,6 +2096,7 @@ impl TypeChecker {
         let union_id = self.types.register_type(TypeDef::Union {
             name: u.name.clone(),
             fields,
+            field_decls: u.fields.iter().map(rask_types::MemberDecl::of).collect(),
         });
         self.types.note_layout_decl(union_id, rask_ast::decl::DeclKind::Union(u.clone()));
     }
@@ -2544,8 +2536,8 @@ impl TypeChecker {
             // Primitives: what their conformances require (CO4 makes floats
             // Comparable, HA4 keeps them out of Hashable). A raw pointer is
             // an address and copies and compares as one (mem.unsafe/UT4).
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Unit
             | Type::String | Type::Bytes | Type::RawPtr(_) => crate::interfaces::primitive_conformances(ty)
                 .iter()
@@ -2758,7 +2750,7 @@ impl TypeChecker {
                         name.clone(),
                         variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
                     ),
-                    Some(TypeDef::Union { name, fields }) => (
+                    Some(TypeDef::Union { name, fields, .. }) => (
                         name.clone(),
                         fields.iter().map(|(_, t)| t.clone()).collect(),
                     ),
@@ -3095,33 +3087,6 @@ impl TypeChecker {
     }
 }
 
-/// The runtime type a `@binary` field specifier stands for, or `None` when the
-/// spelling isn't one. Layout asks this too — the specifier is the declared
-/// type string everywhere downstream, and `u16be` names no type, so a `@binary`
-/// struct was laid out with a pointer-sized slot per field and a warning per
-/// compile.
-pub fn binary_field_runtime_type(ty: &TypeExpr) -> Option<Type> {
-    rask_ast::binary::field_spec(ty).ok().map(|spec| held_type(&spec))
-}
-
-fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
-    use rask_ast::binary::Held;
-    match spec.held {
-        Held::Bytes(len) => Type::Array { elem: Box::new(Type::U8), len },
-        Held::Int(name) | Held::Float(name) => match name {
-            "u8" => Type::U8,
-            "i8" => Type::I8,
-            "u16" => Type::U16,
-            "i16" => Type::I16,
-            "u32" => Type::U32,
-            "i32" => Type::I32,
-            "u64" => Type::U64,
-            "i64" => Type::I64,
-            "f32" => Type::F32,
-            _ => Type::F64,
-        },
-    }
-}
 
 /// B1–V4: check a `@binary` struct's fields and give each its runtime type.
 fn parse_binary_struct_fields(
@@ -3145,7 +3110,7 @@ fn parse_binary_struct_fields(
                         field.name_span,
                     ));
                 }
-                typed_fields.push((field.name.clone(), held_type(&spec)));
+                typed_fields.push((field.name.clone(), rask_layout::held_type(&spec)));
                 bit_offset += spec.bits;
             }
             Err(msg) => {
@@ -3170,86 +3135,6 @@ fn parse_binary_struct_fields(
         return Err(errors);
     }
     Ok(typed_fields)
-}
-
-/// PC1: single uppercase ASCII letter — always a type parameter in signatures.
-pub fn is_type_param_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
-}
-
-/// PC1: a function's type params — explicit `<T>` declarations plus every
-/// single uppercase letter in its signature types, in signature order
-/// (params left to right, then return type).
-///
-/// Shared by the type checker and the monomorphizer so both derive the same
-/// ordered list. Uses a fresh TypeTable: results match the populated table
-/// because single-letter names can never be registered types (PC3), and only
-/// single letters are collected.
-pub fn signature_type_param_names(f: &FnDecl) -> Vec<String> {
-    let mut names: Vec<String> = f.type_params.iter().map(|p| p.name.clone()).collect();
-    let mut add = |n: &str| {
-        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
-            names.push(n.to_string());
-        }
-    };
-    for p in &f.params {
-        if let (false, Some(ty)) = (p.name == "self", &p.ty) {
-            for_each_written_name(ty, &mut add);
-        }
-    }
-    if let Some(rt) = &f.ret_ty {
-        for_each_written_name(rt, &mut add);
-    }
-    names
-}
-
-/// Every single-segment name a written type mentions, heads included, in
-/// written order: `Map<K, Vec<V>>` gives `Map`, `K`, `Vec`, `V`.
-fn for_each_written_name(ty: &TypeExpr, f: &mut impl FnMut(&str)) {
-    ty.walk_paths(&mut |path| {
-        if let [name] = path {
-            f(name);
-        }
-    });
-}
-
-/// PC1 for a type declaration: explicit `<T>` declarations plus every single
-/// uppercase letter appearing in its field or payload types, in declaration
-/// order.
-///
-/// `gradual-constraints` lists struct fields and enum payloads as signature
-/// positions alongside function parameters, but only the function side was
-/// wired up — so `struct Pair { first: T  second: U }` registered with no type
-/// parameters at all, and `Pair<i64, string>` had nothing to match against.
-/// SYNTAX.md's own `Pair` example didn't compile (#913).
-pub fn declared_type_param_names<'a>(
-    explicit: &[rask_ast::decl::TypeParam],
-    member_types: impl Iterator<Item = &'a TypeExpr>,
-) -> Vec<String> {
-    let mut names: Vec<String> = explicit.iter().map(|p| p.name.clone()).collect();
-    let mut add = |n: &str| {
-        if is_type_param_name(n) && !names.iter().any(|x| x == n) {
-            names.push(n.to_string());
-        }
-    };
-    for ty in member_types {
-        for_each_written_name(ty, &mut add);
-    }
-    names
-}
-
-/// PC1 for a struct: explicit `<T>` plus single letters in its field types.
-pub fn struct_type_param_names(s: &StructDecl) -> Vec<String> {
-    declared_type_param_names(&s.type_params, s.fields.iter().map(|f| &f.ty))
-}
-
-/// PC1 for an enum: explicit `<T>` plus single letters in its payload types.
-pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
-    declared_type_param_names(
-        &e.type_params,
-        e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)),
-    )
 }
 
 /// GT1: an interface's own parameters, in scope for every signature it declares.

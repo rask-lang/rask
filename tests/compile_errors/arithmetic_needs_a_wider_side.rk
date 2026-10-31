@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: integer arithmetic where no type holds both sides, and a compound
+// assignment whose answer doesn't fit its target
+//
+// Two widths meet under an operator only where one type holds every value of
+// the other (type.primitives/CV1a). `small += big` used to compile: the answer
+// took the left's type, and native truncated it silently.
+
+func main() {
+    mut small: u32 = 5
+    let big: u64 = 5_000_000_000
+    // ERROR: the `u64` answer doesn't fit the `u32`
+    small += big
+    let signed: i64 = -1
+    // ERROR: no type holds every `u64` and every `i64`
+    let x = big + signed
+    let a: i32 = -1
+    let b: u32 = 1
+    // ERROR: no type holds every `i32` and every `u32`
+    let y = a * b
+    mut n: usize = 3
+    // ERROR: a `u64` doesn't fit a 32-bit `usize`
+    n += big
+    println(small)
+    println(x)
+    println(y)
+    println(n)
+}

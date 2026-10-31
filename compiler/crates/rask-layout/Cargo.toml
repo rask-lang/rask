@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+[package]
+name = "rask-layout"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+rask-stdlib = { path = "../rask-stdlib" }
+
+[dev-dependencies]
+rask-parser = { path = "../rask-parser" }

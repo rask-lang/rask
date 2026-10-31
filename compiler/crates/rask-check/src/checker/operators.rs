@@ -328,8 +328,8 @@ impl TypeChecker {
         match self.ctx.literal_vars.get(&id) {
             Some(super::inference::LiteralKind::Integer) => matches!(
                 candidate,
-                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             ),
             Some(super::inference::LiteralKind::Float) => {
                 matches!(candidate, Type::F32 | Type::F64)

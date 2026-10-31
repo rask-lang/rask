@@ -18,6 +18,8 @@ mod errors;
 mod parse_type;
 mod borrow;
 mod declarations;
+mod sizes;
+pub use sizes::layout_spelling;
 mod annotations;
 mod check_pattern;
 mod check_fn;
@@ -44,9 +46,9 @@ pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
-pub use declarations::is_type_param_name;
+
 pub use generics::{bind_header_pattern, bind_header_patterns};
-pub use declarations::{binary_field_runtime_type, header_type_params, signature_type_param_names, struct_type_param_names, enum_type_param_names};
+pub use declarations::header_type_params;
 
 use borrow::ActiveBorrow;
 
@@ -94,6 +96,10 @@ pub struct PendingMutation {
     pub ty: rask_types::Type,
     pub kind: BindingKind,
     pub span: rask_ast::Span,
+    /// The object of each field or index step between the root and the
+    /// written place. A write past a raw pointer lands in what it points at,
+    /// not in the root, and only their solved types say where that is.
+    pub steps: Vec<NodeId>,
 }
 
 /// A deferred `mutate self` check on a receiver whose type wasn't solved yet.
@@ -351,6 +357,8 @@ pub struct TypeChecker {
     /// interface's symbol (`TypeTable::interface_symbol`).
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
+    /// See `TypedProgram::arm_widenings`.
+    pub(super) arm_widenings: HashMap<NodeId, Type>,
     /// CB1/CB2: function values coerced to a C function pointer, and where.
     pub(super) c_fn_pointers: HashMap<NodeId, rask_ast::Span>,
     /// CB3: externs whose callback takes a closure through a context pointer.
@@ -477,6 +485,11 @@ pub struct TypeChecker {
     /// is checked, so an unannotated parameter has its type while the body is
     /// checked rather than only after.
     pub(super) closure_param_expectations: HashMap<NodeId, Vec<Type>>,
+    /// The return type a closure literal's slot gives it, when that is a
+    /// `T or E`. The body is checked against it the way a function body is
+    /// checked against its declared return: a bare `return`, or a body of
+    /// type `T`, is the success branch.
+    pub(super) closure_return_expectations: HashMap<NodeId, Type>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -506,6 +519,13 @@ pub struct TypeChecker {
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
     pub(super) pending_linear_containers: Vec<(rask_ast::Span, Type)>,
+    /// RC5: method calls on a `Vec` or `Map`, with the receiver as resolved
+    /// then. Checked after solving, once the element type is settled, for a
+    /// method that would drop or copy an element that must be consumed.
+    pub(super) pending_element_uses: Vec<(rask_ast::Span, Type, String)>,
+    /// `@noreturn` bodies, with the function's name and where it ends, checked
+    /// after solving for a path that reaches the end.
+    pub(super) pending_noreturn_bodies: Vec<(String, Vec<rask_ast::stmt::Stmt>, rask_ast::Span)>,
     /// SH10: struct fields and enum payloads that spell a `Shared`, checked
     /// for a box cycle once every declaration is registered, since the cycle
     /// can close through a type declared later. (Owner, field, type, span).
@@ -660,6 +680,7 @@ impl TypeChecker {
             in_assign_target: false,
             in_stmt_expr: false,
             interface_coercions: HashMap::new(),
+            arm_widenings: HashMap::new(),
             c_fn_pointers: HashMap::new(),
             extern_c_fns: std::collections::HashSet::new(),
             c_contexts: HashMap::new(),
@@ -703,7 +724,10 @@ impl TypeChecker {
             labeled_calls: Vec::new(),
             method_calls: Vec::new(),
             closure_param_expectations: HashMap::new(),
+            closure_return_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
+            pending_element_uses: Vec::new(),
+            pending_noreturn_bodies: Vec::new(),
             pending_shared_fields: Vec::new(),
 
             type_test_patterns: std::collections::HashSet::new(),
@@ -925,6 +949,12 @@ impl TypeChecker {
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are
         // concrete.
         self.validate_pending_linear_containers();
+        self.validate_pending_element_uses();
+        for (function_name, body, span) in std::mem::take(&mut self.pending_noreturn_bodies) {
+            if !self.has_explicit_return(&body) {
+                self.errors.push(TypeError::NoReturnFinishes { function_name, span });
+            }
+        }
 
         // SH10: a `Shared` field whose payload can hold the owner again.
         self.validate_shared_cycles();
@@ -1104,6 +1134,11 @@ impl TypeChecker {
             .collect();
 
         let interface_coercions = self.interface_coercions.clone();
+        let arm_widenings: HashMap<NodeId, Type> = self
+            .arm_widenings
+            .iter()
+            .map(|(n, t)| (*n, self.ctx.apply(t)))
+            .collect();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let err_returns = self.err_returns.clone();
@@ -1149,6 +1184,7 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
+            arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),
             file_packages: self.resolved.file_packages.clone(),

@@ -1376,6 +1376,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![MirOperand::Constant(MirConst::Int(42))],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1466,6 +1467,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -1570,6 +1572,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1731,6 +1734,7 @@ mod tests {
                         dst: Some(LocalId(3)),
                         closure: LocalId(2),
                         args: vec![],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(3)))),
             ],
@@ -1765,6 +1769,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -1855,6 +1860,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![local_op(0)],
+                        taken: Vec::new(),
                     }),
                     assign(0, MirRValue::BinaryOp {
                         op: BinOp::Add,
@@ -1984,6 +1990,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![MirOperand::Constant(MirConst::Int(10))],
+                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -2056,12 +2063,12 @@ mod tests {
         vtable_symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![
-                rask_check::layout::StructLayout {
+                rask_layout::StructLayout {
                     name: "Point".to_string(),
                     size: 8,
                     align: 4,
                     fields: vec![
-                        rask_check::layout::FieldLayout {
+                        rask_layout::FieldLayout {
                             name: "x".to_string(),
                             ty: rask_types::Type::I32,
                             offset: 0,
@@ -2074,7 +2081,7 @@ mod tests {
                         is_type_param: false,
                         bits: None,
                         },
-                        rask_check::layout::FieldLayout {
+                        rask_layout::FieldLayout {
                             name: "y".to_string(),
                             ty: rask_types::Type::I32,
                             offset: 4,
@@ -2120,20 +2127,20 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
-                rask_check::layout::EnumLayout {
+                rask_layout::EnumLayout {
                     name: "Result".to_string(),
                     size: 8,
                     align: 4,
                     tag_ty: rask_types::Type::U8,
                     tag_offset: 0,
                     variants: vec![
-                        rask_check::layout::VariantLayout {
+                        rask_layout::VariantLayout {
                             name: "Ok".to_string(),
                             tag: 0,
                             payload_offset: 4,
                             payload_size: 4,
                             fields: vec![
-                                rask_check::layout::FieldLayout {
+                                rask_layout::FieldLayout {
                                     name: "value".to_string(),
                                     ty: rask_types::Type::I32,
                                     offset: 0,
@@ -2149,13 +2156,13 @@ mod tests {
                             ],
                             attrs: vec![],
                         },
-                        rask_check::layout::VariantLayout {
+                        rask_layout::VariantLayout {
                             name: "Err".to_string(),
                             tag: 1,
                             payload_offset: 4,
                             payload_size: 4,
                             fields: vec![
-                                rask_check::layout::FieldLayout {
+                                rask_layout::FieldLayout {
                                     name: "error".to_string(),
                                     ty: rask_types::Type::I32,
                                     offset: 0,

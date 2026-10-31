@@ -63,12 +63,18 @@ pub enum Type {
     I32,
     I64,
     I128,
+    /// P2: pointer-sized. Its own type, not an alias for `i64` or `i32`: a
+    /// program means the same thing on every target, and only layout and the
+    /// backends learn the width (`at_pointer_width`).
+    Isize,
     /// Unsigned integers
     U8,
     U16,
     U32,
     U64,
     U128,
+    /// P2: pointer-sized, like `Isize`.
+    Usize,
     /// Floating point
     F32,
     F64,
@@ -227,13 +233,6 @@ impl Type {
         }
     }
 
-    /// P2: what `usize` is on this target — pointer-sized, not always 64-bit.
-    /// The width comes from `rask_ast::primitives::pointer_bits`, which is the
-    /// single place that decides it.
-    pub fn usize_ty() -> Type {
-        if rask_ast::primitives::pointer_bits() == 32 { Type::U32 } else { Type::U64 }
-    }
-
     /// How many bytes a scalar of this type occupies, or `None` if it isn't a
     /// scalar.
     ///
@@ -242,7 +241,8 @@ impl Type {
     /// rule about what fits a machine word can't drift apart (#1083).
     ///
     /// Each is its real size (type.primitives/P5: a `char` is 4 bytes). A value
-    /// is never padded out to a word to make it easier to move.
+    /// is never padded out to a word to make it easier to move. `usize` and
+    /// `isize` have none here: their width is the target's.
     pub fn scalar_bytes(&self) -> Option<u32> {
         Some(match self {
             Type::Bool | Type::I8 | Type::U8 => 1,
@@ -254,9 +254,27 @@ impl Type {
         })
     }
 
-    /// P2: what `isize` is on this target.
-    pub fn isize_ty() -> Type {
-        if rask_ast::primitives::pointer_bits() == 32 { Type::I32 } else { Type::I64 }
+    /// The fixed-width integer `usize` or `isize` is with `bits`-wide pointers.
+    /// Anything else is itself. For layout and the backends; the checker never
+    /// asks, so a program type-checks the same for every target.
+    pub fn at_pointer_width(&self, bits: u32) -> Type {
+        self.at_width(bits)
+    }
+
+    /// `at_pointer_width` for the target this compilation is for. Reads the
+    /// process-wide width, until a `Target` value is passed down instead.
+    pub fn at_target_width(&self) -> Type {
+        self.at_width(rask_ast::primitives::pointer_bits())
+    }
+
+    fn at_width(&self, bits: u32) -> Type {
+        match (self, bits) {
+            (Type::Usize, 32) => Type::U32,
+            (Type::Usize, _) => Type::U64,
+            (Type::Isize, 32) => Type::I32,
+            (Type::Isize, _) => Type::I64,
+            (other, _) => other.clone(),
+        }
     }
 
     /// Set the display name for Named types (used for readable error messages).
@@ -418,6 +436,7 @@ impl Type {
             Type::InterfaceObject { interface_name, .. } => {
                 TypeExpr::Any(Box::new(TypeExpr::named(interface_name.clone())))
             }
+            Type::Never => TypeExpr::NoReturn,
             other => TypeExpr::named(other.to_string()),
         }
     }
@@ -433,11 +452,13 @@ impl fmt::Display for Type {
             Type::I32 => write!(f, "i32"),
             Type::I64 => write!(f, "i64"),
             Type::I128 => write!(f, "i128"),
+            Type::Isize => write!(f, "isize"),
             Type::U8 => write!(f, "u8"),
             Type::U16 => write!(f, "u16"),
             Type::U32 => write!(f, "u32"),
             Type::U64 => write!(f, "u64"),
             Type::U128 => write!(f, "u128"),
+            Type::Usize => write!(f, "usize"),
             Type::F32 => write!(f, "f32"),
             Type::F64 => write!(f, "f64"),
             Type::Char => write!(f, "char"),
@@ -480,6 +501,8 @@ impl fmt::Display for Type {
             }
             Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
+            // An error side that can't happen: the call can't fail, and is a `T`.
+            Type::Result { ok, err } if **err == Type::Never => write!(f, "{}", ok),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
@@ -488,12 +511,14 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            // `*(u8?)`: written bare, the `?` would be the pointer's.
+            Type::RawPtr(inner) if matches!(**inner, Type::Result { .. }) => write!(f, "*({})", inner),
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
             Type::InterfaceObject { interface_name, .. } => write!(f, "any {}", interface_name),
             Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
-            Type::Never => write!(f, "!"),
+            Type::Never => write!(f, "noreturn"),
             Type::None => write!(f, "none"),
             Type::Error => write!(f, "<error>"),
         }

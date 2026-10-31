@@ -44,8 +44,8 @@ impl<'a> OwnershipChecker<'a> {
         matches!(
             ty,
             Type::Unit | Type::Never | Type::Bool | Type::Char
-                | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                 | Type::F32 | Type::F64
                 | Type::RawPtr(_) | Type::Fn { .. }
         )

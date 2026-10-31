@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `&x` is the raw address of a variable, field or element: what a C
+// out-parameter wants. Making one is safe; reading or writing through it is
+// `unsafe` (mem.unsafe). A write through the pointer is a write to the place
+// it was taken from, so the next read of `x` sees it.
+
+struct Size {
+    w: i32
+    h: i32
+}
+
+func fill(p: *i32, v: i32) {
+    unsafe {
+        *p = v
+    }
+}
+
+test "a write through &x lands in x" {
+    mut n: i32 = 1
+    fill(&n, 42)
+    assert n == 42
+}
+
+test "the spec's spelling: &x as *T" {
+    let x: i32 = 7
+    let p: *i32 = &x as *i32
+    assert unsafe *p == 7
+}
+
+test "a field's address writes the field" {
+    mut s = Size(w: 0, h: 0)
+    fill(&s.w, 640)
+    fill(&s.h, 480)
+    assert s.w == 640
+    assert s.h == 480
+}
+
+test "an element's address writes the element" {
+    mut v: Vec<i32> = [1, 2, 3]
+    fill(&v[1], 20)
+    assert v[1] == 20
+    assert v[2] == 3
+}
+
+test "a struct's fields read through its pointer" {
+    let s = Size(w: 640, h: 480)
+    let p = &s
+    assert unsafe (*p).h == 480
+    let v: Vec<Size> = [Size(w: 1, h: 2)]
+    let q = unsafe v.as_ptr()
+    let copy = unsafe *q
+    assert unsafe (*q).w == 1
+    assert copy.h == 2
+}
+
+func main() {
+    mut w: i32 = 0
+    mut h: i32 = 0
+    fill(&w, 3)
+    fill(&h, 4)
+    println("{w} {h}")
+}

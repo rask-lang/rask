@@ -101,8 +101,8 @@ impl TypeTable {
         let size = || self.copy_size(ty);
         match ty {
             Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => Copy,
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => Copy,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => Copy,
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => Copy,
             Type::F32 | Type::F64 => Copy,
             Type::Never => Copy,
 

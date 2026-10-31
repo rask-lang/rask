@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Integer arithmetic between two widths widens the narrower side.
+//
+// The checker let any two integer types meet under an operator and gave the
+// answer the left operand's type, so `small + big` with a `u32` on the left was
+// a `u32`: native truncated 5000000000 to 705032709 without a word, and the
+// interpreter panicked with an overflow. Now the narrower side widens to the
+// type that holds both, on both backends; where no type holds both, or the
+// answer doesn't fit where it's stored, it's a compile error
+// (compile_errors/arithmetic_needs_a_wider_side.rk).
+
+test "the narrower side widens, either way round" {
+    let small: u32 = 4_000_000_000
+    let big: u64 = 1_000_000_000
+    assert small + big == 5_000_000_000
+    assert big + small == 5_000_000_000
+    let z: u32 = 7
+    let huge: u64 = 5_000_000_000
+    assert z * huge == 35_000_000_000
+    assert huge / z == 714_285_714
+    assert huge % z == 2
+}
+
+test "unsigned widens into a wider signed type" {
+    let s: u8 = 200
+    let w: i64 = -5
+    assert s + w == 195
+    assert w - s == -205
+}
+
+test "a compound assignment widens into the wider target" {
+    mut total: u64 = 4_000_000_000
+    let small: u32 = 4_000_000_000
+    total += small
+    let text: string = "abcd"
+    total += text.len()
+    assert total == 8_000_000_004
+}
+
+test "bitwise operators widen too" {
+    let x: u8 = 255
+    let y: u64 = 511
+    assert x | y == 511
+    assert x & y == 255
+    assert x ^ y == 256
+}

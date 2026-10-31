@@ -105,6 +105,10 @@ pub enum MirType {
     F64,
     Char,
     Ptr,
+    /// A raw pointer `*T`: an address, released by nothing. Never null, so
+    /// `*T?` is this one word with null for `none` (mem.unsafe/PT6). `Ptr` is
+    /// every other address, and an option over one has a tag.
+    RawPtr,
     /// A container handle: one word, freed by its kind's free.
     ///
     /// Every `Vec`, `Map` and `Rack` is this, wherever it sits — a local, a
@@ -234,13 +238,13 @@ impl MirType {
         (self.passed_by_address() && !matches!(self, MirType::SimdVector { .. })).then(|| self.size())
     }
 
-    /// True for the one-word niche payload: a link.
+    /// True for the one-word niche payloads: a link and a raw pointer.
     ///
-    /// `Link<T>?` is the same word — no tag, no separate payload slot — with
-    /// the null address reserved to mean `none`. Everywhere that asks "is this
-    /// option a niche?" is asking this.
+    /// `Link<T>?` and `*T?` are the same word as their payload — no tag, no
+    /// separate payload slot — with the null address reserved to mean `none`.
+    /// Everywhere that asks "is this option a niche?" is asking this.
     pub fn is_niche_payload(&self) -> bool {
-        matches!(self, MirType::Link(_))
+        matches!(self, MirType::Link(_) | MirType::RawPtr)
     }
 
     /// The node layout a link names, whether the link is spelled bare or as a
@@ -277,7 +281,10 @@ impl MirType {
             // Only an option directly over a link. `Link<T>??` is a tagged
             // option whose payload happens to be a niche one, and its `none`
             // is a tag, not the null address.
-            MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
+            MirType::Option(inner) if inner.is_niche_payload() => match inner.as_ref() {
+                MirType::RawPtr => Some(rask_types::abi::RAW_PTR_NONE_SENTINEL),
+                _ => inner.niche_none(),
+            },
             _ => None,
         }
     }
@@ -295,7 +302,7 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 => 8,
-            MirType::Ptr | MirType::FuncPtr(_) | MirType::Link(_) | MirType::Container(_)
+            MirType::Ptr | MirType::RawPtr | MirType::FuncPtr(_) | MirType::Link(_) | MirType::Container(_)
             | MirType::Heap(_) => Self::word(),
             MirType::I128 | MirType::U128 => 16,
             MirType::Buffer => 16, // the runtime's RaskStr, 16 bytes on every target
@@ -400,7 +407,7 @@ impl MirType {
             // where the link *is* the value and `none` is the null address, so
             // it keeps the word store. That's why this isn't just "everything
             // passed by address".
-            MirType::Option(inner) => !matches!(**inner, MirType::Link(_)),
+            MirType::Option(inner) => !inner.is_niche_payload(),
             _ => false,
         }
     }

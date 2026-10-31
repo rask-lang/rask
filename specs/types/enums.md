@@ -511,7 +511,7 @@ let bad: ObjectKind? = ObjectKind.from_value(99)  // none
 
 `from_value` is auto-generated for all fieldless enums. Returns optional — invalid values produce `none`.
 
-## Empty Enum (Never Type)
+## Empty Enum
 
 <!-- test: parse -->
 ```rask

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! What a type declaration says, once its fields and signatures are `Type`s.
 
+use rask_ast::attr::Attr;
 use rask_ast::ty::ParamMode;
 
 use crate::Type;
@@ -23,6 +24,47 @@ pub struct InterfaceAssocType {
     pub bounds: Vec<rask_ast::ty::TypeExpr>,
     /// AT4: what a conformance that omits the binding gets.
     pub default: Option<rask_ast::ty::TypeExpr>,
+}
+
+/// What a declaration says about one field beyond its type: a struct or union
+/// field, or a variant's payload field. Layout and serialization read these.
+#[derive(Debug, Clone, Default)]
+pub struct MemberDecl {
+    pub attrs: Vec<Attr>,
+    pub has_default: bool,
+    pub is_public: bool,
+}
+
+impl MemberDecl {
+    pub fn of(field: &rask_ast::decl::Field) -> Self {
+        MemberDecl {
+            attrs: field.attrs.clone(),
+            has_default: field.default.is_some(),
+            is_public: field.visibility.is_pub(),
+        }
+    }
+}
+
+/// What a declaration says about one enum variant beyond its payload types.
+#[derive(Debug, Clone, Default)]
+pub struct VariantDecl {
+    pub attrs: Vec<Attr>,
+    /// E15: the written discriminant, if any.
+    pub discriminant: Option<i128>,
+    /// The payload's field names, in order. Empty names for a positional one.
+    pub field_names: Vec<String>,
+    pub fields: Vec<MemberDecl>,
+}
+
+impl VariantDecl {
+    pub fn of(variant: &rask_ast::decl::Variant) -> Self {
+        VariantDecl {
+            attrs: variant.attrs.clone(),
+            discriminant: variant.discriminant,
+            field_names: variant.fields.iter().map(|f| f.name.clone()).collect(),
+            fields: variant.fields.iter().map(MemberDecl::of).collect(),
+        }
+    }
 }
 
 /// Information about a user-defined type.
@@ -63,6 +105,11 @@ pub enum TypeDef {
         /// makes it, and these methods are the ways to keep one
         /// (type.temporary). `None` for an ordinary type.
         temporary: Option<Vec<String>>,
+        /// The declaration's own attributes (`@layout(C)`, `@packed`, …).
+        attrs: Vec<Attr>,
+        /// What each field's declaration says beyond its type, in `fields`
+        /// order.
+        field_decls: Vec<MemberDecl>,
     },
     Enum {
         name: String,
@@ -78,6 +125,13 @@ pub enum TypeDef {
         /// wrong to serialize, so the opt-out has to reach both.
         no_encode: bool,
         no_decode: bool,
+        /// The declaration's own attributes (`tag(...)`, …).
+        attrs: Vec<Attr>,
+        /// The written backing type (`enum E: u8`), which sets the tag width.
+        backing: Option<Type>,
+        /// What each variant's declaration says beyond its payload types, in
+        /// `variants` order.
+        variant_decls: Vec<VariantDecl>,
     },
     Interface {
         name: String,
@@ -97,6 +151,8 @@ pub enum TypeDef {
     Union {
         name: String,
         fields: Vec<(String, Type)>,
+        /// In `fields` order.
+        field_decls: Vec<MemberDecl>,
     },
     /// OR6: a primitive, so it has somewhere to carry conformances and the
     /// methods that come with them.

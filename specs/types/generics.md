@@ -44,7 +44,7 @@ interface Name {
 
     // Default implementation (optional)
     func helper(self) -> bool {
-        self.method_name(...) != nullptr
+        self.another_method() != OtherType.empty()
     }
 }
 ```

@@ -49,8 +49,6 @@ pub enum ExprKind {
     Char(char),
     /// Boolean literal
     Bool(bool),
-    /// Null pointer literal
-    Null,
     /// OPT3: absent sentinel for `T?`. Dedicated literal — not tied to the
     /// `None` enum variant. Context infers the inner type `T`.
     None,
@@ -752,7 +750,6 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::StringInterp { .. } => "StringInterp",
         ExprKind::Char { .. } => "Char",
         ExprKind::Bool { .. } => "Bool",
-        ExprKind::Null { .. } => "Null",
         ExprKind::None { .. } => "None",
         ExprKind::Ident { .. } => "Ident",
         ExprKind::GenericName { .. } => "GenericName",

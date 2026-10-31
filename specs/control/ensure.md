@@ -304,9 +304,9 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void
 
 ## Many resources, one at a time
 
-No container holds a linear value (`mem.resources/RC1`–RC3), so "process a
-hundred files" is a hundred acquisitions each consumed on its own path — not a
-collection someone has to remember to drain:
+"Process a hundred files" is usually a hundred acquisitions, each consumed on its
+own path. When they have to be open at once, a `Vec` holds them and is owed
+itself (`mem.resources/RC1`), committed with `ensure files.consume(…)`:
 
 <!-- test: parse -->
 ```rask

@@ -421,12 +421,18 @@ impl<'a> Translator<'a> {
     }
 
     /// A C enum is its integer type, and its enumerators are constants (TM6).
+    /// The type is the one GCC and Clang give it: `unsigned int` with no
+    /// negative enumerator, else `int`, wider when a value needs it. Typed
+    /// `int` regardless, `ev.type == SDL_EVENT_QUIT` compared a `Uint32`
+    /// field with a `c_int` and needed a conversion C never asks for.
     fn enumeration(&mut self, e: &CEnumDecl, emitted: &mut HashSet<String>) -> String {
         let known: Vec<i64> = e.variants.iter().filter_map(|v| v.value).collect();
-        let base = if known.iter().all(|&v| i32::try_from(v).is_ok()) {
-            "c_int"
-        } else if known.iter().all(|&v| u32::try_from(v).is_ok()) {
+        let base = if known.iter().all(|&v| u32::try_from(v).is_ok()) {
             "c_uint"
+        } else if known.iter().all(|&v| i32::try_from(v).is_ok()) {
+            "c_int"
+        } else if known.iter().all(|&v| v >= 0) {
+            "c_ulong"
         } else {
             "c_long"
         };
@@ -440,6 +446,8 @@ impl<'a> Translator<'a> {
                 }
                 rname
             }
+            // No type to be: the enumerators are C's `int` constants.
+            None if known.iter().all(|&v| i32::try_from(v).is_ok()) => "c_int".to_string(),
             None => base.to_string(),
         };
         for v in &e.variants {
@@ -471,6 +479,13 @@ impl<'a> Translator<'a> {
             }
             Some(CValue::Float(f)) => format!("public const {}: f64 = {:?}\n", d.name, f),
             Some(CValue::Str(s)) => format!("public const {}: string = {}\n", d.name, quote(&s)),
+            // `#define SDL_mutex SDL_Mutex`: another name for something. A
+            // library's old spellings come in hundreds and say nothing, so
+            // they're kept out of the file; a use still says what it was.
+            None if matches!(d.body.as_slice(), [CTokenKind::Ident(_)]) => {
+                self.skipped.insert(d.name.clone(), format!("another name for `{}`", d.text.split_whitespace().last().unwrap_or("")));
+                return String::new();
+            }
             None => return self.skip(&d.name, &format!("not a constant: {}", d.text)),
         };
         emitted.insert(d.name.clone());
@@ -502,14 +517,19 @@ impl<'a> Translator<'a> {
             CType::FixedInt { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
             CType::IntPtr { signed } => (if *signed { "isize" } else { "usize" }).into(),
             CType::Const(inner) => self.ty(inner),
+            // A header doesn't say which of its pointers may be NULL, and a
+            // `*T` never is (mem.unsafe/PT6), so a data pointer is `*T?`. A
+            // `*T` argument still fills one; a returned one is checked before
+            // it's used. An override declaration (BI3) narrows one that the
+            // library's docs promise is never NULL.
             CType::Pointer(inner) => match strip(inner) {
                 // A C string, by convention.
-                CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8".into(),
+                CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8?".into(),
                 CType::FuncPtr { .. } => self.ty(strip(inner)),
-                other => format!("*{}", self.ty(other)),
+                other => optional_pointer_to(self.ty(other)),
             },
             CType::Array(elem, Some(n)) => format!("[{}; {}]", self.ty(elem), n),
-            CType::Array(elem, None) => format!("*{}", self.ty(elem)),
+            CType::Array(elem, None) => optional_pointer_to(self.ty(elem)),
             CType::Named(n) => match builtin_typedef(n) {
                 Some(t) => self.ty(&t),
                 None => type_name(n),
@@ -654,3 +674,14 @@ fn decl_name(decl: &CDecl) -> Option<&str> {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// `*T?` for a pointee spelled `pointee`. A `?` after a pointer type is the
+/// pointer's own, so a pointee that is itself optional takes parentheses:
+/// C's `void **` is `*(*void?)?`, where `**void??` doesn't parse.
+fn optional_pointer_to(pointee: String) -> String {
+    if pointee.ends_with('?') {
+        format!("*({})?", pointee)
+    } else {
+        format!("*{}?", pointee)
+    }
+}

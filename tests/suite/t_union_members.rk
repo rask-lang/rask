@@ -39,6 +39,20 @@ test "the size is the largest member's" {
     assert reflect.size_of<Wide>() == 8
 }
 
+// A pointer that may be absent is one word with null for `none`, as plain as
+// a `*T`: C's unions hold them (SDL_Event's user event has two).
+union Slot {
+    p: *u8?
+    n: u64
+}
+
+test "a union holds an optional pointer" {
+    let s = Slot(p: none)
+    let p = unsafe s.p
+    assert p is none
+    assert reflect.size_of<Slot>() == 8
+}
+
 func main() {
     let b = Bits(i: 1065353216)
     println("{unsafe b.f}")

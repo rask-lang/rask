@@ -367,6 +367,34 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("`take` empties the box, which is only sound on the last handle. A `Shared` is single-handle only when its value must be consumed, and the body is checked against each type it's called with [conc.sync/SH9]")
             }
 
+            DrainLoopOverLinear => Diagnostic::error(
+                "a `for` over `take_all()` would drop what's left if it exits early",
+            )
+            .with_code("E0844")
+            .with_primary(self.span, "the loop owns these, and a `break`, `return` or `try` leaves the rest")
+            .with_fix("drain with `while v.pop()? as x { … }`: an early exit leaves the rest in `v`, still owed")
+            .with_why("the elements must be consumed exactly once, and nothing consumes what a loop leaves behind [mem.resource-types/RC5]"),
+
+            ElementLostInGenericInstance { chain, param, type_arg, method, copies, at } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let verb = if *copies { "copies" } else { "drops" };
+                Diagnostic::error(format!(
+                    "`{}` {} elements with `{}`, and this call gives it `{}` = `{}`",
+                    func, verb, method, param, type_arg
+                ))
+                .with_code("E0849")
+                .with_primary(self.span, format!("`{}` = `{}` here", param, type_arg))
+                .with_secondary(*at, format!("`{}` {} an element, in `{}`", method, verb, func))
+                .with_fix(format!(
+                    "call it with elements that needn't be consumed, or have `{}` take them out with `pop` or `remove` instead",
+                    func
+                ))
+                .with_why(format!(
+                    "`{}` must be consumed exactly once, and a generic body is checked against each type it's called with [mem.resource-types/RC5]",
+                    type_arg
+                ))
+            }
+
             LinearInGenericInstance { chain, type_args, inner, inner_span } => {
                 let func = chain.last().map(String::as_str).unwrap_or("?");
                 let what = match inner.as_ref() {

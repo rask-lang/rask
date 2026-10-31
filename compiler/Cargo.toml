@@ -8,6 +8,7 @@ members = [
     "crates/rask-desugar",
     "crates/rask-types",
     "crates/rask-check",
+    "crates/rask-layout",
     "crates/rask-comptime",
     "crates/rask-ownership",
     "crates/rask-mono",

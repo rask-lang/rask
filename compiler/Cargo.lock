@@ -1360,6 +1360,7 @@ version = "0.6.0"
 dependencies = [
  "rask-ast",
  "rask-diagnostics",
+ "rask-layout",
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
@@ -1409,6 +1410,7 @@ dependencies = [
  "object",
  "rask-ast",
  "rask-check",
+ "rask-layout",
  "rask-mir",
  "rask-mono",
  "rask-stdlib",
@@ -1429,6 +1431,7 @@ dependencies = [
  "rask-diagnostics",
  "rask-effects",
  "rask-interp",
+ "rask-layout",
  "rask-lexer",
  "rask-mir",
  "rask-miri",
@@ -1506,6 +1509,7 @@ dependencies = [
  "rask-comptime",
  "rask-desugar",
  "rask-diagnostics",
+ "rask-layout",
  "rask-lexer",
  "rask-mono",
  "rask-parser",
@@ -1515,6 +1519,16 @@ dependencies = [
  "unicode-normalization",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "rask-layout"
+version = "0.6.0"
+dependencies = [
+ "rask-ast",
+ "rask-parser",
+ "rask-stdlib",
+ "rask-types",
 ]
 
 [[package]]
@@ -1585,6 +1599,7 @@ dependencies = [
  "rask-ast",
  "rask-check",
  "rask-diagnostics",
+ "rask-layout",
  "rask-mono",
  "rask-parser",
  "rask-stdlib",
@@ -1596,6 +1611,7 @@ name = "rask-miri"
 version = "0.6.0"
 dependencies = [
  "rask-check",
+ "rask-layout",
  "rask-mir",
 ]
 
@@ -1605,6 +1621,7 @@ version = "0.6.0"
 dependencies = [
  "rask-ast",
  "rask-check",
+ "rask-layout",
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",

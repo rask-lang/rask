@@ -14,10 +14,11 @@ A game with:
 - **PhysicsBody** — a `@resource` wrapping a C raw pointer (must be consumed)
 - **VulkanDevice** / **PhysicsWorld** — safe wrappers around C FFI
 
-The physics bodies are the interesting part: a `@resource` can't live in *any*
-container (`mem.resources/RC1`–RC3), so the C side keeps them and an entity node
-stores the raw id. That constraint is not a workaround, it's the finding — see
-Phase 3.
+The physics bodies are the interesting part: when this was written a `@resource`
+couldn't live in *any* container, so the C side keeps them and an entity node
+stores the raw id. That constraint was the finding — see Phase 3. A `Vec` of
+them is allowed now and owed itself (`mem.resources/RC1`), but a rack still
+can't hold one (RC2), so the entity graph stays as it is.
 
 ## Type Definitions
 

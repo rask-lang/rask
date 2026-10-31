@@ -94,6 +94,13 @@ impl Interpreter {
     }
 
     fn assign_nested_field(&self, obj: &Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
+        // `p.x = v` through a raw pointer: change the value where it points
+        // and put it back, so a pointer into C memory sees the write too.
+        if let Value::RawPtr(p) = obj {
+            let pointee = p.read()?;
+            self.assign_nested_field(&pointee, field_chain, value)?;
+            return p.write(pointee);
+        }
         if field_chain.is_empty() {
             return Err(RuntimeError::TypeError(
                 "cannot assign to a value directly through nested field chain".to_string(),
@@ -189,6 +196,10 @@ impl Interpreter {
 
     /// Assign `value` into `container[idx]`.
     fn assign_index(&mut self, container: &Value, idx: &Value, value: Value) -> Result<(), RuntimeError> {
+        // `p[i] = v` is `*p.add(i) = v`.
+        if let (Value::RawPtr(p), Value::Int(i, _)) = (container, idx) {
+            return p.stepped(*i as i64).write(value);
+        }
         match container {
             Value::Vec(v) => {
                 if let Value::Int(i, _) = idx {
@@ -222,6 +233,9 @@ impl Interpreter {
         field_chain: &[String],
         value: Value,
     ) -> Result<(), RuntimeError> {
+        if let (Value::RawPtr(p), Value::Int(i, _)) = (container, idx) {
+            return self.assign_nested_field(&Value::RawPtr(p.stepped(*i as i64)), field_chain, value);
+        }
         match container {
             Value::Vec(v) => {
                 if let Value::Int(i, _) = idx {

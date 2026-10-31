@@ -997,6 +997,58 @@ fn raw_pointer_null_checks_follow_build_mode_and_attributes() {
     assert!(!panicked(&debug_unchecked, "null pointer"), "{debug_unchecked:?}");
 }
 
+/// mem.unsafe/PT7: a pointer from `as_ptr()` on a local `Vec`, `string` or
+/// array is checked against that local's storage in a debug build: in-bounds
+/// accesses (a string's terminator included) run, one past the end panics
+/// with the access named. Release doesn't check.
+#[test]
+fn raw_pointer_bounds_checks_use_where_the_pointer_came_from() {
+    let rask = rask_binary();
+    let run = |release: bool, args: &[&str]| {
+        let bin = std::env::temp_dir().join(format!(
+            "rask_ptrbounds_{}_{}_{}",
+            release,
+            std::process::id(),
+            next_tmp_id()
+        ));
+        let mut cmd = Command::new(&rask);
+        cmd.arg("compile");
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(fixture("pointer_bounds.rk"))
+            .arg("-o")
+            .arg(&bin)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("rask compile");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let ran = Command::new(&bin).args(args).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        (
+            String::from_utf8_lossy(&ran.stdout).to_string(),
+            String::from_utf8_lossy(&ran.stderr).to_string(),
+            ran.status.code(),
+        )
+    };
+    let panicked = |r: &(String, String, Option<i32>), msg: &str| r.2 == Some(101) && r.1.contains(msg);
+
+    let fine = run(false, &["a", "b", "c", "d"]);
+    assert_eq!(fine.2, Some(0), "{fine:?}");
+    assert!(fine.0.contains("20\nfine"), "{fine:?}");
+    let vec_read = run(false, &[]);
+    assert!(panicked(&vec_read, "raw pointer read outside"), "{vec_read:?}");
+    let str_write = run(false, &["a"]);
+    assert!(panicked(&str_write, "raw pointer write outside"), "{str_write:?}");
+    let array_read = run(false, &["a", "b"]);
+    assert!(panicked(&array_read, "raw pointer read outside"), "{array_read:?}");
+    let walked = run(false, &["a", "b", "c"]);
+    assert!(panicked(&walked, "raw pointer read outside"), "{walked:?}");
+    let release = run(true, &["a", "b", "c", "d"]);
+    assert!(release.0.contains("20\nfine"), "{release:?}");
+}
+
 /// `@packed` and `@align` were read by nothing; a malformed one is now an
 /// error where it's written.
 #[test]
@@ -3220,12 +3272,11 @@ fn error_comptime_field_name_that_is_not_a_field() {
 
 #[test]
 fn error_linear_containers() {
-    // RC1/RC3: Vec/Map can't hold linear elements (@resource, transitively
-    // linear, or optionals/tuples built from them). Covers every entry route:
-    // annotation, push, param, return, field, transitive, nested, optional,
-    // alias, Map value, Map key (E0820).
+    // RC1-RC5: a Vec/Map of linear values is owed itself, nothing may drop or
+    // copy an element, and a Rack can't hold one. The marker gate checks each
+    // line; this only checks the file fails.
     assert!(compile_error("linear_containers.rk"),
-        "should reject Vec/Map of linear values across all entry routes (E0820)");
+        "should reject losing a linear element, an unconsumed container, and a rack of them");
 }
 
 #[test]
@@ -3897,7 +3948,7 @@ func main() {
     let s: c.Mylib_status = c.MYLIB_TIMEOUT
     let v: i32 = c.MYLIB_VERSION
     let name: string = c.MYLIB_NAME
-    let ctx: *c.Mylib_ctx = nullptr
+    let ctx: *c.Mylib_ctx? = none
     unsafe {
         c.mylib_noop()
         let n = c.mylib_add(alias.x, v)
@@ -3977,7 +4028,7 @@ fn bindc_writes_and_checks() {
     assert!(out.status.success(), "bindc should succeed: {}", String::from_utf8_lossy(&out.stderr));
     for want in [
         "func mylib_add(a: c_int, b: c_int) -> c_int",
-        "func mylib_hash(data: *u8, len: c_size) -> u32",
+        "func mylib_hash(data: *u8?, len: c_size) -> u32",
         "public struct Mylib_point {",
         "public union Mylib_value {",
         "extern \"C\" struct Mylib_ctx",

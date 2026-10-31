@@ -259,6 +259,9 @@ pub enum TypeError {
     /// reader can't tell "negate the payload" from "test for absence".
     #[error("`!` on `{found}` — negation doesn't reach through an optional")]
     NotOnOptional { found: Type, span: Span },
+    /// mem.unsafe/PT6: `*p` where `p: *T?`. It may be the null address.
+    #[error("`*` on `{found}`, which may be absent")]
+    DerefOptionalPointer { found: Type, span: Span },
     /// CV1a/CV2: an integer that doesn't fit the position it's going into.
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
@@ -310,6 +313,17 @@ pub enum TypeError {
     MissingReturn {
         function_name: String,
         expected_type: Type,
+        span: Span,
+    },
+    /// A `@noreturn` function's body can reach its end.
+    #[error("`{function_name}` is `@noreturn`, but its body can finish")]
+    NoReturnFinishes {
+        function_name: String,
+        span: Span,
+    },
+    /// `return` inside a `@noreturn` function.
+    #[error("`return` in a `@noreturn` function")]
+    NoReturnReturns {
         span: Span,
     },
     #[error("generic argument error: {0}")]
@@ -1017,6 +1031,12 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `&` on something that isn't stored anywhere: `&f()`, `&(a + b)`.
+    #[error("`&` needs a variable, a field or an element")]
+    AddressOfValue {
+        span: Span,
+    },
+
     /// UN1: a union literal names other than exactly one member.
     #[error("a `{ty}` is built from one member")]
     UnionMemberCount {
@@ -1381,6 +1401,18 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.resources/RC5: `clear`, `set`, `get` and the like on a `Vec` or
+    /// `Map` whose elements must be consumed. `copies` is a copy out (`get`),
+    /// otherwise a drop (`clear`).
+    #[error("`{method}` would {} a `{elem}` in a `{container}`", if *copies { "copy" } else { "drop" })]
+    LinearElementLost {
+        container: String,
+        method: String,
+        elem: Type,
+        copies: bool,
+        span: Span,
+    },
+
     /// type.sequence/SEQ29: `to_map` is defined only on a sequence of pairs.
     #[error("`to_map` needs a sequence of pairs")]
     ToMapNeedsPairs {
@@ -1683,6 +1715,7 @@ impl TypeError {
             | NotIterable { found, .. }
             | ForMutateReadOnlySource { found, .. }
             | NotOnOptional { found, .. }
+            | DerefOptionalPointer { found, .. }
             | PresenceTestOnResult { found, .. }
             | TakeOnNonOptional { found, .. }
             | TryOnFlatShape { found, .. }
@@ -1700,6 +1733,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            LinearElementLost { elem, .. } => *elem = f(elem),
             SharedCycle { payload, .. } => *payload = f(payload),
             RackNodeNotStruct { node, .. } => *node = f(node),
             TransmuteNeedsTarget { from, .. } => *from = f(from),
@@ -1872,10 +1906,13 @@ impl TypeError {
             | UnionMemberCount { .. }
             | UnionOwningMember { .. }
             | NotCCallable { .. }
+            | AddressOfValue { .. }
             | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
             | UseAfterDiscard { .. }
+            | NoReturnFinishes { .. }
+            | NoReturnReturns { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }

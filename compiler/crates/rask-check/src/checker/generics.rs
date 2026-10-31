@@ -466,7 +466,7 @@ impl TypeChecker {
                 subst.extend(
                     bound
                         .into_iter()
-                        .filter(|(name, _)| super::declarations::is_type_param_name(name)),
+                        .filter(|(name, _)| rask_ast::type_params::is_type_param_name(name)),
                 );
             }
         }
@@ -669,7 +669,7 @@ pub(super) fn pattern_names(pattern: &TypeExpr) -> Vec<String> {
             args.iter().flat_map(pattern_names).collect()
         }
         _ => match pattern.bare_name() {
-            Some(n) if super::declarations::is_type_param_name(n) => vec![n.to_string()],
+            Some(n) if rask_ast::type_params::is_type_param_name(n) => vec![n.to_string()],
             _ => Vec::new(),
         },
     }

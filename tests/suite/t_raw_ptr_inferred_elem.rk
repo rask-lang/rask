@@ -26,9 +26,9 @@ test "Vec.from infers the same way" {
 test "an inferred string element" {
     mut v = Vec.new()
     v.push("hi")
-    let p = unsafe v.as_ptr()
+    let p: *string? = unsafe v.as_ptr()
     assert v[0] == "hi"
-    assert unsafe !p.is_null()
+    assert p?
 }
 
 test "annotating it still works" {
