@@ -59,6 +59,10 @@ pub const STDLIB_DESUGAR_ID_BASE: u32 = 40_000_000;
 /// The stdlib's counterpart to [`DEFAULT_ARGS_ID_BASE`].
 pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
 
+/// What the end of every claim body calls (type.claims/CL5). The claim
+/// runner's generated source declares it.
+pub const CLAIM_END_MARKER: &str = "__claim_reached_end";
+
 /// Run the whole desugar phase over a list of declarations.
 ///
 /// Both sub-passes always run together. Splitting them was a trap: every
@@ -408,6 +412,24 @@ impl Desugarer {
         for stmt in &mut f.body {
             self.desugar_stmt(stmt);
         }
+        if f.attrs.iter().any(|a| a.is("claim")) {
+            self.mark_claim_end(f);
+        }
+    }
+
+    /// A claim discards its input with a bare `return` (type.claims/CL5), so
+    /// what tells a held input from a discarded one is whether the body ran to
+    /// its end. The call goes there; the claim runner's generated source
+    /// defines it.
+    fn mark_claim_end(&mut self, f: &mut FnDecl) {
+        let span = Span::new(f.span.end, f.span.end);
+        let callee = Expr { id: self.fresh_id(), kind: ExprKind::Ident(CLAIM_END_MARKER.to_string()), span };
+        let call = Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Call { func: Box::new(callee), args: Vec::new() },
+            span,
+        };
+        f.body.push(Stmt { id: self.fresh_id(), kind: StmtKind::Expr(call), span });
     }
 
     fn desugar_struct(&mut self, s: &mut StructDecl) {

@@ -75,6 +75,19 @@ pub type CodegenResult<T> = Result<T, CodegenError>;
 ///
 /// Covers the full lifecycle: declare functions/data → generate IR → emit object.
 /// Constructors are backend-specific (different config), so not part of the interface.
+/// One claim for the claim runner (type.claims): its name, the generated case
+/// function that builds an input and calls it, the seed its inputs come from,
+/// how many index values an exhaustive walk takes (0 when it can't be walked),
+/// and its per-input step budget.
+#[derive(Debug, Clone)]
+pub struct ClaimRun {
+    pub name: String,
+    pub fn_name: String,
+    pub seed: u64,
+    pub domain: i64,
+    pub budget: i64,
+}
+
 pub trait Backend {
     /// Declare C runtime functions (rask_alloc, rask_free, print helpers, etc.).
     fn declare_runtime_functions(&mut self) -> CodegenResult<()>;
@@ -126,6 +139,13 @@ pub trait Backend {
     fn gen_test_runner(
         &mut self,
         tests: &[(String, String)],
+        const_names: &[String],
+    ) -> CodegenResult<()>;
+
+    /// Generate the claim runner entry point (type.claims).
+    fn gen_claim_runner(
+        &mut self,
+        claims: &[ClaimRun],
         const_names: &[String],
     ) -> CodegenResult<()>;
 

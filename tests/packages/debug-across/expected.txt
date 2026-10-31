@@ -1,0 +1,3 @@
+Entry(amount: 5, memo: "rent")
+Kind.Large(3)
+Kind.Small

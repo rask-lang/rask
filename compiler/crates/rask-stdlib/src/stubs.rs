@@ -90,6 +90,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("thread.rk", Layer::Std),
     ("async.rk", Layer::Std),
     ("sim.rk", Layer::Std),
+    ("claims.rk", Layer::Std),
     ("std.rk", Layer::Std),
 ];
 
@@ -405,6 +406,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
     ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
+    ("claims.rk", include_str!("../../../../stdlib/claims.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
