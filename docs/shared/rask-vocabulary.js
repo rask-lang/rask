@@ -25,7 +25,7 @@ window.RASK_VOCAB = {
         'take test interface try type union unsafe using where while with'
     ).split(' '),
 
-    literals: 'true false none nullptr'.split(' '),
+    literals: 'true false none'.split(' '),
 
     types: (
         'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +

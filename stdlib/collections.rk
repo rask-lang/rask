@@ -87,6 +87,7 @@ extend Vec<T> {
     /// refused — is a copy. Pushing the item itself gave `self` an element
     /// the source still owned (E0906, #1429).
     @grows
+    @copies_elements
     public func try_push_all(mutate self, items: Sequence<T>) -> void or GrowError<T> {
         for item in items {
             if self.is_full() {
@@ -100,6 +101,7 @@ extend Vec<T> {
     ///
     /// What goes in is a copy, for the reason `try_push_all` gives.
     @grows
+    @copies_elements
     public func push_all(mutate self, items: Sequence<T>) -> void {
         for item in items {
             self.push(item.clone())
@@ -114,6 +116,7 @@ extend Vec<T> {
     /// Remove all elements.
     @native("rask_vec_clear")
     @shrinks
+    @drops_elements
     public func clear(mutate self) {}
 
     /// Insert a value at the given index, shifting later elements right.
@@ -176,14 +179,17 @@ extend Vec<T> {
 
     /// Get element at index (borrows).
     @native("rask_vec_get_opt")
+    @copies_elements
     public func get(self, index: i64) -> Option<T> {}
 
     /// Get the first element.
     @native("rask_vec_first")
+    @copies_elements
     public func first(self) -> Option<T> {}
 
     /// Get the last element.
     @native("rask_vec_last")
+    @copies_elements
     public func last(self) -> Option<T> {}
 
     /// Read element at index through a closure.
@@ -255,6 +261,29 @@ extend Vec<T> {
     @shrinks
     public func take_all(mutate self) -> Vec<T> {}
 
+    /// Hand every element to `f`, front first, and free the vector. `f` owes
+    /// what it's handed, so this is how a vector of resources is consumed
+    /// whole, and what an `ensure` commits it with (mem.resources/RC1):
+    /// `ensure files.consume(|take f| f.close())`. Every element is handed
+    /// over even after one fails, since each is owed either way, and the
+    /// first failure is the answer. A consumer that can't fail makes a call
+    /// that can't either.
+    public func consume<E>(take self, f: func(take T) -> void or E) -> void or E {
+        self.reverse()
+        mut failed: E? = none
+        while self.pop()? as item {
+            f(item) catch e => {
+                if failed is none {
+                    failed = e
+                }
+            }
+        }
+        if failed? as e {
+            return e
+        }
+        return
+    }
+
     /// A sequence over these elements — the chain head a collection stands for
     /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
     /// spelling anyone writes, and not a second `.iter()`.
@@ -277,6 +306,7 @@ extend Vec<T> {
     /// which keeps survivors in order and gathers the removed ones at the end,
     /// where `pop` releases each exactly once.
     @shrinks
+    @drops_elements
     public func remove_where(mutate self, f: func(T) -> bool) -> usize {
         let n = self.len()
         mut kept: usize = 0
@@ -341,6 +371,7 @@ extend Vec<T> {
     /// collapse — sort first for full dedup.
     @native("rask_vec_dedup")
     @shrinks
+    @drops_elements
     public func remove_adjacent_duplicates(mutate self) {}
 
     /// Map then flatten results. Lazy (type.sequence/SEQ41).
@@ -374,6 +405,7 @@ extend Vec<T> {
 
     /// Reduce without initial value. Returns none if empty.
     @native
+    @copies_elements
     public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
 
     /// Zip with another vector into pairs.
@@ -382,10 +414,12 @@ extend Vec<T> {
     /// work yet: `U` is the method's own type parameter and nothing resolves it
     /// at the call site, so the pair's second slot gets the wrong width.
     @native
+    @copies_elements
     public func zip(self, other: Vec<U>) -> Vec<(T, U)> {}
 
     /// Split into chunks of the given size.
     @native("rask_vec_chunks")
+    @copies_elements
     public func chunks(self, size: usize) -> Vec<Vec<T>> {}
 
     /// True if any element satisfies the predicate.
@@ -398,6 +432,7 @@ extend Vec<T> {
 
     /// Find the first element matching the predicate.
     @native
+    @copies_elements
     public func find(self, f: func(T) -> bool) -> Option<T> {}
 
     /// Find the index of the first element matching the predicate.
@@ -406,14 +441,17 @@ extend Vec<T> {
 
     /// Sum all elements.
     @native
+    @copies_elements
     public func sum(self) -> T {}
 
     /// Clone the vector.
     @native("rask_vec_clone")
+    @copies_elements
     public func clone(self) -> Vec<T> {}
 
     /// Set element at index. Panics if out of bounds.
     @native("rask_vec_set", panics: true)
+    @drops_elements
     public func set(mutate self, index: i64, take value: T) {}
 
     /// Give back allocation past `to` elements — or past the current length,
@@ -503,6 +541,7 @@ extend Vec<T> where T: Comparable {
     ///
     /// The loop keeps an index rather than the element: the elements are
     /// `self`'s, and the answer is handed out the way `get` hands one out.
+    @copies_elements
     public func min(self) -> T? {
         let i = self.extreme_index(Ordering.Less)
         if i < 0 {
@@ -512,6 +551,7 @@ extend Vec<T> where T: Comparable {
     }
 
     /// Maximum element. The first of several equal ones.
+    @copies_elements
     public func max(self) -> T? {
         let i = self.extreme_index(Ordering.Greater)
         if i < 0 {
@@ -650,14 +690,17 @@ extend Map<K, V> {
     /// Remove all entries.
     @native("rask_map_clear")
     @shrinks
+    @drops_elements
     public func clear(mutate self) {}
 
     /// Clone the map.
     @native("rask_map_clone")
+    @copies_elements
     public func clone(self) -> Map<K, V> {}
 
     /// Get value for key (borrows).
     @native("rask_map_get")
+    @copies_elements
     public func get(self, key: K) -> Option<V> {}
 
     /// True if the map contains this key.
@@ -722,6 +765,25 @@ extend Map<K, V> {
     @shrinks
     public func take_all(mutate self) -> Vec<(K, V)> {}
 
+    /// Hand every entry to `f` and free the map, the way `Vec.consume` does:
+    /// how a map holding resources is consumed (mem.resources/RC3).
+    public func consume<E>(take self, f: func(take K, take V) -> void or E) -> void or E {
+        mut entries = self.take_all()
+        mut failed: E? = none
+        while entries.pop()? as entry {
+            let (key, value) = entry
+            f(key, value) catch e => {
+                if failed is none {
+                    failed = e
+                }
+            }
+        }
+        if failed? as e {
+            return e
+        }
+        return
+    }
+
     /// The keys, in the map's order, which is unspecified.
     public func keys(self) -> Sequence<K> {
         return |yield| {
@@ -734,6 +796,7 @@ extend Map<K, V> {
     }
 
     /// The values, in the same order as `keys`.
+    @copies_elements
     public func values(self) -> Sequence<V> {
         return |yield| {
             for entry in self {

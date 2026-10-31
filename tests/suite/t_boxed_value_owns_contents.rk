@@ -16,7 +16,7 @@
 // The vtable's `owned_release` is how the second half happens, and it is only
 // reached from the paths where the box owns — a container element's release, a
 // struct field's, a wrapper payload's. `InterfaceDrop`, which is emitted for the
-// borrowed case alone, passes a nullptr hook. Getting that asymmetry wrong is what
+// borrowed case alone, passes a null hook. Getting that asymmetry wrong is what
 // #1144 was: the slot used to run for every box and release the value's
 // strings, so a borrowed box decremented a buffer the frame still held and the
 // next read came back as 0xDE fill.

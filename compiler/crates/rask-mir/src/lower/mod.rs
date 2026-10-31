@@ -31,6 +31,10 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
+/// No arm widenings: a lowering context built without a checked program.
+static EMPTY_ARM_WIDENINGS: std::sync::LazyLock<HashMap<NodeId, rask_types::Type>> =
+    std::sync::LazyLock::new(HashMap::new);
+
 /// `none` for `Link<T>?` — the null address. See `rask_types::abi`.
 pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 
@@ -40,7 +44,7 @@ pub(crate) const LINK_NONE_SENTINEL: i64 = rask_types::abi::LINK_NONE_SENTINEL;
 /// one type and the word itself carries the answer.
 pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
     match ty {
-        MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
+        MirType::Option(inner) if inner.is_niche_payload() => ty.niche_none(),
         MirType::Link(_) => ty.niche_none(),
         _ => None,
     }
@@ -91,6 +95,9 @@ pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
 /// The word that means `none` for a niche option spelled by name.
 pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
     let inner = ty.as_option()?;
+    if let Type::RawPtr(_) = inner {
+        return Some(rask_types::abi::RAW_PTR_NONE_SENTINEL);
+    }
     let Type::UnresolvedGeneric { name, .. } = inner else { return None };
     niche_sentinel_for_head(name)
 }
@@ -405,6 +412,7 @@ impl<'a> MirContext<'a> {
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
+            arm_widenings: &typed.arm_widenings,
             c_fn_pointers: &typed.c_fn_pointers,
             c_contexts: &typed.c_contexts,
             try_chain_placement: &typed.try_chain_placement,
@@ -542,6 +550,8 @@ pub struct MirContext<'a> {
     pub interface_methods: HashMap<String, Vec<String>>,
     /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
     pub interface_coercions: &'a HashMap<NodeId, String>,
+    /// See `TypedProgram::arm_widenings`.
+    pub arm_widenings: &'a HashMap<NodeId, rask_types::Type>,
     /// CB1/CB2: function values passed where C wants a function pointer.
     pub c_fn_pointers: &'a std::collections::HashSet<NodeId>,
     /// CB3: externs whose callback takes a closure through its context.
@@ -693,6 +703,7 @@ impl<'a> MirContext<'a> {
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &EMPTY_ESCAPING,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &EMPTY_ERROR_WRAPS,
@@ -944,7 +955,7 @@ impl<'a> MirContext<'a> {
 
     fn written_layout(&self, ty: &TypeExpr) -> MirType {
         match ty {
-            TypeExpr::Unit | TypeExpr::NoneType => MirType::Void,
+            TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => MirType::Void,
             TypeExpr::Optional(inner) => option_of(self.resolve_type_expr(inner)),
             TypeExpr::Result { ok, err } => MirType::Result {
                 ok: Box::new(self.resolve_type_expr(ok)),
@@ -987,7 +998,8 @@ impl<'a> MirContext<'a> {
                     None => interface.to_string(),
                 },
             },
-            TypeExpr::RawPtr(_) | TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
+            TypeExpr::RawPtr(_) => MirType::RawPtr,
+            TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
             TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
             TypeExpr::Named { path, args } => self.resolve_generic_expr(&path.join("."), args),
         }
@@ -1278,6 +1290,7 @@ impl<'a> MirContext<'a> {
     pub(crate) fn niche_option_sentinel(&self, ty: &Type) -> Option<i64> {
         let inner = ty.as_option()?;
         let head = match inner {
+            Type::RawPtr(_) => return Some(rask_types::abi::RAW_PTR_NONE_SENTINEL),
             Type::UnresolvedGeneric { name, .. } => name.clone(),
             Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
             _ => return None,
@@ -1294,6 +1307,7 @@ impl<'a> MirContext<'a> {
     pub(crate) fn niche_option_mir_type(&self, ty: &Type) -> Option<MirType> {
         let inner = ty.as_option()?;
         let (name, args) = match inner {
+            Type::RawPtr(_) => return Some(MirType::Option(Box::new(MirType::RawPtr))),
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
             _ => return None,
@@ -1421,7 +1435,7 @@ impl<'a> MirContext<'a> {
                 }
             }
             Type::UnresolvedGeneric { name, args } => self.resolve_unresolved_generic(name, args),
-            Type::RawPtr(_) => MirType::Ptr,
+            Type::RawPtr(_) => MirType::RawPtr,
             // A closure is a pointer to its block, and saying so in the type is
             // what lets a carrier holding one give it back. `MirType::Ptr` is
             // every other pointer as well, so a tuple element or an optional's
@@ -1824,6 +1838,9 @@ pub struct MirLowerer<'a> {
     /// same value at panic time as when the ensure was scheduled, which is what
     /// makes snapshotting a scalar into the hook's env exact instead of stale.
     reassigned_names: std::collections::HashSet<String>,
+    /// `reassigned_names` without the assignments that step a raw pointer
+    /// along from itself (`p = p.add(1)`). What PT7's block tracking reads.
+    pointer_rebound: std::collections::HashSet<String>,
     /// Every name that appears inside an `ensure` body in this function.
     ///
     /// Scanned up front, because whether a `mut` scalar needs a stack cell has
@@ -1940,6 +1957,9 @@ pub struct MirLowerer<'a> {
     /// `value.(name)` reads them so a field name can be given a name of its own
     /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
     comptime_strings: HashMap<String, String>,
+    /// Raw pointers whose block lowering saw made, by the local holding them.
+    /// See `PtrBlock`.
+    ptr_blocks: HashMap<LocalId, PtrBlock>,
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for
@@ -3496,9 +3516,43 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn collect_reassigned(body: &[rask_ast::stmt::Stmt]) -> std::collections::HashSet<String> {
         let mut out = std::collections::HashSet::new();
         for stmt in body {
-            Self::scan_reassigned_stmt(stmt, &mut out);
+            Self::scan_reassigned_stmt(stmt, &mut out, false);
         }
         out
+    }
+
+    /// The same, without `p = p.add(n)` and the other steps a raw pointer takes
+    /// from itself. A pointer only ever reassigned that way stays in the block
+    /// it started in, so it keeps its bounds check (mem.unsafe/PT7).
+    pub(crate) fn collect_reassigned_apart_from_pointer_steps(
+        body: &[rask_ast::stmt::Stmt],
+    ) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for stmt in body {
+            Self::scan_reassigned_stmt(stmt, &mut out, true);
+        }
+        out
+    }
+
+    /// `p = p.add(n)`, `p = unsafe p.sub(1)`: the value is `p` moved along by
+    /// pointer arithmetic or a cast.
+    fn is_pointer_step(name: &str, value: &Expr) -> bool {
+        let mut cur = value;
+        loop {
+            match &cur.kind {
+                ExprKind::Unsafe { body } if body.len() == 1 => match &body[0].kind {
+                    rask_ast::stmt::StmtKind::Expr(e) => cur = e,
+                    _ => return false,
+                },
+                ExprKind::MethodCall { object, method, .. }
+                    if matches!(method.as_str(), "add" | "sub" | "offset" | "cast") =>
+                {
+                    cur = object
+                }
+                ExprKind::Ident(n) => return n == name && !std::ptr::eq(cur, value),
+                _ => return false,
+            }
+        }
     }
 
     fn note_place(place: &Expr, out: &mut std::collections::HashSet<String>) {
@@ -3568,19 +3622,27 @@ impl<'a> MirLowerer<'a> {
         (kids, bodies)
     }
 
-    fn scan_reassigned_stmt(stmt: &rask_ast::stmt::Stmt, out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_stmt(
+        stmt: &rask_ast::stmt::Stmt,
+        out: &mut std::collections::HashSet<String>,
+        skip_steps: bool,
+    ) {
         use rask_ast::stmt::StmtKind as SK;
         // The one thing a statement says on its own: an assignment rebinds the
         // root of its target. Everything else is in the children.
-        if let SK::Assign { target, .. } = &stmt.kind {
-            Self::note_place(target, out);
+        if let SK::Assign { target, value, .. } = &stmt.kind {
+            let step = skip_steps
+                && matches!(&target.kind, ExprKind::Ident(n) if Self::is_pointer_step(n, value));
+            if !step {
+                Self::note_place(target, out);
+            }
         }
         let (kids, bodies) = Self::stmt_children(stmt);
         for k in kids {
-            Self::scan_reassigned_expr(k, out);
+            Self::scan_reassigned_expr(k, out, skip_steps);
         }
         for b in bodies {
-            Self::scan_reassigned_body(b, out);
+            Self::scan_reassigned_body(b, out, skip_steps);
         }
     }
 
@@ -3659,9 +3721,13 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn scan_reassigned_body(body: &[rask_ast::stmt::Stmt], out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_body(
+        body: &[rask_ast::stmt::Stmt],
+        out: &mut std::collections::HashSet<String>,
+        skip_steps: bool,
+    ) {
         for stmt in body {
-            Self::scan_reassigned_stmt(stmt, out);
+            Self::scan_reassigned_stmt(stmt, out, skip_steps);
         }
     }
 
@@ -3768,7 +3834,7 @@ impl<'a> MirLowerer<'a> {
         (kids, bodies)
     }
 
-    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
+    fn scan_reassigned_expr(expr: &Expr, out: &mut std::collections::HashSet<String>, skip_steps: bool) {
         // What an expression says on its own: a call that can write an argument
         // rebinds the caller's local, and `take <place>` leaves `none` behind
         // (OPT32) — a write to the place.
@@ -3785,10 +3851,10 @@ impl<'a> MirLowerer<'a> {
         }
         let (kids, bodies) = Self::expr_children(expr);
         for k in kids {
-            Self::scan_reassigned_expr(k, out);
+            Self::scan_reassigned_expr(k, out, skip_steps);
         }
         for b in bodies {
-            Self::scan_reassigned_body(b, out);
+            Self::scan_reassigned_body(b, out, skip_steps);
         }
     }
 
@@ -3811,6 +3877,7 @@ impl<'a> MirLowerer<'a> {
                 | MirType::Array { .. }
                 | MirType::Tuple(_)
                 | MirType::Ptr
+                | MirType::RawPtr
                 | MirType::Container(_)
                 | MirType::Buffer
         )
@@ -3922,7 +3989,7 @@ impl<'a> MirLowerer<'a> {
             let cap_ty = self
                 .builder
                 .local_type(cap.outer)
-                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr | MirType::Container(_))))
+                .filter(|t| cap.by_ref && (t.passed_by_address() || matches!(t, MirType::Ptr | MirType::RawPtr | MirType::Container(_))))
                 .unwrap_or_else(|| cap.ty.clone());
             let dst = thunk_builder.alloc_local(cap.name.clone(), cap_ty.clone());
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
@@ -4431,6 +4498,7 @@ impl<'a> MirLowerer<'a> {
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
+            pointer_rebound: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
             inline_return_target: None,
             inline_return_taken: None,
@@ -4452,12 +4520,14 @@ impl<'a> MirLowerer<'a> {
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
+            ptr_blocks: HashMap::new(),
         };
 
         // Which names this body reassigns (see `reassigned_names`). Scanned once
         // here rather than tracked as lowering goes, because the question is
         // about statements the ensure hasn't reached yet.
         lowerer.reassigned_names = Self::collect_reassigned(&fn_decl.body);
+        lowerer.pointer_rebound = Self::collect_reassigned_apart_from_pointer_steps(&fn_decl.body);
         lowerer.ensure_read_names = Self::collect_ensure_reads(&fn_decl.body);
 
         // Resolve Self from the function name, for the methods that still
@@ -6046,7 +6116,7 @@ impl<'a> MirLowerer<'a> {
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
             | ExprKind::StringInterp(..) | ExprKind::Bytes(..)
-            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
+            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::None | ExprKind::GenericName { .. } => {}
         }
     }
 
@@ -6661,6 +6731,20 @@ pub(crate) enum PointerChecks {
     Always,
     /// `@unchecked_unsafe`: never checked.
     Never,
+}
+
+/// The block a raw pointer points into, for a debug build's bounds check
+/// (mem.unsafe/PT7): the pointer came from `as_ptr()` on a local `Vec`,
+/// `string` or array of scalars, maybe moved along by `add`, `sub`, `offset`
+/// or `cast`. The block is read at the access, not when the pointer was made:
+/// PT3 keeps the root from changing size while the pointer is in use, and if
+/// it did anyway, the pointer is outside the root's storage now and the check
+/// says so.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PtrBlock {
+    Vec { root: LocalId },
+    Str { root: LocalId },
+    Array { root: LocalId, bytes: i64 },
 }
 
 impl PointerChecks {
@@ -7691,6 +7775,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,
@@ -7780,6 +7865,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,
@@ -7876,6 +7962,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,

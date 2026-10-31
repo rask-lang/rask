@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.unsafe/PT7: a pointer from `as_ptr()` on a local is checked against that
+// local's storage in a debug build. The argument count picks the access.
+
+import os
+
+func main() {
+    let xs: Vec<i32> = [1, 2, 3]
+    let s = "hey"
+    let a: [i64; 2] = [7, 8]
+    let p = unsafe xs.as_ptr()
+    let q = unsafe s.as_ptr()
+    let r = unsafe a.as_ptr()
+
+    // In bounds, including the string's terminator and a cast.
+    mut sum: i64 = 0
+    for i in 0..3 {
+        sum += unsafe (*p.add(i)).wrap<i64>()
+    }
+    let raw = unsafe p.cast<u8>()
+    sum += unsafe (*raw.add(11)).wrap<i64>()
+    sum += unsafe (*q.add(3)).wrap<i64>()
+    sum += unsafe r.add(1).read()
+    unsafe {
+        r.write(1)
+    }
+    // A pointer only ever stepped along from itself keeps its block.
+    mut w = unsafe xs.as_ptr()
+    for i in 0..3 {
+        sum += unsafe (*w).wrap<i64>()
+        w = unsafe w.add(1)
+    }
+    println(sum)
+
+    let which = os.args().len()
+    if which == 1 {
+        println(unsafe *p.add(3))
+    } else if which == 2 {
+        unsafe {
+            *q.add(3) = 33
+        }
+    } else if which == 3 {
+        println(unsafe r.sub(1).read())
+    } else if which == 4 {
+        println(unsafe *w)
+    } else {
+        println("fine")
+    }
+}

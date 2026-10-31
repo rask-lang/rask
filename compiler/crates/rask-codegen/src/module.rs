@@ -646,6 +646,23 @@ impl CodeGenerator {
             self.func_ids.insert(internal.to_string(), id);
         }
 
+        // mem.unsafe/PT7: the bounds half of `ptr_check`, for a pointer whose
+        // block lives in a `Vec` or a `string`.
+        for (internal, symbol, params) in [
+            ("ptr_in_vec", "rask_ptr_in_vec", 3),
+            ("ptr_in_str", "rask_ptr_in_str", 4),
+        ] {
+            let mut sig = self.module.make_signature();
+            for _ in 0..params {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function(symbol, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(internal.to_string(), id);
+        }
+
         // rask_panic_at(file: ptr, line: i32, col: i32, msg: ptr) -> noreturn
         {
             let mut sig = self.module.make_signature();

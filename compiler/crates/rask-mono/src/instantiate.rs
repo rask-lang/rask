@@ -318,7 +318,6 @@ impl TypeSubstitutor {
                 ExprKind::StringInterp(segments) => ExprKind::StringInterp(segments.clone()),
                 ExprKind::Char(c) => ExprKind::Char(*c),
                 ExprKind::Bool(b) => ExprKind::Bool(*b),
-                ExprKind::Null => ExprKind::Null,
                 ExprKind::None => ExprKind::None,
 
                 // Variables

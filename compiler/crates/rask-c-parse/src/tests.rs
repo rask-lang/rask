@@ -360,8 +360,8 @@ mylib_status mylib_send(mylib_ctx *ctx, const uint8_t *data, size_t len);
             "public const MYLIB_ERR_TIMEOUT: Mylib_status = -2",
             "public const MYLIB_VERSION: string = \"2.0\"",
             "public const MYLIB_MAX_CONNS: c_int = 128",
-            "func mylib_init(cfg: *Mylib_config) -> *Mylib_ctx",
-            "func mylib_send(ctx: *Mylib_ctx, data: *u8, len: c_size) -> Mylib_status",
+            "func mylib_init(cfg: *Mylib_config?) -> *Mylib_ctx?",
+            "func mylib_send(ctx: *Mylib_ctx?, data: *u8?, len: c_size) -> Mylib_status",
         ] {
             assert!(out.contains(want), "missing `{}` in:\n{}", want, out);
         }

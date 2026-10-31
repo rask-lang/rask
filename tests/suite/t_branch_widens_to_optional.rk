@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An `if` or `match` with a `none` arm and a value arm is a `T?`, and the
+// value arm gains the layer, as it would at an assignment
+// (type.optionals/OPT6, #1692). The arms used to be made equal to each other
+// before anything knew the target, so `none` and `5` never met.
+
+func pick(c: bool) -> i64? {
+    let a: i64? = if c { none } else { 5 }
+    return a
+}
+
+func name_of(n: i64) -> string? {
+    return match n {
+        0 => none,
+        1 => "one",
+        _ => "many",
+    }
+}
+
+func or_minus_one(x: i64?) -> i64 {
+    return x ?? -1
+}
+
+test "an `if` with a `none` arm widens the other arm" {
+    assert pick(true) is none
+    assert (pick(false) ?? 0) == 5
+    assert or_minus_one(if true { none } else { 3 }) == -1
+    assert or_minus_one(if false { none } else { 3 }) == 3
+}
+
+test "a `match` with a `none` arm widens the others" {
+    assert name_of(0) is none
+    assert (name_of(1) ?? "") == "one"
+    assert (name_of(7) ?? "") == "many"
+}
+
+test "a pointer arm widens to `*T?`" {
+    let xs: Vec<i64> = [4]
+    let p: *i64? = if xs.len() > 9 { none } else { unsafe xs.as_ptr() }
+    assert p?
+}

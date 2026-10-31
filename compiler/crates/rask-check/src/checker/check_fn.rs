@@ -301,8 +301,20 @@ impl TypeChecker {
         // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
-            Type::Unit | Type::Never => {
+            Type::Unit => {
                 // No return needed
+            }
+            // `@noreturn`: every path has to end in something that doesn't come
+            // back (a `@noreturn` call, a loop with no exit). A `return` is
+            // reported where it is written.
+            //
+            // Judged once the program is solved: a call's type often isn't known
+            // yet here (`os.exit(1)` resolves through a deferred constraint).
+            Type::Never => {
+                if !f.body_lives_elsewhere() {
+                    let end_span = Span::with_file(f.span.end.saturating_sub(1), f.span.end, f.span.file_id);
+                    self.pending_noreturn_bodies.push((f.name.clone(), f.body.clone(), end_span));
+                }
             }
             Type::Result { ok, err: _ } => {
                 let resolved_ok = self.ctx.apply(ok);
@@ -642,6 +654,42 @@ impl TypeChecker {
         }
     }
 
+    /// Does this call never come back? Its declaration says, through `@noreturn`:
+    /// the callee's recorded result is `noreturn`. Read off the declaration
+    /// rather than the call's own type, which unification leaves open (a
+    /// `noreturn` fits any slot, so it binds nothing).
+    pub(super) fn call_never_returns(&self, call: rask_ast::NodeId) -> bool {
+        let never = |t: &Type| matches!(self.ctx.apply(t), Type::Never);
+        if self.node_types.get(&call).is_some_and(|t| never(t)) {
+            return true;
+        }
+        match self.call_targets.get(&call) {
+            Some(super::Callee::Free(sym)) => matches!(
+                self.symbol_types.get(sym),
+                Some(Type::Fn { ret, .. }) if never(ret)
+            ),
+            Some(callee @ super::Callee::Method { recv, method, .. }) => {
+                if let Type::UnresolvedNamed(module) = recv {
+                    if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
+                        return never(&sig.ret);
+                    }
+                }
+                callee
+                    .recv_type_id()
+                    .and_then(|id| self.types.get(id))
+                    .and_then(|def| match def {
+                        rask_types::TypeDef::Struct { methods, .. }
+                        | rask_types::TypeDef::Enum { methods, .. } => {
+                            methods.iter().find(|m| m.name == *method).map(|m| never(&m.ret))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false)
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn has_explicit_return(&self, body: &[Stmt]) -> bool {
         // Any statement in the body that always returns means the function returns
         body.iter().any(|stmt| self.stmt_always_returns(stmt))
@@ -683,13 +731,9 @@ impl TypeChecker {
                     self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
                 })
             }
-            ExprKind::Call { func, .. } => {
-                if let Some(name) = func.name() {
-                    matches!(name, "panic" | "todo" | "unreachable" | "skip")
-                } else {
-                    false
-                }
-            }
+            // A call that never comes back: `@noreturn` on the callee, which
+            // is what `panic`, `exit` and the rest declare.
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => self.call_never_returns(expr.id),
             _ => false,
         }
     }

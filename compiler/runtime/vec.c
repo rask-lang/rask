@@ -439,6 +439,14 @@ int64_t rask_vec_len(const RaskVec *v) {
     return v ? v->len : 0;
 }
 
+// mem.unsafe/PT7: does `[p, p + access)` lie inside `v`'s elements? A debug
+// build asks before an access through a pointer that came from `v.as_ptr()`.
+int64_t rask_ptr_in_vec(int64_t p, const RaskVec *v, int64_t access) {
+    if (!v) return 0;
+    int64_t off = p - (int64_t)(intptr_t)v->data;
+    return off >= 0 && off + access <= v->len * v->elem_size;
+}
+
 int64_t rask_vec_capacity(const RaskVec *v) {
     return v ? v->cap : 0;
 }

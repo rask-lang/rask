@@ -78,8 +78,8 @@ its header.
 ```rask
 // sdl.rk: generated, never edited
 extern "C" {
-    func SDL_CreateWindow(title: *u8, w: c_int, h: c_int, flags: u64) -> *SDL_Window
-    func SDL_DestroyWindow(window: *SDL_Window)
+    func SDL_CreateWindow(title: *u8?, w: c_int, h: c_int, flags: u64) -> *SDL_Window?
+    func SDL_DestroyWindow(window: *SDL_Window?)
 }
 
 // window.rk: written by hand
@@ -89,10 +89,7 @@ public struct Window { raw: *SDL_Window }
 extend Window {
     public func open(title: string, w: i32, h: i32) -> Window or SdlError {
         let t = try title.to_cstring()
-        let raw = unsafe SDL_CreateWindow(t.as_ptr(), w, h, 0)
-        if raw.is_null() {
-            return sdl_error()
-        }
+        let raw = unsafe SDL_CreateWindow(t.as_ptr(), w, h, 0) ?? return sdl_error()
         return Window(raw: raw)
     }
 
@@ -107,7 +104,7 @@ extend Window {
 | Rule | Description |
 |------|-------------|
 | **TM1: Platform types** | `c_int`, `c_long`, etc. resolve to target platform sizes, not host |
-| **TM2: Pointer mapping** | `T*` → `*T`, `void*` → `*void`, function pointers → `*func(...)` |
+| **TM2: Pointer mapping** | `T*` → `*T?`, `void*` → `*void?`, function pointers → `*func(...)`. A header doesn't say which pointers may be NULL, and a `*T` never is (`mem.unsafe/PT6`), so a data pointer is the optional one. A `*T` argument fills it; a returned one is checked before use. An override (BI3) narrows a pointer the library's docs promise is never NULL |
 | **TM3: Composite types** | A C struct is a `@layout(C)` struct, a union a `union` (always C layout), an opaque struct `extern "C" struct Name` with no body |
 | **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
 | **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
@@ -363,7 +360,7 @@ import c "sqlite3.h" as sql
 public struct Database { handle: *sql.sqlite3 }
 
 public func open(path: string) -> Database or Error {
-    mut db: *sql.sqlite3 = nullptr
+    mut db: *sql.sqlite3? = none
     unsafe {
         mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {

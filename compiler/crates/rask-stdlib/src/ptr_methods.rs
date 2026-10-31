@@ -18,7 +18,7 @@ pub enum PtrSig {
     Write,
     /// `(self, i64) -> Self` — add, sub, offset.
     Arith,
-    /// `self -> bool` — is_null, is_aligned.
+    /// `self -> bool` — is_aligned.
     Predicate,
     /// `(self, i64) -> bool` — is_aligned_to.
     PredicateInt,
@@ -40,7 +40,7 @@ pub struct PtrMethod {
     pub sig: PtrSig,
     /// Whether the call has to sit in an `unsafe` block. Reading and writing
     /// through a pointer, and moving one, can all break memory. Asking what
-    /// address a pointer holds cannot, so `is_null`, `eq` and `ne` are safe.
+    /// address a pointer holds cannot, so `eq` and `ne` are safe.
     pub needs_unsafe: bool,
     /// Whether codegen appends the pointee's size, so `p.offset(1)` steps one
     /// element rather than one byte.
@@ -67,7 +67,6 @@ pub const PTR_METHODS: &[PtrMethod] = &[
     m("sub", Some("rask_ptr_sub"), PtrSig::Arith, true, true),
     m("offset", Some("rask_ptr_offset"), PtrSig::Arith, true, true),
     // Address questions — no memory is touched, so no `unsafe` needed.
-    m("is_null", Some("rask_ptr_is_null"), PtrSig::Predicate, false, false),
     m("eq", Some("rask_ptr_eq"), PtrSig::Comparison, false, false),
     m("ne", Some("rask_ptr_ne"), PtrSig::Comparison, false, false),
     // Alignment.

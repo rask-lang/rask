@@ -26,7 +26,10 @@ func main() {
     let fine: Vec<i64> = [41]
     let p = fine.as_ptr()
     println("{read_plain(p)} {read_checked(p)} {read_unchecked(p)}")
-    let null: *i64 = nullptr
+    // A `*i64` is never null by its type. The bits can still arrive from
+    // outside it, a C function that lies about its result, or this.
+    let zero: i64 = 0
+    let null: *i64 = unsafe transmute(zero)
     let which = os.args().len()
     if which == 1 {
         println("{read_plain(null)}")

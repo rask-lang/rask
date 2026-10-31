@@ -1032,11 +1032,6 @@ impl Interpreter {
             // OPT3: `none` is Option::None — a stateless sentinel, cheaply cloned.
             ExprKind::None => Ok(Value::none()),
 
-            // The null pointer. This used to fall through to the catch-all
-            // and evaluate to unit, so `null.is_null()` was "method not found
-            // on `void`" (#935).
-            ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
-
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
@@ -2499,6 +2494,13 @@ impl Interpreter {
                     lent: self.env.lent_names(),
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
+                    // A real error side: `T?` is a `Result` whose error is
+                    // `none` to the checker, and its `none` is no success.
+                    wraps_ok: matches!(
+                        self.node_types.get(&expr.id),
+                        Some(rask_types::Type::Fn { ret, .. })
+                            if matches!(&**ret, rask_types::Type::Result { err, .. } if !matches!(**err, rask_types::Type::None))
+                    ),
                 })
             }
 

@@ -49,11 +49,15 @@ pub enum CoercionSite {
     /// `[a, b, c]` where the collection's element type is a wrapper — the slot
     /// the literal fills says what its members are.
     CollectionElement,
+    /// An arm of an `if` or `match` whose value is the whole expression's,
+    /// when another arm is a `T?`: `if c { none } else { 5 }` is an `i64?`,
+    /// and the `5` arm gains the layer (type.optionals/OPT6).
+    Branch,
 }
 
 impl CoercionSite {
     /// Every position, so a pass can assert it covers the whole set.
-    pub const ALL: [CoercionSite; 7] = [
+    pub const ALL: [CoercionSite; 8] = [
         CoercionSite::Return,
         CoercionSite::AnnotatedBinding,
         CoercionSite::Argument,
@@ -61,6 +65,7 @@ impl CoercionSite {
         CoercionSite::StructField,
         CoercionSite::CatchArm,
         CoercionSite::CollectionElement,
+        CoercionSite::Branch,
     ];
 
     /// Can a value typed as the error side land on the error branch here?
@@ -81,7 +86,8 @@ impl CoercionSite {
             | CoercionSite::Argument
             | CoercionSite::Assignment
             | CoercionSite::StructField
-            | CoercionSite::CollectionElement => false,
+            | CoercionSite::CollectionElement
+            | CoercionSite::Branch => false,
         }
     }
 
@@ -95,6 +101,7 @@ impl CoercionSite {
             CoercionSite::StructField => "a struct field",
             CoercionSite::CatchArm => "a catch arm",
             CoercionSite::CollectionElement => "a collection element",
+            CoercionSite::Branch => "an arm of an `if` or `match`",
         }
     }
 }

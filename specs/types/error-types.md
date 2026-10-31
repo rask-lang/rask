@@ -513,6 +513,17 @@ Private functions can omit error return types entirely, or use `or _` to state t
 | **ER39: Error union inference** | Private functions may omit error types or use `or _`. The compiler computes the union from all error-producing expressions in the body |
 | **ER40: Public must be explicit** | `public` functions must declare error types explicitly — `or _` is rejected (API stability, same as `type.gradual/GC5`) |
 | **ER41: Recursive annotation** | Mutually recursive functions where the error type is ambiguous require annotation on at least one function in the cycle |
+| **ER49: A closure fills its slot's error type** | A closure literal handed to a `func(…) -> T or E` slot is checked against that return type, as a function body is against its declared one: a body of type `T`, or a bare `return`, is the success branch, and a value that can't be `T` is the error and says what `E` is. An `E` nothing in the body fixes means the closure can't fail, and a `T or E` that can't fail is a `T` (`try` on it never leaves) |
+
+ER49 is what lets one generic signature take a consumer that can fail and one that can't:
+
+<!-- test: skip -->
+```rask
+func each<E>(xs: Vec<i64>, f: func(i64) -> void or E) -> void or E
+
+try each(xs, |x| screen(x))       // E is screen's error
+each(xs, |x| println(x))          // E is fixed by nothing: the call can't fail
+```
 
 Three annotation levels:
 
@@ -570,7 +581,7 @@ match result {
 | **DP1: todo()** | Panics with "not yet implemented" and source location |
 | **DP2: unreachable()** | Panics with "entered unreachable code" and source location |
 | **DP3: Optional message** | Both accept an optional string: `todo("auth flow")`, `unreachable("invalid state")` |
-| **DP4: Never type** | Both return `Never`, coercible to any type |
+| **DP4: Don't finish** | Both are `@noreturn`, so an arm made of one needs no value (`ctrl.flow/CF32`) |
 | **DP5: Lint warning** | `rask lint` warns on `todo()` in non-test code |
 
 <!-- test: skip -->

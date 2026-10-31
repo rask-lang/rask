@@ -2,7 +2,7 @@
 
 // fopen, access and opendir go through the runtime rather than libc, which is
 // where sim puts its filesystem overlay (sim/B5).
-extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8
+extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8?
 
 extern "C" func fclose(f: *u8) -> i32
 
@@ -38,14 +38,14 @@ extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
 
 extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
 
-extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
+extern "C" func realpath(path: *u8, resolved: *u8) -> *u8?
 
 @memory_only
 extern "C" func strlen(s: *u8) -> usize
 
-extern "C" func getcwd(buf: *u8, size: usize) -> *u8
+extern "C" func getcwd(buf: *u8, size: usize) -> *u8?
 
-extern "C" func getenv(name: *u8) -> *u8
+extern "C" func getenv(name: *u8) -> *u8?
 
 /// File system operations.
 struct fs { }
@@ -88,8 +88,7 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
-        if unsafe f.is_null() {
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
         let raw = try read_to_end(f)
@@ -100,8 +99,7 @@ extend fs {
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
-        if unsafe f.is_null() {
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
         let raw = try read_to_end(f)
@@ -119,8 +117,7 @@ extend fs {
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr())
-        if unsafe f.is_null() {
+        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
@@ -128,8 +125,7 @@ extend fs {
 
     /// Write bytes to a file, replacing its contents.
     public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
-        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr())
-        if unsafe f.is_null() {
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
         // Byte by byte into a flat buffer, the one shape `fwrite` takes.
@@ -167,7 +163,7 @@ extend fs {
     public func absolute_path(path: string) -> string or IoError {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe realpath(path.as_ptr(), buf)
-        if unsafe result.is_null() {
+        if result is none {
             unsafe rask_free(buf)
             return IoError.last_os_error()
         }
@@ -179,12 +175,10 @@ extend fs {
 
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
-        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr())
-        if unsafe src.is_null() {
+        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
-        let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr())
-        if unsafe dst.is_null() {
+        let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr()) ?? {
             unsafe fclose(src)
             return IoError.last_os_error()
         }
@@ -260,8 +254,7 @@ extend fs {
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr())
-        if unsafe f.is_null() {
+        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr()) ?? {
             return IoError.last_os_error()
         }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
@@ -393,7 +386,7 @@ extend fs {
     public func current_dir() -> Path {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe getcwd(buf, 4096)
-        if unsafe result.is_null() {
+        if result is none {
             unsafe rask_free(buf)
             return Path.from(".")
         }
@@ -405,8 +398,7 @@ extend fs {
 
     /// User home directory. none if unknown.
     public func home_dir() -> Path? {
-        let ptr = unsafe getenv("HOME\0".as_ptr())
-        if unsafe ptr.is_null() {
+        let ptr = unsafe getenv("HOME\0".as_ptr()) ?? {
             return none
         }
         let len = unsafe strlen(ptr)

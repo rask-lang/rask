@@ -1329,6 +1329,9 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+        if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
+            self.arm_widenings.insert(node, expected.clone());
+        }
 
         // CB1/CB2: a function where C wants a function pointer passes its
         // code address. Which functions can is MIR's to say: it knows whether
@@ -1476,6 +1479,24 @@ impl TypeChecker {
                             self.err_returns.insert(node);
                         }
                         return Ok(false);
+                    }
+                    // A closure filling a `T or E` slot whose `E` nothing has
+                    // fixed yet: a returned value that can't be the success
+                    // side is the error, and it is what `E` is. A function
+                    // collects these instead (ER39, above).
+                    if site == CoercionSite::Return
+                        && !self.accumulate_errors
+                        && matches!(resolved_err, Type::Var(_))
+                        && !matches!(resolved_ok, Type::Var(_))
+                        && !resolved_ok.is_option()
+                        && !matches!(resolved_ret, Type::Var(_) | Type::Unit | Type::Never | Type::Error)
+                        && resolved_ret != resolved_ok
+                    {
+                        self.unify(&resolved_err, &resolved_ret, span)?;
+                        if let Some(node) = value_node {
+                            self.err_returns.insert(node);
+                        }
+                        return Ok(true);
                     }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
@@ -2265,6 +2286,15 @@ impl TypeChecker {
         // handing `Vec<i64>.as_ptr()` to a `const int *` parameter used to pass
         // in silence: the C side then read the 64-bit buffer as 32-bit ints and
         // returned arithmetic that looked fine (#947).
+        // A pointer into a `*T?` slot fills the present side, which is the
+        // pointer the element type is checked against: `*i64` where C wants
+        // a `const int *` is wrong whether or not the header lets it be NULL.
+        if let (Type::RawPtr(_), Type::Result { ok, err }) = (&source, &target) {
+            if matches!(self.ctx.apply(err), Type::None) {
+                let ok = (**ok).clone();
+                return self.check_fits(&source, &ok, span);
+            }
+        }
         if let (Type::RawPtr(from), Type::RawPtr(to)) = (&source, &target) {
             let from_inner = self.resolve_named(&self.ctx.apply(from));
             let to_inner = self.resolve_named(&self.ctx.apply(to));

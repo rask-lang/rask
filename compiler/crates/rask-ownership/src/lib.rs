@@ -763,6 +763,7 @@ impl<'a> OwnershipChecker<'a> {
         self.check_generic_size_fences(decls);
         self.check_linear_instantiations(decls);
         self.check_generic_takes(decls);
+        self.check_generic_element_uses(decls);
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
@@ -1028,6 +1029,90 @@ impl<'a> OwnershipChecker<'a> {
             for stmt in &job.func.body {
                 rask_ast::visit::walk_stmt(stmt, &mut |e| {
                     if let Some(inner) = self.instance_at(e, &generic_fns, &job.subst, Some(&job), false) {
+                        queue.push_back(inner);
+                    }
+                });
+            }
+        }
+    }
+
+    /// mem.resources/RC5 in a generic body. `v.clear()` on a `Vec<T>` is fine
+    /// for most `T` and drops what must be consumed for a linear one, so each
+    /// call that fixes `T` is asked, the way `check_generic_takes` asks.
+    fn check_generic_element_uses(&mut self, decls: &[Decl]) {
+        let generic_fns = generic_bodies(decls);
+        let mut uses: HashMap<*const FnDecl, Vec<(String, String, bool, Span)>> = HashMap::new();
+        for (func, _) in generic_fns.values() {
+            for stmt in &func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    let ExprKind::MethodCall { method, .. } = &e.kind else { return };
+                    let Some(rask_check::Callee::Method { recv, .. }) = self.program.call_targets.get(&e.id) else {
+                        return;
+                    };
+                    let Type::Generic { base, args } = recv else { return };
+                    if !matches!(self.program.types.type_name(*base).as_str(), "Vec" | "Map") {
+                        return;
+                    }
+                    let effect = self.program.declared_effects(e.id);
+                    if !(effect.drops_elements || effect.copies_elements) {
+                        return;
+                    }
+                    for a in args {
+                        if let rask_types::GenericArg::Type(t) = a {
+                            if let Type::UnresolvedNamed(p) = t.as_ref() {
+                                if is_type_param_name(p) {
+                                    uses.entry(*func as *const FnDecl).or_default().push((
+                                        p.clone(),
+                                        method.clone(),
+                                        effect.copies_elements,
+                                        e.span,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        if uses.is_empty() {
+            return;
+        }
+
+        let mut queue: std::collections::VecDeque<InstanceJob> = std::collections::VecDeque::new();
+        for decl in decls {
+            for stmt in decl_body(decl) {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(job) = self.instance_at(e, &generic_fns, &HashMap::new(), None, true) {
+                        queue.push_back(job);
+                    }
+                });
+            }
+        }
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        while let Some(job) = queue.pop_front() {
+            if !seen.insert((callee_label(&job), render_subst(&job.subst, self.program))) {
+                continue;
+            }
+            for (param, method, copies, at) in uses.get(&(job.func as *const FnDecl)).into_iter().flatten() {
+                let Some(arg) = job.subst.get(param) else { continue };
+                if !self.program.types.holds_linear_value(arg) {
+                    continue;
+                }
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ElementLostInGenericInstance {
+                        chain: job.chain.clone(),
+                        param: param.clone(),
+                        type_arg: format!("{}", self.program.types.resolve_type_names(arg)),
+                        method: method.clone(),
+                        copies: *copies,
+                        at: *at,
+                    },
+                    span: job.call_span,
+                });
+            }
+            for stmt in &job.func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(inner) = self.instance_at(e, &generic_fns, &job.subst, Some(&job), true) {
                         queue.push_back(inner);
                     }
                 });
@@ -2496,7 +2581,20 @@ impl<'a> OwnershipChecker<'a> {
                 // `while it? as v` binds `v` for the body, as `if` does.
                 let saved_parts = self.borrowed_parts.clone();
                 self.check_expr(cond);
-                self.check_loop_body(body, &[], label.as_ref(), false);
+                // `v` is a new value each time round. Carried like a binding
+                // from before the loop, the first pass's move made every later
+                // pass's `v` maybe-moved (`while pool.pop()? as c { try
+                // c.close() }`). A resource is owed by the body that got it.
+                let present_resource = self.optional_payload_resource(cond);
+                let fresh: Vec<String> = match &cond.kind {
+                    ExprKind::IsPresent { binding: Some(name), .. } => vec![name.clone()],
+                    _ => Vec::new(),
+                };
+                self.check_loop_body(body, &fresh, label.as_ref(), false);
+                if let Some(ref binding) = present_resource {
+                    let span = body.last().map_or(stmt.span, |s| s.span);
+                    self.check_present_binding_consumed(binding, span);
+                }
                 self.borrowed_parts = saved_parts;
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
@@ -2524,6 +2622,20 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
+                // RC5: the loop owns what `take_all` handed back, and an early
+                // exit drops the rest. Elements that must be consumed are
+                // drained with `while v.pop()? as x`, which leaves the rest in
+                // `v`.
+                if self.is_take_all(iter)
+                    && self
+                        .node_ty(&iter.id)
+                        .is_some_and(|t| self.program.types.is_linear_value(t))
+                {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::DrainLoopOverLinear,
+                        span: iter.span,
+                    });
+                }
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
                 match binding {
                     ForBinding::Single(name) => {
@@ -2717,7 +2829,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Bytes(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
+            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::GenericName { .. } => {}
 
             ExprKind::Binary { left, op: _, right } => {
                 self.check_expr(left);
@@ -6992,9 +7104,30 @@ impl<'a> OwnershipChecker<'a> {
             Some(rask_types::TypeDef::Struct { methods, .. } | rask_types::TypeDef::Enum { methods, .. }) => methods,
             _ => return Vec::new(),
         };
+        // A method from a narrower `extend` doesn't apply: `extend Vec<u8>`'s
+        // `freeze` isn't a way to consume a `Vec<Conn>`.
+        let args: Vec<String> = match self.binding_types.get(name) {
+            Some(Type::Generic { args, .. }) => args
+                .iter()
+                .map(|a| match a {
+                    rask_types::GenericArg::Type(t) => {
+                        format!("{}", self.program.types.resolve_type_names(t))
+                    }
+                    _ => String::new(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let applies = |m: &&rask_types::MethodSig| {
+            m.owner_patterns.iter().zip(&args).all(|(pat, arg)| {
+                let pat = pat.to_string();
+                is_type_param_name(&pat) || pat == *arg
+            })
+        };
         methods
             .iter()
             .filter(|m| m.self_param == rask_types::SelfParam::Take && m.is_public)
+            .filter(applies)
             .map(|m| {
                 let args = if m.params.is_empty() { "" } else { "…" };
                 format!("{}.{}({})", name, m.name, args)

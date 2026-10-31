@@ -1157,6 +1157,10 @@ pub enum Value {
         /// The type arguments of the generic body it was built in, for
         /// whatever generic calls and closures its own body makes.
         generics: GenericFrame,
+        /// Its type returns a `T or E`, so a body that hands back a bare
+        /// value (a `void` body, a bare `return`) is the success side, as for
+        /// a function declared that way.
+        wraps_ok: bool,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1566,7 +1570,7 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone_impl(share_closures);
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound, generics, .. } => {
+            Value::Closure { params, body, captured_env, task_bound, generics, wraps_ok, .. } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
@@ -1580,6 +1584,7 @@ impl Value {
                     lent: Default::default(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
+                    wraps_ok: *wraps_ok,
                 }
             }
             Value::Map(m) => {
