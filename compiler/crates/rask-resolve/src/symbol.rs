@@ -114,11 +114,6 @@ pub enum SymbolKind {
         /// it from the declaration, not from here.
         from_import: bool,
     },
-    /// A C import namespace (`import c "header.h"` → `c.symbol`).
-    CNamespace {
-        /// Symbols parsed from C headers, keyed by name.
-        members: std::collections::HashMap<String, SymbolId>,
-    },
 }
 
 /// Built-in type kinds.

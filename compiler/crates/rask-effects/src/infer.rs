@@ -1028,6 +1028,7 @@ mod tests {
                 abi: "C".into(),
                 name: name.into(),
                 params: vec![],
+                is_variadic: false,
                 ret_ty: None,
                 doc: None,
                 attrs: vec![],

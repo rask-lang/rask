@@ -1006,6 +1006,40 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// TM8: a union member that owns something. Nothing records which
+    /// member is live, so nothing could know what to release.
+    #[error("union `{union_name}` member `{member}` owns memory")]
+    UnionOwningMember {
+        union_name: String,
+        member: String,
+        ty: Type,
+        span: Span,
+    },
+
+    /// A value C's `...` can't take: it reads each one as a number or a
+    /// pointer.
+    #[error("a `{ty}` can't be passed to a C variadic function")]
+    VariadicArg {
+        ty: Type,
+        span: Span,
+    },
+
+    /// CB1: a function C can't call, handed to C as a function pointer.
+    #[error("`{name}` isn't a function C can call")]
+    NotCCallable {
+        name: String,
+        span: Span,
+    },
+
+    /// UN1: a union literal names other than exactly one member.
+    #[error("a `{ty}` is built from one member")]
+    UnionMemberCount {
+        ty: String,
+        given: Vec<String>,
+        members: Vec<String>,
+        span: Span,
+    },
+
     /// FD4: struct literal omits a field that has no default value
     #[error("missing field(s) in `{ty}` initializer")]
     MissingFields {
@@ -1863,6 +1897,10 @@ impl TypeError {
             | PrivateFieldAccess { .. }
             | MethodNotVisible { .. }
             | MissingFields { .. }
+            | UnionMemberCount { .. }
+            | UnionOwningMember { .. }
+            | NotCCallable { .. }
+            | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
             | UseAfterDiscard { .. }

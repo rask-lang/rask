@@ -1790,7 +1790,7 @@ impl ToDiagnostic for crate::TypeError {
 
             DerefOptionalPointer { found, span } => {
                 Diagnostic::error(format!("`*` on a `{}`, which may be absent", found))
-                    .with_code("E0934")
+                    .with_code("E0859")
                     .with_primary(*span, "this pointer may be null")
                     .with_fix("unwrap it first: `let q = p ?? return …` or `if p? as q { … *q … }`")
                     .with_why("a `*T?` is the pointer or `none`, and `none` is the null address. Reading through it would read address 0, so the absent case is handled before the pointer is used [mem.unsafe/PT6]")
@@ -2476,6 +2476,45 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help(fix.clone())
                     .with_fix(fix)
                     .with_why(why)
+            }
+
+            VariadicArg { ty, span } => {
+                Diagnostic::error(format!("a `{ty}` can't be passed through C's `...`"))
+                    .with_code("E0937")
+                    .with_primary(*span, "not a number or a pointer")
+                    .with_help("pass a number, a `bool` or a raw pointer; a string goes as `s.to_cstring()!.as_ptr()`")
+                    .with_why("C reads each variadic argument as the type its format says, with nothing in the call to check it against [struct.c-interop]")
+            }
+
+            NotCCallable { name, span } => {
+                Diagnostic::error(format!("`{name}` can't be handed to C as a function pointer"))
+                    .with_code("E0935")
+                    .with_primary(*span, "a Rask function, not a C one")
+                    .with_help(format!("declare it `extern \"C\" func {name}(…)` so C can call it"))
+                    .with_why("C calls a function pointer with C's convention and can't stop a panic; an `extern \"C\"` function stops one at the boundary [struct.c-interop/CB1]")
+            }
+
+            UnionOwningMember { union_name, member, ty, span } => {
+                Diagnostic::error(format!("union `{union_name}` can't hold `{ty}`"))
+                    .with_code("E0934")
+                    .with_primary(*span, format!("`{member}` owns what it points to"))
+                    .with_help("a union member is plain data: numbers, `bool`, raw pointers, arrays of those, `@layout(C)` structs and other unions")
+                    .with_why("nothing records which member is live, so nothing could know whether to release this one [struct.c-interop/TM8]")
+            }
+
+            UnionMemberCount { ty, given, members, span } => {
+                let (msg, label) = if given.is_empty() {
+                    (format!("a `{ty}` needs its live member"), "no member given".to_string())
+                } else {
+                    let quoted: Vec<String> = given.iter().map(|f| format!("`{f}`")).collect();
+                    (format!("a `{ty}` holds one member, and this names {}", given.len()), format!("{} all share the same bytes", quoted.join(", ")))
+                };
+                let example = members.first().map(|m| format!("{ty}({m}: …)")).unwrap_or_default();
+                Diagnostic::error(msg)
+                    .with_code("E0938")
+                    .with_primary(*span, label)
+                    .with_help(format!("name the one member that's live, e.g. `{example}`"))
+                    .with_why("a union's members overlap, so it holds exactly one at a time [mem.unsafe/UN1]")
             }
 
             MissingFields { ty, fields, span } => {

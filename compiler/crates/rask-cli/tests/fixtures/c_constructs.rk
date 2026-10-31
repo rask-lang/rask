@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Every construct `import c` translates, used against the real C library.
+// Constants, enumerators and nested structs only reached codegen once the
+// header became ordinary Rask declarations (struct.c-interop/BI1).
+
+import c "c_constructs.h"
+import std.reflect
+
+func main() {
+    println("consts {c.CC_VERSION} {c.CC_NAME} {c.CC_FLAGS} {c.CC_WIDE}")
+    println("enum {c.GREEN} {c.BLUE} via C {unsafe c.color_val(c.BLUE)}")
+
+    let pairs: Vec<c.Pair> = [c.Pair(a: c.Point(x: 1, y: 2), b: c.Point(x: 3, y: 4), tag: 5, w: 6.0)]
+    println("nested {unsafe c.pair_sum(pairs.as_ptr())}")
+    println("by value {unsafe c.take_point(c.Point(x: 4, y: 2))}")
+
+    let o = unsafe c.opaque_new(9)
+    println("opaque {unsafe c.opaque_get(o)}")
+    unsafe c.opaque_free(o)
+
+    let b = c.Bits(f: 1.0)
+    println("union {unsafe c.bits_int(b)} size {reflect.size_of<c.Bits>()} C {unsafe c.sizeof_bits()}")
+
+    let name = "abc".to_cstring()!
+    let tables: Vec<c.Table> = [c.Table(vals: [1, 2, 3, 4], name: name.as_ptr())]
+    println("array field {unsafe c.table_sum(tables.as_ptr())}")
+    println("bool {unsafe c.is_even(4)}")
+
+    let p = c.Packed(flag: 1, kind: 5, delta: -3, tail: 9)
+    let kind = unsafe c.packed_kind(p)
+    let delta = unsafe c.packed_delta(p)
+    println("bitfields to C {kind} {delta} size {reflect.size_of<c.Packed>()} C {unsafe c.sizeof_packed()}")
+    mut filled: Vec<c.Packed> = [c.Packed(flag: 0, kind: 0, delta: 0, tail: 0)]
+    unsafe c.packed_fill(filled.as_mut_ptr())
+    let f = filled[0]
+    println("bitfields from C {f.flag} {f.kind} {f.delta} {f.tail}")
+
+    let twice = unsafe c.cc_twice(21)
+    mut pts: Vec<c.Point> = [c.Point(x: 2, y: 3)]
+    unsafe c.cc_scale(pts.as_mut_ptr(), 10)
+    println("inline {twice} {pts[0].x} {pts[0].y}")
+}

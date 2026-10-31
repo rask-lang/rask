@@ -260,50 +260,67 @@ pub fn cmd_lint(path: &str, format: Format, rules: Vec<String>, excludes: Vec<St
     }
 }
 
-pub fn cmd_c_header(path: &str) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
+/// `rask bindc header.h [-o out.rk | --check out.rk]` (struct.c-interop/BI1).
+///
+/// The same translation `import c` compiles, formatted, so a library's binding
+/// can be read, reviewed and committed.
+pub fn cmd_bindc(header: &str, out: Option<&str>, check: Option<&str>, hiding: &[String]) {
+    let path = std::path::Path::new(header);
+    if !path.is_file() {
+        eprintln!("{}: {} isn't a file", output::error_label(), output::file_path(header));
+        process::exit(1);
+    }
+    let cfg = rask_comptime::CfgConfig::from_host("debug", Vec::new());
+    let dirs = std::collections::HashMap::new();
+    let cx = rask_compiler::c_import::Context { source_dirs: &dirs, arch: &cfg.arch, os: &cfg.os };
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| header.to_string());
+    let translation = match rask_compiler::c_import::translate(&name, path, hiding, &cx) {
+        Ok(t) => t,
         Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
+            eprintln!("{}: {}: {}", output::error_label(), output::file_path(header), e);
             process::exit(1);
         }
     };
+    let text = rask_fmt::format_source(&translation.source);
+    let c = &translation.counts;
+    let summary = format!(
+        "{} functions, {} types, {} constants{}",
+        c.functions,
+        c.types,
+        c.constants,
+        if c.skipped > 0 { format!(", {} skipped (see the comments)", c.skipped) } else { String::new() },
+    );
 
-    match rask_c_parse::parse_c_header(&source) {
-        Ok(result) => {
-            for w in &result.warnings {
-                eprintln!("{}: line {}: {}", "warning".yellow().bold(), w.line, w.message);
+    if let Some(existing) = check {
+        match fs::read_to_string(existing) {
+            Ok(have) if have == text => {
+                eprintln!("{} {} matches {}", output::status_pass(), output::file_path(existing), header);
             }
-            let translated = rask_c_parse::translate::translate(&result, &[]);
-            let rask_src = rask_c_parse::translate::render_rask(&translated);
-            print!("{}", rask_src);
-
-            for w in &translated.warnings {
-                eprintln!("{}: {}", "warning".yellow().bold(), w);
+            Ok(_) => {
+                eprintln!(
+                    "{}: {} isn't what {} translates to now; regenerate it with `rask bindc {} -o {}`",
+                    output::error_label(), output::file_path(existing), header, header, existing,
+                );
+                process::exit(1);
             }
-
-            let func_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Function(_))).count();
-            let struct_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Struct(_) | rask_c_parse::translate::RaskCDecl::Union(_))).count();
-            let enum_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Enum(_))).count();
-            let const_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::Const(_))).count();
-            let typedef_count = translated.decls.iter().filter(|d| matches!(d, rask_c_parse::translate::RaskCDecl::TypeAlias(_))).count();
-            let warning_count = translated.warnings.len();
-
-            eprintln!();
-            eprintln!(
-                "{} {} functions, {} structs, {} enums, {} constants, {} typedefs{}",
-                output::status_pass(),
-                func_count,
-                struct_count,
-                enum_count,
-                const_count,
-                typedef_count,
-                if warning_count > 0 { format!(", {} warnings", warning_count) } else { String::new() },
-            );
+            Err(e) => {
+                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(existing), e);
+                process::exit(1);
+            }
         }
-        Err(e) => {
-            eprintln!("{}: parsing {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
+        return;
+    }
+    match out {
+        Some(file) => {
+            if let Err(e) = fs::write(file, &text) {
+                eprintln!("{}: writing {}: {}", output::error_label(), output::file_path(file), e);
+                process::exit(1);
+            }
+            eprintln!("{} wrote {}: {}", output::status_pass(), output::file_path(file), summary);
+        }
+        None => {
+            print!("{}", text);
+            eprintln!("{} {}", output::status_pass(), summary);
         }
     }
 }

@@ -685,6 +685,12 @@ impl PackageRegistry {
     }
 
     /// Get a package by ID.
+    /// The next unused node id, for declarations made outside any package's
+    /// files: a C header's translation (struct.c-interop/CI1).
+    pub fn next_node_id_mut(&mut self) -> &mut u32 {
+        &mut self.next_node_id
+    }
+
     pub fn get(&self, id: PackageId) -> Option<&Package> {
         self.packages.get(id.0 as usize)
     }

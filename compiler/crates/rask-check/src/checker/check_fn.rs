@@ -414,16 +414,10 @@ impl TypeChecker {
                 // resolve. The real primitives are lowercase and land in the
                 // `builtins` check below.
                 if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    // A C type is the exception: `c.Rect` is registered under
-                    // that exact spelling, so `c.Nonexistent` is a name that
-                    // isn't there rather than a path resolving elsewhere.
-                    let from_c_header = name
-                        .split_once('.')
-                        .is_some_and(|(ns, _)| c_namespaces.contains(ns));
-                    if !from_c_header || types.get_type_id(name).is_some() {
-                        return;
-                    }
-                    if !unknown.iter().any(|u| u == name) {
+                    // `c.Rect` would have been rewritten to the header's
+                    // declaration; one still spelled that way isn't in it.
+                    let from_c_header = name.split_once('.').is_some_and(|(ns, _)| c_namespaces.contains(ns));
+                    if from_c_header && !unknown.iter().any(|u| u == name) {
                         unknown.push(name.to_string());
                     }
                     return;

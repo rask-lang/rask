@@ -1289,7 +1289,7 @@ impl CodeGenerator {
                 }
             }
             let func_id = self.module
-                .declare_function(&decl.name, Linkage::Import, &sig)
+                .declare_function(decl.link_name.as_deref().unwrap_or(&decl.name), Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert(decl.name.clone(), func_id);
         }

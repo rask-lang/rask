@@ -11,5 +11,5 @@ func main() {
     let q = unsafe xs.as_ptr()
     println(q.is_null())                  // ERROR: E0313
     let home = unsafe getenv("HOME\0".as_ptr())
-    println(unsafe *home)                 // ERROR: E0934
+    println(unsafe *home)                 // ERROR: E0859
 }

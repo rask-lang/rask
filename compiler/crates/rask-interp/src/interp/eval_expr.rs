@@ -612,7 +612,15 @@ impl Interpreter {
     fn read_field(&mut self, obj: Value, field: &str, span: rask_ast::Span) -> Result<Value, RuntimeDiagnostic> {
         match obj {
             Value::Struct(ref s) => {
-                Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
+                let guard = s.lock().unwrap();
+                if let Some(v) = guard.fields.get(field) {
+                    return Ok(v.clone());
+                }
+                if let Some(u) = self.union_decls.get(&guard.name) {
+                    return crate::interp::union_bits::reinterpret(u, &guard.fields, field)
+                        .map_err(|msg| RuntimeDiagnostic::new(RuntimeError::TypeError(msg), span));
+                }
+                Ok(Value::Unit)
             }
             // Following a link: one deref, nothing to check. No lookup,
             // no liveness test — the link holds the node.
@@ -1984,6 +1992,8 @@ impl Interpreter {
                         ),
                         None => value,
                     };
+                    self.check_bits(&decl_name, &field.name, &value)
+                        .map_err(|e| RuntimeDiagnostic::new(e, field.value.span))?;
                     field_values.insert(field.name.clone(), value);
                 }
 

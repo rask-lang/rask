@@ -160,6 +160,8 @@ pub struct ExternDecl {
     pub name: String,
     /// Parameters
     pub params: Vec<Param>,
+    /// Takes more arguments after `params`: C's `...` (struct.c-interop).
+    pub is_variadic: bool,
     /// Return type (None means void)
     pub ret_ty: Option<crate::ty::TypeExpr>,
     /// Doc comment (`/// ...`)

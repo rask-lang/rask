@@ -26,6 +26,7 @@ pub mod transform;
 mod types;
 
 pub mod layout_check;
+pub mod bitfields;
 pub mod lower;
 mod const_free;
 mod container_drop;

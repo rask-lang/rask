@@ -149,6 +149,7 @@ and file what you learned — that's a finished piece of work, not a blocker.
 | `rask test <file>` | Run `test` blocks — **native**, like `run` |
 | `rask test --interp <file>` | Run `test` blocks on the interpreter |
 | `rask compile --dump-mir <file>` | Print MIR before codegen (debug codegen issues) |
+| `rask bindc <header.h> [-o f.rk]` | Print the Rask a C header translates to: what `import c` compiles |
 
 **Native is the default everywhere.** `rask run` and `rask test` both compile and
 run natively; `--interp` opts out. `rask test --native` is accepted and does

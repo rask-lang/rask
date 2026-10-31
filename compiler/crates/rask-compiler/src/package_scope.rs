@@ -383,6 +383,12 @@ pub fn unqualify_diagnostics(
     let mut back: Vec<(String, String, String)> = Vec::new();
     for (pkg, map) in exports {
         for (original, q) in map {
+            // A C function keeps its name (a link symbol is global), so it
+            // has nothing to write back, and `rename` in a message stays
+            // the word.
+            if original == q {
+                continue;
+            }
             back.push((q.clone(), format!("{}.{}", pkg, original), original.clone()));
         }
     }

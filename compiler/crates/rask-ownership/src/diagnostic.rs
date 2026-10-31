@@ -38,6 +38,14 @@ impl ToDiagnostic for crate::OwnershipError {
         use crate::OwnershipErrorKind::*;
 
         match &self.kind {
+            CCallbackCaptures { captured } => Diagnostic::error(format!(
+                "a closure handed to C as a function pointer can't capture `{captured}`"
+            ))
+            .with_code("E0936")
+            .with_primary(self.span, format!("captures `{captured}`"))
+            .with_help("pass the state through the C API's context pointer, or capture nothing and reach it another way")
+            .with_why("C calls a function pointer with only its own arguments, so there's nowhere for a capture to come from [struct.c-interop/CB6]"),
+
             UseAfterMove { name, moved_at, reason }
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {

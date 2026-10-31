@@ -1190,6 +1190,38 @@ impl TypeChecker {
                     .split_once('.')
                     .and_then(|(module, member)| self.types.module_type_id(module, member));
                 if let Some(ty) = module_type.map(Type::Named).or_else(|| self.types.lookup(base_name)) {
+                    // UN1: a union is built from its one live member.
+                    if let Type::Named(type_id) = &ty {
+                        if let Some(TypeDef::Union { fields: members, .. }) = self.types.get(*type_id) {
+                            let members = members.clone();
+                            let given: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                            if given.len() != 1 || spread.is_some() {
+                                self.errors.push(TypeError::UnionMemberCount {
+                                    ty: base_name.to_string(),
+                                    given: given.clone(),
+                                    members: members.iter().map(|(n, _)| n.clone()).collect(),
+                                    span: expr.span,
+                                });
+                            }
+                            for field_init in fields {
+                                match members.iter().find(|(n, _)| n == &field_init.name) {
+                                    Some((_, want)) => {
+                                        let got = self.infer_expr_expecting(&field_init.value, want);
+                                        self.coerce_into(CoercionSite::StructField, got, want.clone(), field_init.value.span);
+                                    }
+                                    None => {
+                                        self.infer_expr(&field_init.value);
+                                        self.errors.push(TypeError::NoSuchField {
+                                            ty: ty.clone(),
+                                            field: field_init.name.clone(),
+                                            span: field_init.value.span,
+                                        });
+                                    }
+                                }
+                            }
+                            return ty;
+                        }
+                    }
                     if let Type::Named(type_id) = &ty {
                         let (struct_fields, type_params, private_fields) = match self.types.get(*type_id) {
                             Some(TypeDef::Struct { fields: sf, type_params: tp, private_fields: pf, .. }) => {
@@ -2936,6 +2968,21 @@ impl TypeChecker {
                         SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),
                         _ => None,
                     };
+                    // A struct handed *to* C rides in registers or on the
+                    // stack; one handed *back* is a separate ABI rule that
+                    // isn't built (#1101). Say so, rather than reading a value
+                    // nobody wrote.
+                    if let SymbolKind::ExternFunction { ret_ty: Some(ret), .. } = &sym.kind {
+                        if let Ok(Type::Named(id)) = super::parse_type::resolve_type_expr(ret, &self.types) {
+                            if matches!(self.types.get(id), Some(TypeDef::Struct { .. } | TypeDef::Union { .. })) {
+                                self.errors.push(TypeError::CStructReturn {
+                                    func: sym.name.clone(),
+                                    ty: self.types.type_name(id),
+                                    span,
+                                });
+                            }
+                        }
+                    }
                     if let Some(category) = unsafe_category {
                         self.unsafe_ops.push((span, category));
                         if !self.in_unsafe {
@@ -3072,6 +3119,16 @@ impl TypeChecker {
                     return *ret.clone();
                 }
 
+                // `...` in a C declaration: the fixed parameters are checked
+                // as usual, and what follows is anything C can be handed.
+                let variadic = func.name().is_some_and(|n| self.variadic_externs.contains(n));
+                if variadic && args.len() > params.len() {
+                    for arg in &args[params.len()..] {
+                        let ty = self.infer_expr(&arg.expr);
+                        self.note_variadic_arg(ty, arg.expr.span);
+                    }
+                }
+                let args = if variadic && args.len() > params.len() { &args[..params.len()] } else { args };
                 if params.len() != args.len() {
                     for arg in args { self.infer_expr(&arg.expr); }
                     self.errors.push(TypeError::ArityMismatch {
@@ -3693,92 +3750,6 @@ impl TypeChecker {
         Some(*ret)
     }
 
-    /// A call through an `import c` namespace, typed from the header.
-    ///
-    /// `None` when this isn't one, so the caller falls through to the ordinary
-    /// method-call path.
-    fn check_c_call(
-        &mut self,
-        call_id: NodeId,
-        object: &Expr,
-        args: &[CallArg],
-        span: Span,
-    ) -> Option<Type> {
-        // The receiver has to be the namespace itself. A local of the same name
-        // wins, the way it does for the builtin modules.
-        let Some(ns) = object.name() else { return None };
-        if self.lookup_local(ns).is_some() {
-            return None;
-        }
-        let &ns_sym = self.resolved.resolutions.get(&object.id)?;
-        if !matches!(
-            self.resolved.symbols.get(ns_sym).map(|s| &s.kind),
-            Some(SymbolKind::CNamespace { .. })
-        ) {
-            return None;
-        }
-        let &fn_sym = self.resolved.resolutions.get(&call_id)?;
-        let sym = self.resolved.symbols.get(fn_sym)?;
-        if !matches!(sym.kind, SymbolKind::ExternFunction { .. }) {
-            return None;
-        }
-        let fn_name = sym.name.clone();
-
-        // CI3: every C call is unsafe. The category is the same one a bare
-        // `extern "C"` call gets, so `rask` reports them the same way.
-        self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
-        if !self.in_unsafe {
-            self.errors.push(TypeError::UnsafeRequired {
-                operation: "extern function call".to_string(),
-                span,
-            });
-        }
-
-        let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
-            return None;
-        };
-        // The header spells its own struct types bare — `Rect` — and they are
-        // registered under the namespace, as `c.Rect`. Without this the
-        // argument checked against a name that resolves to nothing, so a
-        // `Vec<i64>` went in where a `Rect` was declared without complaint.
-        let params: Vec<Type> = params.iter().map(|p| self.qualify_c_type(ns, &p.ty)).collect();
-
-        // A struct handed *to* C rides in registers or on the stack; one handed
-        // *back* is a separate ABI rule that isn't built (#1101). Say so, rather
-        // than reading a value nobody wrote.
-        if let Some(name) = self.c_struct_name(ns, &ret) {
-            self.errors.push(TypeError::CStructReturn {
-                func: format!("{}.{}", ns, fn_name),
-                ty: name,
-                span,
-            });
-        }
-        let ret = self.qualify_c_type(ns, &ret);
-
-        if args.len() != params.len() {
-            for a in args {
-                self.infer_expr(&a.expr);
-            }
-            self.errors.push(TypeError::ArityMismatch {
-                expected: params.len(),
-                found: args.len(),
-                span,
-            });
-            return Some(ret);
-        }
-        for (arg, want) in args.iter().zip(params.iter()) {
-            let got = self.infer_expr_expecting(&arg.expr, want);
-            self.coerce_into_node(
-                rask_ast::coercion::CoercionSite::Argument,
-                got,
-                want.clone(),
-                Some(arg.expr.id),
-                arg.expr.span,
-            );
-        }
-        Some(ret)
-    }
-
     /// A bare name out of a C header, read as the namespace's type when there
     /// is one. `Rect` in `int area(Rect r)` is `c.Rect`.
     fn qualify_c_type(&self, ns: &str, ty: &Type) -> Type {
@@ -3929,20 +3900,7 @@ impl TypeChecker {
             self.written_method_type_args.insert(call_id, written);
         }
 
-        // `c.strlen(p)` — a call into an `import c` namespace. The resolver
-        // already points the call node at the header's declaration, and nothing
-        // read it: the call came back a fresh variable, so every C call had to
-        // be annotated at its binding or MIR gave up on it. And CI3 — a C call
-        // needs `unsafe` — was checked only for a bare `extern "C" func` call,
-        // never for one reached through the namespace, so the spec's own error
-        // message had never fired (#947, #948 found the surface; nothing tests
-        // it, which is why).
-        if let Some(ret) = self.check_c_call(call_id, object, args, span) {
-            return ret;
-        }
-
-        // `libpkg.make()` — a call into a dependency. Same shape as the C
-        // namespace above and it had no path at all: the call fell through to
+        // `libpkg.make()` — a call into a dependency. It had no path at all: the call fell through to
         // the ordinary method resolver, which asked what methods
         // `__module_libpkg` has, found none, and left a fresh variable behind.
         // One variable per *module local*, so two calls on the same package
@@ -5417,6 +5375,9 @@ impl TypeChecker {
                         .as_ref()
                         .and_then(|t| resolve_type_expr(t, &self.types).ok())
                         .unwrap_or(Type::Unit);
+                    if let Some(view) = self.context_view(&sym.name, param_types.clone(), ret.clone()) {
+                        return view;
+                    }
                     return Type::fn_borrowing(param_types, ret);
                 }
                 SymbolKind::Variable { .. } | SymbolKind::Parameter { .. } => {

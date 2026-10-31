@@ -1333,6 +1333,26 @@ impl TypeChecker {
             self.arm_widenings.insert(node, expected.clone());
         }
 
+        // CB1/CB2: a function where C wants a function pointer passes its
+        // code address. Which functions can is MIR's to say: it knows whether
+        // a closure captured anything.
+        if let Type::RawPtr(pointee) = self.resolve_named(&resolved_expected) {
+            if let Type::Fn { params: want, ret: want_ret } = self.resolve_named(&pointee) {
+                if let Type::Fn { params: got, ret: got_ret } = self.resolve_named(&self.ctx.apply(&ret_ty)) {
+                    if got.len() == want.len() {
+                        for (g, w) in got.iter().zip(want.iter()) {
+                            self.unify(&g.ty, &w.ty, span)?;
+                        }
+                        self.unify(&got_ret, &want_ret, span)?;
+                        if let Some(node) = value_node {
+                            self.c_fn_pointers.insert(node, span);
+                        }
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
         if let Some(node) = value_node {
             if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {
                 return Ok(progress);
@@ -2266,6 +2286,15 @@ impl TypeChecker {
         // handing `Vec<i64>.as_ptr()` to a `const int *` parameter used to pass
         // in silence: the C side then read the 64-bit buffer as 32-bit ints and
         // returned arithmetic that looked fine (#947).
+        // A pointer into a `*T?` slot fills the present side, which is the
+        // pointer the element type is checked against: `*i64` where C wants
+        // a `const int *` is wrong whether or not the header lets it be NULL.
+        if let (Type::RawPtr(_), Type::Result { ok, err }) = (&source, &target) {
+            if matches!(self.ctx.apply(err), Type::None) {
+                let ok = (**ok).clone();
+                return self.check_fits(&source, &ok, span);
+            }
+        }
         if let (Type::RawPtr(from), Type::RawPtr(to)) = (&source, &target) {
             let from_inner = self.resolve_named(&self.ctx.apply(from));
             let to_inner = self.resolve_named(&self.ctx.apply(to));

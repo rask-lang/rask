@@ -413,6 +413,8 @@ impl<'a> MirContext<'a> {
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
             arm_widenings: &typed.arm_widenings,
+            c_fn_pointers: &typed.c_fn_pointers,
+            c_contexts: &typed.c_contexts,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -483,6 +485,14 @@ impl<'a> MirContext<'a> {
 
 }
 
+/// No extern takes a closure through a context pointer.
+pub(crate) static EMPTY_C_CONTEXTS: std::sync::LazyLock<HashMap<String, rask_check::CContext>> =
+    std::sync::LazyLock::new(HashMap::new);
+
+/// No function value coerced to a C function pointer.
+pub(crate) static EMPTY_C_FN_POINTERS: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
+    std::sync::LazyLock::new(std::collections::HashSet::new);
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
@@ -542,6 +552,10 @@ pub struct MirContext<'a> {
     pub interface_coercions: &'a HashMap<NodeId, String>,
     /// See `TypedProgram::arm_widenings`.
     pub arm_widenings: &'a HashMap<NodeId, rask_types::Type>,
+    /// CB1/CB2: function values passed where C wants a function pointer.
+    pub c_fn_pointers: &'a std::collections::HashSet<NodeId>,
+    /// CB3: externs whose callback takes a closure through its context.
+    pub c_contexts: &'a HashMap<String, rask_check::CContext>,
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
@@ -690,6 +704,8 @@ impl<'a> MirContext<'a> {
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
+            c_fn_pointers: &EMPTY_ESCAPING,
+            c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             err_returns: &EMPTY_COALESCE_SHAPE,
@@ -1793,6 +1809,9 @@ pub struct MirLowerer<'a> {
     /// after. A one-shot handoff rather than a return value because the
     /// decision is made where the closure's entry point is built.
     spawn_result_boxed: bool,
+    /// The closure being lowered is a C function pointer (CB2): compiled with
+    /// no environment, entered the C way, and handed back as its address.
+    c_callback: bool,
     /// Inside a closure body: the locals that hold a capture's address
     /// rather than a copy of it. A whole-value write to one replaces what
     /// the creating frame (or the environment) holds.
@@ -4469,6 +4488,7 @@ impl<'a> MirLowerer<'a> {
             synthesized_functions: Vec::new(),
             closure_counter: 0,
             spawn_result_boxed: false,
+            c_callback: false,
             addressed_captures: std::collections::HashSet::new(),
             seq_moved_names: None,
             parent_name: func_name,
@@ -7680,6 +7700,7 @@ mod tests {
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
+                        bits: None,
                     }],
                     attrs: vec![],
                 },
@@ -7699,6 +7720,7 @@ mod tests {
                         is_public: true,
                         decl_index: 0,
                         is_type_param: false,
+                        bits: None,
                     }],
                     attrs: vec![],
                 },
@@ -7743,6 +7765,8 @@ mod tests {
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
+            c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
+            c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7831,6 +7855,8 @@ mod tests {
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
+            c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
+            c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,
@@ -7880,8 +7906,8 @@ mod tests {
                     payload_offset: 4,
                     payload_size: 8,
                     fields: vec![
-                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
-                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false },
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false, bits: None },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4, attrs: vec![], has_declared_default: false, is_public: true, decl_index: 0, is_type_param: false, bits: None },
                     ],
                     attrs: vec![],
                 },
@@ -7926,6 +7952,8 @@ mod tests {
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
+            c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
+            c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             err_returns: &empty_fallback_shape,

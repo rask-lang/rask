@@ -119,6 +119,36 @@ pub struct FieldLayout {
     /// 4614253070214988800 (#820). Codegen has the field's real MIR type at the
     /// read; this says when to prefer it.
     pub is_type_param: bool,
+    /// A `@bits(n)` field: where in its storage unit it sits. `offset`,
+    /// `size` and `align` are the unit's, shared with the bitfields packed
+    /// beside it (struct.c-interop/TM7).
+    pub bits: Option<BitSlot>,
+}
+
+/// A bitfield inside its storage unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitSlot {
+    /// Bits below it in the unit.
+    pub shift: u32,
+    pub width: u32,
+    /// Read back sign-extended.
+    pub signed: bool,
+}
+
+impl BitSlot {
+    /// The field's bits, before the shift.
+    pub fn mask(&self) -> u64 {
+        if self.width >= 64 { u64::MAX } else { (1u64 << self.width) - 1 }
+    }
+}
+
+/// The width a `@bits(n)` attribute asks for.
+pub fn bit_width(attrs: &[rask_ast::attr::Attr]) -> Option<u32> {
+    let a = attrs.iter().find(|a| a.is("bits"))?;
+    match a.positional()?.literal()? {
+        rask_ast::expr::Literal::Int(n) if n >= 0 => u32::try_from(n).ok(),
+        _ => None,
+    }
 }
 
 /// Enum memory layout
@@ -414,6 +444,10 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
 /// Align a value up to the given alignment
 fn align_up(val: u32, align: u32) -> u32 {
     (val + align - 1) & !(align - 1)
+}
+
+fn align_up_u64(val: u64, align: u64) -> u64 {
+    val.div_ceil(align) * align
 }
 
 /// Heuristic: single uppercase letter (or letter + digit) is a type parameter
@@ -731,13 +765,48 @@ fn struct_layout(
     }
 
     let mut field_layouts = Vec::new();
-    let mut offset = 0u32;
+    // In bits, so consecutive bitfields can share a unit.
+    let mut bit_offset = 0u64;
     let mut max_align = 1u32;
 
     for (name, ty, size, align, attrs, has_declared_default, is_public, is_type_param, decl_index) in resolved {
         max_align = max_align.max(align);
+        // TM7: a bitfield shares its declared type's storage unit with the
+        // ones before it while it fits, low bits first; one that would cross
+        // the unit's boundary starts the next unit. What the System V and
+        // AAPCS ABIs do, and every target Rask builds for uses one of them.
+        if let (Some(width), true) = (bit_width(&attrs), c_layout && size > 0) {
+            let unit_bits = size as u64 * 8;
+            if bit_offset % unit_bits + width as u64 > unit_bits {
+                bit_offset = align_up_u64(bit_offset, unit_bits);
+            }
+            let unit_start = bit_offset / unit_bits * unit_bits;
+            let signed = match &ty {
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 => true,
+                Type::UnresolvedNamed(n) => {
+                    rask_ast::primitives::c_type_spelling(n).is_some_and(|s| s.starts_with('i'))
+                }
+                _ => false,
+            };
+            field_layouts.push(FieldLayout {
+                name,
+                ty,
+                offset: (unit_start / 8) as u32,
+                size,
+                align,
+                attrs,
+                has_declared_default,
+                is_public,
+                decl_index,
+                is_type_param,
+                bits: Some(BitSlot { shift: (bit_offset - unit_start) as u32, width, signed }),
+            });
+            bit_offset += width as u64;
+            continue;
+        }
+
         // S3: Align offset for this field
-        offset = align_up(offset, align);
+        let offset = align_up(bit_offset.div_ceil(8) as u32, align);
 
         field_layouts.push(FieldLayout {
             name,
@@ -750,10 +819,12 @@ fn struct_layout(
             is_public,
             decl_index,
             is_type_param,
+            bits: None,
         });
 
-        offset += size;
+        bit_offset = (offset + size) as u64 * 8;
     }
+    let offset = bit_offset.div_ceil(8) as u32;
 
     if let Some(n) = request.align {
         max_align = max_align.max(n);
@@ -803,6 +874,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
             is_public: field.visibility.is_pub(),
             decl_index: decl_index as u32,
             is_type_param: false,
+            bits: None,
         });
     }
 
@@ -934,6 +1006,7 @@ fn enum_layout(
                     is_public: true,
                     decl_index: decl_index as u32,
                     is_type_param: from_param,
+                    bits: None,
                 });
 
                 field_offset += size;

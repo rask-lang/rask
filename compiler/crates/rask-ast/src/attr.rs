@@ -122,7 +122,9 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("deny", ArgForm::RuleNames, Writer::Anyone),
     // Decided, not built yet
     ("deprecated", ArgForm::Exprs, Writer::Anyone),         // tool.warnings/W5
-    ("bitfield", ArgForm::Exprs, Writer::Anyone),           // struct.c-interop
+    ("bits", ArgForm::Exprs, Writer::Anyone),               // struct.c-interop/TM7, on a field
+    ("inline_from", ArgForm::Exprs, Writer::Anyone),        // struct.c-interop/IN1, on an extern
+    ("context", ArgForm::Exprs, Writer::Anyone),            // struct.c-interop/CB3, on an extern
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
     ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
@@ -270,6 +272,10 @@ impl AttrValue {
     }
 }
 
+/// What `extern "C" struct Name` carries: a C type with no body, so no
+/// layout. Never written as an attribute; the formatter prints the form back.
+pub const OPAQUE: &str = "extern_c_opaque";
+
 impl Attr {
     /// An attribute the compiler attaches itself (`@entry` on a script's
     /// `main`, `@layout(C)` on an imported C struct).
@@ -386,4 +392,36 @@ pub fn find<'a>(attrs: &'a [Attr], name: &str) -> Option<&'a Attr> {
 /// Whether `attrs` carries the attribute `name`.
 pub fn has(attrs: &[Attr], name: &str) -> bool {
     find(attrs, name).is_some()
+}
+
+/// `@context(callback, userdata, at: i)` on an extern (struct.c-interop/CB3):
+/// parameter `context` is `callback`'s context pointer, arriving as the
+/// callback's `at`th argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextSpec {
+    pub callback: usize,
+    pub context: usize,
+    pub at: usize,
+}
+
+/// The extern's `@context`, read against its parameter names. `None` when it
+/// has none; `Some(Err)` says what's wrong with the one it has.
+pub fn context_spec(attrs: &[Attr], params: &[&str]) -> Option<Result<ContextSpec, (Span, String)>> {
+    let a = attrs.iter().find(|a| a.is("context"))?;
+    let positional: Vec<&AttrValue> = a.args.iter().flatten().filter(|x| x.label.is_none()).map(|x| &x.value).collect();
+    let name_of = |v: &AttrValue| v.ident().map(str::to_string);
+    let (Some(cb), Some(ctx)) = (positional.first().and_then(|v| name_of(v)), positional.get(1).and_then(|v| name_of(v))) else {
+        return Some(Err((a.span, "`@context` names the callback parameter, then the context one: `@context(callback, userdata, at: 0)`".to_string())));
+    };
+    let at = match a.arg("at").and_then(|v| v.literal()) {
+        Some(crate::expr::Literal::Int(n)) if n >= 0 => n as usize,
+        _ => return Some(Err((a.span, "`@context` needs `at:`, which argument of the callback the context arrives as".to_string()))),
+    };
+    let index = |n: &str| params.iter().position(|p| *p == n);
+    match (index(&cb), index(&ctx)) {
+        (Some(callback), Some(context)) if callback != context => Some(Ok(ContextSpec { callback, context, at })),
+        (None, _) => Some(Err((a.span, format!("`@context` names `{}`, which isn't a parameter", cb)))),
+        (_, None) => Some(Err((a.span, format!("`@context` names `{}`, which isn't a parameter", ctx)))),
+        _ => Some(Err((a.span, "`@context` needs two different parameters".to_string()))),
+    }
 }

@@ -1,380 +1,542 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Translates parsed C declarations into Rask-level intermediate representations.
+//! A parsed header as Rask source: the text `rask bindc` writes and
+//! `import c` compiles (struct.c-interop/BI1).
 //!
-//! Follows the type mapping from struct.c-interop (TM1–TM3):
-//! - C `int` → `c_int`, `unsigned long` → `c_ulong`, etc.
-//! - `T*` → `*T`, `void*` → `*void`, `const char*` → `*u8`
-//! - `#define FOO 42` → const FOO: c_int = 42
-//!
-//! Types come out as `TypeExpr`, the same structure the parser builds, so the
-//! resolver takes them as they are.
+//! The translator owns the C-to-Rask spelling. Everything after it is the
+//! ordinary Rask pipeline, which is why a header gets whatever Rask
+//! declarations get: constants with values, structs inside structs laid out as
+//! structs, enumerators usable in expressions.
 
+use std::collections::{HashMap, HashSet};
+
+use crate::consteval::{self, CValue};
 use crate::*;
-use rask_ast::ty::TypeExpr;
 
-// ---------------------------------------------------------------------------
-// Output types
-// ---------------------------------------------------------------------------
-
-/// A translated Rask declaration from C.
-#[derive(Debug, Clone, PartialEq)]
-pub enum RaskCDecl {
-    Function(RaskCFunc),
-    Struct(RaskCStruct),
-    Union(RaskCStruct),
-    Enum(RaskCEnum),
-    Const(RaskCConst),
-    TypeAlias(RaskCTypeAlias),
+/// What to translate, and how to name what it can't.
+pub struct Options<'a> {
+    /// The header as the program wrote it, for `@inline_from`.
+    pub header: &'a str,
+    /// Names `hiding { … }` leaves out (CI5).
+    pub hiding: &'a [String],
+    /// Whether a file the preprocessor named is the library's own. Its
+    /// declarations are translated; another file's only when one of those
+    /// needs it.
+    pub own: &'a dyn Fn(&str) -> bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCFunc {
-    pub name: String,
-    pub params: Vec<RaskCParam>,
-    /// None for C `void`.
-    pub ret_ty: Option<TypeExpr>,
-    pub is_variadic: bool,
+/// The translation of one header.
+#[derive(Debug, Clone, Default)]
+pub struct Translation {
+    pub source: String,
+    /// C names left out, and why, for the error a use of one gets.
+    pub skipped: HashMap<String, String>,
+    pub counts: Counts,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCParam {
-    pub name: String,
-    pub ty: TypeExpr,
+#[derive(Debug, Clone, Default)]
+pub struct Counts {
+    pub functions: usize,
+    pub types: usize,
+    pub constants: usize,
+    pub skipped: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCStruct {
-    pub name: String,
-    pub fields: Vec<RaskCField>,
-    /// Forward declaration = opaque type (pointer-only access).
-    pub is_opaque: bool,
+/// Rask keywords, which a C name may collide with.
+const KEYWORDS: &[&str] = &[
+    "func", "let", "mut", "const", "struct", "enum", "interface", "implements", "extend",
+    "public", "import", "return", "if", "else", "match", "for", "in", "while", "loop", "break",
+    "continue", "select_priority", "select", "with", "ensure", "take", "mutate", "where", "as",
+    "is", "true", "false", "unsafe", "extern", "comptime", "type", "none", "nullptr", "using",
+    "export", "lazy", "asm", "native", "test", "benchmark", "assert", "check", "try", "catch",
+    "or", "private", "union", "discard", "void", "self", "Self", "spawn", "own",
+];
+
+/// Names a callback's context parameter goes by (CB4).
+const CONTEXT_NAMES: &[&str] = &["userdata", "user_data", "ctx", "context", "arg", "data", "opaque", "udata", "user"];
+
+pub fn translate(parsed: &CParseResult, opts: &Options) -> Translation {
+    let mut t = Translator::new(parsed, opts);
+    t.select();
+    t.emit();
+    Translation { source: t.out, skipped: t.skipped, counts: t.counts }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCField {
-    pub name: String,
-    pub ty: TypeExpr,
+/// A C type name as a Rask type name: Rask types start with a capital
+/// (type.structs/S1a), so `sqlite3` is `Sqlite3` and `__u_char` is `U_char`.
+pub fn type_name(c: &str) -> String {
+    // `__u_char` has no first letter to raise; the underscores go.
+    let trimmed = c.trim_start_matches('_');
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() => first.to_uppercase().chain(chars).collect(),
+        _ => format!("C{}", trimmed),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCEnum {
-    pub name: String,
-    pub variants: Vec<(String, Option<i64>)>,
+/// A C field or parameter name that's safe as a Rask one.
+fn value_name(c: &str) -> String {
+    if KEYWORDS.contains(&c) { format!("{}_", c) } else { c.to_string() }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCConst {
-    pub name: String,
-    pub ty: TypeExpr,
-    /// Literal representation of the value.
-    pub value_repr: String,
+fn quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RaskCTypeAlias {
-    pub name: String,
-    pub target: TypeExpr,
+struct Translator<'a> {
+    items: &'a [CItem],
+    opts: &'a Options<'a>,
+    consts: Constants,
+    /// Where each struct or union tag is defined, else forward-declared.
+    records: HashMap<&'a str, usize>,
+    typedefs: HashMap<&'a str, usize>,
+    enums: HashMap<&'a str, usize>,
+    /// Items to emit, and type names needed only behind a pointer.
+    chosen: HashSet<usize>,
+    by_value: HashSet<String>,
+    opaque: Vec<String>,
+    out: String,
+    skipped: HashMap<String, String>,
+    counts: Counts,
 }
 
-#[derive(Debug, Clone)]
-pub struct TranslateResult {
-    pub decls: Vec<RaskCDecl>,
-    pub warnings: Vec<String>,
-}
-
-// ---------------------------------------------------------------------------
-// Main entry point
-// ---------------------------------------------------------------------------
-
-/// Translate parsed C declarations into Rask intermediate declarations.
-///
-/// Symbols whose names appear in `hiding` are excluded. Static functions are
-/// skipped (internal linkage). Mutable globals produce a warning.
-pub fn translate(result: &CParseResult, hiding: &[String]) -> TranslateResult {
-    let mut decls = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-
-    let translator = Translator;
-
-    // Forward parse warnings.
-    for w in &result.warnings {
-        warnings.push(format!("line {}: {}", w.line, w.message));
+impl<'a> Translator<'a> {
+    fn new(parsed: &'a CParseResult, opts: &'a Options<'a>) -> Self {
+        let items = parsed.decls.as_slice();
+        let mut records = HashMap::new();
+        let mut typedefs = HashMap::new();
+        let mut enums = HashMap::new();
+        for (i, item) in items.iter().enumerate() {
+            match &item.decl {
+                CDecl::Struct(s) | CDecl::Union(s) => {
+                    if let Some(tag) = &s.tag {
+                        let have_def = records.get(tag.as_str()).is_some_and(|&j: &usize| !is_forward(&items[j].decl));
+                        if !have_def {
+                            records.insert(tag.as_str(), i);
+                        }
+                    }
+                }
+                CDecl::Typedef(td) => {
+                    typedefs.entry(td.name.as_str()).or_insert(i);
+                }
+                CDecl::Enum(e) if !e.is_forward => {
+                    if let Some(tag) = &e.tag {
+                        enums.entry(tag.as_str()).or_insert(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Translator {
+            items,
+            opts,
+            consts: Constants::from_items(items),
+            records,
+            typedefs,
+            enums,
+            chosen: HashSet::new(),
+            by_value: HashSet::new(),
+            opaque: Vec::new(),
+            out: String::new(),
+            skipped: HashMap::new(),
+            counts: Counts::default(),
+        }
     }
 
-    for cdecl in &result.decls {
-        let name = decl_name(cdecl);
-        if let Some(n) = &name {
-            if hiding.iter().any(|h| h == n) {
+    // -- Selection -----------------------------------------------------------
+
+    /// The library's own declarations, then what they need from elsewhere:
+    /// in full where it's used by value, as an opaque type where it's only
+    /// pointed at.
+    fn select(&mut self) {
+        let mut work: Vec<(CType, bool)> = Vec::new();
+        for (i, item) in self.items.iter().enumerate() {
+            if !(self.opts.own)(&item.file) {
                 continue;
             }
-        }
-
-        match cdecl {
-            CDecl::Function(f) => {
-                // Static functions have internal linkage — not importable (struct.c-interop edge case).
-                if f.is_static {
+            if let Some(n) = decl_name(&item.decl) {
+                if self.opts.hiding.iter().any(|h| h == n) {
                     continue;
                 }
-                decls.push(RaskCDecl::Function(translator.translate_func(f)));
             }
-            CDecl::Struct(s) => {
-                if let Some(rask) = translator.translate_struct(s) {
-                    decls.push(RaskCDecl::Struct(rask));
+            match &item.decl {
+                CDecl::Struct(s) | CDecl::Union(s) if is_forward(&item.decl) => {
+                    // Defined somewhere? That definition is what to emit.
+                    if let Some(tag) = &s.tag {
+                        work.push((CType::StructTag(tag.clone()), false));
+                    }
+                    continue;
                 }
+                _ => {}
             }
-            CDecl::Union(u) => {
-                if let Some(rask) = translator.translate_struct(u) {
-                    decls.push(RaskCDecl::Union(rask));
-                }
+            self.chosen.insert(i);
+            uses(&item.decl, &mut work);
+        }
+        let mut seen: HashSet<(String, bool)> = HashSet::new();
+        while let Some((ty, by_value)) = work.pop() {
+            let Some(name) = named(&ty) else { continue };
+            if !seen.insert((name.to_string(), by_value)) {
+                continue;
             }
-            CDecl::Enum(e) => {
-                if let Some(rask) = translator.translate_enum(e) {
-                    decls.push(RaskCDecl::Enum(rask));
-                }
+            let name = name.to_string();
+            if by_value {
+                self.by_value.insert(name.clone());
             }
-            CDecl::Typedef(td) => {
-                // Skip self-referencing typedefs (`typedef struct foo foo`).
-                match &td.target {
-                    CType::StructTag(t) | CType::UnionTag(t) | CType::EnumTag(t)
-                        if t == &td.name =>
-                    {
+            let idx = match &ty {
+                CType::Named(n) => self.typedefs.get(n.as_str()).or_else(|| self.records.get(n.as_str())).copied(),
+                CType::StructTag(t) | CType::UnionTag(t) => self.records.get(t.as_str()).copied(),
+                CType::EnumTag(t) => self.enums.get(t.as_str()).copied(),
+                _ => None,
+            };
+            match idx {
+                Some(i) => {
+                    let own = (self.opts.own)(&self.items[i].file);
+                    let record = matches!(self.items[i].decl, CDecl::Struct(_) | CDecl::Union(_));
+                    // A foreign record reached only through pointers stays opaque.
+                    if record && !own && !by_value && !self.chosen.contains(&i) {
+                        if !self.opaque.contains(&name) {
+                            self.opaque.push(name);
+                        }
                         continue;
                     }
-                    _ => {}
+                    if self.chosen.insert(i) || by_value {
+                        let mut more = Vec::new();
+                        uses(&self.items[i].decl, &mut more);
+                        // A typedef passes on how it's used.
+                        if let CDecl::Typedef(_) = &self.items[i].decl {
+                            for m in &mut more {
+                                m.1 = m.1 && by_value;
+                            }
+                        }
+                        work.extend(more);
+                    }
                 }
-                decls.push(RaskCDecl::TypeAlias(translator.translate_typedef(td)));
-            }
-            CDecl::Define(d) => {
-                if let Some(c) = translator.translate_define(d, &mut warnings) {
-                    decls.push(RaskCDecl::Const(c));
-                }
-            }
-            CDecl::Variable(v) => {
-                if v.is_const {
-                    decls.push(RaskCDecl::Const(RaskCConst {
-                        name: v.name.clone(),
-                        ty: translator.translate_type(&v.ty),
-                        value_repr: String::new(), // extern — no initializer from header
-                    }));
-                } else {
-                    warnings.push(format!(
-                        "skipping mutable global `{}`: mutable C globals are not safe to import",
-                        v.name
-                    ));
+                None => {
+                    if !self.opaque.contains(&name) {
+                        self.opaque.push(name);
+                    }
                 }
             }
         }
+        // An opaque name that turned out to be defined and chosen isn't opaque.
+        let defined: HashSet<String> = self
+            .chosen
+            .iter()
+            .filter_map(|&i| match &self.items[i].decl {
+                CDecl::Struct(s) | CDecl::Union(s) if !s.is_forward => s.tag.as_deref().map(type_name),
+                CDecl::Typedef(td) if !self.self_typedef(td) => Some(type_name(&td.name)),
+                CDecl::Enum(e) => e.tag.as_deref().map(type_name),
+                _ => None,
+            })
+            .collect();
+        self.opaque.retain(|n| !defined.contains(&type_name(n)));
     }
 
-    TranslateResult { decls, warnings }
-}
+    // -- Emission ------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Internal translator
-// ---------------------------------------------------------------------------
-
-struct Translator;
-
-impl Translator {
-    // -- Type translation ---------------------------------------------------
-
-    fn translate_type(&self, ty: &CType) -> TypeExpr {
-        let named = |n: &str| TypeExpr::named(n);
-        match ty {
-            CType::Void => TypeExpr::Unit,
-            CType::Char => named("c_char"),
-            CType::SignedChar => named("i8"),
-            CType::UnsignedChar => named("u8"),
-            CType::Short => named("c_short"),
-            CType::UnsignedShort => named("c_ushort"),
-            CType::Int => named("c_int"),
-            CType::UnsignedInt => named("c_uint"),
-            CType::Long => named("c_long"),
-            CType::UnsignedLong => named("c_ulong"),
-            CType::LongLong => named("c_longlong"),
-            CType::UnsignedLongLong => named("c_ulonglong"),
-            CType::Float => named("f32"),
-            CType::Double => named("f64"),
-            CType::Bool => named("bool"),
-            CType::SizeT => named("c_size"),
-            CType::SSizeT => named("c_ssize"),
-            CType::FixedInt { bits, signed } => {
-                named(&format!("{}{}", if *signed { 'i' } else { 'u' }, bits))
+    fn emit(&mut self) {
+        self.out.push_str(&format!(
+            "// Generated by `rask bindc {}`. Regenerate it; don't edit it.\n",
+            self.opts.header
+        ));
+        let mut emitted: HashSet<String> = HashSet::new();
+        let mut externs: Vec<String> = Vec::new();
+        for i in 0..self.items.len() {
+            if !self.chosen.contains(&i) {
+                continue;
             }
-            CType::IntPtr { signed } => named(if *signed { "isize" } else { "usize" }),
-            CType::Pointer(inner) => self.translate_pointer(inner),
-            // Top-level const on a non-pointer: strip it. Rask handles
-            // mutability through const/let, not type qualifiers.
-            CType::Const(inner) => self.translate_type(inner),
-            CType::Array(elem, Some(size)) => TypeExpr::Array {
-                elem: Box::new(self.translate_type(elem)),
-                len: size.to_string(),
-            },
-            // Unsized array decays to pointer.
-            CType::Array(elem, None) => TypeExpr::RawPtr(Box::new(self.translate_type(elem))),
-            CType::Named(name) => match name.as_str() {
-                "FILE" | "va_list" => void_ptr(),
-                _ => named(name),
-            },
-            CType::StructTag(tag) | CType::UnionTag(tag) | CType::EnumTag(tag) => named(tag),
-            CType::FuncPtr { ret, params, is_variadic } => {
-                self.translate_func_ptr(ret, params, *is_variadic)
+            let item = &self.items[i];
+            let mut text = String::new();
+            match &item.decl {
+                CDecl::Function(f) => {
+                    match self.function(f) {
+                        Ok((attrs, sig)) if attrs.is_empty() => externs.push(sig),
+                        Ok((attrs, sig)) => {
+                            text.push_str(&format!("{}extern \"C\" {}\n", attrs, sig));
+                            self.counts.functions += 1;
+                        }
+                        Err(why) => text.push_str(&self.skip(&f.name, &why)),
+                    }
+                }
+                CDecl::Struct(s) | CDecl::Union(s) => {
+                    let Some(tag) = &s.tag else { continue };
+                    let rname = type_name(tag);
+                    if !emitted.insert(rname.clone()) {
+                        continue;
+                    }
+                    text.push_str(&self.record(s, matches!(item.decl, CDecl::Union(_))));
+                    self.counts.types += 1;
+                }
+                CDecl::Enum(e) => text.push_str(&self.enumeration(e, &mut emitted)),
+                CDecl::Typedef(td) => {
+                    let rname = type_name(&td.name);
+                    if self.self_typedef(td) || !emitted.insert(rname.clone()) {
+                        continue;
+                    }
+                    text.push_str(&format!("public type alias {} = {}\n", rname, self.ty(&td.target)));
+                    self.counts.types += 1;
+                }
+                CDecl::Define(d) => text.push_str(&self.define(d, &mut emitted)),
+                CDecl::Variable(v) => {
+                    text.push_str(&self.skip(&v.name, "a C global variable; read it through a function the library provides"));
+                }
             }
+            if !text.is_empty() {
+                self.out.push('\n');
+                self.out.push_str(&text);
+            }
+        }
+        if !self.opaque.is_empty() {
+            self.out.push('\n');
+            let mut names = self.opaque.clone();
+            names.sort();
+            for n in names {
+                let rname = type_name(&n);
+                if emitted.insert(rname.clone()) {
+                    self.out.push_str(&format!("extern \"C\" struct {}\n", rname));
+                    self.counts.types += 1;
+                }
+            }
+        }
+        if !externs.is_empty() {
+            self.out.push_str("\nextern \"C\" {\n");
+            for e in &externs {
+                self.out.push_str("    ");
+                self.out.push_str(e);
+                self.out.push('\n');
+            }
+            self.out.push_str("}\n");
+            self.counts.functions += externs.len();
         }
     }
 
-    /// Translate `T*` → `*T`, with special cases:
-    /// - `const char*` → `*u8` (C string convention)
-    /// - `void*` → `*void`
-    /// - Strips outer `const` on pointer targets.
-    fn translate_pointer(&self, inner: &CType) -> TypeExpr {
-        match strip_const(inner) {
-            CType::Char | CType::SignedChar | CType::UnsignedChar => {
-                TypeExpr::RawPtr(Box::new(TypeExpr::named("u8")))
+    /// The comment a skipped declaration leaves (BI5), and the record of why.
+    fn skip(&mut self, name: &str, why: &str) -> String {
+        self.skipped.insert(name.to_string(), why.to_string());
+        self.counts.skipped += 1;
+        format!("// skipped `{}`: {}\n", name, why)
+    }
+
+    fn self_typedef(&self, td: &CTypedef) -> bool {
+        match &td.target {
+            CType::StructTag(t) | CType::UnionTag(t) | CType::EnumTag(t) | CType::Named(t) => {
+                type_name(t) == type_name(&td.name)
             }
-            CType::Void => void_ptr(),
-            // Pointer-to-function-pointer collapses to the func ptr.
-            CType::FuncPtr { ret, params, is_variadic } => {
-                self.translate_func_ptr(ret, params, *is_variadic)
-            }
-            other => TypeExpr::RawPtr(Box::new(self.translate_type(other))),
+            _ => false,
         }
     }
 
-    /// Translate a C function pointer to `*func(...) -> R`. Rask function types
-    /// have no variadic form, so a pointer to a variadic function stays opaque.
-    fn translate_func_ptr(&self, ret: &CType, params: &[CType], is_variadic: bool) -> TypeExpr {
-        if is_variadic {
-            return void_ptr();
+    fn function(&self, f: &CFuncDecl) -> Result<(String, String), String> {
+        if KEYWORDS.contains(&f.name.as_str()) {
+            return Err(format!("its name is a Rask keyword"));
         }
-        TypeExpr::RawPtr(Box::new(TypeExpr::Func {
-            params: params.iter().map(|p| rask_ast::ty::FuncParam::borrowed(self.translate_type(p))).collect(),
-            ret: Box::new(self.translate_type(ret)),
-        }))
-    }
-
-    #[cfg(test)]
-    fn translate_type_src(&self, ty: &CType) -> String {
-        self.translate_type(ty).source()
-    }
-
-    // -- Declaration translators --------------------------------------------
-
-    fn translate_func(&self, f: &CFuncDecl) -> RaskCFunc {
-        let params: Vec<RaskCParam> = f
+        let params: Vec<&CParam> = f
             .params
             .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                // C `f(void)` means no params — skip single unnamed void param.
-                if f.params.len() == 1 && p.name.is_none() && p.ty == CType::Void {
-                    return None;
-                }
-                let name = p.name.clone().unwrap_or_else(|| format!("p{}", i));
-                Some(RaskCParam {
-                    name,
-                    ty: self.translate_type(&p.ty),
-                })
-            })
+            .filter(|p| !(f.params.len() == 1 && p.name.is_none() && p.ty == CType::Void))
             .collect();
-
-        let ret_ty = match &f.ret_ty {
-            CType::Void => None,
-            other => Some(self.translate_type(other)),
-        };
-
-        RaskCFunc {
-            name: f.name.clone(),
-            params,
-            ret_ty,
-            is_variadic: f.is_variadic,
-        }
-    }
-
-    fn translate_struct(&self, s: &CStructDecl) -> Option<RaskCStruct> {
-        // Anonymous structs without a tag are not importable.
-        let name = s.tag.as_ref()?;
-
-        let fields = s
-            .fields
-            .iter()
-            .map(|f| RaskCField {
-                name: f.name.clone(),
-                ty: self.translate_type(&f.ty),
-            })
-            .collect();
-
-        Some(RaskCStruct {
-            name: name.clone(),
-            fields,
-            is_opaque: s.is_forward,
-        })
-    }
-
-    fn translate_enum(&self, e: &CEnumDecl) -> Option<RaskCEnum> {
-        let name = e.tag.as_ref()?;
-        if e.is_forward {
-            return None;
-        }
-
-        let variants = e.variants.iter().map(|v| (v.name.clone(), v.value)).collect();
-
-        Some(RaskCEnum {
-            name: name.clone(),
-            variants,
-        })
-    }
-
-    fn translate_typedef(&self, td: &CTypedef) -> RaskCTypeAlias {
-        RaskCTypeAlias {
-            name: td.name.clone(),
-            target: self.translate_type(&td.target),
-        }
-    }
-
-    fn translate_define(
-        &self,
-        d: &CDefine,
-        warnings: &mut Vec<String>,
-    ) -> Option<RaskCConst> {
-        match &d.kind {
-            CDefineKind::Integer(v) => Some(RaskCConst {
-                name: d.name.clone(),
-                ty: TypeExpr::named("c_int"),
-                value_repr: v.to_string(),
-            }),
-            CDefineKind::UnsignedInteger(v) => Some(RaskCConst {
-                name: d.name.clone(),
-                ty: TypeExpr::named("c_uint"),
-                value_repr: v.to_string(),
-            }),
-            CDefineKind::Float(v) => Some(RaskCConst {
-                name: d.name.clone(),
-                ty: TypeExpr::named("f64"),
-                value_repr: format!("{}", v),
-            }),
-            CDefineKind::String(s) => Some(RaskCConst {
-                name: d.name.clone(),
-                ty: TypeExpr::RawPtr(Box::new(TypeExpr::named("u8"))),
-                value_repr: format!(
-                    "c\"{}\"",
-                    s.replace('\\', "\\\\").replace('"', "\\\"")
-                ),
-            }),
-            CDefineKind::FunctionMacro { .. } => {
-                warnings.push(format!(
-                    "skipping function-like macro `{}`",
-                    d.name
-                ));
-                None
+        let mut names: Vec<String> = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            let mut n = p.name.as_deref().map(value_name).unwrap_or_else(|| format!("p{}", i));
+            if names.contains(&n) {
+                n = format!("{}{}", n, i);
             }
-            CDefineKind::Unparseable => {
-                warnings.push(format!(
-                    "skipping unparseable macro `{}`",
-                    d.name
-                ));
-                None
+            names.push(n);
+        }
+        let mut sig = format!("func {}(", f.name);
+        for (i, p) in params.iter().enumerate() {
+            if i > 0 {
+                sig.push_str(", ");
+            }
+            sig.push_str(&format!("{}: {}", names[i], self.ty(&p.ty)));
+        }
+        if f.is_variadic {
+            sig.push_str(if params.is_empty() { "..." } else { ", ..." });
+        }
+        sig.push(')');
+        if strip(&f.ret_ty) != &CType::Void {
+            sig.push_str(&format!(" -> {}", self.ty(&f.ret_ty)));
+        }
+        let mut attrs = String::new();
+        if f.is_inline && f.is_static {
+            attrs.push_str(&format!("@inline_from({})\n", quote(self.opts.header)));
+        }
+        let resolve = |t: &CType| self.resolve(t);
+        for (cb, ctx, at) in contexts(&params, &resolve) {
+            attrs.push_str(&format!("@context({}, {}, at: {})\n", names[cb], names[ctx], at));
+        }
+        Ok((attrs, sig))
+    }
+
+    /// A type with typedefs looked through.
+    fn resolve(&self, ty: &CType) -> CType {
+        let mut ty = strip(ty).clone();
+        for _ in 0..16 {
+            let CType::Named(n) = &ty else { break };
+            let Some(&i) = self.typedefs.get(n.as_str()) else { break };
+            let CDecl::Typedef(td) = &self.items[i].decl else { break };
+            ty = strip(&td.target).clone();
+        }
+        ty
+    }
+
+    fn record(&self, s: &CStructDecl, is_union: bool) -> String {
+        let name = type_name(s.tag.as_deref().unwrap_or_default());
+        if s.is_forward {
+            return format!("extern \"C\" struct {}\n", name);
+        }
+        let mut out = if is_union {
+            format!("public union {} {{\n", name)
+        } else {
+            format!("@layout(C)\npublic struct {} {{\n", name)
+        };
+        let mut used: Vec<String> = Vec::new();
+        for f in &s.fields {
+            let mut n = value_name(&f.name);
+            if used.contains(&n) {
+                n = format!("{}{}", n, used.len());
+            }
+            used.push(n.clone());
+            out.push_str("    ");
+            if let Some(w) = f.bit_width {
+                out.push_str(&format!("@bits({}) ", w));
+            }
+            out.push_str(&format!("public {}: {}\n", n, self.ty(&f.ty)));
+        }
+        out.push_str("}\n");
+        out
+    }
+
+    /// A C enum is its integer type, and its enumerators are constants (TM6).
+    fn enumeration(&mut self, e: &CEnumDecl, emitted: &mut HashSet<String>) -> String {
+        let known: Vec<i64> = e.variants.iter().filter_map(|v| v.value).collect();
+        let base = if known.iter().all(|&v| i32::try_from(v).is_ok()) {
+            "c_int"
+        } else if known.iter().all(|&v| u32::try_from(v).is_ok()) {
+            "c_uint"
+        } else {
+            "c_long"
+        };
+        let mut out = String::new();
+        let ty = match &e.tag {
+            Some(tag) => {
+                let rname = type_name(tag);
+                if emitted.insert(rname.clone()) {
+                    out.push_str(&format!("public type alias {} = {}\n", rname, base));
+                    self.counts.types += 1;
+                }
+                rname
+            }
+            None => base.to_string(),
+        };
+        for v in &e.variants {
+            if !emitted.insert(v.name.clone()) {
+                continue;
+            }
+            match v.value {
+                Some(x) => {
+                    out.push_str(&format!("public const {}: {} = {}\n", v.name, ty, x));
+                    self.counts.constants += 1;
+                }
+                None => out.push_str(&self.skip(&v.name, "an enumerator whose value isn't a constant expression")),
+            }
+        }
+        out
+    }
+
+    fn define(&mut self, d: &CDefine, emitted: &mut HashSet<String>) -> String {
+        if d.params.is_some() {
+            return self.skip(&d.name, &format!("a function-like macro: {}", d.text));
+        }
+        if emitted.contains(&d.name) {
+            return String::new();
+        }
+        let line = match consteval::eval(&d.body, &self.consts) {
+            Some(CValue::Int(v, ty)) => {
+                let rty = self.ty(&ty);
+                format!("public const {}: {} = {}\n", d.name, rty, v)
+            }
+            Some(CValue::Float(f)) => format!("public const {}: f64 = {:?}\n", d.name, f),
+            Some(CValue::Str(s)) => format!("public const {}: string = {}\n", d.name, quote(&s)),
+            None => return self.skip(&d.name, &format!("not a constant: {}", d.text)),
+        };
+        emitted.insert(d.name.clone());
+        self.counts.constants += 1;
+        line
+    }
+
+    // -- Types ---------------------------------------------------------------
+
+    fn ty(&self, ty: &CType) -> String {
+        match ty {
+            CType::Void => "void".into(),
+            CType::Char => "c_char".into(),
+            CType::SignedChar => "i8".into(),
+            CType::UnsignedChar => "u8".into(),
+            CType::Short => "c_short".into(),
+            CType::UnsignedShort => "c_ushort".into(),
+            CType::Int => "c_int".into(),
+            CType::UnsignedInt => "c_uint".into(),
+            CType::Long => "c_long".into(),
+            CType::UnsignedLong => "c_ulong".into(),
+            CType::LongLong => "c_longlong".into(),
+            CType::UnsignedLongLong => "c_ulonglong".into(),
+            CType::Float => "f32".into(),
+            CType::Double => "f64".into(),
+            CType::Bool => "bool".into(),
+            CType::SizeT => "c_size".into(),
+            CType::SSizeT => "c_ssize".into(),
+            CType::FixedInt { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
+            CType::IntPtr { signed } => (if *signed { "isize" } else { "usize" }).into(),
+            CType::Const(inner) => self.ty(inner),
+            // A header doesn't say which of its pointers may be NULL, and a
+            // `*T` never is (mem.unsafe/PT6), so a data pointer is `*T?`. A
+            // `*T` argument still fills one; a returned one is checked before
+            // it's used. An override declaration (BI3) narrows one that the
+            // library's docs promise is never NULL.
+            CType::Pointer(inner) => match strip(inner) {
+                // A C string, by convention.
+                CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8?".into(),
+                CType::FuncPtr { .. } => self.ty(strip(inner)),
+                other => format!("*{}?", self.ty(other)),
+            },
+            CType::Array(elem, Some(n)) => format!("[{}; {}]", self.ty(elem), n),
+            CType::Array(elem, None) => format!("*{}?", self.ty(elem)),
+            CType::Named(n) => match builtin_typedef(n) {
+                Some(t) => self.ty(&t),
+                None => type_name(n),
+            },
+            CType::StructTag(t) | CType::UnionTag(t) => type_name(t),
+            CType::EnumTag(t) => match self.enums.get(t.as_str()) {
+                Some(_) => type_name(t),
+                None => "c_int".into(),
+            },
+            // Rask function types have no variadic form.
+            CType::FuncPtr { is_variadic: true, .. } => "*void".into(),
+            CType::FuncPtr { ret, params, .. } => {
+                let ps: Vec<String> = params
+                    .iter()
+                    .filter(|p| !(params.len() == 1 && **p == CType::Void))
+                    .map(|p| self.ty(p))
+                    .collect();
+                let mut s = format!("*func({})", ps.join(", "));
+                if strip(ret) != &CType::Void {
+                    s.push_str(&format!(" -> {}", self.ty(ret)));
+                }
+                s
             }
         }
     }
@@ -384,581 +546,116 @@ impl Translator {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Strip one layer of `Const` wrapper.
-fn strip_const(ty: &CType) -> &CType {
+fn strip(ty: &CType) -> &CType {
     match ty {
-        CType::Const(inner) => inner,
+        CType::Const(inner) => strip(inner),
         other => other,
     }
 }
 
-fn void_ptr() -> TypeExpr {
-    TypeExpr::RawPtr(Box::new(TypeExpr::Unit))
+fn is_forward(d: &CDecl) -> bool {
+    matches!(d, CDecl::Struct(s) | CDecl::Union(s) if s.is_forward)
 }
 
-/// Extract the primary name of a C declaration for hiding checks.
-fn decl_name(decl: &CDecl) -> Option<String> {
-    match decl {
-        CDecl::Function(f) => Some(f.name.clone()),
-        CDecl::Struct(s) => s.tag.clone(),
-        CDecl::Union(u) => u.tag.clone(),
-        CDecl::Enum(e) => e.tag.clone(),
-        CDecl::Typedef(td) => Some(td.name.clone()),
-        CDecl::Define(d) => Some(d.name.clone()),
-        CDecl::Variable(v) => Some(v.name.clone()),
-    }
+fn is_void_ptr(ty: &CType) -> bool {
+    matches!(strip(ty), CType::Pointer(inner) if strip(inner) == &CType::Void)
 }
 
-// ---------------------------------------------------------------------------
-// Rendering (for debugging / `rask c-header` command)
-// ---------------------------------------------------------------------------
-
-/// Render translated declarations as Rask source text.
-pub fn render_rask(result: &TranslateResult) -> String {
-    let mut out = String::new();
-
-    for decl in &result.decls {
-        match decl {
-            RaskCDecl::Function(f) => {
-                out.push_str("extern \"C\" func ");
-                out.push_str(&f.name);
-                out.push('(');
-                let mut first = true;
-                for p in &f.params {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    first = false;
-                    out.push_str(&p.name);
-                    out.push_str(": ");
-                    out.push_str(&p.ty.source());
-                }
-                if f.is_variadic {
-                    if !first {
-                        out.push_str(", ");
-                    }
-                    out.push_str("...");
-                }
-                out.push(')');
-                if let Some(ret) = &f.ret_ty {
-                    out.push_str(" -> ");
-                    out.push_str(&ret.source());
-                }
-                out.push('\n');
+/// The callback/context pairs in a parameter list (CB4): `(callback index,
+/// context index, position of the context among the callback's arguments)`.
+fn contexts(params: &[&CParam], resolve: &dyn Fn(&CType) -> CType) -> Vec<(usize, usize, usize)> {
+    let ctx_params: Vec<usize> = (0..params.len()).filter(|&i| is_void_ptr(&params[i].ty)).collect();
+    let mut out = Vec::new();
+    for (cb, p) in params.iter().enumerate() {
+        let resolved = resolve(&p.ty);
+        let fp = match &resolved {
+            CType::FuncPtr { params, is_variadic: false, .. } => params,
+            CType::Pointer(inner) => match strip(inner) {
+                CType::FuncPtr { params, is_variadic: false, .. } => params,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let slots: Vec<usize> = (0..fp.len()).filter(|&i| is_void_ptr(&fp[i])).collect();
+        if slots.len() != 1 {
+            continue;
+        }
+        let ctx = match ctx_params.as_slice() {
+            [one] => Some(*one),
+            many => {
+                let named: Vec<usize> = many
+                    .iter()
+                    .copied()
+                    .filter(|&i| params[i].name.as_deref().is_some_and(|n| CONTEXT_NAMES.contains(&n.to_ascii_lowercase().as_str())))
+                    .collect();
+                if named.len() == 1 { Some(named[0]) } else { None }
             }
-            RaskCDecl::Struct(s) | RaskCDecl::Union(s) => {
-                let keyword = if matches!(decl, RaskCDecl::Union(_)) {
-                    "union"
-                } else {
-                    "struct"
-                };
-                out.push_str("extern \"C\" ");
-                out.push_str(keyword);
-                out.push(' ');
-                out.push_str(&s.name);
-                if s.is_opaque {
-                    out.push('\n');
-                } else {
-                    out.push_str(" {\n");
-                    for f in &s.fields {
-                        out.push_str("    ");
-                        out.push_str(&f.name);
-                        out.push_str(": ");
-                        out.push_str(&f.ty.source());
-                        out.push('\n');
-                    }
-                    out.push_str("}\n");
-                }
-            }
-            RaskCDecl::Enum(e) => {
-                out.push_str("extern \"C\" enum ");
-                out.push_str(&e.name);
-                out.push_str(" {\n");
-                for (vname, value) in &e.variants {
-                    out.push_str("    ");
-                    out.push_str(vname);
-                    if let Some(v) = value {
-                        out.push_str(&format!(" = {}", v));
-                    }
-                    out.push('\n');
-                }
-                out.push_str("}\n");
-            }
-            RaskCDecl::Const(c) => {
-                out.push_str("const ");
-                out.push_str(&c.name);
-                out.push_str(": ");
-                out.push_str(&c.ty.source());
-                if !c.value_repr.is_empty() {
-                    out.push_str(" = ");
-                    out.push_str(&c.value_repr);
-                }
-                out.push('\n');
-            }
-            RaskCDecl::TypeAlias(a) => {
-                out.push_str("type ");
-                out.push_str(&a.name);
-                out.push_str(" = ");
-                out.push_str(&a.target.source());
-                out.push('\n');
+        };
+        if let Some(ctx) = ctx {
+            if !out.iter().any(|&(_, c, _)| c == ctx) {
+                out.push((cb, ctx, slots[0]));
             }
         }
     }
-
-    for w in &result.warnings {
-        out.push_str("// WARNING: ");
-        out.push_str(w);
-        out.push('\n');
-    }
-
     out
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn empty_result(decls: Vec<CDecl>) -> CParseResult {
-        CParseResult {
-            decls,
-            warnings: vec![],
-        }
-    }
-
-    #[test]
-    fn translate_basic_function() {
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "puts".into(),
-            params: vec![CParam {
-                name: Some("s".into()),
-                ty: CType::Pointer(Box::new(CType::Const(Box::new(CType::Char)))),
-            }],
-            ret_ty: CType::Int,
-            is_variadic: false,
-            is_static: false,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        assert_eq!(out.decls.len(), 1);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => {
-                assert_eq!(f.name, "puts");
-                assert_eq!(f.params.len(), 1);
-                assert_eq!(f.params[0].name, "s");
-                assert_eq!(f.params[0].ty.source(), "*u8");
-                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_int"));
-                assert!(!f.is_variadic);
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_void_return() {
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "free".into(),
-            params: vec![CParam {
-                name: Some("ptr".into()),
-                ty: CType::Pointer(Box::new(CType::Void)),
-            }],
-            ret_ty: CType::Void,
-            is_variadic: false,
-            is_static: false,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty, None);
-                assert_eq!(f.params[0].ty.source(), "*void");
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_void_params() {
-        // C `int getpid(void)` — single void param means no params.
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "getpid".into(),
-            params: vec![CParam {
-                name: None,
-                ty: CType::Void,
-            }],
-            ret_ty: CType::Int,
-            is_variadic: false,
-            is_static: false,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => {
-                assert!(f.params.is_empty());
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_variadic_function() {
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "printf".into(),
-            params: vec![CParam {
-                name: Some("fmt".into()),
-                ty: CType::Pointer(Box::new(CType::Const(Box::new(CType::Char)))),
-            }],
-            ret_ty: CType::Int,
-            is_variadic: true,
-            is_static: false,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => {
-                assert!(f.is_variadic);
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn skip_static_function() {
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "internal_helper".into(),
-            params: vec![],
-            ret_ty: CType::Void,
-            is_variadic: false,
-            is_static: true,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        assert!(out.decls.is_empty());
-    }
-
-    #[test]
-    fn translate_struct_and_opaque() {
-        let result = empty_result(vec![
-            CDecl::Struct(CStructDecl {
-                tag: Some("point".into()),
-                fields: vec![
-                    CField { name: "x".into(), ty: CType::Double, bit_width: None },
-                    CField { name: "y".into(), ty: CType::Double, bit_width: None },
-                ],
-                is_forward: false,
-            }),
-            CDecl::Struct(CStructDecl {
-                tag: Some("sqlite3".into()),
-                fields: vec![],
-                is_forward: true,
-            }),
-        ]);
-
-        let out = translate(&result, &[]);
-        assert_eq!(out.decls.len(), 2);
-
-        match &out.decls[0] {
-            RaskCDecl::Struct(s) => {
-                assert_eq!(s.name, "point");
-                assert!(!s.is_opaque);
-                assert_eq!(s.fields.len(), 2);
-                assert_eq!(s.fields[0].ty.source(), "f64");
-            }
-            other => panic!("expected Struct, got {:?}", other),
-        }
-
-        match &out.decls[1] {
-            RaskCDecl::Struct(s) => {
-                assert_eq!(s.name, "sqlite3");
-                assert!(s.is_opaque);
-            }
-            other => panic!("expected Struct, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_enum() {
-        let result = empty_result(vec![CDecl::Enum(CEnumDecl {
-            tag: Some("color".into()),
-            variants: vec![
-                CEnumVariant { name: "RED".into(), value: Some(0) },
-                CEnumVariant { name: "GREEN".into(), value: Some(1) },
-                CEnumVariant { name: "BLUE".into(), value: Some(2) },
-            ],
-            is_forward: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::Enum(e) => {
-                assert_eq!(e.name, "color");
-                assert_eq!(e.variants.len(), 3);
-                assert_eq!(e.variants[0], ("RED".into(), Some(0)));
-            }
-            other => panic!("expected Enum, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_typedef() {
-        let result = empty_result(vec![CDecl::Typedef(CTypedef {
-            name: "size_t".into(),
-            target: CType::UnsignedLong,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::TypeAlias(a) => {
-                assert_eq!(a.name, "size_t");
-                assert_eq!(a.target.source(), "c_ulong");
-            }
-            other => panic!("expected TypeAlias, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_defines() {
-        let result = empty_result(vec![
-            CDecl::Define(CDefine {
-                name: "EXIT_SUCCESS".into(),
-                kind: CDefineKind::Integer(0),
-            }),
-            CDecl::Define(CDefine {
-                name: "VERSION".into(),
-                kind: CDefineKind::String("1.0".into()),
-            }),
-            CDecl::Define(CDefine {
-                name: "MAX".into(),
-                kind: CDefineKind::FunctionMacro {
-                    params: vec!["a".into(), "b".into()],
-                },
-            }),
-            CDecl::Define(CDefine {
-                name: "WEIRD".into(),
-                kind: CDefineKind::Unparseable,
-            }),
-        ]);
-
-        let out = translate(&result, &[]);
-        assert_eq!(out.decls.len(), 2); // integer + string only
-
-        match &out.decls[0] {
-            RaskCDecl::Const(c) => {
-                assert_eq!(c.name, "EXIT_SUCCESS");
-                assert_eq!(c.ty.source(), "c_int");
-                assert_eq!(c.value_repr, "0");
-            }
-            other => panic!("expected Const, got {:?}", other),
-        }
-
-        // Two warnings for skipped macros.
-        assert_eq!(
-            out.warnings
-                .iter()
-                .filter(|w| w.contains("skipping"))
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn translate_variable_const_vs_mutable() {
-        let result = empty_result(vec![
-            CDecl::Variable(CVarDecl {
-                name: "errno".into(),
-                ty: CType::Int,
-                is_extern: true,
-                is_const: false,
-            }),
-            CDecl::Variable(CVarDecl {
-                name: "STDOUT".into(),
-                ty: CType::Int,
-                is_extern: true,
-                is_const: true,
-            }),
-        ]);
-
-        let out = translate(&result, &[]);
-        // Mutable skipped, const kept.
-        assert_eq!(out.decls.len(), 1);
-        match &out.decls[0] {
-            RaskCDecl::Const(c) => assert_eq!(c.name, "STDOUT"),
-            other => panic!("expected Const, got {:?}", other),
-        }
-        assert!(out.warnings.iter().any(|w| w.contains("errno")));
-    }
-
-    #[test]
-    fn hiding_filters_symbols() {
-        let result = empty_result(vec![
-            CDecl::Function(CFuncDecl {
-                name: "keep".into(),
-                params: vec![],
-                ret_ty: CType::Void,
-                is_variadic: false,
-                is_static: false,
-                is_inline: false,
-            }),
-            CDecl::Function(CFuncDecl {
-                name: "hide_me".into(),
-                params: vec![],
-                ret_ty: CType::Void,
-                is_variadic: false,
-                is_static: false,
-                is_inline: false,
-            }),
-        ]);
-
-        let out = translate(&result, &["hide_me".into()]);
-        assert_eq!(out.decls.len(), 1);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => assert_eq!(f.name, "keep"),
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_fixed_int_types() {
-        let t = Translator;
-        assert_eq!(
-            t.translate_type_src(&CType::FixedInt { bits: 8, signed: true }),
-            "i8"
-        );
-        assert_eq!(
-            t.translate_type_src(&CType::FixedInt {
-                bits: 32,
-                signed: false
-            }),
-            "u32"
-        );
-        assert_eq!(
-            t.translate_type_src(&CType::FixedInt {
-                bits: 64,
-                signed: true
-            }),
-            "i64"
-        );
-    }
-
-    #[test]
-    fn translate_func_ptr_type() {
-        let t = Translator;
-        let ty = CType::FuncPtr {
-            ret: Box::new(CType::Int),
-            params: vec![CType::Pointer(Box::new(CType::Void)), CType::Int],
-            is_variadic: false,
-        };
-        assert_eq!(t.translate_type_src(&ty), "*func(*void, c_int) -> c_int");
-    }
-
-    #[test]
-    fn translate_array_type() {
-        let t = Translator;
-        assert_eq!(
-            t.translate_type_src(&CType::Array(Box::new(CType::Int), Some(16))),
-            "[c_int; 16]"
-        );
-        assert_eq!(
-            t.translate_type_src(&CType::Array(Box::new(CType::Char), None)),
-            "*c_char"
-        );
-    }
-
-    #[test]
-    fn translate_unnamed_params() {
-        let result = empty_result(vec![CDecl::Function(CFuncDecl {
-            name: "memcpy".into(),
-            params: vec![
-                CParam {
-                    name: None,
-                    ty: CType::Pointer(Box::new(CType::Void)),
-                },
-                CParam {
-                    name: None,
-                    ty: CType::Pointer(Box::new(CType::Const(Box::new(CType::Void)))),
-                },
-                CParam {
-                    name: None,
-                    ty: CType::SizeT,
-                },
-            ],
-            ret_ty: CType::Pointer(Box::new(CType::Void)),
-            is_variadic: false,
-            is_static: false,
-            is_inline: false,
-        })]);
-
-        let out = translate(&result, &[]);
-        match &out.decls[0] {
-            RaskCDecl::Function(f) => {
-                assert_eq!(f.params[0].name, "p0");
-                assert_eq!(f.params[0].ty.source(), "*void");
-                assert_eq!(f.params[1].name, "p1");
-                assert_eq!(f.params[1].ty.source(), "*void"); // const stripped on pointer target
-                assert_eq!(f.params[2].name, "p2");
-                assert_eq!(f.params[2].ty.source(), "c_size");
-                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("*void"));
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn self_referencing_typedef_skipped() {
-        let result = empty_result(vec![
-            CDecl::Struct(CStructDecl {
-                tag: Some("foo".into()),
-                fields: vec![CField {
-                    name: "x".into(),
-                    ty: CType::Int,
-                    bit_width: None,
-                }],
-                is_forward: false,
-            }),
-            CDecl::Typedef(CTypedef {
-                name: "foo".into(),
-                target: CType::StructTag("foo".into()),
-            }),
-        ]);
-
-        let out = translate(&result, &[]);
-        // Struct emitted, typedef suppressed.
-        assert_eq!(out.decls.len(), 1);
-        assert!(matches!(&out.decls[0], RaskCDecl::Struct(_)));
-    }
-
-    #[test]
-    fn render_round_trip() {
-        let result = empty_result(vec![
-            CDecl::Function(CFuncDecl {
-                name: "open".into(),
-                params: vec![
-                    CParam { name: Some("path".into()), ty: CType::Pointer(Box::new(CType::Const(Box::new(CType::Char)))) },
-                    CParam { name: Some("flags".into()), ty: CType::Int },
-                ],
-                ret_ty: CType::Int,
-                is_variadic: false,
-                is_static: false,
-                is_inline: false,
-            }),
-            CDecl::Struct(CStructDecl {
-                tag: Some("sqlite3".into()),
-                fields: vec![],
-                is_forward: true,
-            }),
-        ]);
-
-        let translated = translate(&result, &[]);
-        let rendered = render_rask(&translated);
-        assert!(rendered.contains("extern \"C\" func open(path: *u8, flags: c_int) -> c_int"));
-        assert!(rendered.contains("extern \"C\" struct sqlite3\n"));
+/// The type a type expression names, if it names one.
+fn named(ty: &CType) -> Option<&str> {
+    match ty {
+        CType::Named(n) if builtin_typedef(n).is_none() => Some(n),
+        CType::StructTag(t) | CType::UnionTag(t) | CType::EnumTag(t) => Some(t),
+        _ => None,
     }
 }
+
+/// The types a declaration mentions, and whether by value.
+fn uses(decl: &CDecl, out: &mut Vec<(CType, bool)>) {
+    fn walk(ty: &CType, by_value: bool, out: &mut Vec<(CType, bool)>) {
+        match ty {
+            CType::Const(inner) => walk(inner, by_value, out),
+            CType::Pointer(inner) => walk(inner, false, out),
+            CType::Array(elem, Some(_)) => walk(elem, by_value, out),
+            CType::Array(elem, None) => walk(elem, false, out),
+            CType::FuncPtr { ret, params, .. } => {
+                walk(ret, false, out);
+                for p in params {
+                    walk(p, false, out);
+                }
+            }
+            other if named(other).is_some() => out.push((other.clone(), by_value)),
+            _ => {}
+        }
+    }
+    match decl {
+        // A parameter or return by value needs the layout to pass it.
+        CDecl::Function(f) => {
+            walk(&f.ret_ty, true, out);
+            for p in &f.params {
+                walk(&p.ty, true, out);
+            }
+        }
+        CDecl::Struct(s) | CDecl::Union(s) => {
+            for f in &s.fields {
+                walk(&f.ty, true, out);
+            }
+        }
+        CDecl::Typedef(td) => walk(&td.target, true, out),
+        CDecl::Enum(_) | CDecl::Define(_) | CDecl::Variable(_) => {}
+    }
+}
+
+/// The name a declaration introduces, for `hiding`.
+fn decl_name(decl: &CDecl) -> Option<&str> {
+    match decl {
+        CDecl::Function(f) => Some(&f.name),
+        CDecl::Struct(s) | CDecl::Union(s) => s.tag.as_deref(),
+        CDecl::Enum(e) => e.tag.as_deref(),
+        CDecl::Typedef(td) => Some(&td.name),
+        CDecl::Define(d) => Some(&d.name),
+        CDecl::Variable(v) => Some(&v.name),
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests;

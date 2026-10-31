@@ -38,7 +38,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, TypedProgram, PlacedArg, receiver_name};
+pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -143,14 +143,9 @@ pub struct TypeChecker {
     pub(super) ctx: InferenceContext,
     /// Types assigned to nodes.
     pub(super) node_types: HashMap<NodeId, Type>,
-    /// Struct declarations synthesized from `import c` headers. They reach
-    /// monomorphization through `TypedProgram` so a C struct gets a layout like
-    /// any other (#948).
-    pub(super) c_type_decls: Vec<rask_ast::decl::Decl>,
-    /// The `import c` namespace names in this program (`c`, or the alias in
-    /// `import c "…" as mylib`). A dotted name under one of these is a C type
-    /// that must be registered — `c.Nonexistent` in a signature is an error,
-    /// where a module path like `time.Instant` resolves elsewhere.
+    /// The `import c` aliases (`c`, or `mylib` under `as mylib`). Every name
+    /// the header has was rewritten to its declaration before resolve, so a
+    /// dotted type still under one names nothing.
     pub(super) c_namespaces: std::collections::HashSet<String>,
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
@@ -358,6 +353,16 @@ pub struct TypeChecker {
     pub(super) interface_coercions: HashMap<NodeId, String>,
     /// See `TypedProgram::arm_widenings`.
     pub(super) arm_widenings: HashMap<NodeId, Type>,
+    /// CB1/CB2: function values coerced to a C function pointer, and where.
+    pub(super) c_fn_pointers: HashMap<NodeId, rask_ast::Span>,
+    /// CB3: externs whose callback takes a closure through a context pointer.
+    pub(super) c_contexts: HashMap<String, type_defs::CContext>,
+    /// Externs declared with `...`: a call may pass more than they list.
+    pub(super) variadic_externs: std::collections::HashSet<String>,
+    /// Variadic arguments whose type isn't settled yet, checked after solving.
+    pub(super) pending_variadic: Vec<(Type, rask_ast::Span)>,
+    /// The `extern "C"` functions with bodies, which C can call (CB1).
+    pub(super) extern_c_fns: std::collections::HashSet<SymbolId>,
     /// ER31a: `try` sites where the propagated error gets wrapped in a variant
     /// of the enclosing function's error enum. NodeId of the `try` expression →
     /// the wrapping variant. Both backends read this to build the enum value.
@@ -614,7 +619,6 @@ impl TypeChecker {
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
-            c_type_decls: Vec::new(),
             c_namespaces: std::collections::HashSet::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
@@ -671,6 +675,11 @@ impl TypeChecker {
             in_stmt_expr: false,
             interface_coercions: HashMap::new(),
             arm_widenings: HashMap::new(),
+            c_fn_pointers: HashMap::new(),
+            extern_c_fns: std::collections::HashSet::new(),
+            c_contexts: HashMap::new(),
+            variadic_externs: std::collections::HashSet::new(),
+            pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
@@ -776,8 +785,28 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
         }
         self.collect_import_aliases();
-        self.collect_c_types();
+        self.c_namespaces = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                rask_ast::decl::DeclKind::CImport(c) => Some(c.alias.clone()),
+                _ => None,
+            })
+            .collect();
         self.collect_type_declarations(decls);
+        self.extern_c_fns = decls
+            .iter()
+            .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Fn(f) if f.abi.is_some()))
+            .filter_map(|d| self.resolved.decl_symbols.get(&d.id).copied())
+            .collect();
+        self.collect_extern_contexts(decls);
+        self.variadic_externs = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                rask_ast::decl::DeclKind::Extern(e) if e.is_variadic => Some(e.name.clone()),
+                _ => None,
+            })
+            .collect();
+        self.check_union_members(decls);
         self.check_user_annotations(decls);
         self.check_allow_names(decls);
         self.check_bound_names(decls);
@@ -1114,6 +1143,8 @@ impl TypeChecker {
             .map(|(node, ty)| (*node, self.ctx.apply(ty)))
             .collect();
 
+        self.check_c_fn_pointers();
+        self.check_variadic_args();
         let unsafe_ops = self.unsafe_ops;
 
         let span_types: HashMap<_, _> = self
@@ -1140,7 +1171,6 @@ impl TypeChecker {
 
         let program = TypedProgram {
             symbols: self.resolved.symbols,
-            c_type_decls: self.c_type_decls,
             resolutions: self.resolved.resolutions,
             types: self.types,
             node_types,
@@ -1149,6 +1179,8 @@ impl TypeChecker {
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
             arm_widenings,
+            c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
+            c_contexts: std::mem::take(&mut self.c_contexts),
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,

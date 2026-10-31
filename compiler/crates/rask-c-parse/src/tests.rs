@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 use crate::*;
-use crate::translate;
 
     fn parse(src: &str) -> CParseResult {
         parse_c_header(src).expect("parse failed")
@@ -13,7 +12,7 @@ use crate::translate;
     fn parse_function_decl() {
         let r = parse("int printf(const char *fmt, ...);");
         assert_eq!(r.decls.len(), 1);
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.name, "printf");
                 assert!(f.is_variadic);
@@ -27,7 +26,7 @@ use crate::translate;
     #[test]
     fn parse_void_function() {
         let r = parse("void exit(int status);");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.name, "exit");
                 assert_eq!(f.ret_ty, CType::Void);
@@ -40,7 +39,7 @@ use crate::translate;
     #[test]
     fn parse_struct_with_fields() {
         let r = parse("struct Point { int x; int y; };");
-        let found_struct = r.decls.iter().find(|d| matches!(d, CDecl::Struct(_)));
+        let found_struct = r.decls.iter().map(|i| &i.decl).find(|d| matches!(d, CDecl::Struct(_)));
         match found_struct {
             Some(CDecl::Struct(s)) => {
                 assert_eq!(s.tag.as_deref(), Some("Point"));
@@ -56,7 +55,7 @@ use crate::translate;
     #[test]
     fn parse_forward_decl() {
         let r = parse("struct Opaque;");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Struct(s) => {
                 assert_eq!(s.tag.as_deref(), Some("Opaque"));
                 assert!(s.is_forward);
@@ -68,7 +67,7 @@ use crate::translate;
     #[test]
     fn parse_enum() {
         let r = parse("enum Color { RED, GREEN = 5, BLUE };");
-        let found_enum = r.decls.iter().find(|d| matches!(d, CDecl::Enum(_)));
+        let found_enum = r.decls.iter().map(|i| &i.decl).find(|d| matches!(d, CDecl::Enum(_)));
         match found_enum {
             Some(CDecl::Enum(e)) => {
                 assert_eq!(e.tag.as_deref(), Some("Color"));
@@ -91,7 +90,7 @@ use crate::translate;
     #[test]
     fn a_typedef_names_the_anonymous_struct_it_wraps() {
         let r = parse("typedef struct { int fd; } FileHandle;");
-        let structs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+        let structs: Vec<_> = r.decls.iter().map(|i| &i.decl).filter_map(|d| match d {
             CDecl::Struct(s) => Some(s),
             _ => None,
         }).collect();
@@ -99,7 +98,7 @@ use crate::translate;
         assert_eq!(structs[0].tag.as_deref(), Some("FileHandle"));
         assert_eq!(structs[0].fields.len(), 1);
         assert!(
-            !r.decls.iter().any(|d| matches!(d, CDecl::Typedef(_))),
+            !r.decls.iter().map(|i| &i.decl).any(|d| matches!(d, CDecl::Typedef(_))),
             "the name-donating typedef is a no-op: {:?}", r.decls
         );
     }
@@ -109,7 +108,7 @@ use crate::translate;
     #[test]
     fn a_second_typedef_name_points_at_the_adopted_tag() {
         let r = parse("typedef struct { int fd; } FileHandle, *FilePtr;");
-        let typedefs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+        let typedefs: Vec<_> = r.decls.iter().map(|i| &i.decl).filter_map(|d| match d {
             CDecl::Typedef(t) => Some(t),
             _ => None,
         }).collect();
@@ -125,13 +124,13 @@ use crate::translate;
     #[test]
     fn a_tagged_typedef_keeps_the_alias() {
         let r = parse("typedef struct file { int fd; } FileHandle;");
-        let structs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+        let structs: Vec<_> = r.decls.iter().map(|i| &i.decl).filter_map(|d| match d {
             CDecl::Struct(s) => Some(s),
             _ => None,
         }).collect();
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].tag.as_deref(), Some("file"));
-        let typedefs: Vec<_> = r.decls.iter().filter_map(|d| match d {
+        let typedefs: Vec<_> = r.decls.iter().map(|i| &i.decl).filter_map(|d| match d {
             CDecl::Typedef(t) => Some(t),
             _ => None,
         }).collect();
@@ -143,10 +142,10 @@ use crate::translate;
     #[test]
     fn parse_define_integer() {
         let r = parse("#define MAX_SIZE 1024\n");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Define(d) => {
                 assert_eq!(d.name, "MAX_SIZE");
-                assert_eq!(d.kind, CDefineKind::Integer(1024));
+                assert_eq!(d.body, vec![CTokenKind::IntLit(1024)]);
             }
             other => panic!("expected Define, got {:?}", other),
         }
@@ -155,10 +154,10 @@ use crate::translate;
     #[test]
     fn parse_define_string() {
         let r = parse("#define VERSION \"1.0\"\n");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Define(d) => {
                 assert_eq!(d.name, "VERSION");
-                assert_eq!(d.kind, CDefineKind::String("1.0".into()));
+                assert_eq!(d.body, vec![CTokenKind::StringLit("1.0".into())]);
             }
             other => panic!("expected Define, got {:?}", other),
         }
@@ -167,10 +166,11 @@ use crate::translate;
     #[test]
     fn parse_define_function_macro() {
         let r = parse("#define MAX(a, b) ((a) > (b) ? (a) : (b))\n");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Define(d) => {
                 assert_eq!(d.name, "MAX");
-                assert!(matches!(d.kind, CDefineKind::FunctionMacro { .. }));
+                assert_eq!(d.params, Some(vec!["a".to_string(), "b".to_string()]));
+                assert_eq!(d.text, "#define MAX(a, b) ((a) > (b) ? (a) : (b))");
             }
             other => panic!("expected Define, got {:?}", other),
         }
@@ -179,7 +179,7 @@ use crate::translate;
     #[test]
     fn parse_typedef_pointer() {
         let r = parse("typedef void *HANDLE;");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Typedef(td) => {
                 assert_eq!(td.name, "HANDLE");
                 assert_eq!(td.target, CType::Pointer(Box::new(CType::Void)));
@@ -191,7 +191,7 @@ use crate::translate;
     #[test]
     fn parse_unsigned_long_long() {
         let r = parse("unsigned long long get_size(void);");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.ret_ty, CType::UnsignedLongLong);
                 assert!(f.params.is_empty());
@@ -203,7 +203,7 @@ use crate::translate;
     #[test]
     fn parse_stdint_types() {
         let r = parse("uint32_t hash(const uint8_t *data, size_t len);");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.ret_ty, CType::FixedInt { bits: 32, signed: false });
                 assert_eq!(f.params.len(), 2);
@@ -224,7 +224,7 @@ use crate::translate;
         let r = parse("inline int square(int x) { return x * x; }");
         // Inline functions with bodies — kept as declaration, body discarded.
         // (inline is not static, so it's imported)
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.name, "square");
                 assert!(f.is_inline);
@@ -236,7 +236,7 @@ use crate::translate;
     #[test]
     fn comments_stripped() {
         let r = parse("/* block */ int foo(void); // line comment\n");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => assert_eq!(f.name, "foo"),
             other => panic!("expected Function, got {:?}", other),
         }
@@ -245,7 +245,7 @@ use crate::translate;
     #[test]
     fn parse_function_pointer_param() {
         let r = parse("void qsort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *));");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Function(f) => {
                 assert_eq!(f.name, "qsort");
                 assert_eq!(f.params.len(), 4);
@@ -273,14 +273,14 @@ int unix_only(void);
 "#;
         // Both branches visible (no real preprocessing — just skips directives)
         let r = parse(src);
-        let funcs: Vec<_> = r.decls.iter().filter(|d| matches!(d, CDecl::Function(_))).collect();
+        let funcs: Vec<_> = r.decls.iter().map(|i| &i.decl).filter(|d| matches!(d, CDecl::Function(_))).collect();
         assert_eq!(funcs.len(), 2);
     }
 
     #[test]
     fn parse_extern_variable() {
         let r = parse("extern int errno;");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Variable(v) => {
                 assert_eq!(v.name, "errno");
                 assert!(v.is_extern);
@@ -288,110 +288,6 @@ int unix_only(void);
             }
             other => panic!("expected Variable, got {:?}", other),
         }
-    }
-
-    // ---- Translator tests ----
-
-    #[test]
-    fn translate_function() {
-        let r = parse("int open(const char *path, int flags);");
-        let result = translate::translate(&r, &[]);
-        match &result.decls[0] {
-            translate::RaskCDecl::Function(f) => {
-                assert_eq!(f.name, "open");
-                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_int"));
-                assert_eq!(f.params[0].ty.source(), "*u8");
-                assert_eq!(f.params[1].ty.source(), "c_int");
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_struct() {
-        let r = parse("struct Point { int x; float y; };");
-        let result = translate::translate(&r, &[]);
-        let found = result.decls.iter().find(|d| matches!(d, translate::RaskCDecl::Struct(_)));
-        match found {
-            Some(translate::RaskCDecl::Struct(s)) => {
-                assert_eq!(s.name, "Point");
-                assert_eq!(s.fields[0].ty.source(), "c_int");
-                assert_eq!(s.fields[1].ty.source(), "f32");
-            }
-            other => panic!("expected Struct, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_opaque() {
-        let r = parse("struct sqlite3;");
-        let result = translate::translate(&r, &[]);
-        match &result.decls[0] {
-            translate::RaskCDecl::Struct(s) => {
-                assert_eq!(s.name, "sqlite3");
-                assert!(s.is_opaque);
-            }
-            other => panic!("expected opaque Struct, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_hiding() {
-        let r = parse("int keep(void);\nint hide(void);");
-        let result = translate::translate(&r, &["hide".to_string()]);
-        assert_eq!(result.decls.len(), 1);
-        match &result.decls[0] {
-            translate::RaskCDecl::Function(f) => assert_eq!(f.name, "keep"),
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_define_to_const() {
-        let r = parse("#define SQLITE_OK 0\n");
-        let result = translate::translate(&r, &[]);
-        match &result.decls[0] {
-            translate::RaskCDecl::Const(c) => {
-                assert_eq!(c.name, "SQLITE_OK");
-                assert_eq!(c.ty.source(), "c_int");
-                assert_eq!(c.value_repr, "0");
-            }
-            other => panic!("expected Const, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_size_t() {
-        let r = parse("size_t strlen(const char *s);");
-        let result = translate::translate(&r, &[]);
-        match &result.decls[0] {
-            translate::RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_size"));
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn translate_void_return() {
-        let r = parse("void free(void *ptr);");
-        let result = translate::translate(&r, &[]);
-        match &result.decls[0] {
-            translate::RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty, None);
-                assert_eq!(f.params[0].ty.source(), "*void");
-            }
-            other => panic!("expected Function, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn render_rask_output() {
-        let r = parse("int add(int a, int b);");
-        let result = translate::translate(&r, &[]);
-        let output = translate::render_rask(&result);
-        assert!(output.contains("extern \"C\" func add("));
-        assert!(output.contains("c_int"));
     }
 
     // ---- Resilience ----
@@ -404,7 +300,7 @@ this is garbage that should not parse;
 int another_good(int x);
 "#;
         let r = parse(src);
-        let funcs: Vec<_> = r.decls.iter()
+        let funcs: Vec<_> = r.decls.iter().map(|i| &i.decl)
             .filter(|d| matches!(d, CDecl::Function(_)))
             .collect();
         // Should recover and parse at least some functions
@@ -414,10 +310,10 @@ int another_good(int x);
     #[test]
     fn hex_define() {
         let r = parse("#define FLAGS 0xFF00\n");
-        match &r.decls[0] {
+        match &r.decls[0].decl {
             CDecl::Define(d) => {
                 assert_eq!(d.name, "FLAGS");
-                assert_eq!(d.kind, CDefineKind::UnsignedInteger(0xFF00));
+                assert_eq!(d.body, vec![CTokenKind::HexLit(0xFF00)]);
             }
             other => panic!("expected Define, got {:?}", other),
         }
@@ -456,31 +352,17 @@ mylib_status mylib_send(mylib_ctx *ctx, const uint8_t *data, size_t len);
 
 #endif
 "#;
-        let r = parse(src);
-        let result = translate::translate(&r, &[]);
-
-        // Should have: opaque type, struct, enum, 3 functions, 2 constants, typedef
-        let funcs: Vec<_> = result.decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::Function(_)))
-            .collect();
-        let structs: Vec<_> = result.decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::Struct(_)))
-            .collect();
-        let enums: Vec<_> = result.decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::Enum(_)))
-            .collect();
-        let consts: Vec<_> = result.decls.iter()
-            .filter(|d| matches!(d, translate::RaskCDecl::Const(_)))
-            .collect();
-
-        assert!(funcs.len() >= 3, "should have at least 3 functions, got {}", funcs.len());
-        assert!(structs.len() >= 1, "should have at least 1 struct, got {}", structs.len());
-        assert!(enums.len() >= 1, "should have at least 1 enum, got {}", enums.len());
-        assert!(consts.len() >= 2, "should have at least 2 constants, got {}", consts.len());
-
-        // Verify specific translation
-        let init_fn = funcs.iter().find(|d| {
-            matches!(d, translate::RaskCDecl::Function(f) if f.name == "mylib_init")
-        });
-        assert!(init_fn.is_some(), "should have mylib_init");
+        let out = crate::translate::tests::bind(src);
+        for want in [
+            "extern \"C\" struct Mylib_ctx",
+            "public struct Mylib_config {",
+            "public type alias Mylib_status = c_int",
+            "public const MYLIB_ERR_TIMEOUT: Mylib_status = -2",
+            "public const MYLIB_VERSION: string = \"2.0\"",
+            "public const MYLIB_MAX_CONNS: c_int = 128",
+            "func mylib_init(cfg: *Mylib_config?) -> *Mylib_ctx?",
+            "func mylib_send(ctx: *Mylib_ctx?, data: *u8?, len: c_size) -> Mylib_status",
+        ] {
+            assert!(out.contains(want), "missing `{}` in:\n{}", want, out);
+        }
     }
