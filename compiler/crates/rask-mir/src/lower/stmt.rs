@@ -423,7 +423,7 @@ impl<'a> MirLowerer<'a> {
                 // A `mut` can be reassigned, so whatever this name meant to
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
-                let r = self.lower_binding(name, ty.as_ref(), init);
+                let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
                 self.check_resource_moved(init);
                 r
             }
@@ -441,7 +441,7 @@ impl<'a> MirLowerer<'a> {
                     Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
                     _ => { self.comptime_strings.remove(name); }
                 }
-                let r = self.lower_binding(name, ty.as_ref(), init);
+                let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
                 self.check_resource_moved(init);
                 r
             }
@@ -1653,7 +1653,9 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Lower a let/const binding: evaluate init, assign to a new local.
-    fn lower_binding(&mut self, name: &str, ty: Option<&TypeExpr>, init: &Expr) -> Result<(), LoweringError> {
+    /// `annotated` is the statement, when it writes the binding's type: the
+    /// checker's type for the statement is that type.
+    fn lower_binding(&mut self, name: &str, annotated: Option<rask_ast::NodeId>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
 
@@ -1668,7 +1670,14 @@ impl<'a> MirLowerer<'a> {
         // is an option holding one, and taking the block's local as the binding
         // skipped the wrap: the tag was read out of the block's first word and
         // `o? as v` took the `none` branch.
-        let var_ty = ty.map(|t| self.ctx.resolve_type_expr(t)).unwrap_or(inferred_ty.clone());
+        let declared = annotated.and_then(|stmt| self.ctx.lookup_raw_type(stmt)).cloned();
+        let var_ty = match annotated {
+            Some(stmt) => match self.ctx.lookup_raw_type(stmt) {
+                Some(checked) => self.ctx.type_to_mir(checked),
+                None => crate::fallback::unknown_type("lower/stmt:annotated_binding"),
+            },
+            None => inferred_ty.clone(),
+        };
         if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
                 if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
@@ -1947,22 +1956,17 @@ impl<'a> MirLowerer<'a> {
         if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {
             if let Some(prefix) = self.mir_type_name(&var_ty) {
                 self.meta_mut(name).type_prefix = Some(prefix);
-            } else if let Some(written) = ty {
-                if let Some(prefix) = super::type_prefix_of(written) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
+            } else if let Some(prefix) =
+                declared.as_ref().and_then(|t| super::MirContext::type_prefix(t, self.ctx.type_names))
+            {
+                self.meta_mut(name).type_prefix = Some(prefix);
             }
         }
 
         // Track collection element types from type annotations (Vec<u8>, …)
         if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            if let Some(TypeExpr::Named { path, args }) = ty {
-                if let ([head], [elem]) = (path.as_slice(), args.as_slice()) {
-                    if head == "Vec" {
-                        let elem_mir = self.ctx.resolve_type_expr(elem);
-                        self.meta_mut(name).elem_type = Some(elem_mir);
-                    }
-                }
+            if let Some(elem) = declared.as_ref().and_then(|t| self.vec_elem_of_checker_type(t)) {
+                self.meta_mut(name).elem_type = Some(elem);
             }
         }
 

@@ -1756,10 +1756,10 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Spawn { target, body, .. } => self.lower_spawn(expr, *target, body),
 
             // Cast
-            ExprKind::Cast { expr, ty } => self.lower_cast(expr, ty),
+            ExprKind::Cast { expr: inner, ty } => self.lower_cast(expr.id, inner, ty),
 
             // Explicit lossy conversion (CV5–CV10).
-            ExprKind::Convert { expr, target, kind } => self.lower_convert(expr, target, *kind),
+            ExprKind::Convert { expr: inner, kind, .. } => self.lower_convert(expr.id, inner, *kind),
 
             // Using block — bracket the body with the context's install/teardown.
             // The two runtime contexts are independent (conc.async): Multitasking
@@ -2147,7 +2147,9 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), result_ty))
         }
 
-    fn lower_cast(&mut self, expr: &Expr, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
+    /// `cast` is the cast expression itself: the checker's type for it is the
+    /// target.
+    fn lower_cast(&mut self, cast: rask_ast::NodeId, expr: &Expr, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
             // Interface object boxing: `value as any Interface`
             if let TypeExpr::Any(interface) = ty {
                 let interface_name = interface.to_string();
@@ -2157,7 +2159,10 @@ impl<'a> MirLowerer<'a> {
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
-            let target_ty = self.ctx.resolve_type_expr(ty);
+            let target_ty = match self.ctx.lookup_raw_type(cast) {
+                Some(checked) => self.ctx.type_to_mir(checked),
+                None => crate::fallback::unknown_type("lower/expr:cast_target"),
+            };
 
             // E18: `e as i64` on a fieldless enum extracts the discriminant.
             // An enum value is passed by address, so casting it directly
@@ -2189,22 +2194,23 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), target_ty))
         }
 
-    fn lower_convert(&mut self, expr: &Expr, target: &TypeExpr, kind: ConvertKind) -> Result<TypedOperand, LoweringError> {
+    /// `convert` is the conversion expression itself. The checker's type for
+    /// it is the whole result: the target, or the target wrapped the way a
+    /// conversion that can fail is (CV11, CV14–CV16).
+    fn lower_convert(&mut self, convert: rask_ast::NodeId, expr: &Expr, kind: ConvertKind) -> Result<TypedOperand, LoweringError> {
             let (val, source_ty) = self.lower_expr(expr)?;
-            let target_ty = self.ctx.resolve_type_expr(target);
-            let result_ty = if kind.is_optional() {
-                MirType::Option(Box::new(target_ty.clone()))
-            } else if kind.yields_result(target_ty.is_int_like()) {
-                // CV11/CV14–CV16: anything that can fail yields a result,
-                // so `!`, `try` and `catch` all work on it without the
-                // conversion inventing an error vocabulary of its own.
-                MirType::Result {
-                    ok: Box::new(target_ty.clone()),
-                    err: Box::new(self.ctx.resolve_type_name("ConvertError")),
-                }
-            } else {
-                target_ty.clone()
+            let Some(checked) = self.ctx.lookup_raw_type(convert).cloned() else {
+                let guess = crate::fallback::unknown_type("lower/expr:convert_target");
+                return Ok((val, guess));
             };
+            let result_ty = self.ctx.type_to_mir(&checked);
+            // A conversion's target is a number, never a wrapper itself, so a
+            // wrapper here is the one the conversion added.
+            let target = match &checked {
+                rask_types::Type::Result { ok, .. } => (**ok).clone(),
+                other => other.clone(),
+            };
+            let target_ty = self.ctx.type_to_mir(&target);
             let result_local = self.builder.alloc_temp(result_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
