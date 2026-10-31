@@ -279,6 +279,8 @@ impl VerdictCache {
 struct ClaimPlan {
     /// How it's reported: `antisymmetric<ledger.Entry>` for an instantiation.
     name: String,
+    /// As declared: `antisymmetric`.
+    declared: String,
     /// What its case function calls, type arguments included.
     callee: String,
     /// Which source declares it, by index into the sources.
@@ -505,6 +507,7 @@ fn plan_claims(sources: &[(PathBuf, String)]) -> Result<Plan, Vec<rask_diagnosti
             let text = src.get(f.span.start..f.span.end).unwrap_or(&f.name);
             let claim = ClaimPlan {
                 name: f.name.clone(),
+                declared: f.name.clone(),
                 callee: f.name.clone(),
                 file,
                 span: f.span,
@@ -1058,8 +1061,7 @@ fn run_claims(
     // A generic claim of the package's own that nothing instantiated says so,
     // rather than passing without a word.
     for g in plan.generics.iter().filter(|g| g.law_of.is_none()) {
-        let prefix = format!("{}<", g.claim.name);
-        if !plan.claims.iter().any(|c| c.name.starts_with(&prefix)) {
+        if !plan.claims.iter().any(|c| c.declared == g.claim.declared) {
             let text = "no public type of the package meets its bounds and can be built".to_string();
             if format == Format::Human {
                 println!("  {:<24} {text}", g.claim.name);
@@ -1439,7 +1441,7 @@ pub(super) fn reach(path: &str) -> Option<(PathBuf, Vec<ReachedClaim>)> {
         fns.dedup();
         out.push(ReachedClaim {
             name: claim.name.clone(),
-            declared: claim.name.split('<').next().unwrap_or(&claim.name).to_string(),
+            declared: claim.declared.clone(),
             file: plan.files[claim.file].clone(),
             fns,
         });

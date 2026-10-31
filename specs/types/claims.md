@@ -24,15 +24,10 @@ I want this without turning Rask into a proof language. Nobody writes a proof. T
 
 A claim checks what it says and nothing more. A package held to ten claims has ten things checked, not a proof that it's correct.
 
-> **Built so far.** A package's `claims.rk` (W1), checked by `rask build`,
-> `rask run`, `rask test` and `rask check --claims`; `rask check` type-checks
-> it (R1). Inputs are built for anything `json.decode` builds, plus `char`,
-> tuples and enums (IN1). Exhaustive (V2) and sampled (V3) verdicts, shrinking
-> (V1), the step budget (D2, `@claim_budget`) and the seed (D1) work. Not yet:
-> shared `[claims]` sources (W2, W3), interface claims (G1, G2), cached
-> verdicts and calls (D4, D5), strict mode (V6), hand-written generators
-> (IN2), the `rask claims` tool, and inputs of 128-bit integers, `T or E` and
-> maps with non-string keys.
+> **Built so far.** Everything below except cached calls (D5), hand-written
+> generators (IN2, whose spelling is open), the solver (V4) and registry
+> claims sources (W3). Claims run in `rask build`, `rask run`, `rask test` and
+> `rask check --claims`; `rask check` type-checks them (R1).
 
 ## Declaration
 
