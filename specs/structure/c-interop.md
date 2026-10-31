@@ -129,14 +129,14 @@ extend Window {
 | `struct S { ... }` | `@layout(C) struct S { ... }` |
 | `struct S;` (no body) | `extern "C" struct S` |
 | `union U { ... }` | `union U { ... }` ([mem.unsafe/UN1–UN3](../memory/unsafe.md#unions)) |
-| `enum E { A, B }` | `type alias E = c_int` plus `const A: E = 0`, `const B: E = 1` |
+| `enum E { A, B }` | `type alias E = c_uint` plus `const A: E = 0`, `const B: E = 1` |
 | `int x : 3;` | `@bits(3) x: c_int` |
 | Anonymous nested struct/union | A named type `Outer_anon0` and a field of it |
 | Packed struct | `@packed` annotation |
 
 | Rule | Description |
 |------|-------------|
-| **TM6: Enums are integers** | A C enum is its integer type, and its enumerators are constants. C stores any value of the type in it (flags, values from newer library versions), so a closed Rask enum would make an unlisted value undefined in a `match` |
+| **TM6: Enums are integers** | A C enum is its integer type, and its enumerators are constants. C stores any value of the type in it (flags, values from newer library versions), so a closed Rask enum would make an unlisted value undefined in a `match`. The integer type is the one GCC and Clang pick: `c_uint` when no enumerator is negative, else `c_int`, wider when a value needs it |
 | **TM7: Bitfields** | `@bits(n)` on an integer field of a `@layout(C)` struct packs it into the field's storage unit as the target's C ABI does: consecutive bitfields share a unit while they fit, low bits first. A read is shift and mask; a write panics if the value doesn't fit in `n` bits (a literal that doesn't fit is a compile error). A bitfield has no address |
 | **TM8: Unions** | Size is the largest member's, alignment the strictest. Building one with a single member is safe and makes it the live one; reading any member is `unsafe`, since nothing records which is live. Members must be C-compatible (EX4), so nothing in a union owns memory |
 

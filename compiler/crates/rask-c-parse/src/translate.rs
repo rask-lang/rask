@@ -421,12 +421,18 @@ impl<'a> Translator<'a> {
     }
 
     /// A C enum is its integer type, and its enumerators are constants (TM6).
+    /// The type is the one GCC and Clang give it: `unsigned int` with no
+    /// negative enumerator, else `int`, wider when a value needs it. Typed
+    /// `int` regardless, `ev.type == SDL_EVENT_QUIT` compared a `Uint32`
+    /// field with a `c_int` and needed a conversion C never asks for.
     fn enumeration(&mut self, e: &CEnumDecl, emitted: &mut HashSet<String>) -> String {
         let known: Vec<i64> = e.variants.iter().filter_map(|v| v.value).collect();
-        let base = if known.iter().all(|&v| i32::try_from(v).is_ok()) {
-            "c_int"
-        } else if known.iter().all(|&v| u32::try_from(v).is_ok()) {
+        let base = if known.iter().all(|&v| u32::try_from(v).is_ok()) {
             "c_uint"
+        } else if known.iter().all(|&v| i32::try_from(v).is_ok()) {
+            "c_int"
+        } else if known.iter().all(|&v| v >= 0) {
+            "c_ulong"
         } else {
             "c_long"
         };
@@ -440,6 +446,8 @@ impl<'a> Translator<'a> {
                 }
                 rname
             }
+            // No type to be: the enumerators are C's `int` constants.
+            None if known.iter().all(|&v| i32::try_from(v).is_ok()) => "c_int".to_string(),
             None => base.to_string(),
         };
         for v in &e.variants {

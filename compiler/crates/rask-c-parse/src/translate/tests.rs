@@ -53,8 +53,10 @@ fn nested_anonymous_members_get_names() {
 
 #[test]
 fn enums_are_integers() {
-    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };");
-    has(&out, "public type alias Color = c_int");
+    let out = bind("typedef enum { RED = 1, GREEN = 1 << 2, BLUE } Color;\nenum { ANON = 7 };\ntypedef enum { DOWN = -1, UP = 1 } Dir;");
+    // GCC's and Clang's choice: unsigned with no negative enumerator.
+    has(&out, "public type alias Color = c_uint");
+    has(&out, "public type alias Dir = c_int");
     has(&out, "public const GREEN: Color = 4");
     has(&out, "public const BLUE: Color = 5");
     has(&out, "public const ANON: c_int = 7");
