@@ -666,6 +666,18 @@ impl<'a> Printer<'a> {
     fn format_struct_decl(&mut self, s: &StructDecl, span: Span) {
         self.emit_indent();
 
+        if s.attrs.iter().any(|a| a.is(rask_ast::attr::OPAQUE)) {
+            for attr in s.attrs.iter().filter(|a| !a.is(rask_ast::attr::OPAQUE)) {
+                self.emit_attr(attr);
+                self.emit_newline();
+                self.emit_indent();
+            }
+            self.emit("extern \"C\" struct ");
+            self.emit(&s.name);
+            self.emit_newline();
+            return;
+        }
+
         for attr in &s.attrs {
             self.emit_attr(attr);
             self.emit_newline();
@@ -1312,6 +1324,9 @@ impl<'a> Printer<'a> {
                 self.emit(", ");
             }
             self.format_param(param);
+        }
+        if e.is_variadic {
+            self.emit(if e.params.is_empty() { "..." } else { ", ..." });
         }
         self.emit(")");
         if let Some(ref ret_ty) = e.ret_ty {

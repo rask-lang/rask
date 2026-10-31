@@ -317,6 +317,7 @@ mod tests {
                     is_public: true,
                     decl_index: i as u32,
                     is_type_param: false,
+                    bits: None,
                 })
                 .collect(),
         }

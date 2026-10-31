@@ -37,8 +37,12 @@ pub enum BuildMode {
 
 /// Extern function signature for codegen declaration.
 /// Decoupled from AST — callers convert from their own representation.
+#[derive(Debug, Clone)]
 pub struct ExternFuncSig {
     pub name: String,
+    /// The symbol to link to, when it isn't `name`: a header's inline
+    /// function is reached through a wrapper (struct.c-interop/IN2).
+    pub link_name: Option<String>,
     pub param_types: Vec<rask_ast::ty::TypeExpr>,
     pub ret_ty: Option<rask_ast::ty::TypeExpr>,
 }

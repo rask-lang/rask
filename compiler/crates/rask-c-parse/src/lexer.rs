@@ -10,6 +10,9 @@ pub struct CToken {
     pub line: usize,
     /// True if whitespace preceded this token (used for #define disambiguation).
     pub space_before: bool,
+    /// Index into the lexer's `files`: where the preprocessor said this
+    /// token came from.
+    pub file: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +21,9 @@ pub enum CTokenKind {
     Ident(String),
     IntLit(i64),
     UIntLit(u64),
+    /// A hex literal without a `u` suffix. C gives it `unsigned int` when it
+    /// fits there and not in `int`, which a decimal literal never gets.
+    HexLit(u64),
     FloatLit(f64),
     StringLit(String),
     CharLit(char),
@@ -104,6 +110,13 @@ pub struct CLexer<'a> {
     source: &'a [u8],
     pos: usize,
     line: usize,
+    /// Every file a line marker named; index 0 is the header itself.
+    pub files: Vec<String>,
+    file: u32,
+    /// Inside a `#` directive, where a newline ends it. Anywhere else a
+    /// newline is whitespace: a declaration can span lines, and the
+    /// preprocessor splits one wherever a macro expanded.
+    in_directive: bool,
 }
 
 impl<'a> CLexer<'a> {
@@ -112,6 +125,9 @@ impl<'a> CLexer<'a> {
             source: source.as_bytes(),
             pos: 0,
             line: 1,
+            files: vec![String::new()],
+            file: 0,
+            in_directive: false,
         }
     }
 
@@ -171,12 +187,13 @@ impl<'a> CLexer<'a> {
 
         let mut tok = self.next_token_raw()?;
         tok.space_before = had_space;
+        tok.file = self.file;
         Ok(tok)
     }
 
     fn next_token_raw(&mut self) -> Result<CToken, ParseError> {
         if self.pos >= self.source.len() {
-            return Ok(CToken { kind: CTokenKind::Eof, line: self.line, space_before: false });
+            return Ok(CToken { kind: CTokenKind::Eof, line: self.line, space_before: false, file: 0 });
         }
 
         let line = self.line;
@@ -185,7 +202,11 @@ impl<'a> CLexer<'a> {
         // Newline
         if ch == b'\n' {
             self.advance();
-            return Ok(CToken { kind: CTokenKind::Newline, line, space_before: false });
+            if !self.in_directive {
+                return self.next_token();
+            }
+            self.in_directive = false;
+            return Ok(CToken { kind: CTokenKind::Newline, line, space_before: false, file: 0 });
         }
 
         // Line continuation
@@ -201,9 +222,31 @@ impl<'a> CLexer<'a> {
             // ## ?
             if self.peek() == b'#' {
                 self.advance();
-                return Ok(CToken { kind: CTokenKind::DoubleHash, line, space_before: false });
+                return Ok(CToken { kind: CTokenKind::DoubleHash, line, space_before: false, file: 0 });
             }
             self.skip_whitespace_no_newline();
+            if self.peek().is_ascii_digit() {
+                while self.peek().is_ascii_digit() {
+                    self.advance();
+                }
+                self.skip_whitespace_no_newline();
+                if self.peek() == b'"' {
+                    if let CTokenKind::StringLit(f) = self.read_string_lit(line)?.kind {
+                        self.file = match self.files.iter().position(|x| *x == f) {
+                            Some(i) => i as u32,
+                            None => {
+                                self.files.push(f);
+                                (self.files.len() - 1) as u32
+                            }
+                        };
+                    }
+                }
+                while self.pos < self.source.len() && self.peek() != b'\n' {
+                    self.advance();
+                }
+                return self.next_token();
+            }
+            self.in_directive = true;
             let directive = self.read_ident();
             let kind = match directive.as_str() {
                 "define" => CTokenKind::PPDefine,
@@ -220,7 +263,7 @@ impl<'a> CLexer<'a> {
                 "line" => CTokenKind::PPLine,
                 _ => CTokenKind::Hash, // unknown directive, treat as hash
             };
-            return Ok(CToken { kind, line, space_before: false });
+            return Ok(CToken { kind, line, space_before: false, file: 0 });
         }
 
         // Numbers
@@ -302,7 +345,7 @@ impl<'a> CLexer<'a> {
                 }
                 _ => CTokenKind::Ident(ident),
             };
-            return Ok(CToken { kind, line, space_before: false });
+            return Ok(CToken { kind, line, space_before: false, file: 0 });
         }
 
         // Punctuation
@@ -388,7 +431,7 @@ impl<'a> CLexer<'a> {
                 ));
             }
         };
-        Ok(CToken { kind, line, space_before: false })
+        Ok(CToken { kind, line, space_before: false, file: 0 })
     }
 
     fn read_ident(&mut self) -> String {
@@ -415,8 +458,8 @@ impl<'a> CLexer<'a> {
             let hex = String::from_utf8_lossy(&self.source[hex_start..self.pos]);
             let val = u64::from_str_radix(&hex, 16)
                 .map_err(|e| ParseError::new(format!("bad hex literal: {}", e), line))?;
-            self.skip_int_suffix();
-            return Ok(CToken { kind: CTokenKind::UIntLit(val), line, space_before: false });
+            let kind = if self.skip_int_suffix() { CTokenKind::UIntLit(val) } else { CTokenKind::HexLit(val) };
+            return Ok(CToken { kind, line, space_before: false, file: 0 });
         }
 
         // Octal check
@@ -454,23 +497,24 @@ impl<'a> CLexer<'a> {
             let clean: String = text.chars().filter(|c| !matches!(c, 'f' | 'F' | 'l' | 'L')).collect();
             let val: f64 = clean.parse()
                 .map_err(|e| ParseError::new(format!("bad float literal: {}", e), line))?;
-            return Ok(CToken { kind: CTokenKind::FloatLit(val), line, space_before: false });
+            return Ok(CToken { kind: CTokenKind::FloatLit(val), line, space_before: false, file: 0 });
         }
 
         let text = String::from_utf8_lossy(&self.source[start..self.pos]);
         let val = if is_octal && text.len() > 1 {
-            i64::from_str_radix(&text[1..], 8)
+            u64::from_str_radix(&text[1..], 8)
                 .map_err(|e| ParseError::new(format!("bad octal literal: {}", e), line))?
         } else {
-            text.parse::<i64>()
+            text.parse::<u64>()
                 .map_err(|e| ParseError::new(format!("bad integer literal: {}", e), line))?
         };
 
-        let is_unsigned = self.skip_int_suffix();
+        // A decimal literal past `i64::MAX` only fits an unsigned type.
+        let is_unsigned = self.skip_int_suffix() || val > i64::MAX as u64;
         if is_unsigned {
-            Ok(CToken { kind: CTokenKind::UIntLit(val as u64), line, space_before: false })
+            Ok(CToken { kind: CTokenKind::UIntLit(val), line, space_before: false, file: 0 })
         } else {
-            Ok(CToken { kind: CTokenKind::IntLit(val), line, space_before: false })
+            Ok(CToken { kind: CTokenKind::IntLit(val as i64), line, space_before: false, file: 0 })
         }
     }
 
@@ -516,7 +560,7 @@ impl<'a> CLexer<'a> {
                 _ => s.push(ch as char),
             }
         }
-        Ok(CToken { kind: CTokenKind::StringLit(s), line, space_before: false })
+        Ok(CToken { kind: CTokenKind::StringLit(s), line, space_before: false, file: 0 })
     }
 
     fn read_char_lit(&mut self, line: usize) -> Result<CToken, ParseError> {
@@ -538,7 +582,7 @@ impl<'a> CLexer<'a> {
         if self.peek() == b'\'' {
             self.advance();
         }
-        Ok(CToken { kind: CTokenKind::CharLit(ch), line, space_before: false })
+        Ok(CToken { kind: CTokenKind::CharLit(ch), line, space_before: false, file: 0 })
     }
 
     /// Skip `__attribute__((...))` or `__declspec(...)` or `asm(...)`.

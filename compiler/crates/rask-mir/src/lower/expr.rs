@@ -1539,6 +1539,9 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_expr_inner(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         self.builder.set_span(expr.span);
+        if self.ctx.c_fn_pointers.contains(&expr.id) {
+            return self.lower_c_fn_pointer(expr);
+        }
         // A `comptime` block or a call to a `comptime func`: the fold already
         // computed it, and the value is all that's left of it.
         if let Some(folded) = self.ctx.folded.nodes.get(&expr.id).cloned() {
@@ -2508,7 +2511,10 @@ impl<'a> MirLowerer<'a> {
             let mut arg_operands = Vec::new();
             let mut arg_mir_types = Vec::new();
             for (i, a) in args.iter().enumerate() {
-                let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body } = &a.expr.kind {
+                // A C function pointer goes through `lower_expr` (CB2).
+                let (op, mir_ty) = if let (ExprKind::Closure { params, ret_ty, body }, false) =
+                    (&a.expr.kind, self.ctx.c_fn_pointers.contains(&a.expr.id))
+                {
                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                     let carries = self.closure_carries(Some(a.expr.id));
                     let lowered = self.lower_closure_expecting(
@@ -2780,6 +2786,10 @@ impl<'a> MirLowerer<'a> {
 
             let result_local = self.builder.alloc_temp(ret_ty.clone());
 
+            let arg_operands = match self.ctx.c_contexts.get(&func_name) {
+                Some(cc) => self.thread_context(&func_name, cc, arg_operands),
+                None => arg_operands,
+            };
             let func_ref = if self.ctx.extern_funcs.contains(&func_name) {
                 FunctionRef::extern_c(func_name)
             } else {
@@ -2794,6 +2804,55 @@ impl<'a> MirLowerer<'a> {
 
             Ok((MirOperand::Local(result_local), ret_ty))
         }
+
+    /// CB3: a call to an extern whose callback takes a closure through its
+    /// context pointer. The program passed the closure where the callback
+    /// goes; C gets a trampoline there, and the closure as the context. The
+    /// trampoline is entered the C way, finds the closure in the argument the
+    /// context arrives as, and calls it with the rest.
+    ///
+    /// The closure was taken (`take`, by the checker's view of the extern),
+    /// so this frame doesn't free it: C keeps it (CB5).
+    fn thread_context(
+        &mut self,
+        extern_name: &str,
+        cc: &rask_check::CContext,
+        mut args: Vec<MirOperand>,
+    ) -> Vec<MirOperand> {
+        let closure = args[cc.spec.callback].clone();
+        let tramp_name = format!("{}__ctx_{}_{}", self.parent_name, extern_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let ret_ty = self.ctx.type_to_mir(&cc.ret);
+        let mut tb = crate::BlockBuilder::new(tramp_name.clone(), ret_ty.clone());
+        let params: Vec<crate::LocalId> = cc
+            .c_params
+            .iter()
+            .enumerate()
+            .map(|(i, t)| tb.add_param(format!("a{}", i), self.ctx.type_to_mir(t)))
+            .collect();
+        let rest: Vec<MirOperand> = params
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != cc.spec.at)
+            .map(|(_, p)| MirOperand::Local(*p))
+            .collect();
+        let dst = if ret_ty == MirType::Void { None } else { Some(tb.alloc_temp(ret_ty.clone())) };
+        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], args: rest }));
+        tb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: dst.map(MirOperand::Local) }));
+        let mut tramp = tb.finish();
+        tramp.is_extern_c = true;
+        self.synthesized_functions.push(tramp);
+
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(tramp_name),
+        }));
+        args[cc.spec.callback] = MirOperand::Local(addr);
+        args.insert(cc.spec.context, closure);
+        args
+    }
 
     /// A field read that moves the value out: `let old = self.memtable`
     /// before `self.memtable = Memtable.new()` (mem.parameters/PM7).
@@ -3010,6 +3069,8 @@ impl<'a> MirLowerer<'a> {
                 MirType::Struct(StructLayoutId { id, .. }) => Some(*id),
                 other => other.as_link().map(|s| s.id),
             };
+            // A `@bits` field, wherever below its layout is found.
+            let mut bits: Option<rask_check::layout::BitSlot> = None;
             let (field_index, result_ty, byte_offset, field_size) = if let Some(id) = &node_layout {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                     if let Some((idx, fl)) = layout.fields.iter().enumerate()
@@ -3026,6 +3087,7 @@ impl<'a> MirLowerer<'a> {
                                 }
                             }
                         }
+                        bits = fl.bits;
                         (idx as u32, ft, Some(fl.offset), Some(fl.size))
                     } else {
                         (0, MirType::I64, None, None)
@@ -3057,6 +3119,7 @@ impl<'a> MirLowerer<'a> {
                                 rt = self.ctx.type_to_mir(&fl.ty);
                                 bo = Some(fl.offset);
                                 fs = Some(fl.size);
+                                bits = fl.bits;
                                 resolved = true;
                             }
                         }
@@ -3092,6 +3155,7 @@ impl<'a> MirLowerer<'a> {
                                         rt = self.ctx.type_to_mir(&fl.ty);
                                         bo = Some(fl.offset);
                                         fs = Some(fl.size);
+                                        bits = fl.bits;
                                         resolved = true;
                                     }
                                 }
@@ -3118,6 +3182,7 @@ impl<'a> MirLowerer<'a> {
                             rt = self.ctx.type_to_mir(&fl.ty);
                             bo = Some(fl.offset);
                             fs = Some(fl.size);
+                            bits = fl.bits;
                             resolved = true;
                             break;
                         }
@@ -3188,8 +3253,66 @@ impl<'a> MirLowerer<'a> {
                     access,
                 },
             }));
+            if let Some(slot) = bits {
+                return Ok((self.extract_bits(MirOperand::Local(result_local), &result_ty, slot), result_ty));
+            }
             Ok((MirOperand::Local(result_local), result_ty))
         }
+
+    /// Read `fl` out of `base` into `dst`, a bitfield included.
+    pub(crate) fn read_layout_field(
+        &mut self,
+        dst: crate::LocalId,
+        base: MirOperand,
+        field_index: u32,
+        fl: &rask_check::layout::FieldLayout,
+        field_ty: &MirType,
+        byte_offset: u32,
+    ) {
+        let rvalue = MirRValue::Field {
+            base,
+            field_index,
+            byte_offset: Some(byte_offset),
+            access: FieldAccess::for_field(field_ty, fl.size),
+        };
+        let Some(slot) = fl.bits else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst, rvalue }));
+            return;
+        };
+        let unit = self.builder.alloc_temp(field_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: unit, rvalue }));
+        let value = self.extract_bits(MirOperand::Local(unit), field_ty, slot);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst, rvalue: MirRValue::Use(value) }));
+    }
+
+    /// A bitfield's value out of its loaded storage unit: shifted down and
+    /// masked, or for a signed field shifted to the top and back down so the
+    /// sign comes along (struct.c-interop/TM7).
+    pub(crate) fn extract_bits(
+        &mut self,
+        unit: MirOperand,
+        ty: &MirType,
+        slot: rask_check::layout::BitSlot,
+    ) -> MirOperand {
+        let unit_bits = (ty.size() * 8) as i64;
+        use crate::operand::BinOp as Op;
+        let op = |this: &mut Self, op: Op, left: MirOperand, right: i64| {
+            let dst = this.builder.alloc_temp(ty.clone());
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op, left, right: MirOperand::Constant(MirConst::Int(right)) },
+            }));
+            MirOperand::Local(dst)
+        };
+        if slot.signed {
+            let up = unit_bits - slot.shift as i64 - slot.width as i64;
+            let raised = if up > 0 { op(self, Op::Shl, unit, up) } else { unit };
+            op(self, Op::Shr, raised, unit_bits - slot.width as i64)
+        } else {
+            let down = if slot.shift > 0 { op(self, Op::Shr, unit, slot.shift as i64) } else { unit };
+            op(self, Op::BitAnd, down, slot.mask() as i64)
+        }
+    }
 
     fn lower_index(&mut self, expr: &Expr, object: &Expr, index: &Expr) -> Result<TypedOperand, LoweringError> {
             let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -5013,10 +5136,6 @@ impl<'a> MirLowerer<'a> {
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }
-        if let Some(r) = self.try_lower_c_namespace_call(expr, object, method, args)? {
-            return Ok(r);
-        }
-
         // Iterator terminal methods: .collect(), .fold(), .any(), .all(), etc.
         // Try to recognize an iterator chain on the receiver and fuse it inline.
         if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
@@ -5677,7 +5796,9 @@ impl<'a> MirLowerer<'a> {
                                 // from the callee's declared `func(...)` parameter;
                                 // `|req| req.method` on a `func(Request) -> Response`
                                 // otherwise defaulted to i64 (#463).
-                                let (op, _) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {
+                                let (op, _) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
+                                    (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
+                                {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                                     let carries = self.closure_carries(Some(arg.expr.id));
                                     let lowered = self.lower_closure_expecting(
@@ -6030,7 +6151,9 @@ impl<'a> MirLowerer<'a> {
         }
         for (i, arg) in args.iter().enumerate() {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
-            let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {
+            let (op, ty) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
+                (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
+            {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
                     expected = elem_params.clone();
@@ -6958,37 +7081,6 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok(Some((MirOperand::Local(result_local), result_ty)))
-    }
-
-    /// `c.func(args)` where `c` is the C namespace → extern "C" call.
-    fn try_lower_c_namespace_call(
-        &mut self,
-        expr: &Expr,
-        object: &Expr,
-        method: &String,
-        args: &[CallArg],
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        // C namespace call: c.func_name(args...) → extern "C" call
-        if self.ctx.extern_funcs.contains(method) {
-            if let Some(ns) = object.name() {
-                if !self.locals.contains_key(ns) {
-                    let mut arg_operands = Vec::new();
-                    for arg in args {
-                        let (op, _) = self.lower_expr(&arg.expr)?;
-                        arg_operands.push(op);
-                    }
-                    let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4037"));
-                    let result_local = self.builder.alloc_temp(ret_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(result_local),
-                        func: crate::FunctionRef::extern_c(method.clone()),
-                        args: arg_operands,
-                    }));
-                    return Ok(Some((MirOperand::Local(result_local), ret_ty)));
-                }
-            }
-        }
-        Ok(None)
     }
 
     /// `Enum.from_value(n)` on a fieldless enum → `Enum?`.
@@ -8864,15 +8956,8 @@ impl<'a> MirLowerer<'a> {
                     parts.push(lit(self, &format!("{}: ", f.name)));
                     let field_ty = self.ctx.type_to_mir(&f.ty);
                     let field = self.builder.alloc_temp(field_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: field,
-                        rvalue: MirRValue::Field {
-                            base: obj_op.clone(),
-                            field_index: i as u32,
-                            byte_offset: Some(f.offset),
-                            access: FieldAccess::for_field(&field_ty, f.size),
-                        },
-                    }));
+                    let f = f.clone();
+                    self.read_layout_field(field, obj_op.clone(), i as u32, &f, &field_ty, f.offset);
                     parts.push(self.debug_render_value(
                         &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
                     )?);

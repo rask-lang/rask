@@ -413,6 +413,7 @@ pub fn link_executable_with(
     }
 
     let runtime_objs = runtime_objects(&config, &runtime_dir, release)?;
+    let companion_objs = companions(obj_path, &config, release)?;
 
     let mut cmd = process::Command::new(&config.cc);
     cmd.args(&config.cc_args);
@@ -424,6 +425,9 @@ pub fn link_executable_with(
         cmd.arg(obj);
     }
     for obj in &opts.objects {
+        cmd.arg(obj);
+    }
+    for obj in &companion_objs {
         cmd.arg(obj);
     }
     // Escape hatch for investigating a runtime-level bug: the runtime is
@@ -463,6 +467,10 @@ pub fn link_executable_with(
 
     // Always clean up the intermediate .o file
     let _ = std::fs::remove_file(obj_path);
+    for kind in COMPANIONS {
+        let _ = std::fs::remove_file(format!("{}.{}.c", obj_path, kind));
+        let _ = std::fs::remove_file(format!("{}.{}.o", obj_path, kind));
+    }
 
     // Both streams go back out. Capturing was for the hint below, and dropping
     // either one silently would be the opposite of what it is for: a `cc`
@@ -486,6 +494,39 @@ pub fn link_executable_with(
     }
 
     Ok(())
+}
+
+/// The C files codegen may write beside an object, by suffix: `<obj>.inline.c`
+/// wraps a header's inline functions (struct.c-interop/IN2), `<obj>.va.c`
+/// makes its variadic calls.
+pub const COMPANIONS: &[&str] = &["inline", "va"];
+
+/// Compile the object's C companions that exist, with the runtime's compiler
+/// and flags, so they're built for the same target.
+fn companions(obj_path: &str, config: &TargetConfig, release: bool) -> Result<Vec<String>, String> {
+    let mut objs = Vec::new();
+    for kind in COMPANIONS {
+        let src = format!("{}.{}.c", obj_path, kind);
+        if !Path::new(&src).is_file() {
+            continue;
+        }
+        let obj = format!("{}.{}.o", obj_path, kind);
+        let out = process::Command::new(&config.cc)
+            .args(&config.cc_args)
+            .args(profile_cflags(release))
+            .args(["-c", &src, "-o", &obj])
+            .output()
+            .map_err(|e| format!("failed to run {}: {}", config.cc, e))?;
+        if !out.status.success() {
+            return Err(format!(
+                "compiling the C beside the program ({}) failed:\n{}",
+                src,
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        objs.push(obj);
+    }
+    Ok(objs)
 }
 
 /// Collect a Mach-O binary's debug info into `<bin>.dSYM`.

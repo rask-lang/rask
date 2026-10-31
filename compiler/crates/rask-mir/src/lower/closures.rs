@@ -282,6 +282,40 @@ impl<'a> MirLowerer<'a> {
         self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, false)
     }
 
+    /// A function value where C wants a function pointer (CB1, CB2): the
+    /// code address of an `extern "C"` function, or a closure that captures
+    /// nothing, compiled as one. The checker has already refused a Rask
+    /// function; a closure that captures is refused here, since only this
+    /// pass knows what it captured.
+    pub(super) fn lower_c_fn_pointer(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        match &expr.kind {
+            rask_ast::expr::ExprKind::Ident(name) => {
+                let addr = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: addr,
+                    rvalue: crate::MirRValue::FuncAddr(name.clone()),
+                }));
+                Ok((MirOperand::Local(addr), MirType::Ptr))
+            }
+            rask_ast::expr::ExprKind::Closure { params, ret_ty, body } => {
+                let free = self.collect_free_vars(body, params);
+                if !free.is_empty() {
+                    let names: Vec<&str> = free.iter().map(|(n, ..)| n.as_str()).collect();
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "a closure handed to C as a function pointer can't capture anything, and this one captures `{}`; \
+                         pass the state through the C API's context pointer (struct.c-interop/CB3, CB6)",
+                        names.join("`, `")
+                    )));
+                }
+                self.c_callback = true;
+                self.lower_closure_expecting(params, ret_ty.as_ref(), body, false, &[], Some(expr.id), false)
+            }
+            _ => Err(LoweringError::InvalidConstruct(
+                "only a named `extern \"C\"` function or a closure literal can be handed to C as a function pointer".to_string(),
+            )),
+        }
+    }
+
     /// CM1: whether this closure outlives the frame that built it, as the
     /// ownership pass worked out.
     pub(super) fn closure_carries(&self, closure_id: Option<NodeId>) -> bool {
@@ -383,7 +417,10 @@ impl<'a> MirLowerer<'a> {
         let closure_ret = if returns_ordering { MirType::I64 } else { closure_ret };
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 
-        let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
+        // A C callback is called with exactly the C arguments, and captured
+        // nothing that would need an environment (CB2).
+        let c_abi = std::mem::take(&mut self.c_callback);
+        let env_param_id = if c_abi { None } else { Some(closure_builder.add_param("__env".to_string(), MirType::Ptr)) };
 
         // The checker's parameter list for this closure, for a parameter that
         // was neither annotated nor pinned by the callee's signature.
@@ -442,7 +479,7 @@ impl<'a> MirLowerer<'a> {
             }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
-                env_ptr: env_param_id,
+                env_ptr: env_param_id.expect("a C callback captures nothing"),
                 offset: cap.offset,
                 access: capture_access,
             }));
@@ -490,7 +527,8 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let closure_fn = closure_builder.finish();
+        let mut closure_fn = closure_builder.finish();
+        closure_fn.is_extern_c = c_abi;
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
             ret_ty: closure_ret.clone(),
@@ -523,6 +561,15 @@ impl<'a> MirLowerer<'a> {
         // this is the only place that knows, because it's the place that decided.
         if for_spawn {
             self.spawn_result_boxed = boxes_result;
+        }
+
+        if c_abi {
+            let addr = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: addr,
+                rvalue: crate::MirRValue::FuncAddr(entry_name),
+            }));
+            return Ok((MirOperand::Local(addr), MirType::Ptr));
         }
 
         // 5. In the parent function, emit ClosureCreate.

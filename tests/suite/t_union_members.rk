@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A union holds one member at a time. Building one names the live member,
+// writing a member makes it the live one, and reading any member reads the
+// live one's bytes as that member's type (mem.unsafe/UN1-UN3). The size is
+// the largest member's.
+
+import std.reflect
+
+union Bits {
+    i: i32
+    f: f32
+}
+
+union Wide {
+    b: u8
+    q: i64
+}
+
+test "a member reads the live one's bits" {
+    let b = Bits(i: 1065353216)
+    assert unsafe b.f == 1.0
+    assert unsafe b.i == 1065353216
+}
+
+test "writing a member makes it the live one" {
+    mut b = Bits(f: 2.0)
+    b.i = 1077936128
+    assert unsafe b.f == 3.0
+}
+
+test "a narrower member reads the low bytes" {
+    let w = Wide(q: 258)
+    assert unsafe w.b == 2
+}
+
+test "the size is the largest member's" {
+    assert reflect.size_of<Bits>() == 4
+    assert reflect.size_of<Wide>() == 8
+}
+
+func main() {
+    let b = Bits(i: 1065353216)
+    println("{unsafe b.f}")
+}

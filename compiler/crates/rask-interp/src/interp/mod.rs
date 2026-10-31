@@ -24,6 +24,7 @@ mod operators;
 pub(crate) mod overflow;
 mod dispatch;
 mod transmute;
+pub(crate) mod union_bits;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
 use rask_ast::span::LineMap;
@@ -138,6 +139,9 @@ pub struct Interpreter {
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// Union declarations by name: a read of a member that isn't the live one
+    /// reinterprets the live one's bytes (mem.unsafe/UN2).
+    pub(crate) union_decls: HashMap<String, rask_ast::decl::UnionDecl>,
     /// Where the innermost `call_function` failed, when one did.
     ///
     /// The method-dispatch path hands back a bare `RuntimeError`, so a
@@ -458,6 +462,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            union_decls: HashMap::new(),
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
@@ -502,6 +507,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            union_decls: HashMap::new(),
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
@@ -548,6 +554,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            union_decls: HashMap::new(),
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
@@ -845,6 +852,7 @@ impl Interpreter {
         child.functions = self.functions.clone();
         child.enums = self.enums.clone();
         child.struct_decls = self.struct_decls.clone();
+        child.union_decls = self.union_decls.clone();
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();

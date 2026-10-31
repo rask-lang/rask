@@ -125,6 +125,5 @@ fn classify(kind: &SymbolKind) -> (u32, u32) {
         SymbolKind::BuiltinModule { .. } => (TYPE_NAMESPACE, MOD_STDLIB),
         SymbolKind::ExternalPackage { .. } => (TYPE_NAMESPACE, 0),
         SymbolKind::TypeAlias { .. } => (TYPE_TYPE, 0),
-        SymbolKind::CNamespace { .. } => (TYPE_NAMESPACE, 0),
     }
 }
