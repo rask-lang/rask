@@ -2447,6 +2447,22 @@ impl<'a> OwnershipChecker<'a> {
                         false
                     }
                 };
+                // L1: a linear value still owed can't be written over —
+                // the assignment drops it unconsumed. `mut c = Conn(1); c =
+                // Conn(2)` leaked the first connection, and `q = Heap(…)` the
+                // first box.
+                if let ExprKind::Ident(name) = &target.kind {
+                    let linear = self.resource_bindings.contains(name) || self.owned_bindings.contains(name);
+                    if linear && matches!(self.bindings.get(name), Some(BindingState::Owned)) {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::LinearOverwritten {
+                                consume: self.consume_calls(name),
+                                name: name.clone(),
+                            },
+                            span: stmt.span,
+                        });
+                    }
+                }
                 // Assignments move the value — except a link into a field.
                 //
                 // A link is a pointer, so both cases copy the same pointer; what

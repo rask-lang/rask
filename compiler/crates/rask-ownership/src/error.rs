@@ -398,6 +398,15 @@ pub enum OwnershipErrorKind {
         where_: String,
     },
 
+    /// mem.linear/L1: assigning over a linear binding that still holds a
+    /// value nobody consumed.
+    #[error("`{name}` still holds a value that has to be consumed")]
+    LinearOverwritten {
+        name: String,
+        /// As in `ResourceNotConsumed`.
+        consume: Vec<String>,
+    },
+
     /// Resource type not consumed before scope exit.
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
