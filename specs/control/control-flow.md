@@ -148,7 +148,7 @@ process(item)
 |------|-------------|
 | **CF15: Break value** | `break value` exits loop and produces a value (expression context) |
 | **CF16: Type consistency** | All `break value` expressions must have same type |
-| **CF17: Never type** | Loop without reachable exit has type `Never` |
+| **CF17: No exit, no finish** | A loop with no reachable exit doesn't finish (CF32) |
 | **CF18: Bare break forbidden** | If any `break value` exists, bare `break` is an error |
 
 ```rask
@@ -208,7 +208,7 @@ search: loop {
 |------|-------------|
 | **CF26: Exits function** | `return` immediately exits current function, closure or task block (not just block) |
 | **CF27: Ensure trigger** | `return` triggers `ensure` cleanup before exiting |
-| **CF28: Never type** | Type of `return` expression is `Never` |
+| **CF28: Return doesn't finish** | A `return` expression doesn't finish (CF32) |
 
 Closures are independent scopes for `return`. `return` inside a closure exits the **closure**, not the enclosing function. This matches function semantics — a closure is an anonymous function. Block-bodied closures require explicit `return`, same as functions.
 
@@ -257,16 +257,33 @@ let result = {
 }
 ```
 
-## Never Type
+## Expressions That Don't Finish
 
 | Rule | Description |
 |------|-------------|
-| **CF32: Never coercion** | `Never` coerces to any type |
+| **CF32: Fits any slot** | An expression that doesn't finish (`return`, `break`, `continue`, a loop with no exit, a call to a `@noreturn` function) needs no value: an `if` arm, a `match` arm or a `??` fallback made of one fits whatever the other side is |
+| **CF34: `@noreturn`** | A function marked `@noreturn` never comes back to its caller: `panic`, `todo`, `unreachable`, `os.exit`. It declares no result type. Every path through its body ends in something that doesn't finish, and it has no `return` (E0809, E0850) |
 
 ```rask
 mut x: i32 = if cond { 42 } else { panic("nope") }
-// else branch is Never, coerces to i32
+// the else arm doesn't finish, so the `if` is an i32
 ```
+
+<!-- test: skip -->
+```rask
+@noreturn
+func fail(msg: string) {
+    println("fail: {msg}")
+    os.exit(3)
+}
+
+let v = x ?? fail("none")
+```
+
+There's no type for "doesn't finish" to write. I had one, `Never`, and the only
+places it was ever written were the two `exit` declarations. Saying it on the
+function is what C does with `noreturn`, and it reads as what it is: a fact
+about the function, not a kind of value.
 
 ## Edge Cases
 
@@ -281,7 +298,7 @@ mut x: i32 = if cond { 42 } else { panic("nope") }
 | Empty `if` branches | CF7 | Valid: `if c {} else {}` evaluates to `()` |
 | Nested `ensure` in loop | CF27 | Each iteration registers new ensure |
 | `loop` with `break value` and bare `break` | CF18 | Error: inconsistent exit types |
-| `loop` without exit | CF17 | Type is `Never` (infinite loop) |
+| `loop` without exit | CF17 | Doesn't finish (infinite loop) |
 | Chained `else if` | — | Desugars to nested `if` in `else` block |
 
 ## Error Messages
@@ -536,24 +553,15 @@ if cond {
 }
 ```
 
-**Never type and divergence:**
+**Expressions that don't finish:**
 
-Some expressions never complete normally:
-
-| Expression | Type |
-|------------|------|
-| `return ...` | `Never` |
-| `break` | `Never` |
-| `break ...` | `Never` |
-| `continue` | `Never` |
-| `panic(...)` | `Never` |
-| `loop { /* no exit */ }` | `Never` |
-
-`Never` coerces to any type, allowing branches with different control flow:
+`return`, `break` (with or without a value), `continue`, a call to a
+`@noreturn` function (`panic(...)`, `os.exit(...)`) and `loop { }` with no exit
+never complete normally, so an arm made of one needs no value (CF32):
 
 ```rask
 mut x: i32 = if cond { 42 } else { return }
-// else branch is Never, coerces to i32
+// the else arm doesn't finish, so the `if` is an i32
 ```
 
 ### Examples

@@ -315,6 +315,17 @@ pub enum TypeError {
         expected_type: Type,
         span: Span,
     },
+    /// A `@noreturn` function's body can reach its end.
+    #[error("`{function_name}` is `@noreturn`, but its body can finish")]
+    NoReturnFinishes {
+        function_name: String,
+        span: Span,
+    },
+    /// `return` inside a `@noreturn` function.
+    #[error("`return` in a `@noreturn` function")]
+    NoReturnReturns {
+        span: Span,
+    },
     #[error("generic argument error: {0}")]
     GenericError(String, Span),
     #[error("cannot mutate `{var}` while borrowed")]
@@ -1855,6 +1866,8 @@ impl TypeError {
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
             | UseAfterDiscard { .. }
+            | NoReturnFinishes { .. }
+            | NoReturnReturns { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }

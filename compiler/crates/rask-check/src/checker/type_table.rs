@@ -299,7 +299,6 @@ impl TypeTable {
         self.builtins.insert("none".to_string(), Type::None);
         self.builtins.insert("isize".to_string(), Type::isize_ty());
         self.builtins.insert("usize".to_string(), Type::usize_ty());
-        self.builtins.insert("Never".to_string(), Type::Never);
 
         // The C scalar names an `import c` header translates to. Until these
         // were here none of them was a type, so `*i64` passed for a `const int

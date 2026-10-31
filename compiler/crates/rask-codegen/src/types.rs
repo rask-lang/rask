@@ -14,7 +14,7 @@ pub fn extern_type_to_mir(ty: &rask_ast::ty::TypeExpr) -> MirType {
     use rask_ast::ty::TypeExpr;
     match ty {
         TypeExpr::RawPtr(_) => return MirType::RawPtr,
-        TypeExpr::Unit => return MirType::Void,
+        TypeExpr::Unit | TypeExpr::NoReturn => return MirType::Void,
         _ => {}
     }
     match ty.bare_name().unwrap_or_default() {

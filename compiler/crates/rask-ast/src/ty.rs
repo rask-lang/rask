@@ -29,6 +29,9 @@ pub enum TypeExpr {
     Unit,
     /// `none`
     NoneType,
+    /// What a `@noreturn` function produces: it never comes back. Not
+    /// written as a type; the parser puts it where the result type goes.
+    NoReturn,
     /// `[T; N]`, where `N` is a literal or a comptime parameter's name.
     Array { elem: Box<TypeExpr>, len: String },
     /// `[N]T`, the fixed-count form `@binary` layouts use.
@@ -180,7 +183,7 @@ impl TypeExpr {
             TypeExpr::Result { ok, err } => TypeExpr::Result { ok: sub_box(ok), err: sub_box(err) },
             TypeExpr::Union(ts) => TypeExpr::Union(ts.iter().map(sub).collect()),
             TypeExpr::Tuple(ts) => TypeExpr::Tuple(ts.iter().map(sub).collect()),
-            TypeExpr::Unit | TypeExpr::NoneType => self.clone(),
+            TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => self.clone(),
             TypeExpr::Array { elem, len } => {
                 let len = match subst(len) {
                     Some(TypeExpr::Int(n)) => n,
@@ -218,7 +221,7 @@ impl TypeExpr {
                 }
                 args.iter_mut().for_each(|a| a.replace_projections(f));
             }
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => {}
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
             TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
                 inner.replace_projections(f)
             }
@@ -247,7 +250,7 @@ impl TypeExpr {
                 }
                 args.iter_mut().for_each(|a| a.rename(f));
             }
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => {}
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
             TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
                 inner.rename(f)
             }
@@ -271,7 +274,7 @@ impl TypeExpr {
             TypeExpr::Named { path, args } => {
                 f(&path.join(".")) || args.iter().any(|a| a.mentions(f))
             }
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => false,
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => false,
             TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
                 inner.mentions(f)
             }
@@ -293,7 +296,7 @@ impl TypeExpr {
                 path: f(path).unwrap_or_else(|| path.clone()),
                 args: args.iter().map(sub).collect(),
             },
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => self.clone(),
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => self.clone(),
             TypeExpr::Optional(inner) => TypeExpr::Optional(sub_box(inner)),
             TypeExpr::RawPtr(inner) => TypeExpr::RawPtr(sub_box(inner)),
             TypeExpr::Any(inner) => TypeExpr::Any(sub_box(inner)),
@@ -318,7 +321,7 @@ impl TypeExpr {
                 f(path);
                 args.iter().for_each(|a| a.walk_paths(f));
             }
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => {}
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
             TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
                 inner.walk_paths(f)
             }
@@ -346,7 +349,7 @@ impl TypeExpr {
                     a.walk_names(f);
                 }
             }
-            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => {}
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
             TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
                 inner.walk_names(f)
             }
@@ -411,6 +414,7 @@ impl TypeExpr {
             TypeExpr::Tuple(ts) => format!("({})", list(ts, ", ")),
             TypeExpr::Unit => "void".to_string(),
             TypeExpr::NoneType => "none".to_string(),
+            TypeExpr::NoReturn => "noreturn".to_string(),
             TypeExpr::Array { elem, len } => format!("[{}; {}]", elem.source(), len),
             TypeExpr::FixedCount { count, elem } => format!("[{}]{}", count, elem.source()),
             // An omitted return type is `void`, so writing it back would add an
@@ -466,6 +470,7 @@ impl fmt::Display for TypeExpr {
             }
             TypeExpr::Unit => f.write_str("()"),
             TypeExpr::NoneType => f.write_str("none"),
+            TypeExpr::NoReturn => f.write_str("noreturn"),
             TypeExpr::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             TypeExpr::FixedCount { count, elem } => write!(f, "[{}]{}", count, elem),
             TypeExpr::Func { params, ret } => {

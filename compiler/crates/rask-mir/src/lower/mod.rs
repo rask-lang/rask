@@ -939,7 +939,7 @@ impl<'a> MirContext<'a> {
 
     fn written_layout(&self, ty: &TypeExpr) -> MirType {
         match ty {
-            TypeExpr::Unit | TypeExpr::NoneType => MirType::Void,
+            TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => MirType::Void,
             TypeExpr::Optional(inner) => option_of(self.resolve_type_expr(inner)),
             TypeExpr::Result { ok, err } => MirType::Result {
                 ok: Box::new(self.resolve_type_expr(ok)),

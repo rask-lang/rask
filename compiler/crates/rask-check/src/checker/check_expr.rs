@@ -2877,10 +2877,16 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
+                // What the declaration in `builtins.rk` says it returns: a
+                // `@noreturn` one (`panic`, `exit`) never comes back.
                 return match name {
-                    "panic" | "todo" | "unreachable" | "skip" => Type::Never,
                     "format" => Type::String,
-                    _ => Type::Unit,
+                    _ => rask_stdlib::StubRegistry::load()
+                        .functions()
+                        .iter()
+                        .find(|f| f.name == name)
+                        .map(|f| super::builtins::stub_type(&f.ret_ty))
+                        .unwrap_or(Type::Unit),
                 };
             }
 

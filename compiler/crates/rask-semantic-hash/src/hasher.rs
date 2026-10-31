@@ -129,6 +129,7 @@ impl Hasher {
             }
             TypeExpr::Unit => self.feed_tag(7),
             TypeExpr::NoneType => self.feed_tag(8),
+            TypeExpr::NoReturn => self.feed_tag(17),
             TypeExpr::Array { elem, len } => {
                 self.feed_tag(9);
                 self.feed_type(elem);

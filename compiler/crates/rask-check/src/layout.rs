@@ -435,6 +435,7 @@ fn is_typevar_name(name: &str) -> bool {
 pub fn field_type(ty: &TypeExpr) -> Type {
     match ty {
         TypeExpr::Unit => Type::Unit,
+        TypeExpr::NoReturn => Type::Never,
         TypeExpr::Optional(inner) => Type::option(field_type(inner)),
         TypeExpr::Result { ok, err } => Type::Result {
             ok: Box::new(field_type(ok)),

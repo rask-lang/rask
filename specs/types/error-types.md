@@ -581,7 +581,7 @@ match result {
 | **DP1: todo()** | Panics with "not yet implemented" and source location |
 | **DP2: unreachable()** | Panics with "entered unreachable code" and source location |
 | **DP3: Optional message** | Both accept an optional string: `todo("auth flow")`, `unreachable("invalid state")` |
-| **DP4: Never type** | Both return `Never`, coercible to any type |
+| **DP4: Don't finish** | Both are `@noreturn`, so an arm made of one needs no value (`ctrl.flow/CF32`) |
 | **DP5: Lint warning** | `rask lint` warns on `todo()` in non-test code |
 
 <!-- test: skip -->

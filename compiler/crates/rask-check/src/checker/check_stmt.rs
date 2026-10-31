@@ -294,6 +294,13 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
+                // A `@noreturn` function's result is "never comes back", so
+                // there is nothing a `return` could hand back.
+                if let Some(expected) = &self.current_return_type {
+                    if matches!(self.ctx.apply(expected), Type::Never) {
+                        self.errors.push(TypeError::NoReturnReturns { span: stmt.span });
+                    }
+                }
                 let ret_ty = if let Some(expr) = value {
                     if let Some(expected) = &self.current_return_type.clone() {
                         // If expecting Result<T, E>, propagate T as the expected type

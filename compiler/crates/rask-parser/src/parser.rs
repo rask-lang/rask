@@ -1004,6 +1004,22 @@ impl Parser {
             None
         };
 
+        // `@noreturn` says what the function produces: nothing, ever. It is
+        // the result type, so writing another one beside it contradicts it.
+        let ret_ty = if attrs.iter().any(|a| a.is("noreturn")) {
+            if let Some(written) = &ret_ty {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: format!("a `@noreturn` function doesn't return `{}`, or anything", written.source()),
+                    hint: Some("drop the `-> …`: the function never comes back".to_string()),
+                    why: None,
+                });
+            }
+            Some(rask_ast::ty::TypeExpr::NoReturn)
+        } else {
+            ret_ty
+        };
+
         self.reject_signature_using()?;
 
         // `where` closes the signature (after return type + using clauses).

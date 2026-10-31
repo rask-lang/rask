@@ -1008,7 +1008,7 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
 /// What a stub's declared return type is, in the categories MIR asks about.
 fn ret_category(t: &TypeExpr) -> RetCategory {
     match t {
-        TypeExpr::Unit => RetCategory::Void,
+        TypeExpr::Unit | TypeExpr::NoReturn => RetCategory::Void,
         TypeExpr::Result { ok, err } => RetCategory::Result {
             ok: Box::new(ret_category(ok)),
             err: Box::new(ret_category(err)),
@@ -1222,13 +1222,13 @@ mod tests {
 
     /// Names a stub signature may mention that `stdlib_type_names` doesn't hold.
     ///
-    /// Two groups. Declared elsewhere and genuinely resolvable: `Never` and
-    /// `Ordering` are registered by the checker rather than by a stub;
+    /// Two groups. Declared elsewhere and genuinely resolvable: `Ordering` is
+    /// registered by the checker rather than by a stub;
     /// `Reader`/`Writer` are stdlib interfaces in io.rk, and the stub registry only
     /// collects structs and enums; `Self` isn't a type name at all. Genuinely still missing: `Error` is the
     /// `any Error` catch-all that ER32 auto-boxing will register (#708).
     const PENDING_STUB_TYPES: &[&str] = &[
-        "Never", "Ordering", "Reader", "Writer", "Self", "Error",
+        "Ordering", "Reader", "Writer", "Self", "Error",
     ];
 
     /// PascalCase type names a signature string mentions, with generic

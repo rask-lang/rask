@@ -576,7 +576,8 @@ impl<'a> Printer<'a> {
         }
         self.emit(")");
 
-        if let Some(ref ret_ty) = f.ret_ty {
+        // `@noreturn` is the result; the attribute already printed says it.
+        if let Some(ref ret_ty) = f.ret_ty.as_ref().filter(|t| **t != rask_ast::ty::TypeExpr::NoReturn) {
             self.emit(" -> ");
             let ty = self.format_type(ret_ty);
             self.emit(&ty);

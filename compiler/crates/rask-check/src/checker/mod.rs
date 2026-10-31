@@ -512,6 +512,9 @@ pub struct TypeChecker {
     /// then. Checked after solving, once the element type is settled, for a
     /// method that would drop or copy an element that must be consumed.
     pub(super) pending_element_uses: Vec<(rask_ast::Span, Type, String)>,
+    /// `@noreturn` bodies, with the function's name and where it ends, checked
+    /// after solving for a path that reaches the end.
+    pub(super) pending_noreturn_bodies: Vec<(String, Vec<rask_ast::stmt::Stmt>, rask_ast::Span)>,
     /// SH10: struct fields and enum payloads that spell a `Shared`, checked
     /// for a box cycle once every declaration is registered, since the cycle
     /// can close through a type declared later. (Owner, field, type, span).
@@ -709,6 +712,7 @@ impl TypeChecker {
             closure_return_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_element_uses: Vec::new(),
+            pending_noreturn_bodies: Vec::new(),
             pending_shared_fields: Vec::new(),
 
             type_test_patterns: std::collections::HashSet::new(),
@@ -911,6 +915,11 @@ impl TypeChecker {
         // concrete.
         self.validate_pending_linear_containers();
         self.validate_pending_element_uses();
+        for (function_name, body, span) in std::mem::take(&mut self.pending_noreturn_bodies) {
+            if !self.has_explicit_return(&body) {
+                self.errors.push(TypeError::NoReturnFinishes { function_name, span });
+            }
+        }
 
         // SH10: a `Shared` field whose payload can hold the owner again.
         self.validate_shared_cycles();

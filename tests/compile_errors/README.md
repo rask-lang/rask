@@ -130,6 +130,7 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [ownership_errors.rk](ownership_errors.rk) | Use-after-move, conditional move, @unique, @resource leak/double-consume, Vec never Copy |
+| [noreturn.rk](noreturn.rk) | A `@noreturn` body that can finish (E0809) or has a `return` (E0850), and `Never`, which isn't a type you can write any more (E0356) |
 | [linear_containers.rk](linear_containers.rk) | A Vec or Map of linear values is owed itself (RC1/RC3, E0805), nothing may drop or copy an element (`clear`, `set`, `v[i] = …`, `remove_where`, `get`, `first`: RC5, E0823; a `for` over `take_all()`: E0844; the same through a generic body: E0849), and a Rack can't hold one (RC2, E0820) |
 | [linear_generic_instance.rk](linear_generic_instance.rk) | A generic body re-checked for the linear type it is called with (#1366, E0904): a `T` dropped in the body, a payload matched out of `List<Conn>` and dropped, a drop two generic calls down blamed on the outer call, a generic method and a method of a generic type (`Holder<T>.drop_it(take self)`) that drop theirs, a `take self` on a concrete holder that leaks its resource field, and a `T` handed to two `take` parameters |
 | [branch_merge.rk](branch_merge.rk) | Branch-merge soundness (O3, L1): move/consume on one branch of if, if-without-else, and match arms; move inside a loop body |

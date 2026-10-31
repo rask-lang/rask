@@ -1170,6 +1170,21 @@ impl ToDiagnostic for crate::TypeError {
             .with_fix(format!("add `return` statement with a value of type `{}`", expected_type))
             .with_why("all code paths in a non-void function must produce a value via explicit `return`"),
 
+            NoReturnFinishes { function_name, span } => Diagnostic::error(format!(
+                "`{}` is `@noreturn`, but its body can finish",
+                function_name
+            ))
+            .with_code("E0809")
+            .with_primary(*span, "a path reaches the end of the function here")
+            .with_fix("end every path in something that doesn't come back: `panic(…)`, `exit(…)`, a `loop` with no `break`; or drop `@noreturn`")
+            .with_why("callers rely on `@noreturn`: code after the call is treated as unreachable, and an arm that calls it needs no value"),
+
+            NoReturnReturns { span } => Diagnostic::error("`return` in a `@noreturn` function")
+                .with_code("E0850")
+                .with_primary(*span, "this would come back to the caller")
+                .with_fix("end this path in `panic(…)` or `exit(…)`, or drop `@noreturn`")
+                .with_why("a `@noreturn` function never comes back, so there's nothing for `return` to do"),
+
             GenericError(msg, span) => Diagnostic::error(format!("generic argument error: {}", msg))
                 .with_code("E0319")
                 .with_primary(*span, "invalid generic argument")
