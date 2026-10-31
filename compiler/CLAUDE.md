@@ -22,6 +22,20 @@ Why it matters: the compiler used to have seven type-string parsers that had
 drifted apart. Each disagreement was a bug that only showed on one backend.
 `no_type_text_reparsing` in `rask-cli/tests/` fails the build when one comes back.
 
+## Error messages
+
+Diagnostics are a first-class feature. A confusing error is a bug.
+
+- All user-facing compiler errors go through `rask-diagnostics`. Don't
+  `eprintln!` or `panic!` your way out of an error path.
+- Every diagnostic explains what's wrong, where, and what to do next. "expected
+  `T`, found `U`" is a starting point, not the finished message.
+- Prefer suggestions (`suggestions.rs`) over prose when there's an obvious fix.
+  Show the fix as code, not as a sentence.
+- Use stable error codes (`codes.rs`) so messages can be looked up and improved.
+- Write the message before the check. If you can't phrase it clearly, the check
+  probably isn't the right shape.
+
 ## Crate guide
 
 ### rask-parser — Recursive descent parser

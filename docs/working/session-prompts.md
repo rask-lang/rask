@@ -174,7 +174,7 @@ Five diagnostics/tooling bugs, all independent:
 #897  `assert a == b` on two string variables prints their addresses instead of the strings (native).
 #898  A failed float assertion rounds both operands to 6 digits, so unequal floats print as equal.
 
-Diagnostics are a first-class feature here — read the "Error messages" section of CLAUDE.md. For
+Diagnostics are a first-class feature here — read the "Error messages" section of compiler/CLAUDE.md. For
 #900 in particular: write the message you WANT first, then make it true. Every user-facing error
 goes through rask-diagnostics; don't eprintln.
 
