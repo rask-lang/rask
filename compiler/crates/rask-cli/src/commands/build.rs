@@ -813,8 +813,12 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         };
         let output = rask_compiler::compile_package(&mut pkg_ctx, &config);
 
+        // The pipeline's list, not the one built above: it also holds each
+        // imported C header's translation, which an error inside one points
+        // into (#1710).
+        let shown = if output.source_files.is_empty() { &source_files } else { &output.source_files };
         for d in &output.diagnostics {
-            crate::show_diagnostic_multi(d, &source_files);
+            crate::show_diagnostic_multi(d, shown);
         }
 
         if let Some(result) = output.result {

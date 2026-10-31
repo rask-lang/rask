@@ -1262,7 +1262,7 @@ impl Parser {
         let start = self.current().span.start;
         let ty = self.parse_type_name()?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok((ty, Span::new(start, end)))
+        Ok((ty, self.span(start, end)))
     }
 
     fn parse_type_name(&mut self) -> Result<TypeExpr, ParseError> {

@@ -5795,6 +5795,43 @@ fn editing_a_sub_package_invalidates_the_build_cache() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An error on a field's type points into the file that declares the field.
+///
+/// The parser built that span without a file id, so it landed in the first
+/// file of the package: an error in a sub-package, or in an imported C
+/// header's translation, named `main.rk` at a line and column it doesn't have
+/// (#1710).
+#[test]
+fn a_field_type_error_names_the_file_it_is_in() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir()
+        .join(format!("rask_fieldspan_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("helpers")).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"fieldspan\"\nversion = \"0.1.0\"\ndescription = \"spans\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.rk"), "import helpers\n\nfunc main() {\n    println(\"x\")\n}\n").unwrap();
+    std::fs::write(
+        dir.join("helpers").join("lib.rk"),
+        "public union Cell {\n    public s: string\n    public n: u64\n}\n",
+    )
+    .unwrap();
+    let build = Command::new(&rask)
+        .arg("build")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask build");
+    let out = format!("{}{}", String::from_utf8_lossy(&build.stdout), String::from_utf8_lossy(&build.stderr));
+    assert!(!build.status.success(), "a string in a union should be refused:\n{out}");
+    let at = std::path::Path::new("helpers").join("lib.rk").display().to_string();
+    assert!(out.contains(&format!("{at}:2:15")), "expected the error at {at}:2:15:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Editing a C header, or a file it includes, rebuilds the binary.
 ///
 /// `import c` compiles the header's constants and struct layouts in, but the
