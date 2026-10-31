@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `@bits(n)` packs an integer field of a `@layout(C)` struct into n bits, the
+// way C does: consecutive bitfields share their type's storage unit, low bits
+// first, and a write keeps its neighbours (struct.c-interop/TM7).
+
+import std.reflect
+
+@layout(C)
+struct Header {
+    @bits(1) fin: u8
+    @bits(3) kind: u8
+    @bits(4) channel: u8
+    len: u16
+}
+
+@layout(C)
+struct Signed {
+    @bits(4) low: i32
+    @bits(12) mid: i32
+}
+
+test "fields read back what was written" {
+    let h = Header(fin: 1, kind: 5, channel: 9, len: 300)
+    assert h.fin == 1
+    assert h.kind == 5
+    assert h.channel == 9
+    assert h.len == 300
+}
+
+test "a write keeps its neighbours" {
+    mut h = Header(fin: 1, kind: 5, channel: 9, len: 300)
+    h.kind = 2
+    assert h.fin == 1
+    assert h.kind == 2
+    assert h.channel == 9
+}
+
+test "bitfields share their storage unit" {
+    assert reflect.size_of<Header>() == 4
+    assert reflect.size_of<Signed>() == 4
+}
+
+test "a signed field reads back its sign" {
+    mut s = Signed(low: -3, mid: 1000)
+    assert s.low == -3
+    assert s.mid == 1000
+    s.mid = -2048
+    assert s.mid == -2048
+    assert s.low == -3
+}
+
+test "a value too wide for its field panics" {
+    expect_fail()
+    mut h = Header(fin: 0, kind: 0, channel: 0, len: 0)
+    let wide: u8 = 8
+    h.kind = wide
+}
+
+func main() {
+    let h = Header(fin: 1, kind: 5, channel: 9, len: 300)
+    println("{h.fin} {h.kind} {h.channel} {h.len}")
+}

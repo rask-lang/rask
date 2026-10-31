@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Callbacks and variadic calls through `import c` (struct.c-interop/CB1-CB6).
+// A named `extern "C"` function and a closure that captures nothing pass as
+// bare function pointers; a closure that captures rides in the context
+// pointer the binding found beside the callback, wherever C puts it.
+
+import c "c_callbacks.h"
+
+extern "C" func subtract(a: c_int, b: c_int) -> c_int {
+    return a - b
+}
+
+func main() {
+    let named = unsafe c.call_cmp(subtract, 9, 4)
+    let lambda = unsafe c.call_cmp(|a, b| a * b, 6, 7)
+    println("pointers {named} {lambda}")
+
+    let xs: Vec<c_int> = [3, 4, 5]
+    let label = "seen".to_uppercase()
+    unsafe c.each(xs.as_ptr(), 3, |v| {
+        println("{label} {v}")
+    })
+
+    let bias: c_int = 100
+    let folded = unsafe c.fold(xs.as_ptr(), 3, |acc, v| acc + v + bias, 0)
+    println("fold {folded}")
+
+    let ints = unsafe c.sum_ints(3, 10, 20, 12)
+    let small: i8 = 5
+    let more = unsafe c.sum_ints(2, small, 7)
+    let f: f32 = 1.5
+    let avg = unsafe c.avg_doubles(3, 1.0, 2.0, f)
+    println("variadic {ints} {more} {avg}")
+}

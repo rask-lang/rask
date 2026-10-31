@@ -1421,6 +1421,7 @@ name = "rask-compiler"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-c-parse",
  "rask-check",
  "rask-codegen",
  "rask-comptime",
@@ -1430,6 +1431,7 @@ dependencies = [
  "rask-interp",
  "rask-lexer",
  "rask-mir",
+ "rask-miri",
  "rask-mono",
  "rask-ownership",
  "rask-parser",
@@ -1639,7 +1641,6 @@ dependencies = [
  "flate2",
  "rand",
  "rask-ast",
- "rask-c-parse",
  "rask-diagnostics",
  "rask-lexer",
  "rask-parser",

@@ -94,6 +94,27 @@ pub fn lookup(cache_dir: &Path, key: &str) -> Option<PathBuf> {
     }
 }
 
+/// `<obj>.<kind>.c`.
+fn companion_of(obj: &Path, kind: &str) -> PathBuf {
+    let mut name = obj.as_os_str().to_owned();
+    name.push(format!(".{}.c", kind));
+    PathBuf::from(name)
+}
+
+/// Copy a cached object, and its companions, to `obj_path`.
+pub fn restore(cached: &Path, obj_path: &Path) -> std::io::Result<()> {
+    std::fs::copy(cached, obj_path)?;
+    for kind in super::link::COMPANIONS {
+        let companion = companion_of(cached, kind);
+        if companion.is_file() {
+            std::fs::copy(&companion, companion_of(obj_path, kind))?;
+        } else {
+            let _ = std::fs::remove_file(companion_of(obj_path, kind));
+        }
+    }
+    Ok(())
+}
+
 /// Store an object file in the cache.
 pub fn store(cache_dir: &Path, key: &str, obj_path: &Path) -> Result<(), String> {
     std::fs::create_dir_all(cache_dir)
@@ -102,6 +123,18 @@ pub fn store(cache_dir: &Path, key: &str, obj_path: &Path) -> Result<(), String>
     let cached = cache_dir.join(format!("{}.o", key));
     std::fs::copy(obj_path, &cached)
         .map_err(|e| format!("failed to cache object file: {}", e))?;
+    // The object's C companions, when it has them: wrappers for a header's
+    // inline functions and for variadic calls.
+    for kind in super::link::COMPANIONS {
+        let companion = companion_of(obj_path, kind);
+        let cached_companion = companion_of(&cached, kind);
+        if companion.is_file() {
+            std::fs::copy(&companion, &cached_companion)
+                .map_err(|e| format!("failed to cache {}: {}", companion.display(), e))?;
+        } else {
+            let _ = std::fs::remove_file(&cached_companion);
+        }
+    }
 
     // LRU eviction if cache is too large
     if let Err(e) = evict_if_needed(cache_dir) {
@@ -147,6 +180,9 @@ fn evict_if_needed(cache_dir: &Path) -> Result<(), String> {
     for (path, size, _) in &entries {
         if total_size <= max_bytes {
             break;
+        }
+        for kind in super::link::COMPANIONS {
+            let _ = std::fs::remove_file(companion_of(path, kind));
         }
         if let Ok(()) = std::fs::remove_file(path) {
             total_size -= size;
