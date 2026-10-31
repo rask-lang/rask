@@ -6602,6 +6602,14 @@ pub(crate) fn type_pat_name(ty: &TypeExpr) -> String {
 
 /// Determine result type for a binary operation.
 /// Comparison ops return Bool, arithmetic returns the operand type.
+/// The operators whose two integer operands meet at one width: arithmetic and
+/// bitwise, not comparison (which compares by value across widths) and not a
+/// shift (whose amount keeps its own type).
+fn is_widening_arithmetic(op: &crate::operand::BinOp) -> bool {
+    use crate::operand::BinOp as B;
+    matches!(op, B::Add | B::Sub | B::Mul | B::Div | B::Mod | B::BitAnd | B::BitOr | B::BitXor)
+}
+
 fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirType {
     use crate::operand::BinOp as B;
     match op {

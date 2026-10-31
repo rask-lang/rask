@@ -4,7 +4,7 @@
 
 use crate::FieldAccess;
 use super::{
-    binop_result_type, is_type_constructor_name, lower_binop,
+    binop_result_type, is_type_constructor_name, is_widening_arithmetic, lower_binop,
     lower_unaryop, operator_method_to_binop, operator_method_to_unaryop, LoopContext,
     LoweringError, MirLowerer, TypedOperand,
 };
@@ -1901,6 +1901,7 @@ impl<'a> MirLowerer<'a> {
             } else {
                 (left_op, right_op)
             };
+            let (left_op, right_op, left_ty) = self.widen_int_operands(&mir_op, left_op, &left_ty, right_op, &right_ty);
             let result_ty = binop_result_type(&mir_op, &left_ty);
             let result_local = self.builder.alloc_temp(result_ty.clone());
 
@@ -7918,6 +7919,8 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     (obj_op.clone(), rhs)
                 };
+                let (lhs, rhs, obj_ty) = self.widen_int_operands(&mir_binop, lhs, obj_ty, rhs, &rhs_ty);
+                let obj_ty = &obj_ty;
                 let result_ty = binop_result_type(&mir_binop, obj_ty);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -7948,6 +7951,40 @@ impl<'a> MirLowerer<'a> {
         }
         } // end if !skip_binop
         Ok(None)
+    }
+
+    /// Integer arithmetic on two widths, with the narrower operand widened to
+    /// the other, and the type they now share. The checker allowed it only
+    /// where one holds every value of the other and typed the answer as that
+    /// one; computed at the left operand's width, `u32 + u64` truncated.
+    fn widen_int_operands(
+        &mut self,
+        op: &crate::operand::BinOp,
+        lhs: MirOperand,
+        lhs_ty: &MirType,
+        rhs: MirOperand,
+        rhs_ty: &MirType,
+    ) -> (MirOperand, MirOperand, MirType) {
+        if !is_widening_arithmetic(op) || !lhs_ty.is_int_like() || !rhs_ty.is_int_like() || lhs_ty == rhs_ty {
+            return (lhs, rhs, lhs_ty.clone());
+        }
+        if rhs_ty.size() > lhs_ty.size() {
+            (self.widen_operand(lhs, rhs_ty), rhs, rhs_ty.clone())
+        } else {
+            let rhs = self.widen_operand(rhs, lhs_ty);
+            (lhs, rhs, lhs_ty.clone())
+        }
+    }
+
+    /// `value` converted to the wider integer type `to`. Lossless: the checker
+    /// only lets an operand widen to a type that holds every value of it.
+    fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
+        let wide = self.builder.alloc_temp(to.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: wide,
+            rvalue: MirRValue::Cast { value, target_ty: to.clone() },
+        }));
+        MirOperand::Local(wide)
     }
 
     /// `x.hash()` on an integer, a bool or a char — FNV-1a over the value's

@@ -138,12 +138,22 @@ and every later operation on that value is float arithmetic. CV1a is about
 conversions the reader can safely not think about, and a change of number kind
 isn't one — the loss test says yes, the *did anything change* test says no.
 
-**Positions, not arithmetic.** CV1a applies where a value fills a typed slot:
-assignment, argument, return, struct field. It is **not** operator promotion —
-operators are homogeneous (`type.operators`), so `a + b` on mixed integer types
-stays an error, and you widen one side yourself. This is the line C's "usual
-arithmetic conversions" crossed, and why `-1 < 1u` is *true* in C. Rask doesn't
-have that bug because it doesn't have that feature.
+**Arithmetic too, by the same test.** CV1a applies where a value fills a typed
+slot (assignment, argument, return, struct field) and between the two sides of an
+arithmetic or bitwise operator. When one integer type holds every value of the
+other, the narrower side widens and the answer has the wider type: `u32 + u64` is
+a `u64`, `u8 + i64` an `i64`. `x += y` then has to fit `x` like any assignment, so
+`total += s.len()` works on a `u64` total and `small += big` on a `u32` doesn't.
+When neither holds the other (`u64 + i64`, `i32 + u32`) there's no answer to pick,
+and it's an error (E0371). That's the line C's "usual arithmetic conversions"
+crossed: C picks a winner even then, which is why `-1 < 1u` is *true* in C.
+
+I used to stop at positions and make operators homogeneous. It cost more than it
+protected: `total += s.len()` needed a conversion that can't fail, and the
+mixed-sign trap it was guarding against is exactly the case this rule still
+refuses. A widened product can still overflow at the narrow width before it
+widens (`u32 * u32` added to a `u64`); overflow is checked, so that panics
+rather than wrapping.
 
 **Why implicit widening is safe here and isn't in some other languages.** Go,
 Rust and Swift require a cast for every numeric conversion. That's the right call

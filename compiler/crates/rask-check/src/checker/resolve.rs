@@ -2034,20 +2034,36 @@ impl TypeChecker {
         if let [operand] = args {
             let arithmetic = rask_stdlib::operators::operator_interface(method).is_some();
             let judged = if arithmetic {
-                self.reject_mixed_signedness(method, ty, operand, span)
-                    .and_then(|()| self.reject_int_float_mix(method, ty, operand, span))
-                    .and_then(|()| self.reject_incomparable_operand(method, ty, operand, span))
+                // A shift's amount keeps its own type and never widens the
+                // result, but it still can't cross signedness.
+                let widened = if Self::is_shift(method) {
+                    self.reject_mixed_signedness(method, ty, operand, span).map(|()| None)
+                } else {
+                    self.widened_integer_result(method, ty, operand, span)
+                };
+                widened.and_then(|wider| {
+                    self.reject_int_float_mix(method, ty, operand, span)?;
+                    self.reject_incomparable_operand(method, ty, operand, span)?;
+                    Ok(wider)
+                })
             } else {
-                self.reject_incomparable_operand(method, ty, operand, span)
+                self.reject_incomparable_operand(method, ty, operand, span).map(|()| None)
             };
-            if let Err(bad) = judged {
-                // The answer's type doesn't depend on what's wrong with the
-                // operand, so pin it before reporting. Leaving it open turned
-                // one error into two, the second blaming a `let` that's fine.
-                let _ = self.unify(ret, &want_ret, span);
-                return Some(Err(bad));
-            }
+            let wider = match judged {
+                Ok(wider) => wider,
+                Err(bad) => {
+                    // The answer's type doesn't depend on what's wrong with the
+                    // operand, so pin it before reporting. Leaving it open turned
+                    // one error into two, the second blaming a `let` that's fine.
+                    let _ = self.unify(ret, &want_ret, span);
+                    return Some(Err(bad));
+                }
+            };
             let _ = self.unify(operand, &params[0], span);
+            // The narrower side widens: the answer is the type that holds both.
+            if let Some(wider) = wider.filter(|_| want_ret == *ty) {
+                return Some(self.unify(ret, &wider, span));
+            }
         }
         Some(self.unify(ret, &want_ret, span))
     }
@@ -3064,18 +3080,54 @@ impl TypeChecker {
         Err(Self::wrapper_method_cut(self_ty, method, span))
     }
 
-    /// ORD4: arithmetic is homogeneous, so a signed and an unsigned operand
-    /// can't meet under `+ - * / % & | ^ << >>`. There's no result type that
-    /// holds both — `u64` can't hold a negative `i32` and `i32` can't hold a
-    /// large `u64` — so widening one side would be picking a winner silently.
-    /// That's the conversion C makes, and it's why `-1 < 1u` is true there.
+    /// The type integer arithmetic between `recv` and `arg` produces, when the
+    /// two differ: the one that holds every value of the other, with the
+    /// narrower side widened to it (type.primitives/CV1a, the same test an
+    /// assignment uses). `u32 + u64` is a `u64`, and `x += y` then has to fit
+    /// `x` like any assignment, so `u64 += u32` is fine and `u32 += u64` isn't.
     ///
-    /// Comparison keeps crossing signedness (it answers by value, so there's
-    /// nothing to guess) — its arm deliberately doesn't call this.
+    /// The result used to be the receiver's type whatever the operand was, so
+    /// `u32 + u64` was a `u32`: native truncated it silently and the
+    /// interpreter panicked with an overflow.
+    ///
+    /// When neither type holds the other there's no result to pick, and
+    /// widening one side would be choosing a winner silently. That's the
+    /// conversion C makes, and it's why `-1 < 1u` is true there. `u32 + i64`
+    /// has one (`i64`); `u64 + i64` and `i32 + u32` don't.
+    ///
+    /// Comparison crosses signedness and width by value (ORD4), so its arm
+    /// doesn't call this.
     ///
     /// Fires only when both sides are settled integer primitives. An untyped
     /// literal is a variable at this point, and the unify below is what pins it
     /// to the receiver, so `a + 1` on a `u64` still works.
+    fn widened_integer_result(
+        &mut self,
+        method: &str,
+        recv: &Type,
+        arg: &Type,
+        span: Span,
+    ) -> Result<Option<Type>, TypeError> {
+        let arg = self.ctx.apply(arg);
+        if Self::integer_is_signed(recv).is_none() || Self::integer_is_signed(&arg).is_none() || *recv == arg {
+            return Ok(None);
+        }
+        if Self::is_integer_widening(&arg, recv) {
+            return Ok(None);
+        }
+        if Self::is_integer_widening(recv, &arg) {
+            return Ok(Some(arg));
+        }
+        Err(TypeError::MixedSignednessArithmetic {
+            op: Self::operator_spelling(method),
+            left: recv.clone(),
+            right: arg,
+            span,
+        })
+    }
+
+    /// A shift's operands can't cross signedness either (ORD4), though the
+    /// amount's width is its own.
     fn reject_mixed_signedness(
         &mut self,
         method: &str,

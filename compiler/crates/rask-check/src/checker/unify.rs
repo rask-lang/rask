@@ -2370,10 +2370,10 @@ impl TypeChecker {
     /// nobody. `u64` → `i64` stays rejected because a `u64` above `i64::MAX`
     /// doesn't fit, and `i*` → `u*` never coerces because negatives never fit.
     ///
-    /// Positions only — assignment, argument, return, field. Not arithmetic:
-    /// operators are homogeneous, so `a + b` on mixed types is still an error.
-    /// That's the line C's "usual arithmetic conversions" crossed, and it's why
-    /// `-1 < 1u` is true there.
+    /// Asked at positions (assignment, argument, return, field) and between an
+    /// arithmetic operator's operands, where the narrower side widens to the
+    /// other (`widened_integer_result`). Where neither fits the other there's no
+    /// answer: C picks one anyway, and it's why `-1 < 1u` is true there.
     /// A scalar coercion that cannot lose information — the set where a tuple
     /// literal may adopt the annotated element type rather than its own.
     ///
