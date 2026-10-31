@@ -57,6 +57,16 @@ pub struct VariantDecl {
 }
 
 impl VariantDecl {
+    /// A variant the compiler registers itself, with `arity` unnamed payload
+    /// fields and nothing else written about it.
+    pub fn synthesized(arity: usize) -> Self {
+        VariantDecl {
+            field_names: vec![String::new(); arity],
+            fields: vec![MemberDecl::default(); arity],
+            ..Default::default()
+        }
+    }
+
     pub fn of(variant: &rask_ast::decl::Variant) -> Self {
         VariantDecl {
             attrs: variant.attrs.clone(),

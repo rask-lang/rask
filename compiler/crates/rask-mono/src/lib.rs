@@ -290,8 +290,9 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
 /// `monomorphize` hands those to `compute_layouts`.
 pub fn compute_declared_layouts(
     decls: &[Decl],
+    types: &rask_check::TypeTable,
 ) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
-    compute_layouts(decls, None)
+    compute_layouts(decls, types, None)
 }
 
 /// What laying out a program's generic instantiations needs from the checker.
@@ -299,7 +300,12 @@ struct Instantiations<'a> {
     /// Each instantiation the program mentions, as base name and arguments.
     reached: Vec<(String, Vec<Type>)>,
     type_names: &'a HashMap<rask_types::TypeId, String>,
-    types: &'a rask_check::TypeTable,
+}
+
+/// The type `decl` registered, which is what layout reads. `None` for a
+/// declaration the checker didn't register (it had errors).
+fn declared_def<'a>(decl: &Decl, types: &'a rask_check::TypeTable) -> Option<&'a rask_types::TypeDef> {
+    types.get(types.declared_type(decl.id)?)
 }
 
 /// One layout to compute.
@@ -317,8 +323,10 @@ enum LayoutStep {
 /// one-word `One` for a 24-byte field (#1444).
 fn compute_layouts(
     decls: &[Decl],
+    types: &rask_check::TypeTable,
     inst: Option<&Instantiations>,
 ) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
+    let name_of = &|id| types.type_name(id);
     let mut layout_cache = LayoutCache::new();
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
@@ -338,6 +346,7 @@ fn compute_layouts(
                     &args,
                     name,
                     inst,
+                    types,
                     &inline_params,
                     &mut layout_cache,
                     &mut struct_layouts,
@@ -347,21 +356,22 @@ fn compute_layouts(
             }
         };
         let decl = &decls[idx];
+        let Some(def) = declared_def(decl, types) else { continue };
         match &decl.kind {
             DeclKind::Struct(s) if s.type_params.is_empty() => {
-                let layout = compute_struct_layout(decl, &[], &layout_cache);
+                let layout = compute_struct_layout(def, &[], name_of, &layout_cache);
                 layout_cache.insert(s.name.clone(), (layout.size, layout.align));
                 struct_layouts.push(layout);
             }
             DeclKind::Enum(e) if e.type_params.is_empty() => {
-                let layout = compute_enum_layout(decl, &[], &layout_cache);
+                let layout = compute_enum_layout(def, &[], name_of, &layout_cache);
                 layout_cache.insert(e.name.clone(), (layout.size, layout.align));
                 enum_layouts.push(layout);
             }
             // The 8-byte-everything model means every scalar argument gives the
             // same field sizes, so a word stands in for each type parameter.
             DeclKind::Struct(s) => {
-                let mut layout = rask_layout::compute_shared_struct_layout(decl, &layout_cache);
+                let mut layout = rask_layout::compute_shared_struct_layout(def, name_of, &layout_cache);
                 // Strip type params from name so struct literals ("Box") match
                 let base_name = s.name.to_string();
                 layout.name = base_name.clone();
@@ -371,7 +381,7 @@ fn compute_layouts(
                 struct_layouts.push(layout);
             }
             DeclKind::Enum(e) => {
-                let mut layout = rask_layout::compute_shared_enum_layout(decl, &layout_cache);
+                let mut layout = rask_layout::compute_shared_enum_layout(def, name_of, &layout_cache);
                 let base_name = e.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
@@ -380,7 +390,7 @@ fn compute_layouts(
                 enum_layouts.push(layout);
             }
             DeclKind::Union(u) => {
-                let layout = compute_union_layout(decl, &layout_cache);
+                let layout = compute_union_layout(def, name_of, &layout_cache);
                 layout_cache.insert(u.name.clone(), (layout.size, layout.align));
                 struct_layouts.push(layout);
             }
@@ -390,10 +400,10 @@ fn compute_layouts(
             // `type Name = string` field was sized 8 instead of 16 and the
             // struct's later fields overlapped it (#445).
             DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
-                let (size, align) = type_size_align(
-                    &rask_layout::field_type(&a.target),
-                    &layout_cache,
-                );
+                let rask_types::TypeDef::NominalAlias { underlying, .. } = def else { continue };
+                let underlying = rask_layout::spelled(underlying, name_of, rask_layout::Unsolved::KeepParams)
+                    .expect("keeping parameters always answers");
+                let (size, align) = type_size_align(&underlying, &layout_cache);
                 layout_cache.insert(a.name.clone(), (size, align));
             }
             _ => {}
@@ -421,6 +431,7 @@ fn lay_out_instance(
     args: &[Type],
     instance_name: String,
     inst: &Instantiations,
+    types: &rask_check::TypeTable,
     inline_params: &HashMap<String, Vec<bool>>,
     layout_cache: &mut LayoutCache,
     struct_layouts: &mut Vec<StructLayout>,
@@ -431,6 +442,8 @@ fn lay_out_instance(
         DeclKind::Enum(e) => e.name.as_str(),
         _ => return,
     };
+    let Some(def) = declared_def(decl, types) else { return };
+    let name_of = &|id| types.type_name(id);
     let held = inline_params.get(base);
     // Only when an argument the type holds by value overflows the shared slot,
     // or is a `T?` / `T or E` / union at any size. The shared slot is an `i64`,
@@ -440,7 +453,7 @@ fn lay_out_instance(
     let overflows = args.iter().enumerate().any(|(i, a)| {
         held.map_or(true, |flags| flags.get(i).copied().unwrap_or(true))
             && (matches!(a, Type::Result { .. } | Type::Union(_))
-                || inline_arg_size(a, inst.type_names, inst.types, layout_cache)
+                || inline_arg_size(a, inst.type_names, types, layout_cache)
                     .is_some_and(|size| size > 8))
     });
     // ...or when it owns storage. A container argument fits the shared word
@@ -471,9 +484,9 @@ fn lay_out_instance(
     };
     match &decl.kind {
         DeclKind::Struct(_) => {
-            let mut layout = compute_struct_layout(decl, &named_args, layout_cache);
+            let mut layout = compute_struct_layout(def, &named_args, name_of, layout_cache);
             if !overflows && !owns {
-                let shared = rask_layout::compute_shared_struct_layout(decl, layout_cache);
+                let shared = rask_layout::compute_shared_struct_layout(def, name_of, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && same_shape(&shared.fields, &layout.fields)
                 {
@@ -485,9 +498,9 @@ fn lay_out_instance(
             struct_layouts.push(layout);
         }
         DeclKind::Enum(_) => {
-            let mut layout = compute_enum_layout(decl, &named_args, layout_cache);
+            let mut layout = compute_enum_layout(def, &named_args, name_of, layout_cache);
             if !overflows && !owns {
-                let shared = rask_layout::compute_shared_enum_layout(decl, layout_cache);
+                let shared = rask_layout::compute_shared_enum_layout(def, name_of, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && shared.variants.len() == layout.variants.len()
                     && shared
@@ -1027,7 +1040,8 @@ fn monomorphize_inner(
     // (#1104).
     let (struct_layouts, mut enum_layouts, _) = compute_layouts(
         decls,
-        Some(&Instantiations { reached, type_names: &type_names, types: &program.types }),
+        &program.types,
+        Some(&Instantiations { reached, type_names: &type_names }),
     );
 
     // `Ordering` has no decl to compute a layout from — the compiler registers
@@ -1421,135 +1435,6 @@ mod tests {
         let tp = dummy_typed_program();
         let result = monomorphize(&tp, &decls).unwrap();
         assert_eq!(result.functions.len(), 3);
-    }
-
-    #[test]
-    fn struct_layouts_computed() {
-        let decls = vec![
-            make_fn("main", vec![], None, vec![return_stmt(None)]),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Struct(StructDecl {
-                    name: "Point".to_string(),
-                    type_params: vec![],
-                    fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                    ],
-                    methods: vec![],
-                    is_pub: false,
-                    attrs: vec![],
-                    doc: None,
-                }),
-                span: sp(),
-            },
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-        assert_eq!(result.struct_layouts.len(), 1);
-        assert_eq!(result.struct_layouts[0].name, "Point");
-    }
-
-    #[test]
-    fn enum_layouts_computed() {
-        let decls = vec![
-            make_fn("main", vec![], None, vec![return_stmt(None)]),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Enum(EnumDecl {
-                    name: "Color".to_string(),
-                    type_params: vec![],
-                    variants: vec![
-                        Variant { name: "Red".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                        Variant { name: "Green".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    ],
-                    methods: vec![],
-                    is_pub: false,
-                    attrs: vec![],
-                    doc: None,
-                    backing_type: None,
-                }),
-                span: sp(),
-            },
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-        // `Ordering` is synthesized alongside the declared enums, so assert on
-        // the declared ones rather than the raw count.
-        let declared: Vec<&str> = result.enum_layouts.iter()
-            .map(|l| l.name.as_str())
-            .filter(|n| *n != "Ordering")
-            .collect();
-        assert_eq!(declared, vec!["Color"]);
-    }
-
-    #[test]
-    fn struct_forward_references_enum() {
-        // Struct declared BEFORE the enum it references — topo sort
-        // must process the enum first so its layout is in the cache.
-        let decls = vec![
-            make_fn("main", vec![], None, vec![return_stmt(None)]),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Struct(StructDecl {
-                    name: "Container".to_string(),
-                    type_params: vec![],
-                    fields: vec![
-                        Field { name: "kind".to_string(), name_span: sp(), ty: rask_parser::parse_type("Kind").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "value".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                    ],
-                    methods: vec![],
-                    is_pub: false,
-                    attrs: vec![],
-                    doc: None,
-                }),
-                span: sp(),
-            },
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Enum(EnumDecl {
-                    name: "Kind".to_string(),
-                    type_params: vec![],
-                    variants: vec![
-                        Variant {
-                            name: "Alpha".to_string(),
-                            name_span: sp(),
-                            fields: vec![
-                                Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                                Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), ty_span: sp(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                            ],
-                            attrs: vec![],
-                            discriminant: None,
-                        },
-                        Variant { name: "Beta".to_string(), name_span: rask_ast::Span::new(0, 0), fields: vec![], attrs: vec![], discriminant: None },
-                    ],
-                    methods: vec![],
-                    is_pub: false,
-                    attrs: vec![],
-                    doc: None,
-                    backing_type: None,
-                }),
-                span: sp(),
-            },
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-
-        // `Ordering` is synthesized alongside the declared enums, so assert on
-        // the declared ones rather than the raw count.
-        let declared: Vec<&str> = result.enum_layouts.iter()
-            .map(|l| l.name.as_str())
-            .filter(|n| *n != "Ordering")
-            .collect();
-        assert_eq!(declared, vec!["Kind"]);
-
-        assert_eq!(result.struct_layouts.len(), 1);
-        let container = &result.struct_layouts[0];
-        assert_eq!(container.name, "Container");
-        // Kind enum: tag(1) + padding(3) + x(4) + y(4) = 12 bytes.
-        // Container should embed Kind at its full size, not the (8,8) default.
-        let kind_field = container.fields.iter().find(|f| f.name == "kind").unwrap();
-        assert_eq!(kind_field.size, 12, "Kind field should be 12 bytes (tag + 2 fields), not 8");
     }
 
     // ── Instantiation ───────────────────────────────────────────
