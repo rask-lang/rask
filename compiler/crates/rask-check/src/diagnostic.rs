@@ -2960,9 +2960,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_code("E0825")
                     .with_primary(*span, label)
                     .with_why(format!(
-                        "`{}` holds {} through {} — a literal outside that range would have to \
+                        "`{}` holds {} through {}{} — a literal outside that range would have to \
                          wrap, and nothing here wraps silently",
                         ty, min, max,
+                        if matches!(ty, crate::Type::Usize | crate::Type::Isize) {
+                            " on the target being built"
+                        } else {
+                            ""
+                        },
                     ))
                     .with_help(format!(
                         "use a type that holds it, or convert at the use site:\n  \

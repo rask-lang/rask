@@ -115,8 +115,14 @@ target and 64 on a 64-bit one, and a conversion is implicit only when it can't
 fail on any of them. So `u32` → `usize` and `usize` → `u64` are implicit, and
 `u64` → `usize` and `usize` → `u32` name a policy, even when the machine you're
 on would have room. Otherwise the same source would compile on a 64-bit machine
-and fail on a 32-bit one, which is VS7a's problem with the copy rule. A literal
-assigned to `usize` has to fit 32 bits for the same reason.
+and fail on a 32-bit one, which is VS7a's problem with the copy rule.
+
+A literal is different: it's a value, so it's checked against the target being
+built, like any constant that overflows. `let n: usize = 5_000_000_000`
+compiles for 64-bit and is an error for 32-bit. Whether a conversion can lose
+data depends only on the types, so that answer can't move between targets;
+whether one constant fits does, and that's where the target is the honest
+reference. Rust draws the same line.
 
 | From → To | Implicit? | Why |
 |---|---|---|

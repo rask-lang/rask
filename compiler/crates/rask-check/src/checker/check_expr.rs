@@ -7007,10 +7007,12 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// The inclusive range of an integer type. The top is a `u128` because
 /// `u128::MAX` is the one bound no signed type can hold.
 ///
-/// A literal has to fit on every target, so `usize` and `isize` give the
-/// 32-bit range.
+/// A literal is a value, so it's checked against the target being built, the
+/// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
+/// a 32-bit one. Conversions are about types and stay target-independent
+/// (`is_integer_widening`). The one place the checker asks the target.
 fn int_range(ty: &Type) -> Option<(i128, u128)> {
-    Some(match prim_of(ty)? {
+    Some(match prim_of(&ty.at_target_width())? {
         Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
         Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
         Prim::Int { lo, signed: true, .. } => (-(1i128 << (lo - 1)), (1u128 << (lo - 1)) - 1),
