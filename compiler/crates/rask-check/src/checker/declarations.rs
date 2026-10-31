@@ -2055,7 +2055,7 @@ impl TypeChecker {
                     self.errors.push(TypeError::UnionOwningMember {
                         union_name: u.name.clone(),
                         member: f.name.clone(),
-                        ty,
+                        ty: self.types.resolve_type_names(&ty),
                         span: f.ty_span,
                     });
                 }
@@ -2075,6 +2075,9 @@ impl TypeChecker {
             // Reported where it's resolved; one error is enough.
             Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } | Type::Error | Type::Var(_) => true,
             Type::Array { elem, .. } => self.plain_data(elem, depth + 1),
+            // `*T?` is one word with null for `none` (mem.unsafe/PT6): a C
+            // pointer that may be absent, as plain as `*T`.
+            t if matches!(t.as_option(), Some(Type::RawPtr(_))) => true,
             Type::Named(id) => match self.types.get(*id) {
                 Some(TypeDef::Struct { fields, is_resource, .. }) => {
                     !is_resource && fields.iter().all(|(_, t)| self.plain_data(t, depth + 1))
