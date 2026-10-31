@@ -933,6 +933,24 @@ fn main() {
                 commands::tools::cmd_fmt(&paths, check_only, write_in_place);
             }
         }
+        "claims" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_claims_help();
+                return;
+            }
+            let path = find_positional_arg(&cmd_args, 2, &["--since"]).unwrap_or(".");
+            if cmd_args.contains(&"--since") {
+                let Some(rev) = extract_flag_value(&cmd_args, "--since") else {
+                    eprintln!("{}: `--since` needs a revision after it", output::error_label());
+                    process::exit(1);
+                };
+                commands::claims_tools::cmd_since(path, &rev);
+            } else if cmd_args.contains(&"--mutate") {
+                commands::claims_tools::cmd_mutate(path);
+            } else {
+                commands::claims_tools::cmd_claims(path, format);
+            }
+        }
         "api" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_api_help();

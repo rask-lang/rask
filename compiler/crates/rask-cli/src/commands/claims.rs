@@ -65,6 +65,23 @@ fn options() -> ClaimsOptions {
 
 /// Check the claims of the package at `path`, if it has any.
 pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> ClaimsOutcome {
+    let (outcome, results) = package_claims(path, format, mode);
+    if format == Format::Json && mode == ClaimsMode::Run {
+        let claims: Vec<String> = results.iter().map(ClaimResult::to_json).collect();
+        println!("{{\"held\":{},\"claims\":[{}]}}", outcome != ClaimsOutcome::Failed, claims.join(","));
+    }
+    outcome
+}
+
+/// The claims of the package at `path`, run or only checked, with each
+/// claim's verdict.
+pub fn package_claims(path: &str, format: Format, mode: ClaimsMode) -> (ClaimsOutcome, Vec<ClaimResult>) {
+    let mut results = Vec::new();
+    let outcome = package_claims_into(path, format, mode, &mut results);
+    (outcome, results)
+}
+
+fn package_claims_into(path: &str, format: Format, mode: ClaimsMode, results: &mut Vec<ClaimResult>) -> ClaimsOutcome {
     let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
     let sources = match claims_sources(&root) {
         Ok(sources) => sources,
@@ -85,7 +102,7 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
             return ClaimsOutcome::Failed;
         }
     };
-    let Some(compiled) = compile_claims(path, &sources, &mut plan) else {
+    let Some(compiled) = compile_claims(path, &sources, &mut plan, Variant::default()) else {
         return ClaimsOutcome::Failed;
     };
     if plan.claims.is_empty() || mode == ClaimsMode::Check {
@@ -139,6 +156,7 @@ pub fn check_package_claims(path: &str, format: Format, mode: ClaimsMode) -> Cla
         }
     }
     let ok = run_claims(bin.as_deref(), (records, ran.1, ran.2), &plan, &compiled, &root, format);
+    results.extend(ok.results.iter().cloned());
 
     // Only a claim that held is kept: a false one is what's being worked on,
     // and it runs and shrinks again until it holds.
@@ -559,10 +577,19 @@ struct Compiled {
     claims_files: Vec<u16>,
 }
 
+/// How a claims compile differs from the build's: an edited copy of one of
+/// the package's files, and whether to keep quiet about errors
+/// (`rask claims --mutate`, where a mutant that doesn't compile is skipped).
+#[derive(Clone, Copy, Default)]
+pub(super) struct Variant<'a> {
+    pub edit: Option<(&'a Path, &'a str)>,
+    pub quiet: bool,
+}
+
 /// The package at `path`, prepared to build, with the root package opened up
 /// as a dependency: seen from the claims, its names are its own and only
 /// what it made `public` is reachable.
-fn prepare(path: &str) -> Option<(super::build::PreparedBuild, String)> {
+fn prepare(path: &str, variant: Variant) -> Option<(super::build::PreparedBuild, String)> {
     let opts = super::build::BuildOptions {
         profile: "debug".to_string(),
         verbose: false,
@@ -580,6 +607,14 @@ fn prepare(path: &str) -> Option<(super::build::PreparedBuild, String)> {
     let root_name = prepared.registry.get(root_id)?.name.clone();
     if let Some(root_pkg) = prepared.registry.get_mut(root_id) {
         root_pkg.is_external = true;
+    }
+    if let Some((file, text)) = variant.edit {
+        if let Err(e) = prepared.registry.replace_source(root_id, file, text.to_string()) {
+            if !variant.quiet {
+                eprintln!("{}: {e}", output::error_label());
+            }
+            return None;
+        }
     }
     Some((prepared, root_name))
 }
@@ -676,8 +711,13 @@ fn public_types(prepared: &super::build::PreparedBuild, root_name: &str) -> Vec<
 /// keep the instantiations the checker accepts: the type conforms to the
 /// claim's bounds and a claim can be given one (IN1). The checker decides
 /// both, the same way it would for a call written by hand.
-fn instantiate_generics(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Plan) -> Option<()> {
-    let (prepared, root_name) = prepare(path)?;
+fn instantiate_generics(
+    path: &str,
+    claim_sources: &[(PathBuf, String)],
+    plan: &mut Plan,
+    variant: Variant,
+) -> Option<()> {
+    let (prepared, root_name) = prepare(path, variant)?;
     let types = public_types(&prepared, &root_name);
     let conformances: Vec<(String, String)> = declared_conformances(&prepared.root)
         .into_iter()
@@ -702,8 +742,10 @@ fn instantiate_generics(path: &str, claim_sources: &[(PathBuf, String)], plan: &
             }
             _ => {
                 failed = true;
-                let d = point_at_input(d, plan, pkg.runner_file, &pkg.claims_files);
-                crate::show_diagnostic_multi(&d, &pkg.sources);
+                if !variant.quiet {
+                    let d = point_at_input(d, plan, pkg.runner_file, &pkg.claims_files);
+                    crate::show_diagnostic_multi(&d, &pkg.sources);
+                }
             }
         }
     }
@@ -722,16 +764,18 @@ fn instantiate_generics(path: &str, claim_sources: &[(PathBuf, String)], plan: &
 
 /// Compile the claims sources and the plan's case functions as one package
 /// that imports the package at `path`.
-fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Plan) -> Option<Compiled> {
+fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Plan, variant: Variant) -> Option<Compiled> {
     if !plan.generics.is_empty() {
-        instantiate_generics(path, claim_sources, plan)?;
+        instantiate_generics(path, claim_sources, plan, variant)?;
     }
-    let (prepared, root_name) = prepare(path)?;
+    let (prepared, root_name) = prepare(path, variant)?;
     let mut pkg = add_claims_package(prepared, &root_name, claim_sources, &plan.runner)?;
     let output = rask_compiler::compile_package_with(&mut pkg.ctx, &pkg.config, |_, _| {});
-    for diag in &output.diagnostics {
-        let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
-        crate::show_diagnostic_multi(&diag, &pkg.sources);
+    if !variant.quiet {
+        for diag in &output.diagnostics {
+            let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
+            crate::show_diagnostic_multi(&diag, &pkg.sources);
+        }
     }
     let result = output.result?;
     Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
@@ -905,6 +949,39 @@ fn run_bin(bin: &Path, env: &[(&str, String)]) -> (Vec<Record>, String, process:
 struct RunOutcome {
     all_held: bool,
     held: Vec<Record>,
+    results: Vec<ClaimResult>,
+}
+
+/// One claim's verdict, as `rask claims --json` reports it.
+#[derive(Debug, Clone)]
+pub struct ClaimResult {
+    pub name: String,
+    /// The claims source it's in, relative to the package.
+    pub file: String,
+    /// `checked_all`, `sampled`, `false`, `died`, or `uninstantiated` for a
+    /// generic claim no type could be given to.
+    pub verdict: String,
+    /// The verdict as the build prints it.
+    pub text: String,
+    /// For a false claim: the smallest counterexample, and what it failed with.
+    pub counterexample: Option<String>,
+    pub error: Option<String>,
+}
+
+impl ClaimResult {
+    pub fn to_json(&self) -> String {
+        let str = |s: &str| format!("\"{}\"", super::run::json_escape(s));
+        let opt = |s: &Option<String>| s.as_deref().map_or("null".to_string(), str);
+        format!(
+            "{{\"name\":{},\"file\":{},\"verdict\":{},\"text\":{},\"counterexample\":{},\"error\":{}}}",
+            str(&self.name),
+            str(&self.file),
+            str(&self.verdict),
+            str(&self.text),
+            opt(&self.counterexample),
+            opt(&self.error),
+        )
+    }
 }
 
 /// Report every claim from its records, cached ones included. `bin` is
@@ -928,24 +1005,40 @@ fn run_claims(
     }
     let mut all_held = true;
     let mut held = Vec::new();
+    let mut results = Vec::new();
+    let result = |claim: &ClaimPlan, verdict: &str, text: String| ClaimResult {
+        name: claim.name.clone(),
+        file: shown(claim),
+        verdict: verdict.to_string(),
+        text,
+        counterexample: None,
+        error: None,
+    };
     for (i, claim) in plan.claims.iter().enumerate() {
         let summary = records.iter().find(|r| r.done && r.claim == claim.name);
         let failure = records.iter().find(|r| !r.done && r.claim == claim.name && r.result == "fail");
         let Some(summary) = summary else {
             all_held = false;
             report_death(claim, &stderr, &status);
+            results.push(result(claim, "died", format!("the claims process {}", super::run::death_description(&status))));
             break;
         };
         if let Some(fail) = failure {
             all_held = false;
             let (input, error) = match bin {
-                Some(bin) => shrink(bin, i, fail, &[]),
-                None => (fail.input.clone(), fail.error.clone()),
+                Some(bin) if std::env::var_os("RASK_CLAIMS_NO_SHRINK").is_none() => shrink(bin, i, fail, &[]),
+                _ => (fail.input.clone(), fail.error.clone()),
             };
             report_false(claim, &input, &error, &shown(claim), compiled, None);
+            results.push(ClaimResult {
+                counterexample: Some(input.clone()),
+                error: Some(error.clone()),
+                ..result(claim, "false", format!("false: {input}"))
+            });
             continue;
         }
         held.push(summary.clone());
+        results.push(result(claim, if summary.mode == "all" { "checked_all" } else { "sampled" }, verdict(summary)));
         if format == Format::Human {
             println!("  {:<24} {}", claim.name, verdict(summary));
             if summary.over_budget > 0 {
@@ -964,18 +1057,20 @@ fn run_claims(
     }
     // A generic claim of the package's own that nothing instantiated says so,
     // rather than passing without a word.
-    if format == Format::Human {
-        for g in plan.generics.iter().filter(|g| g.law_of.is_none()) {
-            let prefix = format!("{}<", g.claim.name);
-            if !plan.claims.iter().any(|c| c.name.starts_with(&prefix)) {
-                println!("  {:<24} no public type of the package meets its bounds and can be built", g.claim.name);
+    for g in plan.generics.iter().filter(|g| g.law_of.is_none()) {
+        let prefix = format!("{}<", g.claim.name);
+        if !plan.claims.iter().any(|c| c.name.starts_with(&prefix)) {
+            let text = "no public type of the package meets its bounds and can be built".to_string();
+            if format == Format::Human {
+                println!("  {:<24} {text}", g.claim.name);
             }
+            results.push(result(&g.claim, "uninstantiated", text));
         }
     }
     if let Some(bin) = bin.filter(|_| all_held && opts.extra_seeds > 0) {
         all_held = run_extra_seeds(bin, plan, compiled, &shown, format, opts.extra_seeds);
     }
-    RunOutcome { all_held, held }
+    RunOutcome { all_held, held, results }
 }
 
 /// `--claim-seeds N`: every sampled claim again, on N seeds the build never
@@ -1214,4 +1309,171 @@ fn report_death(claim: &ClaimPlan, stderr: &str, status: &process::ExitStatus) {
     if !stderr.trim().is_empty() {
         eprintln!("{}", stderr.trim_end());
     }
+}
+
+// ─── What each claim reaches, in source (for `rask claims`) ─
+
+/// A function in the package's own source.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) struct SourceFn {
+    pub file: PathBuf,
+    /// The type of an `extend` block it's in.
+    pub owner: Option<String>,
+    pub name: String,
+    /// Its bytes in the file as it is now.
+    pub start: usize,
+    pub end: usize,
+}
+
+impl SourceFn {
+    pub fn label(&self) -> String {
+        match &self.owner {
+            Some(o) => format!("{o}.{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+}
+
+/// Every function a file declares, methods with their type.
+pub(super) fn source_fns(file: &Path, src: &str) -> Vec<SourceFn> {
+    let tokens = rask_lexer::Lexer::new_with_file_id(src, 0).tokenize().tokens;
+    let mut out = Vec::new();
+    let mut push = |owner: Option<String>, f: &FnDecl| {
+        out.push(SourceFn {
+            file: file.to_path_buf(),
+            owner,
+            name: f.name.clone(),
+            start: f.span.start,
+            end: f.span.end,
+        })
+    };
+    for d in rask_parser::Parser::new_with_file_id(tokens, 0, 0).parse().decls {
+        match &d.kind {
+            DeclKind::Fn(f) => push(None, f),
+            DeclKind::Impl(i) => {
+                for m in &i.methods {
+                    push(i.target_ty.name(), m);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// One claim and the package functions it reaches.
+pub(super) struct ReachedClaim {
+    /// As reported: `antisymmetric<shop.Price>` for an instantiation.
+    pub name: String,
+    /// As declared: `antisymmetric`.
+    pub declared: String,
+    /// The claims source it's in.
+    pub file: PathBuf,
+    pub fns: Vec<SourceFn>,
+}
+
+/// The package at `path`'s claims, compiled but not run, and for each one
+/// the functions of the package it reaches. Its own functions only: what it
+/// reaches in a dependency or the stdlib isn't the package's to change.
+pub(super) fn reach(path: &str) -> Option<(PathBuf, Vec<ReachedClaim>)> {
+    let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let sources = match claims_sources(&root) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: {e}", output::error_label());
+            return None;
+        }
+    };
+    let mut plan = match plan_claims(&sources) {
+        Ok(plan) => plan,
+        Err(diags) => {
+            for d in &diags {
+                crate::show_diagnostic_multi(d, &sources);
+            }
+            return None;
+        }
+    };
+    let compiled = compile_claims(path, &sources, &mut plan, Variant::default())?;
+    let runs = claim_runs(&plan);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let entry = rask_compiler::emit::Entry::Claims(&runs);
+    let lowered = match rask_compiler::emit::lower(&input, &entry) {
+        Ok(l) => l,
+        Err(errors) => {
+            for e in &errors {
+                eprintln!("{}: compile claims: {}", output::error_label(), e);
+            }
+            return None;
+        }
+    };
+
+    let own: Vec<PathBuf> = rask_resolve::package::package_source_files(&root)
+        .into_iter()
+        .filter_map(|p| p.canonicalize().ok())
+        .collect();
+    let mut by_file: std::collections::HashMap<PathBuf, Vec<SourceFn>> = std::collections::HashMap::new();
+    let mut at = |file_id: u16, start: usize| -> Option<SourceFn> {
+        let (file, src) = compiled.sources.get(file_id as usize)?;
+        let file = file.canonicalize().ok()?;
+        if !own.contains(&file) {
+            return None;
+        }
+        let fns = by_file.entry(file.clone()).or_insert_with(|| source_fns(&file, src));
+        fns.iter().find(|f| f.start == start).cloned()
+    };
+    let mut out = Vec::new();
+    for (i, claim) in plan.claims.iter().enumerate() {
+        let reached = rask_compiler::emit::reached_from(&lowered, &input, &case_fn(i));
+        let mut fns: Vec<SourceFn> = compiled
+            .result
+            .mono
+            .functions
+            .iter()
+            .filter(|m| reached.contains_key(m.name.as_str()))
+            .filter_map(|m| match &m.body.kind {
+                DeclKind::Fn(f) => at(f.span.file_id, f.span.start),
+                _ => None,
+            })
+            .collect();
+        fns.sort();
+        fns.dedup();
+        out.push(ReachedClaim {
+            name: claim.name.clone(),
+            declared: claim.name.split('<').next().unwrap_or(&claim.name).to_string(),
+            file: plan.files[claim.file].clone(),
+            fns,
+        });
+    }
+    Some((root, out))
+}
+
+/// Whether each claim holds, run quietly with `variant`'s edit and no
+/// cache, no shrinking and no report. `None` when the edited package
+/// doesn't compile. A claims process that dies counts against every claim
+/// it hadn't finished.
+pub(super) fn verdicts(path: &str, variant: Variant) -> Option<Vec<(String, bool)>> {
+    let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let sources = claims_sources(&root).ok()?;
+    let mut plan = plan_claims(&sources).ok()?;
+    let compiled = compile_claims(path, &sources, &mut plan, variant)?;
+    if plan.claims.is_empty() {
+        return Some(Vec::new());
+    }
+    let runs = claim_runs(&plan);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let entry = rask_compiler::emit::Entry::Claims(&runs);
+    let lowered = rask_compiler::emit::lower(&input, &entry).ok()?;
+    let bin = link_claims(&input, &entry, lowered, &compiled.link_opts)?;
+    let (records, _, _) = run_bin(&bin, &[]);
+    let _ = std::fs::remove_file(&bin);
+    Some(
+        plan.claims
+            .iter()
+            .map(|c| {
+                let done = records.iter().any(|r| r.done && r.claim == c.name);
+                let failed = records.iter().any(|r| !r.done && r.claim == c.name && r.result == "fail");
+                (c.name.clone(), done && !failed)
+            })
+            .collect(),
+    )
 }

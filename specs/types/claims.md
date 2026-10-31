@@ -156,15 +156,17 @@ Interfaces are nominal because a conformance is a statement about meaning (`type
 
 ## Weak claims
 
-A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, drops a branch, swaps two arguments) and reruns the claim. A claim that holds after every change isn't constraining that code, and it's reported. This is too slow for every build, so it's a tool and never part of one.
+A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, swaps `+` and `-` or `&&` and `||`, negates a `bool`, bumps an integer) and reruns the claims. A change a claim holds through is code that claim isn't constraining, and it's reported with the line and the change. Some changes mean the same thing as the original (`x > 9` and `x >= 10`), and no claim can notice those, so a report is something to read, not a score. This is too slow for every build, so it's a tool and never part of one. The changes are compiled from memory; the package on disk isn't touched.
 
 ## Tooling
 
 | Command | What it does |
 |---------|--------------|
-| `rask claims <path>` | Lists every claim with its verdict. The surface a reviewer reads, like `rask api` |
+| `rask claims <path>` | Lists every claim with its verdict, `--json` for tools. The surface a reviewer reads, like `rask api` |
 | `rask claims --mutate <path>` | Weak-claim report (above) |
-| `rask claims --since <rev>` | Lists commits since `<rev>` that changed a claim *and* a function that claim reaches. That's what it looks like when someone rewrites the grader along with the work |
+| `rask claims --since <rev>` | Lists commits since `<rev>` that changed a claim *and* a function that claim reaches. That's what it looks like when someone rewrites the grader along with the work. What a claim reaches is read off the code as it is now, so a function renamed since then isn't matched |
+
+`--since` and `--mutate` exit 1 when they find something, so CI can gate on them.
 
 ## What a claim can and can't say
 

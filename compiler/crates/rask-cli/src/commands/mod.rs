@@ -9,6 +9,7 @@ pub mod run;
 pub mod sim;
 pub mod claims;
 pub mod claims_git;
+pub mod claims_tools;
 pub mod build;
 pub mod link;
 pub mod tools;

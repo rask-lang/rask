@@ -303,3 +303,50 @@ fn a_generic_claim_and_the_stdlib_laws_hold_each_conforming_type() {
     assert!(run.stderr.contains("fix its `implements` block"), "{}", run.stderr);
     assert!(!run.stderr.contains("compare_is_reflexive<generic.Size>"), "{}", run.stderr);
 }
+
+#[test]
+fn rask_claims_lists_verdicts_and_measures_what_they_constrain() {
+    let dir = copy_of("strict");
+    let json = rask(&dir, &["claims", "--json", "."]);
+    assert_eq!(json.code, 0, "{}{}", json.stdout, json.stderr);
+    assert!(json.stdout.contains("\"name\":\"small_pass_through\",\"file\":\"claims.rk\",\"verdict\":\"checked_all\""), "{}", json.stdout);
+    assert!(json.stdout.contains("\"name\":\"wide_pass_through\",\"file\":\"claims.rk\",\"verdict\":\"sampled\""), "{}", json.stdout);
+
+    // `limit` can return 65501 past the edge and neither claim notices:
+    // the sampled one never draws an input that high.
+    let mutate = rask(&dir, &["claims", "--mutate", "."]);
+    assert_eq!(mutate.code, 1, "{}{}", mutate.stdout, mutate.stderr);
+    assert!(mutate.stdout.contains("wide_pass_through        held after"), "{}", mutate.stdout);
+    assert!(mutate.stdout.contains("lib.rk:6 in `limit`: `65500` → `65501`"), "{}", mutate.stdout);
+}
+
+#[test]
+fn since_lists_commits_that_changed_a_claim_and_code_it_reaches() {
+    let dir = copy_of("strict");
+    git(&dir, &["init", "--quiet"]);
+    git(&dir, &["add", "."]);
+    git(&dir, &["commit", "--quiet", "-m", "start"]);
+    let start = git(&dir, &["rev-parse", "HEAD"]);
+
+    // The code and the claim that checks it, in one commit.
+    let lib = dir.join("lib.rk");
+    let claims_rk = dir.join("claims.rk");
+    let edit = |path: &Path, from: &str, to: &str| {
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains(from), "{from} not in {}", path.display());
+        std::fs::write(path, text.replacen(from, to, 1)).unwrap();
+    };
+    edit(&lib, "return 65500", "return 65000");
+    edit(&claims_rk, "assert strict.limit(x) == x", "assert strict.limit(x) <= x");
+    git(&dir, &["commit", "--quiet", "-am", "loosen the limit and its claim together"]);
+
+    // The code alone, reviewed against an unchanged claim.
+    edit(&lib, "if x > 65500", "if x > 65000");
+    git(&dir, &["commit", "--quiet", "-am", "move the edge"]);
+
+    let run = rask(&dir, &["claims", "--since", &start, "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("loosen the limit and its claim together"), "{}", run.stdout);
+    assert!(run.stdout.contains("changed claim `wide_pass_through` and `limit`, which it reaches"), "{}", run.stdout);
+    assert!(!run.stdout.contains("move the edge"), "{}", run.stdout);
+}

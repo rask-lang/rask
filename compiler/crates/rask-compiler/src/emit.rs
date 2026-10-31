@@ -68,6 +68,10 @@ impl Entry<'_> {
 /// MIR as codegen sees it, after every pass.
 pub struct Lowered {
     pub functions: Vec<MirFunction>,
+    /// What each function referred to before the passes ran: inlining
+    /// folds a callee into its caller, and a walk of the result alone
+    /// would lose that the caller depended on it.
+    pub calls_as_lowered: HashMap<String, Vec<String>>,
     pub pipeline: rask_mir::PipelineResult,
     /// Every layout's field types as MIR types, for codegen.
     pub field_types: rask_mir::FieldTypes,
@@ -152,6 +156,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     rask_mir::dispatch_trace::report();
     rask_mir::fallback::report_coverage();
 
+    let calls_as_lowered = functions.iter().map(|f| (f.name.clone(), referred_to(f, input))).collect();
     let pipeline = rask_mir::PassManager::default_pipeline().run(&mut functions);
 
     for func in &mut functions {
@@ -179,7 +184,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
             .collect());
     }
 
-    Ok(Lowered { functions, pipeline, field_types: ctx.field_types() })
+    Ok(Lowered { functions, calls_as_lowered, pipeline, field_types: ctx.field_types() })
 }
 
 /// What `emit` produced besides the object file.
@@ -229,19 +234,18 @@ pub fn emit_lowered(
 }
 
 /// Every function `root` can reach, by name, in name order: what it calls,
-/// takes the address of, or builds a closure or ensure hook from; the methods
-/// of any interface object it boxes; and the helpers lowering synthesized for
-/// it (named `<fn>__…`). A claim's verdict depends on these and on nothing
-/// else the program holds (type.claims/D4).
+/// takes the address of, or builds a closure or ensure hook from, before
+/// the passes or after; the methods of any interface object it boxes; and
+/// the helpers lowering synthesized for it (named `<fn>__…`). A claim's
+/// verdict depends on these and on nothing else the program holds
+/// (type.claims/D4).
 pub fn reached_from<'f>(
     lowered: &'f Lowered,
     input: &BackEnd,
     root: &str,
 ) -> std::collections::BTreeMap<&'f str, &'f MirFunction> {
-    use rask_mir::{MirRValue, MirStmtKind};
     let by_name: HashMap<&str, &MirFunction> =
         lowered.functions.iter().map(|f| (f.name.as_str(), f)).collect();
-    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let mut reached = std::collections::BTreeMap::new();
     let mut queue = vec![root.to_string()];
     while let Some(name) = queue.pop() {
@@ -251,27 +255,40 @@ pub fn reached_from<'f>(
         }
         let helpers = format!("{}__", f.name);
         queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
-        for stmt in f.blocks.iter().flat_map(|b| &b.statements) {
-            match &stmt.kind {
-                MirStmtKind::Call { func, .. } => queue.push(func.name.clone()),
-                MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => queue.push(n.clone()),
-                MirStmtKind::ClosureCreate { func_name, .. } => queue.push(func_name.clone()),
-                MirStmtKind::EnsureHookRegister { thunk, .. } => queue.push(thunk.clone()),
-                MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
-                    for method in interface_methods.get(interface_name).into_iter().flatten() {
-                        queue.push(
-                            input.mono.vtable_symbols
-                                .get(&(concrete_type.clone(), method.clone()))
-                                .cloned()
-                                .unwrap_or_else(|| format!("{concrete_type}_{method}")),
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
+        queue.extend(referred_to(f, input));
+        queue.extend(lowered.calls_as_lowered.get(&f.name).into_iter().flatten().cloned());
     }
     reached
+}
+
+/// The functions `f` names: calls, addresses taken, closures and ensure
+/// hooks built, and the vtable methods of interface objects it boxes.
+fn referred_to(f: &MirFunction, input: &BackEnd) -> Vec<String> {
+    use rask_mir::{MirRValue, MirStmtKind};
+    let mut out = Vec::new();
+    let mut interface_methods = None;
+    for stmt in f.blocks.iter().flat_map(|b| &b.statements) {
+        match &stmt.kind {
+            MirStmtKind::Call { func, .. } => out.push(func.name.clone()),
+            MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => out.push(n.clone()),
+            MirStmtKind::ClosureCreate { func_name, .. } => out.push(func_name.clone()),
+            MirStmtKind::EnsureHookRegister { thunk, .. } => out.push(thunk.clone()),
+            MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
+                let methods = interface_methods
+                    .get_or_insert_with(|| rask_check::interface_vtable_methods(&input.typed.types));
+                for method in methods.get(interface_name).into_iter().flatten() {
+                    out.push(
+                        input.mono.vtable_symbols
+                            .get(&(concrete_type.clone(), method.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| format!("{concrete_type}_{method}")),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn emit_inner(
@@ -283,7 +300,7 @@ fn emit_inner(
     obj_path: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<(), Vec<String>> {
-    let Lowered { mut functions, pipeline, field_types } = lowered;
+    let Lowered { mut functions, pipeline, field_types, .. } = lowered;
     let has_errors = pipeline.diagnostics.iter().any(|d| d.severity == Severity::Error);
     diagnostics.extend(pipeline.diagnostics);
     if has_errors {
