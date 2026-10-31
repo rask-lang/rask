@@ -1159,6 +1159,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: params
@@ -1198,6 +1199,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: type_params
                     .into_iter()
@@ -1240,6 +1242,7 @@ mod tests {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
             mutate_self_fns: std::collections::HashSet::new(),
+            fn_sigs: HashMap::new(),
             c_fn_pointers: std::collections::HashSet::new(),
             c_contexts: std::collections::HashMap::new(),
             resolutions: std::collections::HashMap::new(),
@@ -1560,6 +1563,7 @@ mod tests {
 
     fn make_method(name: &str, params: Vec<(&str, &str)>, ret_ty: Option<&str>, body: Vec<Stmt>) -> FnDecl {
         FnDecl {
+            id: rask_ast::NodeId::DUMMY,
             name: name.to_string(),
             type_params: vec![],
             params: params

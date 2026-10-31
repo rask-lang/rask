@@ -326,6 +326,10 @@ impl rask_ast::rewrite::Rewrite for AsMember<'_> {
         }
     }
 
+    fn func(&mut self, f: &mut rask_ast::decl::FnDecl) {
+        f.id = self.fresh();
+    }
+
     fn ty(&mut self, t: &mut TypeExpr) {
         let (member, bytes) = (self.member, self.bytes);
         *t = t.substitute(&|n| match n {

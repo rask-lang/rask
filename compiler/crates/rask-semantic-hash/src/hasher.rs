@@ -1193,6 +1193,7 @@ mod tests {
 
     fn make_fn(name: &str, params: Vec<(&str, &str)>, body: Vec<Stmt>) -> FnDecl {
         FnDecl {
+            id: rask_ast::NodeId::DUMMY,
             name: name.into(),
             type_params: vec![],
             params: params.into_iter().map(|(n, ty)| Param {

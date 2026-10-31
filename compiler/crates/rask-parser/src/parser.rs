@@ -573,6 +573,7 @@ impl Parser {
                 decls.push(Decl {
                     id: self.next_id(),
                     kind: DeclKind::Fn(FnDecl {
+                        id: self.next_id(),
                         name: "main".to_string(),
                         type_params: vec![],
                         params: vec![],
@@ -1050,7 +1051,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         let fn_span = self.span(fn_start, fn_end);
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span, decl_start: fn_start }))
+        Ok(DeclKind::Fn(FnDecl { id: self.next_id(), name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span, decl_start: fn_start }))
     }
 
     /// `using` on a signature is gone. It only ever declared a pool context, and
@@ -2254,6 +2255,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(FnDecl {
+            id: self.next_id(),
             name,
             type_params,
             params,
@@ -2691,6 +2693,7 @@ impl Parser {
         attrs.push(rask_ast::attr::Attr::synthetic("claim", None));
         let claim_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(DeclKind::Fn(FnDecl {
+            id: self.next_id(),
             name,
             type_params: Vec::new(),
             params,
@@ -2840,6 +2843,7 @@ impl Parser {
             }
             let body = self.parse_block_body()?;
             return Ok(DeclKind::Fn(FnDecl {
+                id: self.next_id(),
                 name,
                 type_params: vec![],
                 params,

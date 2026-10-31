@@ -284,6 +284,15 @@ pub struct ErrorWrap {
     pub variant: String,
 }
 
+/// A checked function's signature: each parameter's name and type, `self`
+/// included, and what it returns. A generic function's mention its type
+/// parameters; an instantiation substitutes its arguments in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnSignature {
+    pub params: Vec<(String, Type)>,
+    pub ret: Type,
+}
+
 /// Method signature.
 #[derive(Debug, Clone)]
 pub struct MethodSig {

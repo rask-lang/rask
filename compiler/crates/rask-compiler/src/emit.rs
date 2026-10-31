@@ -128,7 +128,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
             }
         }
         match rask_mir::lower::MirLowerer::lower_function_named(
-            &mono_fn.body, &all_mono_decls, &ctx, Some(&mono_fn.name),
+            &mono_fn.body, &all_mono_decls, &ctx, Some(&mono_fn.name), &mono_fn.type_args,
         ) {
             Ok(fns) => functions.extend(fns),
             Err(e) => errors.push(format!("MIR lowering '{}': {}", mono_fn.name, e)),

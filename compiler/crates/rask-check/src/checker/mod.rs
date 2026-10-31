@@ -429,7 +429,10 @@ pub struct TypeChecker {
     /// or a private method the inference decided writes through self. Keyed by
     /// the method's span so lowering can look up the answer instead of working
     /// the rule out a second time.
-    pub(super) mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
+    pub(super) mutate_self_fns: std::collections::HashSet<NodeId>,
+    /// Each checked function's signature, by `FnDecl::id`, with inference
+    /// variables still in it until the program is finished.
+    pub(super) fn_sigs: HashMap<NodeId, rask_types::FnSignature>,
     /// D1: Bindings invalidated by `discard`. Maps name → discard span.
     pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
@@ -703,6 +706,7 @@ impl TypeChecker {
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
             mutate_self_fns: std::collections::HashSet::new(),
+            fn_sigs: HashMap::new(),
             accumulate_errors: false,
             discarded_bindings: HashMap::new(),
             pending_casts: Vec::new(),
@@ -1153,6 +1157,15 @@ impl TypeChecker {
         self.check_variadic_args();
         let unsafe_ops = self.unsafe_ops;
 
+        let fn_sigs: HashMap<NodeId, rask_types::FnSignature> = self
+            .fn_sigs
+            .iter()
+            .map(|(id, sig)| {
+                let params = sig.params.iter().map(|(n, t)| (n.clone(), self.ctx.apply(t))).collect();
+                (*id, rask_types::FnSignature { params, ret: self.ctx.apply(&sig.ret) })
+            })
+            .collect();
+
         let span_types: HashMap<_, _> = self
             .span_types
             .iter()
@@ -1206,6 +1219,7 @@ impl TypeChecker {
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,
+            fn_sigs,
             type_test_patterns: self.type_test_patterns,
             struct_shorthand_patterns: self.struct_shorthand_patterns,
             arg_hoists: self

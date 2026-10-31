@@ -417,6 +417,7 @@ impl<'a> MirContext<'a> {
             c_contexts: &typed.c_contexts,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
+            fn_sigs: &typed.fn_sigs,
             // Defaults; the `with_*` below set the ones a caller has.
             folded: empty::folded(),
             extern_funcs: empty::strings(),
@@ -505,7 +506,7 @@ pub struct MirContext<'a> {
     /// synthetic lowering units the unit tests hand-build. A real compile that
     /// arrives without it is a plumbing bug, and `method_mutates_self` says so
     /// rather than quietly answering "doesn't mutate".
-    pub mutate_self_fns: Option<&'a std::collections::HashSet<(usize, usize, u16)>>,
+    pub mutate_self_fns: Option<&'a std::collections::HashSet<NodeId>>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
@@ -625,7 +626,13 @@ pub struct MirContext<'a> {
     /// Function name → return type the checker inferred, for the ones that don't
     /// declare it. Only consulted when there's no annotation to read.
     pub inferred_fn_ret: &'a HashMap<String, Type>,
+    /// Each checked function's signature, by `FnDecl::id`.
+    pub fn_sigs: &'a HashMap<NodeId, rask_types::FnSignature>,
 }
+
+/// For contexts built without checker data (tests, comptime).
+pub static EMPTY_FN_SIGS: std::sync::LazyLock<HashMap<NodeId, rask_types::FnSignature>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 /// For contexts built without checker data (tests, comptime): no function has an
 /// inferred return type, so every signature comes from its annotation.
@@ -724,6 +731,7 @@ impl<'a> MirContext<'a> {
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
         }
     }
 
@@ -4162,16 +4170,19 @@ impl<'a> MirLowerer<'a> {
         all_decls: &[Decl],
         ctx: &MirContext,
     ) -> Result<Vec<MirFunction>, LoweringError> {
-        Self::lower_function_named(decl, all_decls, ctx, None)
+        Self::lower_function_named(decl, all_decls, ctx, None, &[])
     }
 
+    /// `bindings` are the type arguments this instance of the function is for,
+    /// empty for a function that isn't generic.
     pub fn lower_function_named(
         decl: &Decl,
         all_decls: &[Decl],
         ctx: &MirContext,
         qualified_name: Option<&str>,
+        bindings: &[rask_types::TypeBinding],
     ) -> Result<Vec<MirFunction>, LoweringError> {
-        Self::lower_function_inner(decl, all_decls, ctx, qualified_name, None)
+        Self::lower_function_inner(decl, all_decls, ctx, qualified_name, None, bindings)
     }
 
     /// Lower the thunk that fills one module-level const's global slot.
@@ -4187,6 +4198,7 @@ impl<'a> MirLowerer<'a> {
             id: NodeId(0),
             span: Span::new(0, 0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.clone(),
                 type_params: Vec::new(),
                 params: Vec::new(),
@@ -4209,6 +4221,7 @@ impl<'a> MirLowerer<'a> {
             ctx,
             Some(&name),
             Some((&c.name, &c.init)),
+            &[],
         )
     }
 
@@ -4297,9 +4310,10 @@ impl<'a> MirLowerer<'a> {
         ctx: &MirContext,
         qualified_name: Option<&str>,
         const_init: Option<(&str, &Expr)>,
+        bindings: &[rask_types::TypeBinding],
     ) -> Result<Vec<MirFunction>, LoweringError> {
         crate::fallback::reset();
-        let result = Self::lower_function_typed(decl, all_decls, ctx, qualified_name, const_init);
+        let result = Self::lower_function_typed(decl, all_decls, ctx, qualified_name, const_init, bindings);
         let gave_up = crate::fallback::take_hits();
         // An empty node-type map means nobody ran the checker — the lowering unit
         // tests hand-build ASTs to assert block structure, so *every* node is
@@ -4318,6 +4332,7 @@ impl<'a> MirLowerer<'a> {
         ctx: &MirContext,
         qualified_name: Option<&str>,
         const_init: Option<(&str, &Expr)>,
+        bindings: &[rask_types::TypeBinding],
     ) -> Result<Vec<MirFunction>, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
@@ -4328,7 +4343,21 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref());
+        // The signature the checker gave this function, with this instance's
+        // type arguments written in. A function the compiler made after
+        // checking (a const initializer, a test runner's `main`) has none.
+        let own_sig = ctx.fn_sigs.get(&fn_decl.id).map(|sig| {
+            let map: HashMap<String, Type> =
+                bindings.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
+            rask_types::FnSignature {
+                params: sig.params.iter().map(|(n, t)| (n.clone(), rask_check::substitute_type(t, &map))).collect(),
+                ret: rask_check::substitute_type(&sig.ret, &map),
+            }
+        });
+        let ret_ty = match &own_sig {
+            Some(sig) => ctx.type_to_mir(&sig.ret),
+            None => ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref()),
+        };
 
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
@@ -4551,9 +4580,14 @@ impl<'a> MirLowerer<'a> {
                 Some(t) if t.is_name("Self") => self_type.as_ref().or(param.ty.as_ref()),
                 other => other.as_ref(),
             };
-            let param_ty = match written {
-                Some(t) => ctx.resolve_type_expr(t),
-                None => MirType::Void,
+            let checked = own_sig
+                .as_ref()
+                .and_then(|sig| sig.params.iter().find(|(n, _)| *n == param.name))
+                .map(|(_, ty)| ctx.type_to_mir(ty));
+            let param_ty = match (&checked, written) {
+                (Some(ty), _) => ty.clone(),
+                (None, Some(t)) => ctx.resolve_type_expr(t),
+                (None, None) => MirType::Void,
             };
             // #270: a scalar `mutate` param is passed by pointer so the callee can
             // write back through it. Register the param local as a pointer; reads
@@ -4563,10 +4597,7 @@ impl<'a> MirLowerer<'a> {
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
             // The parameter keeps saying which container it is, so a frame that
             // gets it back from a call knows which free matches (#1502).
-            let declared_ty = match written {
-                Some(t) if !scalar_mutate => ctx.resolve_type_expr(t),
-                _ => local_ty.clone(),
-            };
+            let declared_ty = if scalar_mutate { local_ty.clone() } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             // Set type prefix for parameters so method calls qualify correctly.
@@ -6523,7 +6554,7 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
         return true;
     }
     match ctx.mutate_self_fns {
-        Some(set) => set.contains(&(f.span.start, f.span.end, f.span.file_id)),
+        Some(set) => set.contains(&f.id),
         // Same test for a synthetic unit the rest of lowering uses: no node
         // types means nobody ran the checker, so there was no GC9 decision to
         // record and "doesn't mutate" is the honest answer.
@@ -7020,6 +7051,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: params
@@ -7796,6 +7828,7 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -7886,6 +7919,7 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -7983,6 +8017,7 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
         };
 
         let decl = make_fn("f", vec![], None, vec![

@@ -137,6 +137,9 @@ impl TypeSubstitutor {
 
     fn clone_fn_decl(&mut self, fn_decl: &FnDecl) -> FnDecl {
         FnDecl {
+            // The copy is the same function at other types: its signature is
+            // the original's, filed under the original's id.
+            id: fn_decl.id,
             name: fn_decl.name.clone(),
             type_params: Vec::new(), // Removed after instantiation
             params: fn_decl.params.iter().map(|p| self.clone_param(p)).collect(),
