@@ -5064,6 +5064,38 @@ fn torn_lock_update_warns_once_and_only_where_it_should() {
     );
 }
 
+/// tool.warnings/W13 (W0303): an arm the arms above it already cover. A bare
+/// name that isn't a variant binds, so a misspelt variant swallowed every arm
+/// below it without a word. A warning, as the exhaustiveness table says, so the
+/// program still checks.
+#[test]
+fn unreachable_match_arm_warns() {
+    let src = r#"
+enum Shape { Circle, Square, Dot }
+func area(s: Shape) -> i32 {
+    return match s {
+        Circle => 1,
+        Sqare => 2,
+        Dot => 3,
+    }
+}
+func twice(s: Shape) -> i32 {
+    return match s { Circle => 1, Circle => 2, _ => 3 }
+}
+@allow(unreachable_pattern)
+func allowed(s: Shape) -> i32 {
+    return match s { _ => 1, Dot => 2 }
+}
+func main() {
+    println("{area(Shape.Dot)} {twice(Shape.Dot)} {allowed(Shape.Dot)}")
+}
+"#;
+    let output = check_output(src);
+    assert!(output.contains("Typecheck OK"), "a warning must not fail the check:\n{output}");
+    assert_eq!(output.matches("W0303").count(), 2, "expected two W0303:\n{output}");
+    assert!(output.contains("`Sqare` above"), "the warning should name the catch-all:\n{output}");
+}
+
 /// #996: `value.(expr)` is a compile-time rewrite (CT53), so the name has to be
 /// one the compiler can read. Native said so as a MIR lowering failure and the
 /// interpreter looked the field up by name at run time and carried on — the

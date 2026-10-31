@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a pattern that can't be about the value it matches
+//
+// A qualified variant pattern, `Color.Red`, was never checked against the
+// scrutinee. `Size.Big` on a `Color` and a misspelt `Color.Blue` both bound
+// nothing and tested nothing, and exhaustiveness counted any qualified name as
+// a catch-all — so `match c { Color.Red => … }` compiled, and native produced
+// no value at all for a `Green`. A bare name in an `is` test that isn't a
+// variant binds, so `c is Blue` was always true.
+
+enum Color { Red, Green }
+enum Size { Big, Small }
+
+func name(c: Color) -> string {
+    // ERROR: missing `Green` — a qualified arm is a variant test, not a catch-all [E0340]
+    return match c { Color.Red => "red" }
+}
+
+func size_of(c: Color) -> i32 {
+    // ERROR: `Size.Big` is another enum's variant [E0940]
+    return match c { Size.Big => 1, _ => 2 }
+}
+
+func spelled(c: Color) -> i32 {
+    // ERROR: `Color` has no `Blue` [E0940]
+    return match c { Color.Blue => 1, _ => 2 }
+}
+
+func flag(b: bool) -> i32 {
+    // ERROR: a `bool` match needs both `true` and `false` [E0340]
+    return match b { true => 1 }
+}
+
+func main() {
+    let c = Color.Green
+    // ERROR: `Blue` isn't a variant, so it would bind and always match [E0940]
+    if c is Blue {
+        println("blue")
+    }
+
+    // FIX: name the scrutinee's own variants, or close with `_`
+    let n = match c { Color.Red => 1, Color.Green => 2 }
+    let m = match true { true => 1, false => 0 }
+    if c is Color.Green {
+        println("{n} {m} {name(c)} {size_of(c)} {spelled(c)} {flag(true)}")
+    }
+}

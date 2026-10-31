@@ -772,6 +772,64 @@ impl TypeChecker {
         Some((id, type_params.clone()))
     }
 
+    /// Report a pattern that names a variant `scrutinee` can't be. `type_id`
+    /// is the type the pattern is read against: the scrutinee's own, or the
+    /// enum the pattern names when the scrutinee is still open or a `T or E`.
+    ///
+    /// Unchecked, `Size.Big` against a `Color` and `Color.Blue` both fell
+    /// through to binding fresh variables, and exhaustiveness counted the
+    /// qualified name as a catch-all: `match c { Color.Red => … }` compiled
+    /// and native produced no value for a `Green`.
+    fn reject_foreign_variant(
+        &mut self,
+        name: &str,
+        type_id: rask_types::TypeId,
+        scrutinee: &Type,
+        span: Span,
+    ) -> bool {
+        // Read against an open scrutinee or one branch of a result, the type
+        // came from the pattern itself and can't disagree with it.
+        if !matches!(scrutinee, Type::Named(_) | Type::Generic { .. }) {
+            return false;
+        }
+        let variant = name.rsplit('.').next().unwrap_or(name);
+        let (variants, is_enum) = match self.types.get(type_id) {
+            Some(TypeDef::Enum { variants, .. }) => {
+                (variants.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>(), true)
+            }
+            Some(TypeDef::Struct { .. }) => (Vec::new(), false),
+            _ => return false,
+        };
+        let declared = is_enum && variants.iter().any(|v| v == variant);
+        // The qualifier, when it resolves, has to be the scrutinee's enum:
+        // `Size.Big` names `Size` even when `Color` happens to have a `Big`.
+        // One that doesn't resolve (a module path) is left to the variant
+        // lookup. The qualifier is read in the scope that declared the enum,
+        // so stdlib code matching its own `Color` isn't read against a user
+        // type of the same name.
+        let qualifier_matches = match name.rsplit_once('.') {
+            Some((qualifier, _)) => match self.types.resolve_name_as_declared_by(type_id, qualifier) {
+                Some(id) => id == type_id,
+                None => true,
+            },
+            None => true,
+        };
+        // A struct read by a bare name is a destructure, not a variant.
+        if !is_enum && !name.contains('.') {
+            return false;
+        }
+        if declared && qualifier_matches {
+            return false;
+        }
+        self.errors.push(TypeError::PatternVariantMismatch {
+            pattern: name.to_string(),
+            scrutinee: self.ctx.apply(scrutinee),
+            variants,
+            span,
+        });
+        true
+    }
+
     /// What enum `id`'s parameters are bound to in `scrutinee_ty`: its own
     /// arguments, or those of the branch that is this enum when the scrutinee
     /// is a `T or E`. A fresh variable per parameter when it says nothing.
@@ -996,6 +1054,9 @@ impl TypeChecker {
         };
 
         if let Some(type_id) = base_id {
+            if self.reject_foreign_variant(name, type_id, &resolved_scrutinee, span) {
+                return vec![];
+            }
             let found = self.types.get(type_id).and_then(|def| {
                 if let TypeDef::Enum { variants, type_params, .. } = def {
                     variants.iter()

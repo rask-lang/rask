@@ -31,6 +31,7 @@ On by default. Suppress with `@allow(warning_name)`.
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 | **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over a `Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
 | **W11: mod_for_index** | W0909 | `mod_for_index` | `%` whose result is used as an index and whose left operand can be negative — `%` takes the dividend's sign (`type.operators/AR2`), so `(i - 1) % n` indexes out of range instead of wrapping. `.mod(n)` is the floored answer (AR3) |
+| **W13: unreachable_pattern** | W0303 | `unreachable_pattern` | `match` arm the arms above it already cover: one after a catch-all (`_`, or a bare name that binds), or a second unguarded test of the same variant |
 
 <!-- test: skip -->
 ```rask

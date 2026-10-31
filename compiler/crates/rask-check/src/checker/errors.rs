@@ -486,6 +486,16 @@ pub enum TypeError {
         second_span: Span,
     },
 
+    /// tool.warnings/W13 (`unreachable_pattern`, W0303): a `match` arm that
+    /// can never run, because a catch-all above it takes every value or an
+    /// unguarded arm above it already tests the same variant.
+    #[error("unreachable match arm")]
+    UnreachableArm {
+        /// The arm that took this one's values, written as it reads.
+        earlier: String,
+        span: Span,
+    },
+
     /// conc.sync/ST1: `staged()` is the source of a `with` binding and nothing
     /// else. `read`/`write` also have an expression-scoped form (R5); staged has
     /// none, because the commit needs a block boundary to happen at.
@@ -1251,6 +1261,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A pattern names a variant the matched value can't be: `Size.Big`
+    /// against a `Color`, or a `Color.Blue` that `Color` doesn't declare.
+    /// `variants` is what the value's enum does declare, empty for a struct.
+    #[error("pattern `{pattern}` can't match a `{scrutinee}`")]
+    PatternVariantMismatch {
+        pattern: String,
+        scrutinee: Type,
+        variants: Vec<String>,
+        span: Span,
+    },
+
     /// ER23: `is TypeName as ...` requires the scrutinee to be a Result
     #[error("type pattern `{ty_name}` requires a Result scrutinee, found `{found}`")]
     TypePatternNotResult {
@@ -1732,6 +1753,8 @@ impl TypeError {
 
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
+            PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
+
             LinearInContainer { elem, .. } => *elem = f(elem),
             LinearElementLost { elem, .. } => *elem = f(elem),
             SharedCycle { payload, .. } => *payload = f(payload),
@@ -1857,6 +1880,7 @@ impl TypeError {
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
             | TornLockUpdate { .. }
+            | UnreachableArm { .. }
 
             | NoAllocViolation { .. }
             | UnexpectedAnnotation { .. }

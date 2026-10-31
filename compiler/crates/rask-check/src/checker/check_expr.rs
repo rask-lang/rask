@@ -1021,6 +1021,7 @@ impl TypeChecker {
                 let value_ty = self.infer_expr(value);
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
@@ -1079,6 +1080,7 @@ impl TypeChecker {
                 let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
                 let bindings =
                     self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 // The pattern's own names live past the guard, like the `let`'s:
                 // `let p = r is Point as q else { … }` binds both. Only the
                 // `let`'s name was ever given a type — the statement handler
@@ -1119,6 +1121,7 @@ impl TypeChecker {
                 // prefix — the last of the nine dispatch fallbacks, and this was
                 // the gap holding it up (#425).
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
@@ -1132,9 +1135,11 @@ impl TypeChecker {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let mut arm_types: Vec<(Type, rask_ast::NodeId)> = Vec::new();
                 let mut every_arm_diverges = !arms.is_empty();
+                let mut reach = ArmReach::default();
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    self.note_arm_reach(&mut reach, arm, &bindings);
                     for (name, ty) in bindings {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
@@ -5645,6 +5650,28 @@ impl TypeChecker {
             return;
         }
 
+        // A bool has two values, so `true` and `false` close the match
+        // without a wildcard, and one of them alone doesn't.
+        if matches!(resolved, Type::Bool) {
+            let mut has_wildcard = false;
+            let mut seen = [false; 2];
+            for arm in &arms {
+                Self::collect_bool_pattern(&arm.pattern, &mut seen, &mut has_wildcard);
+            }
+            if has_wildcard {
+                return;
+            }
+            let missing: Vec<String> = [(false, "false"), (true, "true")]
+                .iter()
+                .filter(|(b, _)| !seen[*b as usize])
+                .map(|(_, name)| name.to_string())
+                .collect();
+            if !missing.is_empty() {
+                self.errors.push(TypeError::NonExhaustiveMatch { missing, guarded, span });
+            }
+            return;
+        }
+
         // Only check enums for the Named case
         let type_id = match &resolved {
             Type::Named(id) => *id,
@@ -5754,6 +5781,88 @@ impl TypeChecker {
         }
     }
 
+    /// An `is` test that can't fail: `_`, or a bare name that isn't a variant
+    /// and so binds. `c is Blue` on a `Color` with no `Blue` was always true.
+    fn reject_irrefutable_test(
+        &mut self,
+        pattern: &Pattern,
+        bindings: &[(String, Type)],
+        value_ty: &Type,
+        span: Span,
+    ) {
+        let name = match pattern {
+            Pattern::Wildcard => "_".to_string(),
+            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
+            _ => return,
+        };
+        let ty = self.ctx.apply(value_ty);
+        if matches!(ty, Type::Var(_) | Type::Error) {
+            return;
+        }
+        let variants = match &ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
+                Some(TypeDef::Enum { variants, .. }) => variants.iter().map(|(v, _)| v.clone()).collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        self.errors.push(TypeError::PatternVariantMismatch {
+            pattern: name,
+            scrutinee: ty,
+            variants,
+            span,
+        });
+    }
+
+    /// Warn about `arm` when the arms before it already take every value it
+    /// could match (tool.warnings/W13). Only two shapes are judged: a
+    /// catch-all, and a payload-free test of a variant an earlier unguarded
+    /// arm tested the same way. Anything that refines a payload is left alone.
+    fn note_arm_reach(&mut self, reach: &mut ArmReach, arm: &MatchArm, bindings: &[(String, Type)]) {
+        let span = arm.body.span;
+        if let Some(earlier) = &reach.closed_by {
+            if !self.allowed_warnings.iter().any(|a| a == "unreachable_pattern") {
+                self.errors.push(TypeError::UnreachableArm { earlier: earlier.clone(), span });
+            }
+            return;
+        }
+        if arm.guard.is_some() {
+            return;
+        }
+        match &arm.pattern {
+            Pattern::Wildcard => reach.closed_by = Some("_".to_string()),
+            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
+                reach.closed_by = Some(n.clone());
+            }
+            Pattern::Ident(n) => {
+                let tag = n.rsplit('.').next().unwrap_or(n).to_string();
+                if !reach.tags.insert(tag) {
+                    if !self.allowed_warnings.iter().any(|a| a == "unreachable_pattern") {
+                        self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_bool_pattern(pattern: &Pattern, seen: &mut [bool; 2], has_wildcard: &mut bool) {
+        match pattern {
+            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
+            Pattern::Literal(expr) => {
+                if let ExprKind::Bool(b) = expr.kind {
+                    seen[b as usize] = true;
+                }
+            }
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    Self::collect_bool_pattern(alt, seen, has_wildcard);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn collect_result_covered(
         &self,
         pattern: &Pattern,
@@ -5813,6 +5922,10 @@ impl TypeChecker {
                 // not a catch-all binding
                 if enum_variants.contains(name) {
                     covered.insert(name.clone());
+                } else if let Some((_, variant)) = name.rsplit_once('.') {
+                    // `Color.Red` tests a tag and binds nothing. Whether it
+                    // names this enum at all is the pattern check's job.
+                    covered.insert(variant.to_string());
                 } else {
                     *has_wildcard = true;
                 }
@@ -7328,4 +7441,13 @@ impl TypeChecker {
         }
         target
     }
+}
+
+/// What the arms of one `match` so far are known to take.
+#[derive(Default)]
+struct ArmReach {
+    /// The catch-all that closed the match, as written.
+    closed_by: Option<String>,
+    /// Variants tested by a bare, unguarded arm.
+    tags: std::collections::HashSet<String>,
 }

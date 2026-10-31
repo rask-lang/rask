@@ -1502,6 +1502,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
             }
 
+            UnreachableArm { earlier, span } => {
+                Diagnostic::warning("unreachable match arm".to_string())
+                    .with_code("W0303")
+                    .with_primary(*span, format!("never runs: `{}` above takes every value it could", earlier))
+                    .with_help("delete the arm, or move it above the one that takes its values")
+                    .with_why("arms are tried top to bottom and the first match wins. A bare name that isn't a variant binds, so it matches everything — a misspelt variant reads exactly like this [type.enums, Exhaustiveness]. Add `@allow(unreachable_pattern)` to the enclosing function if it's intended")
+            }
+
             StagedOutsideWith { name, span } => {
                 Diagnostic::error("`staged()` only works as the source of a `with` block")
                     .with_code("E0846")
@@ -2769,6 +2777,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "the `if` condition has no error to bind")
                     .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
+            }
+            PatternVariantMismatch { pattern, scrutinee, variants, span } => {
+                let diag = Diagnostic::error(format!("pattern `{}` can't match a `{}`", pattern, scrutinee))
+                    .with_code("E0940")
+                    .with_why("a pattern is checked against the type of the value it matches; one naming another type's variant, or a variant that doesn't exist, would never match");
+                if variants.is_empty() {
+                    diag.with_primary(*span, format!("`{}` isn't an enum, so it has no variants", scrutinee))
+                } else {
+                    let list = variants.iter().map(|v| format!("`{}`", v)).collect::<Vec<_>>().join(", ");
+                    diag.with_primary(*span, format!("not a variant of `{}`", scrutinee))
+                        .with_help(format!("`{}` has {}", scrutinee, list))
+                }
             }
             TypePatternNotResult { ty_name, found, span } => {
                 // Two shapes of the same mistake: a scrutinee that has no
