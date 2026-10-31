@@ -249,6 +249,55 @@ impl TypeChecker {
     /// variants, interface objects and nominal aliases all legitimately unify across
     /// names, and judging those from here reported the stdlib's own source as
     /// broken (#730).
+    /// A number literal where a type parameter is expected: `let y: T = 5`.
+    /// Only a numeric bound gives the literal a way to become a `T`
+    /// (type.generics, numeric literals): `Integer`, `Float` or `Numeric` for
+    /// `5`, and not `Integer` for `5.0`. Any other `T` may be a `string`.
+    fn literal_into_rigid_param(&self, kind: super::inference::LiteralKind, ty: &Type) -> bool {
+        let Type::UnresolvedNamed(name) = ty else { return false };
+        if !self.types.is_type_param_in_scope(name) {
+            return false;
+        }
+        let accepts = |b: &rask_ast::ty::TypeExpr| match kind {
+            super::inference::LiteralKind::Integer => {
+                b.is_name("Integer") || b.is_name("Float") || b.is_name("Numeric")
+            }
+            super::inference::LiteralKind::Float => b.is_name("Float") || b.is_name("Numeric"),
+        };
+        let fits = self
+            .current_type_param_bounds
+            .get(name)
+            .is_some_and(|bounds| bounds.iter().any(accepts));
+        !fits
+    }
+
+    /// Inside a generic body a type parameter is one fixed, unknown type. It
+    /// equals itself and whatever a variable settles to, and nothing else:
+    /// `func f<T>(x: T) -> T { return 5 }` has no `T` for which `5` is one.
+    /// Deferring these as "a name that may still resolve" let every such body
+    /// through, and native then read an `i64` where a `string` was laid out.
+    fn is_rigid_param_mismatch(&self, a: &Type, b: &Type) -> bool {
+        let param = |t: &Type| match t {
+            Type::UnresolvedNamed(n) if self.types.is_type_param_in_scope(n) => Some(n.clone()),
+            _ => None,
+        };
+        let concrete = |t: &Type| matches!(
+            t,
+            Type::Unit | Type::Bool | Type::Char | Type::String | Type::Bytes
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+            | Type::F32 | Type::F64
+            | Type::Named(_) | Type::Generic { .. } | Type::Tuple(_) | Type::Array { .. }
+            | Type::Fn { .. } | Type::Result { .. } | Type::RawPtr(_)
+        );
+        match (param(a), param(b)) {
+            (Some(x), Some(y)) => x != y,
+            (Some(_), None) => concrete(b),
+            (None, Some(_)) => concrete(a),
+            (None, None) => false,
+        }
+    }
+
     fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
         let is_primitive = |t: &Type| matches!(
             t,
@@ -1714,7 +1763,7 @@ impl TypeChecker {
                             });
                         }
                     }
-                    if !literal_fits(kind, other) {
+                    if !literal_fits(kind, other) || self.literal_into_rigid_param(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
@@ -1747,7 +1796,7 @@ impl TypeChecker {
                             });
                         }
                     }
-                    if !literal_fits(kind, other) {
+                    if !literal_fits(kind, other) || self.literal_into_rigid_param(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
                             found: self.ctx.literal_default(*id, kind),
@@ -2037,6 +2086,14 @@ impl TypeChecker {
                     && !matches!(r2, Type::UnresolvedNamed(_));
                 if both_known && (r1 != t1 || r2 != t2) {
                     return self.unify(&r1, &r2, span);
+                }
+                if self.is_rigid_param_mismatch(&r1, &r2) {
+                    return Err(TypeError::Mismatch {
+                        expected: t1,
+                        found: t2,
+                        span,
+                        convert: Vec::new(),
+                    });
                 }
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(t1, t2, span));

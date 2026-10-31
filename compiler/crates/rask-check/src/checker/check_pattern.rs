@@ -26,6 +26,9 @@ const GUARD_BINDING: &str = "<guard>";
 /// `Fn`, and `Union` so two types built from different sources compare equal.
 pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
     match ty {
+        // A type parameter in scope stays one, even when a type shares its
+        // name: `Duration` in `extend Either<Duration, Output>`.
+        Type::UnresolvedNamed(name) if types.is_type_param_in_scope(name) => ty.clone(),
         Type::UnresolvedNamed(name) => {
             if let Some(id) = types.get_type_id(name) {
                 return Type::Named(id);
