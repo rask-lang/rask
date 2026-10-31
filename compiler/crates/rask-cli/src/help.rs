@@ -65,6 +65,7 @@ pub fn print_usage() {
     println!("{}", output::section_header("Debugging and Exploration:"));
     println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
     println!("  {} {}  Show a module's public API", output::command("api"), output::arg("<file | dir>"));
+    println!("  {} {}  List a package's claims and their verdicts", output::command("claims"), output::arg("[dir]"));
     println!("  {} {} Report all unsafe operations by category", output::command("unsafe"), output::arg("<file | dir>"));
 
     println!();
@@ -478,6 +479,27 @@ pub fn print_fmt_help() {
         output::command("rask"),
         output::command("fmt"),
         output::arg(""));
+}
+
+pub fn print_claims_help() {
+    println!("{}", output::section_header("Claims"));
+    println!();
+    println!("A package's claims (claims.rk, the sources under [claims], the stdlib's laws),");
+    println!("run the way a build runs them, with each one's verdict.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("claims"),
+        output::arg("[dir] [--since <rev> | --mutate]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Commits since <rev> that changed a claim and code it reaches", output::arg("--since <rev>"));
+    println!("  {}        Change the code claims reach in small ways; report changes no claim notices", output::arg("--mutate"));
+    println!("  {}  Fail every claim that held without being checked for every input", output::arg("--claims=strict"));
+    println!("  {}  Run sampled claims on N more seeds", output::arg("--claim-seeds N"));
+    println!("  {}          Verdicts as JSON", output::arg("--json"));
+    println!();
+    println!("`--since` and `--mutate` exit 1 when they find something, so CI can gate on them.");
 }
 
 pub fn print_api_help() {

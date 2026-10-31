@@ -156,14 +156,23 @@ runtime_constants! {
     /// A `char`, as its code point in four bytes. Claims build these; JSON
     /// has no `char` yet.
     RASK_JSHAPE_CHAR = 12;
-    RASK_JSHAPE_PRIM_COUNT = 13;
-    RASK_JSHAPE_VEC = 13;
-    RASK_JSHAPE_MAP = 14;
-    RASK_JSHAPE_OPT = 15;
-    RASK_JSHAPE_STRUCT = 16;
+    /// 128-bit integers, which JSON numbers can't carry. Claims build these.
+    RASK_JSHAPE_I128 = 13;
+    RASK_JSHAPE_U128 = 14;
+    RASK_JSHAPE_PRIM_COUNT = 15;
+    RASK_JSHAPE_VEC = 15;
+    RASK_JSHAPE_MAP = 16;
+    RASK_JSHAPE_OPT = 17;
+    RASK_JSHAPE_STRUCT = 18;
     /// An enum: a tag, and per variant a struct of its payload. Claims build
     /// these; JSON's enum form is still open (std.json).
-    RASK_JSHAPE_ENUM = 17;
+    RASK_JSHAPE_ENUM = 19;
+    /// A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
+    /// build these; JSON has no form for a result.
+    RASK_JSHAPE_RESULT = 20;
+    /// A type that builds itself through `claims.Generate`: the shape holds
+    /// the function that calls its `generate`. Claims only.
+    RASK_JSHAPE_GENERATED = 21;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;

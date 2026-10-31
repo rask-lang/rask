@@ -34,11 +34,21 @@ pub struct LockedPackage {
     pub signing_key: Option<String>,
 }
 
+/// A claims source from git, as it was when first fetched (type.claims/W3):
+/// a checkout edited after that fails the build.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LockedClaims {
+    pub name: String,
+    pub source: String,
+    pub checksum: String,
+}
+
 /// The full lock file.
 #[derive(Debug, Default)]
 pub struct LockFile {
     pub version: u32,
     pub packages: Vec<LockedPackage>,
+    pub claims: Vec<LockedClaims>,
 }
 
 impl LockFile {
@@ -96,7 +106,7 @@ impl LockFile {
         }
 
         packages.sort_by(|a, b| a.name.cmp(&b.name));
-        LockFile { version: LOCKFILE_VERSION, packages }
+        LockFile { version: LOCKFILE_VERSION, packages, claims: Vec::new() }
     }
 
     /// Generate workspace lock file with capabilities.
@@ -148,6 +158,12 @@ impl LockFile {
                 content.push_str(&format!("capabilities = [{}]\n", caps.join(", ")));
             }
             content.push('\n');
+        }
+        for c in &self.claims {
+            content.push_str("[[claims]]\n");
+            content.push_str(&format!("name = {}\n", quote(&c.name)));
+            content.push_str(&format!("source = {}\n", quote(&c.source)));
+            content.push_str(&format!("checksum = {}\n\n", quote(&c.checksum)));
         }
         content
     }
@@ -292,10 +308,13 @@ fn collect_rk_files_recursive(
 }
 
 const PACKAGE_KEYS: [&str; 6] = ["name", "version", "source", "checksum", "signing-key", "capabilities"];
+const CLAIMS_KEYS: [&str; 3] = ["name", "source", "checksum"];
 
 /// A lock file entry while it's being read: each key with its line.
 struct Entry {
     line: usize,
+    /// `[[claims]]` rather than `[[package]]`.
+    claims: bool,
     fields: BTreeMap<String, (usize, Value)>,
 }
 
@@ -316,12 +335,12 @@ fn parse(content: &str, file: &str) -> Result<LockFile, String> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if line == "[[package]]" {
-            entries.push(Entry { line: n, fields: BTreeMap::new() });
+        if line == "[[package]]" || line == "[[claims]]" {
+            entries.push(Entry { line: n, claims: line == "[[claims]]", fields: BTreeMap::new() });
             continue;
         }
         if line.starts_with('[') {
-            return Err(at(n, format!("unknown table `{}`; rask.lock has only [[package]] entries", line)));
+            return Err(at(n, format!("unknown table `{}`; rask.lock has only [[package]] and [[claims]] entries", line)));
         }
         let Some((key, value)) = line.split_once('=') else {
             return Err(at(n, format!("expected `key = value`, found `{}`", line)));
@@ -352,8 +371,9 @@ fn parse(content: &str, file: &str) -> Result<LockFile, String> {
             file_version = Some(v);
             continue;
         };
-        if !PACKAGE_KEYS.contains(&key) {
-            return Err(at(n, format!("unknown key `{}`; a [[package]] entry holds {}", key, PACKAGE_KEYS.join(", "))));
+        let (keys, table) = if entry.claims { (&CLAIMS_KEYS[..], "[[claims]]") } else { (&PACKAGE_KEYS[..], "[[package]]") };
+        if !keys.contains(&key) {
+            return Err(at(n, format!("unknown key `{}`; a {} entry holds {}", key, table, keys.join(", "))));
         }
         let parsed = if key == "capabilities" {
             parse_string_array(value).map(Value::List)
@@ -372,10 +392,21 @@ fn parse(content: &str, file: &str) -> Result<LockFile, String> {
     if file_version.is_none() {
         return Err(format!("{}: no `lockfile-version` line; run `rask update` to regenerate it", file));
     }
-    let packages = entries.into_iter()
+    let (claim_entries, package_entries): (Vec<Entry>, Vec<Entry>) = entries.into_iter().partition(|e| e.claims);
+    let packages = package_entries.into_iter()
         .map(|e| to_locked(e).map_err(|msg| at_entry(file, msg)))
         .collect::<Result<_, _>>()?;
-    Ok(LockFile { version: LOCKFILE_VERSION, packages })
+    let claims = claim_entries.into_iter()
+        .map(|mut e| {
+            Ok(LockedClaims {
+                name: e.required("name")?,
+                source: e.required("source")?,
+                checksum: e.required("checksum")?,
+            })
+        })
+        .collect::<Result<_, (usize, String)>>()
+        .map_err(|msg| at_entry(file, msg))?;
+    Ok(LockFile { version: LOCKFILE_VERSION, packages, claims })
 }
 
 fn at_entry(file: &str, (line, msg): (usize, String)) -> String {
@@ -391,7 +422,8 @@ impl Entry {
     }
 
     fn required(&mut self, key: &str) -> Result<String, (usize, String)> {
-        self.string(key).ok_or_else(|| (self.line, format!("this [[package]] entry has no `{}`", key)))
+        let table = if self.claims { "[[claims]]" } else { "[[package]]" };
+        self.string(key).ok_or_else(|| (self.line, format!("this {} entry has no `{}`", table, key)))
     }
 }
 
@@ -523,6 +555,7 @@ mod tests {
             metadata: Vec::new(),
             list_metadata: Vec::new(),
             profiles: Vec::new(),
+            claims: Vec::new(),
         }
     }
 

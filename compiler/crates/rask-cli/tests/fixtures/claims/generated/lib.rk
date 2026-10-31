@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A list that keeps itself sorted. Its field is private, so a claim can only
+// be handed one its claims file builds through `insert`.
+
+public struct Sorted {
+    private items: Vec<i64>
+}
+
+extend Sorted {
+    public func new() -> Sorted {
+        return Sorted(items: Vec.new())
+    }
+
+    // The bug: a negative number always goes to the back.
+    public func insert(mutate self, x: i64) {
+        if x < 0 {
+            self.items.push(x)
+            return
+        }
+        mut i = 0
+        while i < self.items.len() && self.items[i] < x {
+            i += 1
+        }
+        self.items.insert(i, x)
+    }
+
+    public func is_sorted(self) -> bool {
+        for i in 1..self.items.len() {
+            if self.items[i - 1] > self.items[i] {
+                return false
+            }
+        }
+        return true
+    }
+
+    public func len(self) -> usize {
+        return self.items.len()
+    }
+}
+
+func main() {}

@@ -43,11 +43,11 @@ func key(k: string) -> Step {
 
 const HEAD = "schema = \"rask-package@1\"\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
 
-// A made-up release 2 of rask-package: `with` on a dependency becomes
+// A made-up release 3 of rask-package, the one after the shipped one: `with` on a dependency becomes
 // `features`, sandboxing goes on by default, and `edition` arrives.
 // The shape is replayed from the log here; the real schema writes it out
 // and lets `check_history` compare the two.
-func schema_v2() -> Schema {
+func schema_v3() -> Schema {
     mut changes = Vec<Change>.new()
     mut sites = dep_sites()
     for site in sites.take_all() {
@@ -56,7 +56,7 @@ func schema_v2() -> Schema {
     changes.push(Change.Default(at: Vec<Step>.from([key("package")]), name: "sandbox", from: Value.Bool(false), to: Value.Bool(true)))
     changes.push(Change.Add(at: Vec<Step>.from([key("package")]), field: defaulted("edition", Ty.Str, Value.Str("2026"))))
     mut history = package_history()
-    history.push(Release(version: 2, changes))
+    history.push(Release(version: 3, changes))
     let shape = replay_shape(history) catch e => panic(e.message())
     return Schema(name: "rask-package", shape, history)
 }
@@ -106,15 +106,15 @@ test "strings are checked by field type" {
     assert cap.contains("\"network\" is not allowed here")
 }
 
-// ─── Release 2: replaying forward ───────────────────────────────
+// ─── Release 3: replaying forward ───────────────────────────────
 
-test "release 2's history replays" {
-    assert schema_error(schema_v2()) == ""
+test "release 3's history replays" {
+    assert schema_error(schema_v3()) == ""
 }
 
-test "a release 1 file loads under release 2" {
+test "a release 1 file loads under release 3" {
     let text = "{HEAD}[dependencies]\ntokio = {{ registry = \"^1.0\", with = [\"net\"] }}\n"
-    let tree = load(text, schema_v2()) catch e => panic(e.message())
+    let tree = load(text, schema_v3()) catch e => panic(e.message())
     let pkg = table_at(tree, "package")
     // It left sandbox out, and in release 1 that meant false.
     assert bool_at(pkg, "sandbox") == false
@@ -124,30 +124,30 @@ test "a release 1 file loads under release 2" {
     assert find_entry(tokio, "with") is none
 }
 
-test "the old spelling is an error in a release 2 file" {
-    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nt = {{ registry = \"^1\", with = [\"net\"] }}\n"
-    assert load_error(text, schema_v2()).contains("unknown key `with`")
+test "the old spelling is an error in a release 3 file" {
+    let text = "schema = \"rask-package@3\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nt = {{ registry = \"^1\", with = [\"net\"] }}\n"
+    assert load_error(text, schema_v3()).contains("unknown key `with`")
 }
 
 test "old and new spelling together is an error" {
     let text = "{HEAD}[dependencies]\nt = {{ registry = \"^1\", with = [\"a\"], features = [\"b\"] }}\n"
-    assert load_error(text, schema_v2()).contains("both `with` and `features` are set")
+    assert load_error(text, schema_v3()).contains("both `with` and `features` are set")
 }
 
 test "migrating forward writes out what the old default meant" {
-    let out = migrated(HEAD, schema_v2(), 2)
-    assert out.contains("schema = \"rask-package@2\"")
+    let out = migrated(HEAD, schema_v3(), 3)
+    assert out.contains("schema = \"rask-package@3\"")
     assert out.contains("sandbox = false")
 }
 
-// ─── Release 2: running backward ────────────────────────────────
+// ─── Release 3: running backward ────────────────────────────────
 
 test "a lossless downgrade" {
-    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[dependencies]\nt = {{ registry = \"^1\", features = [\"net\"] }}\n"
-    let out = migrated(text, schema_v2(), 1)
+    let text = "schema = \"rask-package@3\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[dependencies]\nt = {{ registry = \"^1\", features = [\"net\"] }}\n"
+    let out = migrated(text, schema_v3(), 1)
     assert out.contains("schema = \"rask-package@1\"")
     assert out.contains("with = [\"net\"]")
-    // Release 2 leaves sandbox on by default; release 1 has to be told.
+    // Release 3 leaves sandbox on by default; release 1 has to be told.
     assert out.contains("sandbox = true")
     // At its default, `edition` drops without changing what the file means.
     assert !out.contains("edition")
@@ -156,15 +156,15 @@ test "a lossless downgrade" {
 }
 
 test "a downgrade that would lose information is refused" {
-    let text = "schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2027\"\n"
-    let e = migrate_error(text, schema_v2(), 1)
+    let text = "schema = \"rask-package@3\"\n[package]\nname = \"a\"\nversion = \"0.1.0\"\nedition = \"2027\"\n"
+    let e = migrate_error(text, schema_v3(), 1)
     assert e.contains("`edition = \"2027\"` doesn't exist in the older version")
 }
 
-test "round trip: 1 to 2 and back gives a file that means the same" {
+test "round trip: 1 to 3 and back gives a file that means the same" {
     let text = "{HEAD}sandbox = true\n[dependencies]\nt = {{ path = \"../t\", with = [\"x\"] }}\n"
-    let up = migrated(text, schema_v2(), 2)
-    let down = migrated(up, schema_v2(), 1)
+    let up = migrated(text, schema_v3(), 3)
+    let down = migrated(up, schema_v3(), 1)
     let a = load(text, package_schema()) catch e => panic(e.message())
     let b = load(down, package_schema()) catch e => panic(e.message())
     assert render_document(a) == render_document(b)
@@ -175,7 +175,7 @@ test "round trip: 1 to 2 and back gives a file that means the same" {
 test "a change the old shape can't take is refused" {
     mut s = package_schema()
     s.history.push(Release(
-        version: 2
+        version: 3
         changes: Vec<Change>.from([Change.Add(at: Vec<Step>.from([key("package")]), field: required("edition", Ty.Str))])
     ))
     assert schema_error(s).contains("every older file would stop loading")
@@ -373,7 +373,7 @@ test "the schema line is checked before anything else" {
     let body = "[package]\nname = \"a\"\nversion = \"1.0.0\"\n"
     assert pkg_error(body).contains("missing `schema = \"<name>@<version>\"`")
     assert pkg_error("schema = \"rask-lock@1\"\n{body}").contains("this file is a `rask-lock` file; expected `rask-package`")
-    assert pkg_error("schema = \"rask-package@2\"\n{body}").contains("update the toolchain")
+    assert pkg_error("schema = \"rask-package@3\"\n{body}").contains("update the toolchain")
     assert pkg_error("schema = \"rask-package@0\"\n{body}").contains("rask-package@0 doesn't exist")
     assert pkg_error("schema = \"rask-package\"\n{body}").contains("has no version")
     assert pkg_error("schema = 1\n{body}").contains("`schema` must be a string")
@@ -815,4 +815,37 @@ test "codegen-units is 1 to 256" {
     assert package_error("{HEAD}[profiles.x]\ncodegen-units = 0\n").contains("profiles.x.codegen-units: 0 is outside 1 to 256")
     assert package_error("{HEAD}[profiles.x]\ncodegen-units = 257\n").contains("257 is outside")
     assert package_error("{HEAD}[profiles.x]\ncodegen-units = 256\n") == ""
+}
+
+// ─── Release 2: [claims] ────────────────────────────────────────
+
+const CLAIMED = "schema = \"rask-package@2\"\n[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+test "claims sources come from a path or git" {
+    let text = "{CLAIMED}[claims]\nrepo = {{ path = \"../shared-claims\" }}\nacme = {{ git = \"https://git.acme.dev/claims\", rev = \"v2.1\" }}\n"
+    let pkg = load_package(text) catch e => panic(e.message())
+    assert pkg.claims.len() == 2
+    mut paths = 0
+    mut gits = 0
+    for c in pkg.claims {
+        match c.source {
+            DepSource.Path(p) => {
+                assert c.name == "repo" && p == "../shared-claims"
+                paths += 1
+            }
+            DepSource.Git(url, rev, branch) => {
+                assert c.name == "acme" && url == "https://git.acme.dev/claims" && rev == "v2.1"
+                gits += 1
+            }
+            DepSource.Registry(_) => panic("no registry claims source was written")
+        }
+    }
+    assert paths == 1 && gits == 1
+}
+
+test "a claims source isn't a dependency: no registry, no shared keys" {
+    let reg = pkg_error("{CLAIMED}[claims]\nx = {{ registry = \"^1\" }}\n")
+    assert reg.contains("claims.x")
+    let shared = pkg_error("{CLAIMED}[claims]\nx = {{ path = \"c\", allow = [\"net\"] }}\n")
+    assert shared.contains("claims.x: unknown key `allow`")
 }

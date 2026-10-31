@@ -1328,6 +1328,16 @@ impl TypeTable {
         self.declares_conformance_to(type_id, iface, interface)
     }
 
+    /// Does the type build its own claim inputs: is there a `T implements
+    /// claims.Generate` for it (type.claims/IN2)?
+    pub fn builds_claim_inputs(&self, type_id: TypeId) -> bool {
+        let generate = TypeExpr::Named {
+            path: vec!["claims".to_string(), "Generate".to_string()],
+            args: Vec::new(),
+        };
+        self.declares_conformance(type_id, &generate)
+    }
+
     /// Does the type conform to a *different* interface spelled `name`? A stdlib
     /// `Buffer` implements the stdlib's `Writer`, and a program declaring its own
     /// `Writer` hasn't changed that (#1329).

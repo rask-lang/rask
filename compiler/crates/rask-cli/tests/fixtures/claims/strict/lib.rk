@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A package whose claims all hold, for `--claims=strict` and `--claim-seeds`.
+
+public func limit(x: u16) -> u16 {
+    if x > 65500 {
+        return 65500
+    }
+    return x
+}
+
+func main() {
+    println("strict")
+}

@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// What a claim's generated case functions call (type.claims). The build writes
-// one per claim: it builds each input with `claims.input` and calls the claim.
-// Nothing but that generated code should call these until hand-written
-// generators exist (type.claims/IN2).
+// What a claim's generated case functions call (type.claims), and what a
+// claims file writes a generator with (`Generate`, `Choices`). The build
+// writes one case function per claim: it builds each input with
+// `claims.input` and calls the claim.
 
 public struct claims { }
 
 extend claims {
     /// One input of type `T`, built from the claim's choices. `name` is the
     /// parameter it's for: the input prints as `name = value` in a
-    /// counterexample. `T` is anything `json.decode` could build, plus `char`,
-    /// tuples and enums.
+    /// counterexample. `T` is anything `json.decode` could build, where any
+    /// part may instead build itself through `Generate`.
     @builtin
-    public func input<T: Decode>(name: string) -> T {}
+    public func input<T: ClaimInput>(name: string) -> T {}
 
     /// Fill the value at `dst` from the claim's choices, through the shape a
     /// decode of its type reads. What `input` lowers to.
@@ -28,4 +28,40 @@ extend claims {
     /// reaching it discarded its input (type.claims/CL5).
     @native("rask_claim_reached_end")
     public func reached_end() {}
+
+    /// A choice below `n`, from the same choices every input is built from.
+    @native("rask_claim_below")
+    func draw_below(n: u64) -> u64 {}
+}
+
+/// A type that builds its own claim inputs (type.claims/IN2): a sorted list,
+/// a valid tree, anything with an invariant its fields don't spell out. A
+/// claims file declares it for the type it checks; a claim given that type
+/// gets what `generate` builds, wherever the type sits in the input.
+public interface Generate {
+    func generate(from: Choices) -> Self
+}
+
+/// What a generator draws from. Every choice comes out of the claim's own,
+/// so a generated input shrinks and replays like any other.
+public struct Choices { }
+
+extend Choices {
+    /// A `T`, built the way a claim's input of type `T` is.
+    @builtin
+    public func make<T: ClaimInput>(self) -> T {}
+
+    /// A number below `n`. `n` must be above zero.
+    public func below(self, n: u64) -> u64 {
+        if n == 0 {
+            panic("Choices.below(0) has nothing to choose from")
+        }
+        return claims.draw_below(n)
+    }
+
+    /// One of `items`, which must not be empty.
+    public func one_of<T: Cloneable>(self, items: Vec<T>) -> T {
+        let i = self.below(items.len().to<u64>()!)
+        return items[i.to<usize>()!].clone()
+    }
 }

@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import generic
+
+// Checked for every public type that is Comparable and can be built.
+claim antisymmetric<T: Comparable>(a: T, b: T) {
+    if a.compare(b) == Ordering.Less {
+        assert b.compare(a) == Ordering.Greater
+    }
+}

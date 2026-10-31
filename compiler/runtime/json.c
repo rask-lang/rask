@@ -534,7 +534,7 @@ static int64_t json_prim_width(int64_t kind) {
         case RASK_JSHAPE_I16: case RASK_JSHAPE_U16:                       return 2;
         case RASK_JSHAPE_I32: case RASK_JSHAPE_U32: case RASK_JSHAPE_F32:
         case RASK_JSHAPE_CHAR:                                            return 4;
-        case RASK_JSHAPE_STRING:                                          return 16;
+        case RASK_JSHAPE_STRING: case RASK_JSHAPE_I128: case RASK_JSHAPE_U128: return 16;
         default:                                                          return 8;
     }
 }
@@ -623,6 +623,26 @@ RaskJsonShape *rask_json_shape_enum(int64_t size, int64_t tag_offset, int64_t ta
     return s;
 }
 
+RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int64_t total_size,
+                                      int64_t payload_offset) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_RESULT, total_size);
+    s->elem = ok;
+    s->err = err;
+    s->payload_offset = payload_offset;
+    return s;
+}
+
+RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_GENERATED, size);
+    s->generate = (RaskJsonFill)generate;
+    return s;
+}
+
+void rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key) {
+    rask_json_shape_free(map->key);
+    map->key = key;
+}
+
 void rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload) {
     if (!s) return;
     if (s->nvariants == s->vcap) {
@@ -651,6 +671,8 @@ void rask_json_shape_free(RaskJsonShape *s) {
     }
     rask_free(s->variants);
     rask_json_shape_free(s->elem);
+    rask_json_shape_free(s->err);
+    rask_json_shape_free(s->key);
     rask_free(s);
 }
 
@@ -836,7 +858,11 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         // Claims build these shapes; JSON's form for them is still open (std.json),
         // so lowering never asks the decoder for one.
         case RASK_JSHAPE_CHAR:
+        case RASK_JSHAPE_I128:
+        case RASK_JSHAPE_U128:
         case RASK_JSHAPE_ENUM:
+        case RASK_JSHAPE_RESULT:
+        case RASK_JSHAPE_GENERATED:
             json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
             return 0;
         case RASK_JSHAPE_STRING: {

@@ -37,7 +37,7 @@ debug-info = true
 #[test]
 fn the_loader_compiles_and_its_history_replays() {
     check_history().unwrap();
-    assert_eq!(schema_line().unwrap(), "rask-package@1");
+    assert_eq!(schema_line().unwrap(), "rask-package@2");
 }
 
 #[test]
@@ -504,7 +504,7 @@ fn every_problem_comes_back_one_per_line() {
 
 #[test]
 fn a_file_for_a_newer_schema_says_to_update() {
-    let err = load_text("schema = \"rask-package@2\"\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n").unwrap_err();
+    let err = load_text("schema = \"rask-package@3\"\n[package]\nname = \"a\"\nversion = \"1.0.0\"\n").unwrap_err();
     assert!(err.contains("update the toolchain"), "{err}");
     let err = load_text("[package]\nname = \"a\"\nversion = \"1.0.0\"\n").unwrap_err();
     assert!(err.contains("missing `schema = "), "{err}");
