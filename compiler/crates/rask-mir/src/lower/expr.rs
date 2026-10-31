@@ -5836,7 +5836,7 @@ impl<'a> MirLowerer<'a> {
                                 )));
                             }
                             if base == "Map" && method == "from" && args.len() == 1 {
-                                return self.lower_map_from_pairs(expr, written_args, &args[0].expr).map(Some);
+                                return self.lower_map_from_pairs(expr, &args[0].expr).map(Some);
                             }
                         }
 
@@ -6020,17 +6020,11 @@ impl<'a> MirLowerer<'a> {
                                 || func_name == "Map_with_capacity"
                             {
                                 let from_checker = self.container_elem_mir_type(expr.id, 0);
-                                // The spelling still answers when the checker has
-                                // nothing for this node: `Map<string, _>.new()` inside
-                                // a stdlib body has no recorded type.
-                                let from_spelling = written_args
-                                    .first()
-                                    .map(|arg| self.ctx.resolve_type_expr(arg));
                                 // Same decision either way; `with_capacity`
                                 // just lands on the constructor that also takes
                                 // the capacity.
                                 let with_cap = func_name == "Map_with_capacity";
-                                match from_checker.or(from_spelling) {
+                                match from_checker {
                                     Some(k) if with_cap => {
                                         crate::elem_strs::map_ctor_with_capacity(&k).to_string()
                                     }

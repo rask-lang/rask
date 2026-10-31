@@ -402,9 +402,10 @@ impl<'a> MirLowerer<'a> {
                 rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
                 _ => None,
             });
-        let closure_ret = ret_ty
-            .map(|t| self.ctx.resolve_type_expr(t))
-            .or(checked_ret)
+        // The checker's type for the closure first: inside a generic body the
+        // written annotation names a type parameter.
+        let closure_ret = checked_ret
+            .or_else(|| ret_ty.map(|t| self.ctx.resolve_type_expr(t)))
             .unwrap_or_else(|| if inferred_void {
                 MirType::Void
             } else {
@@ -440,13 +441,13 @@ impl<'a> MirLowerer<'a> {
         let outer_param_names = self.save_names(params.iter().map(|p| p.name.as_str()).collect());
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
-            // Written annotation first, then the type the callee declares for
-            // this position, then what the checker inferred.
+            // What the checker inferred first, then the written annotation,
+            // then the type the callee declares for this position — the last
+            // two only for a closure made after checking.
             let written = param.ty.clone()
                 .or_else(|| expected_param_tys.get(i).cloned());
-            let param_ty = written.as_ref()
-                .map(|t| self.ctx.resolve_type_expr(t))
-                .or_else(|| checked_params.get(i).cloned())
+            let param_ty = checked_params.get(i).cloned()
+                .or_else(|| written.as_ref().map(|t| self.ctx.resolve_type_expr(t)))
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             // A `mutate` parameter takes the caller's address the way a
             // declared function's does, so one function type means one calling
