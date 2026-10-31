@@ -161,6 +161,9 @@ pub struct MonoFunction {
     pub name: String,
     /// The type parameters this copy fixes, each named by the parameter it binds.
     pub type_args: Vec<TypeBinding>,
+    /// What each `T.Out` the function writes is on this instance, keyed
+    /// `("T", "Out")` (AT6/AT8).
+    pub projections: HashMap<(String, String), Type>,
     pub body: Decl,
 }
 

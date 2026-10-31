@@ -5509,7 +5509,6 @@ impl<'a> MirLowerer<'a> {
         type_args: &Option<Vec<TypeExpr>>,
     ) -> Result<Option<TypedOperand>, LoweringError> {
         if let Some(name) = object.name() {
-            let written_args = object.written_type_args();
             // IM3: a transparent alias is the target type, so every prefix this
             // function mangles has to be the target's name. `import time.Duration
             // as Span` reached codegen as `Span_from_millis`, which no function
