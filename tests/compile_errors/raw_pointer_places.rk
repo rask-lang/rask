@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `&` needs storage, and a raw pointer has no `[i]` (mem.unsafe).
+//
+// `&x` is the address of a variable, field or element. A call's result lives
+// nowhere until it's put somewhere, so it has no address to take.
+//
+// A raw pointer isn't indexed: it knows where its memory starts but not where
+// it ends, so `[i]` would read like a checked access and check nothing. The
+// offset is `p.add(i)` and the read is `*`.
+
+func make() -> i32 {
+    return 3
+}
+
+func fill(p: *i32) {
+    unsafe {
+        *p = 1
+    }
+}
+
+// ERROR: [E0939]
+func address_of_a_call() {
+    fill(&make())
+}
+
+// ERROR: cannot index the raw pointer `**u8` [E0819]
+func index_a_pointer(argv: **u8) -> *u8 {
+    return unsafe argv[0]
+}
+
+func main() {
+}

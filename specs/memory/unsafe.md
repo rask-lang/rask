@@ -92,6 +92,8 @@ All require unsafe except `is_null()`.
 | `ptr.is_aligned()` | `*T -> bool` | Check natural alignment |
 | `ptr.is_aligned_to(n)` | `*T, usize -> bool` | Check alignment to n bytes |
 
+There is no `ptr[i]`. A pointer knows where its memory starts and not where it ends, so a bracket would look like the checked `v[i]` and check nothing. Write `*ptr.add(i)`: the offset and the read are both visible as pointer operations.
+
 ## Unsafe Functions
 
 | Rule | Description |

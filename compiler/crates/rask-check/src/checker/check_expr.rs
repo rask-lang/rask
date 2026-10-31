@@ -6512,6 +6512,15 @@ impl TypeChecker {
             }
             // Unknown / unresolved container — leave it.
             None => {
+                if let Type::RawPtr(_) = self.ctx.apply(container) {
+                    self.errors.push(TypeError::IndexTypeMismatch {
+                        container: self.nameable(&self.ctx.apply(container)),
+                        found: index.clone(),
+                        kind: IndexErrorKind::RawPointer,
+                        span,
+                    });
+                    return true;
+                }
                 if self.is_sequence_type(container) {
                     self.errors.push(TypeError::IndexTypeMismatch {
                         container: self.nameable(&self.ctx.apply(container)),

@@ -3112,6 +3112,15 @@ impl ToDiagnostic for crate::TypeError {
                             .to_string(),
                         Some("materialize it first: `seq.to_vec()[i]`".to_string()),
                     ),
+                    K::RawPointer => (
+                        format!("cannot index the raw pointer `{}`", container),
+                        "a pointer knows where its memory starts, not where it ends, so \
+                         there is nothing for `[i]` to check. Moving it is `p.add(i)` and \
+                         reading through it is `*`, both visible as pointer operations \
+                         [mem.unsafe]"
+                            .to_string(),
+                        Some("offset, then read: `*p.add(i)`".to_string()),
+                    ),
                 };
                 let mut diag = Diagnostic::error(label.clone())
                     .with_code("E0819")
