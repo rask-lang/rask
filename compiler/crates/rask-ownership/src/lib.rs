@@ -101,6 +101,9 @@ struct ForMutateInfo {
     binding_names: Vec<String>,
     /// Span for error messages
     span: Span,
+    /// `for mutate`, or a plain `for` (LP8), which holds its source the same
+    /// way while it walks it.
+    mutate: bool,
 }
 
 /// Ownership and borrow checker.
@@ -2666,17 +2669,29 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     self.rack_iterations.push((elem, binding_names.clone()));
                 }
-                // LP14/LP16: track for-mutate context
-                if *mutate {
-                    if let Some((collection_name, root, fields)) = Self::held_source(iter) {
-                        self.active_for_mutates.push(ForMutateInfo {
-                            collection_name,
-                            root,
-                            fields,
-                            binding_names: binding_names.clone(),
-                            span: stmt.span,
-                        });
-                    }
+                // LP14/LP16: track for-mutate context. A plain `for` over a
+                // place holds it too (LP8): `v.clear()` inside `for x in v`
+                // panicked natively and the interpreter walked the old items.
+                // Only over the place itself — `for x in v.clone()` walks a
+                // copy and leaves `v` free.
+                // A lazy chain off a place, `m.keys()` or `v.filter(f)`, walks
+                // the place as it goes (type.sequence), so it holds it too.
+                let walks_place = matches!(iter.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                    || (matches!(iter.kind, ExprKind::MethodCall { .. })
+                        && self.node_ty(&iter.id).is_some_and(|t| {
+                            rask_check::receiver_name(t, &self.program.types).as_deref() == Some("Sequence")
+                        }));
+                let held = if *mutate || walks_place { Self::held_source(iter) } else { None };
+                let pushed = held.is_some();
+                if let Some((collection_name, root, fields)) = held {
+                    self.active_for_mutates.push(ForMutateInfo {
+                        collection_name,
+                        root,
+                        fields,
+                        binding_names: binding_names.clone(),
+                        span: stmt.span,
+                        mutate: *mutate,
+                    });
                 }
                 let saved_items = self.borrowed_loop_items.clone();
                 let lender = if *mutate { None } else { self.loop_lender(iter) };
@@ -2695,7 +2710,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
-                if *mutate {
+                if pushed {
                     self.active_for_mutates.pop();
                 }
                 if self.rack_iteration_elem(iter).is_some() {
@@ -2906,7 +2921,7 @@ impl<'a> OwnershipChecker<'a> {
                     if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
-                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
+                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.mutate && fm.binding_names.contains(name)) {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::ForMutateTakeItem {
                                         item: name.clone(),
@@ -3002,7 +3017,7 @@ impl<'a> OwnershipChecker<'a> {
                     if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
-                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
+                            if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.mutate && fm.binding_names.contains(name)) {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::ForMutateTakeItem {
                                         item: name.clone(),
@@ -4493,7 +4508,7 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(wb) = self.active_with_bindings.iter().find(|w| holds(&w.root, &w.fields)) {
             found.push((wb.collection_name.clone(), wb.root.clone(), wb.span, false));
         }
-        if let Some(fm) = self.active_for_mutates.iter().find(|f| holds(&f.root, &f.fields)) {
+        if let Some(fm) = self.active_for_mutates.iter().find(|f| f.mutate && holds(&f.root, &f.fields)) {
             found.push((fm.collection_name.clone(), fm.root.clone(), fm.span, true));
         }
         for (collection, link, holder_span, in_loop) in found {
@@ -5243,6 +5258,7 @@ impl<'a> OwnershipChecker<'a> {
                     operation: operation.to_string(),
                     via,
                     loop_span: fm.span,
+                    loop_form: if fm.mutate { "for mutate" } else { "for" },
                 },
                 span,
             });

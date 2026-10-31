@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: growing or shrinking a collection while a plain `for` walks it
+//
+// A value-mode loop holds its source the way `for mutate` does
+// (ctrl.loops/LP8), but only `for mutate` was tracked. `v.clear()` inside
+// `for x in v` panicked natively with an out-of-bounds index while the
+// interpreter walked the old items; `m.insert` inside `for k in m.keys()`
+// changed the map under its own key walk.
+
+func main() {
+    mut v: Vec<i32> = [1, 2, 3]
+    for x in v {
+        // ERROR: `v` is being walked [E0814]
+        v.push(x)
+    }
+    mut m: Map<i32, i32> = Map.new()
+    m.insert(1, 1)
+    for k in m.keys() {
+        // ERROR: and so is `m`, through its keys [E0814]
+        m.insert(k + 100, 0)
+    }
+
+    // FIX: walk a copy, or collect the changes and apply them after
+    for x in v.clone() {
+        v.push(x)
+    }
+    println("{v.len()} {m.len()}")
+}

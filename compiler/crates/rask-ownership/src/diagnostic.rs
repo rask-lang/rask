@@ -1395,15 +1395,15 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            ForMutateStructuralMutation { collection, operation, via, loop_span } => {
+            ForMutateStructuralMutation { collection, operation, via, loop_span, loop_form } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, which a `for mutate` is iterating", callee, collection),
+                        format!("`{}` can resize `{}`, which a `{}` is iterating", callee, collection, loop_form),
                         format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
                     ),
                     None => (
-                        format!("cannot {} `{}` during `for mutate` — invalidates iteration", operation, collection),
-                        format!("{} not allowed during mutable iteration", operation),
+                        format!("cannot {} `{}` during `{}` — invalidates iteration", operation, collection, loop_form),
+                        format!("{} not allowed while `{}` is iterated", operation, collection),
                     ),
                 };
                 Diagnostic::error(headline)

@@ -628,6 +628,8 @@ pub enum OwnershipErrorKind {
         /// As in `WithBlockStructuralMutation`.
         via: Option<String>,
         loop_span: Span,
+        /// `for` or `for mutate`, as written.
+        loop_form: &'static str,
     },
 
     /// LP16: passing `for mutate` item to `take` parameter
