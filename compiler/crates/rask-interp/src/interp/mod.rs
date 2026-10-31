@@ -156,12 +156,12 @@ pub struct Interpreter {
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
     /// nothing here to compute them from — the interpreter answered 0 for both
-    /// while native answered the truth (#1104). `rask_check::layout::compute_struct_layout`
+    /// while native answered the truth (#1104). `rask_layout::compute_struct_layout`
     /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
     pub(crate) type_decls: Vec<Decl>,
     /// Size and alignment of every declared type, so a struct holding another
     /// sees its real size. Computed once, when the declarations are registered.
-    pub(crate) layout_cache: rask_check::layout::LayoutCache,
+    pub(crate) layout_cache: rask_layout::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -385,8 +385,8 @@ impl Interpreter {
         let patterns: Vec<TypeExpr> = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
             Some(patterns) => patterns.clone(),
             None => match (self.struct_decls.get(base), self.enums.get(base)) {
-                (Some(s), _) => rask_check::struct_type_param_names(s),
-                (None, Some(e)) => rask_check::enum_type_param_names(e),
+                (Some(s), _) => rask_ast::type_params::struct_type_param_names(s),
+                (None, Some(e)) => rask_ast::type_params::enum_type_param_names(e),
                 (None, None) => return Vec::new(),
             }
             .iter()
@@ -466,7 +466,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_check::layout::LayoutCache::new(),
+            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -511,7 +511,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_check::layout::LayoutCache::new(),
+            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -558,7 +558,7 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_check::layout::LayoutCache::new(),
+            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),

@@ -1355,7 +1355,7 @@ impl<'a> OwnershipChecker<'a> {
         // implied ones.
         let mut params = self.header_type_params.clone();
         params.extend(owner_params.iter().map(|p| p.name.clone()));
-        params.extend(rask_check::signature_type_param_names(fn_decl));
+        params.extend(rask_ast::type_params::signature_type_param_names(fn_decl));
         self.type_params_in_scope = params;
         self.copy_params = owner_params
             .iter()
@@ -5424,8 +5424,8 @@ impl<'a> OwnershipChecker<'a> {
             "u128" => Type::U128,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "isize" => Type::isize_ty(),
-            "usize" => Type::usize_ty(),
+            "isize" => Type::Isize,
+            "usize" => Type::Usize,
             _ => return self.program.types.get_type_id(name).map(Type::Named),
         })
     }

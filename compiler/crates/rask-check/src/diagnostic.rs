@@ -1059,7 +1059,11 @@ impl ToDiagnostic for crate::TypeError {
                          `x.wrap<{}>()` keeps the low bits, `x.clamp<{}>()` pins to the range",
                         to, to, to
                     ))
-                    .with_why("widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]")
+                    .with_why(if [from, to].iter().any(|t| matches!(t, crate::Type::Usize | crate::Type::Isize)) {
+                        "`usize` and `isize` are 32 bits on a 32-bit target, and a conversion is implicit only when it can't fail on any target, so the program means the same wherever it's built [type.primitives/CV1a, P2]"
+                    } else {
+                        "widening is implicit because it can't fail; this can, so the policy is written at the site rather than guessed [type.primitives/CV1a, CV2]"
+                    })
             }
 
             IntFloatArithmetic { op, left, right, span } => {
@@ -2987,9 +2991,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_code("E0825")
                     .with_primary(*span, label)
                     .with_why(format!(
-                        "`{}` holds {} through {} — a literal outside that range would have to \
+                        "`{}` holds {} through {}{} — a literal outside that range would have to \
                          wrap, and nothing here wraps silently",
                         ty, min, max,
+                        if matches!(ty, crate::Type::Usize | crate::Type::Isize) {
+                            " on the target being built"
+                        } else {
+                            ""
+                        },
                     ))
                     .with_help(format!(
                         "use a type that holds it, or convert at the use site:\n  \

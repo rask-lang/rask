@@ -4,7 +4,7 @@
 
 use crate::FieldAccess;
 use super::{
-    binop_result_type, is_type_constructor_name, lower_binop,
+    binop_result_type, is_type_constructor_name, is_widening_arithmetic, lower_binop,
     lower_unaryop, operator_method_to_binop, operator_method_to_unaryop, LoopContext,
     LoweringError, MirLowerer, TypedOperand,
 };
@@ -421,8 +421,8 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id),
             Some(
                 Type::Bool
-                    | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                    | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                     | Type::F32 | Type::F64
                     | Type::Char
             )
@@ -1916,6 +1916,7 @@ impl<'a> MirLowerer<'a> {
             } else {
                 (left_op, right_op)
             };
+            let (left_op, right_op, left_ty) = self.widen_int_operands(&mir_op, left_op, &left_ty, right_op, &right_ty);
             let result_ty = binop_result_type(&mir_op, &left_ty);
             let result_local = self.builder.alloc_temp(result_ty.clone());
 
@@ -3110,7 +3111,7 @@ impl<'a> MirLowerer<'a> {
                 other => other.as_link().map(|s| s.id),
             };
             // A `@bits` field, wherever below its layout is found.
-            let mut bits: Option<rask_check::layout::BitSlot> = None;
+            let mut bits: Option<rask_layout::BitSlot> = None;
             let (field_index, result_ty, byte_offset, field_size) = if let Some(id) = &node_layout {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                     if let Some((idx, fl)) = layout.fields.iter().enumerate()
@@ -3305,7 +3306,7 @@ impl<'a> MirLowerer<'a> {
         dst: crate::LocalId,
         base: MirOperand,
         field_index: u32,
-        fl: &rask_check::layout::FieldLayout,
+        fl: &rask_layout::FieldLayout,
         field_ty: &MirType,
         byte_offset: u32,
     ) {
@@ -3399,7 +3400,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         unit: MirOperand,
         ty: &MirType,
-        slot: rask_check::layout::BitSlot,
+        slot: rask_layout::BitSlot,
     ) -> MirOperand {
         let unit_bits = (ty.size() * 8) as i64;
         use crate::operand::BinOp as Op;
@@ -3906,7 +3907,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         result_local: crate::LocalId,
         payload_offset: u32,
-        fields: &[rask_check::layout::FieldLayout],
+        fields: &[rask_layout::FieldLayout],
         i: usize,
         value: &Expr,
     ) -> Result<(), LoweringError> {
@@ -7766,6 +7767,8 @@ impl<'a> MirLowerer<'a> {
                 T::I32 => MirType::I32,
                 T::U64 => MirType::U64,
                 T::I64 => MirType::I64,
+                T::Usize => MirType::usize_ty(),
+                T::Isize => MirType::isize_ty(),
                 T::F32 => MirType::F32,
                 T::F64 => MirType::F64,
                 T::Char => MirType::Char,
@@ -8111,6 +8114,7 @@ impl<'a> MirLowerer<'a> {
             .map(|ty| matches!(ty,
                 rask_types::Type::I8 | rask_types::Type::I16 | rask_types::Type::I32 | rask_types::Type::I64
                 | rask_types::Type::U8 | rask_types::Type::U16 | rask_types::Type::U32 | rask_types::Type::U64
+                | rask_types::Type::Usize | rask_types::Type::Isize
                 | rask_types::Type::F32 | rask_types::Type::F64 | rask_types::Type::Bool
             ))
             .unwrap_or(false);
@@ -8202,6 +8206,8 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     (obj_op.clone(), rhs)
                 };
+                let (lhs, rhs, obj_ty) = self.widen_int_operands(&mir_binop, lhs, obj_ty, rhs, &rhs_ty);
+                let obj_ty = &obj_ty;
                 let result_ty = binop_result_type(&mir_binop, obj_ty);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -8232,6 +8238,40 @@ impl<'a> MirLowerer<'a> {
         }
         } // end if !skip_binop
         Ok(None)
+    }
+
+    /// Integer arithmetic on two widths, with the narrower operand widened to
+    /// the other, and the type they now share. The checker allowed it only
+    /// where one holds every value of the other and typed the answer as that
+    /// one; computed at the left operand's width, `u32 + u64` truncated.
+    fn widen_int_operands(
+        &mut self,
+        op: &crate::operand::BinOp,
+        lhs: MirOperand,
+        lhs_ty: &MirType,
+        rhs: MirOperand,
+        rhs_ty: &MirType,
+    ) -> (MirOperand, MirOperand, MirType) {
+        if !is_widening_arithmetic(op) || !lhs_ty.is_int_like() || !rhs_ty.is_int_like() || lhs_ty == rhs_ty {
+            return (lhs, rhs, lhs_ty.clone());
+        }
+        if rhs_ty.size() > lhs_ty.size() {
+            (self.widen_operand(lhs, rhs_ty), rhs, rhs_ty.clone())
+        } else {
+            let rhs = self.widen_operand(rhs, lhs_ty);
+            (lhs, rhs, lhs_ty.clone())
+        }
+    }
+
+    /// `value` converted to the wider integer type `to`. Lossless: the checker
+    /// only lets an operand widen to a type that holds every value of it.
+    fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
+        let wide = self.builder.alloc_temp(to.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: wide,
+            rvalue: MirRValue::Cast { value, target_ty: to.clone() },
+        }));
+        MirOperand::Local(wide)
     }
 
     /// `x.hash()` on an integer, a bool or a char — FNV-1a over the value's
@@ -10720,9 +10760,9 @@ impl<'a> MirLowerer<'a> {
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
         let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_check::layout::field_type).collect();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
         let instance = (!arg_tys.is_empty())
-            .then(|| rask_check::layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
             .flatten();
         let layout = instance
             .as_deref()
@@ -11423,7 +11463,7 @@ impl<'a> MirLowerer<'a> {
 /// The field a struct literal's store writes, named by its layout and position.
 fn field_slot(
     result_ty: &MirType,
-    layout: Option<&rask_check::layout::StructLayout>,
+    layout: Option<&rask_layout::StructLayout>,
     name: &str,
 ) -> Option<crate::FieldSlot> {
     let MirType::Struct(sid) = result_ty else { return None };

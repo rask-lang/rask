@@ -503,10 +503,12 @@ for a checker type by accident, and no grep test has to say so.
    operator), and layout moves into its own crate. That needs the `Type`
    data apart from the checker, since the checker reads sizes for the copy
    rule and layout reads `Type`. Done: `rask-types` holds `Type` and
-   `TypeDef` on the AST alone, and the checker is `rask-check`. The crate takes `Type`, type
+   `TypeDef` on the AST alone, the checker is `rask-check`, and layout is
+   `rask-layout`, which the checker reads. Layout still computes from the
+   written declarations, not from `TypeDef`; that's next. The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
-   `compiler/CLAUDE.md` calls `rask_check::layout` "the one size model"
+   `compiler/CLAUDE.md` calls `rask_layout` "the one size model"
    today; it will be right once the other five answers are gone. The
    pointer-width global goes here too, not in step 3: most of its fifty-odd
    readers are `MirType::size()` and `LayoutCache::new()`, which this step

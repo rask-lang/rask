@@ -30,7 +30,7 @@ use gimli::{
 };
 use object::write::{Object, Relocation, SymbolId};
 use rask_ast::LineMap;
-use rask_check::layout::{EnumLayout, StructLayout};
+use rask_layout::{EnumLayout, StructLayout};
 
 use crate::CodegenError;
 

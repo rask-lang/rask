@@ -6,7 +6,8 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
-use super::declarations::{for_each_unresolved_name, is_type_param_name};
+use super::declarations::for_each_unresolved_name;
+use rask_ast::type_params::is_type_param_name;
 use super::errors::TypeError;
 use rask_ast::ty::TypeExpr;
 use super::TypeChecker;
@@ -55,7 +56,7 @@ impl TypeChecker {
     /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
         let declared: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
-        let implied: Vec<String> = super::declarations::signature_type_param_names(f)
+        let implied: Vec<String> = rask_ast::type_params::signature_type_param_names(f)
             .into_iter()
             .filter(|n| !declared.contains(n))
             .collect();

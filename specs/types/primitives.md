@@ -110,6 +110,27 @@ choosing what to lose is a real decision.
 Unsigned → signed needs the target *strictly* wider; same-signedness only needs
 it no narrower; signed → unsigned never coerces.
 
+**`usize` and `isize` are asked on every target.** They're 32 bits on a 32-bit
+target and 64 on a 64-bit one, and a conversion is implicit only when it can't
+fail on any of them. So `u32` → `usize` and `usize` → `u64` are implicit, and
+`u64` → `usize` and `usize` → `u32` name a policy, even when the machine you're
+on would have room. Otherwise the same source would compile on a 64-bit machine
+and fail on a 32-bit one, which is VS7a's problem with the copy rule.
+
+A literal is different: it's a value, so it's checked against the target being
+built, like any constant that overflows. `let n: usize = 5_000_000_000`
+compiles for 64-bit and is an error for 32-bit. Whether a conversion can lose
+data depends only on the types, so that answer can't move between targets;
+whether one constant fits does, and that's where the target is the honest
+reference. Rust draws the same line.
+
+| From → To | Implicit? | Why |
+|---|---|---|
+| `u32` → `usize` | yes | Fits a 32-bit `usize` |
+| `usize` → `u64` | yes | A 64-bit `usize` fits |
+| `u64` → `usize` | **no** | Doesn't fit a 32-bit `usize` |
+| `usize` → `u32` | **no** | A 64-bit `usize` doesn't fit |
+
 **Int→float is never implicit, even when it's exact.** `i32` → `f64` loses
 nothing and `as` allows it, but it still needs the `as`. Nothing is lost and
 something still changed: equality stops being reliable, `NaN` becomes reachable,
@@ -117,12 +138,22 @@ and every later operation on that value is float arithmetic. CV1a is about
 conversions the reader can safely not think about, and a change of number kind
 isn't one — the loss test says yes, the *did anything change* test says no.
 
-**Positions, not arithmetic.** CV1a applies where a value fills a typed slot:
-assignment, argument, return, struct field. It is **not** operator promotion —
-operators are homogeneous (`type.operators`), so `a + b` on mixed integer types
-stays an error, and you widen one side yourself. This is the line C's "usual
-arithmetic conversions" crossed, and why `-1 < 1u` is *true* in C. Rask doesn't
-have that bug because it doesn't have that feature.
+**Arithmetic too, by the same test.** CV1a applies where a value fills a typed
+slot (assignment, argument, return, struct field) and between the two sides of an
+arithmetic or bitwise operator. When one integer type holds every value of the
+other, the narrower side widens and the answer has the wider type: `u32 + u64` is
+a `u64`, `u8 + i64` an `i64`. `x += y` then has to fit `x` like any assignment, so
+`total += s.len()` works on a `u64` total and `small += big` on a `u32` doesn't.
+When neither holds the other (`u64 + i64`, `i32 + u32`) there's no answer to pick,
+and it's an error (E0371). That's the line C's "usual arithmetic conversions"
+crossed: C picks a winner even then, which is why `-1 < 1u` is *true* in C.
+
+I used to stop at positions and make operators homogeneous. It cost more than it
+protected: `total += s.len()` needed a conversion that can't fail, and the
+mixed-sign trap it was guarding against is exactly the case this rule still
+refuses. A widened product can still overflow at the narrow width before it
+widens (`u32 * u32` added to a `u64`); overflow is checked, so that panics
+rather than wrapping.
 
 **Why implicit widening is safe here and isn't in some other languages.** Go,
 Rust and Swift require a cast for every numeric conversion. That's the right call

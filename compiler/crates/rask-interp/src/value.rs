@@ -63,6 +63,8 @@ impl IntKind {
             Type::U16 => IntKind::U16,
             Type::U32 => IntKind::U32,
             Type::U64 => IntKind::U64,
+            Type::Usize => IntKind::usize_kind(),
+            Type::Isize => IntKind::isize_kind(),
             _ => IntKind::Untyped,
         }
     }
@@ -136,6 +138,17 @@ impl IntKind {
         match (self, other) {
             (IntKind::Untyped, k) | (k, IntKind::Untyped) => k,
             (a, _) => a,
+        }
+    }
+
+    /// The width integer arithmetic between the two runs at: the wider. The
+    /// checker allowed two widths to meet only where that one holds every
+    /// value of the other (type.primitives/CV1a); taking the left's, `u32 +
+    /// u64` overflowed at 32 bits where native widened.
+    pub fn wider(self, other: IntKind) -> IntKind {
+        match (self.bits(), other.bits()) {
+            (Some(a), Some(b)) if b > a => other,
+            _ => self.unify(other),
         }
     }
 }

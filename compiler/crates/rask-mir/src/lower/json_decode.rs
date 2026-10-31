@@ -13,7 +13,7 @@
 //! matching variant and the runtime's message.
 
 use rask_ast::decl::field_attrs;
-use rask_check::layout::StructLayout;
+use rask_layout::StructLayout;
 use rask_types::{GenericArg, Type};
 
 use super::{LoweringError, MirLowerer, TypedOperand};
@@ -354,7 +354,7 @@ impl<'a> MirLowerer<'a> {
     fn decode_default_fill(
         &mut self,
         struct_name: &str,
-        field: &rask_check::layout::FieldLayout,
+        field: &rask_layout::FieldLayout,
     ) -> Option<MirOperand> {
         let method = self
             .ctx
@@ -533,7 +533,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let Some(written) = type_args.as_ref().and_then(|a| a.first()) {
-            return Ok(rask_check::layout::field_type(written));
+            return Ok(rask_layout::field_type(written));
         }
         Err(LoweringError::InvalidConstruct(
             "json.decode needs to know what to build — write it as \
@@ -544,7 +544,7 @@ impl<'a> MirLowerer<'a> {
 }
 
 fn prim_shape_kind(ty: &Type) -> Option<i64> {
-    let kind = match ty {
+    let kind = match &ty.at_target_width() {
         Type::Bool => JSHAPE_BOOL,
         Type::I8 => JSHAPE_I8,
         Type::I16 => JSHAPE_I16,
@@ -563,12 +563,12 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
             "i16" => JSHAPE_I16,
             "i32" => JSHAPE_I32,
             "i64" => JSHAPE_I64,
-            "isize" => if rask_ast::primitives::pointer_bits() == 32 { JSHAPE_I32 } else { JSHAPE_I64 },
+            "isize" => return prim_shape_kind(&Type::Isize),
             "u8" => JSHAPE_U8,
             "u16" => JSHAPE_U16,
             "u32" => JSHAPE_U32,
             "u64" => JSHAPE_U64,
-            "usize" => if rask_ast::primitives::pointer_bits() == 32 { JSHAPE_U32 } else { JSHAPE_U64 },
+            "usize" => return prim_shape_kind(&Type::Usize),
             "f32" => JSHAPE_F32,
             "f64" => JSHAPE_F64,
             "string" => JSHAPE_STRING,

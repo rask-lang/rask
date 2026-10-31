@@ -510,8 +510,8 @@ impl TypeChecker {
     }
 
     fn is_integer_type(ty: &Type) -> bool {
-        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
+        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize)
     }
 
     fn is_float_type(ty: &Type) -> bool {
@@ -533,7 +533,7 @@ impl TypeChecker {
         // it ends up: a default argument is copied into the call, and
         // `MemoryOrder.SeqCst` there means the stdlib's enum even in a program
         // that declares its own `MemoryOrder`.
-        if !self.types.stdlib_mode && crate::layout::is_stdlib_span(expr.span) {
+        if !self.types.stdlib_mode && rask_stdlib::is_stdlib_span(expr.span) {
             self.types.stdlib_mode = true;
             let ty = self.infer_expr(expr);
             self.types.stdlib_mode = false;
@@ -555,7 +555,7 @@ impl TypeChecker {
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
-                    Some(IntSuffix::Isize) => Type::isize_ty(),
+                    Some(IntSuffix::Isize) => Type::Isize,
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
@@ -567,7 +567,7 @@ impl TypeChecker {
                     // so it stays open like any other unsuffixed literal and
                     // `validate_pending_int_literals` catches a bad landing.
                     Some(IntSuffix::U128) | Some(IntSuffix::U128ByMagnitude) => Type::U128,
-                    Some(IntSuffix::Usize) => Type::usize_ty(),
+                    Some(IntSuffix::Usize) => Type::Usize,
                     None
                     | Some(IntSuffix::U64ByMagnitude)
                     | Some(IntSuffix::I128ByMagnitude) => {
@@ -1425,9 +1425,8 @@ impl TypeChecker {
                                 self.note_type_bounds(&ty, expr.span);
                                 (declared, ty)
                             };
-                            let names = self.types.variant_field_names
-                                .get(&(type_id, variant_name.to_string()))
-                                .cloned()
+                            let names = self.types.variant_field_names(type_id, variant_name)
+                                .map(<[String]>::to_vec)
                                 .unwrap_or_default();
                             for field_init in fields.iter() {
                                 let want = names.iter()
@@ -4122,7 +4121,7 @@ impl TypeChecker {
                 // A variant's field names are its parameter names. The parser
                 // spells an unnamed field `_0`, `_1`, …: that variant has no
                 // names, so any label on it is reported.
-                if let Some(names) = self.types.variant_field_names.get(&(type_id, method.to_string())) {
+                if let Some(names) = self.types.variant_field_names(type_id, method).map(<[String]>::to_vec) {
                     let positional = |n: &String| {
                         n.strip_prefix('_').is_some_and(|d| d.parse::<usize>().is_ok())
                     };
@@ -5332,13 +5331,13 @@ impl TypeChecker {
             "u16" => Type::U16,
             "u32" => Type::U32,
             "u64" => Type::U64,
-            "usize" => Type::usize_ty(),
+            "usize" => Type::Usize,
             "u128" => Type::U128,
             "i8" => Type::I8,
             "i16" => Type::I16,
             "i32" => Type::I32,
             "i64" => Type::I64,
-            "isize" => Type::isize_ty(),
+            "isize" => Type::Isize,
             "i128" => Type::I128,
             "f32" => Type::F32,
             "f64" => Type::F64,
@@ -5730,8 +5729,8 @@ impl TypeChecker {
     fn match_needs_wildcard(ty: &Type) -> bool {
         matches!(
             ty,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
                 | Type::F32 | Type::F64
                 | Type::String | Type::Bytes | Type::Char
         )
@@ -6332,7 +6331,7 @@ impl TypeChecker {
             }
             // A type parameter is asked per call, by ownership's instance walk:
             // the body can't know, each caller's `T` can.
-            if matches!(&payload, Type::UnresolvedNamed(n) if super::declarations::is_type_param_name(n)) {
+            if matches!(&payload, Type::UnresolvedNamed(n) if rask_ast::type_params::is_type_param_name(n)) {
                 continue;
             }
             self.errors.push(TypeError::TakeFromSharedBox {
@@ -7080,7 +7079,9 @@ pub(super) struct PendingCast {
 /// Primitive scalar classification for conversion rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Prim {
-    Int { bits: u32, signed: bool },
+    /// `lo` and `hi`: the narrowest and widest it is on any target. They
+    /// differ only for `usize` and `isize` (32 and 64).
+    Int { lo: u32, hi: u32, signed: bool },
     Float { bits: u32 },
     Bool,
     Char,
@@ -7088,16 +7089,18 @@ enum Prim {
 
 fn prim_of(ty: &Type) -> Option<Prim> {
     Some(match ty {
-        Type::I8 => Prim::Int { bits: 8, signed: true },
-        Type::I16 => Prim::Int { bits: 16, signed: true },
-        Type::I32 => Prim::Int { bits: 32, signed: true },
-        Type::I64 => Prim::Int { bits: 64, signed: true },
-        Type::I128 => Prim::Int { bits: 128, signed: true },
-        Type::U8 => Prim::Int { bits: 8, signed: false },
-        Type::U16 => Prim::Int { bits: 16, signed: false },
-        Type::U32 => Prim::Int { bits: 32, signed: false },
-        Type::U64 => Prim::Int { bits: 64, signed: false },
-        Type::U128 => Prim::Int { bits: 128, signed: false },
+        Type::I8 => Prim::Int { lo: 8, hi: 8, signed: true },
+        Type::I16 => Prim::Int { lo: 16, hi: 16, signed: true },
+        Type::I32 => Prim::Int { lo: 32, hi: 32, signed: true },
+        Type::I64 => Prim::Int { lo: 64, hi: 64, signed: true },
+        Type::I128 => Prim::Int { lo: 128, hi: 128, signed: true },
+        Type::U8 => Prim::Int { lo: 8, hi: 8, signed: false },
+        Type::U16 => Prim::Int { lo: 16, hi: 16, signed: false },
+        Type::U32 => Prim::Int { lo: 32, hi: 32, signed: false },
+        Type::U64 => Prim::Int { lo: 64, hi: 64, signed: false },
+        Type::U128 => Prim::Int { lo: 128, hi: 128, signed: false },
+        Type::Isize => Prim::Int { lo: 32, hi: 64, signed: true },
+        Type::Usize => Prim::Int { lo: 32, hi: 64, signed: false },
         Type::F32 => Prim::Float { bits: 32 },
         Type::F64 => Prim::Float { bits: 64 },
         Type::Bool => Prim::Bool,
@@ -7112,12 +7115,17 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// that range needs 128-bit literals to reach anyway.
 /// The inclusive range of an integer type. The top is a `u128` because
 /// `u128::MAX` is the one bound no signed type can hold.
+///
+/// A literal is a value, so it's checked against the target being built, the
+/// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
+/// a 32-bit one. Conversions are about types and stay target-independent
+/// (`is_integer_widening`). The one place the checker asks the target.
 fn int_range(ty: &Type) -> Option<(i128, u128)> {
-    Some(match prim_of(ty)? {
-        Prim::Int { bits: 128, signed: false } => (0, u128::MAX),
-        Prim::Int { bits: 128, signed: true } => (i128::MIN, i128::MAX as u128),
-        Prim::Int { bits, signed: true } => (-(1i128 << (bits - 1)), (1u128 << (bits - 1)) - 1),
-        Prim::Int { bits, signed: false } => (0, (1u128 << bits) - 1),
+    Some(match prim_of(&ty.at_target_width())? {
+        Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
+        Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
+        Prim::Int { lo, signed: true, .. } => (-(1i128 << (lo - 1)), (1u128 << (lo - 1)) - 1),
+        Prim::Int { lo, signed: false, .. } => (0, (1u128 << lo) - 1),
         _ => return None,
     })
 }
@@ -7138,14 +7146,19 @@ fn as_cast_is_lossless(src_ty: &Type, tgt_ty: &Type, s: Prim, t: Prim) -> bool {
         return true;
     }
     match (s, t) {
-        (Prim::Int { bits: sb, signed: ss }, Prim::Int { bits: tb, signed: ts }) => {
-            tb > sb && (ss == ts || !ss)
-        }
-        (Prim::Int { bits, signed }, Prim::Float { bits: fb }) => {
-            int_fits_float_exactly(bits, signed, fb)
+        // On every target: the source at its widest into the target at its
+        // narrowest. Two distinct types of one width and sign only meet here as
+        // `usize` and `u64` (or `isize` and `i64`), which fit one way.
+        (Prim::Int { hi: sb, signed: ss, .. }, Prim::Int { lo: tb, signed: ts, .. }) => match (ss, ts) {
+            (true, true) | (false, false) => tb >= sb,
+            (false, true) => tb > sb,
+            (true, false) => false,
+        },
+        (Prim::Int { hi, signed, .. }, Prim::Float { bits: fb }) => {
+            int_fits_float_exactly(hi, signed, fb)
         }
         (Prim::Float { bits: sb }, Prim::Float { bits: tb }) => tb >= sb,
-        (Prim::Char, Prim::Int { bits, .. }) => bits >= 32,
+        (Prim::Char, Prim::Int { lo, .. }) => lo >= 32,
         _ => false,
     }
 }

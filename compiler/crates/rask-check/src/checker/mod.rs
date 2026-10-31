@@ -18,6 +18,8 @@ mod errors;
 mod parse_type;
 mod borrow;
 mod declarations;
+mod sizes;
+pub use sizes::layout_spelling;
 mod annotations;
 mod check_pattern;
 mod check_fn;
@@ -44,9 +46,9 @@ pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
-pub use declarations::is_type_param_name;
+
 pub use generics::{bind_header_pattern, bind_header_patterns};
-pub use declarations::{binary_field_runtime_type, header_type_params, signature_type_param_names, struct_type_param_names, enum_type_param_names};
+pub use declarations::header_type_params;
 
 use borrow::ActiveBorrow;
 

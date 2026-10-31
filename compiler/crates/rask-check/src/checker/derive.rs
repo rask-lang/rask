@@ -944,8 +944,8 @@ impl TypeChecker {
     fn clones_by_copy(ty: &Type) -> bool {
         match ty {
             Type::Unit | Type::Bool | Type::Char | Type::None
-            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 => true,
             // An address: the copy points where the original does.
             Type::RawPtr(_) => true,

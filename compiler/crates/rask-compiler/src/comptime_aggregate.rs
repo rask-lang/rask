@@ -16,7 +16,7 @@ use rask_mir::lower::MirContext;
 use rask_mir::MirType;
 use rask_types::abi::{TAG_BYTES, TAG_OFFSET};
 use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
-use rask_check::layout::{FieldLayout};
+use rask_layout::{FieldLayout};
 use rask_mono::{MonoProgram};
 
 /// Why a value has no bytes.

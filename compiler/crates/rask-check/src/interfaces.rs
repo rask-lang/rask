@@ -537,11 +537,13 @@ impl<'a> InterfaceChecker<'a> {
             | Type::I32
             | Type::I64
             | Type::I128
+            | Type::Isize
             | Type::U8
             | Type::U16
             | Type::U32
             | Type::U64
             | Type::U128
+            | Type::Usize
             | Type::F32
             | Type::F64 => true,
             // E15: `T?` (Result with an absent err) encodes when its payload does
@@ -1746,8 +1748,8 @@ fn numeric_interface_members(name: &str) -> Option<fn(&Type) -> bool> {
 fn is_integer_type(ty: &Type) -> bool {
     matches!(
         ty,
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
-            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
     )
 }
 
@@ -1783,8 +1785,8 @@ pub fn primitive_conformances(ty: &Type) -> &'static [&'static str] {
     // An address: what it points at isn't part of it (mem.unsafe/UT4).
     const POINTER: &[&str] = &["Equal", "Cloneable"];
     match ty {
-        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => SIGNED,
-        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => UNSIGNED,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => SIGNED,
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => UNSIGNED,
         Type::F32 | Type::F64 => FLOAT,
         Type::Bool | Type::Char | Type::String => SCALAR,
         Type::Bytes => BYTES,
@@ -2020,6 +2022,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
         let coin = types.register_type(TypeDef::Struct {
             name: "Coin".to_string(),
@@ -2037,6 +2041,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
         let blob = types.register_type(TypeDef::Struct {
             name: "Blob".to_string(),
@@ -2054,6 +2060,8 @@ mod tests {
             no_decode: false,
             reads_as: None,
             temporary: None,
+            attrs: vec![],
+            field_decls: vec![],
         });
 
         // Ring<T> implements Show where T: Show
