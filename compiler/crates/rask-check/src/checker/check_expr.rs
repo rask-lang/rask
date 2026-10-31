@@ -4361,7 +4361,14 @@ impl TypeChecker {
         // read of the same value, and `self.items.clear()` showed through
         // `other`. Only a receiver whose type is known here; one still open
         // has nothing to say whether the method writes.
-        if let Some(var_name) = object.name() {
+        // A Copy receiver passed as an argument is a copy there, so the two
+        // can't alias; that covers every operator on a number (`x + x`).
+        let recv_copy = object
+            .name()
+            .and_then(|n| self.lookup_local(n))
+            .map(|t| self.resolve_named(&self.ctx.apply(&t)))
+            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy(&t));
+        if let Some(var_name) = object.name().filter(|_| !recv_copy) {
             if self.method_mutates_self(var_name, method) {
                 if let Some(recv_path) = Self::access_path(object) {
                     if let Some(arg) = args.iter().find(|a| {
