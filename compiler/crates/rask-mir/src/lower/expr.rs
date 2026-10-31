@@ -5241,6 +5241,16 @@ impl<'a> MirLowerer<'a> {
         if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
             return Ok(r);
         }
+
+        // `from.make<T>()` in a generator: a `T` built like a claim's input
+        // (type.claims/IN2), not noted as one.
+        if method == "make" && args.is_empty() && self.is_claim_choices(object) {
+            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                return Err(LoweringError::InvalidConstruct("Choices.make needs to know what to build".to_string()));
+            };
+            let (value, ty) = self.build_claim_value(&target)?;
+            return Ok((MirOperand::Local(value), ty));
+        }
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }

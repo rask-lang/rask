@@ -153,15 +153,27 @@
 // A `char`, as its code point in four bytes. Claims build these; JSON
 // has no `char` yet.
 #define RASK_JSHAPE_CHAR 12
-#define RASK_JSHAPE_PRIM_COUNT 13
-#define RASK_JSHAPE_VEC 13
-#define RASK_JSHAPE_MAP 14
-#define RASK_JSHAPE_OPT 15
-#define RASK_JSHAPE_STRUCT 16
+
+// 128-bit integers, which JSON numbers can't carry. Claims build these.
+#define RASK_JSHAPE_I128 13
+#define RASK_JSHAPE_U128 14
+#define RASK_JSHAPE_PRIM_COUNT 15
+#define RASK_JSHAPE_VEC 15
+#define RASK_JSHAPE_MAP 16
+#define RASK_JSHAPE_OPT 17
+#define RASK_JSHAPE_STRUCT 18
 
 // An enum: a tag, and per variant a struct of its payload. Claims build
 // these; JSON's enum form is still open (std.json).
-#define RASK_JSHAPE_ENUM 17
+#define RASK_JSHAPE_ENUM 19
+
+// A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
+// build these; JSON has no form for a result.
+#define RASK_JSHAPE_RESULT 20
+
+// A type that builds itself through `claims.Generate`: the shape holds
+// the function that calls its `generate`. Claims only.
+#define RASK_JSHAPE_GENERATED 21
 
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1

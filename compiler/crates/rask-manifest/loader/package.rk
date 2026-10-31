@@ -23,6 +23,13 @@ public struct Package {
     public features: Vec<Feature>
     public exclusive_features: Vec<ExclusiveFeature>
     public profiles: Vec<Profile>
+    // [claims]: the claims sources it's held to besides its own claims.rk.
+    public claims: Vec<ClaimsSource>
+}
+
+public struct ClaimsSource {
+    public name: string
+    public source: DepSource
 }
 
 public enum DepSource {
@@ -93,6 +100,7 @@ public func load_package(text: string) -> Package or LoadError {
         features: features_at(tree)
         exclusive_features: exclusive_at(tree)
         profiles: profiles_at(tree)
+        claims: claims_at(tree)
     )
     let errors = rule_errors(built)
     if !errors.is_empty() {
@@ -240,6 +248,16 @@ func exclusive_at(tree: Vec<Entry>) -> Vec<ExclusiveFeature> {
                 }
             }
             out.push(ExclusiveFeature(name: e.key, default: str_at(g, "default") ?? "", options))
+        }
+    }
+    return out
+}
+
+func claims_at(entries: Vec<Entry>) -> Vec<ClaimsSource> {
+    mut out = Vec<ClaimsSource>.new()
+    for e in table_at(entries, "claims") {
+        if e.value is Table(spec) {
+            out.push(ClaimsSource(name: e.key, source: dep_from(e.key, spec).source))
         }
     }
     return out

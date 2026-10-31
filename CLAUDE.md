@@ -154,6 +154,7 @@ to this file and the skills.
 | `rask fmt <file>` | Format .rk source files |
 | `rask check <file>` | Type-check a .rk file |
 | `rask check --claims <dir>` | Also build and run the package's `claims.rk` ([type.claims](specs/types/claims.md)); `build`, `run` and `test` run them anyway |
+| `rask claims <dir>` | List a package's claims and verdicts; `--since <rev>` and `--mutate` for review |
 | `rask run <file>` | Execute a .rk program (native) |
 | `rask run --interp <file>` | Execute via interpreter (no codegen) |
 | `rask test <file>` | Run `test` blocks — **native**, like `run` |

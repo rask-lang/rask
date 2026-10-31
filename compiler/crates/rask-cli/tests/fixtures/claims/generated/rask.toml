@@ -1,0 +1,5 @@
+schema = "rask-package@2"
+
+[package]
+name = "sorted"
+version = "0.1.0"

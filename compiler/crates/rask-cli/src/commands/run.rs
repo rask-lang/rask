@@ -1019,7 +1019,7 @@ fn display_test_results(
 /// Newlines matter as much as quotes here: a raw newline splits the record
 /// across two lines and the parser then sees an unterminated string, so an
 /// `assert_eq` diff from the interpreter vanished instead of printing.
-fn json_escape(s: &str) -> String {
+pub(super) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

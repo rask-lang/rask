@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // One claim for each verdict a claim can end with (type.claims).
 
+import fs
 import ledger
 
 enum Op {
@@ -62,8 +63,9 @@ claim no_bad_index(x: u16) {
     }
 }
 
-// Tasks run under sim, so a claim can spawn and join.
-claim tasks_double(x: i32) {
+// Tasks run under sim, so a claim can spawn and join. Every `u8` could be
+// walked, but not every schedule, so this one is sampled.
+claim tasks_double(x: u8) {
     let want = x.to<i64>()! * 2
     using Multitasking {
         let h = spawn {
@@ -81,4 +83,10 @@ claim map_sizes_agree(m: Map<string, i64>, c: char) {
         n += 1
     }
     assert n == m.len()
+}
+
+// Each input starts on the real tree alone: what the last one wrote is gone.
+claim files_start_clean(b: bool) {
+    assert !fs.exists("claims_scratch.txt")
+    fs.write_text("claims_scratch.txt", "written")!
 }

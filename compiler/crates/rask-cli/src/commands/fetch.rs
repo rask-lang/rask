@@ -303,6 +303,11 @@ pub fn resolve_and_lock(root: &Path, pins: Pins, verbose: bool) -> Result<Resolv
             existing_lock.as_ref()?.packages.iter().find(|p| p.name == pkg.name)?.signing_key.clone()
         });
     }
+    // Claims sources aren't dependencies: the registry doesn't see them, and
+    // their pins carry over until the claims step rewrites them (type.claims/W3).
+    if let Some(old) = &existing_lock {
+        lock.claims = old.claims.clone();
+    }
     if let Some(old) = &existing_lock {
         for (name, old_key, new_key) in old.signing_keys_changed(&signing_keys) {
             eprintln!("  {} signing key changed for '{}'", "Warning:".yellow(), name);

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What the core interfaces mean (type.claims, "Claims on interfaces"). Every
+// package is held to these without listing them, for each public type that
+// declares its own conformance. A derived conformance meets them by
+// construction, so it isn't checked.
+
+claim equal_is_reflexive<T: Equal>(a: T) {
+    assert a == a
+}
+
+claim equal_is_symmetric<T: Equal>(a: T, b: T) {
+    assert (a == b) == (b == a)
+}
+
+claim compare_is_reflexive<T: Comparable>(a: T) {
+    assert a.compare(a) == Ordering.Equal
+}
+
+claim compare_is_antisymmetric<T: Comparable>(a: T, b: T) {
+    let ab = a.compare(b)
+    let ba = b.compare(a)
+    if ab == Ordering.Less {
+        assert ba == Ordering.Greater
+    }
+    if ab == Ordering.Greater {
+        assert ba == Ordering.Less
+    }
+    if ab == Ordering.Equal {
+        assert ba == Ordering.Equal
+    }
+}
+
+claim compare_agrees_with_equal<T: Comparable + Equal>(a: T, b: T) {
+    assert (a.compare(b) == Ordering.Equal) == (a == b)
+}
+
+claim hash_agrees_with_equal<T: Hashable>(a: T, b: T) {
+    if a == b {
+        assert a.hash() == b.hash()
+    }
+}
+
+claim clone_is_equal<T: Cloneable + Equal>(a: T) {
+    assert a.clone() == a
+}
