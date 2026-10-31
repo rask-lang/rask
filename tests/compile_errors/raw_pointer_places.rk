@@ -6,7 +6,8 @@
 //
 // A raw pointer isn't indexed: it knows where its memory starts but not where
 // it ends, so `[i]` would read like a checked access and check nothing. The
-// offset is `p.add(i)` and the read is `*`.
+// offset is `p.add(i)` and the read is `*`. A field is read the same way,
+// through `*`: `(*p).x`.
 
 func make() -> i32 {
     return 3
@@ -26,6 +27,15 @@ func address_of_a_call() {
 // ERROR: cannot index the raw pointer `**u8` [E0819]
 func index_a_pointer(argv: **u8) -> *u8 {
     return unsafe argv[0]
+}
+
+struct Pt {
+    x: i32
+}
+
+// ERROR: a raw pointer has no field `x` [E0312]
+func field_of_a_pointer(p: *Pt) -> i32 {
+    return unsafe p.x
 }
 
 func main() {

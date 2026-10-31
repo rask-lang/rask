@@ -446,6 +446,17 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("the call operator `()` requires a callable type")
             }
 
+            // A pointer has no fields; the struct it points at does.
+            NoSuchField { ty: crate::Type::RawPtr(_), field, span } => {
+                Diagnostic::error(format!("a raw pointer has no field `{}`", field))
+                    .with_code("E0312")
+                    .with_primary(*span, "this is the pointer, not what it points at")
+                    .with_fix(format!("read through it: `(*p).{}`", field))
+                    .with_why(
+                        "`*p` is where the memory is read, and `unsafe` covers that read. \
+                         A field access on the pointer itself would hide it [mem.unsafe]",
+                    )
+            }
             NoSuchField { ty, field, span } => {
                 Diagnostic::error(format!(
                     "no field `{}` on type `{}`",
