@@ -1324,19 +1324,33 @@ impl Parser {
         // the pointer too: `*u8 or E` is a result holding a pointer.
         if self.check(&TokenKind::Star) {
             self.advance();
-            let grouped = self.check(&TokenKind::LParen);
-            let mut pointee = self.parse_base_type()?;
             let mut absent = 0;
-            if !grouped {
-                while let TypeExpr::Optional(inner) = pointee {
-                    pointee = *inner;
+            let pointee = if self.match_token(&TokenKind::LParen) {
+                // `*(T?)?`: the group ends at its `)`, and a `?` after that is
+                // the pointer's like any other. Parsing the group as a whole
+                // type let it take that `?` too, so `*(*u8?)?`, C's `char **`,
+                // was a never-null pointer to a doubly optional one.
+                let mut parts = vec![self.parse_type_name()?];
+                while self.match_token(&TokenKind::Comma) {
+                    if self.check(&TokenKind::RParen) {
+                        break;
+                    }
+                    parts.push(self.parse_type_name()?);
+                }
+                self.expect(&TokenKind::RParen)?;
+                if parts.len() == 1 { parts.pop().expect("one part") } else { TypeExpr::Tuple(parts) }
+            } else {
+                let mut bare = self.parse_base_type()?;
+                while let TypeExpr::Optional(inner) = bare {
+                    bare = *inner;
                     absent += 1;
                 }
-                // `void` takes no suffix of its own, so `*void?`'s `?` is
-                // still waiting here.
-                while self.match_token(&TokenKind::Question) {
-                    absent += 1;
-                }
+                bare
+            };
+            // `void` takes no suffix of its own, so `*void?`'s `?` is still
+            // waiting here, and so is the `?` after a group.
+            while self.match_token(&TokenKind::Question) {
+                absent += 1;
             }
             let mut ty = TypeExpr::RawPtr(Box::new(pointee));
             for _ in 0..absent {
