@@ -444,14 +444,30 @@ impl<'a> InterfaceChecker<'a> {
         // implementation can match — which is what made every conformance to a
         // generic interface fail claiming a missing method (#1164).
         let subst = self.conformance_substitution(ty, interface);
+        // A written `Self` is the implementing type, on both sides. Left as a
+        // placeholder it matched anything, so `func dup(self) -> Bb` passed
+        // for an interface asking `-> Self` on an `Aa`. Only a plain type:
+        // a generic one's methods spell `Self` by its parameters. Applied
+        // after the conformance's own substitution, so `Self.Out` has already
+        // become what the conformance answers.
+        let plain_self = matches!(ty, Type::Named(_));
+        let self_only: HashMap<String, Type> = if plain_self {
+            HashMap::from([("Self".to_string(), ty.clone())])
+        } else {
+            HashMap::new()
+        };
         let required_methods: Vec<MethodSig> = self
             .interface_methods(interface)?
             .into_iter()
-            .map(|m| substitute_signature(&m, &subst))
+            .map(|m| substitute_signature(&substitute_signature(&m, &subst), &self_only))
             .collect();
 
         // Get the type's available methods
-        let type_methods = self.get_type_methods(ty);
+        let type_methods: Vec<MethodSig> = self
+            .get_type_methods(ty)
+            .iter()
+            .map(|m| substitute_signature(m, &self_only))
+            .collect();
 
         // Check each required method exists with matching signature
         for required in &required_methods {

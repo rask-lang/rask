@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a conformance that answers `Self` with another type, and an
+// `extend` of something that isn't a type
+//
+// A written `Self` in an interface was a placeholder that matched anything, so
+// `func dup(self) -> Bb` satisfied `func dup(self) -> Self` on an `Aa`. And a
+// dotted `extend` header read as a module's type and registered nowhere when
+// it named nothing: `extend Shape.Circle` (a variant) compiled, and its
+// methods didn't exist.
+
+interface Dup {
+    func dup(self) -> Self
+}
+
+struct Aa { x: i32 }
+struct Bb { y: i32 }
+
+Aa implements Dup {
+    // ERROR: `Self` is `Aa` here [E0888]
+    func dup(self) -> Bb {
+        return Bb(y: self.x)
+    }
+}
+
+enum Shape { Circle, Dot }
+
+// ERROR: a variant isn't a type [E0356]
+extend Shape.Circle {
+    func radius(self) -> i32 {
+        return 1
+    }
+}
+
+func main() {}

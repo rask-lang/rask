@@ -1063,6 +1063,7 @@ impl Resolver {
         }
         for decl in decls {
             self.reject_duplicate_members(decl);
+            self.reject_misplaced_self(decl);
         }
     }
 
@@ -1070,6 +1071,34 @@ impl Resolver {
     /// variants, two fields of a variant, two parameters or type parameters
     /// of a function, two methods of an interface. Each used to keep the
     /// last and carry on.
+    /// `self` is a method's first parameter and nothing else. `func f(a,
+    /// self)` compiled and natively read `a`'s slot as the receiver; a free
+    /// `func f(self)` was an ordinary parameter named `self`.
+    fn reject_misplaced_self(&mut self, decl: &Decl) {
+        let check_method = |f: &FnDecl, errors: &mut Vec<ResolveError>| {
+            for (i, p) in f.params.iter().enumerate() {
+                if p.name == "self" && i > 0 {
+                    errors.push(ResolveError::self_misplaced("has to be the first parameter", p.name_span));
+                }
+            }
+        };
+        match &decl.kind {
+            DeclKind::Fn(f) => {
+                if let Some(p) = f.params.iter().find(|p| p.name == "self") {
+                    self.errors.push(ResolveError::self_misplaced(
+                        "is a method's receiver, and this is a free function",
+                        p.name_span,
+                    ));
+                }
+            }
+            DeclKind::Struct(st) => st.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Enum(e) => e.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Interface(i) => i.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Impl(i) => i.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            _ => {}
+        }
+    }
+
     fn reject_duplicate_members(&mut self, decl: &Decl) {
         use rask_ast::decl::{Field, TypeParam};
         fn fields(fs: &[Field]) -> Vec<(&str, Span)> {

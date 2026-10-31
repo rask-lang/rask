@@ -1063,6 +1063,13 @@ impl TypeChecker {
                 // answer per type is exactly what that isn't.
                 if rask_resolve::is_builtin_type(base_name) {
                     self.check_builtin_core_conformance(i, span);
+                } else if !self.types.stdlib_mode && base_name.contains('.') {
+                    // A dotted header reads as a module's type, so the
+                    // header check let it pass, and a block for a type that
+                    // doesn't exist registered nowhere: `extend Nope.Thing { … }`
+                    // compiled, and so did `extend Shape.Circle`, a variant,
+                    // whose methods then didn't exist on `Shape`.
+                    self.report_unknown_type_name(base_name.to_string(), span);
                 }
                 return;
             }

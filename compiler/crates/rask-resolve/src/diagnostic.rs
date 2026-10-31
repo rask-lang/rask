@@ -99,6 +99,14 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("each name can only be defined once in a scope")
             }
 
+            SelfMisplaced { problem } => {
+                Diagnostic::error(format!("`self` {}", problem))
+                    .with_code("E0219")
+                    .with_primary(self.span, "here")
+                    .with_help("`self` is the receiver: the first parameter of a method in an `extend` block, a struct body or an interface")
+                    .with_why("a call `x.m(a)` passes `x` as the first parameter; a `self` anywhere else has nothing to receive")
+            }
+
             RepeatedBinding { name } => {
                 Diagnostic::error(format!("`{}` is bound twice", name))
                     .with_code("E0218")
