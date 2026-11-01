@@ -5247,6 +5247,16 @@ impl<'a> MirLowerer<'a> {
         if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
             return Ok(r);
         }
+
+        // `from.make<T>()` in a generator: a `T` built like a claim's input
+        // (type.claims/IN2), not noted as one.
+        if method == "make" && args.is_empty() && self.is_claim_choices(object) {
+            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                return Err(LoweringError::InvalidConstruct("Choices.make needs to know what to build".to_string()));
+            };
+            let (value, ty) = self.build_claim_value(&target)?;
+            return Ok((MirOperand::Local(value), ty));
+        }
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }
@@ -5805,6 +5815,16 @@ impl<'a> MirLowerer<'a> {
                             }));
                             let encoded = (MirOperand::Local(result_local), MirType::I64);
                             return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
+                        }
+
+                        // claims.input<T>(name) — build a claim's input (type.claims)
+                        if name == "claims" && method == "input" && args.len() == 1 {
+                            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                                return Err(LoweringError::InvalidConstruct(
+                                    "claims.input needs to know what to build".to_string(),
+                                ));
+                            };
+                            return self.lower_claim_input(&args[0].expr, &target).map(Some);
                         }
 
                         // json.decode<T> — describe T to the runtime, decode into it
@@ -9377,7 +9397,7 @@ impl<'a> MirLowerer<'a> {
     /// Vec field printed the *address* of its buffer as an integer, which is
     /// how `Holder { items: 609538720 }` came out where the interpreter says
     /// `Holder { items: [1, 2] }`.
-    fn debug_render_value(
+    pub(super) fn debug_render_value(
         &mut self,
         op: &MirOperand,
         ty: &MirType,
@@ -10295,7 +10315,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Concatenate a list of string operands left to right.
-    fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
+    pub(super) fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
         let mut iter = parts.into_iter();
         let Some(mut acc) = iter.next() else {
             return MirOperand::Constant(MirConst::String(String::new()));

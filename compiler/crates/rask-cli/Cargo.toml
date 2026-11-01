@@ -30,6 +30,6 @@ rask-c-parse = { path = "../rask-c-parse" }
 rask-compiler = { path = "../rask-compiler" }
 rask-manifest = { path = "../rask-manifest" }
 colored = "3"
+serde_json = "1"
 
 [dev-dependencies]
-serde_json = "1"

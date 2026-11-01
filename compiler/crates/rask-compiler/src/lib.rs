@@ -97,8 +97,11 @@ fn misplaced_claims(decls: &[Decl]) -> Vec<Diagnostic> {
             DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("claim")) => Some(
                 Diagnostic::error(format!("claim `{}` is outside a claims file", f.name))
                     .with_code("E0951")
-                    .with_primary(f.span, "a claim can only be declared in a package's `claims.rk`")
-                    .with_help("move it to `claims.rk` beside the package's sources, and import the package there"),
+                    .with_primary(f.span, "a claim can only be declared in a claims source")
+                    .with_help(
+                        "move it to `claims.rk` beside the package's sources and import the package there, \
+                         or to a file a package lists under `[claims]` in its rask.toml",
+                    ),
             ),
             _ => None,
         })

@@ -2041,6 +2041,7 @@ mod tests {
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
+            claim_generators: std::collections::HashMap::new(),
         }
     }
 
@@ -2102,6 +2103,7 @@ mod tests {
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
+            claim_generators: std::collections::HashMap::new(),
         }
     }
 
@@ -2183,6 +2185,7 @@ mod tests {
             call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
+            claim_generators: std::collections::HashMap::new(),
         }
     }
 }

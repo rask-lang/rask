@@ -1040,7 +1040,7 @@ impl CodeGenerator {
         }
 
         // rask_claim_start() -> void and
-        // rask_claim_run(fn, name, seed, domain, budget) -> i64 (1 = a claim failed)
+        // rask_claim_run(fn, name, seed, budget) -> i64 (1 = a claim failed)
         {
             let sig = self.module.make_signature();
             let id = self.module
@@ -1048,7 +1048,7 @@ impl CodeGenerator {
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_claim_start".to_string(), id);
             let mut sig = self.module.make_signature();
-            for _ in 0..5 {
+            for _ in 0..4 {
                 sig.params.push(AbiParam::new(types::I64));
             }
             sig.returns.push(AbiParam::new(types::I64));
@@ -2343,9 +2343,8 @@ impl CodeGenerator {
             })?;
             let name_ptr = fn_builder.ins().global_value(types::I64, *name_gv);
             let seed = fn_builder.ins().iconst(types::I64, c.seed as i64);
-            let domain = fn_builder.ins().iconst(types::I64, c.domain);
             let budget = fn_builder.ins().iconst(types::I64, c.budget);
-            let call = fn_builder.ins().call(run_ref, &[fn_addr, name_ptr, seed, domain, budget]);
+            let call = fn_builder.ins().call(run_ref, &[fn_addr, name_ptr, seed, budget]);
             let failed = fn_builder.inst_results(call)[0];
             failures = fn_builder.ins().iadd(failures, failed);
         }

@@ -646,6 +646,19 @@ pub struct PackageDecl {
     /// List-valued metadata (e.g., `members: ["app", "lib"]`).
     pub list_metadata: Vec<(String, Vec<String>)>,
     pub profiles: Vec<ProfileDecl>,
+    /// `[claims]`: claims sources the package is held to besides its own
+    /// `claims.rk` (type.claims/W2).
+    pub claims: Vec<ClaimsSourceDecl>,
+}
+
+/// One `[claims]` entry: a file or directory of claims, from a path or git.
+#[derive(Debug, Clone)]
+pub struct ClaimsSourceDecl {
+    pub name: String,
+    pub path: Option<String>,
+    pub git: Option<String>,
+    pub rev: Option<String>,
+    pub branch: Option<String>,
 }
 
 impl PackageDecl {

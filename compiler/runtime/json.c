@@ -13,6 +13,7 @@
 // Nesting, arrays, and maps recurse here in C instead of unrolling into MIR.
 
 #include "rask_runtime.h"
+#include "value_shape.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -519,30 +520,8 @@ RaskJsonVal *rask_json_tree_parse(const RaskStr *s) {
 }
 
 // ─── Shapes ───────────────────────────────────────────────────────
-
-struct RaskJsonField {
-    char *key;
-    int64_t offset;
-    RaskJsonShape *shape;   // NULL for a field that isn't serialized
-    int64_t flags;
-    RaskJsonFill fill;      // the field's default, or NULL when it has none
-};
-
-struct RaskJsonShape {
-    int64_t kind;
-    int64_t slot;                 // struct byte size, or element/value slot width
-    int64_t payload_offset;       // T?: where the payload sits, past the tag
-    int      is_static;           // primitive singletons are never freed
-    RaskJsonShape *elem;          // Vec element / Map value / T? payload
-    // What a Vec element or Map value owns, in the form every container
-    // constructor takes, so the container the decoder builds frees it.
-    const int32_t *elem_owned;
-    int64_t n_elem_owned;
-    int64_t elem_align;
-    struct RaskJsonField *fields; // struct fields
-    int32_t nfields;
-    int32_t cap;
-};
+//
+// The structs are in value_shape.h, which claims.c walks too.
 
 // One shared node per primitive kind — a decode call allocates only for the
 // aggregate parts of its type.
@@ -553,8 +532,9 @@ static int64_t json_prim_width(int64_t kind) {
     switch (kind) {
         case RASK_JSHAPE_BOOL: case RASK_JSHAPE_I8: case RASK_JSHAPE_U8:  return 1;
         case RASK_JSHAPE_I16: case RASK_JSHAPE_U16:                       return 2;
-        case RASK_JSHAPE_I32: case RASK_JSHAPE_U32: case RASK_JSHAPE_F32: return 4;
-        case RASK_JSHAPE_STRING:                                          return 16;
+        case RASK_JSHAPE_I32: case RASK_JSHAPE_U32: case RASK_JSHAPE_F32:
+        case RASK_JSHAPE_CHAR:                                            return 4;
+        case RASK_JSHAPE_STRING: case RASK_JSHAPE_I128: case RASK_JSHAPE_U128: return 16;
         default:                                                          return 8;
     }
 }
@@ -636,6 +616,49 @@ void rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
     f->fill = fill;
 }
 
+RaskJsonShape *rask_json_shape_enum(int64_t size, int64_t tag_offset, int64_t tag_width) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_ENUM, size);
+    s->tag_offset = tag_offset;
+    s->tag_width = tag_width;
+    return s;
+}
+
+RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int64_t total_size,
+                                      int64_t payload_offset) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_RESULT, total_size);
+    s->elem = ok;
+    s->err = err;
+    s->payload_offset = payload_offset;
+    return s;
+}
+
+RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_GENERATED, size);
+    s->generate = (RaskJsonFill)generate;
+    return s;
+}
+
+void rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key) {
+    rask_json_shape_free(map->key);
+    map->key = key;
+}
+
+void rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload) {
+    if (!s) return;
+    if (s->nvariants == s->vcap) {
+        int32_t old = s->vcap;
+        int32_t cap = old ? old * 2 : 4;
+        s->variants = (struct RaskJsonVariant *)rask_realloc(
+            s->variants,
+            (int64_t)old * (int64_t)sizeof(struct RaskJsonVariant),
+            (int64_t)cap * (int64_t)sizeof(struct RaskJsonVariant));
+        s->vcap = cap;
+    }
+    s->variants[s->nvariants].tag = tag;
+    s->variants[s->nvariants].payload = payload;
+    s->nvariants++;
+}
+
 void rask_json_shape_free(RaskJsonShape *s) {
     if (!s || s->is_static) return;
     for (int32_t i = 0; i < s->nfields; i++) {
@@ -643,7 +666,13 @@ void rask_json_shape_free(RaskJsonShape *s) {
         rask_json_shape_free(s->fields[i].shape);
     }
     rask_free(s->fields);
+    for (int32_t i = 0; i < s->nvariants; i++) {
+        rask_json_shape_free(s->variants[i].payload);
+    }
+    rask_free(s->variants);
     rask_json_shape_free(s->elem);
+    rask_json_shape_free(s->err);
+    rask_json_shape_free(s->key);
     rask_free(s);
 }
 
@@ -826,6 +855,16 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         case RASK_JSHAPE_STRUCT: return json_decode_struct(dst, shape, v, path);
         case RASK_JSHAPE_VEC:    return json_decode_vec(dst, shape, v, path);
         case RASK_JSHAPE_MAP:    return json_decode_map(dst, shape, v, path);
+        // Claims build these shapes; JSON's form for them is still open (std.json),
+        // so lowering never asks the decoder for one.
+        case RASK_JSHAPE_CHAR:
+        case RASK_JSHAPE_I128:
+        case RASK_JSHAPE_U128:
+        case RASK_JSHAPE_ENUM:
+        case RASK_JSHAPE_RESULT:
+        case RASK_JSHAPE_GENERATED:
+            json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
+            return 0;
         case RASK_JSHAPE_STRING: {
             if (v->kind != RASK_JSON_STR) break;
             RaskStr s = v->as.str;

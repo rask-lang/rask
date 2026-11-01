@@ -268,6 +268,8 @@ fn main() {
     };
 
     set_opt_in_warnings(cli_args);
+    let claims_opts = claims_options(cli_args);
+    commands::claims::set_options(claims_opts);
 
     // Filter out format and --warn flags for command dispatch
     let cmd_args: Vec<&str> = cli_args
@@ -275,13 +277,13 @@ fn main() {
         .enumerate()
         .filter(|(i, a)| {
             let s = a.as_str();
-            if s == "--format=json" || s == "--json" || s.starts_with("--warn=") {
+            if s == "--format=json" || s == "--json" || s.starts_with("--warn=") || s == "--claims=strict" {
                 return false;
             }
-            if s == "--format" || s == "--warn" {
+            if s == "--format" || s == "--warn" || s == "--claim-seeds" {
                 return false;
             }
-            if *i > 0 && (cli_args[i - 1] == "--format" || cli_args[i - 1] == "--warn") {
+            if *i > 0 && (cli_args[i - 1] == "--format" || cli_args[i - 1] == "--warn" || cli_args[i - 1] == "--claim-seeds") {
                 return false;
             }
             true
@@ -342,7 +344,7 @@ fn main() {
                 process::exit(1);
             }
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
-            let claims = cmd_args.contains(&"--claims");
+            let claims = cmd_args.contains(&"--claims") || claims_opts.strict || claims_opts.extra_seeds > 0;
             let Some(target) = find_positional_arg(&cmd_args, 2, &[]) else {
                 eprintln!("{}: missing file or directory argument", output::error_label());
                 process::exit(1);
@@ -824,7 +826,7 @@ fn main() {
                 return;
             }
             let name = find_positional_arg(&cmd_args, 2, &[]);
-            commands::init::cmd_init(name);
+            commands::init::cmd_init(name, cmd_args.contains(&"--agents"));
         }
         "fetch" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -936,6 +938,31 @@ fn main() {
                 commands::tools::cmd_fmt(&paths, check_only, write_in_place);
             }
         }
+        "mcp" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_mcp_help();
+                return;
+            }
+            commands::mcp::cmd_mcp();
+        }
+        "claims" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_claims_help();
+                return;
+            }
+            let path = find_positional_arg(&cmd_args, 2, &["--since"]).unwrap_or(".");
+            if cmd_args.contains(&"--since") {
+                let Some(rev) = extract_flag_value(&cmd_args, "--since") else {
+                    eprintln!("{}: `--since` needs a revision after it", output::error_label());
+                    process::exit(1);
+                };
+                commands::claims_tools::cmd_since(path, &rev);
+            } else if cmd_args.contains(&"--mutate") {
+                commands::claims_tools::cmd_mutate(path);
+            } else {
+                commands::claims_tools::cmd_claims(path, format);
+            }
+        }
         "api" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_api_help();
@@ -1041,6 +1068,16 @@ fn main() {
                 help::print_help_help();
                 return;
             }
+            // For people who work with coding agents: the language and how to
+            // work in a Rask project, for an agent to read.
+            if cmd_args.get(2) == Some(&"agents") {
+                if cmd_args.contains(&"--snippet") {
+                    print!("{}", commands::agents::SNIPPET);
+                } else {
+                    print!("{}", commands::agents::briefing());
+                }
+                return;
+            }
             help::print_usage();
         }
         "version" | "--version" | "-V" => {
@@ -1068,6 +1105,27 @@ fn extract_flag_value(args: &[&str], flag: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// `--claims=strict` and `--claim-seeds N`, which every command that runs
+/// claims takes (type.claims/V6).
+fn claims_options(args: &[String]) -> commands::claims::ClaimsOptions {
+    let strict = args.iter().any(|a| a == "--claims=strict");
+    let extra_seeds = match args.iter().position(|a| a == "--claim-seeds") {
+        None => 0,
+        Some(pos) => match args.get(pos + 1).and_then(|v| v.parse::<u64>().ok()) {
+            Some(n) => n,
+            None => {
+                eprintln!("{}: `--claim-seeds` needs a whole number after it", output::error_label());
+                process::exit(1);
+            }
+        },
+    };
+    if let Some(bad) = args.iter().find(|a| a.starts_with("--claims=") && *a != "--claims=strict") {
+        eprintln!("{}: `{bad}`: the one claims mode is `--claims=strict`", output::error_label());
+        process::exit(1);
+    }
+    commands::claims::ClaimsOptions { strict, extra_seeds }
 }
 
 /// Find the first positional (non-flag) argument after `skip_from`, skipping
