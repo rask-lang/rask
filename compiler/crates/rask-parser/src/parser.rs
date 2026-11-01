@@ -711,7 +711,7 @@ impl Parser {
                 // (what, takes `public`, takes `unsafe`, takes attributes)
                 TokenKind::Struct => Some(("a struct", true, false, true)),
                 TokenKind::Enum => Some(("an enum", true, false, true)),
-                TokenKind::Union => Some(("a union", true, false, false)),
+                TokenKind::Union => Some(("a union", true, false, true)),
                 TokenKind::Interface => Some(("an interface", true, true, true)),
                 TokenKind::Extend => Some(("an extend block", true, true, false)),
                 TokenKind::Import => Some(("an import", false, false, false)),

@@ -563,7 +563,7 @@ impl Default for ErrorCodeRegistry {
                 "E0941" => ("a field given two values", Type,
                     "A struct or variant literal names the same field twice. Only one value could be stored, so the other is a mistake.",
                     "Point(x: 1, x: 2, y: 3)     // error: `x` twice\n// fix\nPoint(x: 1, y: 3)"),
-                "E0940" => ("pattern names a variant the value can't be", Type,
+                "E0954" => ("pattern names a variant the value can't be", Type,
                     "A `match` arm or `is` test names a variant of another enum, or one the scrutinee's enum doesn't declare. It could never match.",
                     "enum Color { Red, Green }\nenum Size { Big, Small }\nmatch c {\n    Size.Big => …        // error: `c` is a `Color`\n    Color.Blue => …      // error: `Color` has no `Blue`\n}"),
                 "E0939" => ("`&` on a value with no storage", Type,

@@ -17,12 +17,12 @@ func name(c: Color) -> string {
 }
 
 func size_of(c: Color) -> i32 {
-    // ERROR: `Size.Big` is another enum's variant [E0940]
+    // ERROR: `Size.Big` is another enum's variant [E0954]
     return match c { Size.Big => 1, _ => 2 }
 }
 
 func spelled(c: Color) -> i32 {
-    // ERROR: `Color` has no `Blue` [E0940]
+    // ERROR: `Color` has no `Blue` [E0954]
     return match c { Color.Blue => 1, _ => 2 }
 }
 
@@ -33,7 +33,7 @@ func flag(b: bool) -> i32 {
 
 func main() {
     let c = Color.Green
-    // ERROR: `Blue` isn't a variant, so it would bind and always match [E0940]
+    // ERROR: `Blue` isn't a variant, so it would bind and always match [E0954]
     if c is Blue {
         println("blue")
     }
