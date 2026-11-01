@@ -8568,7 +8568,7 @@ fn c_macros_compute_what_c_would() {
 fn c_macros_that_read_memory_run_through_their_header() {
     let (text, ok) = run_with_c_object("c_macro_memory");
     assert!(ok, "c_macro_memory.rk should run:\n{text}");
-    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "call 41", "swap 13330"] {
+    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "nested 9", "call 41", "swap 13330"] {
         assert!(text.contains(expected), "missing `{expected}`:\n{text}");
     }
 }

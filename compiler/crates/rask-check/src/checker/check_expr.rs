@@ -7428,7 +7428,7 @@ impl TypeChecker {
                 match self.c_names.get(short) {
                     Some(CName::Spelled(c)) => c.clone(),
                     Some(CName::Nameless) => {
-                        return Err(format!("`{}` is a C record nested without a tag, which C has no name to pass by", short))
+                        return Err(format!("`{}` is a C record declared inside another with neither a tag nor a member name, so C has no way to write its type", short))
                     }
                     None => short.to_string(),
                 }

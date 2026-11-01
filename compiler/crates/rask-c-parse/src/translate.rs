@@ -454,26 +454,52 @@ extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
         ty
     }
 
+    /// How C spells a record, for the C a macro call is compiled into
+    /// (PP4): `Rect` when a typedef names it, `struct rect` when only the tag
+    /// does. One nested without a tag is the type of the member it declares,
+    /// `__typeof__(((struct ev *)0)->u)`; one that declares no member has no
+    /// name in C at all.
+    fn c_spelling(&self, s: &CStructDecl, is_union: bool) -> Option<String> {
+        let tag = s.tag.as_deref().unwrap_or_default();
+        match s.naming {
+            CNaming::Typedef => Some(tag.to_string()),
+            CNaming::Tag if self.self_typedefs.contains(tag) => Some(tag.to_string()),
+            CNaming::Tag => Some(format!("{} {}", if is_union { "union" } else { "struct" }, tag)),
+            CNaming::Anonymous => {
+                for item in self.items {
+                    let (CDecl::Struct(outer) | CDecl::Union(outer)) = &item.decl else { continue };
+                    for f in &outer.fields {
+                        let mut ty = &f.ty;
+                        let mut access = format!("->{}", f.name);
+                        while let CType::Array(inner, _) = ty {
+                            access.push_str("[0]");
+                            ty = inner;
+                        }
+                        let (CType::StructTag(t) | CType::UnionTag(t)) = ty else { continue };
+                        if t != tag {
+                            continue;
+                        }
+                        if f.unnamed {
+                            return None;
+                        }
+                        let outer_c = self.c_spelling(outer, matches!(item.decl, CDecl::Union(_)))?;
+                        return Some(format!("__typeof__((({} *)0){})", outer_c, access));
+                    }
+                }
+                None
+            }
+        }
+    }
+
     fn record(&self, s: &CStructDecl, is_union: bool) -> String {
         let name = type_name(s.tag.as_deref().unwrap_or_default());
         if s.is_forward {
             return format!("extern \"C\" struct {}\n", name);
         }
-        // How C spells it, for the C a macro call is compiled into (PP4):
-        // `Rect` when a typedef names it, `struct rect` when only the tag
-        // does, nothing for one nested without a tag. Written only where it
-        // isn't the Rask name.
-        let tag = s.tag.as_deref().unwrap_or_default();
-        let c_name = match s.naming {
-            CNaming::Anonymous => "@c_name(none)\n".to_string(),
-            naming => {
-                let spelling = if naming == CNaming::Typedef || self.self_typedefs.contains(tag) {
-                    tag.to_string()
-                } else {
-                    format!("{} {}", if is_union { "union" } else { "struct" }, tag)
-                };
-                if spelling == name { String::new() } else { format!("@c_name({})\n", quote(&spelling)) }
-            }
+        let c_name = match self.c_spelling(s, is_union) {
+            None => "@c_name(none)\n".to_string(),
+            Some(spelling) if spelling == name => String::new(),
+            Some(spelling) => format!("@c_name({})\n", quote(&spelling)),
         };
         let mut out = if is_union {
             format!("{}public union {} {{\n", c_name, name)

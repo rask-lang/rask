@@ -84,6 +84,9 @@ pub struct CField {
     pub name: String,
     pub ty: CType,
     pub bit_width: Option<u32>,
+    /// C wrote no name; `name` is made up (`anon2`, `pad3`), and C reaches
+    /// the member's own fields directly.
+    pub unnamed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

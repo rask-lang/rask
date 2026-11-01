@@ -983,7 +983,8 @@ impl CParser {
                 // An unnamed member still takes room: a nested struct or union
                 // whose fields C lets you reach directly, or bitfield padding.
                 // Rask reaches them through a name.
-                if name.is_empty() {
+                let unnamed = name.is_empty();
+                if unnamed {
                     match (&field_ty, bit_width) {
                         (_, Some(0)) => {}
                         (_, Some(_)) => name = format!("pad{}", fields.len()),
@@ -992,7 +993,7 @@ impl CParser {
                     }
                 }
                 if !name.is_empty() {
-                    fields.push(CField { name, ty: field_ty, bit_width });
+                    fields.push(CField { name, ty: field_ty, bit_width, unnamed });
                 }
 
                 if !self.match_token(&CTokenKind::Comma) {

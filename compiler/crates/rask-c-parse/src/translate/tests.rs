@@ -54,7 +54,7 @@ fn nested_anonymous_members_get_names() {
     let out = bind("struct Ev { int type; union { int key; float axis; }; struct { int x, y; } pos; };");
     has(&out, "@c_name(none)\npublic union Ev_anon0 {");
     has(&out, "public anon1: Ev_anon0");
-    has(&out, "public struct Ev_anon1 {");
+    has(&out, "@c_name(\"__typeof__(((struct Ev *)0)->pos)\")\npublic struct Ev_anon1 {");
     has(&out, "public pos: Ev_anon1");
     has(&out, "public type_: c_int");
 }

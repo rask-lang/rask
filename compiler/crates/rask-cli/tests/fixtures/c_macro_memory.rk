@@ -19,6 +19,10 @@ func main() {
     mut n = c.Num(i: 7)
     println("union {unsafe c.NUM_INT(&n)}")
 
+    // A union nested without a tag: C spells it as its member's type.
+    mut e = c.Ev(type_: 1, u: c.Ev_anon0(key: 9))
+    println("nested {unsafe c.KEY(&e.u)}")
+
     let x: i32 = 20
     println("call {unsafe c.TWICE_PLUS(x)}")
     let h: u16 = 0x1234
