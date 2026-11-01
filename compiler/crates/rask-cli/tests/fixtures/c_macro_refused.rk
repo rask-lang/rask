@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Macro calls the checker refuses before any C is compiled: a pointer to a
+// struct C has no name for, and a call in the body handed the wrong type
+// (struct.c-interop/PP4).
+
+import c "c_macro_memory.h"
+
+@layout(C)
+struct Mine {
+    flags: u32
+}
+
+func main() {
+    mut m = Mine(flags: 1)
+    println("{unsafe c.LOCKED(&m)}")
+    mut s = c.Surf(flags: 1, w: 2)
+    println("{unsafe c.TWICE_PLUS(&s)}")
+}

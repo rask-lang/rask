@@ -107,7 +107,9 @@ extend Window {
 | **TM2: Pointer mapping** | `T*` → `*T?`, `void*` → `*void?`, function pointers → `*func(...)`. A header doesn't say which pointers may be NULL, and a `*T` never is (`mem.unsafe/PT6`), so a data pointer is the optional one. A `*T` argument fills it; a returned one is checked before use. An override (BI3) narrows a pointer the library's docs promise is never NULL |
 | **TM3: Composite types** | A C struct is a `@layout(C)` struct, a union a `union` (always C layout), an opaque struct `extern "C" struct Name` with no body |
 | **TM4: Header structs are types** | A struct in an imported header is a type under the namespace — `c.Rect`. Built with a struct literal, fields read like any other struct's, C layout and offsets |
-| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer. Returning a struct by value isn't implemented — the call is rejected |
+| **TM5: By value** | A struct parameter crosses the ABI as the platform passes one, not as a pointer, and a returned one comes back the same way (SR1) |
+| **SR1: Returned by value** | A struct a C function returns comes back in the registers it would go out in as an argument, by the target's convention (System V x86-64, Win64, AAPCS64). One too big for that comes back in memory the caller lends, whose address travels where the convention puts it (`rdi`, `rcx`, `x8`). A target with no convention here refuses the call |
+| **SR2: C calls Rask** | An `extern "C"` function, a closure handed to C, or a context trampoline takes and returns structs by C's rules too. Its exported entry follows them and calls the Rask body, which Rask callers call directly |
 
 ### Primitive Types
 
@@ -156,9 +158,10 @@ func main() {
 argument. The bare `Rect` is not in scope: a header must not claim a name a Rask
 declaration might want.
 
-Handing a struct *to* C works; getting one *back* does not, and the call is
-rejected rather than reading a value nobody wrote. Take it through an
-out-parameter instead.
+A struct goes to C and comes back by value, `let g = unsafe c.SDL_StringToGUID(text)`,
+and the same holds the other way round when C calls a Rask function (SR2).
+Return and argument share one classification per convention, so the two
+directions can't disagree about where a struct goes.
 
 An out-parameter takes the address of a variable, field or element with `&`
 ([mem.unsafe](../memory/unsafe.md)). Taking it is safe; C writing through it
@@ -201,13 +204,15 @@ func call_c_string_api(name: string) -> void or NullByteError {
 | Integer constant (`#define FOO 42`) | `const FOO: c_int = 42` |
 | Constant expression (`(1 << 3)`, `((Uint32)0x20)`, `A \| B`) | Evaluated: `const FOO: c_int = 8` |
 | String constant (`#define V "1.0"`) | `const V: string = "1.0"` |
-| Function-like (`#define MAX(a, b) …`) | Skipped, written as a comment (BI5) |
-| Token pasting, stringification | Skipped, written as a comment |
+| Float constant (`#define PI_F 3.14159f`) | `const PI_F: f32 = 3.1415927`: the literal's own type |
+| Function-like (`#define MAX(a, b) …`) | `@c_macro("…") extern "C" func MAX(a: _, b: _) -> _`, typed at each call (PP4) |
+| Token pasting, stringification | Expanded where they make a name or a suffixed number; otherwise the macro can't be called, and says why |
 
 | Rule | Description |
 |------|-------------|
-| **PP1: Constant expressions** | Integer literals, `+ - * / % << >> & \| ^ ~`, parentheses, casts to integer types, names of earlier constants and enumerators, and calls of function-like macros (expanded, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation. The constant takes the cast's type, else `c_int`, widening to `c_long` or `c_ulong` when the value needs it |
-| **PP2: No guessing** | A macro the evaluator can't reduce to one integer, float or string is skipped. Macros have no types; a guessed signature is worse than a comment |
+| **PP1: Constant expressions** | Integer and floating literals, `+ - * / % << >> & \| ^ ~ ! && \|\| ?:`, comparisons, parentheses, casts to arithmetic types, names of earlier constants and enumerators, and calls of function-like macros (expanded as the preprocessor does: arguments first, with `##` pasting a name or a literal's suffix: `SDL_UINT64_C(0x20)` is `0x20 ## UL`) are evaluated at translation, with C's integer promotion and usual arithmetic conversions. The constant takes C's type for the expression |
+| **PP2: No guessing** | An object-like macro that doesn't reduce to one integer, float or string is skipped with a comment. One that's another name for something says so where it's used |
+| **PP4: Function-like macros** | A function-like macro is callable: `c.SDL_NS_TO_MS(t)`, `c.SDL_MUSTLOCK(surface)`. It has no types of its own, so each call types the body from its arguments by C's rules, an unsuffixed literal argument being C's `int` or `double`, plus the header's struct fields and functions for a body that reads `->x` or calls `f(…)`; a call's arguments have to be ones C takes without a cast. The call is the Rask number or raw pointer that result type is. Arithmetic needs no `unsafe`; a pointer argument, a field read or a call into C does, as any C call. A macro isn't a symbol, so each import's is its own: two headers' `F` are `ca.F` and `cb.F`. Arithmetic called with constants is evaluated at compile time; otherwise native code calls a C function made for those argument types, compiled at link like VA3's. One that touches memory or takes a pointer to a struct is compiled with its header (`@c_macro("…", header: "x.h")`), after the headers of any structs it's handed, one C file per set of headers, and calls the macro by name, so C does all of it. The interpreter computes arithmetic and refuses the rest. A record whose C spelling isn't its Rask name says so with `@c_name("struct point")`; one nested without a tag is spelled as its member's type, `__typeof__(((struct ev *)0)->u)`, one only a pointer typedef names as what the pointer points at, `__typeof__(*((Handle) 0))`, and one that declares no member has `@c_name(none)`. A struct declared in Rask has no C spelling unless it's given one, so a macro can't be handed a pointer to it, nor to a `@c_name(none)` record. A macro that takes a type, a statement or a variable number of arguments still has a declaration, `@c_macro(unusable: "…")`, and a call to it is an error that quotes the reason (E0940) |
 
 ## Inline Functions
 

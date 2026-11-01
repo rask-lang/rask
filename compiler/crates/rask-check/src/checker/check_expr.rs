@@ -3116,6 +3116,22 @@ impl TypeChecker {
             }
         }
 
+        // PP4: a C function-like macro, typed per call from its arguments.
+        // Named bare or through a package (`pa.F`).
+        {
+                let def = self
+                .resolved
+                .resolutions
+                .get(&func.id)
+                .and_then(|&sym| self.resolved.symbols.get(sym))
+                .filter(|sym| matches!(sym.kind, SymbolKind::ExternFunction { .. }))
+                .and_then(|sym| self.c_macros.get(&sym.name))
+                .cloned();
+            if let Some(def) = def {
+                return self.check_c_macro_call(call_id, &def, args, span);
+            }
+        }
+
         // Extern and unsafe function calls require unsafe context
         if let Some(_) = func.name() {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
@@ -3125,21 +3141,6 @@ impl TypeChecker {
                         SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),
                         _ => None,
                     };
-                    // A struct handed *to* C rides in registers or on the
-                    // stack; one handed *back* is a separate ABI rule that
-                    // isn't built (#1101). Say so, rather than reading a value
-                    // nobody wrote.
-                    if let SymbolKind::ExternFunction { ret_ty: Some(ret), .. } = &sym.kind {
-                        if let Ok(Type::Named(id)) = super::parse_type::resolve_type_expr(ret, &self.types) {
-                            if matches!(self.types.get(id), Some(TypeDef::Struct { .. } | TypeDef::Union { .. })) {
-                                self.errors.push(TypeError::CStructReturn {
-                                    func: sym.name.clone(),
-                                    ty: self.types.type_name(id),
-                                    span,
-                                });
-                            }
-                        }
-                    }
                     if let Some(category) = unsafe_category {
                         self.unsafe_ops.push((span, category));
                         if !self.in_unsafe {
@@ -4108,6 +4109,19 @@ impl TypeChecker {
         // that answer different types fought over it — `libpkg.twice(21)` then
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
+        // PP4: a C macro another package declares, `pa.F(x)`. An extern
+        // keeps its name across packages, as a C symbol does.
+        let through_package = self
+            .resolved
+            .resolutions
+            .get(&object.id)
+            .and_then(|&sym| self.resolved.symbols.get(sym))
+            .is_some_and(|sym| matches!(sym.kind, SymbolKind::ExternalPackage { .. }));
+        let macro_def = if through_package { self.c_macros.get(method).cloned() } else { None };
+        if let Some(def) = macro_def {
+            return self.check_c_macro_call(call_id, &def, args, span);
+        }
+
         if let Some(ret) = self.check_package_call(call_id, object, args, span) {
             return ret;
         }
@@ -7848,6 +7862,281 @@ struct CallParam {
     is_deleting: bool,
     /// A `Link<T>` parameter: `mutate` writes the node, not the link.
     is_link: bool,
+}
+
+impl TypeChecker {
+    /// PP4: type a call of a C function-like macro. Each argument's Rask type
+    /// is the C type it stands for, an unsuffixed literal is C's `int` or
+    /// `double` as it would be in C, and the body is typed from those by C's
+    /// rules. The call is the Rask number that result type is.
+    fn check_c_macro_call(
+        &mut self,
+        call_id: rask_ast::NodeId,
+        def: &super::type_defs::CMacroDef,
+        args: &[CallArg],
+        span: Span,
+    ) -> Type {
+        use rask_c_parse::{cexpr, CType};
+        let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+        let fail = |this: &mut Self, problem: String| {
+            this.errors.push(TypeError::CMacroCall { name: def.c_name.clone(), problem, span });
+            Type::Error
+        };
+        let (text, body) = match &def.body {
+            Ok(b) => b.clone(),
+            Err(why) => return fail(self, format!("its body has {}", why)),
+        };
+        if args.len() != def.params.len() {
+            return fail(self, format!("it takes {} arguments and this passes {}", def.params.len(), args.len()));
+        }
+        let mut c_args = Vec::with_capacity(args.len());
+        for (i, ty) in arg_types.iter().enumerate() {
+            let mut ty = self.ctx.apply(ty);
+            if let Type::Var(id) = ty {
+                let pinned = match self.ctx.literal_vars.get(&id) {
+                    Some(super::inference::LiteralKind::Integer) => Type::I32,
+                    Some(super::inference::LiteralKind::Float) => Type::F64,
+                    None => return fail(self, format!("the type of argument {} isn't known yet; give it one", i + 1)),
+                };
+                let _ = self.unify(&ty, &pinned, span);
+                ty = pinned;
+            }
+            match self.c_type_of(&ty) {
+                Some(c) => c_args.push(c),
+                None => {
+                    let shown = self.render_type(&self.resolve_named(&ty));
+                    return fail(self, format!("argument {} is a `{}`, and a C macro takes numbers and pointers", i + 1, shown));
+                }
+            }
+        }
+        let reads_memory = cexpr::touches_memory(&body);
+        if reads_memory && def.header.is_none() {
+            return fail(
+                self,
+                "its body reads memory or calls C, which only works for a macro from an imported header; add `header:` to its `@c_macro`".to_string(),
+            );
+        }
+        let header = CHeader { checker: self };
+        let result = match cexpr::type_of_in(&body, &c_args, &header) {
+            Ok(t) => t,
+            Err(why) => return fail(self, format!("its body has {}", why)),
+        };
+        let Some(rask) = self.rask_type_of_c(&result) else {
+            return fail(self, "it answers something that isn't a number or a pointer".to_string());
+        };
+        // Arithmetic is safe; reading memory or calling into C is what
+        // `unsafe` is for, as for any C call.
+        let takes_pointer = c_args.iter().any(|t| matches!(t, CType::Pointer(_)));
+        // A record's C name means something only after its header.
+        let names_record = c_args.iter().chain(std::iter::once(&result)).any(points_at_record);
+        if names_record && def.header.is_none() {
+            return fail(
+                self,
+                "it's handed a pointer to a struct, which only a macro from an imported header can name; add `header:` to its `@c_macro`".to_string(),
+            );
+        }
+        if reads_memory || takes_pointer {
+            self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
+            if !self.in_unsafe {
+                self.errors.push(TypeError::UnsafeRequired {
+                    operation: "a C macro that reads memory or calls C".to_string(),
+                    span,
+                });
+            }
+        }
+        let mut record_headers = Vec::new();
+        let spelled: Result<Vec<String>, String> =
+            c_args.iter().map(|t| self.c_spelling(t, &mut record_headers)).collect();
+        let (arg_c, result_c) = match (spelled, self.c_spelling(&result, &mut record_headers)) {
+            (Ok(a), Ok(r)) => (a, r),
+            (Err(why), _) | (_, Err(why)) => return fail(self, why),
+        };
+        self.c_macro_calls.insert(
+            call_id,
+            cexpr::MacroCall {
+                name: def.c_name.clone(),
+                symbol: def.name.clone(),
+                body: text,
+                params: def.params.clone(),
+                args: c_args,
+                result,
+                header: if reads_memory || takes_pointer { def.header.clone() } else { None },
+                record_headers,
+                arg_c,
+                result_c,
+            },
+        );
+        rask
+    }
+
+    /// The C type a Rask type stands for in a macro call: a number, or a
+    /// pointer to one, to a struct, or to bytes (C's `char *`).
+    fn c_type_of(&self, ty: &Type) -> Option<rask_c_parse::CType> {
+        use rask_c_parse::CType;
+        let ty = self.resolve_named(&self.ctx.apply(ty));
+        if let Some(inner) = ty.as_option() {
+            return match self.resolve_named(inner) {
+                p @ Type::RawPtr(_) => self.c_type_of(&p),
+                _ => None,
+            };
+        }
+        match &ty {
+            Type::RawPtr(inner) => {
+                let pointee = match self.resolve_named(inner) {
+                    Type::U8 | Type::I8 => CType::Char,
+                    Type::Unit => CType::Void,
+                    Type::Named(id) => CType::Named(self.types.type_name(id)),
+                    other => self.c_type_of(&other)?,
+                };
+                Some(CType::Pointer(Box::new(pointee)))
+            }
+            other => scalar_name(other).and_then(rask_c_parse::cexpr::from_rask_scalar),
+        }
+    }
+
+    /// The Rask type a C type is, for a macro's result: a number, or a
+    /// pointer that may be absent, as every C pointer is (mem.unsafe/PT6).
+    fn rask_type_of_c(&self, ty: &rask_c_parse::CType) -> Option<Type> {
+        use rask_c_parse::CType;
+        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty) {
+            return Some(scalar_type(name));
+        }
+        let CType::Pointer(inner) = rask_c_parse::cexpr::canonical(ty) else { return None };
+        let pointee = match &*inner {
+            CType::Char | CType::SignedChar | CType::UnsignedChar => Type::U8,
+            CType::Void => Type::Unit,
+            CType::Named(n) => Type::Named(self.types.get_type_id(n)?),
+            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other)?),
+        };
+        Some(Type::option(Type::RawPtr(Box::new(pointee))))
+    }
+
+    /// How C spells a type, for the C function a macro call goes to, and
+    /// the headers that declare the records it names.
+    fn c_spelling(&self, ty: &rask_c_parse::CType, headers: &mut Vec<String>) -> Result<String, String> {
+        use rask_ast::attr::CName;
+        use rask_c_parse::CType;
+        Ok(match ty {
+            CType::Pointer(inner) => format!("{} *", self.c_spelling(inner, headers)?),
+            CType::Void => "void".to_string(),
+            CType::Char => "char".to_string(),
+            CType::Named(n) => {
+                let short = n.rsplit('.').next().unwrap_or(n);
+                match self.c_names.get(short) {
+                    Some((CName::Spelled(c), header)) => {
+                        if let Some(h) = header {
+                            if !headers.contains(h) {
+                                headers.push(h.clone());
+                            }
+                        }
+                        c.clone()
+                    }
+                    Some((CName::Nameless, _)) => {
+                        return Err(format!("`{}` is a C record declared inside another with neither a tag nor a member name, so C has no way to write its type", short))
+                    }
+                    None => {
+                        return Err(format!(
+                            "`{}` is declared in Rask, so C has no name for it; if it mirrors a C type, say which with `@c_name(\"struct name\")`",
+                            short
+                        ))
+                    }
+                }
+            }
+            other => rask_c_parse::cexpr::spell(other).to_string(),
+        })
+    }
+}
+
+/// A pointer, at any depth, to a struct or union.
+fn points_at_record(ty: &rask_c_parse::CType) -> bool {
+    match ty {
+        rask_c_parse::CType::Pointer(inner) => points_at_record(inner),
+        rask_c_parse::CType::Named(_) => true,
+        _ => false,
+    }
+}
+
+/// What typing a macro that reads memory asks of the header: its structs'
+/// fields and its functions, as the translation declared them.
+struct CHeader<'a> {
+    checker: &'a TypeChecker,
+}
+
+impl rask_c_parse::cexpr::Header for CHeader<'_> {
+    fn field(&self, record: &rask_c_parse::CType, field: &str) -> Option<rask_c_parse::CType> {
+        let rask_c_parse::CType::Named(name) = record else { return None };
+        let id = self.checker.types.get_type_id(name)?;
+        let fields = match self.checker.types.get(id)? {
+            rask_types::TypeDef::Struct { fields, .. } | rask_types::TypeDef::Union { fields, .. } => fields,
+            _ => return None,
+        };
+        // A C field named like a Rask keyword was renamed with a `_`.
+        let (_, ty) = fields
+            .iter()
+            .find(|(n, _)| n == field)
+            .or_else(|| fields.iter().find(|(n, _)| *n == format!("{}_", field)))?;
+        // As C reads a member: a struct stays one, an array becomes a pointer
+        // to its first element.
+        match self.checker.resolve_named(ty) {
+            Type::Named(id) => Some(rask_c_parse::CType::Named(self.checker.types.type_name(id))),
+            Type::Array { elem, .. } => {
+                let elem = match self.checker.resolve_named(&elem) {
+                    Type::U8 | Type::I8 => rask_c_parse::CType::Char,
+                    Type::Named(id) => rask_c_parse::CType::Named(self.checker.types.type_name(id)),
+                    other => self.checker.c_type_of(&other)?,
+                };
+                Some(rask_c_parse::CType::Pointer(Box::new(elem)))
+            }
+            other => self.checker.c_type_of(&other),
+        }
+    }
+
+    fn function(&self, name: &str) -> Option<(Vec<rask_c_parse::CType>, rask_c_parse::CType, bool)> {
+        let (params, ret, variadic) = self.checker.c_functions.get(name)?;
+        let ps = params
+            .iter()
+            .map(|p| resolve_type_expr(p, &self.checker.types).ok().and_then(|t| self.checker.c_type_of(&t)))
+            .collect::<Option<Vec<_>>>()?;
+        let ret = match ret {
+            None => rask_c_parse::CType::Void,
+            Some(r) => self.checker.c_type_of(&resolve_type_expr(r, &self.checker.types).ok()?)?,
+        };
+        Some((ps, ret, *variadic))
+    }
+}
+
+/// The Rask spelling of a scalar type, as `cexpr` maps C types to and from.
+fn scalar_name(ty: &Type) -> Option<&'static str> {
+    Some(match ty {
+        Type::Bool => "bool",
+        Type::I8 => "i8",
+        Type::U8 => "u8",
+        Type::I16 => "i16",
+        Type::U16 => "u16",
+        Type::I32 => "i32",
+        Type::U32 => "u32",
+        Type::I64 => "i64",
+        Type::U64 => "u64",
+        Type::F32 => "f32",
+        Type::F64 => "f64",
+        _ => return None,
+    })
+}
+
+fn scalar_type(name: &str) -> Type {
+    match name {
+        "bool" => Type::Bool,
+        "i8" => Type::I8,
+        "u8" => Type::U8,
+        "i16" => Type::I16,
+        "u16" => Type::U16,
+        "i32" => Type::I32,
+        "u32" => Type::U32,
+        "i64" => Type::I64,
+        "u64" => Type::U64,
+        "f32" => Type::F32,
+        _ => Type::F64,
+    }
 }
 
 /// A variable, or a field or element of one: storage `&` can point at.

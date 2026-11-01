@@ -4004,13 +4004,12 @@ fn c_import_missing_header() {
     assert!(output.contains("not found"), "should mention header not found: {}", output);
 }
 
-// PP2, BI5: a function-like macro and a static function aren't translated, and
-// using one says which and why.
+// BI5: a global variable and a static function aren't translated, and using
+// one says which and why. A function-like macro is callable (PP4).
 #[test]
 fn c_import_skipped_names_say_why() {
-    let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let m = c.MYLIB_MAX(1, 2)\n}");
-    assert!(!ok);
-    assert!(out.contains("function-like macro"), "{}", out);
+    let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let m: i32 = c.MYLIB_MAX(1, 2)\n}");
+    assert!(ok, "an arithmetic macro is callable: {}", out);
     let (ok, out) = check_c_import_output("mylib.h", "func main() {\n    let e = c.mylib_errno\n}");
     assert!(!ok);
     assert!(out.contains("C global variable"), "{}", out);
@@ -4034,7 +4033,8 @@ fn bindc_writes_and_checks() {
         "extern \"C\" struct Mylib_ctx",
         "public const MYLIB_VERSION: c_int = 42",
         "public const MYLIB_ERR: Mylib_status = -1",
-        "// skipped `MYLIB_MAX`",
+        "@c_macro(\"((a > b) ? a : b)\", header: ",
+        "extern \"C\" func MYLIB_MAX(a: _, b: _) -> _",
     ] {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
@@ -5825,6 +5825,142 @@ fn editing_a_sub_package_invalidates_the_build_cache() {
     )
     .unwrap();
     build_and_run("value 7");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An error on a field's type points into the file that declares the field.
+///
+/// The parser built that span without a file id, so it landed in the first
+/// file of the package: an error in a sub-package, or in an imported C
+/// header's translation, named `main.rk` at a line and column it doesn't have
+/// (#1710).
+#[test]
+fn a_field_type_error_names_the_file_it_is_in() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir()
+        .join(format!("rask_fieldspan_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("helpers")).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"fieldspan\"\nversion = \"0.1.0\"\ndescription = \"spans\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.rk"), "import helpers\n\nfunc main() {\n    println(\"x\")\n}\n").unwrap();
+    std::fs::write(
+        dir.join("helpers").join("lib.rk"),
+        "public union Cell {\n    public s: string\n    public n: u64\n}\n",
+    )
+    .unwrap();
+    let build = Command::new(&rask)
+        .arg("build")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask build");
+    let out = format!("{}{}", String::from_utf8_lossy(&build.stdout), String::from_utf8_lossy(&build.stderr));
+    assert!(!build.status.success(), "a string in a union should be refused:\n{out}");
+    let at = std::path::Path::new("helpers").join("lib.rk").display().to_string();
+    assert!(out.contains(&format!("{at}:2:15")), "expected the error at {at}:2:15:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package that binds a header by hand, macros and all: `pa.F(n)` is
+/// a macro call from the importing package too, and a macro that reads
+/// memory finds its header beside the file that names it, not beside
+/// `main.rk`.
+#[test]
+fn a_c_macro_declared_in_a_sub_package_is_callable() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_subpkg_macro_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pa")).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"submacro\"\nversion = \"0.1.0\"\ndescription = \"macros\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("pa").join("a.h"), "struct pt { int v; };\n#define F(X) ((X) + 1)\n#define PV(P) ((P)->v)\n").unwrap();
+    std::fs::write(
+        dir.join("pa").join("a.rk"),
+        "@c_macro(\"(X + 1)\", header: \"a.h\")\npublic extern \"C\" func F(X: _) -> _\n\n\
+         @layout(C)\n@c_name(\"struct pt\")\npublic struct Pt {\n    public v: c_int\n}\n\n\
+         @c_macro(\"(P->v)\", header: \"a.h\")\npublic extern \"C\" func PV(P: _) -> _\n\n\
+         public func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import pa\n\nfunc main() {\n    let n: i32 = 4\n    mut p = pa.make(9)\n    println(\"{pa.F(n)} {unsafe pa.PV(&p)}\")\n}\n",
+    )
+    .unwrap();
+    let run = Command::new(&rask)
+        .arg("run")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+    let out = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+    assert!(run.status.success(), "{out}");
+    assert!(out.contains("5 9"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Editing a C header, or a file it includes, rebuilds the binary.
+///
+/// `import c` compiles the header's constants and struct layouts in, but the
+/// cache keyed on the Rask files alone, so the old object came back and a
+/// changed `#define` printed its old value (#1705).
+#[test]
+fn editing_an_imported_c_header_invalidates_the_build_cache() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir()
+        .join(format!("rask_cheader_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"cheader\"\nversion = \"0.1.0\"\ndescription = \"cache keying\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib.h"), "#include \"inner.h\"\n#define LIB_VERSION INNER\n").unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import c \"lib.h\"\n\nfunc main() {\n    println(\"version {c.LIB_VERSION}\")\n}\n",
+    )
+    .unwrap();
+
+    let build_and_run = |expected: &str| {
+        let build = Command::new(&rask)
+            .arg("build")
+            .arg(&dir)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask build");
+        let build_out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr),
+        );
+        assert!(build.status.success(), "build failed:\n{build_out}");
+        let run = Command::new(dir.join("build").join("debug").join("cheader"))
+            .output()
+            .expect("failed to run built binary");
+        let out = String::from_utf8_lossy(&run.stdout).to_string();
+        assert!(
+            out.contains(expected),
+            "expected `{expected}` in the output, got:\n{out}\nbuild said:\n{build_out}"
+        );
+    };
+
+    std::fs::write(dir.join("inner.h"), "#define INNER 3\n").unwrap();
+    build_and_run("version 3");
+
+    // Same Rask source and the same `lib.h`; only the file it includes moved.
+    std::fs::write(dir.join("inner.h"), "#define INNER 4\n").unwrap();
+    build_and_run("version 4");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -8407,8 +8543,10 @@ fn run_with_c_object(stem: &str) -> (String, bool) {
     (text, out.status.success())
 }
 
-/// One line per System V argument class. A struct passed as a pointer, or cut
-/// into the wrong register class, gives a different number here.
+/// One line per System V argument class, both ways and in both directions:
+/// Rask calling C, and C calling Rask. A struct passed as a pointer, cut into
+/// the wrong register class, or read back from where it wasn't returned, gives
+/// a different number here.
 #[test]
 fn a_c_struct_goes_by_value() {
     let (text, ok) = run_with_c_object("c_struct");
@@ -8424,6 +8562,26 @@ fn a_c_struct_goes_by_value() {
         "mixed 50",
         "seg 4321",
         "tri 321",
+        "back rect 3 4",
+        "back vec2 1.5 2.5",
+        "back vec2d 1.25 2.5",
+        "back stamp 0.5 7",
+        "back triple 1 2 3",
+        "back rgba 10 11 12 13",
+        "back seg 1 2 3 4",
+        "back tri 5 6 7",
+        "round trip 42",
+        "called area 42",
+        "called vec2 3.75",
+        "called stamp 41.5",
+        "called triple 321",
+        "called seg 4321",
+        "called make 34",
+        "called make vec2 26.5",
+        "called make stamp 70.5",
+        "called make triple 321",
+        "called make tri 765",
+        "called closure 45",
     ] {
         assert!(text.contains(expected), "expected `{expected}` in:\n{text}");
     }
@@ -8467,14 +8625,67 @@ fn callbacks_and_variadics_reach_c() {
     }
 }
 
+/// A header's function-like macros, called with constants and with run-time
+/// values of several widths, give C's answers on both backends (PP4).
 #[test]
-fn a_c_function_returning_a_struct_is_rejected() {
-    let (text, ok) = check_in_fixtures("c_struct_return.rk");
-    assert!(!ok, "a by-value struct return must be rejected:\n{text}");
-    assert!(
-        text.contains("E0858") && text.contains("c.Rect"),
-        "expected the struct-return error naming the type, got:\n{text}"
-    );
+fn c_macros_compute_what_c_would() {
+    let expected = "ms 2\nmask 4 1\nmask runtime 64\nfourcc 1263747410\nfourcc runtime 1263747410\nhalf 2.5\nbyte 44\nbelow 0\n";
+    for mode in ["--native", "--interp"] {
+        let (stdout, stderr, code) = run_capture(mode, "c_macros.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, expected, "{mode}");
+    }
+}
+
+/// Macros that read a field through a pointer, follow two pointers, read a
+/// union, call a header function or a compiler builtin. Native code calls
+/// each through a wrapper compiled with the header (PP4).
+#[test]
+fn c_macros_that_read_memory_run_through_their_header() {
+    let (text, ok) = run_with_c_object("c_macro_memory");
+    assert!(ok, "c_macro_memory.rk should run:\n{text}");
+    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "nested 9", "handle 11", "call 41", "swap 13330"] {
+        assert!(text.contains(expected), "missing `{expected}`:\n{text}");
+    }
+}
+
+/// A macro whose body its arguments can't type, or that's handed something
+/// other than a number or a pointer, is refused at the call with the reason
+/// (E0940).
+#[test]
+fn a_c_macro_call_that_cant_be_made_says_why() {
+    let (text, ok) = check_in_fixtures("c_macro_misuse.rk");
+    assert!(!ok, "the misuse should be refused:\n{text}");
+    assert!(text.contains("E0940"), "{text}");
+    assert!(text.contains("`MUSTLOCK`") && text.contains("`->flags` on something that isn't a pointer"), "names the macro and what's in it:\n{text}");
+    assert!(text.contains("`BUTTON_MASK`") && text.contains("a `string`"), "names the argument:\n{text}");
+}
+
+/// Two headers with macros of the same name: each import calls its own,
+/// whether computed at run time, folded, or compiled with its header.
+#[test]
+fn same_named_macros_from_two_headers_stay_apart() {
+    let (stdout, stderr, code) = run_capture("--native", "c_macro_two.rk");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "run 6 500\nconst 6 500\nread 3 400\ncross 300\nmine -995\n");
+}
+
+/// A pointer to a struct C has no name for, or a call in the body handed
+/// the wrong type, is a diagnostic, not a C compiler error.
+#[test]
+fn a_macro_call_c_would_reject_is_refused_first() {
+    let (text, ok) = check_in_fixtures("c_macro_refused.rk");
+    assert!(!ok, "{text}");
+    assert!(text.contains("`Mine` is declared in Rask, so C has no name for it"), "{text}");
+    assert!(text.contains("a call to `twice` handing its argument 1 a `c.Surf *` where it takes a `int`"), "{text}");
+}
+
+/// A macro that reads memory is refused outside `unsafe`.
+#[test]
+fn a_c_macro_that_reads_memory_needs_unsafe() {
+    let (text, ok) = check_in_fixtures("c_macro_needs_unsafe.rk");
+    assert!(!ok, "the call outside `unsafe` should be refused:\n{text}");
+    assert!(text.contains("a C macro that reads memory or calls C"), "{text}");
 }
 
 /// A header is found next to the file that imports it, not next to wherever the

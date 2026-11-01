@@ -100,6 +100,12 @@ struct Translator<'a> {
     items: &'a [CItem],
     opts: &'a Options<'a>,
     consts: Constants,
+    /// Every function the header declares, so a macro of the same name
+    /// doesn't shadow it.
+    function_names: HashSet<String>,
+    /// Tags a typedef of the same name points at (`typedef struct X X`), so
+    /// C can spell the type bare.
+    self_typedefs: HashSet<String>,
     /// Where each struct or union tag is defined, else forward-declared.
     records: HashMap<&'a str, usize>,
     typedefs: HashMap<&'a str, usize>,
@@ -144,6 +150,23 @@ impl<'a> Translator<'a> {
             items,
             opts,
             consts: Constants::from_items(items),
+            function_names: items
+                .iter()
+                .filter_map(|i| match &i.decl {
+                    CDecl::Function(f) => Some(f.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            self_typedefs: items
+                .iter()
+                .filter_map(|i| match &i.decl {
+                    CDecl::Typedef(t) => match strip(&t.target) {
+                        CType::StructTag(tag) | CType::UnionTag(tag) if *tag == t.name => Some(t.name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect(),
             records,
             typedefs,
             enums,
@@ -324,6 +347,43 @@ impl<'a> Translator<'a> {
     }
 
     /// The comment a skipped declaration leaves (BI5), and the record of why.
+    /// A function-like macro, callable from Rask (PP4). Its body is expanded
+    /// and written out as self-contained C: other macros expanded, constants
+    /// in as typed values, casts to plain C types. Its parameter and result
+    /// types come from each call. One that isn't an arithmetic expression
+    /// still gets a declaration, carrying the reason, so a call says why
+    /// rather than "no such name".
+    fn function_macro(&mut self, d: &CDefine, params: &[String], emitted: &mut HashSet<String>) -> String {
+        // A function of the same name is the real thing; the macro is often
+        // only a shortcut to it.
+        if emitted.contains(&d.name) || self.function_names.contains(&d.name) {
+            return String::new();
+        }
+        emitted.insert(d.name.clone());
+        let variadic = params.iter().any(|p| p == "...");
+        let rparams: Vec<String> = params.iter().filter(|p| *p != "...").map(|p| value_name(p)).collect();
+        let parsed = if variadic {
+            Err("takes a variable number of arguments".to_string())
+        } else {
+            crate::cexpr::parse(&d.body, params, &crate::consteval::AsNames(&self.consts))
+        };
+        // Its header goes with it: a call that reads memory, calls into C or
+        // takes a pointer to one of the header's types is compiled with it.
+        let attr = match parsed {
+            Ok(e) => format!(
+                "@c_macro({}, header: {})",
+                quote(&crate::cexpr::to_c(&e, &rparams)),
+                quote(self.opts.header)
+            ),
+            Err(why) => format!("@c_macro(unusable: {})", quote(&why)),
+        };
+        let ps: Vec<String> = rparams.iter().map(|p| format!("{}: _", p)).collect();
+        self.counts.functions += 1;
+        format!("// {}
+{}
+extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
+    }
+
     fn skip(&mut self, name: &str, why: &str) -> String {
         self.skipped.insert(name.to_string(), why.to_string());
         self.counts.skipped += 1;
@@ -393,15 +453,58 @@ impl<'a> Translator<'a> {
         ty
     }
 
+    /// How C spells a record, for the C a macro call is compiled into
+    /// (PP4): `Rect` when a typedef names it, `struct rect` when only the tag
+    /// does. One nested without a tag is the type of the member it declares,
+    /// `__typeof__(((struct ev *)0)->u)`; one that declares no member has no
+    /// name in C at all.
+    fn c_spelling(&self, s: &CStructDecl, is_union: bool) -> Option<String> {
+        let tag = s.tag.as_deref().unwrap_or_default();
+        match &s.naming {
+            CNaming::Pointee { typedef, depth } => Some(format!("__typeof__({}(({}) 0))", "*".repeat(*depth), typedef)),
+            CNaming::Typedef => Some(tag.to_string()),
+            CNaming::Tag if self.self_typedefs.contains(tag) => Some(tag.to_string()),
+            CNaming::Tag => Some(format!("{} {}", if is_union { "union" } else { "struct" }, tag)),
+            CNaming::Anonymous => {
+                for item in self.items {
+                    let (CDecl::Struct(outer) | CDecl::Union(outer)) = &item.decl else { continue };
+                    for f in &outer.fields {
+                        let mut ty = &f.ty;
+                        let mut access = format!("->{}", f.name);
+                        while let CType::Array(inner, _) = ty {
+                            access.push_str("[0]");
+                            ty = inner;
+                        }
+                        let (CType::StructTag(t) | CType::UnionTag(t)) = ty else { continue };
+                        if t != tag {
+                            continue;
+                        }
+                        if f.unnamed {
+                            return None;
+                        }
+                        let outer_c = self.c_spelling(outer, matches!(item.decl, CDecl::Union(_)))?;
+                        return Some(format!("__typeof__((({} *)0){})", outer_c, access));
+                    }
+                }
+                None
+            }
+        }
+    }
+
     fn record(&self, s: &CStructDecl, is_union: bool) -> String {
         let name = type_name(s.tag.as_deref().unwrap_or_default());
         if s.is_forward {
             return format!("extern \"C\" struct {}\n", name);
         }
+        let c_name = match self.c_spelling(s, is_union) {
+            None => "@c_name(none)\n".to_string(),
+            Some(spelling) if spelling == name => String::new(),
+            Some(spelling) => format!("@c_name({})\n", quote(&spelling)),
+        };
         let mut out = if is_union {
-            format!("public union {} {{\n", name)
+            format!("{}public union {} {{\n", c_name, name)
         } else {
-            format!("@layout(C)\npublic struct {} {{\n", name)
+            format!("@layout(C)\n{}public struct {} {{\n", c_name, name)
         };
         let mut used: Vec<String> = Vec::new();
         for f in &s.fields {
@@ -466,8 +569,8 @@ impl<'a> Translator<'a> {
     }
 
     fn define(&mut self, d: &CDefine, emitted: &mut HashSet<String>) -> String {
-        if d.params.is_some() {
-            return self.skip(&d.name, &format!("a function-like macro: {}", d.text));
+        if let Some(params) = &d.params {
+            return self.function_macro(d, params, emitted);
         }
         if emitted.contains(&d.name) {
             return String::new();
@@ -477,7 +580,13 @@ impl<'a> Translator<'a> {
                 let rty = self.ty(&ty);
                 format!("public const {}: {} = {}\n", d.name, rty, v)
             }
-            Some(CValue::Float(f)) => format!("public const {}: f64 = {:?}\n", d.name, f),
+            Some(CValue::Float(f, t)) => {
+                if crate::cexpr::canonical(&t) == CType::Float {
+                    format!("public const {}: f32 = {:?}\n", d.name, f as f32)
+                } else {
+                    format!("public const {}: f64 = {:?}\n", d.name, f)
+                }
+            }
             Some(CValue::Str(s)) => format!("public const {}: string = {}\n", d.name, quote(&s)),
             // `#define SDL_mutex SDL_Mutex`: another name for something. A
             // library's old spellings come in hundreds and say nothing, so
