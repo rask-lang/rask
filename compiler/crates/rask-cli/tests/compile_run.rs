@@ -5064,6 +5064,40 @@ fn torn_lock_update_warns_once_and_only_where_it_should() {
     );
 }
 
+/// A tuple match is covered when a part that's a struct or a nested tuple
+/// is only taken apart: `(Pt(x, y), true)` / `(Pt(x, y), false)`. Counting
+/// the destructure as a test reported `(_, true)` missing. Check only: native
+/// lowering of these matches is broken on its own (#1726).
+#[test]
+fn tuple_match_with_a_destructured_part_is_exhaustive() {
+    let src = r#"
+struct Pt { x: i32, y: i32 }
+func f(p: Pt, z: bool) -> i32 {
+    return match (p, z) {
+        (Pt(x, y), true) => x,
+        (Pt(x, y), false) => y,
+    }
+}
+func g(t: ((bool, bool), bool)) -> i32 {
+    return match t {
+        ((true, _), _) => 1,
+        ((false, _), _) => 2,
+    }
+}
+func h(t: ((i32, i32), bool)) -> i32 {
+    return match t {
+        ((a, b), true) => a,
+        ((a, b), false) => b,
+    }
+}
+func main() {
+    println("{f(Pt(x: 2, y: 3), true)} {g(((true, true), true))} {h(((1, 2), false))}")
+}
+"#;
+    let output = check_output(src);
+    assert!(output.contains("Typecheck OK"), "every combination is covered:\n{output}");
+}
+
 /// #996: `value.(expr)` is a compile-time rewrite (CT53), so the name has to be
 /// one the compiler can read. Native said so as a MIR lowering failure and the
 /// interpreter looked the field up by name at run time and carried on — the

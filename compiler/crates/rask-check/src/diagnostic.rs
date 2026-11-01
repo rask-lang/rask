@@ -2794,6 +2794,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help("to walk a list of values, write the list: `for s in [\"a\", \"b\"]`")
                     .with_why("a range steps from its start toward its end, which needs a type with a next value [ctrl.ranges]")
             }
+            RepeatedBinding { name, span } => {
+                Diagnostic::error(format!("`{}` is bound twice", name))
+                    .with_code("E0218")
+                    .with_primary(*span, format!("`{}` appears more than once in one arm's pattern", name))
+                    .with_fix("rename one, or use `_` for a value you don't need")
+                    .with_why("each name in one pattern holds one value; with two, the first could never be read")
+            }
+
             StaticCallOnValue { ty, method, span } => {
                 Diagnostic::error(format!("`{}` is a static method of `{}`, called on a value", method, ty))
                     .with_code("E0946")

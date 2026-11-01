@@ -823,11 +823,21 @@ impl TypeChecker {
         // The qualifier, when it resolves, has to be the scrutinee's enum:
         // `Size.Big` names `Size` even when `Color` happens to have a `Big`.
         // One that doesn't resolve (a module path) is left to the variant
-        // lookup. The qualifier is read in the scope that declared the enum,
-        // so stdlib code matching its own `Color` isn't read against a user
-        // type of the same name.
+        // lookup. A stdlib module's body is checked under the program's
+        // names, so its own `Color` and a program's `Color` can't be told
+        // apart here; the qualifier passes if either one is the scrutinee's
+        // enum. That leaves a program's `Color.Red` against a
+        // `terminal.Color` unreported (#1726).
+        let qualifier_id = |q: &str| {
+            let program = self.types.get_type_id(q);
+            if program == Some(type_id) {
+                program
+            } else {
+                self.types.resolve_name_as_declared_by(type_id, q)
+            }
+        };
         let qualifier_matches = match name.rsplit_once('.') {
-            Some((qualifier, _)) => match self.types.resolve_name_as_declared_by(type_id, qualifier) {
+            Some((qualifier, _)) => match qualifier_id(qualifier) {
                 Some(id) => id == type_id,
                 None => true,
             },

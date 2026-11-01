@@ -215,6 +215,10 @@ pub struct OwnershipChecker<'a> {
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
     active_for_mutates: Vec<ForMutateInfo>,
+    /// Names a `let`/`mut` inside a `with` or loop body declared again, so
+    /// they no longer name the held source: a `mut v` in `for x in v { … }`
+    /// is a new vector. Scoped to the block that declared them.
+    shadowed_holds: HashSet<String>,
     /// Link locals whose initializer was a `rack.insert(...)` — they name a node
     /// nothing else in this body has a name for, so a delete elsewhere can't be
     /// deleting them. Every other link local is *derived* (a field read, an
@@ -480,6 +484,7 @@ impl<'a> OwnershipChecker<'a> {
             ensure_at: None,
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
+            shadowed_holds: HashSet::new(),
             coarse_resources: HashMap::new(),
             exit_reported: HashSet::new(),
             deleting_params: HashSet::new(),
@@ -1520,6 +1525,12 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn check_block(&mut self, stmts: &[Stmt]) {
+        let shadowed_on_entry = self.shadowed_holds.clone();
+        self.check_block_body(stmts);
+        self.shadowed_holds = shadowed_on_entry;
+    }
+
+    fn check_block_body(&mut self, stmts: &[Stmt]) {
         let block_id = self.current_block;
         self.current_block += 1;
         let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
@@ -2214,6 +2225,11 @@ impl<'a> OwnershipChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Mut { name, name_span: _, ty, init } => {
+                if self.active_for_mutates.iter().any(|f| &f.root == name)
+                    || self.active_with_bindings.iter().any(|w| &w.root == name)
+                {
+                    self.shadowed_holds.insert(name.clone());
+                }
                 // `mut` is what makes a rack's nodes writable here.
                 self.writable_racks.insert(name.clone());
                 self.check_expr(init);
@@ -2276,6 +2292,11 @@ impl<'a> OwnershipChecker<'a> {
                 self.inherit_frame_limit(&names, init, self.current_block);
             }
             StmtKind::Let { name, name_span: _, ty, init } => {
+                if self.active_for_mutates.iter().any(|f| &f.root == name)
+                    || self.active_with_bindings.iter().any(|w| &w.root == name)
+                {
+                    self.shadowed_holds.insert(name.clone());
+                }
                 self.check_expr(init);
                 self.check_index_binding(name, init, false);
                 // non-Copy types are moved (O3); field/index projections create borrows.
@@ -2694,7 +2715,7 @@ impl<'a> OwnershipChecker<'a> {
                 // copy and leaves `v` free.
                 // A lazy chain off a place, `m.keys()` or `v.filter(f)`, walks
                 // the place as it goes (type.sequence), so it holds it too.
-                let walks_place = matches!(iter.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                let walks_place = matches!(iter.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
                     || (matches!(iter.kind, ExprKind::MethodCall { .. })
                         && self.node_ty(&iter.id).is_some_and(|t| {
                             rask_check::receiver_name(t, &self.program.types).as_deref() == Some("Sequence")
@@ -5289,11 +5310,20 @@ impl<'a> OwnershipChecker<'a> {
     /// holder, if it overlaps something a `with` or `for mutate` holds a
     /// place in: the same path, a part of it, or what it is a part of.
     fn report_held_source_change(&mut self, place: &Expr, operation: &str, via: Option<String>, span: Span) {
+        // An element changes in place inside its container, so `v[0].clear()`
+        // is a change to `v` here; which element can't be told apart.
+        let mut place = place;
+        while let ExprKind::Index { object, .. } = &place.kind {
+            place = object;
+        }
         let (Some(root), fields) = Self::extract_root_and_fields(place) else { return };
         let fields = fields.unwrap_or_default();
         let overlaps = |r: &str, f: &[String]| {
             r == root && (f.starts_with(&fields) || fields.starts_with(f))
         };
+        if self.shadowed_holds.contains(&root) {
+            return;
+        }
         if let Some(wb) = self.active_with_bindings.iter().find(|w| overlaps(&w.root, &w.fields)) {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::WithBlockStructuralMutation {
@@ -5323,10 +5353,15 @@ impl<'a> OwnershipChecker<'a> {
     /// and as a path: `rows`, `h.items`, and for a loop `items.iter()` is
     /// `items`. `None` for anything that isn't a name or a field chain.
     fn held_source(expr: &Expr) -> Option<(String, String, Vec<String>)> {
-        let place = match &expr.kind {
+        let mut place = match &expr.kind {
             ExprKind::MethodCall { object, .. } => object,
             _ => expr,
         };
+        // An element is held through its container: resizing `v` moves
+        // `v[0]`, so walking `v[0]` holds `v`.
+        while let ExprKind::Index { object, .. } = &place.kind {
+            place = object;
+        }
         let (root, fields) = Self::extract_root_and_fields(place);
         let root = root?;
         let shown = Self::render_place(place).unwrap_or_else(|| root.clone());
@@ -8381,7 +8416,14 @@ impl<'a> OwnershipChecker<'a> {
                 _ => false,
             });
         if takes_owned {
-            self.consume_arg(base, None);
+            // Through the same door as a listed field, so a base that is
+            // itself a field read, `..o.h`, is a view stored as an owner
+            // rather than a silent second owner.
+            let ty = self
+                .node_ty(&expr.id)
+                .map(|t| self.resource_type_display(t))
+                .unwrap_or_default();
+            self.consume_into_owner(base, Sink::StructField { ty, field: "..".to_string() });
         }
     }
 

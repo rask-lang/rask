@@ -20,6 +20,12 @@ func main() {
         m.insert(k + 100, 0)
     }
 
+    mut nested: Vec<Vec<i32>> = [[1, 2, 3]]
+    for x in nested[0] {
+        // ERROR: walking an element holds its container [E0814]
+        nested.clear()
+    }
+
     // FIX: walk a copy, or collect the changes and apply them after
     for x in v.clone() {
         v.push(x)

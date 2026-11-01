@@ -2632,14 +2632,6 @@ impl Resolver {
                 self.resolve_expr(scrutinee);
                 for arm in arms {
                     self.scopes.push(ScopeKind::Block);
-                    // Each alternative of an or-pattern binds the same names.
-                    let alts: Vec<&rask_ast::expr::Pattern> = match &arm.pattern {
-                        rask_ast::expr::Pattern::Or(alts) => alts.iter().collect(),
-                        p => vec![p],
-                    };
-                    for alt in alts {
-                        self.reject_repeated_bindings(alt.bound_names(), arm.body.span);
-                    }
                     self.resolve_pattern(&arm.pattern);
                     if let Some(guard) = &arm.guard {
                         self.resolve_expr(guard);

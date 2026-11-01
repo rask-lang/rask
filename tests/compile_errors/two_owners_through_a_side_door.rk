@@ -11,6 +11,10 @@ struct Holder {
     n: i32
 }
 
+struct Outer {
+    h: Holder
+}
+
 struct Item {
     name: string
     tags: Vec<string>
@@ -34,7 +38,11 @@ func main() {
     // ERROR: `v` moved into `w` above [E0800]
     let f = || v.len()
 
+    let outer = Outer(h: Holder(items: [1], n: 1))
+    // ERROR: a spread from a field shares the field's vector [E0909]
+    let d = Holder(n: 4, ..outer.h)
+
     // FIX: say which side gets a copy
     let c = Holder(n: 3, ..b.clone())
-    println("{b.items.len()} {c.n} {w.len()} {f()}")
+    println("{b.items.len()} {c.n} {w.len()} {f()} {d.n}")
 }

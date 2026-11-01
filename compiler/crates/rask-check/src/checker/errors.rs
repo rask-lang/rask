@@ -1310,6 +1310,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// One match arm's pattern binding a name twice: `(a, a) => …`.
+    #[error("`{name}` is bound twice")]
+    RepeatedBinding {
+        name: String,
+        span: Span,
+    },
+
     /// A struct or variant literal that gives one field two values.
     #[error("field `{field}` of `{ty}` is given twice")]
     FieldGivenTwice {
@@ -2022,7 +2029,8 @@ impl TypeError {
             | FieldGivenTwice { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
-            | StaticCallOnValue { .. } => {}
+            | StaticCallOnValue { .. }
+            | RepeatedBinding { .. } => {}
         }
     }
 }

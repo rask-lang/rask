@@ -1153,6 +1153,21 @@ impl TypeChecker {
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    // One name bound twice by an arm's pattern: `(a, a)`. Asked
+                    // here and not in the resolver, because only the checker
+                    // knows that `Red` in `(Red, Red)` tests a variant and
+                    // binds nothing, and an or-pattern's bindings are one
+                    // alternative's, not all of them.
+                    let mut seen: Vec<&str> = Vec::new();
+                    for (name, _) in &bindings {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        if seen.contains(&name.as_str()) {
+                            self.errors.push(TypeError::RepeatedBinding { name: name.clone(), span: expr.span });
+                        }
+                        seen.push(name);
+                    }
                     self.note_arm_reach(&mut reach, arm, &bindings);
                     for (name, ty) in bindings {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
@@ -6104,11 +6119,44 @@ impl TypeChecker {
         let Some((first, rest)) = parts.split_first() else {
             return if rows.is_empty() { Some(Vec::new()) } else { None };
         };
+        // A struct taken apart into plain names can't fail, so it covers the
+        // part the same as `_` does: `(Pt(x, y), true)`.
+        let is_struct = matches!(first, Type::Named(id) | Type::Generic { base: id, .. }
+            if matches!(self.types.get(*id), Some(TypeDef::Struct { .. })));
+        let binds_only = |p: &Pattern| matches!(p, Pattern::Wildcard)
+            || matches!(p, Pattern::Ident(n) if !n.contains('.'));
         let wild = |p: &Pattern| match p {
             Pattern::Wildcard => true,
             Pattern::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
+            Pattern::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
+            Pattern::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
             _ => false,
         };
+        // A nested tuple's parts are columns of their own, so `((true, _), _)`
+        // and `((false, _), _)` cover a `((bool, bool), bool)`.
+        if let Type::Tuple(inner) = first {
+            let n = inner.len();
+            let expanded: Vec<Vec<&Pattern>> = rows
+                .iter()
+                .filter_map(|r| match r[0] {
+                    Pattern::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
+                    p if wild(p) => Some(
+                        std::iter::repeat(&Pattern::Wildcard).take(n).chain(r[1..].iter().copied()).collect(),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            let columns: Vec<Type> = inner
+                .iter()
+                .map(|t| self.resolve_named(&self.ctx.apply(t)))
+                .chain(rest.iter().cloned())
+                .collect();
+            let gap = self.tuple_gap(&expanded, &columns)?;
+            let (head, tail) = gap.split_at(n);
+            let mut out = vec![format!("({})", head.join(", "))];
+            out.extend(tail.iter().cloned());
+            return Some(out);
+        }
         let values: Option<Vec<String>> = match first {
             Type::Bool => Some(vec!["true".to_string(), "false".to_string()]),
             Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
@@ -6904,9 +6952,15 @@ impl TypeChecker {
                 _ => false,
             };
             let pointer = matches!(src, Type::RawPtr(_)) || matches!(pc.target, Type::RawPtr(_));
+            // A type parameter isn't judged here: `x as i128` on `T: Integer`
+            // is lossless for most `T` and narrowing for `u128`, and only an
+            // instantiation knows which. Nothing re-checks it per
+            // instantiation yet (#1726).
+            let type_param = matches!(src, Type::UnresolvedNamed(_));
             if *src == pc.target
                 || pc.in_unsafe
                 || pointer
+                || type_param
                 || (to_int && fieldless_enum)
                 || matches!(src, Type::InterfaceObject { .. } | Type::Never)
             {
