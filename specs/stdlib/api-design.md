@@ -90,7 +90,7 @@ When speccing a module, write the *call sites first* — a dozen lines of realis
 - Guess is wrong because the operation is genuinely subtle → keep the design, and the doc comment leads with the distinction.
 - Guess is reasonable and differs → **rename toward the guess.** The guess is data about every future user's first attempt.
 
-This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate rather than advice.
+This is the stdlib rule "sketch how the call site reads first" (`.claude/rules/stdlib-design.md`) made into a gate rather than advice.
 
 ## Composability (SD7–SD9)
 

@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import strict
+
+// Every input walked.
+claim small_pass_through(x: u8) {
+    let w = x.to<u16>()!
+    assert strict.limit(w) == w
+}
+
+// Sampled, and false for the few inputs above 65,500: the build's own
+// thousand miss them, more seeds find one.
+claim wide_pass_through(x: u16) {
+    assert strict.limit(x) == x
+}

@@ -1480,6 +1480,11 @@ impl TypeChecker {
                     self.unify(&expected, &resolved_ret, span)
                         .map_err(|_| self.er11_error(&resolved_ret, &resolved_expected, span))
                 }
+                // ER11: where nothing wraps, a value has to arrive as the
+                // whole `T or E`, so an unknown one is that. Deferring left
+                // it open when nothing else ever said (`claims.input(…)`
+                // passed straight to a `u8 or Fault` parameter).
+                Type::Var(_) if !allow_wrap => self.unify(&expected, &ret_ty, span),
                 Type::Var(_) => {
                     self.ctx.add_constraint(TypeConstraint::Coerce {
                         value: ret_ty,

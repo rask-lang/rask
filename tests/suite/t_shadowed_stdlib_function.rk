@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's own function named like a stdlib one. The ownership pass read
+// both bodies under one name and never settled, so checking this hung.
+// Calling it still reaches the stdlib's (#1706), so the test only needs the
+// program to get through the checker.
+
+func clamp(x: i64) -> i64 {
+    if x > 10 {
+        return 10
+    }
+    return x
+}
+
+func main() {}
+
+test "a program declaring its own clamp gets checked" {
+    assert true
+}

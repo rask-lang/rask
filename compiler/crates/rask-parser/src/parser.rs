@@ -2733,15 +2733,20 @@ impl Parser {
     fn at_claim_header(&self) -> bool {
         matches!(self.current_kind(), TokenKind::Ident(s) if s == "claim")
             && matches!(self.peek(1), TokenKind::Ident(_))
-            && matches!(self.peek(2), TokenKind::LParen)
+            && matches!(self.peek(2), TokenKind::LParen | TokenKind::Lt)
     }
 
-    /// `claim name(params) { body }` (type.claims/CL1), parsed into the
-    /// function it is, with the compiler's `claim` marker.
+    /// `claim name<T: Bound>(params) { body }` (type.claims/CL1, G1), parsed
+    /// into the function it is, with the compiler's `claim` marker.
     fn parse_claim_decl(&mut self, mut attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let claim_start = self.current().span.start;
         self.advance();
         let name = self.expect_ident()?;
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            self.parse_type_params(ParamOwner::Function)?
+        } else {
+            Vec::new()
+        };
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
         self.skip_newlines();
@@ -2760,7 +2765,7 @@ impl Parser {
         let claim_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(DeclKind::Fn(FnDecl {
             name,
-            type_params: Vec::new(),
+            type_params,
             params,
             ret_ty: None,
             body,

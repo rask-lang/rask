@@ -482,6 +482,32 @@ extend json {
     @native
     public func encode_pretty<T: Encode>(value: T) -> string {}
 
+    /// An enum's shape, for a call site describing a type to the runtime: its
+    /// size, and where its tag sits and how wide it is. Claims build these
+    /// (type.claims); a decode doesn't, while JSON's enum form is open.
+    @native("rask_json_shape_enum")
+    func shape_enum(size: i64, tag_offset: i64, tag_width: i64) -> i64 {}
+
+    /// One variant of an enum shape: its tag, and its payload as a struct
+    /// shape (0 for a variant with none).
+    @native("rask_json_shape_variant")
+    func shape_variant(shape: i64, tag: i64, payload: i64) {}
+
+    /// A `T or E`'s shape: the shapes of both sides, its size, and where the
+    /// payload sits. Claims only; JSON has no form for a result.
+    @native("rask_json_shape_result")
+    func shape_result(ok: i64, err: i64, size: i64, payload_offset: i64) -> i64 {}
+
+    /// Give a map shape a key that isn't a string: a primitive, compared by
+    /// its bytes. Claims only; JSON keys are strings.
+    @native("rask_json_shape_map_key")
+    func shape_map_key(map: i64, key: i64) {}
+
+    /// The shape of a type that builds itself (`claims.Generate`): its size,
+    /// and the function that writes one. Claims only.
+    @native("rask_json_shape_generated")
+    func shape_generated(size: i64, generate: i64) -> i64 {}
+
     /// Convert a typed value to a JsonValue tree.
     @unimplemented
     public func to_value<T: Encode>(value: T) -> JsonValue {}

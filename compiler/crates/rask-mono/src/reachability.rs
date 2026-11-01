@@ -126,6 +126,8 @@ pub struct Monomorphizer<'a> {
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// The field defaults each decoded struct calls (`note_decode_defaults`).
     pub decode_defaults: HashMap<(String, String), String>,
+    /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
+    pub claim_generators: HashMap<String, String>,
     /// Node ids handed out to instantiated copies. Starts above every id the
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
@@ -543,6 +545,7 @@ impl<'a> Monomorphizer<'a> {
             call_rewrites: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
+            claim_generators: HashMap::new(),
             next_instantiated_id: 0,
             in_test_body: false,
             instantiated_node_types: HashMap::new(),
@@ -1699,8 +1702,30 @@ impl<'a> Monomorphizer<'a> {
                 if !seen.insert(*id) {
                     return;
                 }
-                let Some(rask_types::TypeDef::Struct { name, fields, .. }) = typed.types.get(*id) else {
+                // A type that builds itself is built by its `generate`, and
+                // its fields are that function's business.
+                if typed.types.builds_claim_inputs(*id) {
+                    let name = typed.types.type_name(*id);
+                    let method = format!("{name}_generate");
+                    if self.method_table.contains_key(&method) {
+                        self.enqueue(method.clone(), Vec::new());
+                        self.claim_generators.insert(name, method);
+                    }
                     return;
+                }
+                let (name, fields) = match typed.types.get(*id) {
+                    Some(rask_types::TypeDef::Struct { name, fields, .. }) => (name, fields),
+                    // An enum's payloads are built too (claims only; a decode
+                    // never reaches one).
+                    Some(rask_types::TypeDef::Enum { variants, .. }) => {
+                        for (_, payload) in variants.clone() {
+                            for t in payload {
+                                self.queue_decode_defaults(&t, seen);
+                            }
+                        }
+                        return;
+                    }
+                    _ => return,
                 };
                 for (field, field_ty) in fields {
                     let method = format!(
@@ -1721,7 +1746,16 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            Type::Result { ok, .. } => self.queue_decode_defaults(ok, seen),
+            // A claim builds either side of a `T or E`.
+            Type::Result { ok, err } => {
+                self.queue_decode_defaults(ok, seen);
+                self.queue_decode_defaults(err, seen);
+            }
+            Type::Tuple(elems) => {
+                for e in elems {
+                    self.queue_decode_defaults(e, seen);
+                }
+            }
             _ => {}
         }
     }
@@ -1752,6 +1786,28 @@ impl<'a> Monomorphizer<'a> {
         } else {
             self.note_decode_defaults(id);
         }
+    }
+
+    /// `claims.input<T>` builds a `T` the way a decode would, so a field the
+    /// wire form leaves out takes its default here too (type.claims/IN1).
+    fn note_claim_input(&mut self, id: NodeId) {
+        let Some(typed) = self.typed else { return };
+        // `claims.input<T>`, and `Choices.make<T>()` in a generator, which
+        // builds a `T` the same way.
+        let is_input = match self.call_target(id) {
+            Some(Callee::Method { recv, method, .. }) => matches!(
+                (rask_check::receiver_name(&recv, &typed.types).as_deref(), method.as_str()),
+                (Some("claims"), "input") | (Some("Choices"), "make")
+            ),
+            _ => false,
+        };
+        if !is_input {
+            return;
+        }
+        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)).cloned() else {
+            return;
+        };
+        self.queue_decode_defaults(&ty, &mut HashSet::new());
     }
 
     fn decodes_json_value(&self, id: NodeId) -> bool {
@@ -1923,6 +1979,7 @@ impl<'a> Monomorphizer<'a> {
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
             self.note_json_decode(expr.id);
+            self.note_claim_input(expr.id);
         }
 
         match &expr.kind {

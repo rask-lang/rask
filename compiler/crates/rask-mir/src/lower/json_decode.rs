@@ -28,7 +28,7 @@ use rask_mono::runtime_abi::{
     RASK_JFIELD_NOT_SERIALIZED as FIELD_NOT_SERIALIZED, RASK_JSHAPE_BOOL as JSHAPE_BOOL,
     RASK_JSHAPE_F32 as JSHAPE_F32, RASK_JSHAPE_F64 as JSHAPE_F64, RASK_JSHAPE_I16 as JSHAPE_I16,
     RASK_JSHAPE_I32 as JSHAPE_I32, RASK_JSHAPE_I64 as JSHAPE_I64, RASK_JSHAPE_I8 as JSHAPE_I8,
-    RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
+    RASK_JSHAPE_CHAR as JSHAPE_CHAR, RASK_JSHAPE_I128 as JSHAPE_I128, RASK_JSHAPE_U128 as JSHAPE_U128, RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
     RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
     RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
     RASK_JSON_ERR_TYPE as ERR_TYPE,
@@ -145,7 +145,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(dst),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::Sized(target_mir.size()),
+                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
                 },
             }));
             v
@@ -257,16 +257,28 @@ impl<'a> MirLowerer<'a> {
     /// Emit the calls that build a runtime shape for `ty`. `None` when the type
     /// isn't JSON-compatible.
     fn emit_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        self.emit_shape_for(ty, ShapeFor::Json)
+    }
+
+    fn emit_shape_for(&mut self, ty: &Type, purpose: ShapeFor) -> Option<crate::LocalId> {
         if let Some(kind) = prim_shape_kind(ty) {
             return Some(self.emit_shape_call("json_shape_prim", vec![
                 MirOperand::Constant(MirConst::Int(kind)),
             ]));
         }
+        if purpose == ShapeFor::Claims {
+            if let Some(shape) = self.emit_generated_shape(ty) {
+                return Some(shape);
+            }
+            if let Some(shape) = self.emit_claim_only_shape(ty) {
+                return Some(shape);
+            }
+        }
 
         // `T?`: its size and where its payload sits.
         if let Type::Result { ok, err } = ty {
             if **err == Type::None {
-                let inner = self.emit_shape(ok)?;
+                let inner = self.emit_shape_for(ok, purpose)?;
                 let opt = self.ctx.type_to_mir(ty);
                 return Some(self.emit_shape_call("json_shape_opt", vec![
                     MirOperand::Local(inner),
@@ -278,7 +290,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
-            let elem_shape = self.emit_shape(&elem)?;
+            let elem_shape = self.emit_shape_for(&elem, purpose)?;
             let slot = self.slot_size_for_type(&elem)?;
             let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&elem));
             return Some(self.emit_shape_call("json_shape_vec", vec![
@@ -295,7 +307,7 @@ impl<'a> MirLowerer<'a> {
                 return None;
             }
             let val = self.collection_arg(ty, "Map", 1)?;
-            let val_shape = self.emit_shape(&val)?;
+            let val_shape = self.emit_shape_for(&val, purpose)?;
             let slot = self.slot_size_for_type(&val)?;
             let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
             return Some(self.emit_shape_call("json_shape_map", vec![
@@ -306,16 +318,18 @@ impl<'a> MirLowerer<'a> {
         }
 
         let layout = self.struct_layout_of(ty)?;
-        self.emit_struct_shape(&layout)
+        self.emit_struct_shape(&layout, purpose)
     }
 
-    fn emit_struct_shape(&mut self, layout: &StructLayout) -> Option<crate::LocalId> {
+    fn emit_struct_shape(&mut self, layout: &StructLayout, purpose: ShapeFor) -> Option<crate::LocalId> {
         let shape = self.emit_shape_call("json_shape_struct", vec![MirOperand::Constant(
             MirConst::Int(layout.size as i64),
         )]);
         for field in &layout.fields {
             // A `@no_serialize` field isn't in the serialized form at all (E19):
             // the decoder never looks for it and always runs its default.
+            // A claim's input is what a decode could build, so a field the
+            // wire form leaves out takes its default for a claim too.
             let skipped = field_attrs::is_skipped(&field.attrs);
             let fill = self.decode_default_fill(&layout.name, field);
             let (field_shape, flags) = if skipped {
@@ -323,7 +337,7 @@ impl<'a> MirLowerer<'a> {
                 fill.as_ref()?;
                 (MirOperand::Constant(MirConst::Int(0)), FIELD_NOT_SERIALIZED)
             } else {
-                (MirOperand::Local(self.emit_shape(&field.ty)?), 0)
+                (MirOperand::Local(self.emit_shape_for(&field.ty, purpose)?), 0)
             };
             let key = field_attrs::serial_name(&field.attrs, &field.name);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -396,6 +410,235 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(addr))
     }
 
+    /// The shapes only a claim's inputs use: `char`, 128-bit integers, tuples,
+    /// enums, `T or E`, and maps with a key that isn't a string. JSON has no
+    /// form for any of them yet (std.json), so a decode never asks.
+    fn emit_claim_only_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
+        let named = |want: &str| matches!(ty, Type::UnresolvedNamed(n) if n == want);
+        if matches!(ty, Type::Char) || named("char") {
+            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_CHAR)]));
+        }
+        if matches!(ty, Type::I128) || named("i128") {
+            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_I128)]));
+        }
+        if matches!(ty, Type::U128) || named("u128") {
+            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_U128)]));
+        }
+        // `T or E`, either side. (`T?` is a result with `none` for its error,
+        // and JSON reads that one.)
+        if let Type::Result { ok, err } = ty {
+            if **err != Type::None {
+                let ok_shape = self.emit_shape_for(ok, ShapeFor::Claims)?;
+                let err_shape = self.emit_shape_for(err, ShapeFor::Claims)?;
+                let mir = self.ctx.type_to_mir(ty);
+                return Some(self.emit_shape_call("json_shape_result", vec![
+                    MirOperand::Local(ok_shape),
+                    MirOperand::Local(err_shape),
+                    int(mir.size() as i64),
+                    int(mir.payload_offset() as i64),
+                ]));
+            }
+        }
+        // A map keyed by a primitive. JSON keys are strings; a claim's map
+        // can have any key a map compares by its bytes. A key with its own
+        // `eq` and `hash` (a struct, an enum) isn't built yet.
+        if let Some(key) = self.collection_arg(ty, "Map", 0) {
+            if compared_by_bytes(&key) {
+                let key_shape = self.emit_shape_for(&key, ShapeFor::Claims)?;
+                let val = self.collection_arg(ty, "Map", 1)?;
+                let val_shape = self.emit_shape_for(&val, ShapeFor::Claims)?;
+                let slot = self.slot_size_for_type(&val)?;
+                let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
+                let map = self.emit_shape_call("json_shape_map", vec![
+                    MirOperand::Local(val_shape),
+                    int(slot),
+                    owned,
+                ]);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("json_shape_map_key".to_string()),
+                    args: vec![MirOperand::Local(map), MirOperand::Local(key_shape)],
+                }));
+                return Some(map);
+            }
+        }
+        if let Type::Tuple(elems) = ty {
+            let MirType::Tuple(fields) = self.ctx.type_to_mir(ty) else { return None };
+            let shape = self.emit_shape_call("json_shape_struct", vec![int(self.ctx.type_to_mir(ty).size() as i64)]);
+            // Tuple fields sit one after the other, as `debug_render_tuple`
+            // and field access read them.
+            let mut offset: i64 = 0;
+            for (elem, fty) in elems.iter().zip(&fields) {
+                let elem_shape = self.emit_shape_for(elem, ShapeFor::Claims)?;
+                self.add_shape_field(shape, offset, elem_shape);
+                offset += fty.size() as i64;
+            }
+            return Some(shape);
+        }
+        let MirType::Enum(id) = self.ctx.type_to_mir(ty) else { return None };
+        let layout = self.ctx.enum_layouts.get(id.id as usize)?.clone();
+        let shape = self.emit_shape_call("json_shape_enum", vec![
+            int(layout.size as i64),
+            int(layout.tag_offset as i64),
+            int(layout.tag_bytes() as i64),
+        ]);
+        for variant in &layout.variants {
+            let payload = if variant.fields.is_empty() {
+                int(0)
+            } else {
+                let payload = self.emit_shape_call("json_shape_struct", vec![int(layout.size as i64)]);
+                for f in &variant.fields {
+                    let field_shape = self.emit_shape_for(&f.ty, ShapeFor::Claims)?;
+                    self.add_shape_field(payload, (variant.payload_offset + f.offset) as i64, field_shape);
+                }
+                MirOperand::Local(payload)
+            };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_shape_variant".to_string()),
+                args: vec![MirOperand::Local(shape), int(variant.tag as i64), payload],
+            }));
+        }
+        Some(shape)
+    }
+
+    /// A type with its own `claims.Generate` (type.claims/IN2): a function
+    /// that calls its `generate` and writes the result where the runtime
+    /// says, wrapped in a shape. `None` for any other type.
+    fn emit_generated_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        let Type::Named(id) = ty else { return None };
+        let method = self.ctx.claim_generators.get(self.ctx.type_names.get(id)?)?.clone();
+        let ty_mir = self.ctx.type_to_mir(ty);
+        let choices = *self.ctx.type_names.iter().find(|(_, n)| n.as_str() == "Choices")?.0;
+        let choices_mir = self.ctx.type_to_mir(&Type::Named(choices));
+        let name = format!("{}__claim_generate_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let mut wb = crate::builder::BlockBuilder::new(name.clone(), MirType::Void);
+        let slot = wb.add_param("__slot".to_string(), MirType::Ptr);
+        let from = wb.alloc_temp(choices_mir);
+        let value = wb.alloc_temp(ty_mir.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(value),
+            func: FunctionRef::internal(method),
+            args: vec![MirOperand::Local(from)],
+        }));
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: 0,
+            value: MirOperand::Local(value),
+            store_size: ty_mir.size(),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(name),
+        }));
+        Some(self.emit_shape_call("json_shape_generated", vec![
+            MirOperand::Constant(MirConst::Int(ty_mir.size() as i64)),
+            MirOperand::Local(addr),
+        ]))
+    }
+
+    /// A positional field: no key, no flags, no default.
+    fn add_shape_field(&mut self, shape: crate::LocalId, offset: i64, field_shape: crate::LocalId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("json_shape_field".to_string()),
+            args: vec![
+                MirOperand::Local(shape),
+                MirOperand::Constant(MirConst::String(String::new())),
+                MirOperand::Constant(MirConst::Int(offset)),
+                MirOperand::Local(field_shape),
+                MirOperand::Constant(MirConst::Int(0)),
+                MirOperand::Constant(MirConst::Int(0)),
+            ],
+        }));
+    }
+
+    /// `claims.input<T>(name)` (type.claims): fill a `T` from the claim's
+    /// choices, through the shape a decode of `T` would read, and note how it
+    /// prints as `name = value` for a counterexample.
+    pub(super) fn lower_claim_input(
+        &mut self,
+        name: &rask_ast::expr::Expr,
+        target: &Type,
+    ) -> Result<TypedOperand, LoweringError> {
+        let (value, target_mir) = self.build_claim_value(target)?;
+        let (name_op, _) = self.lower_expr(name)?;
+        let shown = self.debug_render_value(&MirOperand::Local(value), &target_mir, Some(target), 0)?;
+        let text = self.concat_all(vec![
+            name_op,
+            MirOperand::Constant(MirConst::String(" = ".to_string())),
+            shown,
+        ]);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("claims_note_input".to_string()),
+            args: vec![text],
+        }));
+        Ok((MirOperand::Local(value), target_mir))
+    }
+
+    /// A `T` built from the claim's choices, through the shape a decode of
+    /// `T` would read: what `claims.input<T>` and a generator's
+    /// `Choices.make<T>()` both are.
+    pub(super) fn build_claim_value(&mut self, target: &Type) -> Result<(crate::LocalId, MirType), LoweringError> {
+        let target_mir = self.ctx.type_to_mir(target);
+        let Some(shape) = self.emit_shape_for(target, ShapeFor::Claims) else {
+            return Err(LoweringError::InvalidConstruct(format!(
+                "a claim can't be given a `{}` — its inputs are built the way \
+                 json.decode builds a value, plus char, 128-bit integers, tuples, enums, \
+                 `T or E` and maps with primitive keys",
+                type_label(target)
+            )));
+        };
+        let scalar_dst = !target_mir.passed_by_address();
+        let dst = if scalar_dst {
+            self.builder.alloc_temp(MirType::Array { elem: Box::new(MirType::U8), len: 16 })
+        } else {
+            self.builder.alloc_temp(target_mir.clone())
+        };
+        let dst_size = if scalar_dst { 16 } else { target_mir.size() as i64 };
+        for (func, args) in [
+            ("json_decode_zero", vec![MirOperand::Local(dst), MirOperand::Constant(MirConst::Int(dst_size))]),
+            ("claims_fill", vec![MirOperand::Local(dst), MirOperand::Local(shape)]),
+            ("json_shape_free", vec![MirOperand::Local(shape)]),
+        ] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(func.to_string()),
+                args,
+            }));
+        }
+        let value = if scalar_dst {
+            let v = self.builder.alloc_temp(target_mir.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: v,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(dst),
+                    field_index: 0,
+                    byte_offset: Some(0),
+                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
+                },
+            }));
+            v
+        } else {
+            dst
+        };
+        Ok((value, target_mir))
+    }
+
     fn emit_shape_call(&mut self, name: &str, args: Vec<MirOperand>) -> crate::LocalId {
         let local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -448,6 +691,14 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         self.ctx.find_struct(&name).map(|(_, l)| l.clone())
+    }
+
+    /// Is `object` a generator's `claims.Choices`?
+    pub(super) fn is_claim_choices(&self, object: &rask_ast::expr::Expr) -> bool {
+        matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(Type::Named(id)) if self.ctx.type_names.get(&id).map(String::as_str) == Some("Choices")
+        )
     }
 
     pub(super) fn is_map_type(&self, ty: &Type) -> bool {
@@ -543,6 +794,14 @@ impl<'a> MirLowerer<'a> {
     }
 }
 
+/// Who a shape is for. JSON can't read a `char`, a tuple or an enum yet;
+/// a claim's inputs can be any of them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShapeFor {
+    Json,
+    Claims,
+}
+
 fn prim_shape_kind(ty: &Type) -> Option<i64> {
     let kind = match &ty.at_target_width() {
         Type::Bool => JSHAPE_BOOL,
@@ -577,6 +836,18 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
         _ => return None,
     };
     Some(kind)
+}
+
+/// A key a map compares by its bytes (`Map_new`): a number, a `bool`, a
+/// `char`. Not a string, which compares by contents.
+fn compared_by_bytes(ty: &Type) -> bool {
+    let named = |n: &str| matches!(ty, Type::UnresolvedNamed(x) if x == n);
+    let kind = prim_shape_kind(ty);
+    (kind.is_some() && kind != Some(JSHAPE_STRING))
+        || matches!(ty, Type::Char | Type::I128 | Type::U128)
+        || named("char")
+        || named("i128")
+        || named("u128")
 }
 
 fn type_label(ty: &Type) -> String {

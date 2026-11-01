@@ -11,7 +11,7 @@
 use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
-use rask_ast::decl::{Decl, DepDecl, FeatureDecl, FeatureOption, PackageDecl, ProfileDecl};
+use rask_ast::decl::{ClaimsSourceDecl, Decl, DepDecl, FeatureDecl, FeatureOption, PackageDecl, ProfileDecl};
 use serde_json::Value;
 
 /// The `schema` library's sources, without its tests.
@@ -264,6 +264,18 @@ fn package_from_json(v: &Value) -> Result<PackageDecl, String> {
         metadata: pairs(v, "metadata", as_string)?,
         list_metadata: pairs(v, "list_metadata", as_strings)?,
         profiles,
+        claims: array(v, "claims")?
+            .iter()
+            .map(|c| {
+                Ok(ClaimsSourceDecl {
+                    name: string(c, "name")?,
+                    path: opt_string(c, "path")?,
+                    git: opt_string(c, "git")?,
+                    rev: opt_string(c, "rev")?,
+                    branch: opt_string(c, "branch")?,
+                })
+            })
+            .collect::<Result<_, String>>()?,
     })
 }
 

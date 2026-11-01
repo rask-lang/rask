@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Input types JSON has no form for: a claim builds them anyway.
+
+public enum Fault {
+    Small
+    Big(u8)
+}
+
+extend Fault {
+    public func message(self) -> string {
+        return "fault"
+    }
+}
+
+func main() {}
