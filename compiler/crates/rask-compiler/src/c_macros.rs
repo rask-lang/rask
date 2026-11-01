@@ -75,11 +75,11 @@ fn wrapper(call: &MacroCall) -> Option<Wrapper> {
     let param_types: Vec<TypeExpr> = call.args.iter().map(sig_type).collect::<Option<_>>()?;
     let ret_ty = sig_type(&call.result)?;
     let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
-    // `cb.F` → `2cb_F`: the length keeps two imports' names apart however
-    // their aliases and macros are spelled.
+    // `cb.F` → `2cb_1F`: each part after its length, so no alias, macro
+    // name or argument types run into another's however they're spelled.
     let symbol = match call.symbol.split_once('.') {
-        Some((alias, name)) => format!("{}{}_{}", alias.len(), alias, name),
-        None => call.symbol.clone(),
+        Some((alias, name)) => format!("{}{}_{}{}", alias.len(), alias, name.len(), name),
+        None => format!("{}{}", call.symbol.len(), call.symbol),
     };
     let name = if parts.is_empty() {
         format!("rask_macro_{}", symbol)
@@ -202,10 +202,10 @@ mod tests {
     #[test]
     fn a_run_time_call_gets_a_function_for_its_types() {
         let w = wrapper(&mask(CType::UnsignedChar)).unwrap();
-        assert_eq!(w.sig.name, "rask_macro_MASK__unsigned_char");
+        assert_eq!(w.sig.name, "rask_macro_4MASK__unsigned_char");
         assert_eq!(
             w.source,
-            "unsigned int rask_macro_MASK__unsigned_char(unsigned char X) { return (unsigned int)((((unsigned int)1) << (X - 1))); }\n"
+            "unsigned int rask_macro_4MASK__unsigned_char(unsigned char X) { return (unsigned int)((((unsigned int)1) << (X - 1))); }\n"
         );
     }
 }
