@@ -7,7 +7,7 @@
 //! out of lowering, and then fell back to the interpreter when either one
 //! mattered (#1563). `rask mir` printed MIR from before the passes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity};
@@ -320,6 +320,8 @@ fn emit_inner(
     codegen.declare_runtime_functions().map_err(fail)?;
     codegen.declare_stdlib_functions().map_err(fail)?;
     let mut extern_sigs: Vec<_> = input.decls.iter().filter_map(|d| match &d.kind {
+        // A C macro is no symbol; its calls are routed below (PP4).
+        DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => None,
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
             link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
@@ -331,13 +333,22 @@ fn emit_inner(
     }).collect();
     let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
+    let macros = crate::c_macros::route_calls(&mut functions)?;
+    extern_sigs.extend(macros.plain.iter().map(|w| w.sig.clone()));
+    extern_sigs.extend(macros.with_header.iter().map(|(_, w)| w.sig.clone()));
     // Only the externs the program reaches. A header declares far more than
     // a program calls, and each declared import is a symbol the link must
     // find: some of a header's functions exist only on other platforms, or
     // in a library the program never links.
     let reached = reached_symbols(&functions);
     extern_sigs.retain(|s| reached.contains(&s.name));
+    // Stale companions from an earlier build go; the set changes with the
+    // headers a program's macro calls need.
+    for stale in companion_sources(std::path::Path::new(obj_path)) {
+        let _ = std::fs::remove_file(stale);
+    }
     write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
+    write_companion(obj_path, "macro", macros.plain.iter().map(|w| w.source.as_str()).collect::<String>())?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
     codegen.declare_functions(input.mono, &functions).map_err(fail)?;
     codegen.register_strings(&functions).map_err(fail)?;
@@ -383,7 +394,7 @@ fn emit_inner(
     }
 
     codegen.emit_object(obj_path).map_err(|e| vec![format!("emit object: {}", e)])?;
-    write_inline_wrappers(input, target, obj_path)
+    write_inline_wrappers(input, target, obj_path, &macros.with_header)
 }
 
 /// The C companion of an object that calls a header's inline functions:
@@ -393,7 +404,12 @@ fn emit_inner(
 /// Its own file, apart from the variadic wrappers: those declare the C
 /// functions they call without the headers, which a header's own
 /// declaration would contradict.
-fn write_inline_wrappers(input: &BackEnd, target: Option<&str>, obj_path: &str) -> Result<(), Vec<String>> {
+fn write_inline_wrappers(
+    input: &BackEnd,
+    target: Option<&str>,
+    obj_path: &str,
+    macros: &[(Vec<String>, crate::variadic::Wrapper)],
+) -> Result<(), Vec<String>> {
     let (arch, os) = match target {
         Some(t) => rask_codegen::targets::arch_and_os(t).map_err(|e| vec![e])?,
         None => (std::env::consts::ARCH.to_string(), std::env::consts::OS.to_string()),
@@ -406,7 +422,56 @@ fn write_inline_wrappers(input: &BackEnd, target: Option<&str>, obj_path: &str) 
         .collect();
     let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
     let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
-    write_companion(obj_path, "inline", src)
+    write_companion(obj_path, "inline", src)?;
+    // A C macro that reads memory or calls into C: compiled with its header,
+    // which its call is made through (struct.c-interop/PP4), after those of
+    // the structs it's handed. One file per set of headers, so two headers'
+    // macros of the same name each mean their own.
+    let mut by_header: BTreeMap<Vec<std::path::PathBuf>, String> = BTreeMap::new();
+    let mut errors = Vec::new();
+    for (headers, w) in macros {
+        let mut paths = Vec::new();
+        for header in headers {
+            match crate::c_import::find_header(header, &cx) {
+                Ok(path) if !paths.contains(&path) => paths.push(path),
+                Ok(_) => {}
+                Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
+            }
+        }
+        let src = by_header.entry(paths.clone()).or_insert_with(|| {
+            paths.iter().map(|p| format!("#include \"{}\"\n", p.display())).collect()
+        });
+        src.push_str(&w.source);
+    }
+    if !errors.is_empty() {
+        errors.sort();
+        errors.dedup();
+        return Err(errors);
+    }
+    for (i, src) in by_header.into_values().enumerate() {
+        write_companion(obj_path, &format!("macro{}", i), src)?;
+    }
+    Ok(())
+}
+
+/// The C files beside an object, `<obj>.<kind>.c`: wrappers for a header's
+/// inline functions, for variadic calls and for macro calls. The link step
+/// compiles each with the object.
+pub fn companion_sources(obj: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some(name) = obj.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    let dir = match obj.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => std::path::Path::new("."),
+    };
+    let prefix = format!("{}.", name);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".c")))
+        .map(|e| obj.with_file_name(e.file_name()))
+        .collect();
+    found.sort();
+    found
 }
 
 /// Every function name a call or a function address in `functions` names.

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Macros that read through a pointer, call a header function or a compiler
+// builtin. Each call goes to a C wrapper that includes the header and calls
+// the macro by name, so it needs `unsafe` (struct.c-interop/PP4).
+
+import c "c_macro_memory.h"
+
+func main() {
+    mut s = c.Surf(flags: 3, w: 640)
+    let sp = &s
+    println("locked {unsafe c.LOCKED(sp)} width {unsafe c.WIDTH(sp)}")
+    s.flags = 2
+    println("locked {unsafe c.LOCKED(sp)}")
+
+    mut tail = c.Node(value: 42, next: none)
+    mut head = c.Node(value: 1, next: &tail)
+    println("next {unsafe c.NEXT_VALUE(&head)}")
+
+    mut n = c.Num(i: 7)
+    println("union {unsafe c.NUM_INT(&n)}")
+
+    // A union nested without a tag: C spells it as its member's type.
+    mut e = c.Ev(type_: 1, u: c.Ev_anon0(key: 9))
+    println("nested {unsafe c.KEY(&e.u)}")
+
+    // A struct only a pointer typedef names: C spells it through `Handle`.
+    mut hv = c.Handle_anon1(v: 11)
+    println("handle {unsafe c.HVAL(&hv)}")
+
+    let x: i32 = 20
+    println("call {unsafe c.TWICE_PLUS(x)}")
+    let h: u16 = 0x1234
+    println("swap {unsafe c.SWAP16(h)}")
+}

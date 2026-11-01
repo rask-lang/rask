@@ -520,6 +520,7 @@ pub struct UnionDecl {
     pub name: String,
     pub fields: Vec<Field>,
     pub is_pub: bool,
+    pub attrs: Vec<crate::attr::Attr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A macro that reads through a pointer is a C call, so it needs `unsafe`
+// like any other (struct.c-interop/PP4).
+
+import c "c_macro_memory.h"
+
+func main() {
+    mut s = c.Surf(flags: 1, w: 2)
+    let sp = &s
+    println("{c.WIDTH(sp)}")
+}

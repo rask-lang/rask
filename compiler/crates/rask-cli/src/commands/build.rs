@@ -733,7 +733,31 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             (source_files, all_decls, pkg_path_string)
         };
 
-        let source_hash = super::cache::hash_source_files(&source_files);
+        let cfg = match super::link::build_cfg(
+            opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
+        ) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("{}: {}", output::error_label(), e);
+                process::exit(1);
+            }
+        };
+        let mut source_hash = super::cache::hash_source_files(&source_files);
+        // An `import c` header is part of the program: its constants and
+        // struct layouts are compiled in, so editing it, or anything it
+        // includes, has to miss the cache (#1705).
+        {
+            let source_dirs: std::collections::HashMap<u16, std::path::PathBuf> = registry
+                .packages()
+                .iter()
+                .flat_map(|p| p.files.iter())
+                .filter_map(|f| Some((f.file_id, f.path.parent()?.to_path_buf())))
+                .collect();
+            let decls: Vec<_> = registry.packages().iter().flat_map(|p| p.all_decls().cloned()).collect();
+            let cx = rask_compiler::c_import::Context { source_dirs: &source_dirs, arch: &cfg.arch, os: &cfg.os };
+            let headers = rask_compiler::c_import::header_fingerprint(&decls, &cx);
+            source_hash.extend_from_slice(&headers.to_le_bytes());
+        }
         let target_str = opts.target.as_deref().unwrap_or("native");
         let compiler_fp = super::cache::compiler_fingerprint();
         let cache_key =
@@ -781,15 +805,6 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
         // Run the full pipeline through the shared driver. Moves `registry`
         // into PackageContext — not used after this point.
-        let cfg = match super::link::build_cfg(
-            opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
-        ) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("{}: {}", output::error_label(), e);
-                process::exit(1);
-            }
-        };
         let config = crate::compiler_config(cfg.clone());
         let mut pkg_ctx = rask_compiler::PackageContext {
             registry,
@@ -798,8 +813,12 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         };
         let output = rask_compiler::compile_package(&mut pkg_ctx, &config);
 
+        // The pipeline's list, not the one built above: it also holds each
+        // imported C header's translation, which an error inside one points
+        // into (#1710).
+        let shown = if output.source_files.is_empty() { &source_files } else { &output.source_files };
         for d in &output.diagnostics {
-            crate::show_diagnostic_multi(d, &source_files);
+            crate::show_diagnostic_multi(d, shown);
         }
 
         if let Some(result) = output.result {

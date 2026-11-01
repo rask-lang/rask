@@ -36,6 +36,7 @@ use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod emit;
 pub mod c_import;
+pub mod c_macros;
 mod variadic;
 pub mod package_scope;
 pub mod runners;

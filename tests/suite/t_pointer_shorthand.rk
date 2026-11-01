@@ -67,6 +67,22 @@ test "p[i] steps by the element's size" {
     assert v[0].w == 1
 }
 
+struct Guid {
+    id: i32
+    data: [u8; 4]
+}
+
+test "an array field's element through a pointer" {
+    mut g = Guid(id: 1, data: [1, 2, 3, 4])
+    let p = &g
+    unsafe {
+        p.data[2] = 30
+    }
+    assert unsafe p.data[2] == 30
+    assert g.data[2] == 30
+    assert g.data[3] == 4
+}
+
 func main() {
     mut s = Size(w: 1, h: 2)
     let p = &s

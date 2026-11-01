@@ -1774,18 +1774,6 @@ impl ToDiagnostic for crate::TypeError {
                 diag
             }
 
-            CStructReturn { func, ty, span } => {
-                Diagnostic::error(format!(
-                    "`{}` returns the struct `{}` by value, which isn't supported yet",
-                    func, ty
-                ))
-                .with_code("E0858")
-                .with_primary(*span, "struct returned by value")
-                .with_help("take the struct through an out-parameter instead: declare the C side as `void f(Rect *out)` and pass a pointer")
-                .with_fix("pass a pointer to a struct you own instead of returning one")
-                .with_why("a C function handing back a struct uses its own ABI rule — registers for a small one, a hidden pointer for a large one — and the compiler doesn't implement it yet, so the value it read back would be wrong rather than absent")
-            }
-
             UnsafeRequired { operation, span } => {
                 Diagnostic::error(format!("{} requires an `unsafe` block", operation))
                     .with_code("E0386")
@@ -2488,6 +2476,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "not a number or a pointer")
                     .with_help("pass a number, a `bool` or a raw pointer; a string goes as `s.to_cstring()!.as_ptr()`")
                     .with_why("C reads each variadic argument as the type its format says, with nothing in the call to check it against [struct.c-interop]")
+            }
+
+            CMacroCall { name, problem, span } => {
+                Diagnostic::error(format!("`{name}` is a C macro, and this call can't be made: {problem}"))
+                    .with_code("E0940")
+                    .with_primary(*span, "a C macro")
+                    .with_fix("pass arguments of the types the macro's body uses them as; a macro whose body can't be typed is written out in Rask by whoever wraps the library")
+                    .with_why("a C macro has no types of its own, so each call types its body from its arguments and the header's declarations, as C would [struct.c-interop/PP4]")
             }
 
             AddressOfValue { span } => {

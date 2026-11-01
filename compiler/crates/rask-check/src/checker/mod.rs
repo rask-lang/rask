@@ -363,6 +363,16 @@ pub struct TypeChecker {
     pub(super) c_fn_pointers: HashMap<NodeId, rask_ast::Span>,
     /// CB3: externs whose callback takes a closure through a context pointer.
     pub(super) c_contexts: HashMap<String, type_defs::CContext>,
+    /// PP4: each extern that stands for a C function-like macro, by symbol.
+    pub(super) c_macros: HashMap<String, type_defs::CMacroDef>,
+    /// PP4: each macro call, as typed.
+    pub(super) c_macro_calls: HashMap<NodeId, rask_c_parse::cexpr::MacroCall>,
+    /// PP4: C spellings of C structs whose Rask name differs (`@c_name`).
+    /// With the header each is declared in, when an import says.
+    pub(super) c_names: HashMap<String, (rask_ast::attr::CName, Option<String>)>,
+    /// PP4: each extern function, for typing a macro body that calls one:
+    /// parameter types, result type, variadic.
+    pub(super) c_functions: HashMap<String, (Vec<rask_ast::ty::TypeExpr>, Option<rask_ast::ty::TypeExpr>, bool)>,
     /// Externs declared with `...`: a call may pass more than they list.
     pub(super) variadic_externs: std::collections::HashSet<String>,
     /// Variadic arguments whose type isn't settled yet, checked after solving.
@@ -684,6 +694,10 @@ impl TypeChecker {
             c_fn_pointers: HashMap::new(),
             extern_c_fns: std::collections::HashSet::new(),
             c_contexts: HashMap::new(),
+            c_macros: HashMap::new(),
+            c_macro_calls: HashMap::new(),
+            c_names: HashMap::new(),
+            c_functions: HashMap::new(),
             variadic_externs: std::collections::HashSet::new(),
             pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),
@@ -805,6 +819,7 @@ impl TypeChecker {
             .filter_map(|d| self.resolved.decl_symbols.get(&d.id).copied())
             .collect();
         self.collect_extern_contexts(decls);
+        self.collect_c_macros(decls);
         self.variadic_externs = decls
             .iter()
             .filter_map(|d| match &d.kind {
@@ -1187,6 +1202,7 @@ impl TypeChecker {
             arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),
+            c_macro_calls: std::mem::take(&mut self.c_macro_calls),
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,

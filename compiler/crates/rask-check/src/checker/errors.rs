@@ -629,12 +629,6 @@ pub enum TypeError {
         from: Type,
         span: Span,
     },
-    #[error("`{func}` returns the struct `{ty}` by value, which isn't supported yet")]
-    CStructReturn {
-        func: String,
-        ty: String,
-        span: Span,
-    },
     #[error("method `{method}` returns Self and cannot be called through `any {interface_name}`")]
     InterfaceObjectSelfReturn {
         interface_name: String,
@@ -1028,6 +1022,14 @@ pub enum TypeError {
     #[error("`{name}` isn't a function C can call")]
     NotCCallable {
         name: String,
+        span: Span,
+    },
+
+    /// PP4: a call to a C function-like macro that can't be made.
+    #[error("`{name}` is a C macro that can't be called here: {problem}")]
+    CMacroCall {
+        name: String,
+        problem: String,
         span: Span,
     },
 
@@ -1868,7 +1870,6 @@ impl TypeError {
             | UnsafeRequired { .. }
             | UnsafeWithoutContract { .. }
             | LayoutAttribute { .. }
-            | CStructReturn { .. }
             | InterfaceObjectSelfReturn { .. }
             | InterfaceObjectGenericMethod { .. }
             | ErrorInterfaceMember { .. }
@@ -1907,6 +1908,7 @@ impl TypeError {
             | UnionOwningMember { .. }
             | NotCCallable { .. }
             | AddressOfValue { .. }
+            | CMacroCall { .. }
             | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }

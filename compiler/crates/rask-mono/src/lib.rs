@@ -1245,6 +1245,7 @@ mod tests {
             mutate_self_fns: std::collections::HashSet::new(),
             c_fn_pointers: std::collections::HashSet::new(),
             c_contexts: std::collections::HashMap::new(),
+            c_macro_calls: std::collections::HashMap::new(),
             resolutions: std::collections::HashMap::new(),
             types: rask_check::TypeTable::new(),
             node_types: std::collections::HashMap::new(),

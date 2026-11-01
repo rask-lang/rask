@@ -807,6 +807,12 @@ impl<'a> Printer<'a> {
     fn format_union_decl(&mut self, u: &UnionDecl, span: Span) {
         self.emit_indent();
 
+        for attr in &u.attrs {
+            self.emit_attr(attr);
+            self.emit_newline();
+            self.emit_indent();
+        }
+
         if u.is_pub {
             self.emit("public ");
         }

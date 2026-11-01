@@ -71,7 +71,13 @@ pub(crate) fn show_diagnostic_multi(
                 .with_sources(&sources);
             eprintln!("{}", fmt.format(diagnostic));
         }
-        None => eprintln!("{}: {}", output::error_label(), diagnostic.message),
+        // No span to head the report with — an error about the program as a
+        // whole, like an instantiation that never ends. The formatter still
+        // gives it its code, notes and help; only the snippet is missing.
+        None => {
+            let fmt = DiagnosticFormatter::new("").with_sources(&sources);
+            eprintln!("{}", fmt.format(diagnostic));
+        }
     }
 }
 
@@ -109,10 +115,9 @@ pub(crate) fn display_pipeline_output<T>(
     for d in &output.diagnostics {
         match format {
             Format::Human => {
-                if source_files.len() == 1 {
-                    let (path, source) = &source_files[0];
-                    show_diagnostic(source, &path.to_string_lossy(), d);
-                } else if !source_files.is_empty() {
+                // By file id even for one file: a span may point into an
+                // imported C header's translation, which isn't that file.
+                if !source_files.is_empty() {
                     show_diagnostic_multi(d, source_files);
                 } else {
                     eprintln!("{}: {}", self::output::severity_label(d.severity), d.message);

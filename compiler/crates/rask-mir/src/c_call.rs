@@ -7,8 +7,11 @@
 //! frontend (clang classifies for LLVM), so it lives here, in terms of the
 //! layout, and a backend only maps the answer onto its own types.
 //!
-//! Only the argument side. A C function returning a struct is rejected in the
-//! checker (#1101).
+//! Both sides of a call: a struct handed to C as an argument, and one C hands
+//! back as its result. The two follow the same classification on every
+//! convention here, except for what happens to one too big for registers. Both
+//! directions use it: Rask calling C (the call site), and C calling Rask (the
+//! thunk `rask-codegen/src/c_entry.rs` puts in front of the body).
 
 use rask_layout::StructLayout;
 
@@ -78,6 +81,28 @@ pub enum CArg {
     Unsupported,
 }
 
+/// How a struct comes back from a C function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CRet {
+    /// Not a struct: returned as its own type.
+    Scalar,
+    /// In registers, one per piece, in the order the convention fills them.
+    Registers(Vec<Piece>),
+    /// The caller lends memory for the result and passes its address as a
+    /// hidden argument; the callee writes the struct there.
+    Indirect,
+    /// A struct on a convention nothing here classifies.
+    Unsupported,
+}
+
+/// How a call to one C function crosses the ABI: each argument, and the
+/// result. Only kept for functions with a struct somewhere in the signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPlan {
+    pub args: Vec<CArg>,
+    pub ret: CRet,
+}
+
 /// One field, as classification sees it.
 #[derive(Debug, Clone, Copy)]
 pub struct AbiField {
@@ -89,12 +114,24 @@ pub struct AbiField {
 /// Classify a parameter of declared type `ty`, given the program's struct
 /// layouts. Anything that names no struct is a scalar.
 pub fn classify(conv: CallConv, ty: &rask_ast::ty::TypeExpr, layouts: &[StructLayout]) -> CArg {
-    let Some(layout) = ty.name().and_then(|n| struct_named(&n, layouts)) else {
-        return CArg::Scalar;
-    };
+    match ty.name().and_then(|n| struct_named(&n, layouts)) {
+        Some(layout) => classify_struct(conv, layout, layouts),
+        None => CArg::Scalar,
+    }
+}
+
+/// Classify an argument that is this struct.
+pub fn classify_struct(conv: CallConv, layout: &StructLayout, layouts: &[StructLayout]) -> CArg {
     let mut fields = Vec::new();
     flatten_struct(layout, 0, layouts, &mut fields);
     classify_aggregate(conv, layout.size, &fields)
+}
+
+/// Classify a result that is this struct.
+pub fn classify_struct_return(conv: CallConv, layout: &StructLayout, layouts: &[StructLayout]) -> CRet {
+    let mut fields = Vec::new();
+    flatten_struct(layout, 0, layouts, &mut fields);
+    classify_aggregate_return(conv, layout.size, &fields)
 }
 
 /// Every scalar in the struct, at its absolute offset.
@@ -124,6 +161,31 @@ fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[Struc
             None => out.push(AbiField { offset, size, is_float: is_float(ty) }),
         },
         _ => out.push(AbiField { offset, size, is_float: is_float(ty) }),
+    }
+}
+
+/// Classify a result of declared type `ty`.
+///
+/// What fits in registers comes back in the same registers it would go out in
+/// as an argument: System V's eight-byte pieces by class, AAPCS64's
+/// homogeneous floats and integer pairs, Win64's one register for 1, 2, 4 or 8
+/// bytes. What doesn't comes back through memory the caller lends, whose
+/// address travels in the convention's own place (`rdi` on System V, `rcx` on
+/// Win64, `x8` on AAPCS64) — the backend's struct-return argument.
+pub fn classify_return(conv: CallConv, ty: &rask_ast::ty::TypeExpr, layouts: &[StructLayout]) -> CRet {
+    match ty.name().and_then(|n| struct_named(&n, layouts)) {
+        Some(layout) => classify_struct_return(conv, layout, layouts),
+        None => CRet::Scalar,
+    }
+}
+
+/// Classify a struct result of `size` bytes with these fields.
+pub fn classify_aggregate_return(conv: CallConv, size: u32, fields: &[AbiField]) -> CRet {
+    match classify_aggregate(conv, size, fields) {
+        CArg::Registers(pieces) => CRet::Registers(pieces),
+        CArg::StackCopy(_) | CArg::ByAddress(_) => CRet::Indirect,
+        CArg::Scalar => CRet::Scalar,
+        CArg::Unsupported => CRet::Unsupported,
     }
 }
 
@@ -229,6 +291,33 @@ mod tests {
     }
 
     use PieceKind::*;
+
+    #[test]
+    fn a_small_struct_comes_back_in_the_registers_it_goes_out_in() {
+        let stamp = [f(0, 8, true), f(8, 8, false)];
+        assert_eq!(
+            classify_aggregate_return(CallConv::SysV64, 16, &stamp),
+            CRet::Registers(vec![Piece { offset: 0, kind: Vector }, Piece { offset: 8, kind: Int }])
+        );
+        let tri = [f(0, 4, true), f(4, 4, true), f(8, 4, true)];
+        assert_eq!(
+            classify_aggregate_return(CallConv::Aapcs64, 12, &tri),
+            CRet::Registers(tri.iter().map(|x| Piece { offset: x.offset, kind: F32 }).collect())
+        );
+        assert_eq!(
+            classify_aggregate_return(CallConv::Win64, 8, &[f(0, 4, false), f(4, 4, false)]),
+            CRet::Registers(vec![Piece { offset: 0, kind: Int }])
+        );
+    }
+
+    #[test]
+    fn a_large_struct_comes_back_through_memory_the_caller_lends() {
+        let triple = [f(0, 8, false), f(8, 8, false), f(16, 8, false)];
+        assert_eq!(classify_aggregate_return(CallConv::SysV64, 24, &triple), CRet::Indirect);
+        assert_eq!(classify_aggregate_return(CallConv::Aapcs64, 24, &triple), CRet::Indirect);
+        // Win64 has no two-register case: twelve bytes is already memory.
+        assert_eq!(classify_aggregate_return(CallConv::Win64, 12, &triple[..2]), CRet::Indirect);
+    }
 
     // The fixture shapes of c_struct.h, per convention.
     const RECT: (u32, [AbiField; 2]) = (8, [AbiField { offset: 0, size: 4, is_float: false }, AbiField { offset: 4, size: 4, is_float: false }]);

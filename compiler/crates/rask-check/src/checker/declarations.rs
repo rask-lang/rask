@@ -1961,6 +1961,53 @@ impl TypeChecker {
         }
     }
 
+    /// PP4: every extern that stands for a C function-like macro, with its
+    /// body parsed once. By name, as `@context` externs are: an imported
+    /// header's declarations have no entry in `decl_symbols`.
+    pub(super) fn collect_c_macros(&mut self, decls: &[rask_ast::decl::Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                // How C spells a record, for a macro's C (PP4).
+                rask_ast::decl::DeclKind::Struct(s) => {
+                    if let Some(c) = rask_ast::attr::c_name(&s.attrs) {
+                        self.c_names.insert(s.name.clone(), (c, rask_ast::attr::c_name_header(&s.attrs)));
+                    }
+                }
+                rask_ast::decl::DeclKind::Union(u) => {
+                    if let Some(c) = rask_ast::attr::c_name(&u.attrs) {
+                        self.c_names.insert(u.name.clone(), (c, rask_ast::attr::c_name_header(&u.attrs)));
+                    }
+                }
+                rask_ast::decl::DeclKind::Extern(e) => {
+                    let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
+                        // A function a macro's body may call.
+                        let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
+                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        continue;
+                    };
+                    let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
+                    let body = attr.body.and_then(|text| {
+                        rask_c_parse::cexpr::parse_body(&text, &params).map(|expr| (text, expr))
+                    });
+                    self.c_macros.insert(
+                        e.name.clone(),
+                        super::type_defs::CMacroDef {
+                            name: e.name.clone(),
+                            c_name: match rask_ast::attr::c_name(&e.attrs) {
+                                Some(rask_ast::attr::CName::Spelled(c)) => c,
+                                _ => e.name.clone(),
+                            },
+                            params,
+                            body,
+                            header: attr.header,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// CB3: the signature a program calls a `@context` extern through: the
     /// context parameter gone, and the callback a closure without it. The
     /// closure is `take`: C keeps it, so it outlives this frame and carries

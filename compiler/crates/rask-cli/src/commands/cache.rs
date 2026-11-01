@@ -94,23 +94,34 @@ pub fn lookup(cache_dir: &Path, key: &str) -> Option<PathBuf> {
     }
 }
 
-/// `<obj>.<kind>.c`.
-fn companion_of(obj: &Path, kind: &str) -> PathBuf {
+/// The object's C companions, each with the suffix it has after the
+/// object's own name (`.inline.c`), so a copy can carry it to another name.
+fn companions(obj: &Path) -> Vec<(PathBuf, String)> {
+    let base = obj.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    rask_compiler::emit::companion_sources(obj)
+        .into_iter()
+        .filter_map(|p| {
+            let suffix = p.file_name()?.to_string_lossy().strip_prefix(&base)?.to_string();
+            Some((p, suffix))
+        })
+        .collect()
+}
+
+/// `obj` with `suffix` after its name.
+fn with_suffix(obj: &Path, suffix: &str) -> PathBuf {
     let mut name = obj.as_os_str().to_owned();
-    name.push(format!(".{}.c", kind));
+    name.push(suffix);
     PathBuf::from(name)
 }
 
 /// Copy a cached object, and its companions, to `obj_path`.
 pub fn restore(cached: &Path, obj_path: &Path) -> std::io::Result<()> {
     std::fs::copy(cached, obj_path)?;
-    for kind in super::link::COMPANIONS {
-        let companion = companion_of(cached, kind);
-        if companion.is_file() {
-            std::fs::copy(&companion, companion_of(obj_path, kind))?;
-        } else {
-            let _ = std::fs::remove_file(companion_of(obj_path, kind));
-        }
+    for (stale, _) in companions(obj_path) {
+        let _ = std::fs::remove_file(stale);
+    }
+    for (companion, suffix) in companions(cached) {
+        std::fs::copy(&companion, with_suffix(obj_path, &suffix))?;
     }
     Ok(())
 }
@@ -125,15 +136,12 @@ pub fn store(cache_dir: &Path, key: &str, obj_path: &Path) -> Result<(), String>
         .map_err(|e| format!("failed to cache object file: {}", e))?;
     // The object's C companions, when it has them: wrappers for a header's
     // inline functions and for variadic calls.
-    for kind in super::link::COMPANIONS {
-        let companion = companion_of(obj_path, kind);
-        let cached_companion = companion_of(&cached, kind);
-        if companion.is_file() {
-            std::fs::copy(&companion, &cached_companion)
-                .map_err(|e| format!("failed to cache {}: {}", companion.display(), e))?;
-        } else {
-            let _ = std::fs::remove_file(&cached_companion);
-        }
+    for (stale, _) in companions(&cached) {
+        let _ = std::fs::remove_file(stale);
+    }
+    for (companion, suffix) in companions(obj_path) {
+        std::fs::copy(&companion, with_suffix(&cached, &suffix))
+            .map_err(|e| format!("failed to cache {}: {}", companion.display(), e))?;
     }
 
     // LRU eviction if cache is too large
@@ -181,8 +189,8 @@ fn evict_if_needed(cache_dir: &Path) -> Result<(), String> {
         if total_size <= max_bytes {
             break;
         }
-        for kind in super::link::COMPANIONS {
-            let _ = std::fs::remove_file(companion_of(path, kind));
+        for (companion, _) in companions(path) {
+            let _ = std::fs::remove_file(companion);
         }
         if let Ok(()) = std::fs::remove_file(path) {
             total_size -= size;

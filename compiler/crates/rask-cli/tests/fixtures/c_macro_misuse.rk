@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// C macro calls that can't be made: one whose body can't be typed from its
+// argument, and one handed something that isn't a number or a pointer
+// (struct.c-interop/PP4).
+
+import c "c_macros.h"
+
+func main() {
+    let name = "x"
+    println("{c.MUSTLOCK(1)}")
+    println("{c.BUTTON_MASK(name)}")
+}
