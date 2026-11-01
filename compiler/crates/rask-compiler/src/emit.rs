@@ -127,6 +127,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
                 continue;
             }
         }
+        ctx.enter_instance(&mono_fn.records);
         match rask_mir::lower::MirLowerer::lower_function_named(
             &mono_fn.body, &all_mono_decls, &ctx, Some(&mono_fn.name),
         ) {

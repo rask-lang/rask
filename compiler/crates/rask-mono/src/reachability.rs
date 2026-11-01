@@ -1271,6 +1271,7 @@ impl<'a> Monomorphizer<'a> {
                 name: mangled,
                 type_args: item.type_args,
                 projections,
+                records: crate::InstanceRecords::default(),
                 body: concrete,
             });
         }

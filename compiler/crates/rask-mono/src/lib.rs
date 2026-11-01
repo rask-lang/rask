@@ -156,6 +156,22 @@ impl MonoProgram {
     }
 }
 
+/// What the checker recorded for a generic body's nodes, worked out again for
+/// one instance: the types with its arguments in, the calls it makes to other
+/// instances. Keyed by the body's own node ids, which every instance shares.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceRecords {
+    pub node_types: HashMap<NodeId, Type>,
+    pub call_targets: HashMap<NodeId, rask_check::Callee>,
+    pub operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
+    /// Closures that may not reach another task, decided from this
+    /// instance's concrete capture types (#1356).
+    pub task_bound_closures: HashSet<NodeId>,
+    /// Call node → the symbol of the instance it calls.
+    pub call_rewrites: HashMap<NodeId, String>,
+    pub map_key_fns: HashMap<NodeId, MapKeyFns>,
+}
+
 /// Monomorphized function instance
 pub struct MonoFunction {
     pub name: String,
@@ -164,6 +180,9 @@ pub struct MonoFunction {
     /// What each `T.Out` the function writes is on this instance, keyed
     /// `("T", "Out")` (AT6/AT8).
     pub projections: HashMap<(String, String), Type>,
+    /// This instance's records for its body's nodes. Empty for a function
+    /// with no type arguments: the checker's own records are its.
+    pub records: InstanceRecords,
     pub body: Decl,
 }
 

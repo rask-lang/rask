@@ -422,9 +422,9 @@ impl<'a> MirContext<'a> {
         Self {
             struct_layouts,
             enum_layouts,
-            node_types: &records.node_types,
-            call_targets: &records.call_targets,
-            operator_targets: &records.operator_targets,
+            node_types: NodeMap::of(&records.node_types),
+            call_targets: NodeMap::of(&records.call_targets),
+            operator_targets: NodeMap::of(&records.operator_targets),
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
             err_returns: &records.err_returns,
@@ -432,7 +432,7 @@ impl<'a> MirContext<'a> {
             lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
             return_moves: &records.return_moves,
-            task_bound_closures: &records.task_bound_closures,
+            task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
             // Straight off the checker — never optional.
             type_defs: &typed.types,
@@ -452,8 +452,8 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
-            call_rewrites: empty::node_names(),
-            map_key_fns: empty::map_key_fns(),
+            call_rewrites: NodeMap::of(empty::node_names()),
+            map_key_fns: NodeMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
@@ -494,6 +494,17 @@ impl<'a> MirContext<'a> {
 
     /// What monomorphization decided per call: which copy it names, and the
     /// key functions a map it builds needs.
+    /// Lower what follows as `records`' instance: its records answer for its
+    /// body's nodes before the checker's do.
+    pub fn enter_instance(&mut self, records: &'a rask_mono::InstanceRecords) {
+        self.node_types.instance = Some(&records.node_types);
+        self.call_targets.instance = Some(&records.call_targets);
+        self.operator_targets.instance = Some(&records.operator_targets);
+        self.task_bound_closures.instance = Some(&records.task_bound_closures);
+        self.call_rewrites.instance = Some(&records.call_rewrites);
+        self.map_key_fns.instance = Some(&records.map_key_fns);
+    }
+
     pub fn with_mono_calls(mut self, mono: &'a rask_mono::MonoProgram) -> Self {
         self.instance_bindings = mono
             .functions
@@ -501,8 +512,8 @@ impl<'a> MirContext<'a> {
             .filter(|f| !f.type_args.is_empty())
             .map(|f| (f.name.clone(), (f.type_args.clone(), f.projections.clone())))
             .collect();
-        self.call_rewrites = &mono.call_rewrites;
-        self.map_key_fns = &mono.map_key_fns;
+        self.call_rewrites = NodeMap::of(&mono.call_rewrites);
+        self.map_key_fns = NodeMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self
     }
@@ -542,7 +553,7 @@ pub struct MirContext<'a> {
     pub mutate_self_fns: Option<&'a std::collections::HashSet<NodeId>>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
-    pub node_types: &'a HashMap<NodeId, Type>,
+    pub node_types: NodeMap<'a, Type>,
     /// TypeId → name mapping from the type checker, for resolving Named types.
     pub type_names: &'a HashMap<rask_types::TypeId, String>,
     /// The checker's type table.
@@ -612,14 +623,14 @@ pub struct MirContext<'a> {
     /// closure, and the frame learns from this what left on that exit.
     pub return_moves: &'a std::collections::HashMap<NodeId, Vec<String>>,
     /// Closures that captured a link or a `Local` box (#1356).
-    pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
+    pub task_bound_closures: NodeSet<'a>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
-    pub call_rewrites: &'a HashMap<NodeId, String>,
+    pub call_rewrites: NodeMap<'a, String>,
     /// A map-building call → the `hash`/`eq` its keys go through (#1391).
-    pub map_key_fns: &'a HashMap<NodeId, rask_mono::MapKeyFns>,
+    pub map_key_fns: NodeMap<'a, rask_mono::MapKeyFns>,
     /// (struct, field) → the method that builds that field's decode default.
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
@@ -629,7 +640,7 @@ pub struct MirContext<'a> {
     /// variable or missing outright; this is the applied type the checker
     /// dispatched on, so lowering reads it instead of guessing a prefix from
     /// the receiver's syntactic shape.
-    pub call_targets: &'a HashMap<NodeId, rask_check::Callee>,
+    pub call_targets: NodeMap<'a, rask_check::Callee>,
     /// OR1: operator calls the checker resolved to a conformance.
     ///
     /// `a * b` is a machine instruction on some pairs and a call on others, and
@@ -637,7 +648,7 @@ pub struct MirContext<'a> {
     /// can't re-derive that from the receiver's MIR type — an `f64` receiver
     /// looks like plain arithmetic either way — so it reads what the checker
     /// settled on.
-    pub operator_targets: &'a HashMap<NodeId, rask_check::OperatorTarget>,
+    pub operator_targets: NodeMap<'a, rask_check::OperatorTarget>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
@@ -664,6 +675,58 @@ pub struct MirContext<'a> {
     /// The type arguments of each generic function's instances, and what its
     /// `T.Out` projections are there, by the instance's symbol.
     pub instance_bindings: HashMap<String, (Vec<rask_types::TypeBinding>, HashMap<(String, String), Type>)>,
+}
+
+/// A per-node record as lowering reads it: the instance being lowered first,
+/// the checker's own second. A generic body's nodes are shared by every
+/// instance, so what differs between them (a type with the arguments in, the
+/// instance a call goes to) is the instance's.
+pub struct NodeMap<'a, V> {
+    pub global: &'a HashMap<NodeId, V>,
+    pub instance: Option<&'a HashMap<NodeId, V>>,
+}
+
+impl<V> Clone for NodeMap<'_, V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<V> Copy for NodeMap<'_, V> {}
+
+impl<'a, V> NodeMap<'a, V> {
+    pub fn of(global: &'a HashMap<NodeId, V>) -> Self {
+        NodeMap { global, instance: None }
+    }
+
+    pub fn get(&self, id: &NodeId) -> Option<&'a V> {
+        self.instance.and_then(|m| m.get(id)).or_else(|| self.global.get(id))
+    }
+
+    pub fn contains_key(&self, id: &NodeId) -> bool {
+        self.get(id).is_some()
+    }
+
+    /// No checker ran: a hand-built unit with nothing recorded.
+    pub fn is_empty(&self) -> bool {
+        self.global.is_empty() && self.instance.map_or(true, |m| m.is_empty())
+    }
+}
+
+/// `NodeMap` for a set of nodes.
+#[derive(Clone, Copy)]
+pub struct NodeSet<'a> {
+    pub global: &'a std::collections::HashSet<NodeId>,
+    pub instance: Option<&'a std::collections::HashSet<NodeId>>,
+}
+
+impl<'a> NodeSet<'a> {
+    pub fn of(global: &'a std::collections::HashSet<NodeId>) -> Self {
+        NodeSet { global, instance: None }
+    }
+
+    pub fn contains(&self, id: &NodeId) -> bool {
+        self.instance.is_some_and(|s| s.contains(id)) || self.global.contains(id)
+    }
 }
 
 /// For contexts built without checker data (tests, comptime).
@@ -776,7 +839,7 @@ impl<'a> MirContext<'a> {
             struct_layouts: &[],
             mutate_self_fns: None,
             enum_layouts: &[],
-            node_types: map,
+            node_types: NodeMap::of(map),
             type_names: &EMPTY_TYPE_NAMES,
             type_defs: &EMPTY_TYPE_DEFS,
             folded: &EMPTY_FOLDED,
@@ -798,13 +861,13 @@ impl<'a> MirContext<'a> {
             lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
-            task_bound_closures: &EMPTY_ESCAPING,
+            task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
-            call_rewrites: &EMPTY_REWRITES,
-            map_key_fns: empty::map_key_fns(),
+            call_rewrites: NodeMap::of(&EMPTY_REWRITES),
+            map_key_fns: NodeMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
-            call_targets: &EMPTY_TARGETS,
-            operator_targets: &EMPTY_OPERATOR_TARGETS,
+            call_targets: NodeMap::of(&EMPTY_TARGETS),
+            operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7904,7 +7967,7 @@ mod tests {
             mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
-            node_types: &node_types,
+            node_types: NodeMap::of(&node_types),
             type_names: &type_names,
             type_defs: &empty_type_defs,
             folded: &folded,
@@ -7926,13 +7989,13 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
-            task_bound_closures: &empty_escaping,
+            task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: &empty_rewrites,
-            map_key_fns: empty::map_key_fns(),
+            call_rewrites: NodeMap::of(&empty_rewrites),
+            map_key_fns: NodeMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
-            call_targets: &empty_targets,
-            operator_targets: &empty_operator_targets,
+            call_targets: NodeMap::of(&empty_targets),
+            operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7996,7 +8059,7 @@ mod tests {
             mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
-            node_types: &node_types,
+            node_types: NodeMap::of(&node_types),
             type_names: &type_names,
             type_defs: &empty_type_defs,
             folded: &folded,
@@ -8018,13 +8081,13 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
-            task_bound_closures: &empty_escaping,
+            task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: &empty_rewrites,
-            map_key_fns: empty::map_key_fns(),
+            call_rewrites: NodeMap::of(&empty_rewrites),
+            map_key_fns: NodeMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
-            call_targets: &empty_targets,
-            operator_targets: &empty_operator_targets,
+            call_targets: NodeMap::of(&empty_targets),
+            operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -8095,7 +8158,7 @@ mod tests {
             mutate_self_fns: None,
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
-            node_types: &node_types,
+            node_types: NodeMap::of(&node_types),
             type_names: &type_names,
             type_defs: &empty_type_defs,
             folded: &folded,
@@ -8117,13 +8180,13 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             return_moves: &empty_return_moves,
-            task_bound_closures: &empty_escaping,
+            task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: &empty_rewrites,
-            map_key_fns: empty::map_key_fns(),
+            call_rewrites: NodeMap::of(&empty_rewrites),
+            map_key_fns: NodeMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
-            call_targets: &empty_targets,
-            operator_targets: &empty_operator_targets,
+            call_targets: NodeMap::of(&empty_targets),
+            operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
