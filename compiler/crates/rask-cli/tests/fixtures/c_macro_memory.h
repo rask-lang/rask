@@ -10,6 +10,8 @@ union num { int i; float f; };
 
 struct ev { int type; union { int key; float axis; } u; };
 
+typedef struct { int v; } *Handle;
+
 int twice(int x);
 
 #define LOCKED(S) (((S)->flags & 1) != 0)
@@ -17,5 +19,6 @@ int twice(int x);
 #define NEXT_VALUE(N) ((N)->next->value)
 #define NUM_INT(U) ((U)->i)
 #define KEY(U) ((U)->key)
+#define HVAL(H) ((H)->v)
 #define TWICE_PLUS(x) (twice(x) + 1)
 #define SWAP16(x) __builtin_bswap16(x)

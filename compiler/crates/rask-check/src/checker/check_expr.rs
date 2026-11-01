@@ -7295,7 +7295,7 @@ impl TypeChecker {
         use rask_c_parse::{cexpr, CType};
         let arg_types: Vec<Type> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
         let fail = |this: &mut Self, problem: String| {
-            this.errors.push(TypeError::CMacroCall { name: def.name.clone(), problem, span });
+            this.errors.push(TypeError::CMacroCall { name: def.c_name.clone(), problem, span });
             Type::Error
         };
         let (text, body) = match &def.body {
@@ -7343,6 +7343,14 @@ impl TypeChecker {
         // Arithmetic is safe; reading memory or calling into C is what
         // `unsafe` is for, as for any C call.
         let takes_pointer = c_args.iter().any(|t| matches!(t, CType::Pointer(_)));
+        // A record's C name means something only after its header.
+        let names_record = c_args.iter().chain(std::iter::once(&result)).any(points_at_record);
+        if names_record && def.header.is_none() {
+            return fail(
+                self,
+                "it's handed a pointer to a struct, which only a macro from an imported header can name; add `header:` to its `@c_macro`".to_string(),
+            );
+        }
         if reads_memory || takes_pointer {
             self.unsafe_ops.push((span, super::UnsafeCategory::ExternCall));
             if !self.in_unsafe {
@@ -7360,7 +7368,8 @@ impl TypeChecker {
         self.c_macro_calls.insert(
             call_id,
             cexpr::MacroCall {
-                name: def.name.clone(),
+                name: def.c_name.clone(),
+                symbol: def.name.clone(),
                 body: text,
                 params: def.params.clone(),
                 args: c_args,
@@ -7430,11 +7439,25 @@ impl TypeChecker {
                     Some(CName::Nameless) => {
                         return Err(format!("`{}` is a C record declared inside another with neither a tag nor a member name, so C has no way to write its type", short))
                     }
-                    None => short.to_string(),
+                    None => {
+                        return Err(format!(
+                            "`{}` is declared in Rask, so C has no name for it; if it mirrors a C type, say which with `@c_name(\"struct name\")`",
+                            short
+                        ))
+                    }
                 }
             }
             other => rask_c_parse::cexpr::spell(other).to_string(),
         })
+    }
+}
+
+/// A pointer, at any depth, to a struct or union.
+fn points_at_record(ty: &rask_c_parse::CType) -> bool {
+    match ty {
+        rask_c_parse::CType::Pointer(inner) => points_at_record(inner),
+        rask_c_parse::CType::Named(_) => true,
+        _ => false,
     }
 }
 
@@ -7457,7 +7480,20 @@ impl rask_c_parse::cexpr::Header for CHeader<'_> {
             .iter()
             .find(|(n, _)| n == field)
             .or_else(|| fields.iter().find(|(n, _)| *n == format!("{}_", field)))?;
-        self.checker.c_type_of(ty)
+        // As C reads a member: a struct stays one, an array becomes a pointer
+        // to its first element.
+        match self.checker.resolve_named(ty) {
+            Type::Named(id) => Some(rask_c_parse::CType::Named(self.checker.types.type_name(id))),
+            Type::Array { elem, .. } => {
+                let elem = match self.checker.resolve_named(&elem) {
+                    Type::U8 | Type::I8 => rask_c_parse::CType::Char,
+                    Type::Named(id) => rask_c_parse::CType::Named(self.checker.types.type_name(id)),
+                    other => self.checker.c_type_of(&other)?,
+                };
+                Some(rask_c_parse::CType::Pointer(Box::new(elem)))
+            }
+            other => self.checker.c_type_of(&other),
+        }
     }
 
     fn function(&self, name: &str) -> Option<(Vec<rask_c_parse::CType>, rask_c_parse::CType, bool)> {

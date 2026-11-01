@@ -76,9 +76,9 @@ fn wrapper(call: &MacroCall) -> Option<Wrapper> {
     let ret_ty = sig_type(&call.result)?;
     let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
     let name = if parts.is_empty() {
-        format!("rask_macro_{}", call.name)
+        format!("rask_macro_{}", call.symbol)
     } else {
-        format!("rask_macro_{}__{}", call.name, parts.join("_"))
+        format!("rask_macro_{}__{}", call.symbol, parts.join("_"))
     };
     let source = if call.header.is_some() {
         let params: Vec<String> = call.arg_c.iter().enumerate().map(|(i, t)| format!("{} a{}", t, i)).collect();
@@ -164,6 +164,7 @@ mod tests {
     fn mask(arg: CType) -> MacroCall {
         MacroCall {
             name: "MASK".into(),
+            symbol: "MASK".into(),
             body: "(((unsigned int)1) << (X - 1))".into(),
             params: vec!["X".into()],
             args: vec![arg.clone()],

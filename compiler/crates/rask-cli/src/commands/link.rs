@@ -467,9 +467,9 @@ pub fn link_executable_with(
 
     // Always clean up the intermediate .o file
     let _ = std::fs::remove_file(obj_path);
-    for kind in COMPANIONS {
-        let _ = std::fs::remove_file(format!("{}.{}.c", obj_path, kind));
-        let _ = std::fs::remove_file(format!("{}.{}.o", obj_path, kind));
+    for src in rask_compiler::emit::companion_sources(Path::new(obj_path)) {
+        let _ = std::fs::remove_file(src.with_extension("o"));
+        let _ = std::fs::remove_file(src);
     }
 
     // Both streams go back out. Capturing was for the hint below, and dropping
@@ -496,35 +496,29 @@ pub fn link_executable_with(
     Ok(())
 }
 
-/// The C files codegen may write beside an object, by suffix: `<obj>.inline.c`
-/// wraps a header's inline functions (struct.c-interop/IN2), `<obj>.va.c`
-/// makes its variadic calls, `<obj>.macro.c` computes its C macro calls.
-pub const COMPANIONS: &[&str] = &["inline", "va", "macro"];
-
-/// Compile the object's C companions that exist, with the runtime's compiler
-/// and flags, so they're built for the same target.
+/// Compile the object's C companions (`rask_compiler::emit::companion_sources`)
+/// with the runtime's compiler and flags, so they're built for the same target.
 fn companions(obj_path: &str, config: &TargetConfig, release: bool) -> Result<Vec<String>, String> {
     let mut objs = Vec::new();
-    for kind in COMPANIONS {
-        let src = format!("{}.{}.c", obj_path, kind);
-        if !Path::new(&src).is_file() {
-            continue;
-        }
-        let obj = format!("{}.{}.o", obj_path, kind);
+    for src in rask_compiler::emit::companion_sources(Path::new(obj_path)) {
+        let obj = src.with_extension("o");
         let out = process::Command::new(&config.cc)
             .args(&config.cc_args)
             .args(profile_cflags(release))
-            .args(["-c", &src, "-o", &obj])
+            .arg("-c")
+            .arg(&src)
+            .arg("-o")
+            .arg(&obj)
             .output()
             .map_err(|e| format!("failed to run {}: {}", config.cc, e))?;
         if !out.status.success() {
             return Err(format!(
                 "compiling the C beside the program ({}) failed:\n{}",
-                src,
+                src.display(),
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        objs.push(obj);
+        objs.push(obj.display().to_string());
     }
     Ok(objs)
 }

@@ -1991,7 +1991,16 @@ impl TypeChecker {
                     });
                     self.c_macros.insert(
                         e.name.clone(),
-                        super::type_defs::CMacroDef { name: e.name.clone(), params, body, header: attr.header },
+                        super::type_defs::CMacroDef {
+                            name: e.name.clone(),
+                            c_name: match rask_ast::attr::c_name(&e.attrs) {
+                                Some(rask_ast::attr::CName::Spelled(c)) => c,
+                                _ => e.name.clone(),
+                            },
+                            params,
+                            body,
+                            header: attr.header,
+                        },
                     );
                 }
                 _ => {}

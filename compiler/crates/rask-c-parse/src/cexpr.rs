@@ -208,6 +208,23 @@ pub fn usual(a: &CType, b: &CType) -> CType {
     }
 }
 
+/// Whether C takes a `from` for a parameter of type `to` without a cast:
+/// a number for a number, a pointer for a pointer to the same thing or to
+/// `void`, and a literal 0 for any pointer.
+fn passes(from: &CType, to: &CType, null: bool) -> bool {
+    let number = |t: &CType| int_shape(t).is_some() || is_float(t);
+    let chars = |t: &CType| matches!(t, CType::Char | CType::SignedChar | CType::UnsignedChar);
+    match (canonical(from), canonical(to)) {
+        (f, t) if number(&f) && number(&t) => true,
+        (f, CType::Pointer(_)) if null && int_shape(&f).is_some() => true,
+        (CType::Pointer(f), CType::Pointer(t)) => {
+            let (f, t) = (canonical(&f), canonical(&t));
+            f == CType::Void || t == CType::Void || f == t || (chars(&f) && chars(&t))
+        }
+        _ => false,
+    }
+}
+
 /// The type of `e` when its parameters have `params`' types.
 pub fn type_of(e: &CExpr, params: &[CType]) -> Result<CType, String> {
     type_of_in(e, params, &NoHeader)
@@ -287,8 +304,20 @@ pub fn type_of_in(e: &CExpr, params: &[CType], header: &dyn Header) -> Result<CT
             if args.len() < ps.len() || (!variadic && args.len() > ps.len()) {
                 return Err(format!("a call to `{}` with the wrong number of arguments", func));
             }
-            for a in args {
-                type_of_in(a, params, header)?;
+            for (i, a) in args.iter().enumerate() {
+                let t = type_of_in(a, params, header)?;
+                // Past the named parameters, C's default promotions apply.
+                let Some(p) = ps.get(i) else { continue };
+                let null = matches!(a, CExpr::Lit(CVal::Int(0, _)));
+                if !passes(&t, p, null) {
+                    return Err(format!(
+                        "a call to `{}` handing its argument {} a `{}` where it takes a `{}`",
+                        func,
+                        i + 1,
+                        describe_type(&t),
+                        describe_type(p)
+                    ));
+                }
             }
             if ret == CType::Void {
                 return Err(format!("a call to `{}`, which answers nothing", func));
@@ -474,6 +503,17 @@ pub fn spell(ty: &CType) -> &'static str {
     }
 }
 
+/// A type as a message names it: `int`, `struct point *`, `void *`.
+fn describe_type(ty: &CType) -> String {
+    match canonical(ty) {
+        CType::Pointer(inner) => format!("{} *", describe_type(&inner)),
+        CType::Void => "void".to_string(),
+        CType::Named(n) => n.rsplit('.').next().unwrap_or(&n).to_string(),
+        other if int_shape(&other).is_some() || is_float(&other) => spell(&other).to_string(),
+        other => format!("{:?}", other),
+    }
+}
+
 fn op_text(op: BinOp) -> &'static str {
     match op {
         BinOp::OrOr => "||",
@@ -537,7 +577,11 @@ pub fn to_c(e: &CExpr, names: &[String]) -> String {
 /// arguments and the result have at this call (struct.c-interop/PP4).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MacroCall {
+    /// The macro's name in C.
     pub name: String,
+    /// Its name in the program, unique across headers: what the C function
+    /// a run-time call goes to is named after.
+    pub symbol: String,
     pub body: String,
     pub params: Vec<String>,
     pub args: Vec<CType>,

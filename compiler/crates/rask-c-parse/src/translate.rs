@@ -367,15 +367,14 @@ impl<'a> Translator<'a> {
         } else {
             crate::cexpr::parse(&d.body, params, &crate::consteval::AsNames(&self.consts))
         };
-        // One that reads memory or calls into C is compiled with its header,
-        // which the call names.
+        // Its header goes with it: a call that reads memory, calls into C or
+        // takes a pointer to one of the header's types is compiled with it.
         let attr = match parsed {
-            Ok(e) if crate::cexpr::touches_memory(&e) => format!(
+            Ok(e) => format!(
                 "@c_macro({}, header: {})",
                 quote(&crate::cexpr::to_c(&e, &rparams)),
                 quote(self.opts.header)
             ),
-            Ok(e) => format!("@c_macro({})", quote(&crate::cexpr::to_c(&e, &rparams))),
             Err(why) => format!("@c_macro(unusable: {})", quote(&why)),
         };
         let ps: Vec<String> = rparams.iter().map(|p| format!("{}: _", p)).collect();
@@ -461,7 +460,8 @@ extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
     /// name in C at all.
     fn c_spelling(&self, s: &CStructDecl, is_union: bool) -> Option<String> {
         let tag = s.tag.as_deref().unwrap_or_default();
-        match s.naming {
+        match &s.naming {
+            CNaming::Pointee { typedef, depth } => Some(format!("__typeof__({}(({}) 0))", "*".repeat(*depth), typedef)),
             CNaming::Typedef => Some(tag.to_string()),
             CNaming::Tag if self.self_typedefs.contains(tag) => Some(tag.to_string()),
             CNaming::Tag => Some(format!("{} {}", if is_union { "union" } else { "struct" }, tag)),

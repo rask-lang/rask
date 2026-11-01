@@ -23,6 +23,10 @@ func main() {
     mut e = c.Ev(type_: 1, u: c.Ev_anon0(key: 9))
     println("nested {unsafe c.KEY(&e.u)}")
 
+    // A struct only a pointer typedef names: C spells it through `Handle`.
+    mut hv = c.Handle_anon1(v: 11)
+    println("handle {unsafe c.HVAL(&hv)}")
+
     let x: i32 = 20
     println("call {unsafe c.TWICE_PLUS(x)}")
     let h: u16 = 0x1234

@@ -134,15 +134,24 @@ pub fn expand(
                 .decls
                 .into_iter()
                 .filter(|d| match &d.kind {
-                    DeclKind::Extern(e) => externs.insert(e.name.clone()),
+                    DeclKind::Extern(e) if !is_macro(e) => externs.insert(e.name.clone()),
                     _ => true,
                 })
                 .collect();
             keep_c_spelling(&mut new);
             let mut map = package_scope::qualify_declarations(&mut new, &import.alias);
-            for d in &new {
-                if let DeclKind::Extern(e) = &d.kind {
-                    map.insert(e.name.clone(), e.name.clone());
+            for d in &mut new {
+                if let DeclKind::Extern(e) = &mut d.kind {
+                    if is_macro(e) {
+                        // A macro is no symbol: each header's is its own, named
+                        // like the header's types, with its C name kept.
+                        let qualified = package_scope::qualified(&import.alias, &e.name);
+                        e.attrs.push(c_name_attr(&e.name));
+                        map.insert(e.name.clone(), qualified.clone());
+                        e.name = qualified;
+                    } else {
+                        map.insert(e.name.clone(), e.name.clone());
+                    }
                 }
             }
             // Externs dropped above as duplicates are still reachable by name.
@@ -185,10 +194,19 @@ fn keep_c_spelling(decls: &mut [Decl]) {
         if rask_ast::attr::c_name(attrs).is_some() {
             continue;
         }
-        let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(name.clone()), span: Span::new(0, 0) };
-        let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
-        attrs.push(rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg])));
+        attrs.push(c_name_attr(name));
     }
+}
+
+/// `@c_name("name")`.
+fn c_name_attr(name: &str) -> rask_ast::attr::Attr {
+    let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(name.to_string()), span: Span::new(0, 0) };
+    let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
+    rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg]))
+}
+
+fn is_macro(e: &rask_ast::decl::ExternDecl) -> bool {
+    rask_ast::attr::c_macro(&e.attrs).is_some()
 }
 
 /// A reference through a C import's alias to a name it doesn't have.

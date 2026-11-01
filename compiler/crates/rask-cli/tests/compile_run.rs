@@ -4033,7 +4033,8 @@ fn bindc_writes_and_checks() {
         "extern \"C\" struct Mylib_ctx",
         "public const MYLIB_VERSION: c_int = 42",
         "public const MYLIB_ERR: Mylib_status = -1",
-        "@c_macro(\"((a > b) ? a : b)\")\nextern \"C\" func MYLIB_MAX(a: _, b: _) -> _",
+        "@c_macro(\"((a > b) ? a : b)\", header: ",
+        "extern \"C\" func MYLIB_MAX(a: _, b: _) -> _",
     ] {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
@@ -8568,7 +8569,7 @@ fn c_macros_compute_what_c_would() {
 fn c_macros_that_read_memory_run_through_their_header() {
     let (text, ok) = run_with_c_object("c_macro_memory");
     assert!(ok, "c_macro_memory.rk should run:\n{text}");
-    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "nested 9", "call 41", "swap 13330"] {
+    for expected in ["locked 1 width 640", "locked 0", "next 42", "union 7", "nested 9", "handle 11", "call 41", "swap 13330"] {
         assert!(text.contains(expected), "missing `{expected}`:\n{text}");
     }
 }
@@ -8583,6 +8584,25 @@ fn a_c_macro_call_that_cant_be_made_says_why() {
     assert!(text.contains("E0940"), "{text}");
     assert!(text.contains("`MUSTLOCK`") && text.contains("`->flags` on something that isn't a pointer"), "names the macro and what's in it:\n{text}");
     assert!(text.contains("`BUTTON_MASK`") && text.contains("a `string`"), "names the argument:\n{text}");
+}
+
+/// Two headers with macros of the same name: each import calls its own,
+/// whether computed at run time, folded, or compiled with its header.
+#[test]
+fn same_named_macros_from_two_headers_stay_apart() {
+    let (stdout, stderr, code) = run_capture("--native", "c_macro_two.rk");
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "run 6 500\nconst 6 500\nread 3 400\n");
+}
+
+/// A pointer to a struct C has no name for, or a call in the body handed
+/// the wrong type, is a diagnostic, not a C compiler error.
+#[test]
+fn a_macro_call_c_would_reject_is_refused_first() {
+    let (text, ok) = check_in_fixtures("c_macro_refused.rk");
+    assert!(!ok, "{text}");
+    assert!(text.contains("`Mine` is declared in Rask, so C has no name for it"), "{text}");
+    assert!(text.contains("a call to `twice` handing its argument 1 a `c.Surf *` where it takes a `int`"), "{text}");
 }
 
 /// A macro that reads memory is refused outside `unsafe`.

@@ -67,7 +67,7 @@ pub struct CStructDecl {
 }
 
 /// What C calls a record, which a macro's C has to write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CNaming {
     /// `struct point`.
     Tag,
@@ -77,6 +77,10 @@ pub enum CNaming {
     /// A record nested in another without a tag. The tag here is made up,
     /// and C has no name for it.
     Anonymous,
+    /// A tagless record only pointer typedefs name
+    /// (`typedef struct { … } *Handle;`): C spells it `__typeof__(*(Handle)0)`,
+    /// one `*` per level of pointer.
+    Pointee { typedef: String, depth: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]

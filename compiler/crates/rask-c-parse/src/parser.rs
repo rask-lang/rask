@@ -30,6 +30,14 @@ impl std::error::Error for ParseError {}
 /// `typedef struct { … } Rect, *RectPtr;` parses the body before any name
 /// exists, so both targets go through a placeholder. Once `Rect` is adopted as
 /// the tag, they name the tag instead — including through pointers.
+/// How many pointers deep `ty` is.
+fn pointer_depth(ty: &CType) -> usize {
+    match ty {
+        CType::Pointer(inner) => 1 + pointer_depth(inner),
+        _ => 0,
+    }
+}
+
 fn retarget_anon(ty: &mut CType, placeholder: &str, adopted: &str, is_struct: bool) {
     match ty {
         CType::Named(n) if n == placeholder => {
@@ -869,15 +877,33 @@ impl CParser {
                 decls.push(CDecl::Typedef(CTypedef { name, target: td_ty }));
             }
 
-            // If no tag, the first typedef name becomes the struct's tag.
+            // If no tag, the first typedef that names the struct itself gives
+            // it its name. One reached only through pointer typedefs
+            // (`typedef struct { … } *Handle;`) has no name of its own in C,
+            // so it gets a made-up one and C spells it through the pointer.
             if tag.is_none() && !decls.is_empty() {
-                if let CDecl::Typedef(ref td) = decls[0] {
-                    let adopted = td.name.clone();
+                let direct = decls.iter().find_map(|d| match d {
+                    CDecl::Typedef(td) if td.target == CType::Named(anon_placeholder.clone()) => Some(td.name.clone()),
+                    _ => None,
+                });
+                let through_pointer = decls.iter().find_map(|d| match d {
+                    CDecl::Typedef(td) => Some((td.name.clone(), pointer_depth(&td.target))),
+                    _ => None,
+                });
+                let named = match (direct, through_pointer) {
+                    (Some(name), _) => Some((name, CNaming::Typedef)),
+                    (None, Some((typedef, depth))) => {
+                        self.anon += 1;
+                        Some((format!("{}_anon{}", typedef, self.anon - 1), CNaming::Pointee { typedef, depth }))
+                    }
+                    (None, None) => None,
+                };
+                if let Some((adopted, naming)) = named {
                     let named_decl = CStructDecl {
                         tag: Some(adopted.clone()),
                         fields: decl.fields,
                         is_forward: false,
-                        naming: CNaming::Typedef,
+                        naming,
                     };
                     // The struct has a name now, so every typedef that pointed
                     // at the placeholder points at it instead. The one that

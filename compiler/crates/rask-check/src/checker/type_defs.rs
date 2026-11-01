@@ -493,7 +493,10 @@ pub struct CContext {
 /// An extern that stands for a C function-like macro (PP4).
 #[derive(Debug, Clone)]
 pub struct CMacroDef {
+    /// The extern's name, unique in the program.
     pub name: String,
+    /// The macro's name in C: `@c_name` when an import renamed it.
+    pub c_name: String,
     pub params: Vec<String>,
     /// The parsed body and its text, or why it can't be called.
     pub body: Result<(String, rask_c_parse::cexpr::CExpr), String>,

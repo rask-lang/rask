@@ -7,7 +7,7 @@
 //! out of lowering, and then fell back to the interpreter when either one
 //! mattered (#1563). `rask mir` printed MIR from before the passes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_diagnostics::{Diagnostic, Severity};
@@ -342,6 +342,11 @@ fn emit_inner(
     // in a library the program never links.
     let reached = reached_symbols(&functions);
     extern_sigs.retain(|s| reached.contains(&s.name));
+    // Stale companions from an earlier build go; the set changes with the
+    // headers a program's macro calls need.
+    for stale in companion_sources(std::path::Path::new(obj_path)) {
+        let _ = std::fs::remove_file(stale);
+    }
     write_companion(obj_path, "va", variadic.iter().map(|w| w.source.as_str()).collect::<String>())?;
     write_companion(obj_path, "macro", macros.plain.iter().map(|w| w.source.as_str()).collect::<String>())?;
     codegen.declare_extern_functions(&extern_sigs, &input.mono.struct_layouts).map_err(fail)?;
@@ -416,26 +421,52 @@ fn write_inline_wrappers(
         .into_iter()
         .collect();
     let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
-    let mut src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
+    let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
+    write_companion(obj_path, "inline", src)?;
     // A C macro that reads memory or calls into C: compiled with its header,
-    // which its call is made through (struct.c-interop/PP4).
-    let mut included: HashSet<std::path::PathBuf> = HashSet::new();
+    // which its call is made through (struct.c-interop/PP4). One file per
+    // header, so two headers' macros of the same name each mean their own.
+    let mut by_header: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
     let mut errors = Vec::new();
     for (header, w) in macros {
         match crate::c_import::find_header(header, &cx) {
             Ok(path) => {
-                if included.insert(path.clone()) {
-                    src.push_str(&format!("#include \"{}\"\n", path.display()));
-                }
+                let src = by_header
+                    .entry(path.clone())
+                    .or_insert_with(|| format!("#include \"{}\"\n", path.display()));
                 src.push_str(&w.source);
             }
-            Err(msg) => errors.push(format!("the header of C macro `{}`, `{}`, isn't found ({})", w.sig.name, header, msg)),
+            Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
         }
     }
     if !errors.is_empty() {
+        errors.dedup();
         return Err(errors);
     }
-    write_companion(obj_path, "inline", src)
+    for (i, src) in by_header.into_values().enumerate() {
+        write_companion(obj_path, &format!("macro{}", i), src)?;
+    }
+    Ok(())
+}
+
+/// The C files beside an object, `<obj>.<kind>.c`: wrappers for a header's
+/// inline functions, for variadic calls and for macro calls. The link step
+/// compiles each with the object.
+pub fn companion_sources(obj: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some(name) = obj.file_name().and_then(|n| n.to_str()) else { return Vec::new() };
+    let dir = match obj.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => std::path::Path::new("."),
+    };
+    let prefix = format!("{}.", name);
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".c")))
+        .map(|e| obj.with_file_name(e.file_name()))
+        .collect();
+    found.sort();
+    found
 }
 
 /// Every function name a call or a function address in `functions` names.
