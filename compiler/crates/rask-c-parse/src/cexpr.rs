@@ -589,6 +589,9 @@ pub struct MacroCall {
     /// The header a macro that reads memory or calls into C is compiled
     /// with; `None` for arithmetic, which needs none.
     pub header: Option<String>,
+    /// The headers that declare the records its argument and result types
+    /// name, included before `header`.
+    pub record_headers: Vec<String>,
     /// Each argument's type as C spells it, then the result's: what the C
     /// function a run-time call goes to declares.
     pub arg_c: Vec<String>,

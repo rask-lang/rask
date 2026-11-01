@@ -368,7 +368,8 @@ pub struct TypeChecker {
     /// PP4: each macro call, as typed.
     pub(super) c_macro_calls: HashMap<NodeId, rask_c_parse::cexpr::MacroCall>,
     /// PP4: C spellings of C structs whose Rask name differs (`@c_name`).
-    pub(super) c_names: HashMap<String, rask_ast::attr::CName>,
+    /// With the header each is declared in, when an import says.
+    pub(super) c_names: HashMap<String, (rask_ast::attr::CName, Option<String>)>,
     /// PP4: each extern function, for typing a macro body that calls one:
     /// parameter types, result type, variadic.
     pub(super) c_functions: HashMap<String, (Vec<rask_ast::ty::TypeExpr>, Option<rask_ast::ty::TypeExpr>, bool)>,

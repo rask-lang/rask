@@ -1205,6 +1205,14 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
+                // PP4: a C macro another package declares, `pa.F(x)`.
+                if let Some(call) = self.c_macro_calls.get(&expr.id).cloned() {
+                    let mut vals = Vec::with_capacity(args.len());
+                    for a in args {
+                        vals.push(self.eval_expr(&a.expr)?);
+                    }
+                    return self.c_macro_value(&call, vals).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
                 // `io.IoError.NotFound("x")` — a payload-carrying variant
                 // reached through the module that exports its enum, which is
                 // the spelling IM1 asks for. Everything below reads the enum's

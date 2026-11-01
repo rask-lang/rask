@@ -1970,12 +1970,12 @@ impl TypeChecker {
                 // How C spells a record, for a macro's C (PP4).
                 rask_ast::decl::DeclKind::Struct(s) => {
                     if let Some(c) = rask_ast::attr::c_name(&s.attrs) {
-                        self.c_names.insert(s.name.clone(), c);
+                        self.c_names.insert(s.name.clone(), (c, rask_ast::attr::c_name_header(&s.attrs)));
                     }
                 }
                 rask_ast::decl::DeclKind::Union(u) => {
                     if let Some(c) = rask_ast::attr::c_name(&u.attrs) {
-                        self.c_names.insert(u.name.clone(), c);
+                        self.c_names.insert(u.name.clone(), (c, rask_ast::attr::c_name_header(&u.attrs)));
                     }
                 }
                 rask_ast::decl::DeclKind::Extern(e) => {

@@ -458,6 +458,12 @@ pub enum CName {
     Nameless,
 }
 
+/// The header a C record is declared in, which `import c` writes as
+/// `@c_name(…, header: "…")`: what C has to include to name it.
+pub fn c_name_header(attrs: &[Attr]) -> Option<String> {
+    attrs.iter().find(|a| a.is("c_name"))?.arg("header")?.string()
+}
+
 /// A C record's `@c_name`, where its C spelling isn't its Rask name.
 pub fn c_name(attrs: &[Attr]) -> Option<CName> {
     let value = attrs.iter().find(|a| a.is("c_name"))?.positional()?;

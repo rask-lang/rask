@@ -75,10 +75,16 @@ fn wrapper(call: &MacroCall) -> Option<Wrapper> {
     let param_types: Vec<TypeExpr> = call.args.iter().map(sig_type).collect::<Option<_>>()?;
     let ret_ty = sig_type(&call.result)?;
     let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
+    // `cb.F` → `2cb_F`: the length keeps two imports' names apart however
+    // their aliases and macros are spelled.
+    let symbol = match call.symbol.split_once('.') {
+        Some((alias, name)) => format!("{}{}_{}", alias.len(), alias, name),
+        None => call.symbol.clone(),
+    };
     let name = if parts.is_empty() {
-        format!("rask_macro_{}", call.symbol)
+        format!("rask_macro_{}", symbol)
     } else {
-        format!("rask_macro_{}__{}", call.symbol, parts.join("_"))
+        format!("rask_macro_{}__{}", symbol, parts.join("_"))
     };
     let source = if call.header.is_some() {
         let params: Vec<String> = call.arg_c.iter().enumerate().map(|(i, t)| format!("{} a{}", t, i)).collect();
@@ -113,14 +119,16 @@ fn wrapper(call: &MacroCall) -> Option<Wrapper> {
 #[derive(Default)]
 pub struct Routed {
     pub plain: Vec<Wrapper>,
-    pub with_header: Vec<(String, Wrapper)>,
+    /// With the headers each is compiled with, its records' first and its
+    /// macro's last.
+    pub with_header: Vec<(Vec<String>, Wrapper)>,
 }
 
 /// Fold or route every macro call in `functions`, and answer the C functions
 /// the routed ones need (one per macro and argument types).
 pub fn route_calls(functions: &mut [MirFunction]) -> Result<Routed, Vec<String>> {
     let mut plain: BTreeMap<String, Wrapper> = BTreeMap::new();
-    let mut with_header: BTreeMap<String, (String, Wrapper)> = BTreeMap::new();
+    let mut with_header: BTreeMap<String, (Vec<String>, Wrapper)> = BTreeMap::new();
     let mut errors = Vec::new();
     for f in functions.iter_mut() {
         for block in &mut f.blocks {
@@ -141,7 +149,10 @@ pub fn route_calls(functions: &mut [MirFunction]) -> Result<Routed, Vec<String>>
                 func.is_extern = true;
                 match &call.header {
                     Some(h) => {
-                        with_header.entry(w.sig.name.clone()).or_insert((h.clone(), w));
+                        let mut headers: Vec<String> =
+                            call.record_headers.iter().filter(|r| *r != h).cloned().collect();
+                        headers.push(h.clone());
+                        with_header.entry(w.sig.name.clone()).or_insert((headers, w));
                     }
                     None => {
                         plain.entry(w.sig.name.clone()).or_insert(w);
@@ -170,6 +181,7 @@ mod tests {
             args: vec![arg.clone()],
             result: CType::UnsignedInt,
             header: None,
+            record_headers: Vec::new(),
             arg_c: vec![cexpr::spell(&arg).to_string()],
             result_c: "unsigned int".into(),
         }

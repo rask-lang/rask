@@ -2984,10 +2984,10 @@ impl TypeChecker {
             }
         }
 
-        // PP4: a C function-like macro. Arithmetic, so no `unsafe`; typed per
-        // call from its arguments.
-        if func.name().is_some() {
-            let def = self
+        // PP4: a C function-like macro, typed per call from its arguments.
+        // Named bare or through a package (`pa.F`).
+        {
+                let def = self
                 .resolved
                 .resolutions
                 .get(&func.id)
@@ -3933,6 +3933,19 @@ impl TypeChecker {
         // that answer different types fought over it — `libpkg.twice(21)` then
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
+        // PP4: a C macro another package declares, `pa.F(x)`. An extern
+        // keeps its name across packages, as a C symbol does.
+        let through_package = self
+            .resolved
+            .resolutions
+            .get(&object.id)
+            .and_then(|&sym| self.resolved.symbols.get(sym))
+            .is_some_and(|sym| matches!(sym.kind, SymbolKind::ExternalPackage { .. }));
+        let macro_def = if through_package { self.c_macros.get(method).cloned() } else { None };
+        if let Some(def) = macro_def {
+            return self.check_c_macro_call(call_id, &def, args, span);
+        }
+
         if let Some(ret) = self.check_package_call(call_id, object, args, span) {
             return ret;
         }
@@ -7360,8 +7373,10 @@ impl TypeChecker {
                 });
             }
         }
-        let spelled: Result<Vec<String>, String> = c_args.iter().map(|t| self.c_spelling(t)).collect();
-        let (arg_c, result_c) = match (spelled, self.c_spelling(&result)) {
+        let mut record_headers = Vec::new();
+        let spelled: Result<Vec<String>, String> =
+            c_args.iter().map(|t| self.c_spelling(t, &mut record_headers)).collect();
+        let (arg_c, result_c) = match (spelled, self.c_spelling(&result, &mut record_headers)) {
             (Ok(a), Ok(r)) => (a, r),
             (Err(why), _) | (_, Err(why)) => return fail(self, why),
         };
@@ -7375,6 +7390,7 @@ impl TypeChecker {
                 args: c_args,
                 result,
                 header: if reads_memory || takes_pointer { def.header.clone() } else { None },
+                record_headers,
                 arg_c,
                 result_c,
             },
@@ -7424,19 +7440,27 @@ impl TypeChecker {
         Some(Type::option(Type::RawPtr(Box::new(pointee))))
     }
 
-    /// How C spells a type, for the C function a macro call goes to.
-    fn c_spelling(&self, ty: &rask_c_parse::CType) -> Result<String, String> {
+    /// How C spells a type, for the C function a macro call goes to, and
+    /// the headers that declare the records it names.
+    fn c_spelling(&self, ty: &rask_c_parse::CType, headers: &mut Vec<String>) -> Result<String, String> {
         use rask_ast::attr::CName;
         use rask_c_parse::CType;
         Ok(match ty {
-            CType::Pointer(inner) => format!("{} *", self.c_spelling(inner)?),
+            CType::Pointer(inner) => format!("{} *", self.c_spelling(inner, headers)?),
             CType::Void => "void".to_string(),
             CType::Char => "char".to_string(),
             CType::Named(n) => {
                 let short = n.rsplit('.').next().unwrap_or(n);
                 match self.c_names.get(short) {
-                    Some(CName::Spelled(c)) => c.clone(),
-                    Some(CName::Nameless) => {
+                    Some((CName::Spelled(c), header)) => {
+                        if let Some(h) = header {
+                            if !headers.contains(h) {
+                                headers.push(h.clone());
+                            }
+                        }
+                        c.clone()
+                    }
+                    Some((CName::Nameless, _)) => {
                         return Err(format!("`{}` is a C record declared inside another with neither a tag nor a member name, so C has no way to write its type", short))
                     }
                     None => {

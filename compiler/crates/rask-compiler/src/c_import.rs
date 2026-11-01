@@ -51,6 +51,7 @@ pub fn expand(
     cx: &Context,
 ) -> Expanded {
     let mut out = Expanded::default();
+    out.diagnostics.extend(resolve_macro_headers(decls, cx));
     let imports: Vec<(rask_ast::decl::CImportDecl, Span)> = decls
         .iter()
         .filter_map(|d| match &d.kind {
@@ -138,14 +139,15 @@ pub fn expand(
                     _ => true,
                 })
                 .collect();
-            keep_c_spelling(&mut new);
+            keep_c_spelling(&mut new, &found.display().to_string());
             let mut map = package_scope::qualify_declarations(&mut new, &import.alias);
             for d in &mut new {
                 if let DeclKind::Extern(e) = &mut d.kind {
                     if is_macro(e) {
-                        // A macro is no symbol: each header's is its own, named
-                        // like the header's types, with its C name kept.
-                        let qualified = package_scope::qualified(&import.alias, &e.name);
+                        // A macro is no symbol: each header's is its own, under
+                        // its import's dotted name, which no Rask declaration
+                        // can take. Its C name is kept.
+                        let qualified = format!("{}.{}", import.alias, e.name);
                         e.attrs.push(c_name_attr(&e.name));
                         map.insert(e.name.clone(), qualified.clone());
                         e.name = qualified;
@@ -183,19 +185,60 @@ pub fn expand(
 
 /// Qualifying renames `Surf` to `Surf_c`, and C still calls it `Surf`. A
 /// record whose C spelling was its Rask name gets that spelling written down
-/// before the rename, for the C a macro call compiles into (PP4).
-fn keep_c_spelling(decls: &mut [Decl]) {
+/// before the rename, and every record the header it's declared in, for the
+/// C a macro call compiles into (PP4): a macro from one header can be handed
+/// a struct from another.
+fn keep_c_spelling(decls: &mut [Decl], header: &str) {
     for d in decls {
         let (name, attrs) = match &mut d.kind {
             DeclKind::Struct(s) => (&s.name, &mut s.attrs),
             DeclKind::Union(u) => (&u.name, &mut u.attrs),
             _ => continue,
         };
-        if rask_ast::attr::c_name(attrs).is_some() {
+        if rask_ast::attr::c_name(attrs).is_none() {
+            attrs.push(c_name_attr(name));
+        }
+        let Some(attr) = attrs.iter_mut().find(|a| a.is("c_name")) else { continue };
+        let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(header.to_string()), span: Span::new(0, 0) };
+        attr.args.get_or_insert_with(Vec::new).push(rask_ast::attr::AttrArg {
+            label: Some("header".to_string()),
+            value: rask_ast::attr::AttrValue::Expr(spelling),
+        });
+    }
+}
+
+/// A written `@c_macro(…, header: "a.h")` names its header the way
+/// `import c` does, beside the file it's written in. Resolved here, once, to
+/// the path the C it compiles into includes; a header `import c` translated
+/// already names its own path.
+fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for d in decls.iter_mut() {
+        let DeclKind::Extern(e) = &mut d.kind else { continue };
+        let Some(attr) = e.attrs.iter_mut().find(|a| a.is("c_macro")) else { continue };
+        let Some(args) = attr.args.as_mut() else { continue };
+        let Some(arg) = args.iter_mut().find(|a| a.label.as_deref() == Some("header")) else { continue };
+        let Some(header) = arg.value.string() else { continue };
+        if Path::new(&header).is_absolute() {
             continue;
         }
-        attrs.push(c_name_attr(name));
+        match locate(&header, d.span.file_id, cx) {
+            Ok(path) => {
+                let path = canonical(&path).display().to_string();
+                arg.value = rask_ast::attr::AttrValue::Expr(Expr {
+                    id: rask_ast::NodeId::DUMMY,
+                    kind: ExprKind::String(path),
+                    span: d.span,
+                });
+            }
+            Err(msg) => diags.push(
+                Diagnostic::error(format!("C header not found: `{}`", header))
+                    .with_primary(d.span, format!("the header C macro `{}` is compiled with", e.name))
+                    .with_note(msg),
+            ),
+        }
     }
+    diags
 }
 
 /// `@c_name("name")`.

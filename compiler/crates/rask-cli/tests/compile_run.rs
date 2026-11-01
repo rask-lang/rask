@@ -5832,6 +5832,47 @@ fn a_field_type_error_names_the_file_it_is_in() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A sub-package that binds a header by hand, macros and all: `pa.F(n)` is
+/// a macro call from the importing package too, and a macro that reads
+/// memory finds its header beside the file that names it, not beside
+/// `main.rk`.
+#[test]
+fn a_c_macro_declared_in_a_sub_package_is_callable() {
+    let rask = rask_binary();
+    let dir = std::env::temp_dir().join(format!("rask_subpkg_macro_{}_{}", std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("pa")).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"submacro\"\nversion = \"0.1.0\"\ndescription = \"macros\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("pa").join("a.h"), "struct pt { int v; };\n#define F(X) ((X) + 1)\n#define PV(P) ((P)->v)\n").unwrap();
+    std::fs::write(
+        dir.join("pa").join("a.rk"),
+        "@c_macro(\"(X + 1)\", header: \"a.h\")\npublic extern \"C\" func F(X: _) -> _\n\n\
+         @layout(C)\n@c_name(\"struct pt\")\npublic struct Pt {\n    public v: c_int\n}\n\n\
+         @c_macro(\"(P->v)\", header: \"a.h\")\npublic extern \"C\" func PV(P: _) -> _\n\n\
+         public func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.rk"),
+        "import pa\n\nfunc main() {\n    let n: i32 = 4\n    mut p = pa.make(9)\n    println(\"{pa.F(n)} {unsafe pa.PV(&p)}\")\n}\n",
+    )
+    .unwrap();
+    let run = Command::new(&rask)
+        .arg("run")
+        .arg(&dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+    let out = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+    assert!(run.status.success(), "{out}");
+    assert!(out.contains("5 9"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Editing a C header, or a file it includes, rebuilds the binary.
 ///
 /// `import c` compiles the header's constants and struct layouts in, but the
@@ -8592,7 +8633,7 @@ fn a_c_macro_call_that_cant_be_made_says_why() {
 fn same_named_macros_from_two_headers_stay_apart() {
     let (stdout, stderr, code) = run_capture("--native", "c_macro_two.rk");
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "run 6 500\nconst 6 500\nread 3 400\n");
+    assert_eq!(stdout, "run 6 500\nconst 6 500\nread 3 400\ncross 300\nmine -995\n");
 }
 
 /// A pointer to a struct C has no name for, or a call in the body handed

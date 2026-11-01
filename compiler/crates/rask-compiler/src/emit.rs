@@ -408,7 +408,7 @@ fn write_inline_wrappers(
     input: &BackEnd,
     target: Option<&str>,
     obj_path: &str,
-    macros: &[(String, crate::variadic::Wrapper)],
+    macros: &[(Vec<String>, crate::variadic::Wrapper)],
 ) -> Result<(), Vec<String>> {
     let (arch, os) = match target {
         Some(t) => rask_codegen::targets::arch_and_os(t).map_err(|e| vec![e])?,
@@ -424,22 +424,27 @@ fn write_inline_wrappers(
     let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
     write_companion(obj_path, "inline", src)?;
     // A C macro that reads memory or calls into C: compiled with its header,
-    // which its call is made through (struct.c-interop/PP4). One file per
-    // header, so two headers' macros of the same name each mean their own.
-    let mut by_header: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
+    // which its call is made through (struct.c-interop/PP4), after those of
+    // the structs it's handed. One file per set of headers, so two headers'
+    // macros of the same name each mean their own.
+    let mut by_header: BTreeMap<Vec<std::path::PathBuf>, String> = BTreeMap::new();
     let mut errors = Vec::new();
-    for (header, w) in macros {
-        match crate::c_import::find_header(header, &cx) {
-            Ok(path) => {
-                let src = by_header
-                    .entry(path.clone())
-                    .or_insert_with(|| format!("#include \"{}\"\n", path.display()));
-                src.push_str(&w.source);
+    for (headers, w) in macros {
+        let mut paths = Vec::new();
+        for header in headers {
+            match crate::c_import::find_header(header, &cx) {
+                Ok(path) if !paths.contains(&path) => paths.push(path),
+                Ok(_) => {}
+                Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
             }
-            Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
         }
+        let src = by_header.entry(paths.clone()).or_insert_with(|| {
+            paths.iter().map(|p| format!("#include \"{}\"\n", p.display())).collect()
+        });
+        src.push_str(&w.source);
     }
     if !errors.is_empty() {
+        errors.sort();
         errors.dedup();
         return Err(errors);
     }

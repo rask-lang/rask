@@ -5228,6 +5228,25 @@ impl<'a> MirLowerer<'a> {
         let method = method.to_string();
         let method = &method;
 
+        // PP4: a C macro another package declares, `pa.F(x)`. The extern
+        // keeps its name, so the call is the bare one's.
+        if let Some(call) = self.ctx.c_macro_calls.get(&expr.id).cloned() {
+            let mut arg_operands = Vec::with_capacity(args.len());
+            for a in args {
+                arg_operands.push(self.lower_expr(&a.expr)?.0);
+            }
+            let ret_ty = c_macro_result(&call);
+            let result_local = self.builder.alloc_temp(ret_ty.clone());
+            let mut func_ref = FunctionRef::extern_c(method.clone());
+            func_ref.c_macro = Some(Box::new(call));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result_local),
+                func: func_ref,
+                args: arg_operands,
+            }));
+            return Ok((MirOperand::Local(result_local), ret_ty));
+        }
+
         // `io.IoError.NotFound("x")` — a payload-carrying variant reached
         // through the module that exports its enum, which is the spelling IM1
         // asks for. The `module.Type.method()` flattening below turned it into
