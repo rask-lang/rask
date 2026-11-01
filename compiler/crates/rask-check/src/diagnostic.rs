@@ -1511,11 +1511,11 @@ impl ToDiagnostic for crate::TypeError {
             }
 
             UnreachableArm { earlier, span } => {
-                Diagnostic::warning("unreachable match arm".to_string())
-                    .with_code("W0303")
+                Diagnostic::error("unreachable match arm".to_string())
+                    .with_code("E0949")
                     .with_primary(*span, format!("never runs: `{}` above takes every value it could", earlier))
                     .with_help("delete the arm, or move it above the one that takes its values")
-                    .with_why("arms are tried top to bottom and the first match wins. A bare name that isn't a variant binds, so it matches everything — a misspelt variant reads exactly like this [type.enums, Exhaustiveness]. Add `@allow(unreachable_pattern)` to the enclosing function if it's intended")
+                    .with_why("arms are tried top to bottom and the first match wins. A bare name that isn't a variant binds, so it matches everything — a misspelt variant reads exactly like this, which is why it's an error and not a warning [type.enums/PM7]")
             }
 
             StagedOutsideWith { name, span } => {

@@ -486,9 +486,9 @@ pub enum TypeError {
         second_span: Span,
     },
 
-    /// tool.warnings/W13 (`unreachable_pattern`, W0303): a `match` arm that
-    /// can never run, because a catch-all above it takes every value or an
-    /// unguarded arm above it already tests the same variant.
+    /// type.enums/PM7: a `match` arm that can never run, because a catch-all
+    /// above it takes every value or an unguarded arm above it already tests
+    /// the same variant.
     #[error("unreachable match arm")]
     UnreachableArm {
         /// The arm that took this one's values, written as it reads.

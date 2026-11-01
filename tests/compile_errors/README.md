@@ -113,6 +113,7 @@ go down.
 | [linear_overwritten.rk](linear_overwritten.rk) | Assigning over a `@resource`, `Heap` or task handle that hasn't been consumed (L1, E0948) |
 | [receiver_and_element_aliasing.rk](receiver_and_element_aliasing.rk) | A `mutate self` receiver also passed as an argument (`b.absorb(b)`), and the same element twice (`both(mutate v[0], mutate v[0])`), E0870 |
 | [borrowed_field_taken.rk](borrowed_field_taken.rk) | Returning a non-Copy field of a `mutate` parameter or `mutate self` (E0872), and a `take self` method on a field of a borrowed parameter (E0835) |
+| [dead_match_arm.rk](dead_match_arm.rk) | An arm after a catch-all (a misspelt variant binds and becomes one), or the same variant tested twice (PM7, E0949) |
 | [generic_body_uses_concrete_type.rk](generic_body_uses_concrete_type.rk) | A generic body that treats `T` as a concrete type: `return 5` from `-> T`, a `U` returned as a `T`, `v.push(5)` into a `Vec<T>`. A number literal becomes a `T` only under `Integer`, `Float` or `Numeric` |
 | [pattern_names_wrong_variant.rk](pattern_names_wrong_variant.rk) | A pattern naming another enum's variant or one that doesn't exist (E0940), a qualified arm counted as a catch-all (E0340), a `bool` match missing `false`, and `c is Blue` that binds and so is always true |
 | [struct_pattern_shared_name.rk](struct_pattern_shared_name.rk) | A struct pattern by position (E0416) where an enum's variant shares the struct's name. The bare pattern is settled by the matched value's type, so the checker reports it rather than the desugarer |

@@ -6067,16 +6067,14 @@ impl TypeChecker {
         });
     }
 
-    /// Warn about `arm` when the arms before it already take every value it
-    /// could match (tool.warnings/W13). Only two shapes are judged: a
+    /// Reject `arm` when the arms before it already take every value it
+    /// could match (type.enums/PM7). Only two shapes are judged: a
     /// catch-all, and a payload-free test of a variant an earlier unguarded
     /// arm tested the same way. Anything that refines a payload is left alone.
     fn note_arm_reach(&mut self, reach: &mut ArmReach, arm: &MatchArm, bindings: &[(String, Type)]) {
         let span = arm.body.span;
         if let Some(earlier) = &reach.closed_by {
-            if !self.allowed_warnings.iter().any(|a| a == "unreachable_pattern") {
-                self.errors.push(TypeError::UnreachableArm { earlier: earlier.clone(), span });
-            }
+            self.errors.push(TypeError::UnreachableArm { earlier: earlier.clone(), span });
             return;
         }
         if arm.guard.is_some() {
@@ -6090,9 +6088,7 @@ impl TypeChecker {
             Pattern::Ident(n) => {
                 let tag = n.rsplit('.').next().unwrap_or(n).to_string();
                 if !reach.tags.insert(tag) {
-                    if !self.allowed_warnings.iter().any(|a| a == "unreachable_pattern") {
-                        self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
-                    }
+                    self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
                 }
             }
             _ => {}
