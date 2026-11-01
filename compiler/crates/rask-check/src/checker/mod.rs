@@ -87,6 +87,21 @@ pub enum BoundFrom {
     /// A `for` element in the default mode. `for mutate x in xs` is the form
     /// that writes back (std.iteration/I1, I4).
     Element,
+    /// `with v[i] as p` where `v` itself is read-only: a `let`, a plain
+    /// parameter. Writing `p` writes back into `v`.
+    ReadOnlySource,
+}
+
+/// One enclosing loop, innermost last in `loop_forms`.
+#[derive(Debug, Clone)]
+pub struct LoopFrame {
+    /// "while", "for" or "loop".
+    pub form: &'static str,
+    pub header: rask_ast::Span,
+    pub label: Option<String>,
+    /// What a `break v` produces: a `loop` in expression position has one,
+    /// every other loop is a statement and has none.
+    pub value: Option<Type>,
 }
 
 /// A deferred read-only-binding check. See `pending_mutations`.
@@ -100,6 +115,9 @@ pub struct PendingMutation {
     /// written place. A write past a raw pointer lands in what it points at,
     /// not in the root, and only their solved types say where that is.
     pub steps: Vec<NodeId>,
+    /// For a method call on the place: the receiver's type and the method.
+    /// `None` for an assignment, which always writes.
+    pub call: Option<(rask_types::Type, String)>,
 }
 
 /// A deferred `mutate self` check on a receiver whose type wasn't solved yet.
@@ -187,7 +205,7 @@ pub struct TypeChecker {
     /// `break v` unifies `v` with the top of this; without it the loop's type
     /// was a fresh variable nothing ever wrote to, so `let found = loop { … }`
     /// stayed open however the breaks were typed.
-    pub(super) loop_value_types: Vec<Type>,
+
     /// The form of each enclosing loop, innermost last — "while", "for" or
     /// "loop", plus where its header is.
     ///
@@ -196,7 +214,13 @@ pub struct TypeChecker {
     /// CF21). `break 42` inside a `while` was accepted silently, because the
     /// only question anyone asked was whether `loop_value_types` had a top —
     /// and it only ever does for a `loop` in expression position (#1090).
-    pub(super) loop_forms: Vec<(&'static str, rask_ast::Span)>,
+    pub(super) loop_forms: Vec<LoopFrame>,
+    /// `loop_forms.len()` where the innermost `ensure` body began, if one is
+    /// being checked. A `break` or `continue` that leaves the loops opened
+    /// inside it, or a `return`, would leave the cleanup itself.
+    pub(super) ensure_floor: Option<usize>,
+    /// Each range expression's bound type, checked once literals settle.
+    pub(super) pending_range_bounds: Vec<(Type, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
@@ -641,8 +665,9 @@ impl TypeChecker {
             errors: Vec::new(),
             current_return_type: None,
             in_test_body: false,
-            loop_value_types: Vec::new(),
             loop_forms: Vec::new(),
+            ensure_floor: None,
+            pending_range_bounds: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
@@ -919,6 +944,7 @@ impl TypeChecker {
 
         // Every callee is known now, so every label has something to name.
         self.validate_arg_labels();
+        self.validate_static_calls_on_values();
         self.validate_method_visibility();
 
         // An integer literal has to fit the type it landed in.
@@ -954,6 +980,7 @@ impl TypeChecker {
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
+        self.validate_pending_range_bounds();
         self.settle_transmutes();
 
         // SEQ45: after literal defaults, so the message names `Sequence<i32>`
@@ -1358,8 +1385,9 @@ impl TypeChecker {
                 ty: ctx.apply(&ty),
                 span,
             },
-            TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
+            TypeError::TryOnNonResult { found, op, span } => TypeError::TryOnNonResult {
                 found: ctx.apply(&found),
+                op,
                 span,
             },
             TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {

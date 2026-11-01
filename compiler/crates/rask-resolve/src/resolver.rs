@@ -888,6 +888,7 @@ impl Resolver {
     // =========================================================================
 
     fn collect_declarations(&mut self, decls: &[Decl]) {
+        self.reject_duplicate_declarations(decls);
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(fn_decl) => {
@@ -1022,6 +1023,159 @@ impl Resolver {
                         self.errors.push(e);
                     }
                 }
+            }
+        }
+    }
+
+    /// Two top-level declarations with one name. `define` lets a binding
+    /// replace the one before it, which is what shadowing a local needs, and
+    /// at the top level it meant the second `func f` silently won. Functions,
+    /// types and constants share the namespace: `Point(…)` may be either a
+    /// call or a construction. An `extern` may repeat an agreeing signature,
+    /// and is checked where it binds.
+    fn reject_duplicate_declarations(&mut self, decls: &[Decl]) {
+        if self.stdlib_mode {
+            return;
+        }
+        let mut seen: HashMap<&str, Span> = HashMap::new();
+        for decl in decls {
+            let name = match &decl.kind {
+                DeclKind::Fn(f) => f.name.as_str(),
+                DeclKind::Struct(s) => s.name.as_str(),
+                DeclKind::Enum(e) => e.name.as_str(),
+                DeclKind::Interface(i) => i.name.as_str(),
+                DeclKind::Const(c) => c.name.as_str(),
+                DeclKind::TypeAlias(a) => a.name.as_str(),
+                DeclKind::Union(u) => u.name.as_str(),
+                DeclKind::Annotation(a) => a.name.as_str(),
+                _ => continue,
+            };
+            match seen.get(name) {
+                Some(&previous) => self.errors.push(ResolveError::duplicate(
+                    name.to_string(),
+                    decl.span,
+                    previous,
+                )),
+                None => {
+                    seen.insert(name, decl.span);
+                }
+            }
+        }
+        for decl in decls {
+            self.reject_duplicate_members(decl);
+            self.reject_misplaced_self(decl);
+        }
+    }
+
+    /// The same name twice inside one declaration: two fields, two
+    /// variants, two fields of a variant, two parameters or type parameters
+    /// of a function, two methods of an interface. Each used to keep the
+    /// last and carry on.
+    /// `self` is a method's first parameter and nothing else. `func f(a,
+    /// self)` compiled and natively read `a`'s slot as the receiver; a free
+    /// `func f(self)` was an ordinary parameter named `self`.
+    fn reject_misplaced_self(&mut self, decl: &Decl) {
+        let check_method = |f: &FnDecl, errors: &mut Vec<ResolveError>| {
+            for (i, p) in f.params.iter().enumerate() {
+                if p.name == "self" && i > 0 {
+                    errors.push(ResolveError::self_misplaced("has to be the first parameter", p.name_span));
+                }
+            }
+        };
+        match &decl.kind {
+            DeclKind::Fn(f) => {
+                if let Some(p) = f.params.iter().find(|p| p.name == "self") {
+                    self.errors.push(ResolveError::self_misplaced(
+                        "is a method's receiver, and this is a free function",
+                        p.name_span,
+                    ));
+                }
+            }
+            DeclKind::Struct(st) => st.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Enum(e) => e.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Interface(i) => i.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            DeclKind::Impl(i) => i.methods.iter().for_each(|m| check_method(m, &mut self.errors)),
+            _ => {}
+        }
+    }
+
+    fn reject_duplicate_members(&mut self, decl: &Decl) {
+        use rask_ast::decl::{Field, TypeParam};
+        fn fields(fs: &[Field]) -> Vec<(&str, Span)> {
+            fs.iter().map(|f| (f.name.as_str(), f.name_span)).collect()
+        }
+        fn type_params(tps: &[TypeParam], span: Span) -> Vec<(&str, Span)> {
+            tps.iter().map(|t| (t.name.as_str(), span)).collect()
+        }
+        fn func(f: &FnDecl) -> Vec<Vec<(&str, Span)>> {
+            vec![
+                f.params.iter().map(|p| (p.name.as_str(), p.name_span)).collect(),
+                type_params(&f.type_params, f.span),
+            ]
+        }
+        fn methods(ms: &[FnDecl]) -> Vec<Vec<(&str, Span)>> {
+            ms.iter().flat_map(func).collect()
+        }
+        let groups: Vec<Vec<(&str, Span)>> = match &decl.kind {
+            DeclKind::Fn(f) => func(f),
+            DeclKind::Struct(st) => {
+                let mut g = vec![
+                    fields(&st.fields),
+                    type_params(&st.type_params, decl.span),
+                    st.methods.iter().map(|m| (m.name.as_str(), m.span)).collect(),
+                ];
+                g.extend(methods(&st.methods));
+                g
+            }
+            DeclKind::Enum(e) => {
+                let mut g = vec![
+                    e.variants.iter().map(|v| (v.name.as_str(), v.name_span)).collect(),
+                    type_params(&e.type_params, decl.span),
+                ];
+                g.extend(e.variants.iter().map(|v| fields(&v.fields)));
+                g.extend(methods(&e.methods));
+                g
+            }
+            DeclKind::Union(u) => vec![fields(&u.fields)],
+            DeclKind::Interface(i) => {
+                let mut g = vec![
+                    type_params(&i.type_params, decl.span),
+                    i.methods.iter().map(|m| (m.name.as_str(), m.span)).collect(),
+                ];
+                g.extend(methods(&i.methods));
+                g
+            }
+            DeclKind::Impl(i) => methods(&i.methods),
+            _ => Vec::new(),
+        };
+        for group in groups {
+            let mut seen: HashMap<&str, Span> = HashMap::new();
+            for (name, span) in group {
+                if name == "_" {
+                    continue;
+                }
+                if let Some(&prev) = seen.get(name) {
+                    self.errors.push(ResolveError::duplicate(name.to_string(), span, prev));
+                } else {
+                    seen.insert(name, span);
+                }
+            }
+        }
+    }
+
+    /// One name bound twice by a single pattern or parameter list:
+    /// `let (a, a) = t`, `|x, x| …`. Shadowing replaced the first silently,
+    /// so the last value won.
+    fn reject_repeated_bindings<'n>(&mut self, names: impl IntoIterator<Item = &'n str>, span: Span) {
+        // A synthesized node (a variant's generated constructor) repeats
+        // whatever its declaration did, and that is reported there.
+        if span.start == span.end {
+            return;
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        for name in names {
+            if name != "_" && !seen.insert(name) {
+                self.errors.push(ResolveError::repeated_binding(name.to_string(), span));
             }
         }
     }
@@ -1836,6 +1990,7 @@ impl Resolver {
             }
             StmtKind::MutTuple { patterns, init } => {
                 self.resolve_expr(init);
+                self.reject_repeated_bindings(rask_ast::stmt::tuple_pats_flat_names(patterns), stmt.span);
                 for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(
                         name.to_string(),
@@ -1851,6 +2006,7 @@ impl Resolver {
             }
             StmtKind::LetTuple { patterns, init } => {
                 self.resolve_expr(init);
+                self.reject_repeated_bindings(rask_ast::stmt::tuple_pats_flat_names(patterns), stmt.span);
                 for name in rask_ast::stmt::tuple_pats_flat_names(patterns) {
                     let sym_id = self.symbols.insert(
                         name.to_string(),
@@ -1973,6 +2129,7 @@ impl Resolver {
                     ForBinding::Single(name) => vec![name.clone()],
                     ForBinding::Tuple(names) => names.clone(),
                 };
+                self.reject_repeated_bindings(names.iter().map(String::as_str), stmt.span);
                 for name in &names {
                     let sym_id = self.symbols.insert(
                         name.clone(),
@@ -2617,6 +2774,7 @@ impl Resolver {
                 self.scopes.pop();
             }
             ExprKind::Closure { params, ret_ty, body } => {
+                self.reject_repeated_bindings(params.iter().map(|p| p.name.as_str()), expr.span);
                 self.scopes.push(ScopeKind::Closure);
                 for ty in params.iter().filter_map(|p| p.ty.as_ref()).chain(ret_ty) {
                     self.check_type_annotation(ty, expr.span);

@@ -212,7 +212,7 @@ impl TypeChecker {
                 if let Some(held) = lent.iter().find(|held| super::check_expr::paths_overlap(held, &path)) {
                     self.errors.push(TypeError::ArgumentChangedLater {
                         callee: callee.to_string(),
-                        place: held.join("."),
+                        place: super::check_expr::path_text(held),
                         span,
                     });
                     return;

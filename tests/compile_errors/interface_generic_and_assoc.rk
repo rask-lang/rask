@@ -89,15 +89,15 @@ Meters implements Ordered<f64> {
     }
 }
 
-struct Feet { v: f64 }
+struct Fathoms { v: f64 }
 
-extend Feet {
-    func mul(self, k: f64) -> Feet {
-        return Feet(v: self.v * k)
+extend Fathoms {
+    func mul(self, k: f64) -> Fathoms {
+        return Fathoms(v: self.v * k)
     }
 }
 
-func scale_it(f: Feet) -> Feet {
+func scale_it(f: Fathoms) -> Fathoms {
     // ERROR: the method is there and the conformance isn't, so nothing says
     // ERROR: what this pair means — `f.mul(2.0)` is still an ordinary call
     return f * 2.0

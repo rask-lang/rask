@@ -40,7 +40,17 @@ impl TypeChecker {
     /// agree on a Map. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
     /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
     fn iter_elem_type(&mut self, iter_ty: &Type, node: rask_ast::NodeId, span: Span) -> Type {
-        let resolved = self.ctx.apply(iter_ty);
+        // `for x in 5`: the literal is still a variable, and an open
+        // container waits. Nothing it waited for would make a number
+        // iterable; native segfaulted.
+        let resolved = self.settle_number(iter_ty);
+        if matches!(resolved, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::Isize | Type::Usize | Type::F32 | Type::F64)
+        {
+            self.errors.push(TypeError::NotIterable { found: resolved, span });
+            return Type::Error;
+        }
         if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
             return elem;
         }
@@ -221,6 +231,7 @@ impl TypeChecker {
                                 kind,
                                 span: stmt.span,
                                 steps,
+                                call: None,
                             });
                         }
                     } else {
@@ -228,6 +239,17 @@ impl TypeChecker {
                             Some(super::BindingKind::Let) => {
                                 self.errors.push(TypeError::MutateConst {
                                     name: root.clone(),
+                                    span: stmt.span,
+                                });
+                            }
+                            // PS2: `AA = 3` in a function rebound a module
+                            // `const` for every task at once.
+                            Some(super::BindingKind::ModuleConst) => {
+                                let ty = self.lookup_local(&root).unwrap_or(Type::Error);
+                                let ty = self.render_type(&self.ctx.apply(&ty));
+                                self.errors.push(TypeError::MutatePackageState {
+                                    name: root.clone(),
+                                    ty,
                                     span: stmt.span,
                                 });
                             }
@@ -301,6 +323,7 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
+                self.check_exit_from_ensure("return", None, stmt.span);
                 // A `@noreturn` function's result is "never comes back", so
                 // there is nothing a `return` could hand back.
                 if let Some(expected) = &self.current_return_type {
@@ -338,7 +361,7 @@ impl TypeChecker {
                 }
                 self.clear_expression_borrows();
             }
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { cond, body, label } => {
                 let cond_ty = self.infer_expr(cond);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));
@@ -349,19 +372,40 @@ impl TypeChecker {
                 if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
                     self.define_local_bound(name, payload_ty, super::BoundFrom::Payload);
                 }
-                self.loop_forms.push(("while", stmt.span));
+                self.loop_forms.push(super::LoopFrame { form: "while", header: stmt.span, label: label.clone(), value: None });
                 for s in body {
                     self.check_stmt(s);
                 }
                 self.loop_forms.pop();
                 self.pop_scope();
             }
-            StmtKind::For { binding, iter, body, mutate, .. } => {
+            StmtKind::For { binding, iter, body, mutate, label } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
                 if *mutate {
                     self.pending_for_mutate.push((iter.id, iter_ty.clone(), iter.span));
+                    // The loop writes into what it walks, so that has to be
+                    // writable: `for mutate x in v` on a `let v` changed `v`.
+                    // Judged after solving, like any write through a place.
+                    if let Some(root) = Self::root_ident_name(iter) {
+                        if let Some(kind) = self.lookup_binding_kind(&root) {
+                            let mut steps = Vec::new();
+                            let mut place: &rask_ast::expr::Expr = iter;
+                            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                                steps.push(object.id);
+                                place = object;
+                            }
+                            self.pending_mutations.push(super::PendingMutation {
+                                root: root.clone(),
+                                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                                kind,
+                                span: iter.span,
+                                steps,
+                                call: None,
+                            });
+                        }
+                    }
                 }
                 // std.iteration/I1: a plain `for` yields elements read-only;
                 // `for mutate x in xs` is the mode whose writes reach the
@@ -386,6 +430,14 @@ impl TypeChecker {
                         // last of the nine dispatch fallbacks (#425).
                         let elems: Vec<Type> = match self.ctx.apply(&elem_ty) {
                             Type::Tuple(elems) if elems.len() == names.len() => elems,
+                            tuple @ Type::Tuple(_) => {
+                                self.errors.push(TypeError::TupleArity {
+                                    names: names.len(),
+                                    tuple,
+                                    span: iter.span,
+                                });
+                                names.iter().map(|_| Type::Error).collect()
+                            }
                             // Still open: the element comes from a chain like
                             // `.lines().enumerate()`, whose tuple only appears
                             // once the solver runs. Fresh variables alone left
@@ -410,7 +462,7 @@ impl TypeChecker {
                         }
                     }
                 }
-                self.loop_forms.push(("for", stmt.span));
+                self.loop_forms.push(super::LoopFrame { form: "for", header: stmt.span, label: label.clone(), value: None });
                 for s in body {
                     self.check_stmt(s);
                 }
@@ -418,6 +470,22 @@ impl TypeChecker {
                 self.pop_scope();
             }
             StmtKind::Break { label, value, .. } => {
+                self.check_exit_from_ensure("break", label.as_deref(), stmt.span);
+                // The loop this leaves: the innermost, or the one named.
+                let target = match label {
+                    None => self.loop_forms.last().cloned(),
+                    Some(l) => self.loop_forms.iter().rev().find(|f| f.label.as_deref() == Some(l)).cloned(),
+                };
+                if value.is_none() {
+                    // A plain `break` out of a value-producing `loop` gives
+                    // it `void`: `let x: i32 = loop { break }` was accepted,
+                    // and the two backends printed 0 and `()`.
+                    if let Some(loop_ty) = target.as_ref().and_then(|f| f.value.clone()) {
+                        if let Err(e) = self.unify(&loop_ty, &Type::Unit, stmt.span) {
+                            self.errors.push(e);
+                        }
+                    }
+                }
                 if let Some(v) = value {
                     // CF20/CF21: `loop` is the form that produces a value.
                     // A `while` or a `for` is a statement — there is nowhere
@@ -427,8 +495,8 @@ impl TypeChecker {
                     // loop. A labelled one names an outer loop this stack
                     // doesn't identify, and guessing the innermost would blame
                     // a `while` for a `break outer 42` aimed past it.
-                    if let (None, Some((form, header))) =
-                        (label.as_ref(), self.loop_forms.last().copied())
+                    if let (None, Some(super::LoopFrame { form, header, .. })) =
+                        (label.as_ref(), self.loop_forms.last().cloned())
                     {
                         if form != "loop" {
                             self.errors.push(TypeError::BreakValueFromStatementLoop {
@@ -439,20 +507,23 @@ impl TypeChecker {
                         }
                     }
                     let ty = self.infer_expr(v);
-                    if let Some(loop_ty) = self.loop_value_types.last().cloned() {
+                    if let Some(loop_ty) = target.as_ref().and_then(|f| f.value.clone()) {
                         if let Err(e) = self.unify(&ty, &loop_ty, v.span) {
                             self.errors.push(e);
                         }
                     }
                 }
             }
-            StmtKind::Continue(_) => {}
+            StmtKind::Continue(label) => {
+                self.check_exit_from_ensure("continue", label.as_deref(), stmt.span);
+            }
             StmtKind::Ensure { body, else_handler } => {
                 // ER4/ER3: cleanup has no caller to propagate to. Report the
                 // `try` itself, then keep checking — the rest of the body is
                 // still worth type-checking.
                 Self::report_try_in_ensure(body, "inside an `ensure` body", &mut self.errors);
                 let mut body_ty = None;
+                let outer_floor = self.ensure_floor.replace(self.loop_forms.len());
                 for s in body {
                     self.check_stmt(s);
                     if let Some(e) = Self::ensure_body_value(&s.kind) {
@@ -461,6 +532,7 @@ impl TypeChecker {
                 }
                 if let Some((name, handler)) = else_handler {
                     Self::report_try_in_ensure(handler, "in an `ensure` error handler", &mut self.errors);
+                    self.ensure_floor = Some(self.loop_forms.len());
                     // ER2: the handler binds the error branch of whatever the
                     // body's last expression produced. That type is still a
                     // variable here — the body is a method call — so tie the two
@@ -482,6 +554,7 @@ impl TypeChecker {
                     }
                     self.pop_scope();
                 }
+                self.ensure_floor = outer_floor;
             }
             StmtKind::Comptime(body) => {
                 for s in body {
@@ -532,23 +605,23 @@ impl TypeChecker {
                     }
                 }
             }
-            StmtKind::WhileLet { pattern, expr, body, .. } => {
+            StmtKind::WhileLet { pattern, expr, body, label } => {
                 let value_ty = self.infer_expr(expr);
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, stmt.span);
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
-                self.loop_forms.push(("while", stmt.span));
+                self.loop_forms.push(super::LoopFrame { form: "while", header: stmt.span, label: label.clone(), value: None });
                 for s in body {
                     self.check_stmt(s);
                 }
                 self.loop_forms.pop();
                 self.pop_scope();
             }
-            StmtKind::Loop { body, .. } => {
+            StmtKind::Loop { body, label } => {
                 self.push_scope();
-                self.loop_forms.push(("loop", stmt.span));
+                self.loop_forms.push(super::LoopFrame { form: "loop", header: stmt.span, label: label.clone(), value: None });
                 for s in body {
                     self.check_stmt(s);
                 }
@@ -556,7 +629,14 @@ impl TypeChecker {
                 self.pop_scope();
             }
             StmtKind::Discard { name, name_span } => {
-                if let Some(ty) = self.lookup_local(name) {
+                // D1: a discarded binding is gone, for `discard` too.
+                if let Some(&discarded_at) = self.discarded_bindings.get(name.as_str()) {
+                    self.errors.push(TypeError::UseAfterDiscard {
+                        name: name.clone(),
+                        discarded_at,
+                        span: *name_span,
+                    });
+                } else if let Some(ty) = self.lookup_local(name) {
                     let resolved = self.ctx.apply(&ty);
                     // D3: @resource types cannot be discarded
                     if self.is_resource_type(&resolved) {
@@ -601,6 +681,15 @@ impl TypeChecker {
 
         let resolved = self.ctx.apply(init_ty);
         if let Type::Tuple(elems) = &resolved {
+            // `let (a, b) = (1, 2, 3)` dropped the `3` natively and failed
+            // at run time on the interpreter.
+            if elems.len() != patterns.len() {
+                self.errors.push(TypeError::TupleArity {
+                    names: patterns.len(),
+                    tuple: resolved.clone(),
+                    span,
+                });
+            }
             for (i, pat) in patterns.iter().enumerate() {
                 let elem_ty = elems.get(i).cloned().unwrap_or(Type::Error);
                 match pat {
@@ -623,7 +712,9 @@ impl TypeChecker {
                 .map(|_| self.ctx.fresh_var())
                 .collect();
             let tuple_ty = Type::Tuple(elem_vars.clone());
-            let _ = self.unify(init_ty, &tuple_ty, span);
+            if let Err(e) = self.unify(init_ty, &tuple_ty, span) {
+                self.errors.push(e);
+            }
             for (pat, var) in patterns.iter().zip(elem_vars) {
                 match pat {
                     TuplePat::Name(name) => {
@@ -722,6 +813,21 @@ impl TypeChecker {
     /// interpreter and a lowering error natively.
     fn check_assignment_target(&mut self, target: &Expr) {
         use rask_ast::expr::UnaryOp;
+        // A place is rooted at a variable. A function, a type or a variant
+        // isn't one: `f = g` and `Color.Red = Color.Green` type-checked and
+        // then failed in lowering on one backend and at run time on the other.
+        let rooted_at_nothing = matches!(target.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
+            && Self::root_ident_name(target).is_some_and(|root| self.lookup_local(&root).is_none());
+        if rooted_at_nothing {
+            let root = Self::root_ident_name(target).unwrap_or_default();
+            let what = if self.types.get_type_id(&root).is_some() {
+                "a type or one of its variants"
+            } else {
+                "a function or a module"
+            };
+            self.errors.push(TypeError::NotAPlace { what, span: target.span });
+            return;
+        }
         let what = match &target.kind {
             ExprKind::Ident(_)
             | ExprKind::Field { .. }
@@ -936,6 +1042,25 @@ impl TypeChecker {
             | SK::LetStruct { init: e, .. }
             | SK::Assign { value: e, .. } => Some(e),
             _ => None,
+        }
+    }
+
+    /// EX4 for cleanup: an `ensure` body runs while its block is already
+    /// leaving, so it can't start another exit. `return` there would replace
+    /// the value the function is already returning, and a `break` or
+    /// `continue` aimed past the loops opened inside it would leave the
+    /// cleanup half-run. Native failed the Cranelift verifier on the first
+    /// and looped forever on the second; the interpreter did each once.
+    fn check_exit_from_ensure(&mut self, what: &'static str, label: Option<&str>, span: rask_ast::Span) {
+        let Some(floor) = self.ensure_floor else { return };
+        let inner = &self.loop_forms[floor.min(self.loop_forms.len())..];
+        let leaves = match (what, label) {
+            ("return", _) => true,
+            (_, None) => inner.is_empty(),
+            (_, Some(l)) => !inner.iter().any(|f| f.label.as_deref() == Some(l)),
+        };
+        if leaves {
+            self.errors.push(TypeError::ExitInEnsure { what, span });
         }
     }
 

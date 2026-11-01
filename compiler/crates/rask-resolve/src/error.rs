@@ -37,6 +37,20 @@ impl ResolveError {
         }
     }
 
+    pub fn self_misplaced(problem: &'static str, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::SelfMisplaced { problem },
+            span,
+        }
+    }
+
+    pub fn repeated_binding(name: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::RepeatedBinding { name },
+            span,
+        }
+    }
+
     pub fn duplicate_test(kind: &'static str, name: String, span: Span, previous: Span) -> Self {
         Self {
             kind: ResolveErrorKind::DuplicateTest { kind, name, previous },
@@ -191,6 +205,15 @@ pub enum ResolveErrorKind {
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },
+
+    /// `self` somewhere a receiver can't be: a free function's parameter, or
+    /// a method's parameter other than the first.
+    #[error("`self` {problem}")]
+    SelfMisplaced { problem: &'static str },
+
+    /// One pattern or parameter list binding a name twice: `let (a, a)`.
+    #[error("`{name}` is bound twice")]
+    RepeatedBinding { name: String },
 
     /// Two tests (or two benchmarks) in one file with one name. The name is
     /// how a test is picked: `-f`, the runner's report, sim's replay line.

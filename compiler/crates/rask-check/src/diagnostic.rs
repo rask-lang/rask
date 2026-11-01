@@ -1385,6 +1385,14 @@ impl ToDiagnostic for crate::TypeError {
                         .with_help("add `mutate` to the loop to write through the element")
                         .with_fix(format!("for mutate {} in … {{ … }}", name))
                         .with_why("a plain `for` yields elements read-only; `for mutate x in xs` is the mode whose writes reach the collection. Without it the two backends disagreed about what the write meant — the interpreter wrote through and native dropped it [std.iteration/I1, I4]"),
+                    BoundFrom::ReadOnlySource => d
+                        .with_primary(*span, format!(
+                            "`{}` is an element of a read-only binding",
+                            name
+                        ))
+                        .with_help("a `with` block writes its binding back into the source at the end, so the source has to be writable")
+                        .with_fix("declare the collection `mut`, or take the parameter as `mutate`")
+                        .with_why("`let` is deep and a plain parameter is read-only, element by element; `with` is a way to reach an element, not a way around that [mem.borrowing]"),
                 }
             }
 
@@ -1500,6 +1508,14 @@ impl ToDiagnostic for crate::TypeError {
                     ))
                     .with_fix(format!("with {}.staged() as {} {{ … }}", source_name, binding))
                     .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
+            }
+
+            UnreachableArm { earlier, span } => {
+                Diagnostic::error("unreachable match arm".to_string())
+                    .with_code("E0949")
+                    .with_primary(*span, format!("never runs: `{}` above takes every value it could", earlier))
+                    .with_help("delete the arm, or move it above the one that takes its values")
+                    .with_why("arms are tried top to bottom and the first match wins. A bare name that isn't a variant binds, so it matches everything — a misspelt variant reads exactly like this, which is why it's an error and not a warning [type.enums/PM7]")
             }
 
             StagedOutsideWith { name, span } => {
@@ -1664,10 +1680,11 @@ impl ToDiagnostic for crate::TypeError {
                 )
             }
 
-            TryOnNonResult { found, span } => {
-                Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
+            TryOnNonResult { found, op, span } => {
+                Diagnostic::error(format!("`{}` on `{}`, which has no absent or error branch", op, found))
                     .with_code("E0369")
-                    .with_primary(*span, "not a Result type")
+                    .with_primary(*span, format!("a `{}` is always there", found))
+                    .with_help(format!("`{}` works on a `T?` or a `T or E`; a plain value needs none of it", op))
             }
 
             DynamicFieldNameNotComptime { span } => {
@@ -2765,6 +2782,77 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "the `if` condition has no error to bind")
                     .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
                     .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
+            }
+            RangeNotCountable { ty, span } => {
+                Diagnostic::error(format!("a range of `{}` doesn't count", ty))
+                    .with_code("E0945")
+                    .with_primary(*span, "a range's bounds have to be numbers or chars")
+                    .with_help("to walk a list of values, write the list: `for s in [\"a\", \"b\"]`")
+                    .with_why("a range steps from its start toward its end, which needs a type with a next value [ctrl.ranges]")
+            }
+            RepeatedBinding { name, span } => {
+                Diagnostic::error(format!("`{}` is bound twice", name))
+                    .with_code("E0218")
+                    .with_primary(*span, format!("`{}` appears more than once in one arm's pattern", name))
+                    .with_fix("rename one, or use `_` for a value you don't need")
+                    .with_why("each name in one pattern holds one value; with two, the first could never be read")
+            }
+
+            StaticCallOnValue { ty, method, span } => {
+                Diagnostic::error(format!("`{}` is a static method of `{}`, called on a value", method, ty))
+                    .with_code("E0946")
+                    .with_primary(*span, format!("`{}` takes no `self`", method))
+                    .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
+                    .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
+            }
+            IfWithoutElseValue { found, span } => {
+                Diagnostic::error("an `if` without `else` has no value".to_string())
+                    .with_code("E0947")
+                    .with_primary(*span, format!("the then-branch gives a `{}`, and nothing says what the `if` is when the condition is false", found))
+                    .with_fix("add the other branch: `if c: a else: b`")
+                    .with_why("without `else` an `if` is a statement and is `void`; a value from one branch would be dropped [ctrl.flow/CF7]")
+            }
+            ExitInEnsure { what, span } => {
+                Diagnostic::error(format!("`{}` can't leave an `ensure` block", what))
+                    .with_code("E0944")
+                    .with_primary(*span, "cleanup runs while the block is already leaving")
+                    .with_help("decide the exit outside the `ensure`; inside, finish the cleanup and fall off the end")
+                    .with_why("an `ensure` runs on the way out of its block, after the exit is chosen. Starting another exit from inside it would replace that one and skip the cleanup still to run [ctrl.ensure]")
+            }
+            EntrySignature { name, problem, span } => {
+                Diagnostic::error(format!("entry point `{}` {}", name, problem))
+                    .with_code("E0942")
+                    .with_primary(*span, "the program starts here")
+                    .with_help("an entry point is `func main()`, `func main() -> void or Error`, or `func main(args: Args)`")
+                    .with_why("the runtime calls the entry point with nothing but the command line, and does nothing with a value it returns other than an error [struct.targets]")
+            }
+            TupleArity { names, tuple, span } => {
+                // Element types may still be open; the count is what matters.
+                let len = match tuple { rask_types::Type::Tuple(e) => e.len(), _ => 0 };
+                Diagnostic::error(format!("{} names for a tuple of {} values", names, len))
+                    .with_code("E0943")
+                    .with_primary(*span, format!("this tuple has {} values", len))
+                    .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
+                    .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
+            }
+            FieldGivenTwice { ty, field, span } => {
+                Diagnostic::error(format!("field `{}` of `{}` is given twice", field, ty))
+                    .with_code("E0941")
+                    .with_primary(*span, format!("`{}` already has a value", field))
+                    .with_fix("drop one of them")
+                    .with_why("each field takes exactly one value; with two, one of them is never stored")
+            }
+            PatternVariantMismatch { pattern, scrutinee, variants, span } => {
+                let diag = Diagnostic::error(format!("pattern `{}` can't match a `{}`", pattern, scrutinee))
+                    .with_code("E0954")
+                    .with_why("a pattern is checked against the type of the value it matches; one naming another type's variant, or a variant that doesn't exist, would never match");
+                if variants.is_empty() {
+                    diag.with_primary(*span, format!("`{}` isn't an enum, so it has no variants", scrutinee))
+                } else {
+                    let list = variants.iter().map(|v| format!("`{}`", v)).collect::<Vec<_>>().join(", ");
+                    diag.with_primary(*span, format!("not a variant of `{}`", scrutinee))
+                        .with_help(format!("`{}` has {}", scrutinee, list))
+                }
             }
             TypePatternNotResult { ty_name, found, span } => {
                 // Two shapes of the same mistake: a scrutinee that has no

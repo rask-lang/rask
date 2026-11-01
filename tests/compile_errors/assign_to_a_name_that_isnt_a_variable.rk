@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: assigning to a function, a type, or a variant
+//
+// `f = g` and `Color.Red = Color.Green` type-checked; native failed in MIR
+// lowering ("unresolved variable") and the interpreter at run time.
+
+enum Color { Red, Green }
+
+func f() {}
+func g() {}
+
+func main() {
+    // ERROR: `f` is a function, not a variable [E0916]
+    f = g
+    // ERROR: a variant is a value, not a place [E0916]
+    Color.Red = Color.Green
+}

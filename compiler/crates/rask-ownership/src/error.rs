@@ -398,6 +398,15 @@ pub enum OwnershipErrorKind {
         where_: String,
     },
 
+    /// mem.linear/L1: assigning over a linear binding that still holds a
+    /// value nobody consumed.
+    #[error("`{name}` still holds a value that has to be consumed")]
+    LinearOverwritten {
+        name: String,
+        /// As in `ResourceNotConsumed`.
+        consume: Vec<String>,
+    },
+
     /// Resource type not consumed before scope exit.
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
@@ -628,6 +637,8 @@ pub enum OwnershipErrorKind {
         /// As in `WithBlockStructuralMutation`.
         via: Option<String>,
         loop_span: Span,
+        /// `for` or `for mutate`, as written.
+        loop_form: &'static str,
     },
 
     /// LP16: passing `for mutate` item to `take` parameter

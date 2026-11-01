@@ -429,9 +429,35 @@ impl TypeChecker {
                 });
                 continue;
             }
-            let Some(ann) = declared.get(name) else { continue };
+            let known = rask_ast::attr::compiler_attr(name).is_some();
+            let ann = declared.get(name);
+            // Neither the compiler's nor declared: an attribute nobody reads.
+            // `@resouce` on a struct dropped the `@resource` it meant and the
+            // type quietly stopped being linear.
+            // `Attr::synthetic` ones (`extern "C" struct`'s opaque mark) are
+            // the compiler's own notes, attached where nothing was written.
+            let synthetic = attr.span.start == attr.span.end;
+            if !known && ann.is_none() && !synthetic {
+                let candidates = rask_ast::attr::COMPILER_ATTRS
+                    .iter()
+                    .map(|(n, ..)| *n)
+                    .chain(declared.keys().copied());
+                let fix = match rask_diagnostics::suggestions::did_you_mean(name, candidates) {
+                    Some(close) => close,
+                    None => format!("declare it, `annotation @{} {{ }}`, or remove it", name),
+                };
+                self.errors.push(TypeError::BadAnnotation {
+                    name: name.to_string(),
+                    problem: format!("`@{}` names no annotation", name),
+                    fix,
+                    why: UNRESOLVED_WHY,
+                    span: attr_span(attr, span),
+                });
+                continue;
+            }
 
-            // AN4: duplicates on one item are ambiguous for readers.
+            // AN4: duplicates on one item are ambiguous for readers, and a
+            // compiler-known one twice says nothing the first didn't.
             if seen.contains(&name) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: name.to_string(),
@@ -444,7 +470,9 @@ impl TypeChecker {
             }
             seen.push(name);
 
-            self.check_attachment_args(ann, attr, attr_span(attr, span));
+            if let Some(ann) = ann {
+                self.check_attachment_args(ann, attr, attr_span(attr, span));
+            }
         }
     }
 

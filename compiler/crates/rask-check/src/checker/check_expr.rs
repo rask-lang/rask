@@ -1007,6 +1007,20 @@ impl TypeChecker {
                         )
                     }
                 } else {
+                    // CF7: with no `else`, the `if` is `void`, so a value from
+                    // the then-branch has nowhere to go. `let a = if c: 1`
+                    // printed `()` on the interpreter and 0 natively.
+                    if !is_stmt {
+                        let then_resolved = self.ctx.apply(&then_ty);
+                        if !matches!(then_resolved, Type::Never | Type::Error)
+                            && self.unify(&then_ty, &Type::Unit, expr.span).is_err()
+                        {
+                            self.errors.push(TypeError::IfWithoutElseValue {
+                                found: self.ctx.apply(&then_ty),
+                                span: expr.span,
+                            });
+                        }
+                    }
                     Type::Unit
                 }
             }
@@ -1021,6 +1035,7 @@ impl TypeChecker {
                 let value_ty = self.infer_expr(value);
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
@@ -1079,6 +1094,7 @@ impl TypeChecker {
                 let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
                 let bindings =
                     self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 // The pattern's own names live past the guard, like the `let`'s:
                 // `let p = r is Point as q else { … }` binds both. Only the
                 // `let`'s name was ever given a type — the statement handler
@@ -1119,6 +1135,7 @@ impl TypeChecker {
                 // prefix — the last of the nine dispatch fallbacks, and this was
                 // the gap holding it up (#425).
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
@@ -1132,9 +1149,26 @@ impl TypeChecker {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let mut arm_types: Vec<(Type, rask_ast::NodeId)> = Vec::new();
                 let mut every_arm_diverges = !arms.is_empty();
+                let mut reach = ArmReach::default();
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    // One name bound twice by an arm's pattern: `(a, a)`. Asked
+                    // here and not in the resolver, because only the checker
+                    // knows that `Red` in `(Red, Red)` tests a variant and
+                    // binds nothing, and an or-pattern's bindings are one
+                    // alternative's, not all of them.
+                    let mut seen: Vec<&str> = Vec::new();
+                    for (name, _) in &bindings {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        if seen.contains(&name.as_str()) {
+                            self.errors.push(TypeError::RepeatedBinding { name: name.clone(), span: expr.span });
+                        }
+                        seen.push(name);
+                    }
+                    self.note_arm_reach(&mut reach, arm, &bindings);
                     for (name, ty) in bindings {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
@@ -1180,6 +1214,19 @@ impl TypeChecker {
             }
 
             ExprKind::StructLit { name, type_args, fields, spread } => {
+                let built = {
+                // `Point(x: 1, x: 2)`: the last one won, silently.
+                let mut given: Vec<&str> = Vec::new();
+                for field in fields.iter() {
+                    if given.contains(&field.name.as_str()) {
+                        self.errors.push(TypeError::FieldGivenTwice {
+                            ty: name.clone(),
+                            field: field.name.clone(),
+                            span: field.value.span,
+                        });
+                    }
+                    given.push(&field.name);
+                }
                 // A struct-lit name may carry the module that exports it. Types are filed
                 // under the bare name, so `http.Response { … }` missed the
                 // lookup and skipped *everything* below — the field types went
@@ -1281,6 +1328,21 @@ impl TypeChecker {
                                         ty: name.clone(),
                                         field: field_init.name.clone(),
                                         span: field_init.value.span,
+                                    });
+                                }
+                            }
+                            // `..base` writes every field nobody listed, the
+                            // private ones too: `Acct(name: "b", ..a)` built
+                            // an `Acct` outside its extend blocks.
+                            if let Some(base) = spread {
+                                if let Some(private) = private_fields
+                                    .iter()
+                                    .find(|p| !fields.iter().any(|f| &f.name == *p))
+                                {
+                                    self.errors.push(TypeError::PrivateFieldAccess {
+                                        ty: name.clone(),
+                                        field: private.clone(),
+                                        span: base.span,
                                     });
                                 }
                             }
@@ -1475,6 +1537,18 @@ impl TypeChecker {
                 } else {
                     Type::UnresolvedNamed(name.clone())
                 }
+                };
+                // `..base` supplies the fields nobody listed, so it has to be
+                // the type being built. Nothing inferred it: `Pt(x: 5, ..q)`
+                // with a `Qt` copied `q`'s fields across by name, and native
+                // read a string's bytes as an `i32`.
+                if let Some(base) = spread {
+                    let base_ty = self.infer_expr(base);
+                    if !matches!(built, Type::UnresolvedNamed(_) | Type::Error) {
+                        self.ctx.add_constraint(TypeConstraint::Equal(built.clone(), base_ty, base.span));
+                    }
+                }
+                built
             }
 
             ExprKind::Array(elements) => {
@@ -1531,6 +1605,7 @@ impl TypeChecker {
                         self.errors.push(e);
                     }
                 }
+                self.pending_range_bounds.push((elem.clone(), expr.span));
                 Type::UnresolvedGeneric {
                     name: "Range".to_string(),
                     args: vec![GenericArg::Type(Box::new(elem))],
@@ -1568,7 +1643,7 @@ impl TypeChecker {
                     self.record_try_placement(expr.id, step_id, &err_ty, expr.span);
                     return inner_ty;
                 }
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     // ER16 on an optional: the `none` leaves to the caller.
                     Type::Result { ok, err } if **err == Type::None => {
@@ -1719,6 +1794,7 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
+                            op: "try",
                             span: expr.span,
                         });
                         Type::Error
@@ -1740,7 +1816,7 @@ impl TypeChecker {
                 }
 
                 let val_ty = self.infer_expr(value);
-                let resolved = self.ctx.apply(&val_ty);
+                let resolved = self.settle_number(&val_ty);
                 let (ok_ty, err_ty) = match &resolved {
                     Type::Result { err, .. } if **err == Type::None => {
                         self.errors.push(TypeError::CatchOnOptional {
@@ -1757,13 +1833,16 @@ impl TypeChecker {
                             ok: Box::new(ok.clone()),
                             err: Box::new(err.clone()),
                         };
-                        let _ = self.unify(&val_ty, &shape, expr.span);
+                        if let Err(e) = self.unify(&val_ty, &shape, expr.span) {
+                            self.errors.push(e);
+                        }
                         (ok, err)
                     }
                     Type::Error => return Type::Error,
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved.clone(),
+                            op: "catch",
                             span: expr.span,
                         });
                         return Type::Error;
@@ -1890,7 +1969,7 @@ impl TypeChecker {
             // narrows nothing; the payload comes from the `as v` bind.
             ExprKind::IsPresent { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     // ER12: `?` marks absence. A result's other branch is an
                     // error, which is tested with `is` and handled with `catch`.
@@ -1916,6 +1995,7 @@ impl TypeChecker {
                     _ => {
                         self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
+                            op: "?",
                             span: expr.span,
                         });
                         Type::Error
@@ -1925,7 +2005,7 @@ impl TypeChecker {
 
             ExprKind::Unwrap { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
-                let resolved = self.ctx.apply(&inner_ty);
+                let resolved = self.settle_number(&inner_ty);
                 match &resolved {
                     Type::Result { ok, err: _ } => {
                         // Extract the ok type (works for T? and T or E)
@@ -1956,6 +2036,12 @@ impl TypeChecker {
             }
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
+                // A closure's body is its own frame: the loops and the
+                // `ensure` around the closure's definition aren't around its
+                // calls.
+                let outer_loops = std::mem::take(&mut self.loop_forms);
+                let outer_floor = self.ensure_floor.take();
+                let closure_ty = {
                 // A slot type still naming a generic parameter (`func(T)` before
                 // substitution) says nothing the body can use yet.
                 let expected_params = self.closure_param_expectations.remove(&expr.id);
@@ -2081,6 +2167,10 @@ impl TypeChecker {
                         .collect(),
                     ret: Box::new(ret_ty),
                 }
+                };
+                self.loop_forms = outer_loops;
+                self.ensure_floor = outer_floor;
+                closure_ty
             }
 
             // A task block. Its value is the task's result, so the expression
@@ -2125,14 +2215,17 @@ impl TypeChecker {
                             });
                         }
                     }
-                } else if is_scalar_ty(&target) {
+                } else if is_scalar_ty(&target) || matches!(self.ctx.apply(&inner_ty), Type::Var(_)) {
                     // CV1–CV4, CH5, BL3: `as` is lossless widening only. Defer the
-                    // check until literal defaults resolve `inner_ty`.
+                    // check until literal defaults resolve `inner_ty` — for a
+                    // non-number target too, or `5 as string` slipped past
+                    // while the `5` was still a variable.
                     self.pending_casts.push(PendingCast {
                         source: inner_ty,
                         target: target.clone(),
                         target_name: ty.to_string(),
                         convert: None,
+                        in_unsafe: self.in_unsafe,
                         span: expr.span,
                     });
                 } else if !matches!(target, Type::Error)
@@ -2170,6 +2263,7 @@ impl TypeChecker {
                     target: target_ty.clone(),
                     target_name: target.to_string(),
                     convert: Some(*kind),
+                    in_unsafe: self.in_unsafe,
                     span: expr.span,
                 });
                 // CV7/CV10 yield `T?`. CV11/CV15/CV16 — and CV14 to an integer
@@ -2188,17 +2282,20 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Loop { body, .. } => {
+            ExprKind::Loop { body, label } => {
                 // Loop-as-expression gets its type from break values — each
                 // `break v` unifies into this.
                 let result = self.ctx.fresh_var();
-                self.loop_value_types.push(result.clone());
-                self.loop_forms.push(("loop", expr.span));
+                self.loop_forms.push(super::LoopFrame {
+                    form: "loop",
+                    header: expr.span,
+                    label: label.clone(),
+                    value: Some(result.clone()),
+                });
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
                 self.loop_forms.pop();
-                self.loop_value_types.pop();
                 result
             }
 
@@ -2423,8 +2520,28 @@ impl TypeChecker {
                             if method == "read" && self.expr_is_shared(object)
                     );
                     guard_elem_types.insert(binding.name.clone(), elem_ty.clone());
+                    // An element of a read-only binding is read-only too: the
+                    // block writes it back into the source. `with m[1] as p
+                    // { p.x = 9 }` on a `let m` changed `m`.
+                    let read_only_source = indexes
+                        && Self::root_ident_name(&binding.source).is_some_and(|root| {
+                            matches!(
+                                self.lookup_binding_kind(&root),
+                                Some(super::BindingKind::Let
+                                    | super::BindingKind::Param
+                                    | super::BindingKind::ModuleConst
+                                    | super::BindingKind::WithRead
+                                    | super::BindingKind::Bound(_))
+                            )
+                        });
                     if is_read_lock {
                         self.define_local_with_read(binding.name.clone(), elem_ty);
+                    } else if read_only_source {
+                        self.define_local_bound(
+                            binding.name.clone(),
+                            elem_ty,
+                            super::BoundFrom::ReadOnlySource,
+                        );
                     } else {
                         self.define_local(binding.name.clone(), elem_ty);
                     }
@@ -2458,7 +2575,12 @@ impl TypeChecker {
 
             ExprKind::ArrayRepeat { value, count } => {
                 let elem_ty = self.infer_expr(value);
-                self.infer_expr(count);
+                // A length is a `usize`: `[0; -1]` asked the interpreter for
+                // a capacity that overflowed and got native killed for memory.
+                let count_ty = self.infer_expr_expecting(count, &Type::Usize);
+                if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
+                    self.errors.push(e);
+                }
                 // Extract literal size when available, otherwise use 0 as placeholder
                 let len = match &count.kind {
                     ExprKind::Int(n, _) => *n as usize,
@@ -2548,6 +2670,16 @@ impl TypeChecker {
             ExprKind::OptionalField { object, field } => {
                 let inferred = self.infer_expr(object);
                 let obj_ty = self.ctx.apply(&inferred);
+                // `?.` is for optionals (OPT3). On a plain value it read the
+                // field and wrapped it, so native gave 0 for `p?.x` on a
+                // `Point` and the interpreter failed at run time.
+                if !matches!(obj_ty, Type::Var(_) | Type::Error | Type::Result { .. }) && obj_ty.as_option().is_none() {
+                    self.errors.push(TypeError::TryOnNonResult {
+                        found: obj_ty.clone(),
+                        op: "?.",
+                        span: expr.span,
+                    });
+                }
                 // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
                 let inner_ty = match obj_ty.as_option() {
                     Some(inner) => inner.clone(),
@@ -3057,6 +3189,31 @@ impl TypeChecker {
             .iter()
             .map(|t| self.resolve_type_arg(t, span))
             .collect();
+        // Type arguments on a function that declares fewer: `g<i32>(1)` on a
+        // non-generic `g` ran, and on a method failed to link a mangled name
+        // nothing defines.
+        if !written_type_args.is_empty() {
+            if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
+                let is_fn = self
+                    .resolved
+                    .symbols
+                    .get(sym_id)
+                    .is_some_and(|sym| matches!(sym.kind, SymbolKind::Function { .. }));
+                if is_fn {
+                    let params = self.fn_type_params.get(&sym_id).cloned().unwrap_or_default();
+                    if params.len() < written_type_args.len() {
+                        self.errors.push(TypeError::TypeArgCount {
+                            name: func.name().unwrap_or_default().to_string(),
+                            expected: params.len(),
+                            params,
+                            found: written_type_args.len(),
+                            site: super::errors::TypeArgSite::Type,
+                            span,
+                        });
+                    }
+                }
+            }
+        }
         let generic_subst: Option<Vec<(String, Type)>> = if func.name().is_some() {
             // Resolve the callee's SymbolId, then look up its type params
             self.resolved.resolutions.get(&func.id).copied()
@@ -3589,8 +3746,8 @@ impl TypeChecker {
                 };
                 self.errors.push(TypeError::OverlappingArgumentBorrow {
                     callee: callee.to_string(),
-                    written: write_path.join("."),
-                    other: read_path.join("."),
+                    written: path_text(write_path),
+                    other: path_text(read_path),
                     span: *span,
                 });
                 return; // one report per call is enough to act on
@@ -3608,6 +3765,20 @@ impl TypeChecker {
             ExprKind::Field { object, field } => {
                 let mut path = Self::access_path(object)?;
                 path.push(field.clone());
+                Some(path)
+            }
+            // An index the source pins down: a literal, or one variable read
+            // twice in the same call, is the same element both times.
+            // `both(mutate v[0], mutate v[0])` handed the callee two writable
+            // names for one element. A computed index stays unknown.
+            ExprKind::Index { object, index } => {
+                let step = match &index.kind {
+                    ExprKind::Int(n, _) => format!("[{n}]"),
+                    ExprKind::Ident(name) => format!("[{name}]"),
+                    _ => return None,
+                };
+                let mut path = Self::access_path(object)?;
+                path.push(step);
                 Some(path)
             }
             _ => None,
@@ -3892,7 +4063,12 @@ impl TypeChecker {
         };
         self.check_argument_lending(&written, Some(object), args);
         self.note_arg_labels(call_id, written, args, span);
-        self.note_method_call(call_id, span);
+        // A module (`os.args()`, `cli.Parser.new(…)`) is bound like a local
+        // but names a namespace, not a value.
+        let on_value = Self::root_ident_name(object).is_some_and(|root| {
+            self.lookup_local(&root).is_some() && self.types.module_named(&root).is_none()
+        }) || !matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. });
+        self.note_method_call(call_id, span, on_value);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
@@ -4209,6 +4385,35 @@ impl TypeChecker {
             }
         }
 
+        // F3 with the receiver as one of the arguments: `b.absorb(b)` on a
+        // `mutate self` method handed the body a writable `self` and a
+        // read of the same value, and `self.items.clear()` showed through
+        // `other`. Only a receiver whose type is known here; one still open
+        // has nothing to say whether the method writes.
+        // A Copy receiver passed as an argument is a copy there, so the two
+        // can't alias; that covers every operator on a number (`x + x`).
+        let recv_copy = object
+            .name()
+            .and_then(|n| self.lookup_local(n))
+            .map(|t| self.resolve_named(&self.ctx.apply(&t)))
+            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy(&t));
+        if let Some(var_name) = object.name().filter(|_| !recv_copy) {
+            if self.method_mutates_self(var_name, method) {
+                if let Some(recv_path) = Self::access_path(object) {
+                    if let Some(arg) = args.iter().find(|a| {
+                        Self::access_path(&a.expr).is_some_and(|p| paths_overlap(&recv_path, &p))
+                    }) {
+                        self.errors.push(TypeError::OverlappingArgumentBorrow {
+                            callee: format!("{}.{}", var_name, method),
+                            written: path_text(&recv_path),
+                            other: path_text(&Self::access_path(&arg.expr).unwrap_or_default()),
+                            span: arg.expr.span,
+                        });
+                    }
+                }
+            }
+        }
+
         // ESAD Phase 1: Push borrow for the object being called
         if let Some(var_name) = object.name() {
             let mode = self.method_borrow_mode(var_name, method);
@@ -4288,6 +4493,32 @@ impl TypeChecker {
         }
 
         let obj_ty_raw = self.infer_expr(object);
+        // A mutating method on a field or element of a binding mutates the
+        // binding: `b.items.push(2)` on a `let b`, `v[0].bump()` on a
+        // read-only parameter. Only a bare receiver was checked, so a `let`
+        // grew through any place one step down. Judged after solving, like
+        // a field write, when the receiver's type says whether the method
+        // writes and the steps say whether a link or pointer is in the way.
+        if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            if let Some(root) = Self::root_ident_name(object) {
+                if let Some(kind) = self.lookup_binding_kind(&root) {
+                    let mut steps = vec![object.id];
+                    let mut place: &Expr = object;
+                    while let ExprKind::Field { object: o, .. } | ExprKind::Index { object: o, .. } = &place.kind {
+                        steps.push(o.id);
+                        place = o;
+                    }
+                    self.pending_mutations.push(super::PendingMutation {
+                        root: root.clone(),
+                        ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                        kind,
+                        span: object.span,
+                        steps,
+                        call: Some((obj_ty_raw.clone(), method.to_string())),
+                    });
+                }
+            }
+        }
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let obj_ty = match (&object.kind, &obj_ty) {
             (ExprKind::Ident(name) | ExprKind::GenericName { name, .. }, Type::Named(id))
@@ -5659,6 +5890,55 @@ impl TypeChecker {
             return;
         }
 
+        // A tuple is covered when every combination of its parts is.
+        if let Type::Tuple(parts) = &resolved {
+            let rows: Vec<Vec<&Pattern>> = arms
+                .iter()
+                .flat_map(|a| match &a.pattern {
+                    Pattern::Or(alts) => alts.iter().collect::<Vec<_>>(),
+                    p => vec![p],
+                })
+                .filter_map(|p| match p {
+                    Pattern::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
+                    Pattern::Wildcard | Pattern::Ident(_) if !matches!(p, Pattern::Ident(n) if n.contains('.')) => {
+                        Some(vec![&Pattern::Wildcard; parts.len()])
+                    }
+                    _ => None,
+                })
+                .collect();
+            let parts: Vec<Type> = parts.iter().map(|t| self.resolve_named(&self.ctx.apply(t))).collect();
+            if let Some(witness) = self.tuple_gap(&rows, &parts) {
+                self.errors.push(TypeError::NonExhaustiveMatch {
+                    missing: vec![format!("({})", witness.join(", "))],
+                    guarded,
+                    span,
+                });
+            }
+            return;
+        }
+
+        // A bool has two values, so `true` and `false` close the match
+        // without a wildcard, and one of them alone doesn't.
+        if matches!(resolved, Type::Bool) {
+            let mut has_wildcard = false;
+            let mut seen = [false; 2];
+            for arm in &arms {
+                Self::collect_bool_pattern(&arm.pattern, &mut seen, &mut has_wildcard);
+            }
+            if has_wildcard {
+                return;
+            }
+            let missing: Vec<String> = [(false, "false"), (true, "true")]
+                .iter()
+                .filter(|(b, _)| !seen[*b as usize])
+                .map(|(_, name)| name.to_string())
+                .collect();
+            if !missing.is_empty() {
+                self.errors.push(TypeError::NonExhaustiveMatch { missing, guarded, span });
+            }
+            return;
+        }
+
         // Only check enums for the Named case
         let type_id = match &resolved {
             Type::Named(id) => *id,
@@ -5768,6 +6048,202 @@ impl TypeChecker {
         }
     }
 
+    /// `ty` as far as it's known, with a number literal's variable read as
+    /// the number it has to become. Such a variable can only ever settle on
+    /// a numeric type, so `?`, `!`, `catch` and `try` on it are already
+    /// wrong: `let x = 5; if x? { … }` passed as "not known yet" and native
+    /// segfaulted reading a tag the `5` doesn't have.
+    pub(super) fn settle_number(&self, ty: &Type) -> Type {
+        let resolved = self.ctx.apply(ty);
+        if let Type::Var(id) = resolved {
+            if let Some(kind) = self.ctx.literal_vars.get(&id).copied() {
+                return self.ctx.literal_default(id, kind);
+            }
+        }
+        resolved
+    }
+
+    /// An `is` test that can't fail: `_`, or a bare name that isn't a variant
+    /// and so binds. `c is Blue` on a `Color` with no `Blue` was always true.
+    fn reject_irrefutable_test(
+        &mut self,
+        pattern: &Pattern,
+        bindings: &[(String, Type)],
+        value_ty: &Type,
+        span: Span,
+    ) {
+        let name = match pattern {
+            Pattern::Wildcard => "_".to_string(),
+            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
+            _ => return,
+        };
+        let ty = self.ctx.apply(value_ty);
+        if matches!(ty, Type::Var(_) | Type::Error) {
+            return;
+        }
+        let variants = match &ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
+                Some(TypeDef::Enum { variants, .. }) => variants.iter().map(|(v, _)| v.clone()).collect(),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        };
+        self.errors.push(TypeError::PatternVariantMismatch {
+            pattern: name,
+            scrutinee: ty,
+            variants,
+            span,
+        });
+    }
+
+    /// Reject `arm` when the arms before it already take every value it
+    /// could match (type.enums/PM7). Only two shapes are judged: a
+    /// catch-all, and a payload-free test of a variant an earlier unguarded
+    /// arm tested the same way. Anything that refines a payload is left alone.
+    fn note_arm_reach(&mut self, reach: &mut ArmReach, arm: &MatchArm, bindings: &[(String, Type)]) {
+        let span = arm.body.span;
+        if let Some(earlier) = &reach.closed_by {
+            self.errors.push(TypeError::UnreachableArm { earlier: earlier.clone(), span });
+            return;
+        }
+        if arm.guard.is_some() {
+            return;
+        }
+        match &arm.pattern {
+            Pattern::Wildcard => reach.closed_by = Some("_".to_string()),
+            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
+                reach.closed_by = Some(n.clone());
+            }
+            Pattern::Ident(n) => {
+                let tag = n.rsplit('.').next().unwrap_or(n).to_string();
+                if !reach.tags.insert(tag) {
+                    self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A combination of tuple parts no row matches, written out, or `None`
+    /// when the rows cover them all. A part whose values can be listed (a
+    /// `bool`, a fieldless or any enum by variant) is split per value;
+    /// anything else is covered only by a row that doesn't test it. A row that
+    /// tests a payload covers less than its variant, so it counts for none.
+    fn tuple_gap(&self, rows: &[Vec<&Pattern>], parts: &[Type]) -> Option<Vec<String>> {
+        let Some((first, rest)) = parts.split_first() else {
+            return if rows.is_empty() { Some(Vec::new()) } else { None };
+        };
+        // A struct taken apart into plain names can't fail, so it covers the
+        // part the same as `_` does: `(Pt(x, y), true)`.
+        let is_struct = matches!(first, Type::Named(id) | Type::Generic { base: id, .. }
+            if matches!(self.types.get(*id), Some(TypeDef::Struct { .. })));
+        let binds_only = |p: &Pattern| matches!(p, Pattern::Wildcard)
+            || matches!(p, Pattern::Ident(n) if !n.contains('.'));
+        let wild = |p: &Pattern| match p {
+            Pattern::Wildcard => true,
+            Pattern::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
+            Pattern::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
+            Pattern::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
+            _ => false,
+        };
+        // A nested tuple's parts are columns of their own, so `((true, _), _)`
+        // and `((false, _), _)` cover a `((bool, bool), bool)`.
+        if let Type::Tuple(inner) = first {
+            let n = inner.len();
+            let expanded: Vec<Vec<&Pattern>> = rows
+                .iter()
+                .filter_map(|r| match r[0] {
+                    Pattern::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
+                    p if wild(p) => Some(
+                        std::iter::repeat(&Pattern::Wildcard).take(n).chain(r[1..].iter().copied()).collect(),
+                    ),
+                    _ => None,
+                })
+                .collect();
+            let columns: Vec<Type> = inner
+                .iter()
+                .map(|t| self.resolve_named(&self.ctx.apply(t)))
+                .chain(rest.iter().cloned())
+                .collect();
+            let gap = self.tuple_gap(&expanded, &columns)?;
+            let (head, tail) = gap.split_at(n);
+            let mut out = vec![format!("({})", head.join(", "))];
+            out.extend(tail.iter().cloned());
+            return Some(out);
+        }
+        let values: Option<Vec<String>> = match first {
+            Type::Bool => Some(vec!["true".to_string(), "false".to_string()]),
+            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
+                Some(TypeDef::Enum { variants, .. }) => Some(variants.iter().map(|(v, _)| v.clone()).collect()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let tests = |p: &Pattern, value: &str| -> bool {
+            match p {
+                Pattern::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
+                Pattern::Ident(n) => n.rsplit('.').next() == Some(value),
+                Pattern::Constructor { name, fields } => {
+                    name.rsplit('.').next() == Some(value)
+                        && fields.iter().all(|f| matches!(f, Pattern::Wildcard) || matches!(f, Pattern::Ident(n) if !n.contains('.')))
+                }
+                _ => false,
+            }
+        };
+        match values {
+            Some(values) => {
+                for value in values {
+                    let sub: Vec<Vec<&Pattern>> = rows
+                        .iter()
+                        .filter(|r| wild(r[0]) || tests(r[0], &value))
+                        .map(|r| r[1..].to_vec())
+                        .collect();
+                    if let Some(mut gap) = self.tuple_gap(&sub, rest) {
+                        gap.insert(0, value);
+                        return Some(gap);
+                    }
+                }
+                None
+            }
+            None => {
+                let sub: Vec<Vec<&Pattern>> =
+                    rows.iter().filter(|r| wild(r[0])).map(|r| r[1..].to_vec()).collect();
+                let mut gap = self.tuple_gap(&sub, rest)?;
+                gap.insert(0, "_".to_string());
+                Some(gap)
+            }
+        }
+    }
+
+    /// Whether `name` is a variant of `ty`'s enum, so a bare name tests
+    /// rather than binds.
+    fn names_variant_of(&self, ty: &Type, name: &str) -> bool {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => matches!(
+                self.types.get(*id),
+                Some(TypeDef::Enum { variants, .. }) if variants.iter().any(|(v, _)| v == name)
+            ),
+            _ => false,
+        }
+    }
+
+    fn collect_bool_pattern(pattern: &Pattern, seen: &mut [bool; 2], has_wildcard: &mut bool) {
+        match pattern {
+            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
+            Pattern::Literal(expr) => {
+                if let ExprKind::Bool(b) = expr.kind {
+                    seen[b as usize] = true;
+                }
+            }
+            Pattern::Or(alts) => {
+                for alt in alts {
+                    Self::collect_bool_pattern(alt, seen, has_wildcard);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn collect_result_covered(
         &self,
         pattern: &Pattern,
@@ -5827,6 +6303,10 @@ impl TypeChecker {
                 // not a catch-all binding
                 if enum_variants.contains(name) {
                     covered.insert(name.clone());
+                } else if let Some((_, variant)) = name.rsplit_once('.') {
+                    // `Color.Red` tests a tag and binds nothing. Whether it
+                    // names this enum at all is the pattern check's job.
+                    covered.insert(variant.to_string());
                 } else {
                     *has_wildcard = true;
                 }
@@ -6429,6 +6909,30 @@ impl TypeChecker {
 
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now
     /// concrete (literal defaults applied), so `1 as bool` sees `i32`.
+    /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
+    /// `Range<string>` that native walked as nothing and the interpreter
+    /// refused at run time.
+    pub(super) fn validate_pending_range_bounds(&mut self) {
+        for (elem, span) in std::mem::take(&mut self.pending_range_bounds) {
+            let ty = self.resolve_named(&self.ctx.apply(&elem));
+            let countable = matches!(
+                ty,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+                    | Type::F32 | Type::F64 | Type::Char
+                    // Still open, already reported, or a type parameter
+                    // whose bound speaks for it.
+                    | Type::Var(_) | Type::Error | Type::Never | Type::UnresolvedNamed(_)
+            );
+            // A nominal number (`type Meters = i64`) counts as what it wraps
+            // only if it says so; leave those to their conformances.
+            let nominal = matches!(&ty, Type::Named(id) if self.types.get_nominal_name(*id).is_some());
+            if !countable && !nominal {
+                self.errors.push(TypeError::RangeNotCountable { ty, span });
+            }
+        }
+    }
+
     pub(super) fn validate_pending_casts(&mut self) {
         let pending = std::mem::take(&mut self.pending_casts);
         for pc in pending {
@@ -6447,6 +6951,40 @@ impl TypeChecker {
     /// CV1–CV4, CH5, BL3: reject any `as` cast that isn't lossless widening.
     fn check_as_cast(&mut self, src: &Type, pc: &PendingCast) {
         let (Some(s), Some(t)) = (prim_of(src), prim_of(&pc.target)) else {
+            // Not two numbers. What's left that `as` does: a fieldless
+            // enum's discriminant (type.enums/E18), and a raw pointer's
+            // address. Anything else reinterprets bits, which only `unsafe`
+            // may do. Unchecked, `"5" as i64` printed the string's pointer
+            // natively and 5 on the interpreter, and `opt as i64` read the
+            // optional's tag.
+            let to_int = matches!(prim_of(&pc.target), Some(Prim::Int { .. }));
+            let fieldless_enum = match src {
+                Type::Named(id) => matches!(
+                    self.types.get(*id),
+                    Some(TypeDef::Enum { variants, .. }) if variants.iter().all(|(_, f)| f.is_empty())
+                ),
+                _ => false,
+            };
+            let pointer = matches!(src, Type::RawPtr(_)) || matches!(pc.target, Type::RawPtr(_));
+            // A type parameter isn't judged here: `x as i128` on `T: Integer`
+            // is lossless for most `T` and narrowing for `u128`, and only an
+            // instantiation knows which. Nothing re-checks it per
+            // instantiation yet (#1726).
+            let type_param = matches!(src, Type::UnresolvedNamed(_));
+            if *src == pc.target
+                || pc.in_unsafe
+                || pointer
+                || type_param
+                || (to_int && fieldless_enum)
+                || matches!(src, Type::InterfaceObject { .. } | Type::Never)
+            {
+                return;
+            }
+            self.errors.push(TypeError::AsCastNotConvertible {
+                src_ty: src.clone(),
+                target_name: pc.target_name.clone(),
+                span: pc.span,
+            });
             return;
         };
         if as_cast_is_lossless(src, &pc.target, s, t) {
@@ -6876,6 +7414,25 @@ impl TypeChecker {
             if through_pointer {
                 continue;
             }
+            // A method call writes only if the method does, and a link on the
+            // way means it writes the node, not this binding.
+            if let Some((recv, method)) = &pm.call {
+                let recv = self.resolve_named(&self.ctx.apply(recv));
+                if matches!(recv, Type::Var(_) | Type::Error)
+                    || !self.method_mutates_self_ty(&recv, method)
+                    || self.link_node_type(&recv).is_some()
+                {
+                    continue;
+                }
+                let through_link = pm.steps.iter().any(|id| {
+                    self.node_types
+                        .get(id)
+                        .is_some_and(|t| self.link_node_type(&self.resolve_named(&self.ctx.apply(t))).is_some())
+                });
+                if through_link || (matches!(pm.kind, super::BindingKind::ModuleConst) && self.is_sync_box(&recv)) {
+                    continue;
+                }
+            }
             // Still unknown after solving — stay quiet rather than guess. An
             // unresolved root has its own diagnostic; guessing here would stack
             // a second, wronger one on top.
@@ -7087,6 +7644,8 @@ pub(super) struct PendingCast {
     pub target_name: String,
     /// `None` = `as` cast; `Some` = explicit conversion form.
     pub convert: Option<ConvertKind>,
+    /// Written inside `unsafe`, where `as` may reinterpret bits.
+    pub in_unsafe: bool,
     pub span: Span,
 }
 
@@ -7263,6 +7822,18 @@ fn body_returns_a_value(body: &Expr) -> bool {
 
 /// Two access paths reach the same storage when one is a prefix of the other.
 /// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
+/// An access path as it's written: `v[0].x`, not `v.[0].x`.
+pub(super) fn path_text(path: &[String]) -> String {
+    let mut out = String::new();
+    for (i, step) in path.iter().enumerate() {
+        if i > 0 && !step.starts_with('[') {
+            out.push('.');
+        }
+        out.push_str(step);
+    }
+    out
+}
+
 pub(super) fn paths_overlap(a: &[String], b: &[String]) -> bool {
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
 }
@@ -7617,4 +8188,13 @@ impl TypeChecker {
         }
         target
     }
+}
+
+/// What the arms of one `match` so far are known to take.
+#[derive(Default)]
+struct ArmReach {
+    /// The catch-all that closed the match, as written.
+    closed_by: Option<String>,
+    /// Variants tested by a bare, unguarded arm.
+    tags: std::collections::HashSet<String>,
 }

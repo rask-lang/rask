@@ -486,6 +486,16 @@ pub enum TypeError {
         second_span: Span,
     },
 
+    /// type.enums/PM7: a `match` arm that can never run, because a catch-all
+    /// above it takes every value or an unguarded arm above it already tests
+    /// the same variant.
+    #[error("unreachable match arm")]
+    UnreachableArm {
+        /// The arm that took this one's values, written as it reads.
+        earlier: String,
+        span: Span,
+    },
+
     /// conc.sync/ST1: `staged()` is the source of a `with` binding and nothing
     /// else. `read`/`write` also have an expression-scoped form (R5); staged has
     /// none, because the commit needs a block boundary to happen at.
@@ -588,9 +598,11 @@ pub enum TypeError {
         other: String,
         span: Span,
     },
-    #[error("`try` requires a Result or Option type, found {found}")]
+    /// `try`, `catch` or `?` on a value with no absent or error branch.
+    #[error("`{op}` on `{found}`, which has no absent or error branch")]
     TryOnNonResult {
         found: Type,
+        op: &'static str,
         span: Span,
     },
     #[error("`{found}` can't be iterated")]
@@ -1253,6 +1265,79 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// struct.targets: an entry point with a signature the runtime can't
+    /// call.
+    #[error("`{name}` {problem}")]
+    EntrySignature {
+        name: String,
+        problem: &'static str,
+        span: Span,
+    },
+
+    /// A tuple destructure whose names don't match the tuple's length.
+    #[error("{names} names for a `{tuple}`")]
+    TupleArity {
+        names: usize,
+        tuple: Type,
+        span: Span,
+    },
+
+    /// ctrl.ensure: `return`, or a `break`/`continue` leaving the loops
+    /// opened inside it, in an `ensure` body or handler.
+    #[error("`{what}` can't leave an `ensure` block")]
+    ExitInEnsure {
+        what: &'static str,
+        span: Span,
+    },
+
+    /// ctrl.ranges: a range's bounds are numbers or chars.
+    #[error("a range of `{ty}` doesn't count")]
+    RangeNotCountable {
+        ty: Type,
+        span: Span,
+    },
+
+    /// A method with no `self` called on a value.
+    #[error("`{method}` is a static method of `{ty}`, called on a value")]
+    StaticCallOnValue {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
+    /// ctrl.flow/CF7: an `if` with no `else`, used for a value.
+    #[error("an `if` without `else` has no value")]
+    IfWithoutElseValue {
+        found: Type,
+        span: Span,
+    },
+
+    /// One match arm's pattern binding a name twice: `(a, a) => …`.
+    #[error("`{name}` is bound twice")]
+    RepeatedBinding {
+        name: String,
+        span: Span,
+    },
+
+    /// A struct or variant literal that gives one field two values.
+    #[error("field `{field}` of `{ty}` is given twice")]
+    FieldGivenTwice {
+        ty: String,
+        field: String,
+        span: Span,
+    },
+
+    /// A pattern names a variant the matched value can't be: `Size.Big`
+    /// against a `Color`, or a `Color.Blue` that `Color` doesn't declare.
+    /// `variants` is what the value's enum does declare, empty for a struct.
+    #[error("pattern `{pattern}` can't match a `{scrutinee}`")]
+    PatternVariantMismatch {
+        pattern: String,
+        scrutinee: Type,
+        variants: Vec<String>,
+        span: Span,
+    },
+
     /// ER23: `is TypeName as ...` requires the scrutinee to be a Result
     #[error("type pattern `{ty_name}` requires a Result scrutinee, found `{found}`")]
     TypePatternNotResult {
@@ -1734,6 +1819,11 @@ impl TypeError {
 
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
+            PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
+            TupleArity { tuple, .. } => *tuple = f(tuple),
+            RangeNotCountable { ty, .. } => *ty = f(ty),
+            IfWithoutElseValue { found, .. } => *found = f(found),
+
             LinearInContainer { elem, .. } => *elem = f(elem),
             LinearElementLost { elem, .. } => *elem = f(elem),
             SharedCycle { payload, .. } => *payload = f(payload),
@@ -1859,6 +1949,7 @@ impl TypeError {
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
             | TornLockUpdate { .. }
+            | UnreachableArm { .. }
 
             | NoAllocViolation { .. }
             | UnexpectedAnnotation { .. }
@@ -1936,7 +2027,12 @@ impl TypeError {
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | InvalidConvert { .. }
-            | AtomicOrderDoesNotFit { .. } => {}
+            | AtomicOrderDoesNotFit { .. }
+            | FieldGivenTwice { .. }
+            | EntrySignature { .. }
+            | ExitInEnsure { .. }
+            | StaticCallOnValue { .. }
+            | RepeatedBinding { .. } => {}
         }
     }
 }

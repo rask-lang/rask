@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a generic body that treats its type parameter as some concrete type
+//
+// Inside `func f<T>`, `T` is one fixed type the caller picks. A body is checked
+// once for every `T`, so nothing that holds for only some of them type-checks.
+// The checker deferred any comparison against a parameter as "a name that may
+// still resolve", and nothing ever resolved it: `return 5` from a `-> T` and
+// `f("hello")` compiled, and native read the `5` back as a string's pointer.
+
+func five<T>(x: T) -> T {
+    // ERROR: `5` isn't a `T` — the caller may have picked `string` [E0308]
+    return 5
+}
+
+func swap_kinds<T, U>(x: T, y: U) -> T {
+    // ERROR: a `U` isn't a `T` [E0308]
+    return y
+}
+
+func as_int<T>(x: T) -> i64 {
+    // ERROR: nor is a `T` an `i64` [E0308]
+    return x
+}
+
+func fill<T>(mutate v: Vec<T>) {
+    // ERROR: a `Vec<T>` holds `T`s [E0308]
+    v.push(5)
+}
+
+struct Wrap<T> { v: T }
+
+extend Wrap<T> {
+    func reset(mutate self) {
+        // ERROR: the field is a `T` [E0308]
+        self.v = 5
+    }
+}
+
+// FIX: a numeric bound is what lets a literal become a `T`
+func bump<T: Integer>(x: T) -> T {
+    return x + 1
+}
+
+func main() {
+    mut v: Vec<string> = Vec.new()
+    fill(mutate v)
+    mut w = Wrap(v: "s")
+    w.reset()
+    println("{five("a")} {swap_kinds(1, "b")} {as_int("c")} {bump(3)}")
+}

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `?`, `!`, `catch` and `is none` on a variable holding a number literal
+//
+// With `let x: i32 = 5` each of these was already an error. Without the
+// annotation, `x`'s type was still the literal's variable when the operator
+// was checked, and an open type passed as "not known yet". A literal can only
+// ever become a number, so nothing was left to find out: native segfaulted
+// reading an optional's tag the `5` doesn't have.
+
+func main() {
+    let x = 5
+    // ERROR: a number is always there [E0369]
+    if x? {
+        println("present")
+    }
+    // ERROR: nothing to force out [E0832]
+    let y: i32 = x!
+    // ERROR: nothing to catch [E0369]
+    let z = x catch _ => 0
+    // ERROR: a number is never `none` [E0398]
+    if x is none {
+        println("absent")
+    }
+    let f = 1.5
+    // ERROR: a float literal is no different [E0369]
+    if f? as v {
+        println("{v}")
+    }
+
+    // FIX: an optional is written as one
+    let o: i32? = 5
+    if o? as v {
+        println("{v} {y} {z}")
+    }
+}

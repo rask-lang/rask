@@ -24,6 +24,38 @@ impl TypeChecker {
         f.name == "main" && self.current_self_type.is_none()
     }
 
+    /// struct.targets: what an entry point may look like. No parameters or
+    /// one `Args`, and nothing back or `void or E`. Anything else has no
+    /// caller to supply it: `func main(x: i64)` ran with garbage in `x`
+    /// natively and failed on the interpreter.
+    fn check_entry_signature(&mut self, f: &FnDecl) {
+        let params: Vec<_> = f.params.iter().filter(|p| p.name != "self").collect();
+        let args_ok = match params.as_slice() {
+            [] => true,
+            [p] => p.ty.as_ref().is_some_and(|t| t.is_name("Args")),
+            _ => false,
+        };
+        if !args_ok {
+            self.errors.push(TypeError::EntrySignature {
+                name: f.name.clone(),
+                problem: "takes parameters nothing supplies",
+                span: f.span,
+            });
+        }
+        let ret_ok = match &f.ret_ty {
+            None | Some(TypeExpr::Unit) => true,
+            Some(TypeExpr::Result { ok, .. }) => matches!(**ok, TypeExpr::Unit),
+            Some(_) => false,
+        };
+        if !ret_ok {
+            self.errors.push(TypeError::EntrySignature {
+                name: f.name.clone(),
+                problem: "returns a value nothing receives",
+                span: f.span,
+            });
+        }
+    }
+
     /// PM6c: a written type that is Copy at every instantiation.
     ///
     /// Only the spelling is asked, and only for the types whose Copy-ness is
@@ -115,11 +147,19 @@ impl TypeChecker {
             }
         } else if let Some(t) = &f.ret_ty {
             self.resolve_written(t, f.span).unwrap_or(Type::Error)
+        } else if self.is_entry_point(f) {
+            // An entry point returns nothing or `void or E` (struct.targets);
+            // with nothing written it's the first, not whatever the body
+            // returns.
+            Type::Unit
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
         } else {
             Type::Unit
         };
+        if self.is_entry_point(f) {
+            self.check_entry_signature(f);
+        }
         // #314: record interface bounds so the body can call interface methods on a
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
@@ -168,6 +208,7 @@ impl TypeChecker {
             if !sp.is_mutate && !sp.is_take && !f.is_pub {
                 // Scan body for self mutations
                 Self::body_writes_self(&f.body)
+                    || self.current_self_type.clone().is_some_and(|t| self.body_mutates_self_place(&f.body, &t))
             } else {
                 sp.is_mutate || sp.is_take
             }
@@ -746,6 +787,101 @@ impl TypeChecker {
     /// error; use `body_assigns_self` for that.
     pub(super) fn body_writes_self(body: &[Stmt]) -> bool {
         body.iter().any(|stmt| Self::stmt_writes_self(stmt, true))
+    }
+
+    /// GC9 for a write the syntactic scan can't see: a mutating method on a
+    /// field or element of `self`, `self.lines.push(t)`, or one handed on as
+    /// `mutate self.lines`. Whether `push` writes depends on the field's
+    /// type, and the declarations are registered by now, so it's read off
+    /// them. Missing it left the method read-only while the body grew the
+    /// caller's vector, through a `let`.
+    pub(super) fn body_mutates_self_place(&self, body: &[Stmt], self_ty: &Type) -> bool {
+        struct Scan<'c> {
+            checker: &'c TypeChecker,
+            self_ty: &'c Type,
+            found: bool,
+        }
+        impl<'a> rask_ast::visit::Visit<'a> for Scan<'_> {
+            fn expr(&mut self, e: &'a Expr) -> bool {
+                let place = |x: &Expr| self.checker.self_place_type(x, self.self_ty);
+                match &e.kind {
+                    ExprKind::MethodCall { object, method, .. }
+                        if matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. })
+                            && place(object).is_some_and(|ty| self.checker.method_mutates_self_ty(&ty, method)) =>
+                    {
+                        self.found = true;
+                    }
+                    ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. }
+                        if args.iter().any(|a| {
+                            matches!(a.mode, rask_ast::expr::ArgMode::Mutate)
+                                && TypeChecker::expr_targets_self(&a.expr)
+                                && place(&a.expr).is_some()
+                        }) =>
+                    {
+                        self.found = true;
+                    }
+                    _ => {}
+                }
+                !self.found
+            }
+            fn stmt(&mut self, st: &'a Stmt) -> bool {
+                // `for mutate x in self.items` writes the items.
+                if let StmtKind::For { mutate: true, iter, .. } = &st.kind {
+                    if TypeChecker::expr_targets_self(iter)
+                        && self.checker.self_place_type(iter, self.self_ty).is_some()
+                    {
+                        self.found = true;
+                    }
+                }
+                !self.found
+            }
+        }
+        let mut scan = Scan { checker: self, self_ty, found: false };
+        rask_ast::visit::visit_body(body, &mut scan);
+        scan.found
+    }
+
+    /// The declared type of a place reached from `self` by fields and
+    /// indexes. `None` past a link or pointer — writing there writes the
+    /// node, not `self` — or where the declarations don't say.
+    fn self_place_type(&self, e: &Expr, self_ty: &Type) -> Option<Type> {
+        let ty = match &e.kind {
+            ExprKind::Ident(n) if n == "self" => return Some(self_ty.clone()),
+            ExprKind::Field { object, field } => {
+                let base = self.self_place_type(object, self_ty)?;
+                let id = match base {
+                    Type::Named(id) | Type::Generic { base: id, .. } => id,
+                    _ => return None,
+                };
+                match self.types.get(id)? {
+                    rask_types::TypeDef::Struct { fields, .. } => {
+                        fields.iter().find(|(n, _)| n == field)?.1.clone()
+                    }
+                    _ => return None,
+                }
+            }
+            ExprKind::Index { object, .. } => match self.resolve_named(&self.self_place_type(object, self_ty)?) {
+                Type::Array { elem, .. } => *elem,
+                Type::Generic { base, args } => {
+                    let pick = match self.types.type_name(base).as_str() {
+                        "Vec" => 0,
+                        "Map" => 1,
+                        _ => return None,
+                    };
+                    match args.get(pick)? {
+                        rask_types::GenericArg::Type(t) => (**t).clone(),
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let ty = self.resolve_named(&ty);
+        if self.link_node_type(&ty).is_some() || matches!(ty, Type::RawPtr(_)) {
+            return None;
+        }
+        Some(ty)
     }
 
     /// Definite writes only — an actual assignment into `self`.

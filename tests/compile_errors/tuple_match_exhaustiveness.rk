@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `match` on a tuple that misses a combination
+//
+// Exhaustiveness looked at enums, results, bools and numbers, and never at a
+// tuple, so these compiled and stopped at run time with "no matching arm".
+
+enum Color { Red, Green }
+
+func both(t: (bool, bool)) -> i32 {
+    // ERROR: missing `(true, false)` [E0340]
+    return match t {
+        (true, true) => 1,
+        (false, _) => 2,
+    }
+}
+
+func mixed(c: Color, b: bool) -> i32 {
+    // ERROR: missing `(Green, false)` [E0340]
+    return match (c, b) {
+        (Red, _) => 1,
+        (Green, true) => 2,
+    }
+}
+
+// FIX: every combination, or a part left to `_`
+func covered(c: Color, b: bool) -> i32 {
+    return match (c, b) {
+        (Red, _) => 1,
+        (Green, true) => 2,
+        (Green, false) => 3,
+    }
+}
+
+func main() {
+    println("{both((true, true))} {mixed(Color.Red, true)} {covered(Color.Green, false)}")
+}
