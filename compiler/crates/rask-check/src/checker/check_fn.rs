@@ -179,20 +179,7 @@ impl TypeChecker {
         // passed as that field's address for these, and MIR has no other way to
         // know the mode was inferred rather than written (#702).
         if inferred_self_mutate {
-            // The key has to identify one method. Real source always gives a
-            // non-empty span, and two methods can't occupy the same bytes;
-            // generic instantiations deliberately share theirs, since the self
-            // mode doesn't depend on the type argument. A zero-width span would
-            // mean a synthesized declaration reached here, and several of those
-            // would collide — which is the one way this could answer "mutates"
-            // for a method that doesn't.
-            debug_assert!(
-                f.span.end > f.span.start,
-                "zero-width span for `{}` — span keys must identify one method",
-                f.name
-            );
-            self.mutate_self_fns
-                .insert((f.span.start, f.span.end, f.span.file_id));
+            self.mutate_self_fns.insert(f.id);
         }
 
         // GC10: Public methods must declare self mode explicitly
@@ -207,9 +194,11 @@ impl TypeChecker {
         }
 
         self.push_scope();
+        let mut sig_params: Vec<(String, Type)> = Vec::with_capacity(f.params.len());
         for param in &f.params {
             if param.name == "self" {
                 if let Some(self_ty) = self.current_self_type.clone() {
+                    sig_params.push(("self".to_string(), self_ty.clone()));
                     if inferred_self_mutate || param.is_mutate || param.is_take {
                         self.define_local("self".to_string(), self_ty.clone());
                     } else {
@@ -254,9 +243,40 @@ impl TypeChecker {
                 self.define_local_param(param.name.clone(), ty.clone());
             }
             self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty.clone());
+            sig_params.push((param.name.clone(), ty.clone()));
             // RC1/RC3: a `Vec`/`Map` parameter can't hold linear elements.
             self.note_linear_container_site(param.name_span, ty);
         }
+        // A written `Self` is still the bare name here; the signature says
+        // which type it is.
+        let mut ret = self.current_return_type.clone().expect("set above");
+        if let Some(self_ty) = self.current_self_type.clone() {
+            // A method declared inside a generic type's own block has the bare
+            // type as its receiver while checking; its signature names the
+            // parameters, so an instance's arguments have somewhere to go.
+            let self_ty = match self_ty {
+                Type::Named(id) => match self.types.get(id).map(|def| def.type_params()) {
+                    Some(params) if !params.is_empty() => Type::Generic {
+                        base: id,
+                        args: params
+                            .iter()
+                            .map(|p| rask_types::GenericArg::Type(Box::new(Type::UnresolvedNamed(p.clone()))))
+                            .collect(),
+                    },
+                    _ => Type::Named(id),
+                },
+                other => other,
+            };
+            if let Some((_, ty)) = sig_params.iter_mut().find(|(n, _)| n == "self") {
+                *ty = self_ty.clone();
+            }
+            let map = std::collections::HashMap::from([("Self".to_string(), self_ty)]);
+            for (_, ty) in &mut sig_params {
+                *ty = crate::substitute_type(ty, &map);
+            }
+            ret = crate::substitute_type(&ret, &map);
+        }
+        self.fn_sigs.insert(f.id, rask_types::FnSignature { params: sig_params, ret });
 
         for stmt in &f.body {
             self.check_stmt(stmt);

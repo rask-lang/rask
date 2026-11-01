@@ -979,6 +979,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],
@@ -1002,6 +1003,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],

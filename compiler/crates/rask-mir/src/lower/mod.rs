@@ -143,30 +143,56 @@ pub(crate) enum IterAdapter<'a> {
 /// A receiver only gets a pointer from a Rask body. A `@native` method's
 /// receiver is whatever its C signature takes, which is the value:
 /// `Random.u64(mutate self)` hands `rask_rng_u64` the handle.
-fn scalar_mutate_params(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> Vec<Option<MirType>> {
+/// A parameter's MIR type: the checker's, from `sig`, for a function it
+/// checked; the written one for a function made after.
+fn param_mir_type(p: &rask_ast::decl::Param, sig: Option<&rask_types::FnSignature>, ctx: &MirContext) -> Option<MirType> {
+    match sig {
+        Some(sig) => sig.params.iter().find(|(n, _)| *n == p.name).map(|(_, t)| ctx.type_to_mir(t)),
+        None => p.ty.as_ref().map(|t| ctx.resolve_type_expr(t)),
+    }
+}
+
+/// The checker's type for each of `params`, in order.
+fn sig_param_tys(params: &[rask_ast::decl::Param], sig: Option<&rask_types::FnSignature>) -> Vec<Option<Type>> {
+    params
+        .iter()
+        .map(|p| sig.and_then(|s| s.params.iter().find(|(n, _)| *n == p.name)).map(|(_, t)| t.clone()))
+        .collect()
+}
+
+fn scalar_mutate_params(
+    f: &rask_ast::decl::FnDecl,
+    sig: Option<&rask_types::FnSignature>,
+    ctx: &MirContext,
+) -> Vec<Option<MirType>> {
     let native = f.body_lives_elsewhere();
     f.params
         .iter()
         .map(|p| {
-            if native && p.name == "self" {
+            if (native && p.name == "self") || !p.is_mutate {
                 return None;
             }
-            let written = p.ty.as_ref().filter(|_| p.is_mutate)?;
-            mutate_param_passing(ParamMode::Mutate, &p.name, &ctx.resolve_type_expr(written)).0
+            let ty = param_mir_type(p, sig, ctx)?;
+            mutate_param_passing(ParamMode::Mutate, &p.name, &ty).0
         })
         .collect()
 }
 
 /// Which params are `mutate` on an aggregate — the ones the caller passes by
 /// address, so a callee's write is supposed to reach the caller's storage.
-fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<bool> {
+fn aggregate_mutate_params(
+    params: &[rask_ast::decl::Param],
+    sig: Option<&rask_types::FnSignature>,
+    ctx: &MirContext,
+) -> Vec<bool> {
     params
         .iter()
         .map(|p| {
-            let Some(written) = p.ty.as_ref().filter(|_| p.is_mutate) else {
+            if !p.is_mutate {
                 return false;
-            };
-            mutate_param_passing(ParamMode::Mutate, &p.name, &ctx.resolve_type_expr(written)).1
+            }
+            let Some(ty) = param_mir_type(p, sig, ctx) else { return false };
+            mutate_param_passing(ParamMode::Mutate, &p.name, &ty).1
         })
         .collect()
 }
@@ -207,12 +233,12 @@ struct FuncSig {
     /// from once the checker's node types are out of reach (a closure body, an
     /// instantiated copy) — the declared return type is the remaining record.
     ret_vec_elem: Option<MirType>,
-    /// Declared parameter types, positionally. Used to type an
-    /// unannotated closure argument's parameters: `|req| { … }` passed to a
-    /// `func(Request) -> Response` parameter has nothing else to go on, and
-    /// defaulting them to i64 made field access and method dispatch inside the
-    /// closure body operate on the wrong type.
-    param_tys: Vec<Option<TypeExpr>>,
+    /// The checker's parameter types, positionally. What an argument is
+    /// coerced into, and what an unannotated closure argument's parameters
+    /// are: `|req| { … }` passed to a `func(Request) -> Response` parameter
+    /// has nothing else to go on when the closure has no checked type of its
+    /// own. `None` for a function made after checking.
+    param_tys: Vec<Option<Type>>,
 }
 
 /// Loop context for break/continue
@@ -418,6 +444,8 @@ impl<'a> MirContext<'a> {
             c_contexts: &typed.c_contexts,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
+            fn_sigs: &typed.fn_sigs,
+            instance_bindings: HashMap::new(),
             // Defaults; the `with_*` below set the ones a caller has.
             folded: empty::folded(),
             extern_funcs: empty::strings(),
@@ -469,6 +497,12 @@ impl<'a> MirContext<'a> {
     /// What monomorphization decided per call: which copy it names, and the
     /// key functions a map it builds needs.
     pub fn with_mono_calls(mut self, mono: &'a rask_mono::MonoProgram) -> Self {
+        self.instance_bindings = mono
+            .functions
+            .iter()
+            .filter(|f| !f.type_args.is_empty())
+            .map(|f| (f.name.clone(), (f.type_args.clone(), f.projections.clone())))
+            .collect();
         self.call_rewrites = &mono.call_rewrites;
         self.map_key_fns = &mono.map_key_fns;
         self.decode_defaults = &mono.decode_defaults;
@@ -508,7 +542,7 @@ pub struct MirContext<'a> {
     /// synthetic lowering units the unit tests hand-build. A real compile that
     /// arrives without it is a plumbing bug, and `method_mutates_self` says so
     /// rather than quietly answering "doesn't mutate".
-    pub mutate_self_fns: Option<&'a std::collections::HashSet<(usize, usize, u16)>>,
+    pub mutate_self_fns: Option<&'a std::collections::HashSet<NodeId>>,
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
@@ -630,7 +664,16 @@ pub struct MirContext<'a> {
     /// Function name → return type the checker inferred, for the ones that don't
     /// declare it. Only consulted when there's no annotation to read.
     pub inferred_fn_ret: &'a HashMap<String, Type>,
+    /// Each checked function's signature, by `FnDecl::id`.
+    pub fn_sigs: &'a HashMap<NodeId, rask_types::FnSignature>,
+    /// The type arguments of each generic function's instances, and what its
+    /// `T.Out` projections are there, by the instance's symbol.
+    pub instance_bindings: HashMap<String, (Vec<rask_types::TypeBinding>, HashMap<(String, String), Type>)>,
 }
+
+/// For contexts built without checker data (tests, comptime).
+pub static EMPTY_FN_SIGS: std::sync::LazyLock<HashMap<NodeId, rask_types::FnSignature>> =
+    std::sync::LazyLock::new(HashMap::new);
 
 /// For contexts built without checker data (tests, comptime): no function has an
 /// inferred return type, so every signature comes from its annotation.
@@ -638,6 +681,48 @@ pub static EMPTY_INFERRED_RET: std::sync::LazyLock<HashMap<String, Type>> =
     std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> MirContext<'a> {
+    /// The element of a checked `Vec<T>`, as MIR.
+    pub(crate) fn vec_elem_mir(&self, ty: &Type) -> Option<MirType> {
+        let (Some(name), Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) =
+            (self.generic_head(ty), ty)
+        else {
+            return None;
+        };
+        if name.trim() != "Vec" {
+            return None;
+        }
+        match args.first()? {
+            // An unresolved inference variable is not an answer. It lowers to
+            // Ptr, which is indistinguishable from a genuine `Vec<SomeStruct>`,
+            // so accepting it here shadowed the fallbacks that *do* know —
+            // `Vec.from([1, 2, 3])` ended up with a pointer element type and
+            // `|x| { return x + 1 }` compiled to pointer arithmetic (x + 8).
+            rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
+            rask_types::GenericArg::Type(inner) => Some(self.type_to_mir(inner)),
+            _ => None,
+        }
+    }
+
+    /// The checker's signature for `f`, with the type arguments of the instance
+    /// `symbol` names written in. `None` for a function made after checking.
+    pub fn instance_sig(&self, f: &rask_ast::decl::FnDecl, symbol: &str) -> Option<rask_types::FnSignature> {
+        let sig = self.fn_sigs.get(&f.id)?;
+        let Some((bindings, projections)) = self.instance_bindings.get(symbol) else {
+            return Some(sig.clone());
+        };
+        // Projections first, while `T.Out` still names the parameter.
+        let projected: HashMap<String, Type> =
+            projections.iter().map(|((p, a), ty)| (format!("{p}.{a}"), ty.clone())).collect();
+        let bound: HashMap<String, Type> = bindings.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
+        let instance = |t: &Type| {
+            rask_check::substitute_type(&rask_check::substitute_type(t, &projected), &bound)
+        };
+        Some(rask_types::FnSignature {
+            params: sig.params.iter().map(|(n, t)| (n.clone(), instance(t))).collect(),
+            ret: instance(&sig.ret),
+        })
+    }
+
     /// A function's MIR return type: the declared one, else the type the checker
     /// inferred for it, else void.
     ///
@@ -730,6 +815,8 @@ impl<'a> MirContext<'a> {
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
+            instance_bindings: HashMap::new(),
         }
     }
 
@@ -1766,9 +1853,10 @@ pub(crate) struct LocalMeta {
     /// Stdlib type prefix (e.g. "Random", "File", "Vec").
     /// Fallback when the type checker leaves types unresolved.
     pub type_prefix: Option<String>,
-    /// The full written type of a generic one (e.g. `Shared<Database>`).
-    /// Resolves generic inner types when type checker info is incomplete.
-    pub full_type: Option<TypeExpr>,
+    /// The checker's type for the local: a parameter's from the signature, a
+    /// binding's from its statement or initializer. Where a later use of the
+    /// name has no type of its own recorded, this is the answer.
+    pub checked_type: Option<Type>,
     /// Collection element MirType (e.g. the T in Vec<T>).
     /// Propagates element types through for-in iteration after mono.
     pub elem_type: Option<MirType>,
@@ -2001,6 +2089,15 @@ pub(crate) struct CatchFrame {
 }
 
 impl<'a> MirLowerer<'a> {
+    /// The checker's type for `node`, as MIR. `what` names the node for the
+    /// error, which only a node made after checking can hit.
+    pub(crate) fn checked_mir_type(&self, node: NodeId, what: &str) -> Result<MirType, LoweringError> {
+        self.ctx
+            .lookup_raw_type(node)
+            .map(|ty| self.ctx.type_to_mir(ty))
+            .ok_or_else(|| LoweringError::no_checked_type(what))
+    }
+
     /// Lower a monomorphized function declaration to MIR.
     ///
     /// Get the metadata entry for a variable, creating a default if absent.
@@ -2070,12 +2167,8 @@ impl<'a> MirLowerer<'a> {
         let Some(type_name) = object.name() else { return };
         let Some(prefix) = type_prefix_from_str(type_name) else { return };
         self.meta_mut(name).type_prefix = Some(prefix.clone());
-        if let Some(inner) = args.first().and_then(|a| {
-            self.ctx.lookup_raw_type(a.expr.id)
-                .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
-        }) {
-            self.meta_mut(name).full_type =
-                Some(TypeExpr::generic(prefix, vec![TypeExpr::named(inner)]));
+        if let Some(ty) = self.ctx.lookup_raw_type(init.id).filter(|t| !crate::fallback::type_is_open(t)) {
+            self.meta_mut(name).checked_type = Some(ty.clone());
         }
     }
 
@@ -2336,20 +2429,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
-        let (name, args) = self.generic_head(ty)?;
-        if name != "Vec" {
-            return None;
-        }
-        match args.first()? {
-            // An unresolved inference variable is not an answer. It lowers to
-            // Ptr, which is indistinguishable from a genuine `Vec<SomeStruct>`,
-            // so accepting it here shadowed the fallbacks that *do* know —
-            // `Vec.from([1, 2, 3])` ended up with a pointer element type and
-            // `|x| { return x + 1 }` compiled to pointer arithmetic (x + 8).
-            rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
-            rask_types::GenericArg::Type(inner) => Some(self.ctx.type_to_mir(inner)),
-            _ => None,
-        }
+        self.ctx.vec_elem_mir(ty)
     }
 
     /// `Map<K, V>` → the two MIR types, when the checker settled both.
@@ -2727,20 +2807,16 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        let written = match &collection.kind {
-            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.full_type.as_ref()),
+        let tracked = match &collection.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.checked_type.clone()),
             // `v.take_all()` holds what `v` holds.
             ExprKind::MethodCall { object, method, .. } if method == "take_all" => {
                 return self.handed_over_elem(object, elem);
             }
             _ => None,
         };
-        if let Some(t) = written {
-            if t.name().as_deref() == Some("Vec") {
-                if let Some(arg) = t.args().first() {
-                    return self.ctx.resolve_type_expr(arg);
-                }
-            }
+        if let Some(elem) = tracked.as_ref().and_then(|t| self.ctx.vec_elem_mir(t)) {
+            return elem;
         }
         elem
     }
@@ -2899,11 +2975,8 @@ impl<'a> MirLowerer<'a> {
                 value_of(&f.ty, self)
             }
             ExprKind::Ident(name) => {
-                let full = self.meta(name).and_then(|m| m.full_type.clone())?;
-                match (full.name().as_deref(), full.args()) {
-                    (Some("Map"), [_, value]) => Some(self.ctx.resolve_type_expr(value)),
-                    _ => None,
-                }
+                let checked = self.meta(name).and_then(|m| m.checked_type.clone())?;
+                self.map_kv_of_checker_type(&checked).map(|(_, value)| value)
             }
             _ => None,
         }
@@ -4171,6 +4244,8 @@ impl<'a> MirLowerer<'a> {
         Self::lower_function_named(decl, all_decls, ctx, None)
     }
 
+    /// `qualified_name` is the instance's symbol, which says which type
+    /// arguments it is for (`MirContext::instance_bindings`).
     pub fn lower_function_named(
         decl: &Decl,
         all_decls: &[Decl],
@@ -4193,6 +4268,7 @@ impl<'a> MirLowerer<'a> {
             id: NodeId(0),
             span: Span::new(0, 0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.clone(),
                 type_params: Vec::new(),
                 params: Vec::new(),
@@ -4334,20 +4410,33 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref());
+        // The signature the checker gave this function, with this instance's
+        // type arguments written in. A function the compiler made after
+        // checking (a const initializer, a test runner's `main`) has none.
+        let own_sig = ctx.instance_sig(fn_decl, qualified_name.unwrap_or(&fn_decl.name));
+        let ret_ty = match &own_sig {
+            Some(sig) => ctx.type_to_mir(&sig.ret),
+            None => ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref()),
+        };
 
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Fn(f) => {
-                    let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref());
+                    // A monomorphized function's declaration is named by its
+                    // instance's symbol.
+                    let sig = ctx.instance_sig(f, &f.name);
+                    let (sig_ret, ret_vec_elem) = match &sig {
+                        Some(s) => (ctx.type_to_mir(&s.ret), ctx.vec_elem_mir(&s.ret)),
+                        None => (ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref()), vec_elem_of_type(f.ret_ty.as_ref(), ctx)),
+                    };
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
-                        scalar_mutate_params: scalar_mutate_params(f, ctx),
-                        aggregate_mutate_params: aggregate_mutate_params(&f.params, ctx),
-                        ret_vec_elem: vec_elem_of_type(f.ret_ty.as_ref(), ctx),
-                        param_tys: f.params.iter().map(|p| p.ty.clone()).collect(),
+                        scalar_mutate_params: scalar_mutate_params(f, sig.as_ref(), ctx),
+                        aggregate_mutate_params: aggregate_mutate_params(&f.params, sig.as_ref(), ctx),
+                        ret_vec_elem,
+                        param_tys: sig_param_tys(&f.params, sig.as_ref()),
                     });
                 }
                 DeclKind::Extern(ext) => {
@@ -4361,17 +4450,20 @@ impl<'a> MirLowerer<'a> {
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
                         let qualified = format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
-                        let sig_ret = m
-                            .ret_ty
-                            .as_ref()
-                            .map(|t| ctx.resolve_type_expr(t))
-                            .unwrap_or(MirType::Void);
+                        let sig = ctx.instance_sig(m, &qualified);
+                        let (sig_ret, ret_vec_elem) = match &sig {
+                            Some(s) => (ctx.type_to_mir(&s.ret), ctx.vec_elem_mir(&s.ret)),
+                            None => (
+                                m.ret_ty.as_ref().map(|t| ctx.resolve_type_expr(t)).unwrap_or(MirType::Void),
+                                vec_elem_of_type(m.ret_ty.as_ref(), ctx),
+                            ),
+                        };
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
-                            scalar_mutate_params: scalar_mutate_params(m, ctx),
-                            aggregate_mutate_params: aggregate_mutate_params(&m.params, ctx),
-                            ret_vec_elem: vec_elem_of_type(m.ret_ty.as_ref(), ctx),
-                            param_tys: m.params.iter().map(|p| p.ty.clone()).collect(),
+                            scalar_mutate_params: scalar_mutate_params(m, sig.as_ref(), ctx),
+                            aggregate_mutate_params: aggregate_mutate_params(&m.params, sig.as_ref(), ctx),
+                            ret_vec_elem,
+                            param_tys: sig_param_tys(&m.params, sig.as_ref()),
                         });
                     }
                 }
@@ -4557,9 +4649,15 @@ impl<'a> MirLowerer<'a> {
                 Some(t) if t.is_name("Self") => self_type.as_ref().or(param.ty.as_ref()),
                 other => other.as_ref(),
             };
-            let param_ty = match written {
-                Some(t) => ctx.resolve_type_expr(t),
-                None => MirType::Void,
+            let checked_param: Option<Type> = own_sig
+                .as_ref()
+                .and_then(|sig| sig.params.iter().find(|(n, _)| *n == param.name))
+                .map(|(_, ty)| ty.clone());
+            let checked = checked_param.as_ref().map(|ty| ctx.type_to_mir(ty));
+            let param_ty = match (&checked, written) {
+                (Some(ty), _) => ty.clone(),
+                (None, Some(t)) => ctx.resolve_type_expr(t),
+                (None, None) => MirType::Void,
             };
             // #270: a scalar `mutate` param is passed by pointer so the callee can
             // write back through it. Register the param local as a pointer; reads
@@ -4569,10 +4667,7 @@ impl<'a> MirLowerer<'a> {
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
             // The parameter keeps saying which container it is, so a frame that
             // gets it back from a call knows which free matches (#1502).
-            let declared_ty = match written {
-                Some(t) if !scalar_mutate => ctx.resolve_type_expr(t),
-                _ => local_ty.clone(),
-            };
+            let declared_ty = if scalar_mutate { local_ty.clone() } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             // Set type prefix for parameters so method calls qualify correctly.
@@ -4591,25 +4686,21 @@ impl<'a> MirLowerer<'a> {
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
                 }
-                // The full written type for generic ones (Shared<T>, Channel<T>, etc.)
-                if let Some(written) = written.filter(|t| !t.args().is_empty()) {
-                    meta.full_type = Some(written.clone());
-                    // Collection element types, so for-loop iteration resolves:
-                    // Vec<Inline> → Struct(Inline).
-                    //
-                    // A `Sequence<T>` parameter carries its element type the
-                    // same way, and this is the only place it survives
-                    // monomorphization: the instantiated copy has fresh node
-                    // ids, so the checker's record is gone, but mono did
-                    // substitute the declared type — `Sequence<(K, V)>`
-                    // arrives here as `Sequence<(i32, i32)>`. Without it
-                    // `for (k, v) in self` inside `Sequence.to_map` had no
-                    // element type and fell back to a machine word (#1046).
-                    if let (Some("Vec" | "Sequence" | "SequenceMut"), [elem]) =
-                        (written.name().as_deref(), written.args())
+                // The checker's type for the parameter, with this instance's
+                // arguments in: `Sequence<(K, V)>` is `Sequence<(i32, i32)>`
+                // in `to_map`'s copy for one. A collection's element type
+                // comes from it, so `for (k, v) in self` has one (#1046).
+                if let Some(checked) = checked_param.clone() {
+                    if let (Some(name), Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) =
+                        (ctx.generic_head(&checked), &checked)
                     {
-                        meta.elem_type = Some(ctx.resolve_type_expr(elem));
+                        if let ("Vec" | "Sequence" | "SequenceMut", [rask_types::GenericArg::Type(elem)]) =
+                            (name.trim(), args.as_slice())
+                        {
+                            meta.elem_type = Some(ctx.type_to_mir(elem));
+                        }
                     }
+                    meta.checked_type = Some(checked);
                 }
             }
         }
@@ -6529,7 +6620,7 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
         return true;
     }
     match ctx.mutate_self_fns {
-        Some(set) => set.contains(&(f.span.start, f.span.end, f.span.file_id)),
+        Some(set) => set.contains(&f.id),
         // Same test for a synthetic unit the rest of lowering uses: no node
         // types means nobody ran the checker, so there was no GC9 decision to
         // record and "doesn't mutate" is the honest answer.
@@ -6776,6 +6867,16 @@ pub enum LoweringError {
     /// miscompile — an f64 loses its value, a string or a struct becomes an
     /// address. Carries the sites that gave up so the report names them.
     UnknownType(Vec<(&'static str, u32)>),
+}
+
+impl LoweringError {
+    /// The checker records a type for every `what` it checks, so one without
+    /// is a node made after checking that nothing typed: a compiler bug.
+    pub fn no_checked_type(what: &str) -> Self {
+        LoweringError::InvalidConstruct(format!(
+            "internal compiler error: the checker recorded no type for this {what}"
+        ))
+    }
 }
 
 impl std::fmt::Display for LoweringError {
@@ -7026,6 +7127,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: params
@@ -7055,8 +7157,46 @@ mod tests {
         }
     }
 
+    /// What the checker would record for a hand-built body: the type of each
+    /// annotated binding and each cast, for the primitive types these tests
+    /// write.
+    fn checked_types(decl: &Decl) -> HashMap<NodeId, Type> {
+        struct Collect(HashMap<NodeId, Type>);
+        fn primitive(ty: &TypeExpr) -> Option<Type> {
+            Some(match ty.to_string().as_str() {
+                "i32" => Type::I32,
+                "i64" => Type::I64,
+                "f64" => Type::F64,
+                "bool" => Type::Bool,
+                "string" => Type::String,
+                _ => return None,
+            })
+        }
+        impl rask_ast::rewrite::Rewrite for Collect {
+            fn expr(&mut self, e: &mut Expr) {
+                if let ExprKind::Cast { ty, .. } = &e.kind {
+                    if let Some(t) = primitive(ty) {
+                        self.0.insert(e.id, t);
+                    }
+                }
+            }
+            fn body(&mut self, b: &mut Vec<Stmt>) {
+                for s in b.iter() {
+                    if let StmtKind::Mut { ty: Some(ty), .. } | StmtKind::Let { ty: Some(ty), .. } = &s.kind {
+                        if let Some(t) = primitive(ty) {
+                            self.0.insert(s.id, t);
+                        }
+                    }
+                }
+            }
+        }
+        let mut c = Collect(HashMap::new());
+        rask_ast::rewrite::rewrite_decl(&mut decl.clone(), &mut c);
+        c.0
+    }
+
     fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
-        let node_types = HashMap::new();
+        let node_types = checked_types(decl);
         let ctx = MirContext::empty_with_map(&node_types);
         let mut fns = MirLowerer::lower_function(decl, all_decls, &ctx).expect("lowering failed");
         fns.remove(0) // Return the main function (first element)
@@ -7238,11 +7378,12 @@ mod tests {
 
     #[test]
     fn lower_let_binding() {
-        let decl = make_fn("f", vec![], None, vec![
-            let_stmt("x", Some("i32"), int_expr(10)),
-            return_stmt(None),
-        ]);
-        let f = lower_one(&decl);
+        let binding = let_stmt("x", Some("i32"), int_expr(10));
+        // The checker files an annotated binding's type under its statement.
+        let node_types = HashMap::from([(binding.id, Type::I32)]);
+        let decl = make_fn("f", vec![], None, vec![binding, return_stmt(None)]);
+        let ctx = MirContext::empty_with_map(&node_types);
+        let f = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx).expect("lowering failed").remove(0);
         let x_local = f.locals.iter().find(|l| l.name.as_deref() == Some("x"));
         assert!(x_local.is_some());
         assert_eq!(x_local.unwrap().ty, MirType::I32);
@@ -7803,6 +7944,8 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
+            instance_bindings: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -7894,6 +8037,8 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
+            instance_bindings: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -7992,6 +8137,8 @@ mod tests {
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
+            fn_sigs: &EMPTY_FN_SIGS,
+            instance_bindings: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![

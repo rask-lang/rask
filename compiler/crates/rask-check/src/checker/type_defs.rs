@@ -611,9 +611,11 @@ pub struct TypedProgram {
     /// the checker already worked out gets recorded, so MIR lowering can read it
     /// rather than re-deriving GC9 with a second walker that could drift.
     ///
-    /// Keyed by span because FnDecl has no NodeId, and spans survive the clone
-    /// monomorphization makes of each generic instantiation.
-    pub mutate_self_fns: std::collections::HashSet<(usize, usize, u16)>,
+    /// Keyed by `FnDecl::id`, which an instantiation's copy keeps.
+    pub mutate_self_fns: std::collections::HashSet<NodeId>,
+    /// Each checked function's signature, by `FnDecl::id`. A generic one's
+    /// types mention its parameters.
+    pub fn_sigs: HashMap<NodeId, rask_types::FnSignature>,
     /// Bare names in a pattern that the checker read as a type test rather
     /// than as a variant or a binding — `r is ParseError` — keyed by the span
     /// of the statement or expression the pattern sits in.

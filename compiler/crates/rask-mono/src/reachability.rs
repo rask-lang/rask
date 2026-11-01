@@ -1185,15 +1185,25 @@ impl<'a> Monomorphizer<'a> {
 
             // Instantiate: if type_args present, clone AST with substitution.
             // Otherwise use original decl directly.
+            let mut projections = HashMap::new();
             let concrete = if item.type_args.is_empty() {
                 original.clone()
             } else {
                 let (param_names, bound_args, self_ty) =
                     self.instantiation_params(&item.name, &item.type_args);
-                let projections = self.projections_for(original, &item.type_args);
+                projections = self.projections_for(original, &item.type_args);
+                // The copy names its types; the instance keeps them as they are.
+                let written_projections = projections
+                    .iter()
+                    .map(|(k, ty)| {
+                        let types = self.typed.map(|t| &t.types);
+                        let named = types.and_then(|t| Self::nameable_type(ty, t)).unwrap_or_else(|| ty.clone());
+                        (k.clone(), named.to_type_expr())
+                    })
+                    .collect();
                 let (mut cloned, origins) =
                     crate::instantiate::instantiate_function_with_params(
-                        original, &param_names, &bound_args, projections,
+                        original, &param_names, &bound_args, written_projections,
                         &mut self.next_instantiated_id,
                     );
                 // The receiver's own layout. A copy made for `One<Big>`
@@ -1263,6 +1273,7 @@ impl<'a> Monomorphizer<'a> {
             self.results.push(MonoFunction {
                 name: mangled,
                 type_args: item.type_args,
+                projections,
                 body: concrete,
             });
         }
@@ -1324,7 +1335,7 @@ impl<'a> Monomorphizer<'a> {
         &self,
         original: &Decl,
         bindings: &[TypeBinding],
-    ) -> HashMap<(String, String), TypeExpr> {
+    ) -> HashMap<(String, String), Type> {
         let mut out = HashMap::new();
         let (Some(typed), DeclKind::Fn(f)) = (self.typed, &original.kind) else { return out };
         let types = &typed.types;
@@ -1346,7 +1357,7 @@ impl<'a> Monomorphizer<'a> {
                         continue;
                     }
                     if let Some(ty) = types.project(&binding.ty, &applied, &a.name) {
-                        out.insert((tp.name.clone(), a.name.clone()), spelled(&ty).to_type_expr());
+                        out.insert((tp.name.clone(), a.name.clone()), ty);
                     }
                 }
             }

@@ -176,9 +176,13 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let Some(var_name) = object.name() {
-            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let Some(inner) = full_type.args().first() {
-                    return Some(inner.to_string());
+            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
+                if let Some((_, args)) = self.generic_head(checked) {
+                    if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
+                        if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
+                            return Some(prefix);
+                        }
+                    }
                 }
             }
         }
@@ -204,12 +208,16 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        // The declared spelling, when the checker's type didn't survive:
-        // "Shared<Queue, Mutex>" -> Mutex.
+        // The binding's type, when the use has none of its own:
+        // `Shared<Queue, Mutex>` -> Mutex.
         if let Some(var_name) = object.name() {
-            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let [_, strategy] = full.args() {
-                    return SharedStrategy::from_name(strategy.bare_name().unwrap_or_default());
+            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
+                if let Some((_, args)) = self.generic_head(checked) {
+                    if let Some(rask_types::GenericArg::Type(s)) = args.get(1) {
+                        if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
+                            return SharedStrategy::from_name(&name);
+                        }
+                    }
                 }
             }
         }

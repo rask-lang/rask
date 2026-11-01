@@ -512,6 +512,7 @@ mod tests {
         let main = Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(), type_params: vec![], params: vec![],
                 ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
@@ -572,6 +573,7 @@ mod tests {
         let main = Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(), type_params: vec![], params: vec![], ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,

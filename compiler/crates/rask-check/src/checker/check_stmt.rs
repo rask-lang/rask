@@ -134,6 +134,8 @@ impl TypeChecker {
                     init_ty
                 };
                 self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty.clone());
+                // The statement's own type is what it binds.
+                self.node_types.insert(stmt.id, binding_ty.clone());
                 // RC1/RC3: a `Vec`/`Map` binding can't hold linear elements.
                 self.note_linear_container_site(*name_span, binding_ty);
                 // E5: Cannot store sync access result in a variable
@@ -181,6 +183,8 @@ impl TypeChecker {
                     init_ty
                 };
                 self.span_types.insert((name_span.start, name_span.end, name_span.file_id), binding_ty.clone());
+                // The statement's own type is what it binds.
+                self.node_types.insert(stmt.id, binding_ty.clone());
                 // RC1/RC3: a `Vec`/`Map` binding can't hold linear elements.
                 self.note_linear_container_site(*name_span, binding_ty);
                 // E5: Cannot store sync access result in a variable

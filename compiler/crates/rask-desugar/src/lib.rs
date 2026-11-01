@@ -401,6 +401,11 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
+        // An injected method is a copy (an interface default) or a parse of
+        // its own (a template): either way its id isn't its own yet.
+        if self.renumber {
+            f.id = self.fresh_id();
+        }
         // A default is copied into each call that leaves it out, after this
         // pass. Left as written, `n: i64 = 2 * 3` reached every call with a
         // raw `*` in it, which nothing past desugar has to understand.
@@ -479,6 +484,7 @@ impl Desugarer {
         };
         let body = vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }];
         FnDecl {
+            id: self.fresh_id(),
             name,
             type_params: vec![],
             params: vec![],
@@ -583,6 +589,7 @@ impl Desugarer {
         };
 
         Some(FnDecl {
+            id: self.fresh_id(),
             name: "message".to_string(),
             type_params: vec![],
             params: vec![Param {

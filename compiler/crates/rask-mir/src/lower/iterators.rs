@@ -157,7 +157,12 @@ impl<'a> MirLowerer<'a> {
                 if meta.type_prefix.as_deref() == Some("Vec") {
                     return true;
                 }
-                if meta.full_type.as_ref().is_some_and(|t| t.name().as_deref() == Some("Vec")) {
+                if meta
+                    .checked_type
+                    .as_ref()
+                    .and_then(|t| self.generic_head(t))
+                    .is_some_and(|(name, _)| name == "Vec")
+                {
                     return true;
                 }
             }

@@ -100,6 +100,7 @@ fn body_fn(block: &Decl, name: String, body: Vec<Stmt>, attrs: Vec<rask_ast::att
     Decl {
         id: block.id,
         kind: DeclKind::Fn(FnDecl {
+            id: block.id,
             name,
             type_params: vec![],
             params: vec![],
@@ -145,6 +146,7 @@ fn main_calling(entries: &[(String, String)]) -> Decl {
     Decl {
         id: NodeId(0),
         kind: DeclKind::Fn(FnDecl {
+            id: rask_ast::NodeId::DUMMY,
             name: "main".to_string(),
             type_params: vec![],
             params: vec![],
