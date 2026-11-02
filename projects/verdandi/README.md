@@ -72,6 +72,15 @@ Rask's ownership rules make the first one checkable: a slice handed to a task ca
 
 Rendering doesn't join the tick. The simulation runs on its own thread at a fixed rate and publishes each finished state. The renderer draws at the display's rate from the last two published states, interpolating between them. A slow frame never stalls the simulation, and a heavy tick never drops a frame.
 
+**Rendering at this scale.** The CPU should do nothing per entity per frame. Instance buffers come straight from the component arrays, so the GPU gets position, sprite and animation frame for every visible unit in one upload. The vertex shader interpolates between the last two states and picks the animation frame from the tick. The CPU's work per frame is culling by chunk and issuing a handful of draws.
+
+Textures are the other bottleneck, and Factorio's history shows both halves of it:
+- **Batching needs atlases.** One draw per texture doesn't scale, so sprites are packed into atlases and grouped by what's drawn together (all belts, all of one horde). A layer then draws in one call per atlas. Draw order (layers, depth within a layer) and atlas grouping pull against each other, so the grouping follows the layers.
+- **Atlases outgrow VRAM.** Factorio's sprites needed about 2.4 GB of VRAM by 2018 (FFF #227). Its answer was virtual texturing (FFF #264): the atlas is cut into 128x128 tiles, and only tiles in use live in a smaller physical texture in VRAM, with a lookup table from virtual to physical tile. In 2D the renderer knows exactly which sprites it draws this frame, so it knows which tiles to make resident without a GPU feedback pass. Evict least recently used. Prefetch along the camera's motion, and draw a lower mip of the tile until the full one arrives, so streaming never shows as pop-in.
+- **Compressed textures** (BC7 on desktop, ASTC on mobile) cut VRAM and bandwidth by four or more, before any streaming. SDL3's GPU API supports them.
+
+Atlas packing, mip generation and compression happen at build time, in `build.rk`, not at load. Shaders are written once and cross-compiled for Vulkan, Metal and D3D12 with SDL's shader tooling.
+
 **Cheap checkpoints.** Copying a large world every few seconds is too slow. Chunks are copy-on-write, so a checkpoint costs what changed since the last one, not the world size. A save file is a checkpoint plus a log.
 
 **Saves across versions.** A replay needs the exact simulation that recorded it. Factorio's replays break across versions. A save carries the version of its rules, and an old log replays on old rules or not at all. Raido's content-addressed bytecode helps with mods.
