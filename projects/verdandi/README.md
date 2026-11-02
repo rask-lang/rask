@@ -37,7 +37,7 @@ The game writes `step(state, inputs)`. The engine owns time, inputs, snapshots a
 ## What it has to solve
 
 **Determinism across machines.** Every source of drift has to be closed at the engine level, not left to game code:
-- floats (same build, our own `sin`/`cos`/`sqrt`, no fused multiply-add: #1683);
+- floats (IEEE basic operations, correctly rounded `sin`/`cos`/`exp`, no fused multiply-add, NaNs canonicalized where their bits show: #1683, on every machine, so Raido can use f64 too: #1735);
 - map iteration order;
 - parallel scheduling;
 - randomness, which lives in the state, seeded per system;
