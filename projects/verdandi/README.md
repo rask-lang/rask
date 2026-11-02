@@ -55,6 +55,14 @@ Raido runs mods, because a mod that can't be nondeterministic can't desync.
 
 This is also where Rask's Cranelift backend gets stress-tested: SIMD, inlining, layout.
 
+**Data layout.** Entities aren't objects. A zombie is an index into arrays: one for positions, one for targets, one for health. A system that moves units streams through the position and target arrays and never touches the rest, so the cache holds only what the loop reads. Two refinements matter at this scale:
+- **Group by access, not by field.** Fields always read together (x and y, velocity and position in a movement pass) go in one array of small structs; fields read rarely (name, history, inventory) go in a cold array. Splitting every field apart costs as much as never splitting.
+- **The layout serves checkpoints and hashing too.** Arrays chunk naturally, so the same chunks are what copy-on-write copies and what the merkle tree hashes.
+
+Layout alone doesn't make 100,000 units cheap. What they look at does: a spatial grid so a unit only checks its neighbours, and one shared path field per target, a flow field, instead of a path per unit. Those are algorithms, not engine plumbing, but the kernel should ship them, because every game in the genre writes them.
+
+In Rask, an array of small structs is a `Vec` of `@layout(C)` structs, packed at natural width (#985), and the same buffer can go to the GPU as instance data. Splitting a struct into parallel arrays is written by hand today. A struct-of-arrays layout the compiler generates from one declaration would make it read like the object version. Worth a spec once the first game shows how often it's needed.
+
 **Cheap checkpoints.** Copying a large world every few seconds is too slow. Chunks are copy-on-write, so a checkpoint costs what changed since the last one, not the world size. A save file is a checkpoint plus a log.
 
 **Saves across versions.** A replay needs the exact simulation that recorded it. Factorio's replays break across versions. A save carries the version of its rules, and an old log replays on old rules or not at all. Raido's content-addressed bytecode helps with mods.
