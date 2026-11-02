@@ -46,6 +46,19 @@ The game writes `step(state, inputs)`. The engine owns time, inputs, snapshots a
 
 Raido runs mods, because a mod that can't be nondeterministic can't desync.
 
+**Mods are the game.** The engine is a kernel with no content. The game itself is a mod on top, the same way Factorio's base game is a mod called `base`. Whatever a game's own designers can do, a modder can do, because the game used no private door. Mods are Raido, which is what makes the rest of this section possible:
+- **Downloading code from a server is safe.** Raido has no I/O; a mod reaches only the externs the engine registers. A server can send a joining player its mods, and running them can't touch the player's machine. Assets are the remaining attack surface: images and sounds from a mod go through C decoders, so those run sandboxed or validated, not trusted.
+- **A mod is its hash.** Bytecode is content-addressed, so the mod set is a list of hashes. A client joins only with the exact set and fetches what it's missing from the server, from a local cache first. Mismatched mods, RimWorld multiplayer's main cause of desyncs, can't happen.
+- **Mod state is game state.** Raido's VM state is serializable, so checkpoints, saves, replays and the desync hash include every mod's state with no extra work. Running out of fuel mid-tick is deterministic too, the same on every machine.
+
+Two stages, as in Factorio. The data stage runs once at load and declares what exists: entity types, their components, recipes, sprites. The engine lays out its arrays and atlases from that. The control stage runs during play and reacts to events.
+
+Mods split into two kinds:
+- **Simulation mods** change the rules. They must match on every machine and are part of the hash.
+- **Client mods** change UI, sounds and visuals. They're local, never hashed, and can read the state but never write it, so one player's UI mod can't desync anyone.
+
+The cost is speed. Raido is an interpreter with fixed-point math, and 100,000 units each running a script every tick won't fit in the budget. Factorio has the same constraint with Lua: heavy per-tick scripts are what kills its tick rate. So the per-entity hot loops (movement, flow fields, combat resolution, rendering) are engine systems written in Rask. Mods configure them with data and handle events: a unit died, a building finished, a wave starts. A mod that needs a new hot loop gets it by asking for an engine system, not by running per entity per tick. Compiling Raido to native code later would move that line, provided the compiled code keeps the interpreter's exact results.
+
 **Finding a desync.** A hash of the full state every tick is too slow at this size. The state lives in chunks hashed incrementally, as a merkle tree (Urd's store), so the per-tick hash is cheap. When two machines disagree, comparing the trees walks straight to the chunk, then the entity, that drifted. With the seed and the input log, the desync replays on one machine.
 
 **Throughput is correctness.** Lockstep runs at the speed of the slowest machine, and 4x fast-forward costs 4x the CPU. So simulation speed decides whether the features exist at all:
