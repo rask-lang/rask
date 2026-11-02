@@ -34,22 +34,23 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 798 green, 9 registered red | `tests/differential.sh` |
-| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 835 green, 9 registered red (7 known divergences, 2 pending) | `tests/differential.sh` |
+| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred; 836 clean | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 7 of 801, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 93 | `tests/tsan_gate.sh` |
+| Programs memcheck finds an error in | 6 of 838, each filed; 6 more weren't measured (the registered red ones) | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 96 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
+| Concurrency files clean under sim, 20 seeds here, 100 in CI | 96 of 96 at 20 seeds, 44 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 855 of 855 | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 54 of 99 open issues | issue search |
-| Open design questions | 19 | issue search |
+| Stdlib items a spec promises that exist and run on both backends | 856 of 856 | `tests/stdlib_coverage_gate.sh` |
+| Open bugs | 59 labelled `bug`, of 133 open issues | issue search |
+| Open design questions | 20 (`design` label) | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+Prototypes (9 agree), projects (22 ok), the agent benchmark (19 reference
+solutions), formatter round-trips (0 failures) and the HTTP server all pass, and
+`cargo test --release` is 1621 passed, 0 failed. Packages, tutorials, the book and
+the internal-spellings gate weren't run this pass.
 
 This table was a month stale when it was last checked — it claimed 31 leaking
 programs holding 86 allocations while the gate printed 0, and 500 of 505 while
@@ -159,8 +160,9 @@ at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position — **shipped 2026-09-22**
 
-**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
-registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
+**Done when `tests/matrix/run.sh` is green. It is: 293 of 293 cells clean, 0
+red, and 13 pairs skipped as pairs the design rules out.** (It was 281 of 283
+at ship; the two red cells were #1244, now closed.)
 
 Read the cell count against the old one with care — it was 284 of 286 while
 `Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
@@ -227,7 +229,7 @@ adapter bodies.
 **Four came out of this list.** Same rule the three below came out under — a
 version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
 
-- **#1244** — can a function type be the success side of `T or E`?
+- **#1244** (closed since) — can a function type be the success side of `T or E`?
   `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, which is
   a defensible reading; what is missing is a way to write the other one, and
   there is no parenthesised type form. `specs/types/error-types.md` and
@@ -244,10 +246,7 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   returns. A name collision in the ownership metadata, not a position.
 
 Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
+milestone — #1245, #1233 and #1248 all came in with #1298. #1244 was the last, and it is closed now; its two cells went green.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -422,7 +421,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 424 sites restate a fact, 417 to go.**
+ratchet at its target. Today: 419 sites restate a fact, 412 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -430,7 +429,7 @@ is that each fact has one owner, the earliest stage that knows it, and flows
 down as data. v0.6 ran into it at every turn: the stdlib declared its methods
 once and codegen kept a second table of them, the checker's call rewrites
 reached the program's copy of the stdlib but not the copy it compiles
-(#1621), and layout sizes opaque handles from a hand list (#1592).
+(#1621, closed), and layout sizes opaque handles from a hand list (#1592).
 
 The audit is [#1570](https://github.com/rask-lang/rask/issues/1570). Its gate
 was "every listed issue closed", which is a list, and this file says a version
@@ -444,10 +443,10 @@ each pinned at today's count, each with the count it has to reach.
 | `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
 | Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
-| Public entry points into the passes | 14 | 7 | #1568 |
-| Interpreters run without the driver's setup (`prepare_interpreter`) | 4 | 0 | #1568 |
+| Public entry points into the passes | 13 | 7 | #1568 |
+| Interpreters run without the driver's setup (`prepare_interpreter`) | 3 | 0 | #1568 |
 | Size or alignment computed outside the layout model | 5 | 0 | #1567 |
-| Readers of the pointer-width process global | 15 | 0 | #1568 |
+| Readers of the pointer-width process global | 12 | 0 | #1568 |
 
 A ratchet at its target gets deleted, and the thing that made the sites
 impossible stays: a Cargo dependency that can't reach the old answer, or a type
@@ -505,7 +504,8 @@ for a checker type by accident, and no grep test has to say so.
    rule and layout reads `Type`. Done: `rask-types` holds `Type` and
    `TypeDef` on the AST alone, the checker is `rask-check`, and layout is
    `rask-layout`, which the checker reads. Layout still computes from the
-   written declarations, not from `TypeDef`; that's next. The crate takes `Type`, type
+   written declarations, not from `TypeDef`; that's next (5 sites outside the
+   model, unchanged this week). The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
    `compiler/CLAUDE.md` calls `rask_layout` "the one size model"
@@ -520,6 +520,9 @@ for a checker type by accident, and no grep test has to say so.
    translates. That's what v0.8 needs.
 7. **#1569** any time, and a good lane for a session that shouldn't touch
    the middle of the pipeline.
+
+The order held on re-measure: step 4's split is done and moved three ratchets, and
+step 2 (#1561) still gates step 5 with 26 + 4 sites on the checker side.
 
 **Cut: #1556.** Running comptime on the MIR interpreter is a new evaluator,
 not a copy removed, and it sits at the end of the longest chain here. It's the
@@ -540,7 +543,18 @@ owns layout (the mono half of 4). Step 5 waits for B.
 
 Bugs found inside the theme join it. Already filed and the same shape: #1553
 (the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
-#1621.
+#1621 (closed).
+
+## What came off this list
+
+- **#1621** (call rewrites never reached stdlib bodies): closed.
+- **#1244** (function type as the success side of `T or E`): closed, and the
+  matrix has no red cells left.
+- **The crate split** (`rask-types`, `rask-check`, `rask-layout`): landed, which
+  is why pass entry points, unprepared interpreters and pointer-width readers
+  each dropped this week.
+- **Atomic and the `Iterator` interface**: now declared in `stdlib/*.rk` and read
+  by the checker, not matched by name.
 
 ## Cadence
 
