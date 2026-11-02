@@ -63,6 +63,15 @@ Layout alone doesn't make 100,000 units cheap. What they look at does: a spatial
 
 In Rask, an array of small structs is a `Vec` of `@layout(C)` structs, packed at natural width (#985), and the same buffer can go to the GPU as instance data. Splitting a struct into parallel arrays is written by hand today. A struct-of-arrays layout the compiler generates from one declaration would make it read like the object version. Worth a spec once the first game shows how often it's needed.
 
+**Parallelism without losing determinism.** Each tick forks work across cores and joins before the next: one task per region of the map, per horde's flow field, per fog-of-war pass. Work stealing is fine, because which core runs a task can't change its result, under three rules:
+- **A task writes only its own slice.** Reads of shared state see last tick's values. Two tasks never write the same array range, so there's nothing to race on and nothing to lock.
+- **Cross-task effects merge in a fixed order.** A unit leaving one region for another, or damage from two hordes on one wall, goes into per-task output buffers that are applied after the join in task order, never in completion order. Sums over floats follow the same rule, since float addition isn't associative.
+- **Randomness is seeded by (tick, task, entity), never by thread.**
+
+Rask's ownership rules make the first one checkable: a slice handed to a task can't be touched by another. What's missing is the fork-join itself. `spawn` moves its captures into the task, so splitting one `Vec` across cores means moving pieces out and back. Fork-join that can borrow (#1686) and `kernel` blocks where each lane writes only its own slot (#1654) are the language work this needs.
+
+Rendering doesn't join the tick. The simulation runs on its own thread at a fixed rate and publishes each finished state. The renderer draws at the display's rate from the last two published states, interpolating between them. A slow frame never stalls the simulation, and a heavy tick never drops a frame.
+
 **Cheap checkpoints.** Copying a large world every few seconds is too slow. Chunks are copy-on-write, so a checkpoint costs what changed since the last one, not the world size. A save file is a checkpoint plus a log.
 
 **Saves across versions.** A replay needs the exact simulation that recorded it. Factorio's replays break across versions. A save carries the version of its rules, and an old log replays on old rules or not at all. Raido's content-addressed bytecode helps with mods.
