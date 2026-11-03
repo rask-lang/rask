@@ -16,7 +16,7 @@ You can't cheat because the math won't let you. You can't inflate because your t
 
 ### Seed Generation
 
-One Raido script + one integer seed = the entire galaxy. Every client runs the same script, gets the same stars. Deterministic fixed-point arithmetic guarantees bitwise-identical output on every machine. The script hash is the galaxy's identity.
+One Raido script + one integer seed = the entire galaxy. Every client runs the same script, gets the same stars. Deterministic arithmetic (integers, and floats under a strict profile) guarantees bitwise-identical output on every machine. The script hash is the galaxy's identity.
 
 The seed generates:
 
@@ -401,7 +401,7 @@ Everything below is infrastructure. Apeiron doesn't build these — it uses them
 
 | Need | Provided by |
 |------|-------------|
-| Deterministic galaxy generation | Raido (fixed-point, content-addressed) |
+| Deterministic galaxy generation | Raido (deterministic, content-addressed) |
 | Object ownership and transfer | Allgard (conservation laws, bilateral escrow) |
 | Verifiable resource extraction | Allgard Law 1 + Raido minting scripts |
 | Cross-domain travel | Midgard patterns (asset fidelity, sealed transfer, leased transfer) |

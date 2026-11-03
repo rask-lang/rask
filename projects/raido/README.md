@@ -6,7 +6,7 @@
 
 Independent project. Deterministic scripting VM with static types and Rask-flavored syntax. Lives in this repo for now but is not part of Rask -- no dependency on the Rask compiler, runtime, or stdlib.
 
-Serializable state. Fixed-point arithmetic. Sandboxed -- the host controls all capabilities.
+Serializable state. Deterministic floats. Sandboxed -- the host controls all capabilities.
 
 Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
 
@@ -33,7 +33,7 @@ Raido's differentiators vs Lua/WASM/JS:
 
 | Property | Raido | Lua | WASM | JS |
 |----------|-------|-----|------|----|
-| Deterministic | Yes (fixed-point) | No | Yes | No |
+| Deterministic | Yes (strict floats) | No | Yes | No |
 | Serializable state | Yes (built-in) | No | Manual | No |
 | Sandboxed | Yes (no I/O) | Partial | Yes | Partial |
 | Safe host interop | Yes (no unsafe) | No | No | No |
@@ -58,8 +58,8 @@ ensure vm.close()
 vm.register_extern_struct("Enemy", raido.ExternStruct(
     fields: [
         raido.Field.int("health", get_health, set_health)
-        raido.Field.number("x", get_x, set_x)
-        raido.Field.number("y", get_y, set_y)
+        raido.Field.float("x", get_x, set_x)
+        raido.Field.float("y", get_y, set_y)
         raido.Field.string("name", get_name, null)  // readonly
     ]
 ))
@@ -80,12 +80,12 @@ let vm2 = raido.Vm.deserialize(snapshot)
 ## Script Example
 
 ```raido
-struct Vec2 { x: number, y: number }
+struct Vec2 { x: float, y: float }
 
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
@@ -121,7 +121,7 @@ let result = process(42) catch e => {
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
 | Types | Static, inferred locals | Catches errors at compile time. Eliminates runtime type checking. 8-byte values. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
-| Numbers | Fixed-point 32.32 | Deterministic (integer math) + fast (hardware ALU). |
+| Numbers | `int` (i64) and `float` (f64) | The two every audience already knows. Floats follow a strict profile that gives the same bits on every machine. |
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
 | Sandbox | No I/O. Host provides all capabilities. | Safe to run untrusted code. |
 | Structs/enums | User-defined, fixed layout | Structured data is the primary data model for all consumers. |
@@ -154,7 +154,7 @@ let result = process(42) catch e => {
 
 | Spec | What it covers |
 |------|----------------|
-| [language/types.md](language/types.md) | Static type system, fixed-point numbers, structs, enums, optionals, function references |
+| [language/types.md](language/types.md) | Static type system, ints and floats, structs, enums, optionals, function references |
 | [language/syntax.md](language/syntax.md) | Grammar, variables, functions, control flow, operators, declarations |
 | [language/coroutines.md](language/coroutines.md) | Cooperative multitasking |
 | [language/stdlib.md](language/stdlib.md) | Configurable built-in modules |
@@ -189,7 +189,7 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 - **Privacy.** Re-execution requires sharing inputs. A domain proving it minted an asset correctly might not want to reveal its crafting formula, resource stockpile, or internal pricing. A ZK proof proves "this output came from this script" without revealing the inputs.
 - **Expensive scripts.** Galaxy generation, large physics simulations — scripts where re-execution is costly and many parties need to verify. The executor proves once, verifiers check cheaply.
 
-Raido's VM design is ZK-compatible by construction — the properties chosen for determinism (integer math, bounded execution, flat memory, static bytecode) are the same properties ZK circuits need. See [vm/architecture.md](vm/architecture.md#zk-proof-compatibility) for details. The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
+Chunks compiled under the provable profile use only `int` arithmetic, so with bounded execution, flat memory and static bytecode they have the properties ZK circuits need. Floats are too costly to prove, so a provable chunk can't use them. See [vm/architecture.md](vm/architecture.md#provable-profile). The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
 
 **What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization, ZK-compatible architecture.
 
@@ -201,7 +201,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
-| Fixed-point format | **32.32** | ~9.6 decimal digits of precision vs 48.16's ~4.8. Simulation shows 48.16 drifts badly in physics chains (2.6 error after 1000 damping frames vs 6e-5). The 2.1B integer ceiling is mitigated by `int` (i64) being a separate type -- use `int` for large values. |
+| Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
 | Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop hosts opt into `frame_end()` for per-frame cleanup. No auto-grow -- hides allocation cost. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |

@@ -19,7 +19,7 @@ A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metada
 | module_imports[]    |  content-addressed module dependencies
 | exports[]           |  top-level functions the host can call
 +---------------------+
-| constants           |  constant pool (strings, numbers)
+| constants           |  constant pool (strings, floats)
 | prototypes[]        |  function prototypes (register count, arity, param types, return type)
 | bytecode            |  instructions
 +---------------------+

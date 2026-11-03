@@ -16,7 +16,7 @@
 enum Token {
     // Literals
     IntLit(i64)
-    NumLit(i64)         // Fixed-point raw value (already converted)
+    FloatLit(f64)
     StringLit(string)
 
     // Identifier
@@ -302,39 +302,32 @@ extend Lexer {
     }
 
     func read_number(self) -> Token or LexError {
-        mut is_num_lit = false
+        mut is_float = false
         let start = self.pos
-        mut frac_start = self.pos
 
         while self.peek()? as c {
             match c {
                 '0'..='9' => { self.advance() }
                 '.' => {
-                    if is_num_lit {
+                    if is_float {
                         return LexError.UnexpectedChar('.', self.line)  // second dot in number
                     }
                     self.advance() // consume the dot
                     if self.peek()? as next {
-                        if next >= '0' && next <= '9' {
-                            frac_start = self.pos
-                        } else {
+                        if next < '0' || next > '9' {
                             return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
                         }
                     } else {
                         return LexError.UnexpectedChar('.', self.line)  // dot not followed by digits
                     }
-                    is_num_lit = true
+                    is_float = true
                 }
                 _ => break,
             }
         }
-        if is_num_lit {
-            
-            let int_part = self.source[start..frac_start - 1].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer part
-            let frac_part = self.source[frac_start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid fractional part
-            let frac_digits = self.pos - frac_start
-            let raw = (int_part << 32) + (frac_part << 32) / pow10(frac_digits)
-            return Token.NumLit(raw)
+        if is_float {
+            let value = self.source[start..self.pos].to_string().parse<f64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid float
+            return Token.FloatLit(value)
         } else {
             let value = self.source[start..self.pos].to_string().parse<i64>() catch _ => return LexError.UnexpectedChar('.', self.line)  // invalid integer
             return Token.IntLit(value)
@@ -382,20 +375,6 @@ extend Lexer {
         let word = self.source[start..self.pos].to_string()
         return self.keyword_or_ident(word)
     }
-}
-
-// Ten to the `n`, for scaling a fractional part into 32.32 fixed point.
-// There is no integer `pow` in the stdlib — `pow` is a method on an f64 value
-// (std.math/N1) — and a float round trip is exactly what a deterministic VM
-// can't have.
-func pow10(n: i64) -> i64 {
-    mut result = 1
-    mut i = 0
-    while i < n {
-        result = result * 10
-        i = i + 1
-    }
-    return result
 }
 
 // --- Errors ---

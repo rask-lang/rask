@@ -11,7 +11,7 @@ Typed subset of Rask. Same `{}` blocks, `match`/`=>`, `if`/`else if`, `for`/`in`
 
 - Newline-terminated statements. Semicolons optional.
 - `//` line comments, `/* */` block comments.
-- Numbers: `42` (int), `3.14` (number), `0xff` (int), `0b1010` (int), `1_000_000` (int). Decimal point means `number`, no decimal means `int`.
+- Numbers: `42` (int), `3.14` (float), `0xff` (int), `0b1010` (int), `1_000_000` (int). Decimal point means `float`, no decimal means `int`.
 
 ### Strings
 
@@ -45,7 +45,7 @@ func greet(name: string) -> string {
     return "Hello, {name}"
 }
 
-func damage(weapon: Weapon, target: Ship, beacon: int) -> number {
+func damage(weapon: Weapon, target: Ship, beacon: int) -> float {
     let base = weapon.power * weapon.efficiency
     let scatter = noise(weapon.quality, weapon.id, beacon)
     return clamp(base + scatter, 0.0, base * 2.0)
@@ -84,13 +84,13 @@ Parameter and return types come from where the lambda is used, or are written ou
 ### Struct
 
 ```raido
-struct Vec2 { x: number, y: number }
+struct Vec2 { x: float, y: float }
 
 struct Ship {
     id: int
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     shield: Shield?
 }
 ```
@@ -109,7 +109,7 @@ enum Order {
     Attack(int)
     Retreat
     HoldPosition
-    Allocate { system: int, power: number }
+    Allocate { system: int, power: float }
 }
 ```
 
@@ -122,13 +122,13 @@ Scripts declare the shapes they expect from the host. The compiler type-checks a
 ```raido
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
 extern func send_message(target: string, body: string)
-extern func noise(quality: number, id: int, index: int) -> number
+extern func noise(quality: float, id: int, index: int) -> float
 extern func move_to(entity: Enemy, target: Vec2)
 ```
 
@@ -138,7 +138,7 @@ Add methods to structs and enums. Same as Rask: `self` is read-only, `mutate sel
 
 ```raido
 extend Vec2 {
-    func distance(self, other: Vec2) -> number {
+    func distance(self, other: Vec2) -> float {
         let dx = self.x - other.x
         let dy = self.y - other.y
         return sqrt(dx * dx + dy * dy)

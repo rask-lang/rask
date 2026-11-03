@@ -25,8 +25,8 @@ vm.seed(12345)
 vm.register_extern_struct("Enemy", raido.ExternStruct {
     fields: [
         raido.Field.int("health", get_health, set_health)
-        raido.Field.number("x", get_x, set_x)
-        raido.Field.number("y", get_y, set_y)
+        raido.Field.float("x", get_x, set_x)
+        raido.Field.float("y", get_y, set_y)
         raido.Field.string("name", get_name, null)  // readonly
     ],
 })
@@ -73,8 +73,8 @@ Scripts declare `extern struct` to describe host-managed data shapes. The compil
 ```raido
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
@@ -89,14 +89,14 @@ func chase(attacker: Enemy, target: Enemy) {
 vm.register_extern_struct("Enemy", raido.ExternStruct {
     fields: [
         raido.Field.int("health", get_health, set_health)
-        raido.Field.number("x", get_x, set_x)
-        raido.Field.number("y", get_y, set_y)
+        raido.Field.float("x", get_x, set_x)
+        raido.Field.float("y", get_y, set_y)
         raido.Field.string("name", get_name, null)  // null setter = readonly
     ],
 })
 ```
 
-**Type mismatch = load error.** If the script declares `health: int` but the host binds `health` as `number`, `vm.load()` fails. No runtime surprises.
+**Type mismatch = load error.** If the script declares `health: int` but the host binds `health` as `float`, `vm.load()` fails. No runtime surprises.
 
 **Readonly enforcement.** Fields declared `readonly` in the script have no setter in the host binding (`null`). The compiler rejects writes to readonly fields at compile time.
 
@@ -109,7 +109,7 @@ Scripts declare `extern func` for host-provided functions with typed signatures.
 **Script side:**
 ```raido
 extern func move_to(entity: Enemy, target: Vec2)
-extern func noise(quality: number, id: int, index: int) -> number
+extern func noise(quality: float, id: int, index: int) -> float
 extern func spawn(kind: string, pos: Vec2) -> Enemy
 ```
 
@@ -125,7 +125,7 @@ vm.register_extern_func("noise", |ctx| {
     let quality = try ctx.arg_number(0)
     let id = try ctx.arg_int(1)
     let index = try ctx.arg_int(2)
-    return raido.Value.number(compute_noise(quality, id, index))
+    return raido.Value.float(compute_noise(quality, id, index))
 })
 ```
 
@@ -141,8 +141,8 @@ import raido.bind
 // Bind a pool -- each handle becomes an extern struct reference
 raido.bind.pool(vm, "enemies", enemies, [
     bind.Field.int("health")
-    bind.Field.number("x")
-    bind.Field.number("y")
+    bind.Field.float("x")
+    bind.Field.float("y")
 ])
 
 // Bind a struct directly
@@ -161,7 +161,7 @@ vm.reset()
 
 // Frame-based cleanup for game loops
 vm.frame_begin()           // save arena position
-try vm.call("on_update", [raido.Value.number(dt)])
+try vm.call("on_update", [raido.Value.float(dt)])
 vm.frame_end()             // reclaim frame-local allocations
 ```
 
@@ -189,7 +189,7 @@ Extern struct field accessors need access to host data (pools, DBs, etc). Scoped
 ```rask
 try vm.with_context(|ctx| {
     ctx.bind("enemies", enemies)  // borrow for this scope
-    ctx.call("on_update", [raido.Value.number(dt)])
+    ctx.call("on_update", [raido.Value.float(dt)])
 })
 // borrow released
 ```

@@ -84,7 +84,7 @@ Coroutines are created from function references -- named top-level functions or 
 
 ```raido
 // The function and its arguments are stored in the coroutine
-func guard_loop(npc: Entity, post: Vec2, radius: number) {
+func guard_loop(npc: Entity, post: Vec2, radius: float) {
     loop {
         patrol_area(npc, post, radius)
         yield

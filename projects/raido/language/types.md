@@ -1,6 +1,6 @@
 <!-- id: raido.types -->
 <!-- status: proposed -->
-<!-- summary: Raido type system -- static types, fixed-point numbers, structs, enums, optionals, function references -->
+<!-- summary: Raido type system -- static types, ints and floats, structs, enums, optionals, function references -->
 <!-- depends: raido/README.md -->
 
 # Types
@@ -12,7 +12,7 @@ Statically typed. Function signatures are fully annotated, local variables are i
 | Type | Size | Description |
 |------|------|-------------|
 | `int` | i64 | Counters, IDs, indices, bitfields. |
-| `number` | i64 (32.32 fixed-point) | Physics, coordinates, economics. Deterministic. |
+| `float` | f64 | Physics, coordinates, fractions. Deterministic on every machine. |
 | `bool` | i64 (0 or 1) | `true`/`false`. |
 | `string` | u32 arena offset | Immutable UTF-8. Dialogue, identifiers, messages. |
 
@@ -31,39 +31,27 @@ Statically typed. Function signatures are fully annotated, local variables are i
 
 `func(int, int) -> bool` -- describes the signature of a function reference. The value is a prototype index pointing to a named top-level function. No closures, no captured state.
 
-## Number (Fixed-Point 32.32)
+## Float
 
-Stored as i64. 32 integer bits (signed), 32 fractional bits.
+A 64-bit IEEE 754 double, the number type JS, Python, Lua and C all have.
 
-- **Range:** +/-2.1 billion. **Precision:** ~2^-32 (~9.6 decimal digits).
-- **Deterministic.** Integer math. Same result on every platform.
-- **Fast.** Add/sub = single i64 op. Mul/div = 128-bit intermediate.
-- **No NaN/infinity.** Division by zero = runtime error. Number overflow saturates. Integer overflow panics (use `wrapping_*` methods for explicit wrapping).
-- Scripts write `3.14`, compiler converts to fixed-point.
-- **Literal rule:** decimal point means `number`, no decimal means `int`. `42` is int, `42.0` is number, `0xff` is int.
-
-### Why 32.32 over 48.16
-
-I chose 32.32 over 48.16. 48.16 gives more integer range (~140 trillion vs ~2.1 billion) but only ~4.8 decimal digits of fractional precision. Simulation showed that's too coarse for real use cases:
-
-- **Physics accumulation** (10K frames at 1/60): 32.32 error 6e-7, 48.16 error 4e-2
-- **Damping chains** (1000 frames x 0.999): 32.32 error 6e-5, 48.16 error 2.6
-- **Financial sums** (0.01 x 10K): 32.32 error 2e-6, 48.16 error 5e-2
-
-The 2.1B integer ceiling is real but manageable -- `int` (i64) handles large values. Use `int` for entity IDs, large counters, and scores. Use `number` for positions, velocities, fractions, and math.
+- **Same bits on every machine.** `+ - * /` and `sqrt` are correctly rounded by IEEE 754, so they agree everywhere. The VM never fuses a multiply and an add, and `sin`, `cos`, `exp` and the rest are correctly rounded, so they agree too. The full profile is rask-lang/rask#1683, the same one Rask's own floats follow.
+- **No NaN, no infinity.** An operation that would produce either (`0.0 / 0.0`, `sqrt(-1.0)`, an overflow) is a runtime error, like integer overflow. So a bad value fails where it's made instead of spreading, and no script ever sees NaN's platform-dependent bits.
+- **Literal rule:** a decimal point means `float`, no decimal means `int`. `42` is int, `42.0` is float, `0xff` is int.
+- **Use `int` for money and anything counted or conserved.** Floats round; store cents, not dollars. A script that uses only `int` can be proven with zero knowledge ([vm/architecture.md](../vm/architecture.md#provable-profile)).
 
 ## Struct
 
 User-defined named records. Fields are fixed at compile time. Layout is determined by the compiler -- field order in the arena matches declaration order.
 
 ```raido
-struct Vec2 { x: number, y: number }
+struct Vec2 { x: float, y: float }
 
 struct Ship {
     id: int
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     shield: Shield?
 }
 ```
@@ -110,8 +98,8 @@ extend Money {
         self.cents += amount.cents
     }
 
-    func to_number(self) -> number {
-        return number(self.cents) / 100.0
+    func to_number(self) -> float {
+        return float(self.cents) / 100.0
     }
 
     func to_string(self) -> string {
@@ -133,7 +121,7 @@ wallet.deposit(total)       // wallet is mut, so it can be passed to `mutate sel
 - Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
 - Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
 - Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
-- Extend works on `struct` and `enum` types. Not on primitives — `int`, `number`, `bool`, `string` have compiler-known built-in methods only.
+- Extend works on `struct` and `enum` types. Not on primitives — `int`, `float`, `bool`, `string` have compiler-known built-in methods only.
 - Extend blocks are part of the chunk's type table and content hash.
 
 ## Enum
@@ -152,7 +140,7 @@ enum Order {
     Attack(int)
     Retreat
     HoldPosition
-    Allocate { system: int, power: number }
+    Allocate { system: int, power: float }
 }
 ```
 
@@ -193,7 +181,7 @@ Stored as u8 tag (0=None, 1=Some) + 7 bytes payload.
 Lightweight multi-return without defining a struct.
 
 ```raido
-func bounds(arr: array<number>) -> (number, number) {
+func bounds(arr: array<float>) -> (float, float) {
     // ...
     return (lo, hi)
 }
@@ -201,7 +189,7 @@ func bounds(arr: array<number>) -> (number, number) {
 let (lo, hi) = bounds(values)
 ```
 
-Tuples are anonymous arena-allocated structs. `(number, number)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
+Tuples are anonymous arena-allocated structs. `(float, float)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
 
 ## Function References
 
@@ -232,13 +220,13 @@ Scripts declare the shapes they expect from the host. The compiler type-checks a
 ```raido
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
 extern func move_to(entity: Enemy, target: Vec2)
-extern func noise(quality: number, id: int, index: int) -> number
+extern func noise(quality: float, id: int, index: int) -> float
 ```
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
@@ -278,7 +266,7 @@ func damaged(ship: Ship, amount: int) -> Ship {
 For host entity mutation, use extern struct fields -- the host controls the data:
 
 ```raido
-extern struct Enemy { health: int, x: number, y: number }
+extern struct Enemy { health: int, x: float, y: float }
 func damage_enemy(enemy: Enemy, amount: int) {
     enemy.health -= amount  // OK: extern struct field write goes through host setter
 }
@@ -291,24 +279,24 @@ func damage_enemy(enemy: Enemy, amount: int) {
 | Expression | Result | Notes |
 |-----------|--------|-------|
 | `int + int` | `int` | Also `-`, `*`, `%` |
-| `int / int` | `number` | Division always returns number |
-| `number + number` | `number` | All ops |
+| `int / int` | `float` | Division always returns float |
+| `float + float` | `float` | All ops |
 
-**Mixed arithmetic -- int promotes to number:**
+**Mixed arithmetic -- int promotes to float:**
 
 | Expression | Result | Notes |
 |-----------|--------|-------|
-| `int + number` | `number` | int operand promoted to 32.32 fixed-point |
-| `number + int` | `number` | Same |
-| `int CMP number` | `bool` | Promotion for comparison too |
+| `int + float` | `float` | int operand converted to float |
+| `float + int` | `float` | Same |
+| `int CMP float` | `bool` | Promotion for comparison too |
 
-Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds number's 32-bit integer range, the promotion panics at runtime. In practice, ints mixed with numbers are small (counts, indices, loop variables).
+Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the int rounds to the nearest float, as in every language with doubles.
 
-**Narrowing requires explicit conversion:** `number -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
+**Narrowing requires explicit conversion:** `float -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
 
 **Integer overflow:** panics by default. Use built-in wrapping methods on `int` for explicit wrapping (see [Built-in Methods](#built-in-methods)).
 
-**Number overflow:** saturates to +/-max value.
+**Float overflow:** producing an infinity is a runtime error (see [Float](#float)).
 
 **Modulo:** follows the sign of the dividend. `7 % 3 == 1`, `-7 % 3 == -1`.
 
