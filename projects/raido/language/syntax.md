@@ -21,20 +21,20 @@ Strings are a first-class type. Immutable, UTF-8.
 "hello"                     // basic string
 "hello {name}"              // interpolation -- any expression in {}
 "value: {x + 1}"            // expressions in interpolation
-'no interpolation here'     // single-quoted: raw, no escapes, no interpolation
+"a literal \{ brace"        // \{ escapes interpolation
 ```
 
-Escape sequences (double-quoted only): `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`.
+Escape sequences: `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`. Single quotes aren't string delimiters; there's no character type.
 
 ## Variables
 
 ```raido
-const x = 42           // immutable binding (type inferred: int)
-let y = 10             // mutable binding (type inferred: int)
-const name: string = get_name()  // explicit type annotation (optional)
+let x = 42           // immutable binding (type inferred: int)
+mut y = 10             // mutable binding (type inferred: int)
+let name: string = get_name()  // explicit type annotation (optional)
 ```
 
-`const` prevents reassignment and mutation through the binding (field writes, indexed writes). `let` allows both. See [types.md](types.md#const-and-let) for full semantics.
+`let` prevents reassignment and mutation through the binding (field writes, indexed writes). `mut` allows both. Same as Rask. See [types.md](types.md#let-and-mut) for full semantics.
 
 No `global` keyword. Script state lives in coroutine locals or host entities.
 
@@ -46,8 +46,8 @@ func greet(name: string) -> string {
 }
 
 func damage(weapon: Weapon, target: Ship, beacon: int) -> number {
-    const base = weapon.power * weapon.efficiency
-    const scatter = noise(weapon.quality, weapon.id, beacon)
+    let base = weapon.power * weapon.efficiency
+    let scatter = noise(weapon.quality, weapon.id, beacon)
     return clamp(base + scatter, 0.0, base * 2.0)
 }
 ```
@@ -70,7 +70,7 @@ Named top-level functions can be used as values. No closures, no lambda syntax.
 ```raido
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
 
-const comparator = by_health
+let comparator = by_health
 ships.sort(comparator)
 ```
 
@@ -129,13 +129,13 @@ extern func move_to(entity: Enemy, target: Vec2)
 
 ### Extend
 
-Add methods to structs and enums. Same as Rask. `self` is always const.
+Add methods to structs and enums. Same as Rask: `self` is read-only, `mutate self` changes it.
 
 ```raido
 extend Vec2 {
     func distance(self, other: Vec2) -> number {
-        const dx = self.x - other.x
-        const dy = self.y - other.y
+        let dx = self.x - other.x
+        let dy = self.y - other.y
         return sqrt(dx * dx + dy * dy)
     }
 
@@ -144,8 +144,8 @@ extend Vec2 {
     }
 }
 
-const d = pos.distance(target)
-const origin = Vec2.zero()
+let d = pos.distance(target)
+let origin = Vec2.zero()
 ```
 
 See [types.md](types.md#extend) for rules.
@@ -159,7 +159,7 @@ import "combat_utils" as combat
 import "physics_common" as phys
 
 func resolve_tick(state: FleetState, orders: Orders) -> CombatResult {
-    const damage = combat.calculate_damage(state, orders)
+    let damage = combat.calculate_damage(state, orders)
     ...
 }
 ```
@@ -192,7 +192,7 @@ for name, score in leaderboard { print("{name}: {score}") }
 
 // loop -- infinite loop with break value
 loop {
-    const msg = try receive() else { break }
+    let msg = try receive() else { break }
     handle(msg)
 }
 
@@ -225,8 +225,8 @@ match order {
 }
 
 // Expression context
-const sign = if x > 0 { "+" } else { "-" }
-const color = match status { Status.Active => "green", _ => "gray" }
+let sign = if x > 0 { "+" } else { "-" }
+let color = match status { Status.Active => "green", _ => "gray" }
 ```
 
 ### `is` Pattern Matching
@@ -251,14 +251,14 @@ let item = queue.pop() is Some else { break }
 
 ```raido
 // Null coalescing
-const defense = shield ?? default_shield
+let defense = shield ?? default_shield
 
 // Force unwrap -- panics on None
-const order = orders.get(ship.id)!
+let order = orders.get(ship.id)!
 
 // Safe access
-const item = inventory.get(3)      // returns T?
-const entry = lookup.get("iron")   // returns V?
+let item = inventory.get(3)      // returns T?
+let entry = lookup.get("iron")   // returns V?
 
 // Match on optionals
 match shield {
@@ -293,8 +293,8 @@ fleet.ships[idx].engine.fuel -= cost
 Copy all fields, override specific ones.
 
 ```raido
-const damaged = Ship { health: ship.health - dmg, ..ship }
-const next_state = FleetState { ships: new_ships, tick: state.tick + 1, ..state }
+let damaged = Ship { health: ship.health - dmg, ..ship }
+let next_state = FleetState { ships: new_ships, tick: state.tick + 1, ..state }
 ```
 
 ## Operators
@@ -319,12 +319,12 @@ No `#` length operator -- use `len()` from core. No `..` concat operator -- stri
 
 ```raido
 func load_config(path: string) -> Config or string {
-    const data = try read_file(path)
+    let data = try read_file(path)
     return parse(data)
 }
 
 // Catch and handle
-const config = load_config("app.cfg") catch e => {
+let config = load_config("app.cfg") catch e => {
     log("fallback: {e}")
     return default_config()
 }
@@ -339,8 +339,8 @@ assert(x > 0, "x must be positive")
 ## Collections
 
 ```raido
-const colors: array<string> = ["red", "green", "blue"]
-const point: map<string, int> = {"x": 10, "y": 20}
+let colors: array<string> = ["red", "green", "blue"]
+let point: map<string, int> = {"x": 10, "y": 20}
 ```
 
 Array literal type is inferred from elements. Map literal type is inferred from entries. Empty collections need type annotation or context.
@@ -350,19 +350,19 @@ Array literal type is inferred from elements. Map literal type is inferred from 
 Integer overflow panics by default. For explicit wrapping (seed hashing, PRNGs):
 
 ```raido
-const h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
+let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 ```
 
 ## Keywords
 
-`break`, `const`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `return`, `struct`, `true`, `try`, `while`, `yield`
+`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mut`, `mutate`, `return`, `struct`, `true`, `try`, `while`, `yield`
 
 `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
 
 ## Deliberate Divergences from Rask
 
-- **Single-quoted strings** -- Rask uses `'a'` for character literals. Raido has no character type; single quotes are raw strings (`'no {interpolation}'`).
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
-- **`extend` with const self only** -- Methods on user-defined structs/enums, same as Rask. `self` is always const — methods return new values rather than mutating. Built-in methods on `int`, `array`, `map`, `string` are compiler-known (see [types.md](types.md#built-in-methods)).
-- **No parameter modes** -- No `mutate`/`take`. Function parameters are always `const`. Structs pass by reference (arena offset), primitives by value. Return modified copies for pure data flow.
+- **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs are arena references, primitives are values, and the arena is reset between evaluations. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
+- **No closures** -- Function references only. Captured mutable state is a verification hazard.
+- **No character type** -- Strings only, so single quotes have no meaning.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

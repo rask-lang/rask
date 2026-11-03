@@ -70,12 +70,12 @@ struct Ship {
 
 Structs are arena-allocated. A struct value in a register is a u32 arena offset. All fields occupy 8 bytes each (i64) regardless of logical type -- bools are stored as i64 0/1, arena offsets are zero-extended. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
 
-**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. Mutation through a `let` binding is visible through all bindings to the same offset. See [Const and Let](#const-and-let) for mutation rules.
+**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. Mutation through a `mut` binding or a `mutate` parameter is visible through all bindings to the same offset. See [Let and Mut](#let-and-mut) for mutation rules.
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
 ```raido
-const damaged = Ship { health: ship.health - dmg, ..ship }
+let damaged = Ship { health: ship.health - dmg, ..ship }
 ```
 
 **Field shorthand** -- omit the value when the variable name matches the field name:
@@ -86,7 +86,7 @@ return Star { id: index, x, y, z, spectral, planet_count, luminosity }
 
 ## Extend
 
-Add methods to any struct or enum. Methods use `self` as the first parameter — always const (no mutation through `self`). The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
+Add methods to any struct or enum. Methods take `self` as the first parameter, read-only unless written `mutate self`. The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
 
 ```raido
 struct Money {
@@ -106,6 +106,10 @@ extend Money {
         return Money { cents: self.cents * rate / 100 }
     }
 
+    func deposit(mutate self, amount: Money) {
+        self.cents += amount.cents
+    }
+
     func to_number(self) -> number {
         return number(self.cents) / 100.0
     }
@@ -115,14 +119,17 @@ extend Money {
     }
 }
 
-const price = Money.from_dollars(10)
-const tax = price.percent(8)
-const total = price.add(tax)
+let price = Money.from_dollars(10)
+let tax = price.percent(8)
+let total = price.add(tax)
+
+mut wallet = Money.from_dollars(5)
+wallet.deposit(total)       // wallet is mut, so it can be passed to `mutate self`
 ```
 
 **Rules:**
 
-- `self` is always const — methods can read fields but not mutate them. Return a new value instead.
+- `self` is read-only by default. `mutate self` lets the method change the value; the caller's binding must be `mut`.
 - Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
 - Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
 - Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
@@ -158,13 +165,13 @@ Simple enums (no payloads) are stored inline as a u32 discriminant in the regist
 `T?` is the optional type. Either `Some(value)` or `None`. Compiler-enforced -- you can't use an optional without handling the `None` case.
 
 ```raido
-const shield: Shield? = find_shield(inventory)
+let shield: Shield? = find_shield(inventory)
 
 // Null coalescing
-const defense = shield ?? default_shield
+let defense = shield ?? default_shield
 
 // Force unwrap -- panics on None
-const order = orders.get(ship.id)!
+let order = orders.get(ship.id)!
 
 // Pattern matching
 match shield {
@@ -191,7 +198,7 @@ func bounds(arr: array<number>) -> (number, number) {
     return (lo, hi)
 }
 
-const (lo, hi) = bounds(values)
+let (lo, hi) = bounds(values)
 ```
 
 Tuples are anonymous arena-allocated structs. `(number, number)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
@@ -203,12 +210,12 @@ References to named top-level functions. No captured state, no arena allocation.
 ```raido
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
 
-const comparator = by_health
+let comparator = by_health
 ships.sort(comparator)
 
 // Coroutine creation -- function reference + initial arguments
 func patrol(npc: Entity, route: array<Vec2>) { ... }
-const co = coroutine(patrol, guard, waypoints)
+let co = coroutine(patrol, guard, waypoints)
 ```
 
 No closures, no partial application. If you need to pass context, pass it as an argument.
@@ -231,28 +238,35 @@ extern func noise(quality: number, id: int, index: int) -> number
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
-## Const and Mut
+## Let and Mut
 
-`const` and `mut` control mutability of the binding **and the data it reaches**:
+`let` and `mut` control mutability of the binding **and the data it reaches**:
 
-- `const x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
+- `let x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
 - `mut x = ...` -- can reassign `x`, can mutate fields through `x`
 
 ```raido
-const ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // ERROR: ship is const
-ship = other_ship  // ERROR: ship is const
+let ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
+ship.health -= 10  // ERROR: ship is not mut
+ship = other_ship  // ERROR: ship is not mut
 
 mut ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
 ship.health -= 10  // OK: ship is mut
 ship = other_ship  // OK: ship is mut
 ```
 
-**Function parameters are const.** A function cannot mutate a struct passed to it. Return a modified copy instead:
+**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter. A `mutate` parameter changes the struct the caller passed, so the caller's binding has to be `mut`. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
 
 ```raido
-func apply_damage(ship: Ship, amount: int) -> Ship {
-    return Ship { health: ship.health - amount, ..ship }
+func apply_damage(mutate ship: Ship, amount: int) {
+    ship.health -= amount
+}
+
+mut ship = spawn_ship()
+apply_damage(ship, 10)      // ship.health is now 10 lower
+
+func damaged(ship: Ship, amount: int) -> Ship {
+    return Ship { health: ship.health - amount, ..ship }   // or return a copy
 }
 ```
 
@@ -298,12 +312,12 @@ Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds num
 ## Type Rules
 
 - Function signatures are fully typed (parameters + return type)
-- Local variables inferred from initializer: `const x = 42` -> `x` is `int`
+- Local variables inferred from initializer: `let x = 42` -> `x` is `int`
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
 - No interfaces or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
 - `??` supplies the other branch on an optional: `value ?? fallback` (both sides same type)
-- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `let` l-values including chained access (`ships[i].health -= damage`)
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `mut` l-values including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
 - Sort stability is required -- `array.sort()` uses a stable sort algorithm
 
@@ -348,6 +362,6 @@ Compiler-known methods on primitive and collection types. These are not user-ext
 Insertion-ordered. Deterministic iteration order. Keys restricted to `string` or `int` -- types with stable, deterministic equality and hashing.
 
 ```raido
-const lookup: map<string, int> = {"iron": 26, "gold": 79}
-const entry = lookup.get("iron")  // returns int?
+let lookup: map<string, int> = {"iron": 26, "gold": 79}
+let entry = lookup.get("iron")  // returns int?
 ```

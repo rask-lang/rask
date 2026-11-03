@@ -47,7 +47,7 @@ Example using Rask as the host language (any language with C FFI can host Raido)
 ```rask
 import raido
 
-const vm = raido.Vm.new(raido.Config(
+let vm = raido.Vm.new(raido.Config(
     arena_size: 256.kilobytes()
     initial_fuel: 100_000
     max_call_depth: 256
@@ -65,16 +65,16 @@ vm.register_extern_struct("Enemy", raido.ExternStruct(
 ))
 vm.register_extern_func("move_to", move_to_handler)
 
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 try vm.load(chunk)  // fails if extern declarations don't match bindings
 
-const result = try vm.call("process", [raido.Value.int(42)])
+let result = try vm.call("process", [raido.Value.int(42)])
 
 // Serialize entire VM state
-const snapshot = vm.serialize()
+let snapshot = vm.serialize()
 
 // Restore later, possibly on a different machine
-const vm2 = raido.Vm.deserialize(snapshot)
+let vm2 = raido.Vm.deserialize(snapshot)
 ```
 
 ## Script Example
@@ -92,12 +92,12 @@ extern struct Enemy {
 extern func move_to(entity: Enemy, target: Vec2)
 
 func chase(attacker: Enemy, target: Enemy) {
-    const dest = Vec2 { x: target.x, y: target.y }
+    let dest = Vec2 { x: target.x, y: target.y }
     move_to(attacker, dest)
 }
 
 func process(input: int) -> int {
-    const data = try transform(input)
+    let data = try transform(input)
     return if data > threshold { data } else { 0 }
 }
 
@@ -107,7 +107,7 @@ func transform(x: int) -> int or string {
 }
 
 // Error handling
-const result = process(42) catch e => {
+let result = process(42) catch e => {
     log("failed: {e}")
     0                       // last expression is the value — `result` is 0 on error
 }

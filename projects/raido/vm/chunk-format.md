@@ -50,8 +50,8 @@ SHA-256 of the bytecode + constants + prototypes + type table sections. Computed
 The host uses this however it wants -- comparing against expected hashes, including in audit logs, verifying snapshots came from a known script. The VM computes the hash and exposes it. The VM does not own the trust model.
 
 ```rask
-const chunk = try vm.compile("script.rd", source)
-const hash = chunk.hash()  // [u8; 32] -- SHA-256 of bytecode content
+let chunk = try vm.compile("script.rd", source)
+let hash = chunk.hash()  // [u8; 32] -- SHA-256 of bytecode content
 ```
 
 Serialized snapshots include the bytecode hash so the host can verify "this snapshot came from this script" on restore.
@@ -65,7 +65,7 @@ Serialized snapshots include the bytecode hash so the host can verify "this snap
 **Exports** -- top-level `func` declarations with their typed signatures. The host can inspect what's callable and what types are expected without reading source.
 
 ```rask
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 chunk.imports()         // extern declarations needed
 chunk.module_imports()  // ["combat_utils", "physics_common"]
 chunk.exports()         // [("on_update", ...), ("process", ...)]
@@ -94,10 +94,10 @@ Checks:
 
 ```rask
 // Compile from source (validates during compilation)
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 
 // Load pre-compiled bytecode (validates on load)
-const chunk = try vm.load(bytecode_bytes)
+let chunk = try vm.load(bytecode_bytes)
 ```
 
 ## Version Compatibility
@@ -188,7 +188,7 @@ Optional. Stripped by default in release, included with a compile flag.
 - **Function names.** Maps prototype indices to names. Powers readable stack traces.
 
 ```rask
-const chunk = try vm.compile("script.rd", source, raido.CompileOpts {
+let chunk = try vm.compile("script.rd", source, raido.CompileOpts {
     debug_info: true,
 })
 ```

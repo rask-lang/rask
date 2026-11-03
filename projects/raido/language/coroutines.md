@@ -11,13 +11,13 @@ Cooperative multitasking. Yield mid-function, resume later. Fully serializable -
 
 ```raido
 // Create from function reference + args
-const co = coroutine(patrol, entity, waypoints)
+let co = coroutine(patrol, entity, waypoints)
 
 // Resume -- errors propagate via try
-const value = try co.resume()
+let value = try co.resume()
 
 // Status
-const s = co.status  // "suspended", "running", "dead"
+let s = co.status  // "suspended", "running", "dead"
 
 // Yield from inside a coroutine
 yield(value)
@@ -29,7 +29,7 @@ yield(value)
 
 ```raido
 // Catch coroutine errors
-const value = co.resume() catch e => {
+let value = co.resume() catch e => {
     log("coroutine failed: {e}")
     return fallback
 }
@@ -69,7 +69,7 @@ func onboarding(user: User) {
 ```raido
 func conversation(npc: Entity, player: Entity) {
     say(npc, "Hello, traveler.")
-    const choice: string = yield  // host resumes with player's choice
+    let choice: string = yield  // host resumes with player's choice
     match choice {
         "quest" => start_quest(npc, player),
         "trade" => open_shop(npc, player),
@@ -95,7 +95,7 @@ func guard_loop(npc: Entity, post: Vec2, radius: number) {
     }
 }
 
-const co = coroutine(guard_loop, guard, tower_pos, 50.0)
+let co = coroutine(guard_loop, guard, tower_pos, 50.0)
 ```
 
 ## Resume with Value
@@ -105,7 +105,7 @@ Resumed coroutines can receive values from the host. `yield` returns the value p
 ```raido
 func combat_tick(fleet: FleetState) {
     loop {
-        const orders: Orders = yield  // host passes orders on resume
+        let orders: Orders = yield  // host passes orders on resume
         execute_orders(fleet, orders)
     }
 }

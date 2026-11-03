@@ -10,7 +10,7 @@ Host API for integrating Raido. All interaction is safe -- no `unsafe` required.
 ## VM Lifecycle
 
 ```rask
-const vm = raido.Vm.new(raido.Config {
+let vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
     initial_fuel: 100_000,
     max_call_depth: 256,
@@ -42,15 +42,15 @@ vm.set_import_resolver(|name: string| -> Vec<u8> or raido.Error {
 vm.set_print(|msg: string| { log.info("raido: {msg}") })
 
 // Compile -- validates, derives imports/exports, computes content hash
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 
 // Or compile with debug info
-const chunk = try vm.compile("script.rd", source, raido.CompileOpts {
+let chunk = try vm.compile("script.rd", source, raido.CompileOpts {
     debug_info: true,
 })
 
 // Or load pre-compiled bytecode (validates on load)
-const chunk = try vm.load(bytecode_bytes)
+let chunk = try vm.load(bytecode_bytes)
 
 // Inspect before running
 chunk.hash()             // content identity (SHA-256)
@@ -60,7 +60,7 @@ chunk.exports()          // functions the host can call (with typed signatures)
 
 // Load -- fails fast if externs don't match declarations
 try vm.exec(chunk)
-const result = try vm.call("process", [raido.Value.int(42)])
+let result = try vm.call("process", [raido.Value.int(42)])
 ```
 
 See [chunk-format.md](chunk-format.md) for format details.
@@ -79,7 +79,7 @@ extern struct Enemy {
 }
 
 func chase(attacker: Enemy, target: Enemy) {
-    const dest = Vec2 { x: target.x, y: target.y }
+    let dest = Vec2 { x: target.x, y: target.y }
     move_to(attacker, dest)
 }
 ```
@@ -116,15 +116,15 @@ extern func spawn(kind: string, pos: Vec2) -> Enemy
 **Host side:**
 ```rask
 vm.register_extern_func("move_to", |ctx| {
-    const entity_ref = try ctx.arg_extern(0)  // Enemy reference
-    const target = try ctx.arg_struct(1)       // Vec2 struct
+    let entity_ref = try ctx.arg_extern(0)  // Enemy reference
+    let target = try ctx.arg_struct(1)       // Vec2 struct
     // host logic...
 })
 
 vm.register_extern_func("noise", |ctx| {
-    const quality = try ctx.arg_number(0)
-    const id = try ctx.arg_int(1)
-    const index = try ctx.arg_int(2)
+    let quality = try ctx.arg_number(0)
+    let id = try ctx.arg_int(1)
+    let index = try ctx.arg_int(2)
     return raido.Value.number(compute_noise(quality, id, index))
 })
 ```
@@ -199,8 +199,8 @@ Same scoped borrowing pattern -- the host binds whatever data extern struct acce
 ## Serialization
 
 ```rask
-const bytes = vm.serialize()
-const vm2 = raido.Vm.deserialize(bytes)
+let bytes = vm.serialize()
+let vm2 = raido.Vm.deserialize(bytes)
 // Re-register extern structs and funcs
 // Re-bind contexts before calling
 ```
@@ -217,7 +217,7 @@ With static types, serialization is simpler -- no type tags per value. The deser
 The host controls what's available:
 
 ```rask
-const vm = raido.Vm.new(raido.Config {
+let vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
     initial_fuel: 100_000,
     max_call_depth: 256,

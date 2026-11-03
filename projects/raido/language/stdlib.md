@@ -8,7 +8,7 @@
 Three tiers: **core functions** (always present), **built-in methods** (always present, compiler-known), and **opt-in modules** (host enables).
 
 ```rask
-const vm = raido.Vm.new(raido.Config {
+let vm = raido.Vm.new(raido.Config {
     stdlib: [raido.Stdlib.math, raido.Stdlib.bit],
 })
 ```

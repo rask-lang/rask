@@ -4,8 +4,8 @@
 // The lexer is the first stage. It reads characters one at a time and groups
 // them into meaningful chunks called "tokens":
 //
-//   "const x = 42 + 3"
-//     → [Const, Ident("x"), Eq, IntLit(42), Plus, IntLit(3), Newline, Eof]
+//   "let x = 42 + 3"
+//     → [Let, Ident("x"), Eq, IntLit(42), Plus, IntLit(3), Newline, Eof]
 //
 // The compiler (Phase 5) will consume these tokens one at a time.
 // It never needs to look more than one token ahead.
@@ -23,8 +23,9 @@ enum Token {
     Ident(string)
 
     // Keywords
-    Const
+    Let
     Mut
+    Mutate
     Func
     Return
     If
@@ -198,8 +199,9 @@ extend Lexer {
     // If not a keyword, it's an identifier.
     func keyword_or_ident(self, word: string) -> Token {
         match word {
-            "const" => return Token.Const
+            "let" => return Token.Let
             "mut" => return Token.Mut
+            "mutate" => return Token.Mutate
             "func" => return Token.Func
             "return" => return Token.Return
             "if" => return Token.If
