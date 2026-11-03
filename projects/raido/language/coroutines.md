@@ -80,7 +80,7 @@ func conversation(npc: Entity, player: Entity) {
 
 ## Function References, Not Closures
 
-Coroutines are created from function references -- named top-level functions. No closures, no captured state. Context is passed as arguments.
+Coroutines are created from function references -- named top-level functions or lambdas. No closures, no captured state. Context is passed as arguments.
 
 ```raido
 // The function and its arguments are stored in the coroutine

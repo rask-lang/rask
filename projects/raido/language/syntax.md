@@ -65,14 +65,19 @@ transfer(source: attacker, target: cargo, amount: 50)
 
 ### Function References
 
-Named top-level functions can be used as values. No closures, no lambda syntax.
+Named top-level functions can be used as values, and so can lambdas: inline functions that capture nothing.
 
 ```raido
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
 
-let comparator = by_health
-ships.sort(comparator)
+ships.sort(by_health)
+ships.sort(|a, b| a.health < b.health)          // the same, inline
+ships.sort(|a: Ship, b: Ship| -> bool {         // block form
+    return a.health < b.health
+})
 ```
+
+Parameter and return types come from where the lambda is used, or are written out. A lambda can't use a local from outside it; pass the value as a parameter instead. It compiles to an unnamed top-level function, so a lambda and a function reference are the same value.
 
 ## Declarations
 

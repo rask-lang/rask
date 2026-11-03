@@ -207,7 +207,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **`extern struct` / `extern func`.** Script declares expected shapes, host binds at load time. | Compile-time type checking. Load-time mismatch detection. Replaces dynamic `host_ref` + vtable pattern. |
 | Type system | **Static.** Function signatures typed, locals inferred. | Runtime type errors are a divergence vector. Static types catch bugs before deployment -- critical when scripts are tradeable economic assets. |
-| Closures | **Cut.** Function references only. | Shared mutable upvalues are a verification hazard. NPC state lives in host entities, not captured variables. Function references cover the composition need. |
+| Closures | **Cut.** Function references and lambdas that capture nothing. | Shared mutable upvalues are a verification hazard. A lambda with no captures is an unnamed function reference, so it's safe; sort keys and callbacks read the way JS, Python and Lua programmers expect. NPC state lives in host entities, not captured variables. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Globals | **Cut.** No mutable global state. | Undermines statelessness between host calls. Script state lives in coroutine locals or host entities. |
 

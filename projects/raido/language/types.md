@@ -205,7 +205,12 @@ Tuples are anonymous arena-allocated structs. `(number, number)` is a 2-field st
 
 ## Function References
 
-References to named top-level functions. No captured state, no arena allocation. A function reference is a prototype index -- the simplest possible callable value.
+References to named top-level functions or to lambdas (`|a, b| a.health < b.health`). No captured state, no arena allocation. A function reference is a prototype index -- the simplest possible callable value. A lambda is compiled to an unnamed top-level function, so it's the same kind of value. It may not read a local of the function it's written in:
+
+```raido
+let threshold = 10
+ships.filter(|s| s.health < threshold)   // ERROR: the lambda uses `threshold` from outside; pass it as a parameter
+```
 
 ```raido
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
