@@ -2871,7 +2871,7 @@ impl Interpreter {
         }
     }
     /// type.primitives/L9: a literal its type builds, through the same
-    /// `from_int_literal` / `from_float_literal` the compile-time fold runs
+    /// `from_literal` the compile-time fold runs
     /// for native code.
     #[inline(never)]
     fn build_from_literal(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {

@@ -95,10 +95,8 @@ impl TypeChecker {
             };
             let Some(id) = self.types.get_type_id(owner) else { continue };
             for m in methods.iter().filter(|m| !m.is_comptime) {
-                let builds = [false, true].into_iter().any(|float| {
-                    self.types.literal_conversion_method(float) == Some(m.name.as_str())
-                        && self.types.builds_from_literal(id, float)
-                });
+                let builds = self.types.literal_conversion_method() == Some(m.name.as_str())
+                    && [false, true].into_iter().any(|float| self.types.builds_from_literal(id, float));
                 if builds {
                     self.errors.push(TypeError::LiteralConversionNotComptime {
                         ty: owner.to_string(),
@@ -665,8 +663,10 @@ impl TypeChecker {
     }
 
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
-        // MN3: two conformances wanting different methods of one name is an
-        // error; the way out is a nominal type of its own.
+        // MN3: two conformances of one interface whose methods of one name
+        // take the same arguments is an error: a call picks between them by
+        // its arguments (GT7) and has nothing to go on. The way out is a
+        // nominal type of its own.
         let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
@@ -704,7 +704,9 @@ impl TypeChecker {
                 let theirs = checker.required_signatures(&self_ty, &other);
                 for a in &mine {
                     if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
-                        if !checker.signatures_agree(a, b) {
+                        let same_args = a.params.len() == b.params.len()
+                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| x == y);
+                        if same_args {
                             clash = Some(a.name.clone());
                             break;
                         }
@@ -1275,6 +1277,18 @@ impl TypeChecker {
                 if let Some(filed) = interface.as_ref().and_then(|(t, name)| {
                     rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
+                    sig.name = filed;
+                } else if let Some(filed) = interface.as_ref().and_then(|(t, _)| {
+                    self.types.filed_conformance_method(t, &self.types.type_name(type_id), &m.name)
+                }) {
+                    // GT7: a generic interface's conformance files its methods
+                    // under the applied arguments, and the declarations and
+                    // the calls are rewritten to that name for the backends.
+                    let list = self.types.filed_methods.entry((type_id, m.name.clone())).or_default();
+                    if !list.contains(&filed) {
+                        list.push(filed.clone());
+                    }
+                    self.filed_methods.decls.insert((decl_id, m.name.clone()), filed.clone());
                     sig.name = filed;
                 }
                 sig

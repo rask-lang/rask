@@ -66,26 +66,35 @@ Method implements Displayable {
 }
 
 // Two *different* applied forms of one generic interface are two conformances, not
-// one declared twice — so this is MN3's E0889 about the two `scale`s, and XC3
-// stays quiet. Reported once, not twice.
-struct Meters {
-    v: f64
+// one declared twice, and each keeps its own method: a call picks by its
+// arguments (GT7). These two `make`s take nothing, so a call has nothing to pick
+// by — MN3's E0889, and XC3 stays quiet. Reported once, not twice.
+struct Html {
+    body: string
 }
 
-interface Scale<Rhs = Self> {
-    func scale(self, rhs: Rhs) -> Self
+struct Json {
+    body: string
 }
 
-Meters implements Scale<f64> {
-    func scale(self, k: f64) -> Meters {
-        return Meters(v: self.v * k)
+struct Report {
+    title: string
+}
+
+interface Make<T> {
+    func make(self) -> T
+}
+
+Report implements Make<Html> {
+    func make(self) -> Html {
+        return Html(body: self.title)
     }
 }
 
-// ERROR: both `scale`s want the type's one method name (E0889, MN3)
-Meters implements Scale<Meters> {
-    func scale(self, o: Meters) -> Meters {
-        return Meters(v: self.v * o.v)
+// ERROR: both `make`s take the same arguments (E0889, MN3)
+Report implements Make<Json> {
+    func make(self) -> Json {
+        return Json(body: self.title)
     }
 }
 

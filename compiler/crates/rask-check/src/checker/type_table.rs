@@ -843,6 +843,39 @@ impl TypeTable {
         self.applied_key_for(iface, interface, self_name)
     }
 
+    /// type.generics/GT7: the name a method of a conformance to a generic
+    /// interface is filed under — `from_literal$f64` for `FromLiteral<f64>`.
+    /// The applied arguments go into it, so `FromLiteral<i64>` and
+    /// `FromLiteral<f64>` on one type keep two bodies under two names, and a
+    /// call picks between them by its arguments. `None` for an interface
+    /// with no type parameters, and for the operators, which file their own
+    /// way (`type.operator-resolution/OR4`).
+    pub fn filed_conformance_method(&self, interface: &TypeExpr, self_name: &str, method: &str) -> Option<String> {
+        // A stdlib interface written bare (`FromLiteral<f64>`) has no program
+        // declaration to find; its arguments live on the stdlib's.
+        let iface = match self.written_interface_ident(interface) {
+            InterfaceIdent::Builtin(name) => self.stdlib_interface_ident(&name),
+            declared => declared,
+        };
+        let key = self.applied_key_for(iface.clone(), interface, self_name);
+        let base = self.interface_name(interface);
+        if rask_stdlib::operators::operator_interface_method(&base).is_some() || key.applied.args().is_empty() {
+            return None;
+        }
+        Some(Self::filed_method_name(method, key.applied.args()))
+    }
+
+    /// `method$Arg` for the applied arguments, each spelled out in full and
+    /// kept to identifier characters.
+    pub fn filed_method_name(method: &str, args: &[TypeExpr]) -> String {
+        let mut name = method.to_string();
+        for a in args {
+            name.push('$');
+            name.extend(a.to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }));
+        }
+        name
+    }
+
     /// `applied_conformance_key` for an interface already identified.
     pub fn applied_key_for(
         &self,
@@ -1367,23 +1400,44 @@ impl TypeTable {
         self.declares_conformance(type_id, &generate)
     }
 
-    /// Does the type build itself from a number literal through the stdlib's
-    /// `FromIntLiteral` or `FromFloatLiteral` (type.primitives/L9)?
-    pub fn builds_from_literal(&self, type_id: TypeId, float: bool) -> bool {
-        let name = if float { "FromFloatLiteral" } else { "FromIntLiteral" };
-        let iface = self.stdlib_interface_ident(name);
-        self.declares_conformance_to(type_id, iface, &TypeExpr::named(name))
+    /// The stdlib's `FromLiteral<f64>` (`float`) or `FromLiteral<i64>`
+    /// (type.primitives/L9).
+    pub fn from_literal_interface(float: bool) -> TypeExpr {
+        let arg = if float { "f64" } else { "i64" };
+        TypeExpr::generic("FromLiteral", vec![TypeExpr::named(arg)])
     }
 
-    /// The conversion `FromFloatLiteral` (`float`) or `FromIntLiteral`
-    /// requires, read from its declaration in stdlib/ops.rk.
-    pub fn literal_conversion_method(&self, float: bool) -> Option<&str> {
-        let name = if float { "FromFloatLiteral" } else { "FromIntLiteral" };
-        let InterfaceIdent::Declared(id) = self.stdlib_interface_ident(name) else { return None };
+    /// Does the type build itself from a number literal through the stdlib's
+    /// `FromLiteral<f64>` (`float`) or `FromLiteral<i64>` (type.primitives/L9)?
+    pub fn builds_from_literal(&self, type_id: TypeId, float: bool) -> bool {
+        let iface = self.stdlib_interface_ident("FromLiteral");
+        self.declares_conformance_to(type_id, iface, &Self::from_literal_interface(float))
+    }
+
+    /// The conversion `FromLiteral` requires, read from its declaration in
+    /// stdlib/ops.rk.
+    pub fn literal_conversion_method(&self) -> Option<&str> {
+        let InterfaceIdent::Declared(id) = self.stdlib_interface_ident("FromLiteral") else { return None };
         match self.get(id)? {
             TypeDef::Interface { methods, .. } => methods.first().map(|m| m.name.as_str()),
             _ => None,
         }
+    }
+
+    /// The method that builds a literal of `type_id` (L9): its
+    /// `FromLiteral<f64>` (`float`) or `FromLiteral<i64>` conformance's,
+    /// filed under the argument (GT7), or the plain method when an `extend`
+    /// block supplies it.
+    pub fn literal_conversion_for(&self, type_id: TypeId, float: bool) -> Option<String> {
+        let plain = self.literal_conversion_method()?;
+        let filed = Self::filed_method_name(plain, Self::from_literal_interface(float).args());
+        let methods = match self.get(type_id)? {
+            TypeDef::Struct { methods, .. }
+            | TypeDef::Enum { methods, .. }
+            | TypeDef::NominalAlias { methods, .. } => methods,
+            _ => return None,
+        };
+        [filed, plain.to_string()].into_iter().find(|n| methods.iter().any(|m| &m.name == n))
     }
 
     /// Does the type conform to a *different* interface spelled `name`? A stdlib

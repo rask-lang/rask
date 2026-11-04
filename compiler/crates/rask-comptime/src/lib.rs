@@ -1242,7 +1242,7 @@ pub struct EnumRef {
     pub units: Vec<String>,
 }
 
-/// A literal its type builds (type.primitives/L9): `Fixed.from_float_literal(0.5)`.
+/// A literal its type builds (type.primitives/L9): `Fixed.from_literal(0.5)`.
 #[derive(Debug, Clone)]
 pub struct LiteralCall {
     /// The type, by the name its functions are registered under.
@@ -1322,7 +1322,7 @@ impl ComptimeInterpreter {
                 }
             }
             // A type's functions with no `self`, as `Type.name`: what
-            // `Fixed.from_float_literal(0.5)` and the calls inside it reach.
+            // `Fixed.from_literal(0.5)` and the calls inside it reach.
             let (owner, methods) = match &decl.kind {
                 DeclKind::Struct(st) => (Some(st.name.as_str()), st.methods.as_slice()),
                 DeclKind::Enum(e) => (Some(e.name.as_str()), e.methods.as_slice()),

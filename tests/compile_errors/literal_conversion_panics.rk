@@ -9,8 +9,8 @@ struct Fixed {
     raw: i64
 }
 
-Fixed implements FromFloatLiteral {
-    comptime func from_float_literal(value: f64) -> Fixed {
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
         if value.abs() >= 2147483648.0 {
             panic("out of range for 32.32")
         }

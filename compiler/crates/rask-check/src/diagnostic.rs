@@ -2032,16 +2032,16 @@ impl ToDiagnostic for crate::TypeError {
 
             OverlappingInterfaceConformance { ty, first, second, method, span } => {
                 Diagnostic::error(format!(
-                    "`{}` conforms to both `{}` and `{}`, and they want different `{}`s",
+                    "`{}` conforms to both `{}` and `{}`, and a call to `{}` can't tell them apart",
                     ty, first, second, method
                 ))
                 .with_code("E0889")
-                .with_primary(*span, format!("the second `{}` has nowhere to live", method))
+                .with_primary(*span, format!("this `{}` takes the same arguments as the other one", method))
                 .with_fix(format!(
                     "rename `{method}` in the interface you own, or conform a nominal type of your own instead: `type … = {ty}`, then `… implements {second}`",
                     method = method, ty = ty, second = second
                 ))
-                .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
+                .with_why("two conformances of one interface can each have a `{method}`, and a call picks one by its arguments (type.generics/GT7). These take the same arguments, so `x.{method}(…)` has nothing to pick by. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
             }
 
             DuplicateMethod { ty, method, first, span } => {
@@ -2834,6 +2834,15 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, format!("this tuple has {} values", len))
                     .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
                     .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
+            }
+            NoConformanceTakes { ty, method, args, candidates, span } => {
+                let mut d = Diagnostic::error(format!("no `{}` on `{}` takes ({})", method, ty, args.join(", ")))
+                    .with_code("E0956")
+                    .with_primary(*span, "no conformance matches these arguments");
+                for c in candidates {
+                    d = d.with_note(format!("there is `{}`", c));
+                }
+                d.with_why(format!("`{ty}` has one `{method}` per conformance of the interface, and a call's arguments pick which (type.generics/GT7)"))
             }
             LiteralConversionNotComptime { ty, method, span } => {
                 Diagnostic::error(format!("`{}.{}` builds literals, so it has to be a `comptime func`", ty, method))

@@ -363,7 +363,7 @@ impl TypeChecker {
     }
 
     /// Could an unsuffixed literal be this type through its conformance to
-    /// `FromIntLiteral` or `FromFloatLiteral` (type.primitives/L9)?
+    /// `FromLiteral` (type.primitives/L9)?
     fn literal_builds(&self, literal: &Type, candidate: &Type) -> bool {
         let Type::Var(id) = self.ctx.apply(literal) else { return false };
         let Some(kind) = self.ctx.literal_vars.get(&id).copied() else { return false };

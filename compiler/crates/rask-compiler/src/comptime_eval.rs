@@ -267,7 +267,7 @@ impl Fold<'_, '_> {
     }
 
     /// type.primitives/L9: a literal its type builds, through the type's
-    /// `from_int_literal` or `from_float_literal`, recorded under the
+    /// `from_literal`, recorded under the
     /// literal's node like any other compile-time value.
     fn fold_literal(&mut self, node: rask_ast::NodeId, conv: &rask_check::LiteralConversion) {
         let rask_check::LiteralConversion { ty, value, method, span } = conv;

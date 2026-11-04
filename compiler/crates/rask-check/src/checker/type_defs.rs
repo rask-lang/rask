@@ -124,9 +124,9 @@ pub struct LiteralConversion {
 /// What a converted literal hands its conversion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LiteralValue {
-    /// For `FromIntLiteral`, whose conversion takes an `i64`.
+    /// For `FromLiteral<i64>`.
     Int(i64),
-    /// For `FromFloatLiteral`, whose conversion takes an `f64`.
+    /// For `FromLiteral<f64>`.
     Float(f64),
 }
 
@@ -552,7 +552,7 @@ pub struct TypedProgram {
     /// receiver alone.
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
     /// type.primitives/L9: number literals a type builds itself from, keyed by
-    /// the literal's node. `let half: Fixed = 0.5` is `Fixed.from_float_literal(0.5)`,
+    /// the literal's node. `let half: Fixed = 0.5` is `Fixed.from_literal(0.5)`,
     /// computed while compiling; the backends read the folded value.
     pub literal_conversions: HashMap<NodeId, LiteralConversion>,
     /// TR5: implicit interface coercion sites. NodeId of expression → the

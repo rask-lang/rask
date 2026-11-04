@@ -6847,12 +6847,12 @@ impl TypeChecker {
     /// disagreed about what it meant — the interpreter kept 300, codegen kept
     /// the low byte.
     /// L9: the type a literal of `kind` builds when it lands in `ty`, and
-    /// whether through `FromFloatLiteral`. An integer literal takes
-    /// `FromIntLiteral` first and `FromFloatLiteral` otherwise, the way it
-    /// fills an `f64` slot; a float literal only `FromFloatLiteral`.
+    /// whether through `FromLiteral<f64>`. An integer literal takes
+    /// `FromLiteral<i64>` first and `FromLiteral<f64>` otherwise, the way it
+    /// fills an `f64` slot; a float literal only `FromLiteral<f64>`.
     pub(super) fn literal_builder(&self, kind: LiteralKind, ty: &Type) -> Option<(rask_types::TypeId, bool)> {
         // A generic type's instance takes what its declaration does:
-        // `Quantity<Meters>` through `Quantity<U> implements FromFloatLiteral`.
+        // `Quantity<Meters>` through `Quantity<U> implements FromLiteral<f64>`.
         let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return None };
         if kind == LiteralKind::Integer && self.types.builds_from_literal(*id, false) {
             return Some((*id, false));
@@ -6862,7 +6862,7 @@ impl TypeChecker {
 
     /// L9: every unsuffixed literal that settled on a type building itself
     /// from literals is that type's conversion. Recorded for the fold and the
-    /// interpreter; an integer going through `from_int_literal` has to fit its
+    /// interpreter; an integer going through `FromLiteral<i64>` has to fit its
     /// `i64` parameter.
     pub(super) fn validate_pending_literals(&mut self) {
         use super::type_defs::{LiteralConversion, LiteralValue};
@@ -6891,8 +6891,7 @@ impl TypeChecker {
                     }
                 },
             };
-            let Some(method) = self.types.literal_conversion_method(float) else { continue };
-            let method = method.to_string();
+            let Some(method) = self.types.literal_conversion_for(id, float) else { continue };
             self.literal_conversions.insert(node, LiteralConversion { ty: id, value, method, span });
         }
     }

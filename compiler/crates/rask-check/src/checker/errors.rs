@@ -1319,7 +1319,17 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.primitives/L9: a `FromIntLiteral` or `FromFloatLiteral`
+    /// type.generics/GT7: no conformance's method takes these arguments.
+    #[error("no `{method}` on `{ty}` takes ({})", args.join(", "))]
+    NoConformanceTakes {
+        ty: String,
+        method: String,
+        args: Vec<String>,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// type.primitives/L9: a `FromLiteral`
     /// conversion that isn't a `comptime func`.
     #[error("`{ty}.{method}` builds literals, so it has to be a `comptime func`")]
     LiteralConversionNotComptime {
@@ -2039,6 +2049,7 @@ impl TypeError {
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
             | LiteralConversionNotComptime { .. }
+            | NoConformanceTakes { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }

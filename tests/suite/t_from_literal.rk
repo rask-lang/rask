@@ -17,15 +17,15 @@ extend Fixed {
     }
 }
 
-Fixed implements FromFloatLiteral {
-    comptime func from_float_literal(value: f64) -> Fixed {
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
         return Fixed(raw: (value * 4294967296.0).to_int())
     }
 }
 
-Fixed implements FromIntLiteral {
+Fixed implements FromLiteral<i64> {
     // A conversion may call the type's other functions at compile time.
-    comptime func from_int_literal(value: i64) -> Fixed {
+    comptime func from_literal(value: i64) -> Fixed {
         return Fixed.from_int(value)
     }
 }
@@ -70,8 +70,8 @@ struct Quantity<U> {
     raw: i64
 }
 
-Quantity<U> implements FromFloatLiteral {
-    comptime func from_float_literal(value: f64) -> Quantity<U> {
+Quantity<U> implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Quantity<U> {
         return Quantity(raw: (value * 1000.0).to_int())
     }
 }
@@ -101,7 +101,7 @@ test "L9 — an annotated binding" {
     assert neg.raw == -15032385536
 }
 
-test "L9 — an integer literal through from_int_literal" {
+test "L9 — an integer literal through from_literal" {
     let three: Fixed = 3
     assert three.raw == 3 * ONE
     let minus: Fixed = -2

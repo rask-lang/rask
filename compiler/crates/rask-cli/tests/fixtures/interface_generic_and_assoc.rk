@@ -30,9 +30,7 @@ Meters implements Mul<f64> {
 }
 
 // AT8: a second conformance of the same interface, to a different type, with its
-// own `Out`. `Meters` can't also carry `Mul<Meters>` — that would be two
-// `mul`s on one type and MN1 gives it one, so it's rejected at the block
-// (E0889) until operator resolution picks from the pair.
+// own `Out`.
 SquareMeters implements Mul<SquareMeters> {
     type Out = SquareMeters
 

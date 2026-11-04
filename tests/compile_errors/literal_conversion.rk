@@ -8,8 +8,8 @@ struct Fixed {
     raw: i64
 }
 
-Fixed implements FromFloatLiteral {
-    comptime func from_float_literal(value: f64) -> Fixed {
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
         if value.abs() >= 2147483648.0 {
             panic("out of range for 32.32")
         }
@@ -21,9 +21,9 @@ struct Ticks {
     n: i64
 }
 
-Ticks implements FromIntLiteral {
+Ticks implements FromLiteral<i64> {
     // ERROR: E0955, the conversion runs while compiling
-    func from_int_literal(value: i64) -> Ticks {
+    func from_literal(value: i64) -> Ticks {
         return Ticks(n: value)
     }
 }
@@ -35,12 +35,12 @@ struct Count {
 
 extend Count {
     // ERROR: E0955, wherever the method is written
-    func from_int_literal(value: i64) -> Count {
+    func from_literal(value: i64) -> Count {
         return Count(n: value)
     }
 }
 
-Count implements FromIntLiteral {}
+Count implements FromLiteral<i64> {}
 
 func main() {
     // ERROR: E0825, the conversion takes an `i64`
