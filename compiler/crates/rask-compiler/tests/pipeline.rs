@@ -127,16 +127,11 @@ fn call_targets_records_free_and_method_dispatch() {
 }
 
 #[test]
-fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
-    // An instantiated generic used to number its nodes from zero, so its nodes
-    // collided with the original program's. Every per-node lookup inside such a
-    // body — type, dispatch target, type arguments — then answered with an
-    // unrelated node's record rather than missing. Lowering papered over it by
-    // guessing from AST shape, which is why so much of it reconstructs
-    // information the checker already had.
-    //
-    // Two instantiations also numbered from zero identically, so they collided
-    // with each other as well.
+fn each_instance_has_its_own_records_for_the_shared_body() {
+    // Every instance of a generic function shares its body's node ids, so what
+    // differs between them lives in the instance's records. Two instances of
+    // `identity` give the same `x` two different types; keyed globally by
+    // node, the second would have replaced the first.
     let path = tmp_rk(r#"
         func identity<T>(x: T) -> T {
             return x
@@ -150,28 +145,17 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
     let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
 
-    let checker_max = result.typed.node_types.keys().map(|n| n.0).max().unwrap_or(0);
-    let carried = &result.mono.instantiated_node_types;
-
-    assert!(
-        !carried.is_empty(),
-        "two instantiations of first_of<T> should have carried node records; \
-         an empty map means lowering is back to guessing inside them",
-    );
-    for id in carried.keys() {
-        assert!(
-            id.0 > checker_max,
-            "instantiated node {} is inside the original program's id range \
-             (max {}) — a lookup there answers with another node's record",
-            id.0, checker_max,
-        );
-    }
-    // Both instantiations must be represented. Numbering each copy from zero
-    // made them collide with each other as well as with the program.
-    assert!(
-        result.mono.functions.iter().filter(|f| !f.type_args.is_empty()).count() >= 2,
-        "expected an instantiation per type argument",
-    );
+    let instances: Vec<_> = result
+        .mono
+        .functions
+        .iter()
+        .filter(|f| f.name.starts_with("identity$"))
+        .collect();
+    assert_eq!(instances.len(), 2, "expected an instantiation per type argument");
+    let (a, b) = (&instances[0].records.node_types, &instances[1].records.node_types);
+    assert!(!a.is_empty() && !b.is_empty(), "each instance carries records for its body");
+    let differs = a.iter().any(|(id, ty)| b.get(id).is_some_and(|other| other != ty));
+    assert!(differs, "the two instances type a shared node differently");
     let _ = std::fs::remove_file(&path);
 }
 

@@ -85,9 +85,9 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
-    // Instantiated generic bodies have nodes the checker never saw; mono
-    // carried its records onto them. Lowering wants one map for both.
-    let records = input.mono.node_records(input.typed);
+    // A generic instance's body shares the original's nodes; what differs is
+    // in its own records, which lowering enters per function.
+    let records = rask_mono::NodeRecords::from_typed(input.typed);
     let mut ctx = rask_mir::lower::MirContext::new(
         input.typed,
         &input.mono.struct_layouts,

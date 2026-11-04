@@ -136,39 +136,13 @@ pub struct Monomorphizer<'a> {
     /// there ends the test rather than propagating (std.testing/T20), and the
     /// message it reports needs its `message()` body queued like `r!` does.
     in_test_body: bool,
-    /// Per-node facts carried onto the instantiated copies: the checker keys
-    /// everything by node id, and a copy's nodes are new. Populated from the
-    /// origin map each instantiation reports.
-    pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
-    /// Which original node each copy's node replaces. A fact recorded against
-    /// the generic body by a later pass — a folded `comptime` value — reaches
-    /// the copies through this.
-    pub node_origins: HashMap<NodeId, NodeId>,
-    /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
-    pub instantiated_call_targets: HashMap<NodeId, rask_check::Callee>,
-    /// OR1: the same, for the operator calls a conformance answered. An
-    /// instantiated body's nodes are new, and the receiver the checker recorded
-    /// was still the type parameter.
-    pub instantiated_operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
-    /// ER31a error wraps for the copies, same idea. The wrapping variant names a
-    /// concrete enum, so it carries over unchanged.
-    pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
-    /// ER14a: instantiated `??` nodes whose right side is still wrapped.
-    pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
-    pub instantiated_err_returns: HashSet<NodeId>,
-    pub instantiated_escaping_closures: HashSet<NodeId>,
-    /// CM3: lent captures, as `typed.lent_captures`, under instantiated ids.
-    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
-    /// Assignments in the copies whose new value takes the old one.
-    pub instantiated_field_reuses: HashSet<NodeId>,
-    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
-    /// Closures in the copies that may not reach another task (#1356).
-    pub instantiated_task_bound_closures: HashSet<NodeId>,
-    /// Per-call-site type arguments for the copies. A generic calling another
-    /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
-    /// call; substituting this instantiation's arguments turns that into the
-    /// concrete pair that reachability needs to enqueue.
-    instantiated_call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
+    /// The records of the generic instance being worked out: what the
+    /// checker recorded for its body's nodes, with its arguments in. Moved
+    /// into its `MonoFunction` when the instance is done.
+    records: crate::InstanceRecords,
+    /// Whether the function being walked is a generic instance, whose records
+    /// are its own rather than the program's.
+    in_instance: bool,
     /// Interface name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
     /// `any Interface` makes every such method of the concrete type reachable even
@@ -548,19 +522,8 @@ impl<'a> Monomorphizer<'a> {
             claim_generators: HashMap::new(),
             next_instantiated_id: 0,
             in_test_body: false,
-            instantiated_node_types: HashMap::new(),
-            node_origins: HashMap::new(),
-            instantiated_call_targets: HashMap::new(),
-            instantiated_operator_targets: HashMap::new(),
-            instantiated_error_wraps: HashMap::new(),
-            instantiated_fallback_keeps_shape: HashSet::new(),
-            instantiated_err_returns: HashSet::new(),
-            instantiated_escaping_closures: HashSet::new(),
-            instantiated_lent_captures: HashMap::new(),
-            instantiated_field_reuses: HashSet::new(),
-            instantiated_return_moves: HashMap::new(),
-            instantiated_task_bound_closures: HashSet::new(),
-            instantiated_call_type_args: HashMap::new(),
+            records: crate::InstanceRecords::default(),
+            in_instance: false,
             interface_methods,
             interface_coercions: HashMap::new(),
             decls,
@@ -621,7 +584,6 @@ impl<'a> Monomorphizer<'a> {
             .map(|n| n.as_str())
             .zip(type_args.iter())
             .collect();
-        self.node_origins.extend(origins.iter().map(|(&new_id, &old_id)| (new_id, old_id)));
         for (&new_id, &old_id) in origins {
             if let Some(args) = self.call_type_args.get(&old_id) {
                 let concrete: Vec<TypeBinding> = args
@@ -632,15 +594,16 @@ impl<'a> Monomorphizer<'a> {
                     ))
                     .collect();
                 if !concrete.is_empty() {
-                    self.instantiated_call_type_args.insert(new_id, concrete);
+                    self.records.call_type_args.insert(new_id, concrete);
                 }
             }
         }
         let Some(typed) = self.typed else { return };
         for (&new_id, &old_id) in origins {
             if let Some(ty) = typed.node_types.get(&old_id) {
-                if let Some(concrete) = Self::concretize(ty, type_args, &bindings) {
-                    self.instantiated_node_types.insert(new_id, concrete);
+                match Self::concretize(ty, type_args, &bindings) {
+                    Some(concrete) => { self.records.node_types.insert(new_id, concrete); }
+                    None => { self.records.no_node_type.insert(new_id); }
                 }
             }
             if let Some(callee) = typed.call_targets.get(&old_id) {
@@ -656,11 +619,15 @@ impl<'a> Monomorphizer<'a> {
                         })
                     }
                 };
-                if let Some(c) = carried {
-                    self.instantiated_call_targets.insert(new_id, c);
+                match carried {
+                    Some(c) => { self.records.call_targets.insert(new_id, c); }
+                    None => { self.records.no_call_target.insert(new_id); }
                 }
             }
             if let Some(target) = typed.operator_targets.get(&old_id) {
+                // Absent unless one is worked out below: a receiver that still
+                // names a parameter has no target either.
+                self.records.no_operator_target.insert(new_id);
                 if let Some(recv) = Self::concretize(&target.recv, type_args, &bindings) {
                     // A bare `T: Mul` bound files the method under the
                     // parameter's own name (`mul$T`); it means this
@@ -694,12 +661,13 @@ impl<'a> Monomorphizer<'a> {
                     // dispatch said `Meters_mul$Meters` while nothing generated
                     // it, and `i32_mul$i32` for a pair that has no body (#1472).
                     if let Some(rask_check::Callee::Method { method: m, .. }) =
-                        self.instantiated_call_targets.get_mut(&new_id)
+                        self.records.call_targets.get_mut(&new_id)
                     {
                         *m = if language_pair { target.operator.clone() } else { method.clone() };
                     }
                     if !language_pair {
-                        self.instantiated_operator_targets.insert(
+                        self.records.no_operator_target.remove(&new_id);
+                        self.records.operator_targets.insert(
                             new_id,
                             rask_check::OperatorTarget {
                                 recv,
@@ -713,40 +681,9 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            // ER31a: the wrapping variant names a concrete enum, so it carries
-            // over as-is — no substitution to do.
-            if let Some(wrap) = typed.error_wraps.get(&old_id) {
-                self.instantiated_error_wraps.insert(new_id, wrap.clone());
-            }
-            // ER14a: whether a `??` keeps its shape is a property of the two
-            // operand types, which substitution preserves.
-            if typed.fallback_keeps_shape.contains(&old_id) {
-                self.instantiated_fallback_keeps_shape.insert(new_id);
-            }
-            // ER9: which side a return takes doesn't depend on the type
-            // arguments — a `T` never meets `E` (ER3).
-            if typed.err_returns.contains(&old_id) {
-                self.instantiated_err_returns.insert(new_id);
-            }
-            // CM1: whether a closure outlives its frame is a property of where
-            // it is written, which substitution doesn't move.
-            if typed.escaping_closures.contains(&old_id) {
-                self.instantiated_escaping_closures.insert(new_id);
-            }
-            // CM3: which captures are lent is where the closure is written,
-            // too.
-            if let Some(lent) = typed.lent_captures.get(&old_id) {
-                self.instantiated_lent_captures.insert(new_id, lent.clone());
-            }
-            // Which assignment builds its value from the old one is written in
-            // the source, and substitution doesn't change it.
-            if typed.field_reuses.contains(&old_id) {
-                self.instantiated_field_reuses.insert(new_id);
-            }
-            // So is which bindings a `return` moves.
-            if let Some(moved) = typed.return_moves.get(&old_id) {
-                self.instantiated_return_moves.insert(new_id, moved.clone());
-            }
+            // What doesn't depend on the type arguments (ER31a's wrap, ER14a's
+            // shape, ER9's side, CM1/CM3, field reuses, return moves) is the
+            // checker's record of the same node, which every instance shares.
             // A closure that captured a link or a `Local` box of a concrete
             // type is task-bound in every copy. One whose capture has a type
             // parameter's type is decided here, where that type is known:
@@ -759,7 +696,7 @@ impl<'a> Monomorphizer<'a> {
                     })
                 });
             if task_bound {
-                self.instantiated_task_bound_closures.insert(new_id);
+                self.records.task_bound_closures.insert(new_id);
             }
         }
     }
@@ -989,7 +926,7 @@ impl<'a> Monomorphizer<'a> {
     /// with a `BufferedReader<Buffer>` needs `BufferedReader_read$Buffer`.
     fn mark_boxed_instance_methods(&mut self, id: NodeId, interface_name: &str) {
         let Some(typed) = self.typed else { return };
-        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)).cloned() else {
+        let Some(ty) = self.node_type(id).cloned() else {
             return;
         };
         let Type::Generic { base, args } = &ty else { return };
@@ -1160,6 +1097,17 @@ impl<'a> Monomorphizer<'a> {
         self.mark_interface_object_methods(&interface_name);
     }
 
+    /// Where a call's instance goes: the instance being walked has its own,
+    /// since every instance shares the body's node ids.
+    fn set_rewrite(&mut self, call: NodeId, symbol: String) {
+        let map = if self.in_instance { &mut self.records.call_rewrites } else { &mut self.call_rewrites };
+        map.insert(call, symbol);
+    }
+
+    fn map_key_fns_here(&mut self) -> &mut HashMap<NodeId, crate::MapKeyFns> {
+        if self.in_instance { &mut self.records.map_key_fns } else { &mut self.map_key_fns }
+    }
+
     /// Run until fixpoint: process queue, instantiate, discover more calls
     pub fn run(&mut self) {
         while let Some(item) = self.queue.pop_front() {
@@ -1174,6 +1122,8 @@ impl<'a> Monomorphizer<'a> {
             }
             self.seen.insert(key.clone(), true);
             self.current = Some((key, item.depth));
+            self.records = crate::InstanceRecords::default();
+            self.in_instance = !item.type_args.is_empty();
 
             let original = match self.fn_table.get(&item.name) {
                 Some(decl) => *decl,
@@ -1274,7 +1224,7 @@ impl<'a> Monomorphizer<'a> {
                 name: mangled,
                 type_args: item.type_args,
                 projections,
-                records: crate::InstanceRecords::default(),
+                records: std::mem::take(&mut self.records),
                 body: concrete,
             });
         }
@@ -1397,9 +1347,10 @@ impl<'a> Monomorphizer<'a> {
     /// from what `carry_node_records` substituted.
     fn type_args_at(&self, id: NodeId) -> Vec<TypeBinding> {
         let args = self
+            .records
             .call_type_args
             .get(&id)
-            .or_else(|| self.instantiated_call_type_args.get(&id))
+            .or_else(|| self.call_type_args.get(&id))
             .cloned()
             .unwrap_or_default();
         // Kept as the checker typed them, ids and all: names are spelled where a
@@ -1557,10 +1508,7 @@ impl<'a> Monomorphizer<'a> {
     /// it replaces.
     fn forced_error_message_fns(&self, id: NodeId) -> Vec<String> {
         let Some(typed) = self.typed else { return Vec::new() };
-        let Some(ty) = self
-            .instantiated_node_types
-            .get(&id)
-            .or_else(|| typed.node_types.get(&id))
+        let Some(ty) = self.node_type(id)
         else {
             return Vec::new();
         };
@@ -1606,10 +1554,7 @@ impl<'a> Monomorphizer<'a> {
     /// (#1062).
     fn sort_comparator_fn(&self, recv_id: NodeId) -> Option<String> {
         let typed = self.typed?;
-        let ty = self
-            .instantiated_node_types
-            .get(&recv_id)
-            .or_else(|| typed.node_types.get(&recv_id))?;
+        let ty = self.node_type(recv_id)?;
         let args = match ty {
             Type::Generic { base, args } if typed.types.type_name(*base) == "Vec" => args,
             Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
@@ -1638,7 +1583,7 @@ impl<'a> Monomorphizer<'a> {
     /// lookup nobody reads.
     fn note_map_key_fns(&mut self, id: NodeId) {
         let Some(typed) = self.typed else { return };
-        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)) else {
+        let Some(ty) = self.node_type(id) else {
             return;
         };
 
@@ -1650,7 +1595,7 @@ impl<'a> Monomorphizer<'a> {
         let Some(rask_types::GenericArg::Type(key)) = key else { return };
         let key = key.as_ref().clone();
         let Some(fns) = self.key_fns(&key) else { return };
-        self.map_key_fns.insert(id, fns);
+        self.map_key_fns_here().insert(id, fns);
     }
 
     /// The `hash` and `eq` a map with this key calls, queued, or `None` when
@@ -1700,8 +1645,7 @@ impl<'a> Monomorphizer<'a> {
     /// method is which. Nothing in the source calls them: the decoder does,
     /// for a field the input leaves out (std.encoding/E20).
     fn note_decode_defaults(&mut self, id: NodeId) {
-        let Some(typed) = self.typed else { return };
-        let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
+        let ty = self.node_type(id);
         let Some(Type::Result { ok, .. }) = ty else { return };
         let ok = ok.as_ref().clone();
         self.queue_decode_defaults(&ok, &mut HashSet::new());
@@ -1816,7 +1760,7 @@ impl<'a> Monomorphizer<'a> {
         if !is_input {
             return;
         }
-        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)).cloned() else {
+        let Some(ty) = self.node_type(id).cloned() else {
             return;
         };
         self.queue_decode_defaults(&ty, &mut HashSet::new());
@@ -1824,7 +1768,7 @@ impl<'a> Monomorphizer<'a> {
 
     fn decodes_json_value(&self, id: NodeId) -> bool {
         let Some(typed) = self.typed else { return false };
-        let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
+        let ty = self.node_type(id);
         match ty {
             Some(rask_types::Type::Result { ok, .. }) => {
                 rask_check::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
@@ -1835,10 +1779,7 @@ impl<'a> Monomorphizer<'a> {
 
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
-        let ty = self
-            .instantiated_node_types
-            .get(&id)
-            .or_else(|| typed.node_types.get(&id))?;
+        let ty = self.node_type(id)?;
         rask_check::receiver_name(ty, &typed.types)
     }
 
@@ -1849,9 +1790,25 @@ impl<'a> Monomorphizer<'a> {
     /// is what widened `self[i].hash()` inside `Vec_hash$i64` to every `hash`
     /// there is, the generic `Vec_hash` among them, which then had no `T`.
     fn call_target(&self, id: NodeId) -> Option<&rask_check::Callee> {
-        self.instantiated_call_targets
-            .get(&id)
-            .or_else(|| self.typed?.call_targets.get(&id))
+        if let Some(found) = self.records.call_targets.get(&id) {
+            return Some(found);
+        }
+        if self.records.no_call_target.contains(&id) {
+            return None;
+        }
+        self.typed?.call_targets.get(&id)
+    }
+
+    /// The type of a node in the body being walked: the instance's, else the
+    /// checker's, unless the instance has none on purpose.
+    fn node_type(&self, id: NodeId) -> Option<&Type> {
+        if let Some(found) = self.records.node_types.get(&id) {
+            return Some(found);
+        }
+        if self.records.no_node_type.contains(&id) {
+            return None;
+        }
+        self.typed?.node_types.get(&id)
     }
 
     /// The body a plain call reaches when the checker dispatched it as a
@@ -2007,7 +1964,7 @@ impl<'a> Monomorphizer<'a> {
                     } else {
                         body.clone()
                     };
-                    self.call_rewrites.insert(expr.id, mangled);
+                    self.set_rewrite(expr.id, mangled);
                     self.enqueue(body, type_args);
                 } else if let Some(name) = func.name() {
                     // `make<i32>(2)`: the written arguments are already in
@@ -2021,7 +1978,7 @@ impl<'a> Monomorphizer<'a> {
                     // nothing emits.
                     if !type_args.is_empty() && self.has_instantiable_body(name) {
                         let mangled = mangle_name(name, &type_args, self.typed.map(|t| &t.types));
-                        self.call_rewrites.insert(expr.id, mangled);
+                        self.set_rewrite(expr.id, mangled);
                     }
                     self.enqueue(name.clone(), type_args);
                 }
@@ -2051,7 +2008,7 @@ impl<'a> Monomorphizer<'a> {
                     } else {
                         "JsonValue_to_string".to_string()
                     };
-                    self.call_rewrites.insert(expr.id, body.clone());
+                    self.set_rewrite(expr.id, body.clone());
                     self.enqueue(body, Vec::new());
                     for arg in args {
                         self.visit_expr(&arg.expr);
@@ -2138,7 +2095,7 @@ impl<'a> Monomorphizer<'a> {
                         .find(|name| self.method_table.contains_key(name));
                         if let Some(name) = renderer.filter(|n| *n != qualified) {
                             qualified = name.clone();
-                            self.call_rewrites.insert(expr.id, name);
+                            self.set_rewrite(expr.id, name);
                         }
                     }
                     // A method on a generic type gets one body per receiver
@@ -2162,7 +2119,7 @@ impl<'a> Monomorphizer<'a> {
                     // entry point, so mangling it produced a call to
                     // `Map_len$string_string` that nothing emits.
                     if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
-                        self.call_rewrites.insert(
+                        self.set_rewrite(
                             expr.id,
                             mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types)),
                         );
@@ -2266,7 +2223,7 @@ impl<'a> Monomorphizer<'a> {
                             // recording; the plain case is the name lowering
                             // would build anyway.
                             if qualified != format!("{}_{}", qualified.rsplit_once('_').map(|(t, _)| t).unwrap_or(""), method) {
-                                self.call_rewrites.insert(expr.id, qualified.clone());
+                                self.set_rewrite(expr.id, qualified.clone());
                             }
                             self.enqueue(qualified, type_args.clone());
                         }
@@ -2393,7 +2350,7 @@ impl<'a> Monomorphizer<'a> {
                 if self.in_test_body {
                     let names = self.forced_error_message_fns(e.id);
                     if !names.is_empty() {
-                        self.call_rewrites.insert(expr.id, names.join("|"));
+                        self.set_rewrite(expr.id, names.join("|"));
                         for name in names {
                             self.enqueue(name, Vec::new());
                         }
@@ -2427,7 +2384,7 @@ impl<'a> Monomorphizer<'a> {
                         // name can contain, and lowering matches each member
                         // against it — so the two never have to agree on the
                         // order members come out in.
-                        self.call_rewrites.insert(expr.id, names.join("|"));
+                        self.set_rewrite(expr.id, names.join("|"));
                         for name in names {
                             self.enqueue(name, Vec::new());
                         }
@@ -2546,7 +2503,7 @@ impl<'a> Monomorphizer<'a> {
                 // call to the uninstantiated `T_greet` that nothing emits.
                 let type_args = self.type_args_at(expr.id);
                 if !type_args.is_empty() && self.has_instantiable_body(name) {
-                    self.call_rewrites.insert(expr.id, mangle_name(name, &type_args, self.typed.map(|t| &t.types)));
+                    self.set_rewrite(expr.id, mangle_name(name, &type_args, self.typed.map(|t| &t.types)));
                     self.enqueue(name.clone(), type_args);
                 } else if self.is_plain_fn(name) {
                     self.enqueue(name.clone(), Vec::new());

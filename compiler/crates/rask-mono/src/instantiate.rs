@@ -49,11 +49,12 @@ impl TypeSubstitutor {
         id
     }
 
-    /// A fresh id that remembers which original node it replaces.
+    /// The copy's node is the original's: every instance shares the body's
+    /// ids, and what differs between them is in the instance's records
+    /// (`InstanceRecords`). Noted so the records can be worked out for each.
     fn fresh_id_from(&mut self, origin: NodeId) -> NodeId {
-        let id = self.fresh_id();
-        self.node_origin.insert(id, origin);
-        id
+        self.node_origin.insert(origin, origin);
+        origin
     }
 
     /// The written type with each type parameter replaced by its argument.

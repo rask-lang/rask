@@ -54,31 +54,6 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
-    /// Types and dispatch targets for the nodes of instantiated generic bodies.
-    ///
-    /// Those nodes don't exist in the checker's output — they were created
-    /// here — so without these, every lookup inside an instantiated body misses
-    /// and lowering falls back to guessing from AST shape.
-    pub instantiated_node_types: HashMap<NodeId, Type>,
-    /// Which original node each node of an instantiated body copies.
-    pub node_origins: HashMap<NodeId, NodeId>,
-    pub instantiated_call_targets: HashMap<NodeId, rask_check::Callee>,
-    /// OR1: operator calls a conformance answered, in instantiated bodies.
-    pub instantiated_operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
-    /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
-    pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
-    /// ER14a: instantiated `??` nodes whose right side is still wrapped.
-    pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
-    /// ER9: error-side returns in instantiated bodies.
-    pub instantiated_err_returns: HashSet<NodeId>,
-    pub instantiated_escaping_closures: HashSet<NodeId>,
-    /// CM3: lent captures on instantiated closures.
-    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
-    pub instantiated_field_reuses: HashSet<NodeId>,
-    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
-    /// Closures in instantiated bodies that may not reach another task, each
-    /// decided from its copy's concrete capture types (#1356).
-    pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// (instance layout, method) → the symbol in that vtable slot, for a
     /// generic instance boxed as `any I`. `BufferedReader$Buffer` and `read`
     /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
@@ -137,26 +112,6 @@ impl NodeRecords {
     }
 }
 
-impl MonoProgram {
-    /// The checker's records merged with the ones carried onto instantiated
-    /// bodies.
-    pub fn node_records(&self, typed: &TypedProgram) -> NodeRecords {
-        let mut r = NodeRecords::from_typed(typed);
-        r.node_types.extend(self.instantiated_node_types.iter().map(|(k, v)| (*k, v.clone())));
-        r.call_targets.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
-        r.operator_targets
-            .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
-        r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
-        r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
-        r.err_returns.extend(self.instantiated_err_returns.iter().copied());
-        r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
-        r.lent_captures.extend(self.instantiated_lent_captures.iter().map(|(k, v)| (*k, v.clone())));
-        r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
-        r.return_moves.extend(self.instantiated_return_moves.iter().map(|(k, v)| (*k, v.clone())));
-        r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
-        r
-    }
-}
 
 /// What the checker recorded for a generic body's nodes, worked out again for
 /// one instance: the types with its arguments in, the calls it makes to other
@@ -172,6 +127,16 @@ pub struct InstanceRecords {
     /// Call node → the symbol of the instance it calls.
     pub call_rewrites: HashMap<NodeId, String>,
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
+    /// The type arguments each call in the body passes, with this
+    /// instance's in.
+    pub call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
+    /// Nodes this instance has no record for where the generic body has one:
+    /// a type or call target that still names a parameter after substitution,
+    /// an operator two primitives answer themselves. The body's record would
+    /// be wrong here, so it doesn't answer either.
+    pub no_node_type: HashSet<NodeId>,
+    pub no_call_target: HashSet<NodeId>,
+    pub no_operator_target: HashSet<NodeId>,
 }
 
 /// Monomorphized function instance
@@ -1009,7 +974,7 @@ fn monomorphize_inner(
     for ty in program
         .node_types
         .values()
-        .chain(mono.instantiated_node_types.values())
+        .chain(mono.results.iter().flat_map(|f| f.records.node_types.values()))
         // A type argument is an instantiation even when nothing builds one.
         // `reflect.fields<Box2<string>>()` names the type and never constructs
         // it, so it appeared in no expression's type — and the layout that
@@ -1058,18 +1023,6 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
-        instantiated_node_types: mono.instantiated_node_types,
-        node_origins: mono.node_origins,
-        instantiated_call_targets: mono.instantiated_call_targets,
-        instantiated_operator_targets: mono.instantiated_operator_targets,
-        instantiated_error_wraps: mono.instantiated_error_wraps,
-        instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
-        instantiated_err_returns: mono.instantiated_err_returns,
-        instantiated_escaping_closures: mono.instantiated_escaping_closures,
-        instantiated_lent_captures: mono.instantiated_lent_captures,
-        instantiated_field_reuses: mono.instantiated_field_reuses,
-        instantiated_return_moves: mono.instantiated_return_moves,
-        instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
         vtable_symbols: mono.vtable_symbols,
     })
 }

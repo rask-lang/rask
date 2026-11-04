@@ -501,8 +501,11 @@ impl<'a> MirContext<'a> {
     /// body's nodes before the checker's do.
     pub fn enter_instance(&mut self, records: &'a rask_mono::InstanceRecords) {
         self.node_types.instance = Some(&records.node_types);
+        self.node_types.cleared = Some(&records.no_node_type);
         self.call_targets.instance = Some(&records.call_targets);
+        self.call_targets.cleared = Some(&records.no_call_target);
         self.operator_targets.instance = Some(&records.operator_targets);
+        self.operator_targets.cleared = Some(&records.no_operator_target);
         self.task_bound_closures.instance = Some(&records.task_bound_closures);
         self.call_rewrites.instance = Some(&records.call_rewrites);
         self.map_key_fns.instance = Some(&records.map_key_fns);
@@ -694,6 +697,9 @@ pub struct MirContext<'a> {
 pub struct NodeMap<'a, V> {
     pub global: &'a HashMap<NodeId, V>,
     pub instance: Option<&'a HashMap<NodeId, V>>,
+    /// Nodes the instance has no record for on purpose: the body's would be
+    /// wrong for it (`InstanceRecords::no_node_type` and the like).
+    pub cleared: Option<&'a std::collections::HashSet<NodeId>>,
 }
 
 impl<V> Clone for NodeMap<'_, V> {
@@ -705,11 +711,17 @@ impl<V> Copy for NodeMap<'_, V> {}
 
 impl<'a, V> NodeMap<'a, V> {
     pub fn of(global: &'a HashMap<NodeId, V>) -> Self {
-        NodeMap { global, instance: None }
+        NodeMap { global, instance: None, cleared: None }
     }
 
     pub fn get(&self, id: &NodeId) -> Option<&'a V> {
-        self.instance.and_then(|m| m.get(id)).or_else(|| self.global.get(id))
+        if let Some(found) = self.instance.and_then(|m| m.get(id)) {
+            return Some(found);
+        }
+        if self.cleared.is_some_and(|c| c.contains(id)) {
+            return None;
+        }
+        self.global.get(id)
     }
 
     pub fn contains_key(&self, id: &NodeId) -> bool {

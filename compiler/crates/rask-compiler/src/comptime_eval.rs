@@ -70,7 +70,7 @@ pub fn fold_comptime(
 ) -> (Folded, Vec<Diagnostic>) {
     let interp = interpreter(decls, typed, cfg);
 
-    let records = mono.node_records(typed);
+    let records = rask_mono::NodeRecords::from_typed(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
     let ctx = rask_mir::lower::MirContext::new(typed, &mono.struct_layouts, &mono.enum_layouts, &records, &type_names);
 
@@ -105,17 +105,6 @@ pub fn fold_comptime(
                 fold.fold(e, DEFAULT_BRANCH_QUOTA, None);
             }
             Target::Stmt(stmt, body) => fold.settle(stmt, body),
-        }
-    }
-
-    // A generic function's copies have nodes of their own, each replacing one
-    // of the generic body's. A value folded there is the copy's value too.
-    for (&copy, &origin) in &mono.node_origins {
-        if let Some(node) = fold.folded.nodes.get(&origin).cloned() {
-            fold.folded.nodes.insert(copy, node);
-        }
-        if let Some(stmt) = fold.folded.statements.get(&origin).copied() {
-            fold.folded.statements.insert(copy, stmt);
         }
     }
 

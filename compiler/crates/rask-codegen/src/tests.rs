@@ -2021,18 +2021,6 @@ mod tests {
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
@@ -2048,18 +2036,6 @@ mod tests {
     /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![
@@ -2111,18 +2087,6 @@ mod tests {
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             type_names: Default::default(),
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
         vtable_symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
