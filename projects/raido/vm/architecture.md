@@ -32,6 +32,8 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 
 `Some(x)` is just `x`; `None` is the `none` tag. 256 registers x 16 bytes = 4 KB per call frame.
 
+**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart (an optional of a non-reference type such as `int?`, or a function value that may be a closure) keep 16-byte slots. An optional of a reference type uses a null payload for `None` and stays at 8 bytes. Struct fields, closure captures and coroutine registers keep their tags, since one object mixes types there.
+
 ## Determinism
 
 `float` arithmetic is IEEE 754 binary64 under a strict profile, bitwise identical on all platforms: round-to-nearest, subnormals kept, no fused multiply-add, correctly rounded math functions (rask-lang/rask#1683). An operation that would produce NaN or an infinity raises `FloatError`, so registers only ever hold finite floats.
@@ -125,6 +127,8 @@ A script can't observe when or whether the collector has run, so the VM can coll
 
 Any collector satisfies this. Non-moving mark-and-sweep is the simple choice, and it keeps host references stable.
 
+**Pauses.** A stop-the-world collection pauses in proportion to what's live, so a mod holding many megabytes could cause a frame hitch. Because collection can't be observed, an implementation is free to collect incrementally (a slice of marking per allocation or per frame) or generationally, without changing any result. The arena this replaced paid a comparable cost at each reset, freeing in bulk, so pauses aren't new; they're just no longer tied to a fixed moment.
+
 ### Memory Limit
 
 The VM has a configured limit on **reachable** memory, measured in a logical size every implementation computes the same way:
@@ -132,8 +136,8 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 | Object | Logical size |
 |--------|--------------|
 | String | 16 + byte length |
-| Array | 16 + 16 per slot of capacity |
-| Map | 16 + 40 per slot of capacity |
+| Array | 16 + 8 per slot of capacity (16 for element types that keep their tag) |
+| Map | 16 + 24 per slot of capacity, plus 8 for each of key and value that keeps its tag |
 | Struct, enum payload, closure | 16 + 16 per field or capture |
 | Coroutine | 64 + 16 per register in its frames |
 
