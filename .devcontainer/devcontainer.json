@@ -1,0 +1,26 @@
+{
+  "name": "Rask",
+  "build": { "dockerfile": "Dockerfile" },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" }
+  },
+  "mounts": [
+    "source=rask-projects,target=/workspaces/projects,type=volume",
+    "source=rask-claude,target=/home/vscode/.claude,type=volume",
+    "source=rask-cargo-registry,target=/usr/local/cargo/registry,type=volume"
+  ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude"
+  },
+  "remoteEnv": {
+    "PATH": "${containerWorkspaceFolder}/compiler/target/release:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postAttachCommand": "bash .devcontainer/install-extension.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["anthropic.claude-code"]
+    }
+  },
+  "remoteUser": "vscode"
+}
