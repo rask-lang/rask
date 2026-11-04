@@ -26,7 +26,7 @@ fi
 WORK=$(mktemp -d) || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
-cp compiler/runtime/Makefile compiler/runtime/*.c compiler/runtime/*.h "$WORK/" || exit 1
+cp -r compiler/runtime/Makefile compiler/runtime/*.c compiler/runtime/*.h compiler/runtime/core-math "$WORK/" || exit 1
 
 echo "clang gate: $(ls "$WORK"/*.c | wc -l) runtime sources, $(clang --version | head -1)"
 

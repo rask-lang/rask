@@ -85,6 +85,7 @@ static void pool_worker_loop(void) {
 
 static void *pool_worker(void *arg) {
     (void)arg;
+    rask_fp_reset();
     rask_outside_thread_start();
     pool_worker_loop();
     rask_outside_thread_exit();

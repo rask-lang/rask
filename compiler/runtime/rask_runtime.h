@@ -324,12 +324,15 @@ int64_t  rask_f64_compare_total(double a, double b);
 // A float's bit pattern at its own width, every NaN as the one quiet NaN.
 uint32_t rask_f32_to_bits(float f);
 float    rask_f32_from_bits(uint32_t bits);
+// The default floating-point environment, at every thread start (math.c).
+void     rask_fp_reset(void);
 uint64_t rask_f64_to_bits(double d);
 double   rask_f64_from_bits(uint64_t bits);
 
 // The float methods' entry points (stdlib/float.rk): math.c's wrappers, and
-// the libm functions native code calls directly. Codegen reads its call
-// signatures from these lines.
+// the libm functions native code calls directly — only the exact ones, which
+// give the same bits from every libm (math.c says why). Codegen reads its
+// call signatures from these lines.
 double math_sin(double x);
 double math_cos(double x);
 double math_tan(double x);
@@ -350,7 +353,8 @@ double ceil(double x);
 double round(double x);
 double trunc(double x);
 double sqrt(double x);
-double pow(double x, double y);
+double math_pow(double x, double y);
+double math_powi(double x, int32_t n);
 
 // `pass`: how the comparator takes the two elements, a RASK_SORT_PASS_* code
 // (rask_abi.h). Lowering knows which; the width doesn't say. Lowering picks one
