@@ -4039,11 +4039,15 @@ fn bindc_writes_and_checks() {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
 
+    // Written with `-o`: a header is named from where the file is, so the
+    // file `--check` compares is the one `-o` writes there.
     let tmp = std::env::temp_dir().join(format!("rask_bindc_{}_{}.rk", std::process::id(), next_tmp_id()));
-    std::fs::write(&tmp, &stdout).unwrap();
+    let wrote = Command::new(&rask).arg("bindc").arg(&header_path).arg("-o").arg(&tmp).output().unwrap();
+    assert!(wrote.status.success(), "{}", String::from_utf8_lossy(&wrote.stderr));
     let same = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     assert!(same.status.success(), "{}", String::from_utf8_lossy(&same.stderr));
-    std::fs::write(&tmp, stdout.replace("42", "43")).unwrap();
+    let written = std::fs::read_to_string(&tmp).unwrap();
+    std::fs::write(&tmp, written.replace("42", "43")).unwrap();
     let stale = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     let _ = std::fs::remove_file(&tmp);
     assert!(!stale.status.success(), "a stale binding should fail --check");
