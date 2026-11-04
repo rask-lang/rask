@@ -497,6 +497,25 @@ fn a_fetch_does_not_use_a_download_path_another_process_holds() {
     assert_eq!(run.code, 0, "{:?}", run);
 }
 
+/// `rask publish` builds its tarball in a file of its own too: two publishes
+/// or dry runs of one package at once used to share
+/// `<tmp>/<name>-<version>.tar.gz`.
+#[test]
+fn publish_does_not_use_a_tarball_path_another_process_holds() {
+    let dir = TempDir::new("demo");
+    dir.write(
+        "rask.toml",
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"d\"\nlicense = \"MIT\"\n",
+    );
+    dir.write("main.rk", "func main() {\n    println(\"hi\")\n}\n");
+    let tmp = TempDir::new("tmp");
+    fs::create_dir_all(tmp.path().join("demo-0.1.0.tar.gz")).unwrap();
+    let run = rask_env(dir.path(), &["publish", "--dry-run", "--unsigned", "."], &[("TMPDIR", tmp.path())]);
+    assert_eq!(run.code, 0, "{:?}", run);
+    let left: Vec<_> = fs::read_dir(tmp.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(left.len(), 1, "the tarball should be cleaned up: {:?}", left);
+}
+
 #[test]
 fn remove_notes_a_dependency_something_else_still_needs() {
     let dir = TempDir::new("app");

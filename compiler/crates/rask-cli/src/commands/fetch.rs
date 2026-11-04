@@ -221,12 +221,18 @@ pub fn resolve_and_lock(root: &Path, pins: Pins, verbose: bool) -> Result<Resolv
                 if verbose {
                     println!("  {} \"{}\" {} ...", "Fetching".cyan(), name, version_str);
                 }
-                // One path per process: `rask` commands run side by side share
-                // the cache, and a shared download path let one delete or
+                // A file of this process's own: `rask` commands run side by side
+                // share the cache, and a shared download path let one delete or
                 // overwrite the archive while another was still extracting it.
-                let archive = std::env::temp_dir()
-                    .join(format!("rask-{}-{}-{}.tar.gz", name, version_str, std::process::id()));
+                let archive = match super::own_temp_file(&format!("{}-{}", name, version_str), "tar.gz") {
+                    Ok(p) => p,
+                    Err(e) => {
+                        errors.push(format!("dep \"{}\": no temporary file to download into: {}", name, e));
+                        continue;
+                    }
+                };
                 if let Err(e) = reg_config.download_archive(&name, &version_str, &archive) {
+                    let _ = std::fs::remove_file(&archive);
                     errors.push(format!("dep \"{}\": download failed: {}", name, e));
                     continue;
                 }
