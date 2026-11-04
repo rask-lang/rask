@@ -418,7 +418,10 @@ extend GcHeap {
         self.whole_saved = Map.new()
     }
 
-    func apply_undo(mutate self, take e: UndoEntry) {
+    // Borrows `e` and clones what it restores. Workaround: taking it moves the
+    // entry out of `pop()`'s Option, and native then frees it twice
+    // (rask-lang/rask#1748).
+    func apply_undo(mutate self, e: UndoEntry) {
         let o = e.obj
         match e.op {
             UndoOp.Slot => {
@@ -429,8 +432,8 @@ extend GcHeap {
             }
             UndoOp.Whole => {
                 let before = logical_size(self.objs[o])
-                self.objs[o].slots = e.saved
-                self.objs[o].keys = e.saved_keys
+                self.objs[o].slots = e.saved.clone()
+                self.objs[o].keys = e.saved_keys.clone()
                 if self.objs[o].kind == OBJ_MAP {
                     self.objs[o].index = Map.new()
                     self.reindex(o, 0)
