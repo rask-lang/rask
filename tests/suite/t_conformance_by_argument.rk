@@ -180,3 +180,54 @@ test "GT7 — a nominal type with both literal conversions" {
     assert a.value == 300
     assert b.value == 125
 }
+
+// `T` and `Vec<T>` can never be one type, so these two don't overlap.
+struct Shelf<T> {
+    item: T
+}
+
+Shelf<T> implements Render<T> {
+    func render(self, f: T) -> string {
+        return "one"
+    }
+}
+
+Shelf<T> implements Render<Vec<T>> {
+    func render(self, f: Vec<T>) -> string {
+        return "many {f.len()}"
+    }
+}
+
+// A literal goes where it fits: 300 isn't a u8.
+interface Weigh<K> {
+    func weigh(self, k: K) -> string
+}
+
+struct Balance {
+    n: i64
+}
+
+Balance implements Weigh<u8> {
+    func weigh(self, k: u8) -> string {
+        return "u8"
+    }
+}
+
+Balance implements Weigh<i64> {
+    func weigh(self, k: i64) -> string {
+        return "i64"
+    }
+}
+
+test "GT7 — conformances that never meet" {
+    let s: Shelf<i64> = Shelf(item: 1)
+    assert s.render(5i64) == "one"
+    let v: Vec<i64> = Vec.from([1, 2])
+    assert s.render(v) == "many 2"
+}
+
+test "GT7 — a literal's magnitude rules a conformance out" {
+    let s = Balance(n: 0)
+    assert s.weigh(300) == "i64"
+    assert s.weigh(7u8) == "u8"
+}

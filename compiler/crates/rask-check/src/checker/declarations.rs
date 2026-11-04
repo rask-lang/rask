@@ -766,8 +766,9 @@ impl TypeChecker {
                         // instantiation? A type parameter matches anything:
                         // `Render<T>` and `Render<Html>` on `Boxed<T>` meet at
                         // `Boxed<Html>`.
+                        let mut bound = std::collections::HashMap::new();
                         let same_args = a.params.len() == b.params.len()
-                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| self.shape_fits(x, y) != Some(false));
+                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| self.could_coincide(x, y, &mut bound));
                         if same_args {
                             clash = Some(a.name.clone());
                             break;

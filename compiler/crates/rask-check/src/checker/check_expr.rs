@@ -7748,7 +7748,7 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
 /// a 32-bit one. Conversions are about types and stay target-independent
 /// (`is_integer_widening`). The one place the checker asks the target.
-fn int_range(ty: &Type) -> Option<(i128, u128)> {
+pub(super) fn int_range(ty: &Type) -> Option<(i128, u128)> {
     Some(match prim_of(&ty.at_target_width())? {
         Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
         Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),

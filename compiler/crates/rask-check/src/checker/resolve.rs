@@ -3766,6 +3766,9 @@ impl TypeChecker {
                     .filter(|sig| {
                         sig.params.iter().zip(args).all(|((p, _), a)| match self.ctx.apply(a) {
                             Type::Var(id) => match self.ctx.literal_vars.get(&id) {
+                                // An integer that reached the floats is a
+                                // float the way `1` fills an `f64` slot.
+                                Some(_) if tier == LiteralTier::Float => self.resolve_named(p) == Type::F64,
                                 Some(kind) => self.resolve_named(p) == self.ctx.literal_default(id, *kind),
                                 None => true,
                             },
@@ -3810,8 +3813,13 @@ impl TypeChecker {
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             );
             let integer = kind == super::inference::LiteralKind::Integer;
+            // An integer has to fit: `300` isn't a `u8`.
+            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param)) {
+                (Some(&v), Some((lo, hi))) => v >= lo && (v < 0 || (v as u128) <= hi),
+                _ => true,
+            };
             return Some(match tier {
-                LiteralTier::OwnKind => if integer { int } else { float },
+                LiteralTier::OwnKind => if integer { int && holds() } else { float },
                 LiteralTier::Float => integer && float,
                 LiteralTier::Built => self.literal_builder(kind, &param).is_some(),
             });
@@ -3821,6 +3829,60 @@ impl TypeChecker {
 
     /// Structural match, an open variable or an unbound type parameter on
     /// either side matching anything.
+    /// Could two conformance signatures' parameters be one type for some
+    /// choice of the receiver's type parameters? Unlike `shape_fits`, a
+    /// parameter named on both sides is the same unknown, bound once, and
+    /// can't contain itself: `T` and `Vec<T>` never meet.
+    pub(super) fn could_coincide(&self, a: &Type, b: &Type, bound: &mut HashMap<String, Type>) -> bool {
+        let a = self.resolve_named(a);
+        let b = self.resolve_named(b);
+        let param = |t: &Type| match t {
+            Type::UnresolvedNamed(n) if rask_ast::type_params::is_type_param_name(n) => Some(n.clone()),
+            _ => None,
+        };
+        if let Some(n) = param(&a) {
+            return self.bind_param(n, &b, bound);
+        }
+        if let Some(n) = param(&b) {
+            return self.bind_param(n, &a, bound);
+        }
+        let generic_args = |x: &[GenericArg], y: &[GenericArg], bound: &mut HashMap<String, Type>| {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(x, y)| match (x, y) {
+                    (GenericArg::Type(x), GenericArg::Type(y)) => self.could_coincide(x, y, bound),
+                    (x, y) => x == y,
+                })
+        };
+        match (&a, &b) {
+            (Type::Generic { base: b1, args: x }, Type::Generic { base: b2, args: y }) => b1 == b2 && generic_args(x, y, bound),
+            (Type::UnresolvedGeneric { name: n1, args: x }, Type::UnresolvedGeneric { name: n2, args: y }) => {
+                n1 == n2 && generic_args(x, y, bound)
+            }
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.could_coincide(x, y, bound))
+            }
+            (Type::Result { ok: o1, err: e1 }, Type::Result { ok: o2, err: e2 }) => {
+                self.could_coincide(o1, o2, bound) && self.could_coincide(e1, e2, bound)
+            }
+            (Type::Array { elem: e1, len: l1 }, Type::Array { elem: e2, len: l2 }) => l1 == l2 && self.could_coincide(e1, e2, bound),
+            _ => a == b,
+        }
+    }
+
+    fn bind_param(&self, name: String, other: &Type, bound: &mut HashMap<String, Type>) -> bool {
+        if matches!(other, Type::UnresolvedNamed(n) if *n == name) {
+            return true;
+        }
+        if let Some(prev) = bound.get(&name).cloned() {
+            return self.could_coincide(&prev, other, bound);
+        }
+        if mentions_param(other, &name) {
+            return false;
+        }
+        bound.insert(name, other.clone());
+        true
+    }
+
     pub(super) fn shape_fits(&self, p: &Type, a: &Type) -> Option<bool> {
         let p = self.resolve_named(&self.ctx.apply(p));
         let a = self.resolve_named(&self.ctx.apply(a));
@@ -3926,4 +3988,19 @@ fn all_fit(verdicts: impl Iterator<Item = Option<bool>>) -> Option<bool> {
         }
     }
     known.then_some(true)
+}
+
+/// Does `ty` name the type parameter `name` anywhere inside it?
+fn mentions_param(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::UnresolvedNamed(n) => n == name,
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args.iter().any(|a| match a {
+            GenericArg::Type(t) => mentions_param(t, name),
+            _ => false,
+        }),
+        Type::Tuple(items) => items.iter().any(|t| mentions_param(t, name)),
+        Type::Result { ok, err } => mentions_param(ok, name) || mentions_param(err, name),
+        Type::Array { elem, .. } => mentions_param(elem, name),
+        _ => false,
+    }
 }
