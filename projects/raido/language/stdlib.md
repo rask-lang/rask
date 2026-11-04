@@ -25,7 +25,6 @@ Everything here is always present. I dropped the opt-in tiers: there's no reason
 
 `print(v: string)` -- calls the host's print handler, immediately. It's a log, not an effect: a call that later fails has still printed. Default handler: no-op.
 
-`coroutine(f, args...) -> coroutine` -- see [coroutines.md](coroutines.md).
 
 ### tostring
 
@@ -38,7 +37,7 @@ Everything here is always present. I dropped the opt-in tiers: there's no reason
 | enum | `Order.Attack(3)`, `Stance.Aggressive` |
 | `T?` | `Some(...)`, `None` |
 | struct, tuple, array, map | `Ship { id: 1, health: 90 }`, `(1, 2)`, `[1, 2]`, `{"a": 1}`, with each part converted by these rules. A struct already being printed further up shows as `Ship { ... }` |
-| function, coroutine, extern struct | `<func name>`, `<coroutine>`, `<Enemy>` |
+| function, extern struct | `<func name>`, `<Enemy>` |
 
 String interpolation `"{x}"` uses `tostring`.
 
@@ -81,8 +80,6 @@ Compiler-known methods on primitive and collection types. [types.md](types.md#bu
 **`array<T>`:** `len`, `get`, `push`, `pop`, `insert`, `remove`, `sort`, `filter`, `contains`, `join`, `reverse`
 
 **`map<K, V>`:** `len`, `get`, `keys`, `values`, `contains`, `remove`; writes are `m[k] = v`
-
-**`coroutine`:** `resume`, `done`
 
 User-defined structs get methods via `extend` blocks, same dot syntax.
 

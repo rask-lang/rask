@@ -41,8 +41,7 @@ The type table contains:
 - **Enum definitions.** Name, variant names, variant payloads (if any).
 - **Extend methods.** Type name, method name, parameter types, return type, prototype index. Methods are compiled as regular functions — extend is resolved at compile time, not runtime.
 - **Extern struct declarations.** Name, field names, field types, readonly flags.
-- **Extern func declarations.** Name, parameter types, return type, immediate or deferred.
-- **The yield type.** What `yield` passes out and gets back.
+- **Extern func declarations.** Name, parameter types, return type, and whether it's immediate, deferred or pausing.
 
 The type table is part of the content hash -- changing a struct definition changes the chunk's identity.
 

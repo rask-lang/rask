@@ -28,12 +28,12 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 | `none` | depth: `None` is 0, `Some(None)` is 1, `Some(Some(None))` is 2 |
 | `func` | prototype index (a function or a closure that captures nothing) |
 | `enum` | discriminant (an enum with no payloads) |
-| `ref` | reference to a heap object: string, array, map, struct, enum with payload, closure, coroutine |
+| `ref` | reference to a heap object: string, array, map, struct, enum with payload, closure, task |
 | `extern` | the host's 64-bit id for one of its objects; the tag word also holds the extern struct's type index |
 
 **Optionals cost nothing.** `Some(x)` of a value that isn't `none` is `x` itself. Wrapping a `none` adds one to its depth, and unwrapping takes one off, so `int??` keeps `None` and `Some(None)` apart without a box. 256 registers x 16 bytes = 4 KB per call frame. A frame's registers start as `none` (depth 0).
 
-**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart (an optional of a non-reference type such as `int?`, or a function value that may be a closure) keep 16-byte slots. An optional of a reference type uses a null payload for `None` and stays at 8 bytes; an optional of an optional keeps its tag. Struct fields, closure captures and coroutine registers keep their tags, since one object mixes types there.
+**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart (an optional of a non-reference type such as `int?`, or a function value that may be a closure) keep 16-byte slots. An optional of a reference type uses a null payload for `None` and stays at 8 bytes; an optional of an optional keeps its tag. Struct fields, closure captures and a paused task's registers keep their tags, since one object mixes types there.
 
 ## Determinism
 
@@ -47,7 +47,7 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 
 - **Register-level equivalence.** Same bytecode + same inputs + same fuel -> identical register state at every instruction boundary.
 - **Map iteration order** preserved across serialize/deserialize (insertion-ordered).
-- **Coroutine resume sequence** is deterministic -- same yields in same order, same values.
+- **Pause sequence** is deterministic -- the same pausing calls in the same order, with the same arguments.
 - **Error kind and stack trace structure** are part of the contract. Exact error message text is not.
 - **Fuel cost** is 1 per instruction, no exceptions. A built-in that calls back into script code (`sort`, `filter`) costs 1, plus the instructions of each callback. Fuel spent by a call that fails stays spent.
 - **Memory exhaustion** is deterministic -- it depends on what's reachable at points fixed by the allocation count, not on when garbage was collected ([Memory Limit](#memory-limit)).
@@ -104,7 +104,7 @@ Reference: Blackman & Vigna, 2018. The algorithm is fixed -- changing it is a br
 
 ## Heap
 
-Strings, arrays, maps, structs, enums with payloads, closures and coroutines are heap objects. A value refers to one with a `ref`. The heap is garbage collected. String constants live in the chunk, not the heap, and cost nothing against the limit.
+Strings, arrays, maps, structs, enums with payloads, closures and tasks are heap objects. A value refers to one with a `ref`. The heap is garbage collected. String constants live in the chunk, not the heap, and cost nothing against the limit.
 
 **Object kinds:**
 
@@ -116,7 +116,7 @@ Strings, arrays, maps, structs, enums with payloads, closures and coroutines are
 | Struct | its fields |
 | Enum (with payload) | discriminant and payload fields |
 | Closure | prototype index and captured values |
-| Coroutine | status, call frames and their registers |
+| Task | a paused hook: status, call frames and their registers |
 
 How objects are laid out in memory is the implementation's business. Nothing in the language or the serialized form depends on it.
 
@@ -154,7 +154,7 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 | Array | 16 + 8 per slot of capacity (16 for element types that keep their tag) |
 | Map | 16 + 24 per slot of capacity, plus 8 for each of key and value that keeps its tag |
 | Struct, enum payload, closure | 16 + 16 per field or capture |
-| Coroutine | 64 + 16 per register in its frames |
+| Task | 64 + 16 per register in its frames |
 
 **Capacity here is computed from the length**, not taken from the real buffer: the smallest power of two that's at least 4 and at least the number of items. So a `remove`, a rolled-back `push` or a save and load can't make two VMs disagree, whatever their real buffers hold. An object's **allocation size** is its logical size when it's made, plus the increase whenever it grows.
 
@@ -162,7 +162,7 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 
 An implementation needs to collect at a checkpoint only when what it knew was live after its last collection, plus what's been allocated since, could exceed the limit. Near the limit that's one full collection per eighth of the limit allocated, which is linear. Real memory stays under about 1.125 times the limit plus garbage.
 
-**`reset()`** clears the heap and all tasks and coroutines, and runs every module's initializers again. Use it between independent evaluations.
+**`reset()`** clears the heap and all tasks, and runs every module's initializers again. Use it between independent evaluations.
 
 ## Resource Limits
 
@@ -190,7 +190,7 @@ Fuel is serialized. For deterministic replay, hosts must add fuel at the same po
 
 ### Call Depth
 
-Max call stack depth. Default 256. The depth is the number of frames on the running stack. `CALL` adds one and `RETURN` removes one. `RESUME` puts all of the coroutine's frames back on the stack, and `YIELD` takes them all off, so a coroutine paused five calls deep counts five while it runs and nothing while it's paused. Exceeding the limit is a `CallOverflow` error.
+Max call stack depth. Default 256. The depth is the number of frames on the running stack. `CALL` adds one and `RETURN` removes one. Resuming a task puts all of its frames back on the stack, and pausing takes them all off, so a task paused five calls deep counts five while it runs and nothing while it's paused. Exceeding the limit is a `CallOverflow` error.
 
 `TAIL_CALL` reuses the current frame -- doesn't increment.
 
@@ -347,15 +347,11 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 
 `LOAD_NONE` (in Load/Move) constructs `None`. The compiler emits `IS_SOME` + `JMP_IF_NOT` for `is Some` patterns, `??`, and match arms. `UNWRAP` is used for `!` force unwrap and after successful `IS_SOME` checks.
 
-#### Coroutines
+#### Host Calls
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `COROUTINE A B C` | ABC | `R[A] = new coroutine` from func ref `R[B]` with `C` args in `R[B+1..B+C]`. State: `suspended`. |
-| `YIELD A` | ABx | Suspend the running coroutine or task with `R[A]` as the yielded value. On resume, `R[A]` receives the value passed in. |
-| `RESUME A B` | ABC | Resume coroutine `R[A]` with value `R[B]`. `R[A]` = `Some(yielded)`, or `None` if it finished. Finished coroutine = `CoroutineDead` error. |
-
-Coroutine creation is similar to `CALL`: the function reference is in `R[B]`, arguments follow in `R[B+1..B+C]`. The coroutine's register window receives the arguments in `R[0..C-1]`. First `resume()` starts execution from the top of the function.
+| `CALL_EXTERN A Bx` | ABx | Call extern function `Bx` with its arguments in `R[A+1..]`; the result goes in `R[A]`. A deferred extern is queued instead. A pausing extern pauses the task; when the host resumes it, `R[A]` receives the value the host passed. |
 
 ## Error Types
 
@@ -372,7 +368,6 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 | `MemoryExhausted` | Reachable memory exceeded the configured limit |
 | `FuelExhausted` | Instruction budget reached zero |
 | `CallOverflow` | Call depth exceeded max_call_depth |
-| `CoroutineDead` | Resumed a finished coroutine |
 | `ModifiedDuringIteration` | Added or removed a map key inside `for` over that map |
 | `HostError` | Raised by a host function, or a host misuse: a stale handle, a call into the VM from inside an extern |
 | `ScriptError` | Raised by `error(msg)` in script code |

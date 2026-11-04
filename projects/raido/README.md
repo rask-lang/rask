@@ -10,12 +10,12 @@ Serializable state. Deterministic floats. Sandboxed -- the host controls all cap
 
 Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
 
-**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Coroutines and closures serve game scripting. Features that help neither get cut.
+**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Pausing hooks and closures serve game scripting. Features that help neither get cut.
 
 Two use case families, one VM:
 
 - **Verification** (Allgard minting, Apeiron physics/combat/crafting): pure functions, determinism is load-bearing, content-addressed proofs. A trading partner re-executes the same bytecode with the same inputs and checks the output matches.
-- **Content scripting** (NPC AI, dialogue, game logic, GDL client scripts): multi-tick behavior, host entity interaction, sequential logic that yields between ticks.
+- **Content scripting** (NPC AI, dialogue, game logic, GDL client scripts): multi-tick behavior, host entity interaction, sequential logic that pauses between ticks.
 
 What they share: determinism, bounded resources, host interop, structured data (structs/enums), content addressing.
 
@@ -69,7 +69,7 @@ try vm.load(chunk)  // checks bindings, then runs the script's top-level `let`s
 
 match try vm.call("on_tick", [raido.Value.float(dt)]) {
     raido.Outcome.Done(result) => use(result)
-    raido.Outcome.Yielded(task, _) => waiting.push(task)  // vm.resume(task, v) later
+    raido.Outcome.Paused(task, call) => waiting.push(task)  // vm.resume(task, result) later
 }
 
 // Serialize entire VM state
@@ -87,10 +87,10 @@ let vm2 = raido.Vm.deserialize(snapshot)
 const THRESHOLD = 10
 let kills = 0                                // module state: lives between host calls
 
-func chase(mutate attacker: Enemy, target: Enemy) {
+func chase(attacker: Enemy, target: Enemy) {
     loop {
         move_to(attacker, Vec2 { x: target.x, y: target.y })
-        wait(0.5)                            // yields; the host resumes this call later
+        wait(0.5)                            // pauses; the host resumes this call later
     }
 }
 
@@ -104,7 +104,7 @@ func on_enemy_died(e: Enemy) {
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Identity | Verification-first, scripting-capable | Static types serve verification. Coroutines serve scripting. |
+| Identity | Verification-first, scripting-capable | Static types serve verification. Pausing hooks serve scripting. |
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
 | Types | Static, inferred locals | Catches errors at compile time. No instruction dispatches on type; values carry a tag only for the collector and serialization. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
@@ -120,14 +120,14 @@ func on_enemy_died(e: Enemy) {
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
 | Errors | `error()` aborts the call | Every host call into a script is a transaction: a failure throws away what the call changed and the host logs it. No error types, `try` or `catch` to learn; absence is `T?`. |
-| Coroutines | Every host call can yield | A hook that yields becomes a task the host resumes. Scripts can make their own with `coroutine(f, args...)`. Serializable. |
+| Pausing | Host functions marked `pausing` | `wait(2.0)` is an ordinary call that pauses the hook; the host resumes it with the result. No `yield`, no coroutine objects. Serializable. |
 | Stdlib | Always present | Core functions, `math`, `bit` and the built-in methods. Nothing to opt into; the host adds capabilities through its API module. |
 
 ## Use Cases
 
 | Use case | Key properties used |
 |----------|-------------------|
-| Game entity scripts | Extern structs for entities, coroutines for AI, determinism for netcode |
+| Game entity scripts | Extern structs for entities, pausing hooks for AI, determinism for netcode |
 | Workflow engine | Serialize/resume at each step, deterministic for audit |
 | Plugin system | Sandbox, instruction limits, host-controlled capabilities |
 | Rule engine | Deterministic evaluation, reproducible results |
@@ -144,7 +144,7 @@ func on_enemy_died(e: Enemy) {
 |------|----------------|
 | [language/types.md](language/types.md) | Static type system, ints and floats, structs, enums, optionals, functions and closures |
 | [language/syntax.md](language/syntax.md) | Grammar, variables, functions, control flow, operators, declarations |
-| [language/coroutines.md](language/coroutines.md) | Cooperative multitasking |
+| [language/pausing.md](language/pausing.md) | Hooks that wait, and how the host resumes them |
 | [language/stdlib.md](language/stdlib.md) | Configurable built-in modules |
 
 ### VM -- how the machine executes
@@ -190,7 +190,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
 | Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
-| Memory | **Garbage-collected heap the script can't observe.** | Coroutines, closures and module state keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, checked at points fixed by the allocation count, and serialization walks the object graph in a fixed order, so both are identical on every machine. |
+| Memory | **Garbage-collected heap the script can't observe.** | Paused hooks, closures and module state keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, checked at points fixed by the allocation count, and serialization walks the object graph in a fixed order, so both are identical on every machine. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **A published API module of `extern struct` / `extern func`.** The host declares its shapes once; scripts see them already imported. | Compile-time type checking. Load-time mismatch detection. The module's hash is part of every script's identity. |
@@ -198,7 +198,8 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Module state | **Top-level `let`.** | Every mod needs a counter or a flag that outlives one host call. Module variables are heap roots, so they're saved, restored and rolled back with everything else; `const` names a value that never changes. |
-| Yield | **One yield type per host, declared in its API module.** | `yield` passes values between script and host. Typing it per function would colour every function that calls one that waits; typing it per host keeps `wait(2.0)` an ordinary call. |
+| Pausing | **Host functions marked `pausing`; no `yield` or coroutines in the language.** | A modder writes `wait(2.0)` or `let choice = ask(player, "...")` and it reads like any call. The pausing function's signature types what goes out and what comes back, and nothing that calls it needs marking. Script-made coroutines would add a second way to do the same thing; a hook that loops and waits already runs as long as it likes. |
+| Parameters | **Shared by reference, no modes.** | Structs, arrays and maps behave as in JS, Python and Lua: a function can change what it's given. A read-only default needs a rule for every way a reference can be copied, and I'd rather have nothing to learn. |
 
 **String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`substring`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic -- Unicode case mapping tables are large and version-dependent.
 

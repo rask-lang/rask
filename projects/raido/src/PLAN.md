@@ -44,11 +44,10 @@ main.rk       demo: runs hand-assembled fib
   read-only method borrowed (rask-lang/rask#1747). All tests pass on
   `--interp`. `apply_undo` borrows its entry to dodge rask-lang/rask#1748.
 
-- The compiler. Until it exists, the capture rule, read-only tracking, the
-  published API module and the provable profile have nothing to live in.
-- Coroutines and tasks: `COROUTINE`, `YIELD`, `RESUME`, `vm.resume`.
-- Externs: `GET_FIELD`/`SET_FIELD`, the write buffer, deferred calls, undo
-  callbacks.
+- The compiler. Until it exists, the capture rule, the published API module
+  and the provable profile have nothing to live in.
+- Externs: `CALL_EXTERN`, `GET_FIELD`/`SET_FIELD`, the write buffer,
+  deferred and pausing calls, tasks and `vm.resume`, undo callbacks.
 - `CONCAT`, `ENUM_TAG`, `TAIL_CALL`, enums with payloads, string constants,
   the built-in methods (`push`, `sort`, ...), PRNG draws.
 - Arithmetic reads the operand tag to choose int or float. Typed opcodes from

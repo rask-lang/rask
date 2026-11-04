@@ -51,14 +51,12 @@ enum Opcode: u8 {
     IS_SOME = 35,
     UNWRAP = 36,
     WRAP_SOME = 37,
-    COROUTINE = 38,
-    YIELD = 39,
-    RESUME = 40,
-    IDIV = 41,
-    CLOSURE = 42,
-    GET_CAPTURE = 43,
-    GET_MODULE = 44,
-    SET_MODULE = 45
+    CALL_EXTERN = 38,
+    IDIV = 39,
+    CLOSURE = 40,
+    GET_CAPTURE = 41,
+    GET_MODULE = 42,
+    SET_MODULE = 43
 }
 
 extend Opcode {
@@ -102,9 +100,7 @@ extend Opcode {
             Opcode.IS_SOME => return "IS_SOME"
             Opcode.UNWRAP => return "UNWRAP"
             Opcode.WRAP_SOME => return "WRAP_SOME"
-            Opcode.COROUTINE => return "COROUTINE"
-            Opcode.YIELD => return "YIELD"
-            Opcode.RESUME => return "RESUME"
+            Opcode.CALL_EXTERN => return "CALL_EXTERN"
             Opcode.IDIV => return "IDIV"
             Opcode.CLOSURE => return "CLOSURE"
             Opcode.GET_CAPTURE => return "GET_CAPTURE"
@@ -182,10 +178,10 @@ func disassemble_instr(instr: u32, offset: i64) -> string {
         let val = if bx >= 32768 { bx - 65536 } else { bx }
         return "{offset}: {name} r{a} {val}"
     }
-    if k == Opcode.LOAD_CONST as i64 || k == Opcode.FUNC_REF as i64 || k == Opcode.CLOSURE as i64 || k == Opcode.GET_MODULE as i64 || k == Opcode.SET_MODULE as i64 || k == Opcode.NEW_STRUCT as i64 {
+    if k == Opcode.LOAD_CONST as i64 || k == Opcode.FUNC_REF as i64 || k == Opcode.CLOSURE as i64 || k == Opcode.GET_MODULE as i64 || k == Opcode.SET_MODULE as i64 || k == Opcode.NEW_STRUCT as i64 || k == Opcode.CALL_EXTERN as i64 {
         return "{offset}: {name} r{a} #{decode_bx(instr)}"
     }
-    if k == Opcode.JMP as i64 || k == Opcode.JMP_IF as i64 || k == Opcode.JMP_IF_NOT as i64 || k == Opcode.YIELD as i64 {
+    if k == Opcode.JMP as i64 || k == Opcode.JMP_IF as i64 || k == Opcode.JMP_IF_NOT as i64 {
         return "{offset}: {name} r{a} {decode_sbx(instr)}"
     }
     return "{offset}: {name} r{a} r{decode_b(instr)} r{decode_c(instr)}"

@@ -105,7 +105,7 @@ A closure can use variables from around it:
 ```raido
 let threshold = 10
 let weak = ships.filter(|s| s.health < threshold)
-let guard = coroutine(|| patrol(npc, post))
+let nearest = |u| distance(u, home)
 ```
 
 One rule: a variable a closure uses is never assigned after its `let`, anywhere in the function, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else, or in a module variable:
@@ -183,20 +183,20 @@ A host function that changes the world and returns nothing can be marked `deferr
 extern deferred func send_message(target: string, body: string)
 ```
 
-The module also declares what `yield` passes to the host and what comes back, written like a function (see [coroutines.md](coroutines.md#the-yield-type)), and may contain ordinary Raido functions built on top:
+A host function that takes time is marked `pausing`: calling it pauses the hook until the host resumes it with the result (see [pausing.md](pausing.md)).
 
 ```raido
-enum Wait { Seconds(float), NextTick }
-extern yield(Wait) -> void
-
-func wait(seconds: float) { yield Wait.Seconds(seconds) }
+extern pausing func wait(seconds: float)
+extern pausing func ask(player: Unit, prompt: string) -> string
 ```
+
+The module may also contain ordinary Raido types and functions every script gets.
 
 A script may not contain `extern` declarations of its own. See [vm/interop.md](../vm/interop.md#the-published-api) for how the module is published and checked.
 
 ### Extend
 
-Add methods to structs and enums. Same as Rask: `self` is read-only, `mutate self` changes it.
+Add methods to structs and enums. A method can change `self`, like any function can change what it's given.
 
 ```raido
 extend Vec2 {
@@ -427,15 +427,15 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 ## Keywords
 
-`break`, `const`, `continue`, `deferred`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `while`, `yield`
+`break`, `const`, `continue`, `deferred`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `pausing`, `return`, `struct`, `true`, `while`
 
-`yield` works like `return` without ending the function: `yield` or `yield value`, and it evaluates to what the resumer passed back (`let choice = yield prompt`). `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
+`error()` and `assert()` are built-in functions (core), not keywords.
 
 ## Deliberate Divergences from Rask
 
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
 - **Module-level `let`** -- Rask has no mutable globals; a Raido script's top-level `let` is state that lives between host calls.
-- **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs, arrays and maps are references to a garbage-collected heap; primitives are values. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
+- **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs, arrays and maps are references to a garbage-collected heap; primitives are values. There are no parameter modes: a function can change what it's given, as in JS, Python and Lua.
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
 - **Closures can't reassign what they capture** -- a Rask closure that doesn't outlive its frame can change a captured `mut` variable; Raido has no `mut`, and forbids reassigning a captured variable, so there's no hidden shared state.
 - **No character type** -- Strings only, so single quotes have no meaning.

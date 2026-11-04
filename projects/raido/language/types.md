@@ -26,7 +26,6 @@ Statically typed. Function signatures are fully annotated, local variables are i
 | `map<K, V>` | Key-value store. `K` restricted to `string` or `int`. Insertion-ordered. |
 | `T?` | Optional. Either `Some(value)` or `None`. |
 | `(T, U, ...)` | Tuple. Lightweight grouping for multi-return. |
-| `coroutine` | A suspended function. See [coroutines.md](coroutines.md). |
 
 ## Function Types
 
@@ -60,7 +59,7 @@ struct Ship {
 
 Structs are heap objects; a struct value is a reference. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
 
-**Pass by reference.** Multiple bindings can point to the same struct. A change made through any binding or a `mutate` parameter is visible through all of them. See [Variables](#variables).
+**Pass by reference.** Multiple bindings can point to the same struct. A change made through any binding, or by a function it was passed to, is visible through all of them. See [Variables](#variables).
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
@@ -76,7 +75,7 @@ return Star { id: index, x, y, z, spectral, planet_count, luminosity }
 
 ## Extend
 
-Add methods to any struct or enum. Methods take `self` as the first parameter, read-only unless written `mutate self`. The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
+Add methods to any struct or enum. Methods take `self` as the first parameter and can change it. The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
 
 ```raido
 struct Money {
@@ -96,7 +95,7 @@ extend Money {
         return Money { cents: self.cents * rate // 100 }
     }
 
-    func deposit(mutate self, amount: Money) {
+    func deposit(self, amount: Money) {
         self.cents += amount.cents
     }
 
@@ -114,12 +113,11 @@ let tax = price.percent(8)
 let total = price.add(tax)
 
 let wallet = Money.from_dollars(5)
-wallet.deposit(total)       // `mutate self` changes wallet
+wallet.deposit(total)       // changes wallet
 ```
 
 **Rules:**
 
-- `self` is read-only by default. `mutate self` lets the method change the value.
 - Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
 - Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
 - Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
@@ -201,12 +199,11 @@ A **closure** captures the variables it uses from around it. The rules:
 
 - **A captured variable is never assigned after its `let`**, anywhere in the enclosing function: before the closure, after it, inside it, or around a loop that contains it. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made. Module variables aren't captured; a closure reads them like any other code does.
 - **Structs, arrays and maps are shared**, as everywhere in Raido. A closure that captured `ship` sees `ship.health` change, and can change it.
-- **Read-only stays read-only.** A closure that captures a read-only value can't change it, and what it returns is read-only too ([Variables](#variables)).
 - **Each loop iteration has its own variable**, so `for i in 0..3 { fs.push(|| i) }` makes closures that return 0, 1 and 2.
 - **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
 - **Closures aren't comparable.** There's no `==` on function values ([Equality](#equality)).
 
-A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
+A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a paused hook, a struct field, a host root.
 
 ## Extern Types
 
@@ -239,10 +236,10 @@ ship = other_ship   // OK
 shipp = other_ship  // ERROR: `shipp` isn't declared; did you mean `ship`?
 ```
 
-**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter, including an extern struct. A `mutate` parameter changes the struct the caller passed, and the signature says so. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
+**Functions can change what they're given.** Structs, arrays and maps are references, so a function that changes one changes the caller's, as in JS, Python and Lua. There are no parameter modes to learn:
 
 ```raido
-func apply_damage(mutate ship: Ship, amount: int) {
+func apply_damage(ship: Ship, amount: int) {
     ship.health -= amount
 }
 
@@ -250,30 +247,11 @@ let ship = spawn_ship()
 apply_damage(ship, 10)      // ship.health is now 10 lower
 
 func damaged(ship: Ship, amount: int) -> Ship {
-    return Ship { health: ship.health - amount, ..ship }   // or return a copy
+    return Ship { health: ship.health - amount, ..ship }   // a copy, to leave the original alone
 }
 ```
 
-Read-only follows the value, so a function can't get around it by copying the reference. Anything reached from a read-only value is read-only: a local initialised from it, a field or element read from it, a struct built with `..it`, a closure or coroutine that captured it, and the result of any call that was passed it. A read-only value can't be written through, passed as `mutate`, or stored in a field, collection or module variable.
-
-```raido
-func inspect(s: Ship) {
-    let t = s
-    t.health = 0                // ERROR: `t` is read-only, it came from `s`
-    let w = s.weapons[0]
-    log_all.push(w)             // ERROR: storing a read-only value
-}
-```
-
-Assigning a read-only value to a writable local is an error too, so a local is read-only or not for its whole life. The rule is coarse on purpose: the compiler decides it from signatures alone, and a function that needs to hand back part of a parameter for writing takes it `mutate`.
-
-Extern struct fields follow the same rule; a write goes through the host's setter:
-
-```raido
-func damage_enemy(mutate enemy: Enemy, amount: int) {
-    enemy.health -= amount
-}
-```
+Extern struct fields work the same way; a write goes through the host's setter (`enemy.health -= 5`).
 
 ## Arithmetic Rules
 
@@ -328,7 +306,7 @@ Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the i
 | `string` | same bytes |
 | tuples, enums with payloads, `T?` | same shape and equal parts, recursively; the parts must be comparable |
 | extern structs | the same host object |
-| structs, arrays, maps, coroutines | the same object |
+| structs, arrays, maps | the same object |
 | functions and closures | not comparable; compile error |
 
 So `"a" == "a"`, `(1, 2) == (1, 2)` and `Order.Attack(3) == Order.Attack(3)` are all true. Identity is a yes-or-no answer about the object graph, so it doesn't depend on memory layout or on the collector.

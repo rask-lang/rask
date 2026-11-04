@@ -60,12 +60,12 @@ chunk.exports()          // functions the host can call (with typed signatures)
 // Load -- checks bindings, resolves imports, runs top-level `let`s
 try vm.load(chunk)
 
-// Call a hook. It either finishes or yields and becomes a task.
+// Call a hook. It either finishes or pauses in a pausing host function.
 match try vm.call("on_tick", [raido.Value.float(dt)]) {
     raido.Outcome.Done(result) => use(result)
-    raido.Outcome.Yielded(task, wait) => schedule(task, wait)
+    raido.Outcome.Paused(task, call) => schedule(task, call)   // e.g. wait(0.5)
 }
-// Later: resume it with the yield type's result
+// Later: resume it with that function's result
 let next = try vm.resume(task, raido.Value.void())
 ```
 
@@ -75,7 +75,7 @@ See [chunk-format.md](chunk-format.md) for format details.
 
 ## The Published API
 
-The host publishes its API as one Raido module: `extern` declarations for the structs it exposes and the functions scripts may call, the yield type, and any ordinary Raido types and functions it wants to give every script (`wait`, `Vec2`). Every script compiled for that host sees the module already imported, under the host's chosen name (a game might call it `game`, or import its names directly). Scripts never write `extern` themselves.
+The host publishes its API as one Raido module: `extern` declarations for the structs it exposes and the functions scripts may call, and any ordinary Raido types and functions it wants to give every script (`Vec2`). Every script compiled for that host sees the module already imported, under the host's chosen name (a game might call it `game`, or import its names directly). Scripts never write `extern` themselves.
 
 ```raido
 // game_api.rd -- written by the engine authors, or generated from the
@@ -89,14 +89,10 @@ extern struct Enemy {
 
 struct Vec2 { x: float, y: float }
 
-enum Wait { Seconds(float), NextTick }
-extern yield(Wait) -> void
-
-extern func move_to(mutate entity: Enemy, target: Vec2)
+extern func move_to(entity: Enemy, target: Vec2)
 extern func noise(quality: float, id: int, index: int) -> float
 extern deferred func send_message(target: string, body: string)
-
-func wait(seconds: float) { yield Wait.Seconds(seconds) }
+extern pausing func wait(seconds: float)
 ```
 
 - **One copy of the API.** Adding a field or function to the engine changes the module; scripts don't each carry a stale copy.
@@ -144,7 +140,9 @@ extern func spawn(kind: string, pos: Vec2) -> Enemy        // registered with an
 extern deferred func send_message(target: string, body: string)
 ```
 
-An extern function can't yield; pausing goes through `yield` in Raido code. It also can't call back into the VM: `vm.call` or `vm.resume` from inside an extern is a `HostError`.
+A third kind, **pausing** (`extern pausing func`), takes time: calling it pauses the script, and the host's `vm.call` or `vm.resume` returns `Paused(task, call)` with the function's name and arguments. The host does whatever the function means and later calls `vm.resume(task, result)` ([language/pausing.md](../language/pausing.md)).
+
+An extern function can't call back into the VM: `vm.call` or `vm.resume` from inside an extern is a `HostError`.
 
 **Host side:**
 ```rask
@@ -192,13 +190,13 @@ raido.bind.struct(vm, "config", config)
 The heap is garbage collected, invisibly to scripts ([architecture.md](architecture.md#heap)). The host has one call to make:
 
 ```rask
-// Full reset between independent evaluations -- clears the heap and coroutines
+// Full reset between independent evaluations -- clears the heap and tasks
 vm.reset()
 ```
 
 ## Host References
 
-A heap value the host gets back from a call (a struct, array, string, closure or coroutine) stays alive until the host's next call into the VM finishes, and so does one the host makes for an argument. To keep one longer, the host roots it, like Lua's registry:
+A heap value the host gets back from a call (a struct, array, string or closure) stays alive until the host's next call into the VM finishes, and so does one the host makes for an argument. To keep one longer, the host roots it, like Lua's registry:
 
 ```rask
 let result = try vm.call("make_plan", [])
@@ -278,11 +276,11 @@ The standard library is always present and has no I/O. Everything else a script 
 
 ## Calls Are Transactions
 
-Every run of a script, from `vm.call` or `vm.resume` to the next yield or the end, is one transaction: it either commits or changes nothing. A task that yields three times is four transactions; each yield commits what came before it, so the host can act on it while the task waits.
+Every run of a script, from `vm.call` or `vm.resume` to the next pause or the end, is one transaction: it either commits or changes nothing. A task that pauses three times is four transactions; each pause commits what came before it, so the host can act on it while the task waits.
 
 - **Objects allocated** during the run become unreachable when it fails; the collector reclaims them.
 - **Writes to objects that existed before the run** (a struct in a module variable, a map held by a root) go into an undo log: each store records the slot's old value. Module variable writes are logged the same way. On failure the log is replayed backwards. Objects allocated during the run need no logging; each object records the run it was made in, so the check is one comparison.
-- **Coroutines.** Resuming a coroutine that existed before the run logs its status and saved frames first. Its saved frames are replaced as a whole at each yield, never edited, so logging the old ones is one pointer, and rolling back puts the coroutine back where it was paused.
+- **Tasks.** Resuming a task logs its status and saved frames first. Its saved frames are replaced as a whole at each pause, never edited, so logging the old ones is one pointer, and rolling back puts the task back where it was paused.
 - **The PRNG state** is logged at its first use in the run and restored on failure.
 - **Extern field writes** go into a write buffer. Reads within the run see the buffered value; the buffer is applied in write order when the run commits and dropped if it fails.
 - **Immediate extern functions** with effects have their undo callbacks queued; on failure they run in reverse order.
