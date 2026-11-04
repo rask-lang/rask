@@ -22,11 +22,11 @@
 //! one a function *could* have, and if a program declares it the collision is
 //! an ordinary duplicate declaration, reported by name.
 //!
-//! Only a dependency is qualified. A subdirectory of the program is also a
-//! package by modules/PO1, and its declarations are merged the same way — but
-//! it shares the program's namespace, because `func main()` in `src/main.rk`
-//! is one of those and renaming it leaves the program without an entry point.
-//! Giving a nested package its own scope is PO3 and a separate step.
+//! A subdirectory of the program is a package too (modules/PO1, PO3), and is
+//! qualified the same way, by its path from the root: `pa/sub`'s `f` is
+//! `f_pa_sub`. What something outside the program calls by name keeps it: a
+//! C symbol, a function with a foreign ABI, and the entry point when a
+//! sub-package holds it (`src/main.rk`).
 
 use std::collections::HashMap;
 
@@ -181,17 +181,52 @@ pub fn qualify_references(
     rewrite::rewrite_decls(decls, &mut r);
 }
 
-/// The package an import path names, as its key in `exports`, and how many
-/// of the path's segments that takes: the longest prefix that is one.
-/// `import pa.sub.f` is `pa.sub`, two segments, then the member `f`.
-pub fn imported_package(
-    path: &[String],
-    exports: &HashMap<String, HashMap<String, String>>,
-) -> Option<(String, usize)> {
-    (1..=path.len()).rev().find_map(|n| {
-        let key = path[..n].join(".");
-        exports.contains_key(&key).then_some((key, n))
-    })
+/// What an import path can name, from one package.
+///
+/// A package's key in `exports` is its path from the root (`pa.sub`), or a
+/// dependency's name. An import may also spell it with the root package's
+/// name in front (`import proj.pa`), from the importing package
+/// (`import sub` inside `pa`), or by its last segment alone when only one
+/// package ends that way, which is how the resolver finds it too.
+pub struct ImportScope<'a> {
+    pub exports: &'a HashMap<String, HashMap<String, String>>,
+    /// The root package's name.
+    pub root: &'a str,
+    /// The importing package's key; `None` for the root.
+    pub importer: Option<&'a str>,
+    /// The qualified names a package keeps to itself, which `import pa.*`
+    /// leaves out.
+    pub private: &'a std::collections::HashSet<String>,
+}
+
+impl ImportScope<'_> {
+    /// The package an import path names, as its key in `exports`, and how
+    /// many of the path's segments that takes: the longest prefix that is
+    /// one. `import pa.sub.f` is `pa.sub`, two segments, then the member `f`.
+    pub fn package(&self, path: &[String]) -> Option<(String, usize)> {
+        (1..=path.len()).rev().find_map(|n| self.key(&path[..n]).map(|k| (k, n)))
+    }
+
+    fn key(&self, segments: &[String]) -> Option<String> {
+        let written = segments.join(".");
+        let mut candidates = vec![written.clone()];
+        if segments.len() > 1 && segments[0] == self.root {
+            candidates.push(segments[1..].join("."));
+        }
+        if let Some(importer) = self.importer {
+            candidates.push(format!("{}.{}", importer, written));
+        }
+        if let Some(k) = candidates.into_iter().find(|k| self.exports.contains_key(k)) {
+            return Some(k);
+        }
+        let [only] = segments else { return None };
+        let mut ending: Vec<&String> =
+            self.exports.keys().filter(|k| k.rsplit('.').next() == Some(only.as_str())).collect();
+        match ending.len() {
+            1 => ending.pop().cloned(),
+            _ => None,
+        }
+    }
 }
 
 /// Names brought in unqualified by `import pkg.Name` (modules/IM4, IM5).
@@ -205,8 +240,9 @@ pub fn imported_package(
 /// names are left alone and named in `shadowed`, for the caller to report.
 pub fn unqualified_imports(
     decls: &[Decl],
-    exports: &HashMap<String, HashMap<String, String>>,
+    scope: &ImportScope,
 ) -> (HashMap<String, String>, Vec<ShadowedImport>) {
+    let exports = scope.exports;
     let mut out = HashMap::new();
     let mut clashes = Vec::new();
     let declared: HashMap<String, rask_ast::Span> = decls
@@ -215,8 +251,10 @@ pub fn unqualified_imports(
         .collect();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        let Some((pkg, len)) = imported_package(&import.path, exports) else { continue };
-        if len == import.path.len() {
+        let Some((pkg, len)) = scope.package(&import.path) else { continue };
+        // `import pa` binds the package, not its names; `import pa.*` all of
+        // them.
+        if len == import.path.len() && !import.is_glob {
             continue;
         }
         let pkg = &pkg;
@@ -225,7 +263,7 @@ pub fn unqualified_imports(
         // grouped form `import pkg.{A, B}` parses into one declaration per
         // name, so the path's tail is the whole list either way.
         let wanted: Vec<String> = if import.is_glob {
-            map.keys().cloned().collect()
+            map.iter().filter(|(_, q)| !scope.private.contains(*q)).map(|(n, _)| n.clone()).collect()
         } else {
             import.path[len..].to_vec()
         };

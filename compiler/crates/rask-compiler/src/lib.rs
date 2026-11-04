@@ -767,7 +767,20 @@ fn check_package_scoped(
     // (`pa.sub` → `f_pa_sub`): it's a package of its own (modules/PO3), and
     // its names are reached only through it (IM1, #1744). Its entry point
     // keeps its name, since that's what the program starts from.
-    let root_path_len = pkg_ctx.registry.get(pkg_ctx.root_id).map_or(0, |p| p.path.len());
+    let root = pkg_ctx.registry.get(pkg_ctx.root_id);
+    let root_path_len = root.map_or(0, |p| p.path.len());
+    let root_name = root.map(|p| p.name.clone()).unwrap_or_default();
+    // A sub-package's `main` is the entry point only when the root has none,
+    // as in a `src/` layout. Otherwise it's an ordinary name of its package.
+    let root_has_entry = pkg_ctx.all_decls.iter().any(|d| {
+        matches!(&d.kind, DeclKind::Fn(f) if f.name == "main" || f.attrs.iter().any(|a| a.is("entry")))
+    });
+    // Each package's suffix, unique however its path and name are spelled:
+    // `pa/sub` and `pa_sub/` would both be `_pa_sub` otherwise.
+    let mut suffixes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut import_names: HashMap<rask_resolve::PackageId, String> = HashMap::new();
+    // Every private declaration's qualified name.
+    let mut private: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
@@ -780,15 +793,31 @@ fn check_package_scoped(
             pkg.path[root_path_len..].join(".")
         };
         package_names.push(import_name.clone());
-        let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
-        for decl in &decls {
-            if !is_public_decl(decl) {
-                if let Some(name) = decl.name().map(str::to_string) {
-                    private_elsewhere.entry(name).or_default().push((pkg.id, pkg.name.clone(), decl.span));
-                }
-            }
+        let base = import_name.replace('.', "_");
+        let mut suffix = base.clone();
+        let mut n = 1;
+        while !suffixes.insert(suffix.clone()) {
+            n += 1;
+            suffix = format!("{}{}", base, n);
         }
-        let map = package_scope::qualify_declarations(&mut decls, &import_name.replace('.', "_"), !pkg.is_external);
+        let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
+        let written: Vec<(String, Span)> = decls
+            .iter()
+            .filter(|d| !is_public_decl(d))
+            .filter_map(|d| Some((d.name()?.to_string(), d.span)))
+            .collect();
+        let map = package_scope::qualify_declarations(&mut decls, &suffix, !pkg.is_external && !root_has_entry);
+        // By the name as written, for a bare use that resolve can't find, and
+        // as qualified, for `pa.hidden()` that it can.
+        for (name, span) in written {
+            let entry = (pkg.id, import_name.clone(), span);
+            if let Some(q) = map.get(&name).filter(|q| **q != name) {
+                private.insert(q.clone());
+                private_elsewhere.entry(q.clone()).or_default().push(entry.clone());
+            }
+            private_elsewhere.entry(name).or_default().push(entry);
+        }
+        import_names.insert(pkg.id, import_name.clone());
         exports.insert(import_name, map);
         merged.push((pkg.id, decls));
     }
@@ -803,10 +832,11 @@ fn check_package_scoped(
             .iter()
             .flat_map(|(_, decls)| package_scope::annotation_names(decls))
             .collect();
-        let root_visible = visible_packages(&pkg_ctx.all_decls, exports);
+        let root_scope = package_scope::ImportScope { exports, root: &root_name, importer: None, private: &private };
+        let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
-            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_visible);
+            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
         diags.extend(
@@ -814,10 +844,16 @@ fn check_package_scoped(
                 .iter()
                 .map(unimported_annotation_diagnostic),
         );
-        for (_, decls) in merged.iter_mut() {
-            let visible = visible_packages(decls, exports);
+        for (id, decls) in merged.iter_mut() {
+            let scope = package_scope::ImportScope {
+                exports,
+                root: &root_name,
+                importer: import_names.get(id).map(String::as_str),
+                private: &private,
+            };
+            let visible = visible_packages(decls, &scope);
             package_scope::qualify_references(decls, &visible, &annotations);
-            let (imported, shadowed) = package_scope::unqualified_imports(decls, &visible);
+            let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);
             package_scope::qualify_imported_names(decls, &imported, &annotations);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
             diags.extend(
@@ -1412,12 +1448,13 @@ fn unimported_annotation_diagnostic(u: &package_scope::UnimportedAnnotation) -> 
 /// declarations by `mylib.Name` works too.
 fn visible_packages(
     decls: &[Decl],
-    exports: &HashMap<String, HashMap<String, String>>,
+    scope: &package_scope::ImportScope,
 ) -> HashMap<String, HashMap<String, String>> {
+    let exports = scope.exports;
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        let Some((pkg, len)) = package_scope::imported_package(&import.path, exports) else { continue };
+        let Some((pkg, len)) = scope.package(&import.path) else { continue };
         // `import pa.sub` binds `sub` (modules/IM2).
         let last = import.path[len - 1].clone();
         let binding = match &import.alias {

@@ -10023,3 +10023,48 @@ fn the_interpreter_reads_package_qualified_types_and_patterns() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Every spelling of a sub-package import the resolver accepts reaches the
+/// package's qualified names: the root's name in front, a nested package by
+/// its short name, and `import pa.*` (#1744).
+#[test]
+fn sub_package_imports_in_every_spelling() {
+    let dir = temp_project(
+        "subpkg_spellings",
+        &[
+            ("pa/a.rk", "import sub\n\npublic struct Pt {\n    public x: i32\n}\n\npublic func make(x: i32) -> Pt {\n    return Pt(x: sub.f(x))\n}\n\npublic const LIMIT: i32 = 5\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x + 1\n}\n"),
+            ("pb/b.rk", "public func g() -> i32 {\n    return 30\n}\n"),
+            ("main.rk", "import pa.*\nimport proj.pb\n\nfunc main() {\n    let q = make(3)\n    println(\"{q.x} {LIMIT} {pb.g()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 5 30"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Packages whose paths spell the same once joined (`pa/sub`, `pa_sub/`)
+/// are still two, a sub-package's `main` beside the root's is an ordinary
+/// function, and a private one is refused through its package too.
+#[test]
+fn sub_packages_keep_apart_and_keep_their_private_names() {
+    let dir = temp_project(
+        "subpkg_apart",
+        &[
+            ("pa/sub/s.rk", "public func f() -> i32 {\n    return 1\n}\n"),
+            ("pa_sub/s.rk", "public func f() -> i32 {\n    return 2\n}\n"),
+            ("pc/c.rk", "public func main() -> i32 {\n    return 3\n}\n\nfunc hidden() -> i32 {\n    return 4\n}\n"),
+            ("main.rk", "import pa.sub\nimport pa_sub\nimport pc\n\nfunc main() {\n    println(\"{sub.f()} {pa_sub.f()} {pc.main()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("1 2 3"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pc\n\nfunc main() {\n    println(\"{pc.hidden()}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0877") && out.contains("private to `pc`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
