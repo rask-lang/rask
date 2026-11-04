@@ -91,6 +91,37 @@ pub fn touches_memory(e: &CExpr) -> bool {
     }
 }
 
+/// The functions `e` calls, by name, in order, without repeats.
+pub fn calls(e: &CExpr) -> Vec<String> {
+    fn walk(e: &CExpr, out: &mut Vec<String>) {
+        match e {
+            CExpr::Param(_) | CExpr::Lit(_) => {}
+            CExpr::Unary(_, x) | CExpr::Cast(_, x) => walk(x, out),
+            CExpr::Member { base, .. } => walk(base, out),
+            CExpr::Binary(_, a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            CExpr::Ternary(c, a, b) => {
+                walk(c, out);
+                walk(a, out);
+                walk(b, out);
+            }
+            CExpr::Call { func, args } => {
+                if !out.contains(func) {
+                    out.push(func.clone());
+                }
+                for a in args {
+                    walk(a, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(e, &mut out);
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
     Neg,

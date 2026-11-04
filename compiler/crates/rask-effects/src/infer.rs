@@ -21,7 +21,7 @@ type FuncName = String;
 
 /// Run effect inference on declarations.
 pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
-    infer_with_reach(decls, &[], targets, &HashSet::new()).0
+    infer_with_reach(decls, &[], targets, &Default::default()).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -35,9 +35,9 @@ pub fn infer_with_reach(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
-    arithmetic_macros: &HashSet<String>,
+    c_macros: &crate::CMacros,
 ) -> (EffectMap, HashSet<FuncName>) {
-    let mut pass = InferPass::new(targets, arithmetic_macros);
+    let mut pass = InferPass::new(targets, c_macros);
     pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
     (pass.effects, runtime_only)
@@ -52,8 +52,8 @@ struct Cx<'a> {
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
     targets: &'t MethodTargets,
-    /// The C macros whose body is arithmetic, by the checker's reading.
-    arithmetic_macros: &'t HashSet<String>,
+    /// What each C macro's body does, by the checker's reading.
+    c_macros: &'t crate::CMacros,
     /// The imports of the unit being collected, for what a name at a call
     /// site means.
     imports: sources::ImportedNames,
@@ -81,10 +81,10 @@ struct InferPass<'t> {
 }
 
 impl<'t> InferPass<'t> {
-    fn new(targets: &'t MethodTargets, arithmetic_macros: &'t HashSet<String>) -> Self {
+    fn new(targets: &'t MethodTargets, c_macros: &'t crate::CMacros) -> Self {
         Self {
             targets,
-            arithmetic_macros,
+            c_macros,
             imports: sources::ImportedNames::default(),
             scan_reach: true,
             effects: HashMap::new(),
@@ -342,16 +342,20 @@ impl<'t> InferPass<'t> {
 
     /// INF5: a C function could do anything, so it blocks and touches ambient
     /// state unless its declaration says `@memory_only`. Either way it's C
-    /// code. A C macro whose body is arithmetic is none of that: the compiler
-    /// computes it.
+    /// code. A C macro has its body's effects: arithmetic is pure, since the
+    /// compiler computes it; a field read is C code; a call has the effects
+    /// of the C function it calls.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
                 // `@ambient`: reads ambient state (the clock, randomness) but
                 // never waits, which is a protocol engine's whole shape.
                 let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
-                let effects = if self.arithmetic_macros.contains(&e.name) {
-                    Effects::default()
+                let effects = if let Some(body) = self.c_macros.get(&e.name) {
+                    if !body.calls.is_empty() {
+                        self.call_graph.entry(e.name.clone()).or_default().extend(body.calls.iter().cloned());
+                    }
+                    Effects { c_code: body.touches_memory, ..Default::default() }
                 } else if says("memory_only") {
                     Effects { c_code: true, ..Default::default() }
                 } else {
@@ -900,7 +904,7 @@ mod tests {
     /// the way the compiler runs it.
     fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
         let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-        infer_with_reach(decls, &stdlib, targets, &HashSet::new()).0
+        infer_with_reach(decls, &stdlib, targets, &Default::default()).0
     }
 
     fn target(name: &str) -> rask_ast::decl::MethodTarget {

@@ -548,9 +548,9 @@ pub struct TypedProgram {
     /// that call. Lowering folds a constant one and routes the rest to a C
     /// function for those types.
     pub c_macro_calls: HashMap<NodeId, rask_c_parse::cexpr::MacroCall>,
-    /// The C macros whose body is arithmetic, which the compiler computes:
-    /// no memory read, no call into C. Effect inference reads them as pure.
-    pub arithmetic_c_macros: std::collections::HashSet<String>,
+    /// What each C macro's body does, by the macro's name, for effect
+    /// inference. One whose body doesn't parse can't be called and isn't here.
+    pub c_macro_bodies: HashMap<String, rask_ast::decl::CMacroBody>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after
     /// the checker — the merged decl list has no packages left in it.

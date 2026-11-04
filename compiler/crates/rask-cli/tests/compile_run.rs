@@ -9856,20 +9856,24 @@ fn an_arithmetic_c_macro_runs_in_comptime() {
     }
 }
 
-/// A macro that calls C, in `comptime`, is refused for what it is.
+/// C in `comptime` is refused for what it is. A macro has its body's
+/// effects, so one that calls a C function is that function's: `abs` is
+/// assumed to block (INF5). A `@memory_only` one blocks nothing and is still
+/// C (#1731).
 #[test]
-fn a_c_macro_that_calls_c_is_refused_in_comptime_as_c_code() {
+fn c_in_comptime_is_refused_for_what_it_does() {
     let dir = temp_project(
         "macro_ct_c",
         &[(
             "main.rk",
-            "extern \"C\" func abs(x: c_int) -> c_int\n\n@c_macro(\"abs(X)\", header: \"stdlib.h\")\nextern \"C\" func G(X: _) -> _\n\n\
-             func main() {\n    let c = comptime G(2)\n    println(\"{c}\")\n}\n",
+            "extern \"C\" func abs(x: c_int) -> c_int\n@memory_only\nextern \"C\" func labs(x: c_long) -> c_long\n\n\
+             @c_macro(\"abs(X)\", header: \"stdlib.h\")\nextern \"C\" func G(X: _) -> _\n\n\
+             func main() {\n    let c = comptime G(2)\n    let d = comptime labs(2)\n    println(\"{c} {d}\")\n}\n",
         )],
     );
     let (out, ok) = run_project("--native", &dir);
     assert!(!ok, "{out}");
-    assert!(out.contains("reaches C code at compile time"), "{out}");
-    assert!(!out.contains("blocks"), "{out}");
+    assert!(out.contains("reaches a call that blocks at compile time — `G` does"), "{out}");
+    assert!(out.contains("reaches C code at compile time — `labs` does"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }

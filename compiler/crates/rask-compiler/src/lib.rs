@@ -599,7 +599,7 @@ fn check_loaded_scoped(
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.arithmetic_c_macros, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1004,7 +1004,7 @@ fn check_package_scoped(
     // --- Effects ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.arithmetic_c_macros, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
