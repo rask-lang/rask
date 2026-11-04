@@ -2835,6 +2835,16 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
                     .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
             }
+            AmbiguousConformanceCall { ty, method, candidates, span } => {
+                let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
+                    .with_code("E0957")
+                    .with_primary(*span, "the arguments don't say which");
+                for c in candidates {
+                    d = d.with_note(format!("it fits `{}`", c));
+                }
+                d.with_fix("give the argument a type of its own: annotate the binding it comes from, or put a suffix on a literal")
+                    .with_why(format!("`{ty}` has one `{method}` per conformance of the interface, and a call's arguments pick which (type.generics/GT7)"))
+            }
             NoConformanceTakes { ty, method, args, candidates, span } => {
                 let mut d = Diagnostic::error(format!("no `{}` on `{}` takes ({})", method, ty, args.join(", ")))
                     .with_code("E0956")

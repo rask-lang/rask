@@ -331,6 +331,10 @@ pub struct TypeChecker {
     pub(super) literal_conversions: HashMap<NodeId, type_defs::LiteralConversion>,
     /// GT7: calls through a bound naming a generic interface.
     pub(super) conformance_calls: HashMap<NodeId, type_defs::ConformanceCall>,
+    /// GT7: calls still waiting to learn which conformance they reach, by
+    /// span. One still here once deferred calls are done has nothing left to
+    /// decide it, and is reported.
+    pub(super) waiting_conformance_calls: HashMap<(u16, usize, usize), (String, String, Vec<String>, rask_ast::Span)>,
     /// OR1: method calls that were operators before desugaring rewrote them.
     ///
     /// `a * b` and `a.mul(b)` are one node kind by the time the checker sees
@@ -709,6 +713,7 @@ impl TypeChecker {
             operator_targets: HashMap::new(),
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
+            waiting_conformance_calls: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
             fn_defaults: HashMap::new(),

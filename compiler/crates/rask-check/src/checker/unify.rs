@@ -387,6 +387,14 @@ impl TypeChecker {
             }
         }
         self.retry_deferred_fields();
+        // GT7: a call still unsure which conformance it reaches has nothing
+        // left to tell it. Dropping it would leave the plain name, which no
+        // longer names any body once the methods are filed.
+        let mut waiting: Vec<_> = std::mem::take(&mut self.waiting_conformance_calls).into_values().collect();
+        waiting.sort_by_key(|(_, _, _, span)| (span.file_id, span.start));
+        for (ty, method, candidates, span) in waiting {
+            self.errors.push(TypeError::AmbiguousConformanceCall { ty, method, candidates, span });
+        }
         // Anything still deferred has nothing left to wait for. Those were
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.

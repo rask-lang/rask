@@ -1248,7 +1248,11 @@ impl TypeChecker {
                 let picked = match self.pick_conformance_method(*type_id, &methods, &method, &args, &HashMap::new()) {
                     ConformancePick::NotFiled => None,
                     ConformancePick::Found(sig) => Some(sig),
-                    ConformancePick::Wait => {
+                    ConformancePick::Wait(candidates) => {
+                        self.waiting_conformance_calls.insert(
+                            (span.file_id, span.start, span.end),
+                            (self.render_type(&ty), method.clone(), candidates, span),
+                        );
                         self.deferred_methods.push(TypeConstraint::HasMethod {
                             ty: ty.clone(),
                             method,
@@ -1260,10 +1264,21 @@ impl TypeChecker {
                         return Ok(false);
                     }
                     ConformancePick::NoneFits(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
                         return Err(self.no_conformance_takes(&ty, &method, &args, candidates, span));
+                    }
+                    ConformancePick::Ambiguous(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(TypeError::AmbiguousConformanceCall {
+                            ty: self.render_type(&ty),
+                            method,
+                            candidates,
+                            span,
+                        });
                     }
                 };
                 if let Some(sig) = &picked {
+                    self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
                     self.record_filed_call(call_node, &sig.name);
                 }
                 if let Some(method_sig) = picked.as_ref().or_else(|| methods.iter().find(|m| m.name == method)) {
@@ -1531,7 +1546,11 @@ impl TypeChecker {
                 let conformance_pick = match self.pick_conformance_method(*base, &methods, &method, &args, &receiver_subst) {
                     ConformancePick::NotFiled => None,
                     ConformancePick::Found(sig) => Some(sig),
-                    ConformancePick::Wait => {
+                    ConformancePick::Wait(candidates) => {
+                        self.waiting_conformance_calls.insert(
+                            (span.file_id, span.start, span.end),
+                            (self.render_type(&ty), method.clone(), candidates, span),
+                        );
                         self.deferred_methods.push(TypeConstraint::HasMethod {
                             ty: ty.clone(),
                             method,
@@ -1543,7 +1562,17 @@ impl TypeChecker {
                         return Ok(false);
                     }
                     ConformancePick::NoneFits(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
                         return Err(self.no_conformance_takes(&ty, &method, &args, candidates, span));
+                    }
+                    ConformancePick::Ambiguous(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(TypeError::AmbiguousConformanceCall {
+                            ty: self.render_type(&ty),
+                            method,
+                            candidates,
+                            span,
+                        });
                     }
                 };
 
@@ -1552,6 +1581,9 @@ impl TypeChecker {
                 let filed = self.types.filed_methods.get(&(*base, method.clone())).cloned().unwrap_or_default();
                 let candidates: Vec<&MethodSig> =
                     methods.iter().filter(|m| m.name == method || filed.contains(&m.name)).collect();
+                if conformance_pick.is_some() {
+                    self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                }
                 let found = if conformance_pick.is_some() {
                     conformance_pick.as_ref()
                 } else if candidates.len() > 1 {
@@ -3672,8 +3704,11 @@ pub(super) enum ConformancePick {
     NotFiled,
     /// The arguments pick this one.
     Found(MethodSig),
-    /// An argument hasn't settled enough to say.
-    Wait,
+    /// An argument hasn't settled enough to say; the conformances still in
+    /// the running.
+    Wait(Vec<String>),
+    /// Every argument is known and more than one conformance takes them.
+    Ambiguous(Vec<String>),
     /// No conformance takes these arguments; the candidates' signatures.
     NoneFits(Vec<String>),
 }
@@ -3720,10 +3755,33 @@ impl TypeChecker {
                 }
                 fits.push(*sig);
             }
+            let named = |fits: &[&MethodSig]| fits.iter().map(|s| self.render_signature(method, s)).collect();
+            // A tie between primitives an unsuffixed literal could be breaks
+            // toward the type the literal would have on its own (L1, L4, L6):
+            // `m.scale(2)` against `Scale<i32>` and `Scale<i64>` is the `i32`.
+            if fits.len() > 1 && !unsure {
+                let defaulted: Vec<&MethodSig> = fits
+                    .iter()
+                    .copied()
+                    .filter(|sig| {
+                        sig.params.iter().zip(args).all(|((p, _), a)| match self.ctx.apply(a) {
+                            Type::Var(id) => match self.ctx.literal_vars.get(&id) {
+                                Some(kind) => self.resolve_named(p) == self.ctx.literal_default(id, *kind),
+                                None => true,
+                            },
+                            _ => true,
+                        })
+                    })
+                    .collect();
+                if let [only] = defaulted.as_slice() {
+                    return ConformancePick::Found((*only).clone());
+                }
+            }
             match (fits.as_slice(), unsure) {
                 ([only], false) => return ConformancePick::Found((*only).clone()),
                 ([], _) => continue,
-                _ => return ConformancePick::Wait,
+                (_, true) => return ConformancePick::Wait(named(&fits)),
+                (_, false) => return ConformancePick::Ambiguous(named(&fits)),
             }
         }
         ConformancePick::NoneFits(candidates.iter().map(|s| self.render_signature(method, s)).collect())
@@ -3739,6 +3797,9 @@ impl TypeChecker {
             if arg.as_option().is_none() && !matches!(arg, Type::None) {
                 return self.arg_fits(inner, &arg, tier);
             }
+        }
+        if matches!(param, Type::Var(_)) {
+            return None;
         }
         if let Type::Var(id) = arg {
             let Some(kind) = self.ctx.literal_vars.get(&id).copied() else { return None };
@@ -3760,7 +3821,7 @@ impl TypeChecker {
 
     /// Structural match, an open variable or an unbound type parameter on
     /// either side matching anything.
-    fn shape_fits(&self, p: &Type, a: &Type) -> Option<bool> {
+    pub(super) fn shape_fits(&self, p: &Type, a: &Type) -> Option<bool> {
         let p = self.resolve_named(&self.ctx.apply(p));
         let a = self.resolve_named(&self.ctx.apply(a));
         let generic_args = |x: &[GenericArg], y: &[GenericArg]| -> Option<bool> {

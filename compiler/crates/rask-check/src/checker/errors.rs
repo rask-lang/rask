@@ -1319,6 +1319,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.generics/GT7: more than one conformance's method takes the call.
+    #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
+    AmbiguousConformanceCall {
+        ty: String,
+        method: String,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
     /// type.generics/GT7: no conformance's method takes these arguments.
     #[error("no `{method}` on `{ty}` takes ({})", args.join(", "))]
     NoConformanceTakes {
@@ -2050,6 +2059,7 @@ impl TypeError {
             | FieldGivenTwice { .. }
             | LiteralConversionNotComptime { .. }
             | NoConformanceTakes { .. }
+            | AmbiguousConformanceCall { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }

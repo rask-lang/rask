@@ -762,8 +762,12 @@ impl TypeChecker {
                 let theirs = checker.required_signatures(&self_ty, &other);
                 for a in &mine {
                     if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
+                        // Could the two take the same arguments for some
+                        // instantiation? A type parameter matches anything:
+                        // `Render<T>` and `Render<Html>` on `Boxed<T>` meet at
+                        // `Boxed<Html>`.
                         let same_args = a.params.len() == b.params.len()
-                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| x == y);
+                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| self.shape_fits(x, y) != Some(false));
                         if same_args {
                             clash = Some(a.name.clone());
                             break;
