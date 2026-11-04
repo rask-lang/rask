@@ -36,11 +36,11 @@
 //    ← parameters →       ← locals →            ← temporaries →
 //
 // - Parameters get the first registers (r0, r1, ...).
-// - Local variables (const/mut) get the next ones.
+// - Local variables (let) get the next ones.
 // - Temporaries are used during expression evaluation and freed afterward.
 //
 // The compiler tracks `next_reg` — the next free register. To allocate:
-//   const reg = self.alloc_reg()  // returns next_reg, increments it
+//   let reg = self.alloc_reg()  // returns next_reg, increments it
 // To free temporaries after an expression:
 //   self.free_reg_to(saved_next_reg)  // reset next_reg back
 //
@@ -52,7 +52,7 @@
 // Solution: emit a placeholder jump with offset 0, remember its position,
 // compile the body, then go back and patch the real offset.
 //
-//   const jump_idx = self.emit_jump(Opcode.JMP_IF_NOT)  // placeholder
+//   let jump_idx = self.emit_jump(Opcode.JMP_IF_NOT)  // placeholder
 //   self.compile_block()                              // compile the body
 //   self.patch_jump(jump_idx)                         // now we know the offset
 //
@@ -61,7 +61,7 @@
 // The compiler maintains a stack of scopes. Each scope knows what local
 // variables exist and which registers they're in.
 //
-// When you write `const x = 42`:
+// When you write `let x = 42`:
 //   1. Compiler emits LOAD_INT to put 42 in the next free register
 //   2. Records in the current scope: "x" → register N
 //
@@ -305,7 +305,7 @@ extend Compiler {
     func compile_statement(self) -> void or CompileError {
         // --- Statements ---
         // A statement is one "line" of code:
-        //   const x = 42
+        //   let x = 42
         //   let y = x + 1
         //   return x
         //   if x > 0 { ... }
