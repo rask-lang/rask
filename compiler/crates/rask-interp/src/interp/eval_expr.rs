@@ -1937,6 +1937,9 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, type_args, fields, spread } => {
+                // `pa.Pt { … }` builds the program's own `Pt`: a sub-package's
+                // declarations are registered under their names.
+                let name = &self.without_project_package(name).to_string();
                 // Explicit generic args (`Ring<i64> { }`) give two names, and
                 // they are not interchangeable. The value carries the BASE name
                 // — methods and field decls register under it (like the

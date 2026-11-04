@@ -9832,12 +9832,12 @@ fn a_bindc_struct_reaches_another_headers_macro() {
         ],
     );
     let bindc = Command::new(rask_binary())
-        .arg("bindc")
-        .arg(dir.join("pa").join("s.h"))
+        .current_dir(&dir)
+        .args(["bindc", "pa/s.h", "-o", "pa/s.rk"])
         .output()
         .expect("failed to run rask bindc");
     assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
-    let mut bound = String::from_utf8_lossy(&bindc.stdout).to_string();
+    let mut bound = std::fs::read_to_string(dir.join("pa").join("s.rk")).unwrap();
     assert!(bound.contains("header: \"s.h\""), "bindc writes the struct's header:\n{bound}");
     bound.push_str("\npublic func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n");
     std::fs::write(dir.join("pa").join("s.rk"), bound).unwrap();
@@ -9875,5 +9875,101 @@ fn c_in_comptime_is_refused_for_what_it_does() {
     assert!(!ok, "{out}");
     assert!(out.contains("reaches a call that blocks at compile time — `G` does"), "{out}");
     assert!(out.contains("reaches C code at compile time — `labs` does"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One header imported by the root and by a sub-package is one set of types:
+/// a `c.Pt` the root builds is the `c.Pt` the package takes.
+#[test]
+fn one_header_imported_by_two_packages_is_one_set_of_types() {
+    let dir = temp_project(
+        "cshared",
+        &[
+            ("shared.h", "#ifndef S_H\n#define S_H\nstruct pt { int v; };\n#endif\n"),
+            ("pa/a.rk", "import c \"../shared.h\" as c\n\npublic func get(p: c.Pt) -> i32 {\n    return p.v\n}\n"),
+            ("main.rk", "import pa\nimport c \"shared.h\" as c\n\nfunc main() {\n    let p = c.Pt(v: 6)\n    println(\"{pa.get(p)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('6'), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Imports whose package and alias names run together still get names of
+/// their own: two packages both called `sub`, and a root alias `c_pa` beside
+/// `pa`'s `c`.
+#[test]
+fn c_imports_never_share_names_by_spelling() {
+    let header = |n: i32| format!("struct pt {{ int v; }};\n#define F(X) ((X) + {n})\n");
+    let dir = temp_project(
+        "cnames",
+        &[
+            ("pa/sub/s.h", &header(1)),
+            ("pb/sub/s.h", &header(2)),
+            ("pa/a.h", &header(3)),
+            ("b.h", &header(4)),
+            ("pa/sub/s.rk", "import c \"s.h\" as c\n\npublic func f(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pb/sub/s.rk", "import c \"s.h\" as c\n\npublic func g(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pa/a.rk", "import pa.sub\nimport c \"a.h\" as c\n\npublic func h(x: i32) -> i32 {\n    let y: i32 = sub.f(x)\n    return c.F(y)\n}\n"),
+            ("pb/b.rk", "import pb.sub\n\npublic func k(x: i32) -> i32 {\n    return sub.g(x)\n}\n"),
+            ("main.rk", "import pa\nimport pb\nimport c \"b.h\" as c_pa\n\nfunc main() {\n    let p = c_pa.Pt(v: 0)\n    println(\"{pa.h(0)} {pb.k(0)} {c_pa.F(p.v)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 2 4"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `rask bindc include/s.h -o src/s.rk` names the header as `src/s.rk`
+/// reaches it, and the result builds.
+#[test]
+fn bindc_output_names_its_header_from_where_it_is_written() {
+    let dir = temp_project(
+        "bindc_where",
+        &[
+            ("include/s.h", "struct pt { int v; };\n#define PV(P) ((P)->v)\n"),
+            ("main.rk", "func main() {\n    mut p = Pt(v: 3)\n    println(\"{unsafe PV(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .current_dir(&dir)
+        .args(["bindc", "include/s.h", "-o", "s.rk"])
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let bound = std::fs::read_to_string(dir.join("s.rk")).unwrap();
+    assert!(bound.contains("header: \"include/s.h\""), "{bound}");
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains('3'), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The interpreter builds `pa.Pt { … }` as the package's `Pt`, so its
+/// methods are found, and matches `pa.Shape.Circle(r)` patterns.
+#[test]
+fn the_interpreter_reads_package_qualified_types_and_patterns() {
+    let dir = temp_project(
+        "interp_pkg_types",
+        &[
+            (
+                "pa/a.rk",
+                "public struct Pt {\n    public v: i32\n}\n\nextend Pt {\n    public func get(self) -> i32 {\n        return self.v\n    }\n}\n\n\
+                 public enum Shape {\n    Circle(i32)\n    Dot\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 7)\n    let s = pa.Shape.Circle(3)\n    match s {\n\
+                 \x20       pa.Shape.Circle(r) => println(\"{p.get()} circle {r}\"),\n        pa.Shape.Dot => println(\"dot\"),\n    }\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("7 circle 3"), "{mode}:\n{out}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

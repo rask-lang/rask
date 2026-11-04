@@ -32,6 +32,13 @@ pub struct Expanded {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// One header's translation: each C name against the compiler's, and what
+/// was skipped and why.
+struct Translated {
+    names: HashMap<String, String>,
+    skipped: HashMap<String, String>,
+}
+
 /// Where the headers live and who reads them.
 pub struct Context<'a> {
     /// The directory of each file, by file id.
@@ -80,6 +87,15 @@ pub fn expand(
         })
         .collect();
 
+    // A header is translated once, whichever packages import it: a second
+    // copy of its structs would be a second set of types, and its functions
+    // are declared once, against the first. Keyed with what's hidden, which
+    // changes the translation.
+    let mut translated: HashMap<(PathBuf, Vec<String>), Translated> = HashMap::new();
+    // What each translation's names are qualified with. Unique, so no two
+    // imports' names can meet whatever the aliases and package names are.
+    let mut qualifiers: HashSet<String> = HashSet::new();
+
     for unit in units.iter_mut() {
         let imports: Vec<(rask_ast::decl::CImportDecl, Span)> = unit
             .decls
@@ -94,19 +110,30 @@ pub fn expand(
         }
         let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut done: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut alias_qualifiers: HashMap<String, String> = HashMap::new();
         let mut skipped: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut generated: Vec<Decl> = Vec::new();
 
         for (import, span) in &imports {
             // A sub-package's `c` isn't the root's: its names carry the
-            // package too, so two packages' `c.Point` are two types.
-            let (qualifier, macro_prefix) = match unit.package {
-                None => (import.alias.clone(), import.alias.clone()),
-                Some(pkg) => (
-                    format!("{}_{}", import.alias, pkg.replace('.', "_")),
-                    format!("{}.{}", pkg, import.alias),
-                ),
-            };
+            // package too, so two packages' `c.Point` from two headers are
+            // two types. A macro is named `<qualifier>.F`.
+            let qualifier = alias_qualifiers
+                .entry(import.alias.clone())
+                .or_insert_with(|| {
+                    let base = match unit.package {
+                        None => import.alias.clone(),
+                        Some(pkg) => format!("{}_{}", import.alias, pkg.replace('.', "_")),
+                    };
+                    let mut q = base.clone();
+                    let mut n = 1;
+                    while !qualifiers.insert(q.clone()) {
+                        n += 1;
+                        q = format!("{}{}", base, n);
+                    }
+                    q
+                })
+                .clone();
             for header in &import.headers {
                 let found = match locate(header, span.file_id, cx) {
                     Ok(p) => p,
@@ -119,10 +146,16 @@ pub fn expand(
                         continue;
                     }
                 };
+                let found = canonical(&found);
                 if !done.insert((found.clone(), import.alias.clone())) {
                     continue;
                 }
-                let found = canonical(&found);
+                let key = (found.clone(), import.hiding.clone());
+                if let Some(t) = translated.get(&key) {
+                    exports.entry(import.alias.clone()).or_default().extend(t.names.clone());
+                    skipped.entry(import.alias.clone()).or_default().extend(t.skipped.clone());
+                    continue;
+                }
                 let text = match translate(&found.display().to_string(), &found, &import.hiding, cx) {
                     Ok(t) => t,
                     Err(msg) => {
@@ -134,6 +167,7 @@ pub fn expand(
                         continue;
                     }
                 };
+                let header_skipped = text.skipped.clone();
                 skipped.entry(import.alias.clone()).or_default().extend(text.skipped);
 
                 let file_id = source_files.len() as u16;
@@ -172,7 +206,7 @@ pub fn expand(
                             // A macro is no symbol: each header's is its own,
                             // under its import's dotted name, which no Rask
                             // declaration can take. Its C name is kept.
-                            let qualified = format!("{}.{}", macro_prefix, e.name);
+                            let qualified = format!("{}.{}", qualifier, e.name);
                             e.attrs.push(c_name_attr(&e.name));
                             map.insert(e.name.clone(), qualified.clone());
                             e.name = qualified;
@@ -185,6 +219,7 @@ pub fn expand(
                 for name in &externs {
                     map.entry(name.clone()).or_insert_with(|| name.clone());
                 }
+                translated.insert(key, Translated { names: map.clone(), skipped: header_skipped });
                 exports.entry(import.alias.clone()).or_default().extend(map);
                 generated.extend(new);
             }
@@ -222,19 +257,16 @@ pub fn expand(
 fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for d in decls.iter_mut() {
+        // A macro's header is what its C is compiled with. A record's is
+        // only needed by a macro handed one, and that compile says so if it
+        // can't be found.
         let (attr, what) = match &mut d.kind {
             DeclKind::Extern(e) => {
                 let what = format!("the header C macro `{}` is compiled with", e.name);
-                (e.attrs.iter_mut().find(|a| a.is("c_macro")), what)
+                (e.attrs.iter_mut().find(|a| a.is("c_macro")), Some(what))
             }
-            DeclKind::Struct(s) => {
-                let what = format!("the header that declares `{}` for C", s.name);
-                (s.attrs.iter_mut().find(|a| a.is("c_name")), what)
-            }
-            DeclKind::Union(u) => {
-                let what = format!("the header that declares `{}` for C", u.name);
-                (u.attrs.iter_mut().find(|a| a.is("c_name")), what)
-            }
+            DeclKind::Struct(s) => (s.attrs.iter_mut().find(|a| a.is("c_name")), None),
+            DeclKind::Union(u) => (u.attrs.iter_mut().find(|a| a.is("c_name")), None),
             _ => continue,
         };
         let Some(args) = attr.and_then(|a| a.args.as_mut()) else { continue };
@@ -252,11 +284,15 @@ fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
                     span: d.span,
                 });
             }
-            Err(msg) => diags.push(
-                Diagnostic::error(format!("C header not found: `{}`", header))
-                    .with_primary(d.span, what)
-                    .with_note(msg),
-            ),
+            Err(msg) => {
+                if let Some(what) = what {
+                    diags.push(
+                        Diagnostic::error(format!("C header not found: `{}`", header))
+                            .with_primary(d.span, what)
+                            .with_note(msg),
+                    );
+                }
+            }
         }
     }
     diags

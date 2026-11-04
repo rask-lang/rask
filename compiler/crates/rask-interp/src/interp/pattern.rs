@@ -196,9 +196,11 @@ impl Interpreter {
                     ..
                 } = value
                 {
-                    // Handle qualified: "Message.Text" → enum "Message", variant "Text"
-                    let matches = if let Some(dot) = name.find('.') {
-                        let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
+                    // Handle qualified: "Message.Text" → enum "Message", variant
+                    // "Text". Anything before the enum says where it lives:
+                    // `pa.Shape.Circle`.
+                    let matches = if let Some((path, pat_variant)) = name.rsplit_once('.') {
+                        let pat_enum = path.rsplit('.').next().unwrap_or(path);
                         enum_name == pat_enum && variant == pat_variant
                     } else {
                         variant == name
@@ -233,7 +235,7 @@ impl Interpreter {
             } => {
                 if let Value::Struct(ref s) = value {
                     let guard = s.lock().unwrap();
-                    if guard.name == *pat_name {
+                    if guard.name == self.without_project_package(pat_name) {
                         let mut bindings = HashMap::new();
                         for (field_name, field_pattern) in pat_fields {
                             if let Some(field_val) = guard.fields.get(field_name) {
@@ -258,8 +260,8 @@ impl Interpreter {
                 // arm never matched at all and every one of them fell to the
                 // wildcard (#910).
                 if let Value::Enum { name: enum_name, variant, fields: payload, .. } = value {
-                    let (pat_enum, pat_variant) = match pat_name.split_once('.') {
-                        Some((e, v)) => (Some(e), v),
+                    let (pat_enum, pat_variant) = match pat_name.rsplit_once('.') {
+                        Some((e, v)) => (Some(e.rsplit('.').next().unwrap_or(e)), v),
                         None => (None, pat_name.as_str()),
                     };
                     if variant != pat_variant

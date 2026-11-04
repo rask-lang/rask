@@ -1274,6 +1274,15 @@ impl Interpreter {
         }
     }
 
+    /// `pa.Pt` as the program's own `Pt`, when `pa` is one of the project's
+    /// packages; anything else as written.
+    pub(crate) fn without_project_package<'n>(&self, name: &'n str) -> &'n str {
+        match name.split_once('.') {
+            Some((pkg, rest)) if self.project_packages.contains(pkg) => rest,
+            _ => name,
+        }
+    }
+
     /// Bind the project's own packages, whose members are reached by their
     /// bare names.
     pub fn register_project_packages(&mut self, names: &[String]) {
