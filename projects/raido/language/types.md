@@ -58,7 +58,7 @@ struct Ship {
 
 Structs are arena-allocated. A struct value in a register is a u32 arena offset. All fields occupy 8 bytes each (i64) regardless of logical type -- bools are stored as i64 0/1, arena offsets are zero-extended. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
 
-**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. Mutation through a `mut` binding or a `mutate` parameter is visible through all bindings to the same offset. See [Let and Mut](#let-and-mut) for mutation rules.
+**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. A change made through any binding or a `mutate` parameter is visible through all bindings to the same offset. See [Variables](#variables).
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
@@ -111,13 +111,13 @@ let price = Money.from_dollars(10)
 let tax = price.percent(8)
 let total = price.add(tax)
 
-mut wallet = Money.from_dollars(5)
-wallet.deposit(total)       // wallet is mut, so it can be passed to `mutate self`
+let wallet = Money.from_dollars(5)
+wallet.deposit(total)       // `mutate self` changes wallet
 ```
 
 **Rules:**
 
-- `self` is read-only by default. `mutate self` lets the method change the value; the caller's binding must be `mut`.
+- `self` is read-only by default. `mutate self` lets the method change the value.
 - Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
 - Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
 - Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
@@ -231,31 +231,25 @@ extern func noise(quality: float, id: int, index: int) -> float
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
-## Let and Mut
+## Variables
 
-`let` and `mut` control mutability of the binding **and the data it reaches**:
-
-- `let x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
-- `mut x = ...` -- can reassign `x`, can mutate fields through `x`
+`let` declares a variable. Every variable can be reassigned and its fields changed; there's no immutable binding to learn. Assigning to a name that was never declared is a compile error.
 
 ```raido
 let ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // ERROR: ship is not mut
-ship = other_ship  // ERROR: ship is not mut
-
-mut ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // OK: ship is mut
-ship = other_ship  // OK: ship is mut
+ship.health -= 10   // OK
+ship = other_ship   // OK
+shipp = other_ship  // ERROR: `shipp` isn't declared; did you mean `ship`?
 ```
 
-**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter. A `mutate` parameter changes the struct the caller passed, so the caller's binding has to be `mut`. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
+**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter. A `mutate` parameter changes the struct the caller passed, and the signature says so. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
 
 ```raido
 func apply_damage(mutate ship: Ship, amount: int) {
     ship.health -= amount
 }
 
-mut ship = spawn_ship()
+let ship = spawn_ship()
 apply_damage(ship, 10)      // ship.health is now 10 lower
 
 func damaged(ship: Ship, amount: int) -> Ship {
@@ -310,7 +304,7 @@ Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the i
 - No interfaces or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
 - `??` supplies the other branch on an optional: `value ?? fallback` (both sides same type)
-- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `mut` l-values including chained access (`ships[i].health -= damage`)
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on any variable, including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
 - Sort stability is required -- `array.sort()` uses a stable sort algorithm
 

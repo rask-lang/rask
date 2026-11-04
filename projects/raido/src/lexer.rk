@@ -24,7 +24,6 @@ enum Token {
 
     // Keywords
     Let
-    Mut
     Mutate
     Func
     Return
@@ -200,7 +199,6 @@ extend Lexer {
     func keyword_or_ident(self, word: string) -> Token {
         match word {
             "let" => return Token.Let
-            "mut" => return Token.Mut
             "mutate" => return Token.Mutate
             "func" => return Token.Func
             "return" => return Token.Return

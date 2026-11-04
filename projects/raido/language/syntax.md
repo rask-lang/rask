@@ -29,12 +29,12 @@ Escape sequences: `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`. Single quo
 ## Variables
 
 ```raido
-let x = 42           // immutable binding (type inferred: int)
-mut y = 10             // mutable binding (type inferred: int)
+let x = 42                     // type inferred: int
+x = 50                         // any variable can be reassigned
 let name: string = get_name()  // explicit type annotation (optional)
 ```
 
-`let` prevents reassignment and mutation through the binding (field writes, indexed writes). `mut` allows both. Same as Rask. See [types.md](types.md#let-and-mut) for full semantics.
+`let` declares a variable, as in JS. Assigning to a name that was never declared is an error, so a typo can't quietly make a new variable. Unlike Rask, there's no `mut`: every variable can be reassigned and its fields changed. See [types.md](types.md#variables).
 
 No `global` keyword. Script state lives in coroutine locals or host entities.
 
@@ -360,7 +360,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 ## Keywords
 
-`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mut`, `mutate`, `return`, `struct`, `true`, `try`, `while`, `yield`
+`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `try`, `while`, `yield`
 
 `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
 
@@ -368,6 +368,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
 - **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs are arena references, primitives are values, and the arena is reset between evaluations. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
+- **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
 - **No closures** -- Function references only. Captured mutable state is a verification hazard.
 - **No character type** -- Strings only, so single quotes have no meaning.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

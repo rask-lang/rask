@@ -36,7 +36,7 @@
 //    ← parameters →       ← locals →            ← temporaries →
 //
 // - Parameters get the first registers (r0, r1, ...).
-// - Local variables (let/mut) get the next ones.
+// - Local variables (let) get the next ones.
 // - Temporaries are used during expression evaluation and freed afterward.
 //
 // The compiler tracks `next_reg` — the next free register. To allocate:
