@@ -1733,8 +1733,9 @@ impl Resolver {
                     }
                 }
             } else if found.is_some() {
-                // A package that has no public member of that name.
-                self.errors.push(ResolveError::undefined(path.join("."), span));
+                // A package that has no public member of that name. Named
+                // bare, so a private one is reported as private (E0877).
+                self.errors.push(ResolveError::undefined(symbol_name.clone(), span));
                 return;
             } else {
                 let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
@@ -3550,10 +3551,13 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        // This should still resolve (the import falls through to the fallback path)
-        // but the symbol won't be the actual function — it'll be a dummy Variable
+        // A member the package doesn't export names nothing here.
         let result = Resolver::resolve_package(&decls, &registry, app_pkg);
-        assert!(result.is_ok(), "Import of non-public symbol should not error at resolve time");
+        let errors = result.expect_err("a private member isn't importable");
+        assert!(
+            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name } if name == "internal_helper")),
+            "{errors:?}"
+        );
     }
 
     #[test]
