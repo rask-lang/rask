@@ -15,8 +15,8 @@ Two approaches: automatic header parsing (built-in C parser, like Zig) for well-
 | **CI2: Explicit binding** | `extern "C" { }` declares C functions/types manually |
 | **CI3: Unsafe required** | All C function calls require `unsafe` context |
 | **CI4: Override** | An explicit `extern "C" func` in the program replaces the auto-parsed one of the same name |
-| **CI5: Package scope** | An extern belongs to the package that declares it, like a function: `pa`'s `labs` is `pa.labs` to the rest of the program, and the root's own `func labs` stays the root's. The C symbol is the same whichever package declares it, so two declarations of one C function have to agree on its signature (E0213) |
 | **CI5: Hiding** | `import c "header.h" hiding { symbol }` suppresses specific auto-parsed symbols |
+| **CI6: Package scope** | An extern belongs to the package that declares it, like a function: `pa`'s `labs` is `pa.labs` to the rest of the program, and the root's own `func labs` stays the root's. The C symbol is the same whichever package declares it, so two declarations of one C function have to agree on its signature (E0213) |
 
 | Syntax | Effect |
 |--------|--------|
