@@ -5,7 +5,7 @@
 
 # Types
 
-Statically typed. Function signatures are fully annotated, local variables are inferred from their initializer. No runtime type tags -- the compiler knows every register's type at every instruction.
+Statically typed. Function signatures are fully annotated, local variables are inferred from their initializer. The compiler knows every register's type at every instruction, so nothing dispatches on type at run time.
 
 ## Primitives
 
@@ -14,7 +14,7 @@ Statically typed. Function signatures are fully annotated, local variables are i
 | `int` | i64 | Counters, IDs, indices, bitfields. |
 | `float` | f64 | Physics, coordinates, fractions. Deterministic on every machine. |
 | `bool` | i64 (0 or 1) | `true`/`false`. |
-| `string` | u32 arena offset | Immutable UTF-8. Dialogue, identifiers, messages. |
+| `string` | heap reference | Immutable UTF-8. Dialogue, identifiers, messages. |
 
 ## Composite Types
 
@@ -42,7 +42,7 @@ A 64-bit IEEE 754 double, the number type JS, Python, Lua and C all have.
 
 ## Struct
 
-User-defined named records. Fields are fixed at compile time. Layout is determined by the compiler -- field order in the arena matches declaration order.
+User-defined named records. Fields are fixed at compile time. Fields are numbered in declaration order.
 
 ```raido
 struct Vec2 { x: float, y: float }
@@ -56,9 +56,9 @@ struct Ship {
 }
 ```
 
-Structs are arena-allocated. A struct value in a register is a u32 arena offset. All fields occupy 8 bytes each (i64) regardless of logical type -- bools are stored as i64 0/1, arena offsets are zero-extended. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
+Structs are heap objects; a struct value is a reference. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
 
-**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. A change made through any binding or a `mutate` parameter is visible through all bindings to the same offset. See [Variables](#variables).
+**Pass by reference.** Multiple bindings can point to the same struct. A change made through any binding or a `mutate` parameter is visible through all of them. See [Variables](#variables).
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
@@ -146,7 +146,7 @@ enum Order {
 
 Variants are accessed with dot syntax: `Order.Attack(target_id)`, `Stance.Aggressive`.
 
-Simple enums (no payloads) are stored inline as a u32 discriminant in the register -- no arena allocation. Enums with payloads use a u32 discriminant + u32 arena offset in the register. The arena body contains only the payload fields (no redundant discriminant -- the register already has it).
+Simple enums (no payloads) are a discriminant in the register, with no heap object. Enums with payloads are heap objects holding the discriminant and the payload fields.
 
 ## Optionals
 
@@ -189,7 +189,7 @@ func bounds(arr: array<float>) -> (float, float) {
 let (lo, hi) = bounds(values)
 ```
 
-Tuples are anonymous arena-allocated structs. `(float, float)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
+Tuples are anonymous structs. `(float, float)` is a 2-field struct. The compiler generates internal type entries for tuple types -- no user-visible struct name.
 
 ## Functions as Values
 
@@ -204,7 +204,7 @@ A **closure** captures the variables it uses from around it. The rules:
 - **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
 - **Closures aren't comparable.** There's no `==` on function values.
 
-A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is an arena object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#layout)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
+A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
 
 ## Extern Types
 

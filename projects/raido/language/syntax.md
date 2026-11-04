@@ -384,7 +384,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 ## Deliberate Divergences from Rask
 
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
-- **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs are arena references, primitives are values, and the arena is reset between evaluations. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
+- **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs, arrays and maps are references to a garbage-collected heap; primitives are values. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
 - **Closures can't reassign what they capture** -- a Rask closure that doesn't outlive its frame can change a captured `mut` variable; Raido has no `mut`, and forbids reassigning a captured variable, so there's no hidden shared state.
 - **No character type** -- Strings only, so single quotes have no meaning.

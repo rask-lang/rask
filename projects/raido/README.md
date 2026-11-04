@@ -48,7 +48,7 @@ Example using Rask as the host language (any language with C FFI can host Raido)
 import raido
 
 let vm = raido.Vm.new(raido.Config(
-    arena_size: 256.kilobytes()
+    memory_limit: 256.kilobytes()
     initial_fuel: 100_000
     max_call_depth: 256
 ))
@@ -113,7 +113,7 @@ func transform(x: int) -> int {
 |----------|--------|-----------|
 | Identity | Verification-first, scripting-capable | Static types serve verification. Coroutines serve scripting. |
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
-| Types | Static, inferred locals | Catches errors at compile time. Eliminates runtime type checking. 8-byte values. |
+| Types | Static, inferred locals | Catches errors at compile time. No instruction dispatches on type; values carry a tag only for the collector and serialization. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
 | Numbers | `int` (i64) and `float` (f64) | The two every audience already knows. Floats follow a strict profile that gives the same bits on every machine. |
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
@@ -157,7 +157,7 @@ func transform(x: int) -> int {
 
 | Spec | What it covers |
 |------|----------------|
-| [vm/architecture.md](vm/architecture.md) | Register VM, arena, instruction set, serialization |
+| [vm/architecture.md](vm/architecture.md) | Register VM, heap, instruction set, serialization |
 | [vm/chunk-format.md](vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](vm/interop.md) | Host API, extern structs/funcs, scoped bindings, error propagation |
 
@@ -196,7 +196,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
 | Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
-| Arena strategy | **Fixed arena; deterministic mark-compact collection at `frame_end()`.** | `reset()` between independent evaluations. Game loops call `frame_end()`, which keeps what's reachable from coroutines, closures and host roots and slides it down in allocation order, so the bytes are identical on every machine. Replaced a frame/persistent split under which keeping a value past a frame left a dangling reference. No auto-grow -- hides allocation cost. |
+| Memory | **Garbage-collected heap the script can't observe.** | Coroutines and closures keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, and serialization walks the object graph in a fixed order, so both are identical on every machine. Values carry a 16-byte tag-and-payload so the collector needs no help from the compiler. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **`extern struct` / `extern func`.** Script declares expected shapes, host binds at load time. | Compile-time type checking. Load-time mismatch detection. Replaces dynamic `host_ref` + vtable pattern. |

@@ -1,5 +1,10 @@
 # Raido in Rask -- Implementation Plan
 
+> The spec moved on: values are 16-byte tagged, memory is a garbage-collected
+> heap with canonical serialization, and closures, transactional calls and the
+> published API module are new. This plan and `arena.rk` describe the old bump
+> arena. rask-lang/rask#1736 lists what to build.
+
 Two-pass compiler: declaration pass scans types, compile pass emits bytecode
 with type checking. No full AST. Memory is O(declarations), not O(program size).
 
