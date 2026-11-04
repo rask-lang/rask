@@ -25,13 +25,13 @@ Always available. A Raido VM without these isn't a Raido VM.
 
 `len(v: T) -> int` -- string byte length, array length, or map entry count. `T` must be `string`, `array`, or `map` (compiler-enforced).
 
-`error(msg: string)` -- raises a ScriptError.
+`error(msg: string)` -- aborts the current call; its changes roll back and the host receives a ScriptError.
 
 `assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").
 
 `print(v: string)` -- calls the host's print handler. Default: no-op. Host can override via `vm.set_print(handler)`.
 
-Error catching uses `try`/`else` syntax, not a stdlib function.
+Scripts don't catch errors; a failure ends the call. See [syntax.md](syntax.md#errors).
 
 ## Built-in Methods
 

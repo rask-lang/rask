@@ -388,21 +388,6 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 
 Coroutine creation is similar to `CALL`: the function reference is in `R[B]`, arguments follow in `R[B+1..B+C]`. The coroutine's register window receives the arguments in `R[0..C-1]`. First `resume()` starts execution from the top of the function.
 
-#### Error Handling
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `TRY A sBx` | AsBx | Execute next instruction. If it raises an error, jump `PC += sBx` with error value in `R[A]`. If no error, continue. |
-
-`TRY` acts as a one-instruction error trap. The compiler emits:
-
-```
-TRY rErr +2      // if next instruction errors, jump +2 with error in rErr
-CALL rFn ...     // the protected call
-JMP +N           // skip the error handler (no error)
-// error handler starts here, rErr has the error value
-```
-
 ## Error Types
 
 Every runtime error is a `raido.ScriptError` with a `kind` enum and a message string:
@@ -425,7 +410,7 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 
 All errors carry: kind, message (string), and a stack trace (array of `{file, line, function}` if debug info is present, `{proto_idx, pc_offset}` if not).
 
-`FuelExhausted`, `ArenaExhausted`, and `CallOverflow` are **not catchable** by `TRY`. They propagate directly to the host as a `raido.ScriptError`. Scripts can't mask resource exhaustion. The VM implements this by checking error kind after any trap -- if the kind is a resource error, it bypasses the TRY handler and unwinds the entire call stack to the host.
+Scripts can't catch any of these. An error unwinds the whole call stack to the host, which receives it as a `raido.ScriptError`, and the call's changes are rolled back ([interop.md](interop.md#calls-are-transactions)).
 
 **Eliminated by static types:** `TypeError` (impossible by construction), `ReadOnlyField` (compiler rejects writes to `readonly` extern fields).
 

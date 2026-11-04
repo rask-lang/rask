@@ -231,4 +231,14 @@ No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 - **Script -> Host:** `raido.ScriptError` (kind, message, stack trace).
 - **Host -> Script:** Rask errors in extern funcs become Raido runtime errors (`HostError`).
-- **In-script:** `try expr` propagates errors. `expr catch e => { ... }` handles them. `error(msg)` raises them. Same syntax as Rask.
+- **In-script:** `error(msg)` raises. Scripts don't catch; absence is `T?`.
+
+## Calls Are Transactions
+
+Every call the host makes into a script (`vm.call`, resuming a waiting handler) either completes or changes nothing:
+
+- **Arena state** is already per-call: the frame resets when the call returns.
+- **Extern field writes** go into a write buffer. Reads within the call see the buffered value; the buffer is applied when the call returns and dropped if it fails.
+- **Extern functions with effects** (`send_message`, `spawn_unit`) are registered as deferred: their calls are queued and run after the call succeeds, in call order. Pure extern functions (`noise`, `distance`) run immediately.
+
+So a mod that fails halfway through an event never leaves the world half-updated, and the host only has to log the error and carry on.

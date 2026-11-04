@@ -97,19 +97,13 @@ func chase(attacker: Enemy, target: Enemy) {
 }
 
 func process(input: int) -> int {
-    let data = try transform(input)
+    let data = transform(input)
     return if data > threshold { data } else { 0 }
 }
 
-func transform(x: int) -> int or string {
-    if x < 0: error("negative input")
+func transform(x: int) -> int {
+    if x < 0 { error("negative input") }    // aborts the host's call; its changes roll back
     return x * scale + offset
-}
-
-// Error handling
-let result = process(42) catch e => {
-    log("failed: {e}")
-    0                       // last expression is the value — `result` is 0 on error
 }
 ```
 
@@ -131,7 +125,7 @@ let result = process(42) catch e => {
 | Optionals | `T?` with `Some`/`None` | Compiler-enforced null safety. No nil. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
-| Errors | `try`/`else`, `error()` | Same syntax as Rask. No `pcall`. |
+| Errors | `error()` aborts the call | Every host call into a script is a transaction: a failure throws away what the call changed and the host logs it. No error types, `try` or `catch` to learn; absence is `T?`. |
 | Coroutines | `coroutine(f, args...)`, methods | Create/resume/yield. Method-based. Serializable. |
 | Stdlib | Core functions + built-in methods always present, `math`/`bit` opt-in | Collection/string methods are always available. Host controls math and bitwise access. |
 

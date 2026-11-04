@@ -197,7 +197,7 @@ for name, score in leaderboard { print("{name}: {score}") }
 
 // loop -- infinite loop with break value
 loop {
-    let msg = try receive() else { break }
+    let msg = receive() is Some else { break }
     handle(msg)
 }
 
@@ -318,27 +318,21 @@ let next_state = FleetState { ships: new_ships, tick: state.tick + 1, ..state }
 
 No `#` length operator -- use `len()` from core. No `..` concat operator -- string interpolation covers it.
 
-## Error Handling
+## Errors
 
-`try` propagates errors to the caller, matching Rask's error handling syntax:
+There are no error types to handle. A script that hits something it can't go on from calls `error`, and the call the host made into the script fails as a whole: every change it made is thrown away (see [vm/interop.md](../vm/interop.md#calls-are-transactions)), and the host logs the message with a stack trace.
 
 ```raido
-func load_config(path: string) -> Config or string {
-    let data = try read_file(path)
-    return parse(data)
-}
-
-// Catch and handle
-let config = load_config("app.cfg") catch e => {
-    log("fallback: {e}")
-    return default_config()
-}
-
-// Raise an error
-error("invalid state")
-
-// Assert
+error("no target in range")
 assert(x > 0, "x must be positive")
+```
+
+Something that may legitimately be missing returns `T?`, and the caller decides with `??`, `is Some` or `match`:
+
+```raido
+func find_target(ships: array<Ship>, id: int) -> Ship? { ... }
+
+let target = find_target(ships, id) ?? return        // nothing to do this tick
 ```
 
 ## Collections
@@ -360,7 +354,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 ## Keywords
 
-`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `try`, `while`, `yield`
+`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `while`, `yield`
 
 `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
 
@@ -371,4 +365,5 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
 - **No closures** -- Function references only. Captured mutable state is a verification hazard.
 - **No character type** -- Strings only, so single quotes have no meaning.
+- **No `T or E`, `try` or `catch`** -- a failure aborts the host's call and rolls it back; absence is `T?`.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

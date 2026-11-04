@@ -1,6 +1,6 @@
 <!-- id: raido.coroutines -->
 <!-- status: proposed -->
-<!-- summary: Cooperative multitasking -- coroutine values with methods, try integration, serializable state -->
+<!-- summary: Cooperative multitasking -- coroutine values with methods, serializable state -->
 <!-- depends: raido/language/syntax.md -->
 
 # Coroutines
@@ -13,8 +13,8 @@ Cooperative multitasking. Yield mid-function, resume later. Fully serializable -
 // Create from function reference + args
 let co = coroutine(patrol, entity, waypoints)
 
-// Resume -- errors propagate via try
-let value = try co.resume()
+// Resume
+let value = co.resume()
 
 // Status
 let s = co.status  // "suspended", "running", "dead"
@@ -25,15 +25,7 @@ yield(value)
 
 `coroutine(func, args...)` creates a suspended coroutine from a function reference and initial arguments. `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
 
-`co.resume(args...)` returns the value passed to `yield()`. If the coroutine errors, the error propagates through `try` like any other call.
-
-```raido
-// Catch coroutine errors
-let value = co.resume() catch e => {
-    log("coroutine failed: {e}")
-    return fallback
-}
-```
+`co.resume(args...)` returns the value passed to `yield()`. If the coroutine fails, the failure aborts the host's call it ran in, like any other error, and the coroutine is dead.
 
 ## Why
 
@@ -111,7 +103,7 @@ func combat_tick(fleet: FleetState) {
 }
 
 // Host side:
-try co.resume(current_orders)
+co.resume(current_orders)
 ```
 
 ## Serialization
