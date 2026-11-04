@@ -56,13 +56,15 @@ pub fn qualified(pkg: &str, name: &str) -> String {
 /// resolver's export table and the consumer's own references can be pointed at
 /// the same place.
 ///
-/// A name something outside the program uses keeps it, and is in the map as
-/// itself, so `pkg.name` still reaches it: a C symbol, a function with a
-/// foreign ABI, which C calls, and, in one of the project's own packages,
-/// the entry point (`main`, or `@entry`). A `src/` layout puts `main` in a
-/// sub-package. A C macro is no symbol, so it's the package's own, as
-/// `pkg.F`: a dotted name, which no Rask declaration can take, so the
-/// program's own `F_pkg` can't meet it. Its C name goes in `@c_name`.
+/// A name something outside the program calls keeps it, and is in the map as
+/// itself, so `pkg.name` still reaches it: a function with a foreign ABI,
+/// which C calls, and, in one of the project's own packages, the entry point
+/// (`main`, or `@entry`). A `src/` layout puts `main` in a sub-package.
+///
+/// An extern is the package's own like a function, `labs_pkg`, and links to
+/// the C symbol its `@c_name` keeps (#1754). A C macro is no symbol at all:
+/// it's `pkg.F`, a dotted name no Rask declaration can take, so the
+/// program's own `F_pkg` can't meet it.
 pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
     let mut kept: HashMap<String, String> = HashMap::new();
@@ -73,7 +75,7 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) ->
                 continue;
             }
             DeclKind::Extern(e) => {
-                kept.insert(e.name.clone(), e.name.clone());
+                map.insert(e.name.clone(), qualified(pkg, &e.name));
                 continue;
             }
             DeclKind::Fn(f) => {

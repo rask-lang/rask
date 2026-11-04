@@ -43,6 +43,10 @@ pub struct Resolver {
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
     current_package: Option<PackageId>,
+    /// Each extern's C symbol, against the first declaration of it. Two
+    /// packages' externs have names of their own and still link one symbol,
+    /// so they have to agree on its signature.
+    extern_symbols: HashMap<String, SymbolId>,
     /// What an import path names, and from which package each file imports.
     import_index: crate::ImportIndex,
     file_package_ids: HashMap<u16, PackageId>,
@@ -110,6 +114,7 @@ impl Resolver {
             errors: Vec::new(),
             current_package: None,
             import_index: crate::ImportIndex::default(),
+            extern_symbols: HashMap::new(),
             file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
             unlinked_scopes: HashMap::new(),
@@ -882,6 +887,21 @@ impl Resolver {
                     );
                     exports.insert(c.name.clone(), sym_id);
                 }
+                // `import pa.labs`: a C function or macro the package declares.
+                DeclKind::Extern(e) => {
+                    let sym_id = self.symbols.insert(
+                        e.name.clone(),
+                        SymbolKind::ExternFunction {
+                            abi: e.abi.clone(),
+                            params: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
+                            ret_ty: e.ret_ty.clone(),
+                        },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(e.name.clone(), sym_id);
+                }
                 _ => {}
             }
         }
@@ -1014,6 +1034,25 @@ impl Resolver {
                         }
                     }
 
+                    // The same C function under another package's name.
+                    let symbol = extern_decl.c_symbol();
+                    let is_macro = rask_ast::attr::c_macro(&extern_decl.attrs).is_some();
+                    if let Some(prev) = self.extern_symbols.get(&symbol).and_then(|id| self.symbols.get(*id)).filter(|_| !is_macro) {
+                        if let SymbolKind::ExternFunction { abi, params, ret_ty } = &prev.kind {
+                            let same = *abi == extern_decl.abi
+                                && *params == param_types
+                                && *ret_ty == extern_decl.ret_ty;
+                            if !same {
+                                self.errors.push(ResolveError::conflicting_extern(
+                                    symbol.clone(),
+                                    render_extern_sig(abi, params, ret_ty),
+                                    render_extern_sig(&extern_decl.abi, &param_types, &extern_decl.ret_ty),
+                                    prev.span,
+                                    decl.span,
+                                ));
+                            }
+                        }
+                    }
                     let sym_id = self.symbols.insert(
                         extern_decl.name.clone(),
                         SymbolKind::ExternFunction {
@@ -1025,6 +1064,9 @@ impl Resolver {
                         decl.span,
                         false,
                     );
+                    if !is_macro {
+                        self.extern_symbols.entry(symbol).or_insert(sym_id);
+                    }
                     if let Err(e) = self.scopes.define(extern_decl.name.clone(), sym_id, decl.span) {
                         self.errors.push(e);
                     }

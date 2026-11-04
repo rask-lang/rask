@@ -324,7 +324,10 @@ fn emit_inner(
         DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => None,
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
-            link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
+            link_name: Some(match crate::c_import::inline_header(e) {
+                Some(_) => rask_c_parse::shim::wrapper_symbol(&e.c_symbol()),
+                None => e.c_symbol(),
+            }),
             // The parser rejects an extern parameter without a type.
             param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
             ret_ty: e.ret_ty.clone(),

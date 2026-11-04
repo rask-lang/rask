@@ -207,6 +207,18 @@ pub struct FnDecl {
     pub decl_start: usize,
 }
 
+impl ExternDecl {
+    /// The C symbol it links to: its `@c_name` when the program knows it by
+    /// another name (a package qualifies its externs like its functions),
+    /// else its name.
+    pub fn c_symbol(&self) -> String {
+        match crate::attr::c_name(&self.attrs) {
+            Some(crate::attr::CName::Spelled(c)) => c,
+            _ => self.name.clone(),
+        }
+    }
+}
+
 impl FnDecl {
     /// Declared without a Rask body: the backend implements it (`@native`,
     /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`

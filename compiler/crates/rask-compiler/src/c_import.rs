@@ -71,21 +71,21 @@ pub fn expand(
         out.diagnostics.extend(resolve_macro_headers(unit.decls, cx));
     }
 
-    // An extern the program declares itself replaces the header's (CI4), and
-    // one header imported twice, by one package or by two, declares each
-    // function once. The stdlib declares a few C functions for its own use
-    // (`strlen`, `fread`); its declaration stands too.
+    // One declaration per C symbol: an extern the program declares itself
+    // replaces the header's (CI4), and so does the stdlib's, which declares a
+    // few C functions for its own use (`strlen`, `fread`). The header's name
+    // then reaches that one. By C symbol, against the declaration's own
+    // name, since a package's externs carry the package (`labs_pa`).
     let stdlib = rask_stdlib::StubRegistry::compilable_decls();
-    let mut externs: HashSet<String> = units
-        .iter()
-        .flat_map(|u| u.decls.iter())
-        .chain(stdlib.iter())
-        .filter_map(|d| match &d.kind {
-            // A macro is no symbol, and only its own package's.
-            DeclKind::Extern(e) if !is_macro(e) => Some(e.name.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut externs: HashMap<String, String> = HashMap::new();
+    for d in units.iter().flat_map(|u| u.decls.iter()).chain(stdlib.iter()) {
+        // A macro is no symbol, and only its own package's.
+        if let DeclKind::Extern(e) = &d.kind {
+            if !is_macro(e) {
+                externs.entry(e.c_symbol()).or_insert_with(|| e.name.clone());
+            }
+        }
+    }
 
     // A header is translated once, whichever packages import it: a second
     // copy of its structs would be a second set of types, and its functions
@@ -195,15 +195,24 @@ pub fn expand(
                     .decls
                     .into_iter()
                     .filter(|d| match &d.kind {
-                        DeclKind::Extern(e) if !is_macro(e) => externs.insert(e.name.clone()),
+                        DeclKind::Extern(e) if !is_macro(e) => !externs.contains_key(&e.name),
                         _ => true,
                     })
                     .collect();
-                // A macro is no symbol: each header's `F` is its own, `c.F`.
+                // Each header's names are its own: `Point_c`, `labs_c`, and a
+                // macro `c.F`.
                 let mut map = package_scope::qualify_declarations(&mut new, &qualifier, false);
-                // Externs dropped above as duplicates are still reachable by name.
-                for name in &externs {
-                    map.entry(name.clone()).or_insert_with(|| name.clone());
+                for d in &new {
+                    if let DeclKind::Extern(e) = &d.kind {
+                        if !is_macro(e) {
+                            externs.insert(e.c_symbol(), e.name.clone());
+                        }
+                    }
+                }
+                // C functions declared elsewhere are reachable through the
+                // alias too, as the declaration that stands.
+                for (c, name) in &externs {
+                    map.entry(c.clone()).or_insert_with(|| name.clone());
                 }
                 translated.insert(key, Translated { names: map.clone(), skipped: header_skipped });
                 exports.entry(import.alias.clone()).or_default().extend(map);
@@ -439,9 +448,12 @@ pub fn inline_wrappers(decls: &[Decl], cx: &Context) -> Result<Option<String>, V
     for d in decls {
         let DeclKind::Extern(e) = &d.kind else { continue };
         let Some(header) = inline_header(e) else { continue };
+        // By C name, once: two packages' externs can link the same one.
+        let c = e.c_symbol();
         match by_header.iter_mut().find(|(h, _)| *h == header) {
-            Some((_, names)) => names.push(e.name.clone()),
-            None => by_header.push((header, vec![e.name.clone()])),
+            Some((_, names)) if names.contains(&c) => {}
+            Some((_, names)) => names.push(c),
+            None => by_header.push((header, vec![c])),
         }
     }
     if by_header.is_empty() {

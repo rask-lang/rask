@@ -174,6 +174,16 @@ impl TypedProgram {
                 methods.iter().map(move |m| format!("{ty}_{}", m.name))
             })
             .collect();
+        // A C function an extern links to. A program function of that name
+        // was the same symbol in the object, so `pa.labs` called the root's
+        // own `func labs` (#1754).
+        let c_symbols: std::collections::HashSet<String> = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_none() => Some(e.c_symbol()),
+                _ => None,
+            })
+            .collect();
         decls
             .iter()
             .filter_map(|d| match &d.kind {
@@ -181,6 +191,7 @@ impl TypedProgram {
                     if f.name != "main"
                         && f.abi.is_none()
                         && (method_symbols.contains(&f.name)
+                            || c_symbols.contains(&f.name)
                             || rask_stdlib::mir_metadata::is_method_symbol(&f.name)) =>
                 {
                     Some((f.name.clone(), format!("{}#fn", f.name)))

@@ -10073,3 +10073,35 @@ fn sub_packages_keep_apart_and_keep_their_private_names() {
     assert!(!ok && out.contains("E0877") && out.contains("private to `pc`"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A sub-package's extern is the package's own name for its C function: the
+/// root's `func labs` stays the root's, `pa.labs` is C's, two packages may
+/// both declare it if they agree on its signature, and nothing declares it
+/// bare for the root (#1754).
+#[test]
+fn a_sub_packages_extern_is_its_own() {
+    let dir = temp_project(
+        "subpkg_extern",
+        &[
+            ("pa/a.rk", "public extern \"C\" func labs(x: i64) -> i64\n"),
+            ("pb/b.rk", "public extern \"C\" func labs(x: i64) -> i64\n\npublic func pos(x: i64) -> i64 {\n    return unsafe labs(x)\n}\n"),
+            (
+                "main.rk",
+                "import pa\nimport pb\n\nfunc labs(x: i64) -> i64 {\n    return 0\n}\n\n\
+                 func main() {\n    println(\"{labs(-3)} {unsafe pa.labs(-4)} {pb.pos(-5)}\")\n}\n",
+            ),
+        ],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("0 4 5"), "{out}");
+
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{unsafe labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("`labs`"), "a package's extern isn't the root's:\n{out}");
+
+    std::fs::write(dir.join("pb/b.rk"), "public extern \"C\" func labs(x: i32) -> i64\n").unwrap();
+    std::fs::write(dir.join("main.rk"), "import pa\nimport pb\n\nfunc main() {\n    println(\"{unsafe pa.labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0213"), "one C function, two signatures:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
