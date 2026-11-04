@@ -40,9 +40,8 @@ main.rk       demo: runs hand-assembled fib
 
 ## Not yet
 
-- Native: five tests crash because the MIR inliner frees a `self` that a
-  read-only method borrowed (rask-lang/rask#1747). All tests pass on
-  `--interp`. `apply_undo` borrows its entry to dodge rask-lang/rask#1748.
+- `apply_undo` borrows its entry and clones what it restores, to dodge a
+  native double free (rask-lang/rask#1748). Drop that once it's fixed.
 
 - The compiler. Until it exists, the capture rule, the published API module
   and the provable profile have nothing to live in.

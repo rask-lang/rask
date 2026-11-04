@@ -78,7 +78,7 @@ struct Vm {
     frames: Vec<Frame>
     fuel: i64
     max_call_depth: i64
-    prng: Vec<i64>
+    prng: Prng
 }
 
 // --- PRNG seeding (vm/architecture.md, PRNG) ---
@@ -101,17 +101,25 @@ func splitmix_step(z: i64) -> i64 {
     return r ^ shr(r, 31)
 }
 
-func seed_state(seed: i64) -> Vec<i64> {
+// xoshiro128++ state: four 32-bit words, each held in an i64.
+struct Prng {
+    s0: i64
+    s1: i64
+    s2: i64
+    s3: i64
+}
+
+func seed_state(seed: i64) -> Prng {
     let z1 = seed.wrapping_add(SPLITMIX_GAMMA)
     let z2 = z1.wrapping_add(SPLITMIX_GAMMA)
     let r1 = splitmix_step(z1)
     let r2 = splitmix_step(z2)
-    mut s: Vec<i64> = Vec.new()
-    s.push(r1 & 0xFFFFFFFF)
-    s.push(shr(r1, 32) & 0xFFFFFFFF)
-    s.push(r2 & 0xFFFFFFFF)
-    s.push(shr(r2, 32) & 0xFFFFFFFF)
-    return s
+    return Prng(
+        s0: r1 & 0xFFFFFFFF
+        s1: shr(r1, 32) & 0xFFFFFFFF
+        s2: r2 & 0xFFFFFFFF
+        s3: shr(r2, 32) & 0xFFFFFFFF
+    )
 }
 
 func check_float(x: f64) -> Value or VmError {

@@ -232,10 +232,10 @@ test "optionals nest without boxing" {
 test "PRNG seeding is SplitMix64 as specified" {
     // SplitMix64 from 0 gives 0xE220A8397B1DCDAF, then 0x6E789E6AA1B965F4.
     let s = seed_state(0)
-    assert s[0] == 0x7B1DCDAF
-    assert s[1] == 0xE220A839
-    assert s[2] == 0xA1B965F4
-    assert s[3] == 0x6E789E6A
+    assert s.s0 == 0x7B1DCDAF
+    assert s.s1 == 0xE220A839
+    assert s.s2 == 0xA1B965F4
+    assert s.s3 == 0x6E789E6A
 }
 
 // --- Execution ---

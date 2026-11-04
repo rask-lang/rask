@@ -414,8 +414,8 @@ extend GcHeap {
 
     func clear_log(mutate self) {
         self.undo.clear()
-        self.logged_slots = Map.new()
-        self.whole_saved = Map.new()
+        self.logged_slots.clear()
+        self.whole_saved.clear()
     }
 
     // Borrows `e` and clones what it restores. Workaround: taking it moves the
@@ -435,7 +435,7 @@ extend GcHeap {
                 self.objs[o].slots = e.saved.clone()
                 self.objs[o].keys = e.saved_keys.clone()
                 if self.objs[o].kind == OBJ_MAP {
-                    self.objs[o].index = Map.new()
+                    self.objs[o].index.clear()
                     self.reindex(o, 0)
                 }
                 // Growing back isn't an allocation, but the bound that lets

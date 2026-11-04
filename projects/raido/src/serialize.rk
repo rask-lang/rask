@@ -18,7 +18,7 @@ const SNAPSHOT_VERSION: i64 = 1
 
 struct MachineState {
     fuel: i64
-    prng: Vec<i64>
+    prng: Prng
 }
 
 func put_u8(mutate out: Vec<u8>, v: i64) {
@@ -120,9 +120,10 @@ func serialize(heap: GcHeap, m: MachineState) -> Vec<u8> {
     put_u8(mutate out, 0x56)
     put_u16(mutate out, SNAPSHOT_VERSION)
     put_i64(mutate out, m.fuel)
-    for p in m.prng {
-        put_u32(mutate out, p)
-    }
+    put_u32(mutate out, m.prng.s0)
+    put_u32(mutate out, m.prng.s1)
+    put_u32(mutate out, m.prng.s2)
+    put_u32(mutate out, m.prng.s3)
     put_i64(mutate out, heap.since_checkpoint)
     put_values(mutate out, heap.module_vars, nums)
     // Dead roots too, so a root index means the same root after a load.
@@ -232,10 +233,11 @@ func read_snapshot(take saved: Vec<u8>, mutate heap: GcHeap) -> MachineState or 
         return bad("VersionMismatch: snapshot version {version}")
     }
     let fuel = try r.i64()
-    mut prng: Vec<i64> = Vec.new()
-    for _ in 0..4 {
-        prng.push(try r.u32())
-    }
+    let s0 = try r.u32()
+    let s1 = try r.u32()
+    let s2 = try r.u32()
+    let s3 = try r.u32()
+    let prng = Prng(s0: s0, s1: s1, s2: s2, s3: s3)
     heap.since_checkpoint = try r.i64()
 
     // Values may name objects that come later, so read the object count
