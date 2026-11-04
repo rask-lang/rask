@@ -668,29 +668,6 @@ impl Interpreter {
                     span
                 ))
             }
-            // A member of one of the project's packages, `pa.Color`: the
-            // program's own declaration of that name.
-            Value::Package(pkg_name) if self.project_packages.contains(&pkg_name) => {
-                // Enums and structs both resolve to Value::Type so
-                // `pa.Color.Red` works through the normal enum
-                // variant dispatch on the next `.Red` access.
-                if self.enums.contains_key(field)
-                    || self.struct_decls.contains_key(field)
-                    || self.methods.contains_key(field)
-                {
-                    return Ok(Value::Type(field.to_string()));
-                }
-                if let Some(func) = self.functions.get(field) {
-                    return Ok(Value::Function { name: func.name.clone(), generics: None });
-                }
-                if let Some(value) = self.env.get(field) {
-                    return Ok(value);
-                }
-                Err(RuntimeDiagnostic::new(
-                    RuntimeError::UndefinedVariable(field.to_string()),
-                    span,
-                ))
-            }
             Value::Package(pkg_name) => {
                 // A stdlib module with no Rust side of its own (`bits`)
                 // is bound as a package, but its types are registered
@@ -1214,14 +1191,6 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                // PP4: a C macro another package declares, `pa.F(x)`.
-                if let Some(call) = self.c_macro_calls.get(&expr.id).cloned() {
-                    let mut vals = Vec::with_capacity(args.len());
-                    for a in args {
-                        vals.push(self.eval_expr(&a.expr)?);
-                    }
-                    return self.c_macro_value(&call, vals).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                }
                 // `io.IoError.NotFound("x")` — a payload-carrying variant
                 // reached through the module that exports its enum, which is
                 // the spelling IM1 asks for. Everything below reads the enum's
@@ -1528,15 +1497,9 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                // A call into one of the project's packages, `pa.via_a(4)`:
-                // its declarations are the program's own, under their names.
+                // A package's own declarations are reached through names the
+                // compiler already qualified; what's left is the stdlib's.
                 if let Value::Package(pkg_name) = &receiver {
-                    if self.project_packages.contains(pkg_name) {
-                        if let Some(func) = self.functions.get(method).cloned() {
-                            let generics = self.call_generics(expr.id);
-                            return self.call_function(&func, arg_vals, generics);
-                        }
-                    }
                     // A bodiless `@native` declaration in the stdlib: answered
                     // by symbol, the way native codegen's dispatch table does.
                     if let Some(symbol) = Self::stdlib_native_symbol(pkg_name, method) {
@@ -1937,9 +1900,6 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, type_args, fields, spread } => {
-                // `pa.Pt { … }` builds the program's own `Pt`: a sub-package's
-                // declarations are registered under their names.
-                let name = &self.without_project_package(name).to_string();
                 // Explicit generic args (`Ring<i64> { }`) give two names, and
                 // they are not interchangeable. The value carries the BASE name
                 // — methods and field decls register under it (like the

@@ -120,13 +120,10 @@ pub struct PackageContext {
 pub struct CheckResult {
     pub typed: TypedProgram,
     pub decls: Vec<Decl>,
-    /// Packages bound by name on the interpreter whose members it finds some
-    /// other way: the stdlib modules a single file imports, and a project's
-    /// dependencies, whose references are already rewritten to qualified names.
+    /// Packages bound by name on the interpreter: the stdlib modules a single
+    /// file imports, and a project's other packages, whose members are
+    /// reached through references already rewritten to qualified names.
     pub package_names: Vec<String>,
-    /// A project's own sub-packages. Their declarations share the program's
-    /// namespace, so `pa.via_a` is `via_a`.
-    pub project_packages: Vec<String>,
     /// Each dependency's declarations, original name against the qualified one
     /// the rest of the pipeline uses. Kept so a diagnostic raised after the
     /// check can still say `libpkg.Cat` rather than `Cat_libpkg`.
@@ -208,9 +205,6 @@ pub fn prepare_interpreter(interp: &mut rask_interp::Interpreter, result: &Check
     }
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
-    }
-    if !result.project_packages.is_empty() {
-        interp.register_project_packages(&result.project_packages);
     }
 }
 
@@ -629,7 +623,6 @@ fn check_loaded_scoped(
             typed,
             decls: parse_result.decls,
             package_names,
-            project_packages: Vec::new(),
             qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,
@@ -741,7 +734,6 @@ fn check_package_scoped(
     // struct, so calling it doesn't construct one", in a file the consumer
     // never wrote (#1112).
     let mut package_names = Vec::new();
-    let mut project_packages = Vec::new();
 
     // Names another package declared but did not make public, and where. A
     // package's own declarations are all merged now (#1100), so nothing stops
@@ -766,18 +758,25 @@ fn check_package_scoped(
     // anyway, through a separate list merged *after* resolve. A subdirectory is
     // a package (modules/PO1), so this is what made the ordinary `src/` layout
     // fail: `func main()` in `src/main.rk` is a private declaration by this
-    // rule (#1100). Those keep sharing the program's namespace — renaming that
-    // `main` leaves the program without an entry point.
+    // rule (#1100).
+    //
+    // A sub-package is qualified the same way, by its path from the root
+    // (`pa.sub` → `f_pa_sub`): it's a package of its own (modules/PO3), and
+    // its names are reached only through it (IM1, #1744). Its entry point
+    // keeps its name, since that's what the program starts from.
+    let root_path_len = pkg_ctx.registry.get(pkg_ctx.root_id).map_or(0, |p| p.path.len());
     let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
             continue;
         }
-        if pkg.is_external {
-            package_names.push(pkg.name.clone());
+        // How the program's imports name it.
+        let import_name = if pkg.is_external || pkg.path.len() <= root_path_len {
+            pkg.name.clone()
         } else {
-            project_packages.push(pkg.name.clone());
-        }
+            pkg.path[root_path_len..].join(".")
+        };
+        package_names.push(import_name.clone());
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
         for decl in &decls {
             if !is_public_decl(decl) {
@@ -786,10 +785,8 @@ fn check_package_scoped(
                 }
             }
         }
-        if pkg.is_external {
-            let map = package_scope::qualify_declarations(&mut decls, &pkg.name);
-            exports.insert(pkg.name.clone(), map);
-        }
+        let map = package_scope::qualify_declarations(&mut decls, &import_name.replace('.', "_"), !pkg.is_external);
+        exports.insert(import_name, map);
         merged.push((pkg.id, decls));
     }
 
@@ -1035,7 +1032,6 @@ fn check_package_scoped(
             typed,
             decls: std::mem::take(&mut pkg_ctx.all_decls),
             package_names,
-            project_packages,
             qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,
@@ -1108,14 +1104,9 @@ pub fn compile_package_with(
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
-    // Collect package_modules from the registry before check consumes pkg_ctx.
+    // The stdlib modules the program imports. Another package's members
+    // are reached through names already qualified, never through it.
     let mut package_modules = HashSet::new();
-    for pkg in pkg_ctx.registry.packages() {
-        if pkg.id != pkg_ctx.root_id {
-            package_modules.insert(pkg.name.clone());
-        }
-    }
-    // Also include builtin stdlib modules referenced by imports.
     for decl in &pkg_ctx.all_decls {
         if let DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
@@ -1423,14 +1414,15 @@ fn visible_packages(
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        let Some(pkg) = import.path.first() else { continue };
-        let Some(map) = exports.get(pkg) else { continue };
-        let binding = match (&import.alias, import.path.len()) {
+        let Some((pkg, len)) = package_scope::imported_package(&import.path, exports) else { continue };
+        // `import pa.sub` binds `sub` (modules/IM2).
+        let last = import.path[len - 1].clone();
+        let binding = match &import.alias {
             // `import pkg.Name as N` renames the member, not the package.
-            (Some(alias), 1) => alias.clone(),
-            _ => pkg.clone(),
+            Some(alias) if len == import.path.len() => alias.clone(),
+            _ => last,
         };
-        out.insert(binding, map.clone());
+        out.insert(binding, exports[&pkg].clone());
     }
     out
 }

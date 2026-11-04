@@ -199,7 +199,7 @@ pub fn expand(
                         _ => true,
                     })
                     .collect();
-                let mut map = package_scope::qualify_declarations(&mut new, &qualifier);
+                let mut map = package_scope::qualify_declarations(&mut new, &qualifier, false);
                 for d in &mut new {
                     if let DeclKind::Extern(e) = &mut d.kind {
                         if is_macro(e) {

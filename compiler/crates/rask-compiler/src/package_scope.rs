@@ -55,14 +55,36 @@ pub fn qualified(pkg: &str, name: &str) -> String {
 /// Returns the original name of each declaration against its new one, so the
 /// resolver's export table and the consumer's own references can be pointed at
 /// the same place.
-pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, String> {
+///
+/// A name something outside the program uses keeps it, and is in the map as
+/// itself, so `pkg.name` still reaches it: an extern (a C symbol, or a C
+/// macro), a function with a foreign ABI, which C calls, and, in one of the
+/// project's own packages, the entry point (`main`, or `@entry`). A `src/`
+/// layout puts `main` in a sub-package.
+pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
+    let mut kept: HashMap<String, String> = HashMap::new();
     for decl in decls.iter() {
+        match &decl.kind {
+            DeclKind::Extern(e) => {
+                kept.insert(e.name.clone(), e.name.clone());
+                continue;
+            }
+            DeclKind::Fn(f) => {
+                let entry = f.name == "main" || f.attrs.iter().any(|a| a.is("entry"));
+                if f.abi.is_some() || (keeps_entry && entry) {
+                    kept.insert(f.name.clone(), f.name.clone());
+                    continue;
+                }
+            }
+            _ => {}
+        }
         if let Some(name) = decl.name().map(str::to_string) {
             map.insert(name.clone(), qualified(pkg, &name));
         }
     }
     if map.is_empty() {
+        map.extend(kept);
         return map;
     }
 
@@ -75,6 +97,7 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, St
         .map(|(n, q)| (n.clone(), q.clone()))
         .collect();
     rename_attachments(decls, &annotations);
+    map.extend(kept);
     map
 }
 
@@ -133,6 +156,19 @@ pub fn qualify_references(
     rewrite::rewrite_decls(decls, &mut r);
 }
 
+/// The package an import path names, as its key in `exports`, and how many
+/// of the path's segments that takes: the longest prefix that is one.
+/// `import pa.sub.f` is `pa.sub`, two segments, then the member `f`.
+pub fn imported_package(
+    path: &[String],
+    exports: &HashMap<String, HashMap<String, String>>,
+) -> Option<(String, usize)> {
+    (1..=path.len()).rev().find_map(|n| {
+        let key = path[..n].join(".");
+        exports.contains_key(&key).then_some((key, n))
+    })
+}
+
 /// Names brought in unqualified by `import pkg.Name` (modules/IM4, IM5).
 ///
 /// Those *are* bare in the program, and mean the dependency's declaration.
@@ -154,18 +190,19 @@ pub fn unqualified_imports(
         .collect();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        if import.path.len() < 2 {
+        let Some((pkg, len)) = imported_package(&import.path, exports) else { continue };
+        if len == import.path.len() {
             continue;
         }
-        let pkg = &import.path[0];
-        let Some(map) = exports.get(pkg) else { continue };
+        let pkg = &pkg;
+        let map = &exports[pkg];
         // `import pkg.*` brings in everything the package exports; the
         // grouped form `import pkg.{A, B}` parses into one declaration per
         // name, so the path's tail is the whole list either way.
         let wanted: Vec<String> = if import.is_glob {
             map.keys().cloned().collect()
         } else {
-            import.path[1..].to_vec()
+            import.path[len..].to_vec()
         };
         for name in wanted {
             let Some(q) = map.get(&name) else { continue };
@@ -327,6 +364,14 @@ impl Rewrite for ReferenceQualifier<'_> {
         };
         if let Some(kind) = replacement {
             e.kind = kind;
+        }
+        // `libpkg.Cat { … }`.
+        if let ExprKind::StructLit { name, .. } = &mut e.kind {
+            if let Some((pkg, member)) = name.split_once('.') {
+                if let Some(q) = self.resolve(pkg, member) {
+                    *name = q.clone();
+                }
+            }
         }
     }
 

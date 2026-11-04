@@ -876,21 +876,6 @@ impl Resolver {
                     );
                     exports.insert(c.name.clone(), sym_id);
                 }
-                // `pa.F(x)`, a C function or macro the package declares.
-                DeclKind::Extern(e) => {
-                    let sym_id = self.symbols.insert(
-                        e.name.clone(),
-                        SymbolKind::ExternFunction {
-                            abi: e.abi.clone(),
-                            params: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
-                            ret_ty: e.ret_ty.clone(),
-                        },
-                        None,
-                        Span::new(0, 0),
-                        true,
-                    );
-                    exports.insert(e.name.clone(), sym_id);
-                }
                 _ => {}
             }
         }

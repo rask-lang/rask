@@ -232,9 +232,6 @@ pub struct Interpreter {
     /// package is currently executing. Both empty outside a package build.
     pub(crate) file_packages: HashMap<u16, String>,
     pub(crate) conformance_disambiguation: HashMap<rask_ast::NodeId, String>,
-    /// The project's own packages (`import pa` for `pa/`). Their declarations
-    /// share the program's namespace, so `pa.via_a` is `via_a`.
-    pub(crate) project_packages: Arc<std::collections::HashSet<String>>,
     /// OR4: each `implements` block's interface by its own name (the checker's).
     pub(crate) conformance_interfaces: HashMap<rask_ast::NodeId, String>,
     /// The package whose function is running, innermost last.
@@ -491,7 +488,6 @@ impl Interpreter {
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
-            project_packages: Arc::default(),
             conformance_disambiguation: HashMap::new(),
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
@@ -536,7 +532,6 @@ impl Interpreter {
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
-            project_packages: Arc::default(),
             conformance_disambiguation: HashMap::new(),
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
@@ -587,7 +582,6 @@ impl Interpreter {
             generic_frames: Vec::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
-            project_packages: Arc::default(),
             conformance_disambiguation: HashMap::new(),
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
@@ -880,7 +874,6 @@ impl Interpreter {
         child.else_binding_types = self.else_binding_types.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
         child.err_returns = self.err_returns.clone();
-        child.project_packages = self.project_packages.clone();
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
@@ -1272,24 +1265,6 @@ impl Interpreter {
             }
             self.env.define(name.clone(), Value::Package(name.clone()));
         }
-    }
-
-    /// `pa.Pt` as the program's own `Pt`, when `pa` is one of the project's
-    /// packages; anything else as written.
-    pub(crate) fn without_project_package<'n>(&self, name: &'n str) -> &'n str {
-        match name.split_once('.') {
-            Some((pkg, rest)) if self.project_packages.contains(pkg) => rest,
-            _ => name,
-        }
-    }
-
-    /// Bind the project's own packages, whose members are reached by their
-    /// bare names.
-    pub fn register_project_packages(&mut self, names: &[String]) {
-        for name in names {
-            self.env.define(name.clone(), Value::Package(name.clone()));
-        }
-        self.project_packages = Arc::new(names.iter().cloned().collect());
     }
 
     pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeDiagnostic> {

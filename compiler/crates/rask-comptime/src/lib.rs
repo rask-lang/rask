@@ -1466,14 +1466,10 @@ impl ComptimeInterpreter {
                 }
             }
 
-            // Method call (from desugared operators), or a C macro through
-            // its package, `pa.F(x)`.
+            // Method call (from desugared operators)
             ExprKind::MethodCall { object, method, args, .. } => {
                 let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
-                match self.c_macros.get(&expr.id).cloned() {
-                    Some(call) => self.eval_c_macro(&call, &arg_exprs)?,
-                    None => self.eval_method_call(object, method, &arg_exprs)?,
-                }
+                self.eval_method_call(object, method, &arg_exprs)?
             }
 
             // Field access

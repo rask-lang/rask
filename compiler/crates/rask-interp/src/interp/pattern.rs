@@ -235,7 +235,7 @@ impl Interpreter {
             } => {
                 if let Value::Struct(ref s) = value {
                     let guard = s.lock().unwrap();
-                    if guard.name == self.without_project_package(pat_name) {
+                    if guard.name == *pat_name {
                         let mut bindings = HashMap::new();
                         for (field_name, field_pattern) in pat_fields {
                             if let Some(field_val) = guard.fields.get(field_name) {
