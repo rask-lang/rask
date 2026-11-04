@@ -605,7 +605,7 @@ impl TypeChecker {
             .chain(
                 crate::COMPILER_PROVIDED_TRAITS
                     .iter()
-                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode"].iter())
+                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode", "ClaimInput"].iter())
                     .map(|s| s.to_string()),
             )
             .collect()
@@ -631,6 +631,9 @@ impl TypeChecker {
                 };
             }
         }
+        // A claim input that can't be built is reported as the decode it would
+        // have been; a `claims.Generate` conformance is the other way out.
+        let interface_name = if interface_name == "ClaimInput" { "Decode".to_string() } else { interface_name };
         if interface_name != "Encode" && interface_name != "Decode" {
             let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
                 super::InterfaceBoundContext::NumericBound

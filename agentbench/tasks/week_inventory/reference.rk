@@ -3,7 +3,7 @@ struct Item { name: string, sku: string?, price_cents: i64 }
 
 func find(items: Vec<Item>, name: string) -> Item? {
     for item in items {
-        if item.name == name { return item }
+        if item.name == name { return item.clone() }
     }
     return none
 }

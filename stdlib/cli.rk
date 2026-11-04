@@ -318,7 +318,7 @@ extend Parser {
     func find_long(self, long: string) -> OptionSpec? {
         for o in self.opts {
             if o.long == long {
-                return o
+                return o.clone()
             }
         }
         return none
@@ -327,7 +327,7 @@ extend Parser {
     func find_short(self, short: string) -> OptionSpec? {
         for o in self.opts {
             if !o.short.is_empty() && o.short == short {
-                return o
+                return o.clone()
             }
         }
         return none

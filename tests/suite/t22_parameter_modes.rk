@@ -83,7 +83,7 @@ func consume(take data: LargeData) -> u64 {
 }
 
 test "take mode transfers ownership" {
-    let data = LargeData(values: Vec.new())
+    mut data = LargeData(values: Vec.new())
     data.values.push(1)
     data.values.push(2)
     let len = consume(data)

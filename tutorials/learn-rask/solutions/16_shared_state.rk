@@ -88,6 +88,9 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
 func shared_config_update() -> i32 {
     using Multitasking {
         mut config = Shared.new(35000)
+        // Each task carries what it captures, so the second needs a handle of
+        // its own to the same box.
+        let config_for_pilot = config.clone()
         mut (tx, rx) = Channel<bool>.buffered(1)
 
         // `Shared` holds a Copy value here, so `set`/`get` are the whole API —
@@ -100,7 +103,7 @@ func shared_config_update() -> i32 {
 
         let pilot = spawn {
             rx.receive()!
-            return config.get()
+            return config_for_pilot.get()
         }
         ensure pilot.detach()
 

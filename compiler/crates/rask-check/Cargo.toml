@@ -11,6 +11,7 @@ rask-types = { path = "../rask-types" }
 rask-layout = { path = "../rask-layout" }
 rask-resolve = { path = "../rask-resolve" }
 rask-stdlib = { path = "../rask-stdlib" }
+rask-c-parse = { path = "../rask-c-parse" }
 thiserror.workspace = true
 
 [dev-dependencies]

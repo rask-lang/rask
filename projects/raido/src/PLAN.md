@@ -1,5 +1,10 @@
 # Raido in Rask -- Implementation Plan
 
+> The spec moved on: values are 16-byte tagged, memory is a garbage-collected
+> heap with canonical serialization, and closures, transactional calls and the
+> published API module are new. This plan and `arena.rk` describe the old bump
+> arena. rask-lang/rask#1736 lists what to build.
+
 Two-pass compiler: declaration pass scans types, compile pass emits bytecode
 with type checking. No full AST. Memory is O(declarations), not O(program size).
 
@@ -8,7 +13,7 @@ with type checking. No full AST. Memory is O(declarations), not O(program size).
 ```
 raido/
   rask.toml        # Package declaration
-  value.rk         # 8-byte values, 32.32 fixed-point Number
+  value.rk         # 8-byte values (int, float, references)
   bytes.rk         # Byte encoding helpers (read/write u8, u16, u32, i64)
   arena.rk         # Byte-buffer arena with bump allocation
   opcodes.rk       # 42 opcodes, encode/decode 32-bit instructions
@@ -30,9 +35,9 @@ raido/
 
 **bytes.rk** — Little-endian encode/decode for u8, u16, u32, i64.
 
-**value.rk** — 32.32 fixed-point Number (add, sub, mul, div, comparisons,
-to_string). Value enum: None, Bool, Int, Num, Str, Array, MapVal, Struct,
-Enum, FuncRef, HostRef.
+**value.rk** — Value enum: None, Bool, Int, Float, Str, Array, MapVal, Struct,
+Enum, FuncRef, HostRef. A float is a Rask f64; the VM raises an error on any
+operation that would produce NaN or an infinity.
 
 ### Phase 2: Arena
 
@@ -174,8 +179,8 @@ struct Local {
 
 - `const x = 42` → infer `x: int` from literal
 - `const y = foo(a, b)` → look up `foo`'s return type from type table
-- Binary ops: `int + int → int`, `number + number → number`,
-  `int + number → number` (promote), `int / int → number`
+- Binary ops: `int + int → int`, `float + float → float`,
+  `int + float → float` (promote), `int / int → float`
 - Function calls: check argument types match parameter types
 - Struct construction: check all fields present, types match
 - Match: check exhaustiveness on enums
@@ -237,7 +242,7 @@ compile + run Raido scripts using those features.
 
 ### Phase 7: Standard library
 
-**Core (always present):** `tostring()`, `int()`, `number()`, `len()`,
+**Core (always present):** `tostring()`, `int()`, `float()`, `len()`,
 `error()`, `assert()`, `print()`.
 
 No `type()` — types known at compile time.

@@ -231,9 +231,9 @@ struct CodegenCtx<'a> {
     /// A debug build: raw-pointer null checks are on (mem.unsafe).
     debug_checks: bool,
     adapt_table: &'a HashMap<String, (ArgAdapt, RetAdapt)>,
-    /// How a C function's arguments cross the C ABI, for the ones with a struct
-    /// parameter. Absent means every argument is a plain scalar (#948).
-    c_abi_args: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>,
+    /// How a call to a C function crosses the C ABI, for the ones with a
+    /// struct parameter or result. Absent means a plain scalar signature (#948).
+    c_abi_plans: &'a HashMap<String, rask_mir::c_call::CallPlan>,
     /// Each layout's field types as MIR types (`MirContext::field_types`).
     field_types: &'a rask_mir::FieldTypes,
     /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
@@ -404,8 +404,8 @@ pub struct FunctionBuilder<'a> {
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
 
-    /// C functions taking a struct by value, and how each argument goes.
-    c_abi_args: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>,
+    /// C functions taking or returning a struct by value, and how each goes.
+    c_abi_plans: &'a HashMap<String, rask_mir::c_call::CallPlan>,
 
     /// Each layout's field types as MIR types, for the ownership walks.
     field_types: &'a rask_mir::FieldTypes,
@@ -417,8 +417,8 @@ pub struct FunctionBuilder<'a> {
     debug_checks: bool,
 }
 
-/// No C function in this program takes a struct by value.
-static NO_C_ABI_ARGS: std::sync::LazyLock<HashMap<String, Vec<rask_mir::c_call::CArg>>> =
+/// No C function in this program takes or returns a struct by value.
+static NO_C_ABI_PLANS: std::sync::LazyLock<HashMap<String, rask_mir::c_call::CallPlan>> =
     std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> CodegenCtx<'a> {
@@ -478,7 +478,7 @@ impl<'a> FunctionBuilder<'a> {
             current_col: 0,
             line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
-            c_abi_args: &NO_C_ABI_ARGS,
+            c_abi_plans: &NO_C_ABI_PLANS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
             debug_checks: false,
@@ -499,10 +499,10 @@ impl<'a> FunctionBuilder<'a> {
         self.preempt_flag = Some(flag);
     }
 
-    /// The C-ABI argument plans, when the program imports a header whose
-    /// functions take a struct by value.
-    pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<rask_mir::c_call::CArg>>) {
-        self.c_abi_args = plans;
+    /// The C-ABI call plans, when the program imports a header whose
+    /// functions take or return a struct by value.
+    pub fn set_c_abi_plans(&mut self, plans: &'a HashMap<String, rask_mir::c_call::CallPlan>) {
+        self.c_abi_plans = plans;
     }
 
     /// `if rask_preempt_requested { rask_preempt_point() }`, leaving the builder
@@ -772,7 +772,7 @@ impl<'a> FunctionBuilder<'a> {
             is_extern_c: self.mir_fn.is_extern_c,
             debug_checks: self.debug_checks,
             adapt_table: &self.adapt_table,
-            c_abi_args: self.c_abi_args,
+            c_abi_plans: self.c_abi_plans,
             field_types: self.field_types,
             unwind_rec: None,
         };
@@ -2333,7 +2333,10 @@ impl<'a> FunctionBuilder<'a> {
             // and address-taken scalars) or spill a scalar to a stack slot and return
             // its address.
             MirRValue::FuncAddr(name) => {
-                let func_ref = ctx.func_refs.get(name.as_str())
+                // A function C will call: its C-convention entry when it has
+                // one, since the body expects Rask's (struct.c-interop/SR2).
+                let func_ref = ctx.func_refs.get(&crate::c_entry::c_entry_key(name))
+                    .or_else(|| ctx.func_refs.get(name.as_str()))
                     .ok_or_else(|| CodegenError::FunctionNotFound(name.clone()))?;
                 Ok(builder.ins().func_addr(types::I64, *func_ref))
             }
@@ -5005,13 +5008,34 @@ impl<'a> FunctionBuilder<'a> {
             && ctx.adapt_table.get(func.name.as_str())
                 .map(|(a, _)| *a == ArgAdapt::StringOutParam)
                 .unwrap_or(false);
-        let param_offset = usize::from(injects_out_param);
-
         // A struct passed by value doesn't reach C as a pointer: it goes in
         // registers, a copy on the stack, or the address of a copy, as
         // `rask_mir::c_call` decided for the target. The declared signature
-        // can't say which, so the plan is looked up by name (#948).
-        let abi_plan = ctx.c_abi_args.get(func.name.as_str());
+        // can't say which, so the plan is looked up by name (#948). A struct
+        // coming back is planned the same way.
+        let call_plan = ctx.c_abi_plans.get(func.name.as_str());
+        let abi_plan = call_plan.map(|p| &p.args);
+        let ret_plan = call_plan.map(|p| &p.ret);
+        if let Some(rask_mir::c_call::CRet::Unsupported) = ret_plan {
+            return Err(CodegenError::UnsupportedFeature(format!(
+                "`{}` returns a C struct by value, and how one comes back isn't \
+                 worked out for this target yet",
+                func.name,
+            )));
+        }
+        // Where the struct the call returns ends up: the destination's own
+        // slot, or scratch when the result is dropped.
+        let ret_ty = dst
+            .and_then(|d| ctx.locals.iter().find(|l| l.id == *d))
+            .map(|l| l.ty.clone());
+        let ret_addr = match (ret_plan, &ret_ty) {
+            (Some(rask_mir::c_call::CRet::Indirect | rask_mir::c_call::CRet::Registers(_)), Some(ty)) => {
+                Some(Self::call_dst_ptr(builder, dst, ty, ctx))
+            }
+            _ => None,
+        };
+        let indirect = matches!(ret_plan, Some(rask_mir::c_call::CRet::Indirect));
+        let param_offset = usize::from(injects_out_param) + usize::from(indirect);
 
         let mut arg_vals = Vec::with_capacity(args.len());
         let mut slot = param_offset;
@@ -5083,7 +5107,35 @@ impl<'a> FunctionBuilder<'a> {
             None
         };
 
+        if indirect {
+            // The memory C writes the struct into, as the hidden first
+            // argument. A dropped result still needs somewhere to land.
+            let addr = match ret_addr {
+                Some(a) => a,
+                None => {
+                    let size = ret_ty.as_ref().map_or(0, |t| t.size()).max(64);
+                    LocalSlot::new(builder, size, 16).addr(builder, 0)
+                }
+            };
+            arg_vals.insert(0, addr);
+        }
+
         let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+        if let (Some(rask_mir::c_call::CRet::Registers(pieces)), Some(addr), Some(ty)) =
+            (ret_plan, ret_addr, ret_ty.as_ref())
+        {
+            let results: Vec<Value> = builder.inst_results(call_inst).to_vec();
+            Self::store_returned_pieces(builder, &results, pieces, addr, ty.size());
+        }
+        if ret_addr.is_some() {
+            // The struct is in the destination's slot now; the local is its
+            // address, as every aggregate's is.
+            if let Some(var) = dst.and_then(|d| ctx.var_map.get(d)) {
+                builder.def_var(*var, ret_addr.expect("checked"));
+            }
+            return Ok(());
+        }
 
         if let Some(ss) = out_param_slot {
             // String out-param: result is in the stack slot, define dst var as pointer
@@ -6617,6 +6669,35 @@ impl<'a> FunctionBuilder<'a> {
                 Self::copy_aggregate(builder, scratch_ptr, ss, n);
             }
             n => Self::copy_aggregate(builder, result, ss, n),
+        }
+    }
+
+    /// Write a struct C returned in registers into the `size` bytes at `addr`.
+    ///
+    /// Each piece goes back at the offset it was classified from. The last
+    /// one may cover less than its register: a twelve-byte struct on System V
+    /// comes back as two eight-byte pieces, and storing the second whole
+    /// would write four bytes past the struct. Those go through a scratch
+    /// word and only the bytes that belong to the struct are copied.
+    fn store_returned_pieces(
+        builder: &mut ClifFunctionBuilder,
+        results: &[Value],
+        pieces: &[rask_mir::c_call::Piece],
+        addr: Value,
+        size: u32,
+    ) {
+        for (piece, &val) in pieces.iter().zip(results) {
+            let width = builder.func.dfg.value_type(val).bytes();
+            if piece.offset + width <= size {
+                builder.ins().store(MemFlags::new(), val, addr, piece.offset as i32);
+                continue;
+            }
+            let scratch = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot, 8, 3,
+            )));
+            scratch.store(builder, val, 0);
+            let from = scratch.addr(builder, 0);
+            Self::copy_bytes(builder, from, 0, addr, piece.offset as i32, size.saturating_sub(piece.offset));
         }
     }
 

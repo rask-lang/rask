@@ -176,6 +176,31 @@ func package_json(p: Package) -> JsonValue {
         profiles.push(JsonValue.Object(pm))
     }
     m.insert("profiles", JsonValue.Array(profiles))
+
+    mut claims = Vec<JsonValue>.new()
+    for c in p.claims {
+        mut cm = Map<string, JsonValue>.new()
+        cm.insert("name", JsonValue.String(c.name))
+        mut path = JsonValue.Null
+        mut git = JsonValue.Null
+        mut rev = JsonValue.Null
+        mut branch = JsonValue.Null
+        match c.source {
+            DepSource.Registry(_) => {}
+            DepSource.Path(p) => path = JsonValue.String(p),
+            DepSource.Git(url, rev: r, branch: b) => {
+                git = JsonValue.String(url)
+                rev = opt(r)
+                branch = opt(b)
+            }
+        }
+        cm.insert("path", path)
+        cm.insert("git", git)
+        cm.insert("rev", rev)
+        cm.insert("branch", branch)
+        claims.push(JsonValue.Object(cm))
+    }
+    m.insert("claims", JsonValue.Array(claims))
     return JsonValue.Object(m)
 }
 

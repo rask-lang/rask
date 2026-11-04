@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import shared
+
+claim doubles_are_even(x: u8) {
+    assert shared.double(x) % 2 == 0
+}

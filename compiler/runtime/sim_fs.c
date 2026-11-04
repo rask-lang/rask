@@ -192,6 +192,18 @@ static Name *name_set(const char *np, NameKind kind, Node *node) {
     return e;
 }
 
+// Back to the real tree alone, between two claim inputs (sim.h). A stream
+// still open keeps its node, as it would across a rename.
+void rask_sim_fs_reset(void) {
+    while (names) {
+        Name *e = names;
+        names = e->next;
+        node_release(e->node);
+        free(e->path);
+        free(e);
+    }
+}
+
 typedef enum { KIND_NONE, KIND_FILE, KIND_DIR, KIND_OTHER } Kind;
 
 // What `np` is: the overlay first, then the real tree.

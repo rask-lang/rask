@@ -27,7 +27,8 @@ pub enum CTokenKind {
     /// An integer literal with an `L` suffix (`20UL`, `5LL`): `long`, so 64
     /// bits on every target Rask builds for, and unsigned with a `U`.
     LongLit(u64, bool),
-    FloatLit(f64),
+    /// A floating literal, and whether an `f` suffix made it a `float`.
+    FloatLit(f64, bool),
     StringLit(String),
     CharLit(char),
 
@@ -495,7 +496,9 @@ impl<'a> CLexer<'a> {
                     self.pos += 1;
                 }
             }
-            // Skip float suffix (f, F, l, L)
+            // The suffix: `f` makes it a `float`; `l` a `long double`,
+            // which Rask reads as a `double`.
+            let single = matches!(self.peek(), b'f' | b'F');
             if matches!(self.peek(), b'f' | b'F' | b'l' | b'L') {
                 self.pos += 1;
             }
@@ -504,7 +507,7 @@ impl<'a> CLexer<'a> {
             let clean: String = text.chars().filter(|c| !matches!(c, 'f' | 'F' | 'l' | 'L')).collect();
             let val: f64 = clean.parse()
                 .map_err(|e| ParseError::new(format!("bad float literal: {}", e), line))?;
-            return Ok(CToken { kind: CTokenKind::FloatLit(val), line, space_before: false, file: 0 });
+            return Ok(CToken { kind: CTokenKind::FloatLit(val, single), line, space_before: false, file: 0 });
         }
 
         let text = String::from_utf8_lossy(&self.source[start..self.pos]);

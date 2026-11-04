@@ -121,7 +121,7 @@ func sst_point_lookup(meta: SstMeta, key: string, mutate cache: BlockCache) -> K
     if cache.get(meta.id, target_block)? as entries {
         for entry in entries {
             if entry.key == key {
-                return entry
+                return entry.clone()
             }
         }
         return none
@@ -133,7 +133,7 @@ func sst_point_lookup(meta: SstMeta, key: string, mutate cache: BlockCache) -> K
 
     for entry in entries {
         if entry.key == key {
-            return entry
+            return entry.clone()
         }
     }
     return none

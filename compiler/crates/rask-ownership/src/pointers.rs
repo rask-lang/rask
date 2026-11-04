@@ -428,15 +428,23 @@ impl<'a> OwnershipChecker<'a> {
     /// native or builtin, an interface method, a closure value) keeps the
     /// signature rule at the call: every argument it borrows.
     pub(crate) fn infer_pointer_returns(&mut self, groups: &[&[Decl]]) {
-        let mut bodies: Vec<(Option<String>, &FnDecl)> = Vec::new();
+        // One body per name, the way the signatures are collected: a later
+        // group (the program) replaces an earlier one (the stdlib). Two bodies
+        // under one key would each overwrite the other's answer, and the loop
+        // below would never settle.
+        let mut bodies: Vec<((Option<String>, String), &FnDecl)> = Vec::new();
+        let mut put = |key: (Option<String>, String), f| match bodies.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = f,
+            None => bodies.push((key, f)),
+        };
         for decls in groups {
             for decl in decls.iter() {
                 match &decl.kind {
-                    DeclKind::Fn(f) if !f.body_lives_elsewhere() => bodies.push((None, f)),
+                    DeclKind::Fn(f) if !f.body_lives_elsewhere() => put((None, f.name.clone()), f),
                     DeclKind::Impl(i) => {
                         let ty = i.target_ty.name().unwrap_or_default();
                         for m in i.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
-                            bodies.push((Some(ty.clone()), m));
+                            put((Some(ty.clone()), m.name.clone()), m);
                         }
                     }
                     _ => {}
@@ -445,12 +453,11 @@ impl<'a> OwnershipChecker<'a> {
         }
         loop {
             let mut changed = false;
-            for (owner, f) in &bodies {
+            for (key, f) in &bodies {
                 let origins = self.returned_param_origins(f);
                 let flags: Vec<bool> = (0..f.params.len()).map(|i| origins.contains(&i)).collect();
-                let key = (owner.clone(), f.name.clone());
-                if self.pointer_returns.get(&key) != Some(&flags) {
-                    self.pointer_returns.insert(key, flags);
+                if self.pointer_returns.get(key) != Some(&flags) {
+                    self.pointer_returns.insert(key.clone(), flags);
                     changed = true;
                 }
             }

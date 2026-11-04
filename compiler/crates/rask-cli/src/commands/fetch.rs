@@ -221,8 +221,18 @@ pub fn resolve_and_lock(root: &Path, pins: Pins, verbose: bool) -> Result<Resolv
                 if verbose {
                     println!("  {} \"{}\" {} ...", "Fetching".cyan(), name, version_str);
                 }
-                let archive = std::env::temp_dir().join(format!("{}-{}.tar.gz", name, version_str));
+                // A file of this process's own: `rask` commands run side by side
+                // share the cache, and a shared download path let one delete or
+                // overwrite the archive while another was still extracting it.
+                let archive = match super::own_temp_file(&format!("{}-{}", name, version_str), "tar.gz") {
+                    Ok(p) => p,
+                    Err(e) => {
+                        errors.push(format!("dep \"{}\": no temporary file to download into: {}", name, e));
+                        continue;
+                    }
+                };
                 if let Err(e) = reg_config.download_archive(&name, &version_str, &archive) {
+                    let _ = std::fs::remove_file(&archive);
                     errors.push(format!("dep \"{}\": download failed: {}", name, e));
                     continue;
                 }
@@ -302,6 +312,11 @@ pub fn resolve_and_lock(root: &Path, pins: Pins, verbose: bool) -> Result<Resolv
         pkg.signing_key = signing_keys.get(&pkg.name).cloned().or_else(|| {
             existing_lock.as_ref()?.packages.iter().find(|p| p.name == pkg.name)?.signing_key.clone()
         });
+    }
+    // Claims sources aren't dependencies: the registry doesn't see them, and
+    // their pins carry over until the claims step rewrites them (type.claims/W3).
+    if let Some(old) = &existing_lock {
+        lock.claims = old.claims.clone();
     }
     if let Some(old) = &existing_lock {
         for (name, old_key, new_key) in old.signing_keys_changed(&signing_keys) {

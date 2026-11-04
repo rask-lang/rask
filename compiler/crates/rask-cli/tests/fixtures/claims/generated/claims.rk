@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import claims
+import sorted
+
+// Built only through `insert`, from non-negative numbers, so every one the
+// claims get is sorted however `insert` treats negatives.
+sorted.Sorted implements claims.Generate {
+    func generate(from: claims.Choices) -> sorted.Sorted {
+        mut s = sorted.Sorted.new()
+        for x in from.make<Vec<u8>>() {
+            s.insert(x.to<i64>()!)
+        }
+        if from.below(2) == 1 {
+            s.insert(from.one_of(Vec<i64>.from([7, 70, 700])))
+        }
+        return s
+    }
+}
+
+// Every generated value, wherever it sits in an input, is sorted.
+claim generated_are_sorted(lists: Vec<sorted.Sorted>) {
+    for s in lists {
+        assert s.is_sorted()
+    }
+}
+
+// False: a negative number lands behind a bigger one.
+claim stays_sorted(s: sorted.Sorted, x: i64) {
+    mut t = s.clone()
+    t.insert(x)
+    assert t.is_sorted()
+}

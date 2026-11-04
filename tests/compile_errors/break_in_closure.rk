@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `break` or `continue` inside a closure, aimed at a loop outside it
+//
+// A closure's body runs when it's called, possibly after the loop around its
+// definition is gone, so it can't leave that loop. Native failed in MIR
+// lowering; the interpreter broke the outer loop through the call.
+
+func main() {
+    loop {
+        // ERROR: the closure isn't inside the loop when it runs [E0204]
+        let f = || { break }
+        f()
+    }
+    for i in 0..3 {
+        // ERROR: same for `continue` [E0205]
+        let g = || { continue }
+        g()
+    }
+}

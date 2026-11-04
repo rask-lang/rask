@@ -22,6 +22,8 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [syntax_rejected.rk](syntax_rejected.rk) | Rust-isms (`pub`, `fn`, `::`, `let mut`, turbofish, `&`), `const` in a body. Parser errors only — a rule the checker enforces can never fire here, so those markers moved to files of their own |
+| [member_separators.rk](member_separators.rk) | Two struct fields or enum variants on one line with no comma between them. `..` and `...` inside a struct body were skipped as well; they're a parse error now |
+| [modifier_on_wrong_declaration.rk](modifier_on_wrong_declaration.rk) | `comptime`, `unsafe`, `public` or an attribute on a declaration that doesn't read it (`comptime struct`, `public import`) |
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 | [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 | [interface_body_members.rk](interface_body_members.rk) | Anything an interface body doesn't hold — `const`, a nested `struct`, a bare `public`, an attribute (#1164). All of them used to hang the parser: the body loop had no branch for them, so nothing consumed the token and the condition never went false. `type` was on this list and no longer is — an interface body holds methods and associated types (TD4) |
@@ -89,6 +91,31 @@ go down.
 | [type_mismatch_return.rk](type_mismatch_return.rk) | Wrong return type |
 | [wrong_arg_count.rk](wrong_arg_count.rk) | Wrong number of arguments |
 | [named_args_misfit.rk](named_args_misfit.rk) | Named arguments that don't place on the callee's parameters (E0903): a name it doesn't have, two arguments for one parameter, an unnamed argument after a named one, a label on a tuple variant or a closure value. Labels go in any order; tests/suite/t_named_args_any_order.rk has the calls that work |
+| [duplicate_names.rk](duplicate_names.rk) | One name declared twice at the top level, or twice inside one declaration — fields, variants, a variant's fields, parameters, type parameters, interface methods (E0201) — or bound twice by one pattern or closure (E0218). Each used to keep the last silently |
+| [literal_and_destructure_counts.rk](literal_and_destructure_counts.rk) | A field given twice in a literal (E0941), and a tuple destructure in `let` or `for` with the wrong number of names (E0943) |
+| [entry_point_signature.rk](entry_point_signature.rk) | A `main` that takes a parameter other than `Args`, or returns something other than `void` or `void or E` (E0942) |
+| [number_has_no_absent_branch.rk](number_has_no_absent_branch.rk) | `?`, `!`, `catch` and `is none` on an unannotated number literal binding. Its type was still the literal's variable, which passed as "not known yet"; native segfaulted |
+| [as_between_unrelated_types.rk](as_between_unrelated_types.rk) | `as` from a string, an optional or a nominal type to a number, or from a number to a string (E0838) |
+| [assign_to_module_const.rk](assign_to_module_const.rk) | `=` and `+=` on a module-level `const` (E0856) |
+| [spread_and_private_patterns.rk](spread_and_private_patterns.rk) | A struct-update base of another type (`Point(x: 5, ..label)`), and a private field named in a pattern or filled by a spread outside the type's extend blocks (SV4, E0396) |
+| [let_mutated_through_a_place.rk](let_mutated_through_a_place.rk) | A `let` or read-only parameter mutated by a method on a field or element (`b.items.push(x)`, `v[0].bump()`), and a private method whose plain `self` writes through a field (GC9 infers `mutate self`, so a `let` receiver is refused) |
+| [ensure_exits_and_loop_values.rk](ensure_exits_and_loop_values.rk) | `return`, or a `break` past the loops opened inside it, in an `ensure` body (E0944), and a plain `break` out of a `loop` whose value is used as an `i32` |
+| [break_in_closure.rk](break_in_closure.rk) | `break`/`continue` in a closure aimed at a loop outside it. Native failed in lowering; the interpreter broke the outer loop through the call |
+| [numbers_where_they_dont_fit.rk](numbers_where_they_dont_fit.rk) | A float literal in integer arithmetic (`x += 1.5`, E0401), `for i in 5` (E0827), and a range of strings (E0945) |
+| [static_method_and_unknown_annotation.rk](static_method_and_unknown_annotation.rk) | A static method called through a value (E0946), and an annotation nothing declares, such as the typo `@resouce` (E0854) |
+| [values_that_go_nowhere.rk](values_that_go_nowhere.rk) | `let a = if c: 1` with no `else` (E0947), `?.` on a plain struct, `[0; -1]`, type arguments on a non-generic function (E0885), and `discard` twice |
+| [assign_to_a_name_that_isnt_a_variable.rk](assign_to_a_name_that_isnt_a_variable.rk) | `f = g` on a function and `Color.Red = …` on a variant (E0916) |
+| [tuple_match_exhaustiveness.rk](tuple_match_exhaustiveness.rk) | A `match` on a tuple missing a combination of its parts (E0340), with the missing one named |
+| [resize_while_walking.rk](resize_while_walking.rk) | `push`/`insert` on a collection a plain `for` is walking, directly or through a lazy chain like `m.keys()` (LP8, E0814). Only `for mutate` was tracked |
+| [self_out_of_place.rk](self_out_of_place.rk) | `self` after another parameter, or on a free function (E0219) |
+| [conformance_and_extend_targets.rk](conformance_and_extend_targets.rk) | A conformance answering `-> Self` with another type (E0888), and `extend Shape.Circle` on a variant, which registered nowhere (E0356) |
+| [two_owners_through_a_side_door.rk](two_owners_through_a_side_door.rk) | A struct-update spread that takes a non-Copy field moves its base; a closure capturing a moved value; returning a `with` binding (E0919) |
+| [linear_overwritten.rk](linear_overwritten.rk) | Assigning over a `@resource`, `Heap` or task handle that hasn't been consumed (L1, E0948) |
+| [receiver_and_element_aliasing.rk](receiver_and_element_aliasing.rk) | A `mutate self` receiver also passed as an argument (`b.absorb(b)`), and the same element twice (`both(mutate v[0], mutate v[0])`), E0870 |
+| [borrowed_field_taken.rk](borrowed_field_taken.rk) | Returning a non-Copy field of a `mutate` parameter or `mutate self` (E0872), and a `take self` method on a field of a borrowed parameter (E0835) |
+| [dead_match_arm.rk](dead_match_arm.rk) | An arm after a catch-all (a misspelt variant binds and becomes one), or the same variant tested twice (PM7, E0949) |
+| [generic_body_uses_concrete_type.rk](generic_body_uses_concrete_type.rk) | A generic body that treats `T` as a concrete type: `return 5` from `-> T`, a `U` returned as a `T`, `v.push(5)` into a `Vec<T>`. A number literal becomes a `T` only under `Integer`, `Float` or `Numeric` |
+| [pattern_names_wrong_variant.rk](pattern_names_wrong_variant.rk) | A pattern naming another enum's variant or one that doesn't exist (E0954), a qualified arm counted as a catch-all (E0340), a `bool` match missing `false`, and `c is Blue` that binds and so is always true |
 | [struct_pattern_shared_name.rk](struct_pattern_shared_name.rk) | A struct pattern by position (E0416) where an enum's variant shares the struct's name. The bare pattern is settled by the matched value's type, so the checker reports it rather than the desugarer |
 | [argument_changed_later.rk](argument_changed_later.rk) | A later argument changing a place an earlier argument already lent to the call (E0869, #1534). Arguments are lent in the order written, so the two backends used to disagree about which value the earlier argument saw |
 | [error_mismatch.rk](error_mismatch.rk) | Incompatible error types with `try` |

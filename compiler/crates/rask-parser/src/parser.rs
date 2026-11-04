@@ -462,7 +462,14 @@ impl Parser {
                     // errors (a second interface after the comma) are the ones
                     // worth keeping over the statement retry's generic line.
                     let is_conformance = self.at_conformance_header() || self.at_claim_header();
-                    if is_annotation_decl || is_conformance || matches!(self.current_kind(),
+                    // `comptime struct …`: a modifier in front of a
+                    // declaration keyword, which a statement can't start with.
+                    let modified_decl = matches!(self.current_kind(), TokenKind::Comptime | TokenKind::Unsafe)
+                        && matches!(self.peek(1),
+                            TokenKind::Struct | TokenKind::Enum | TokenKind::Union | TokenKind::Interface
+                            | TokenKind::Extend | TokenKind::Type | TokenKind::Import | TokenKind::Export
+                            | TokenKind::Test | TokenKind::Benchmark | TokenKind::Const | TokenKind::Func);
+                    if is_annotation_decl || is_conformance || modified_decl || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
@@ -695,6 +702,57 @@ impl Parser {
         }
 
         let is_conformance = self.at_conformance_header();
+        // Each declaration takes only the modifiers it reads. The rest were
+        // parsed and dropped: `comptime struct`, `unsafe enum`, `public
+        // import`, `@resource type alias` all compiled and meant nothing.
+        let what = if is_conformance {
+            Some(("a conformance", false, true, false))
+        } else {
+            match self.current_kind() {
+                // (what, takes `public`, takes `unsafe`, takes attributes)
+                TokenKind::Struct => Some(("a struct", true, false, true)),
+                TokenKind::Enum => Some(("an enum", true, false, true)),
+                TokenKind::Union => Some(("a union", true, false, true)),
+                TokenKind::Interface => Some(("an interface", true, true, true)),
+                TokenKind::Extend => Some(("an extend block", true, true, false)),
+                TokenKind::Import => Some(("an import", false, false, false)),
+                TokenKind::Export => Some(("an export", false, false, false)),
+                TokenKind::Const => Some(("a const", true, false, true)),
+                TokenKind::Type => Some(("a type declaration", true, false, false)),
+                TokenKind::Test => Some(("a test", false, false, true)),
+                TokenKind::Benchmark => Some(("a benchmark", false, false, true)),
+                _ => None,
+            }
+        };
+        if let Some((what, takes_pub, takes_unsafe, takes_attrs)) = what {
+            // `comptime test` is a test that runs at compile time; nothing
+            // else here takes `comptime`.
+            let comptime_ok = what == "a test";
+            let bad = if is_pub && !takes_pub && !(is_conformance) {
+                Some("public")
+            } else if is_comptime && !comptime_ok {
+                Some("comptime")
+            } else if is_unsafe && !takes_unsafe {
+                Some("unsafe")
+            } else if !attrs.is_empty() && !takes_attrs {
+                Some("an attribute")
+            } else {
+                None
+            };
+            if let Some(modifier) = bad {
+                let hint = if what == "an import" && modifier == "public" {
+                    "to re-export a name, write `export` on its own line".to_string()
+                } else {
+                    format!("remove `{}`", if modifier == "an attribute" { "@…" } else { modifier })
+                };
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: format!("{} doesn't apply to {}", if modifier == "an attribute" { modifier.to_string() } else { format!("`{modifier}`") }, what),
+                    hint: Some(hint),
+                    why: Some("a modifier the declaration doesn't read would be dropped without a word".to_string()),
+                });
+            }
+        }
         let kind = if is_conformance {
             self.parse_conformance_decl(is_pub, is_unsafe, doc)?
         } else { match self.current_kind() {
@@ -704,7 +762,7 @@ impl Parser {
             }
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
-            TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
+            TokenKind::Union => self.parse_union_decl(is_pub, attrs, doc)?,
             TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
             TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
@@ -849,6 +907,27 @@ impl Parser {
     /// separates items, and so does a newline — the statement rule, applied to
     /// lists (SYNTAX.md, "Continuation"). A line that continues an item starts
     /// with a continuation token, which the item's own expression already took.
+    /// After a member of a struct or enum body: a comma, a line break, or
+    /// the closing brace. `struct Pt { x: i32 y: i32 }` read as two fields
+    /// with nothing between them, unlike a body's statements, which already
+    /// refuse that.
+    fn end_member(&mut self, what: &str) -> Result<(), ParseError> {
+        let separated = self.match_token(&TokenKind::Comma)
+            || self.check(&TokenKind::Newline)
+            || self.check(&TokenKind::RBrace)
+            || self.at_end();
+        if !separated {
+            return Err(ParseError {
+                span: self.current().span,
+                message: format!("expected `,` or a new line after this {what}"),
+                hint: Some(format!("put each {what} on its own line, or separate them with commas")),
+                why: Some("a newline or a comma ends a member; two side by side read as one".to_string()),
+            });
+        }
+        self.skip_newlines();
+        Ok(())
+    }
+
     fn list_continues(&mut self, close: &TokenKind) -> Result<bool, ParseError> {
         if self.match_token(&TokenKind::Comma) {
             self.skip_newlines();
@@ -1263,7 +1342,7 @@ impl Parser {
         let start = self.current().span.start;
         let ty = self.parse_type_name()?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok((ty, Span::new(start, end)))
+        Ok((ty, self.span(start, end)))
     }
 
     fn parse_type_name(&mut self) -> Result<TypeExpr, ParseError> {
@@ -1325,19 +1404,33 @@ impl Parser {
         // the pointer too: `*u8 or E` is a result holding a pointer.
         if self.check(&TokenKind::Star) {
             self.advance();
-            let grouped = self.check(&TokenKind::LParen);
-            let mut pointee = self.parse_base_type()?;
             let mut absent = 0;
-            if !grouped {
-                while let TypeExpr::Optional(inner) = pointee {
-                    pointee = *inner;
+            let pointee = if self.match_token(&TokenKind::LParen) {
+                // `*(T?)?`: the group ends at its `)`, and a `?` after that is
+                // the pointer's like any other. Parsing the group as a whole
+                // type let it take that `?` too, so `*(*u8?)?`, C's `char **`,
+                // was a never-null pointer to a doubly optional one.
+                let mut parts = vec![self.parse_type_name()?];
+                while self.match_token(&TokenKind::Comma) {
+                    if self.check(&TokenKind::RParen) {
+                        break;
+                    }
+                    parts.push(self.parse_type_name()?);
+                }
+                self.expect(&TokenKind::RParen)?;
+                if parts.len() == 1 { parts.pop().expect("one part") } else { TypeExpr::Tuple(parts) }
+            } else {
+                let mut bare = self.parse_base_type()?;
+                while let TypeExpr::Optional(inner) = bare {
+                    bare = *inner;
                     absent += 1;
                 }
-                // `void` takes no suffix of its own, so `*void?`'s `?` is
-                // still waiting here.
-                while self.match_token(&TokenKind::Question) {
-                    absent += 1;
-                }
+                bare
+            };
+            // `void` takes no suffix of its own, so `*void?`'s `?` is still
+            // waiting here, and so is the `?` after a group.
+            while self.match_token(&TokenKind::Question) {
+                absent += 1;
             }
             let mut ty = TypeExpr::RawPtr(Box::new(pointee));
             for _ in 0..absent {
@@ -1764,15 +1857,6 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
-            if self.check(&TokenKind::DotDot) {
-                self.advance();
-                if self.check(&TokenKind::Dot) {
-                    self.advance();
-                }
-                self.skip_newlines();
-                continue;
-            }
-
             let member_start = self.current().span.start;
             let method_doc = self.take_doc();
 
@@ -1812,8 +1896,7 @@ impl Parser {
                 fields.push(Field { name: field_name, name_span, ty, ty_span, visibility, attrs: field_attrs, default, doc: method_doc });
             }
 
-            self.match_token(&TokenKind::Comma);
-            self.skip_newlines();
+            self.end_member("field")?;
         }
 
         self.expect(&TokenKind::RBrace)?;
@@ -1887,7 +1970,7 @@ impl Parser {
         Ok(DeclKind::Annotation(AnnotationDecl { name, name_span, fields, is_pub, doc }))
     }
 
-    fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_union_decl(&mut self, is_pub: bool, attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Union)?;
         let name = self.expect_ident()?;
 
@@ -1933,6 +2016,7 @@ impl Parser {
             name,
             fields,
             is_pub,
+            attrs,
             doc,
         }))
     }
@@ -2057,8 +2141,7 @@ impl Parser {
                 });
             }
 
-            self.match_token(&TokenKind::Comma);
-            self.skip_newlines();
+            self.end_member("variant")?;
         }
 
         self.expect(&TokenKind::RBrace)?;
@@ -2667,15 +2750,20 @@ impl Parser {
     fn at_claim_header(&self) -> bool {
         matches!(self.current_kind(), TokenKind::Ident(s) if s == "claim")
             && matches!(self.peek(1), TokenKind::Ident(_))
-            && matches!(self.peek(2), TokenKind::LParen)
+            && matches!(self.peek(2), TokenKind::LParen | TokenKind::Lt)
     }
 
-    /// `claim name(params) { body }` (type.claims/CL1), parsed into the
-    /// function it is, with the compiler's `claim` marker.
+    /// `claim name<T: Bound>(params) { body }` (type.claims/CL1, G1), parsed
+    /// into the function it is, with the compiler's `claim` marker.
     fn parse_claim_decl(&mut self, mut attrs: Vec<rask_ast::attr::Attr>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let claim_start = self.current().span.start;
         self.advance();
         let name = self.expect_ident()?;
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            self.parse_type_params(ParamOwner::Function)?
+        } else {
+            Vec::new()
+        };
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
         self.skip_newlines();
@@ -2695,7 +2783,7 @@ impl Parser {
         Ok(DeclKind::Fn(FnDecl {
             id: self.next_id(),
             name,
-            type_params: Vec::new(),
+            type_params,
             params,
             ret_ty: None,
             body,

@@ -182,6 +182,12 @@ pub const CLAIMS_FILE: &str = "claims.rk";
 
 /// Collect .rk source file paths from a directory (excluding build.rk and
 /// claims.rk). Also includes any .rk files from the .rk-gen/ subdirectory.
+/// The source files of the package in `dir`, the same ones the registry
+/// reads; its subpackages' aren't among them.
+pub fn package_source_files(dir: &Path) -> Vec<PathBuf> {
+    collect_rk_files(dir).map(|(files, _)| files).unwrap_or_default()
+}
+
 fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageError> {
     let mut files = Vec::new();
     let mut subdirs = Vec::new();
@@ -687,6 +693,25 @@ impl PackageRegistry {
     /// Get a package by ID.
     /// The next unused node id, for declarations made outside any package's
     /// files: a C header's translation (struct.c-interop/CI1).
+    /// Swap the text of one of package `id`'s files and parse it again,
+    /// under the file id it had. For a tool that compiles an edited copy of
+    /// a package without writing it to disk (`rask claims --mutate`).
+    pub fn replace_source(&mut self, id: PackageId, path: &Path, source: String) -> Result<(), PackageError> {
+        let next_id = &mut self.next_node_id;
+        let Some(pkg) = self.packages.get_mut(id.0 as usize) else {
+            return Ok(());
+        };
+        let Some(slot) = pkg.files.iter().position(|f| f.path == path) else {
+            return Ok(());
+        };
+        let mut file_id = pkg.files[slot].file_id;
+        let mut parsed = parse_rk_sources(next_id, &mut file_id, vec![(path.to_path_buf(), source)])?;
+        if let Some(file) = parsed.pop() {
+            pkg.files[slot] = file;
+        }
+        Ok(())
+    }
+
     pub fn next_node_id_mut(&mut self) -> &mut u32 {
         &mut self.next_node_id
     }
@@ -763,6 +788,7 @@ impl PackageRegistry {
                 metadata: Vec::new(),
                 list_metadata: Vec::new(),
                 profiles: Vec::new(),
+                claims: Vec::new(),
             })
         });
 

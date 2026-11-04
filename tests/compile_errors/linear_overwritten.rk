@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: assigning over a linear value that hasn't been consumed
+//
+// A `@resource`, a `Heap` and a task handle are consumed exactly once
+// (mem.linear/L1). Assigning a new one to the binding dropped the old one
+// unconsumed: `c = Conn(id: 2)` leaked the first connection, and the first
+// task's handle was neither joined nor detached.
+
+@resource
+struct Conn { id: i32 }
+
+extend Conn {
+    func close(take self) {}
+}
+
+struct Node { v: i64 }
+
+func main() {
+    mut c = Conn(id: 1)
+    // ERROR: the first `Conn` is still owed a `close()` [E0948]
+    c = Conn(id: 2)
+    c.close()
+
+    mut q = Heap(Node(v: 1))
+    // ERROR: the first box is never dropped [E0948]
+    q = Heap(Node(v: 2))
+    drop(q)
+
+    // FIX: consume, then assign
+    mut d = Conn(id: 3)
+    d.close()
+    d = Conn(id: 4)
+    d.close()
+}

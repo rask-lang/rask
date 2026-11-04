@@ -163,11 +163,18 @@ pub struct InterfaceChecker<'a> {
     types: &'a TypeTable,
     /// Collected errors.
     errors: Vec<InterfaceError>,
+    /// Answering `ClaimInput` rather than `Decode`: a type that builds itself
+    /// (`claims.Generate`) counts wherever it sits.
+    claim_input: bool,
 }
 
 impl<'a> InterfaceChecker<'a> {
     pub fn new(types: &'a TypeTable) -> Self {
-        Self { types, errors: Vec::new() }
+        Self { types, errors: Vec::new(), claim_input: false }
+    }
+
+    fn generates(&self, id: TypeId) -> bool {
+        self.types.builds_claim_inputs(id)
     }
 
     /// Every method a declared interface requires: its own, then its
@@ -262,7 +269,7 @@ impl<'a> InterfaceChecker<'a> {
             return true;
         }
         let name = self.types.interface_name(interface);
-        matches!(name.as_str(), "Copy" | "Encode" | "Decode")
+        matches!(name.as_str(), "Copy" | "Encode" | "Decode" | "ClaimInput")
             || numeric_interface_members(&name).is_some()
             || builtin_interface_methods(&name).is_some()
     }
@@ -316,6 +323,23 @@ impl<'a> InterfaceChecker<'a> {
             if members(ty) {
                 return Ok(());
             }
+        }
+
+        // What a claim can be handed (type.claims/IN1, IN2): what a decode
+        // builds, where any part may instead build itself through
+        // `claims.Generate`. Only the compiler writes this bound.
+        if base_interface == "ClaimInput" {
+            self.claim_input = true;
+            let ok = self.type_is_encodable(ty, &mut Vec::new()) && self.first_defaultless_excluded_field(ty).is_none();
+            self.claim_input = false;
+            if ok {
+                return Ok(());
+            }
+            return Err(InterfaceError::NotSatisfied {
+                ty: self.type_name(ty),
+                interface_name: interface_name.clone(),
+                span,
+            });
         }
 
         if matches!(base_interface, "Encode" | "Decode") {
@@ -444,14 +468,30 @@ impl<'a> InterfaceChecker<'a> {
         // implementation can match — which is what made every conformance to a
         // generic interface fail claiming a missing method (#1164).
         let subst = self.conformance_substitution(ty, interface);
+        // A written `Self` is the implementing type, on both sides. Left as a
+        // placeholder it matched anything, so `func dup(self) -> Bb` passed
+        // for an interface asking `-> Self` on an `Aa`. Only a plain type:
+        // a generic one's methods spell `Self` by its parameters. Applied
+        // after the conformance's own substitution, so `Self.Out` has already
+        // become what the conformance answers.
+        let plain_self = matches!(ty, Type::Named(_));
+        let self_only: HashMap<String, Type> = if plain_self {
+            HashMap::from([("Self".to_string(), ty.clone())])
+        } else {
+            HashMap::new()
+        };
         let required_methods: Vec<MethodSig> = self
             .interface_methods(interface)?
             .into_iter()
-            .map(|m| substitute_signature(&m, &subst))
+            .map(|m| substitute_signature(&substitute_signature(&m, &subst), &self_only))
             .collect();
 
         // Get the type's available methods
-        let type_methods = self.get_type_methods(ty);
+        let type_methods: Vec<MethodSig> = self
+            .get_type_methods(ty)
+            .iter()
+            .map(|m| substitute_signature(m, &self_only))
+            .collect();
 
         // Check each required method exists with matching signature
         for required in &required_methods {
@@ -550,6 +590,11 @@ impl<'a> InterfaceChecker<'a> {
             Type::Result { ok, err } if matches!(**err, Type::None) => {
                 self.type_is_encodable(ok, visited)
             }
+            // `T or E`, when both sides are. A claim builds one (type.claims);
+            // JSON has no form for it yet, and a decode that reaches one says so.
+            Type::Result { ok, err } => {
+                self.type_is_encodable(ok, visited) && self.type_is_encodable(err, visited)
+            }
             Type::Array { elem, .. } => self.type_is_encodable(elem, visited),
             Type::Tuple(elems) => elems.iter().all(|e| self.type_is_encodable(e, visited)),
             Type::Named(id) => self.named_is_encodable(*id, &[], visited),
@@ -619,7 +664,7 @@ impl<'a> InterfaceChecker<'a> {
         id: TypeId,
         visited: &mut Vec<TypeId>,
     ) -> Option<String> {
-        if visited.contains(&id) {
+        if visited.contains(&id) || (self.claim_input && self.generates(id)) {
             return None;
         }
         visited.push(id);
@@ -712,6 +757,9 @@ impl<'a> InterfaceChecker<'a> {
     fn named_is_encodable(&self, id: TypeId, targs: &[Type], visited: &mut Vec<TypeId>) -> bool {
         if visited.contains(&id) {
             return true; // recursive type — assume ok, the non-cyclic fields decide
+        }
+        if self.claim_input && self.generates(id) {
+            return true;
         }
         visited.push(id);
         let result = match self.types.get(id) {

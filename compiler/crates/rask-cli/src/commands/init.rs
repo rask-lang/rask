@@ -12,7 +12,7 @@ use crate::output;
 ///
 /// If `name` is None, uses the current directory (initializes in-place).
 /// If `name` is Some, creates a new subdirectory.
-pub fn cmd_init(name: Option<&str>) {
+pub fn cmd_init(name: Option<&str>, agents: bool) {
     let (project_dir, project_name) = match name {
         Some(n) => {
             let dir = Path::new(n);
@@ -81,6 +81,18 @@ pub fn cmd_init(name: Option<&str>) {
         let gitignore_content = "/build/\n.rk-gen/\n";
         write_file(&gitignore, gitignore_content);
         println!("  {} {}", "Created".green(), ".gitignore");
+    }
+
+    // Only on request: plenty of projects want nothing to do with agents.
+    if agents {
+        match super::agents::write_agents_md(&project_dir) {
+            Ok(true) => println!("  {} {}", "Created".green(), "AGENTS.md section"),
+            Ok(false) => println!("  {} {} (already has a Rask section)", "Skipped".dimmed(), "AGENTS.md"),
+            Err(e) => {
+                eprintln!("{}: writing AGENTS.md: {}", output::error_label(), e);
+                process::exit(1);
+            }
+        }
     }
 
     // Initialize git if not in a repo

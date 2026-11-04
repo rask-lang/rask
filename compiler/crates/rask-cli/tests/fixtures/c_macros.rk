@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A header's function-like macros, called (struct.c-interop/PP4). Each call
+// is typed from its arguments by C's rules: a constant call folds, any other
+// computes the macro's body in C (native) or here (interpreter), with C's
+// conversions either way.
+
+import c "c_macros.h"
+
+const LEFT: u32 = c.BUTTON_MASK(1)
+
+func main() {
+    let elapsed: u64 = 2500000
+    println("ms {c.NS_TO_MS(elapsed)}")
+    println("mask {c.BUTTON_MASK(3)} {LEFT}")
+    let which: u8 = 7
+    println("mask runtime {c.BUTTON_MASK(which)}")
+    println("fourcc {c.FOURCC(82, 65, 83, 75)}")
+    let k: i32 = 75
+    println("fourcc runtime {c.FOURCC(82, 65, 83, k)}")
+    let x: i32 = 5
+    println("half {c.HALF(x)}")
+    let big: i32 = 300
+    println("byte {c.CLAMP_BYTE(big)}")
+    // -1 against an unsigned compares as a huge unsigned number, as in C.
+    let minus: i32 = -1
+    let one: u32 = 1
+    println("below {c.BELOW(minus, one)}")
+}

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A type's own `origin()` is that method. The checker answered `.origin()`
+// on every type with the error-origin builtin's `string`, so SYNTAX.md's own
+// `Point.origin()` typed as a string, and native lowered the type name as a
+// value and failed.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+extend Point {
+    func origin() -> Point {
+        return Point(x: 0, y: 0)
+    }
+}
+
+test "a static method named origin returns what it declares" {
+    let p = Point.origin()
+    assert p.x == 0
+    assert p.y == 0
+}

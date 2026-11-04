@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: one name declared or bound twice where only one can live
+//
+// The resolver's scopes let a binding replace the one before it, which is
+// what shadowing a local needs. Everywhere else it meant the second one
+// silently won: a second `func area`, a second field, the second `x` in a
+// literal, the second `a` in `let (a, a)`.
+
+func area() -> i32 {
+    return 1
+}
+
+// ERROR: a second function of the same name [E0201]
+func area() -> i32 {
+    return 2
+}
+
+// ERROR: a type can't take a name a function already has [E0201]
+struct area { v: i32 }
+
+struct Point {
+    x: i32
+    // ERROR: two fields called `x` [E0201]
+    x: i32
+}
+
+enum Shape {
+    Dot
+    // ERROR: two variants called `Dot` [E0201]
+    Dot
+    // ERROR: two fields in one variant [E0201]
+    Line(len: i32, len: i32)
+}
+
+// ERROR: two parameters called `a` [E0201]
+func add(a: i32, a: i32) -> i32 {
+    return a
+}
+
+// ERROR: two type parameters called `T` [E0201]
+func pick<T, T>(x: T) -> T {
+    return x
+}
+
+interface Sized {
+    func size(self) -> i32
+    // ERROR: two methods called `size` [E0201]
+    func size(self) -> i32
+}
+
+func main() {
+    // ERROR: `a` bound twice by one pattern [E0218]
+    let (a, a) = (1, 2)
+
+    // ERROR: and by one closure's parameters [E0218]
+    let f = |n: i32, n: i32| n
+
+    // FIX: shadowing a local in a nested scope is fine, and so is `_`
+    let (h, _) = (1, 2)
+    let h = h + 1
+    println("{a} {f(1, 2)} {h} {area()} {add(1, 2)} {pick(1)}")
+}

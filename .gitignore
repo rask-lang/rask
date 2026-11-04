@@ -5,7 +5,12 @@
 # Claude artifacts (removed from history)
 .refinement/
 research/
-.claude
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/agents/
+!.claude/skills/
+!.claude/rules/
 .devcontainer/
 
 # mdBook build artifacts

@@ -26,6 +26,9 @@ const GUARD_BINDING: &str = "<guard>";
 /// `Fn`, and `Union` so two types built from different sources compare equal.
 pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
     match ty {
+        // A type parameter in scope stays one, even when a type shares its
+        // name: `Duration` in `extend Either<Duration, Output>`.
+        Type::UnresolvedNamed(name) if types.is_type_param_in_scope(name) => ty.clone(),
         Type::UnresolvedNamed(name) => {
             if let Some(id) = types.get_type_id(name) {
                 return Type::Named(id);
@@ -524,13 +527,27 @@ impl TypeChecker {
                         span,
                     ));
                     // Check each field pattern
-                    let struct_fields = self.types.get(type_id).and_then(|def| {
-                        if let TypeDef::Struct { fields, .. } = def {
-                            Some(fields.clone())
-                        } else {
-                            None
+                    let (struct_fields, private) = match self.types.get(type_id) {
+                        Some(TypeDef::Struct { fields, private_fields, .. }) => {
+                            (Some(fields.clone()), private_fields.clone())
                         }
-                    });
+                        _ => (None, Vec::new()),
+                    };
+                    // SV4: outside the type's own extend blocks a private
+                    // field is reached by `..`, never by name. `let Acct(bal,
+                    // name) = a` read the private balance anywhere.
+                    let own = matches!(&self.current_self_type, Some(Type::Named(id)) if *id == type_id);
+                    if !own {
+                        for (field_name, _) in fields {
+                            if private.contains(field_name) {
+                                self.errors.push(TypeError::PrivateFieldAccess {
+                                    ty: name.clone(),
+                                    field: field_name.clone(),
+                                    span,
+                                });
+                            }
+                        }
+                    }
                     let mut bindings = vec![];
                     if let Some(struct_fields) = struct_fields {
                         for (field_name, field_pattern) in fields {
@@ -612,7 +629,9 @@ impl TypeChecker {
                     return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
                 }
                 let narrow_ty = normalize_type(&resolve_type_name(ty, &self.types), &self.types);
-                let resolved = self.ctx.apply(scrutinee_ty);
+                // A number literal's variable is a number: `x is none` on
+                // `let x = 5` can't be true.
+                let resolved = self.settle_number(scrutinee_ty);
                 // ER23 at variant granularity. `match` already dispatches on one
                 // variant of a `T or E` — `error-types.md` shows exactly that with
                 // `IoError.NotFound(p)` arms, and ER30 makes covering every
@@ -770,6 +789,74 @@ impl TypeChecker {
             return None;
         }
         Some((id, type_params.clone()))
+    }
+
+    /// Report a pattern that names a variant `scrutinee` can't be. `type_id`
+    /// is the type the pattern is read against: the scrutinee's own, or the
+    /// enum the pattern names when the scrutinee is still open or a `T or E`.
+    ///
+    /// Unchecked, `Size.Big` against a `Color` and `Color.Blue` both fell
+    /// through to binding fresh variables, and exhaustiveness counted the
+    /// qualified name as a catch-all: `match c { Color.Red => … }` compiled
+    /// and native produced no value for a `Green`.
+    fn reject_foreign_variant(
+        &mut self,
+        name: &str,
+        type_id: rask_types::TypeId,
+        scrutinee: &Type,
+        span: Span,
+    ) -> bool {
+        // Read against an open scrutinee or one branch of a result, the type
+        // came from the pattern itself and can't disagree with it.
+        if !matches!(scrutinee, Type::Named(_) | Type::Generic { .. }) {
+            return false;
+        }
+        let variant = name.rsplit('.').next().unwrap_or(name);
+        let (variants, is_enum) = match self.types.get(type_id) {
+            Some(TypeDef::Enum { variants, .. }) => {
+                (variants.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>(), true)
+            }
+            Some(TypeDef::Struct { .. }) => (Vec::new(), false),
+            _ => return false,
+        };
+        let declared = is_enum && variants.iter().any(|v| v == variant);
+        // The qualifier, when it resolves, has to be the scrutinee's enum:
+        // `Size.Big` names `Size` even when `Color` happens to have a `Big`.
+        // One that doesn't resolve (a module path) is left to the variant
+        // lookup. A stdlib module's body is checked under the program's
+        // names, so its own `Color` and a program's `Color` can't be told
+        // apart here; the qualifier passes if either one is the scrutinee's
+        // enum. That leaves a program's `Color.Red` against a
+        // `terminal.Color` unreported (#1726).
+        let qualifier_id = |q: &str| {
+            let program = self.types.get_type_id(q);
+            if program == Some(type_id) {
+                program
+            } else {
+                self.types.resolve_name_as_declared_by(type_id, q)
+            }
+        };
+        let qualifier_matches = match name.rsplit_once('.') {
+            Some((qualifier, _)) => match qualifier_id(qualifier) {
+                Some(id) => id == type_id,
+                None => true,
+            },
+            None => true,
+        };
+        // A struct read by a bare name is a destructure, not a variant.
+        if !is_enum && !name.contains('.') {
+            return false;
+        }
+        if declared && qualifier_matches {
+            return false;
+        }
+        self.errors.push(TypeError::PatternVariantMismatch {
+            pattern: name.to_string(),
+            scrutinee: self.ctx.apply(scrutinee),
+            variants,
+            span,
+        });
+        true
     }
 
     /// What enum `id`'s parameters are bound to in `scrutinee_ty`: its own
@@ -996,6 +1083,9 @@ impl TypeChecker {
         };
 
         if let Some(type_id) = base_id {
+            if self.reject_foreign_variant(name, type_id, &resolved_scrutinee, span) {
+                return vec![];
+            }
             let found = self.types.get(type_id).and_then(|def| {
                 if let TypeDef::Enum { variants, type_params, .. } = def {
                     variants.iter()

@@ -19,7 +19,7 @@ A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metada
 | module_imports[]    |  content-addressed module dependencies
 | exports[]           |  top-level functions the host can call
 +---------------------+
-| constants           |  constant pool (strings, numbers)
+| constants           |  constant pool (strings, floats)
 | prototypes[]        |  function prototypes (register count, arity, param types, return type)
 | bytecode            |  instructions
 +---------------------+
@@ -50,22 +50,22 @@ SHA-256 of the bytecode + constants + prototypes + type table sections. Computed
 The host uses this however it wants -- comparing against expected hashes, including in audit logs, verifying snapshots came from a known script. The VM computes the hash and exposes it. The VM does not own the trust model.
 
 ```rask
-const chunk = try vm.compile("script.rd", source)
-const hash = chunk.hash()  // [u8; 32] -- SHA-256 of bytecode content
+let chunk = try vm.compile("script.rd", source)
+let hash = chunk.hash()  // [u8; 32] -- SHA-256 of bytecode content
 ```
 
 Serialized snapshots include the bytecode hash so the host can verify "this snapshot came from this script" on restore.
 
 ## Imports and Exports
 
-**Imports** -- extern structs and extern funcs the script declares. Derived from `extern struct` and `extern func` declarations. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
+**Imports** -- the extern structs and extern funcs the script uses from the published API module, and that module's hash. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
 
 **Module imports** -- other content-addressed chunks referenced via `import "name" as alias`. The import graph is part of the chunk's content hash. The host resolves import names to chunks.
 
 **Exports** -- top-level `func` declarations with their typed signatures. The host can inspect what's callable and what types are expected without reading source.
 
 ```rask
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 chunk.imports()         // extern declarations needed
 chunk.module_imports()  // ["combat_utils", "physics_common"]
 chunk.exports()         // [("on_update", ...), ("process", ...)]
@@ -94,10 +94,10 @@ Checks:
 
 ```rask
 // Compile from source (validates during compilation)
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 
 // Load pre-compiled bytecode (validates on load)
-const chunk = try vm.load(bytecode_bytes)
+let chunk = try vm.load(bytecode_bytes)
 ```
 
 ## Version Compatibility
@@ -188,7 +188,7 @@ Optional. Stripped by default in release, included with a compile flag.
 - **Function names.** Maps prototype indices to names. Powers readable stack traces.
 
 ```rask
-const chunk = try vm.compile("script.rd", source, raido.CompileOpts {
+let chunk = try vm.compile("script.rd", source, raido.CompileOpts {
     debug_info: true,
 })
 ```

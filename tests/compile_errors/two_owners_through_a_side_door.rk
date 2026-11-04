@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: three ways one value ended up with two owners
+//
+// `Holder(n: 2, ..a)` copied `a`'s vector into the new value and left `a`
+// holding it too; a push through one showed in the other. A closure built
+// after `v` moved captured the vector its new owner now held. And `with
+// v[0] as p { return p }` handed the caller an element `v` still owned.
+
+struct Holder {
+    items: Vec<i32>
+    n: i32
+}
+
+struct Outer {
+    h: Holder
+}
+
+struct Item {
+    name: string
+    tags: Vec<string>
+}
+
+func first(mutate v: Vec<Item>) -> Item {
+    with v[0] as p {
+        // ERROR: `p` is lent out of `v` [E0919]
+        return p
+    }
+}
+
+func main() {
+    let a = Holder(items: [1], n: 1)
+    let b = Holder(n: 2, ..a)
+    // ERROR: the spread moved `a`'s vector into `b` [E0800]
+    println("{a.items.len()}")
+
+    let v: Vec<i32> = [1]
+    let w = v
+    // ERROR: `v` moved into `w` above [E0800]
+    let f = || v.len()
+
+    let outer = Outer(h: Holder(items: [1], n: 1))
+    // ERROR: a spread from a field shares the field's vector [E0909]
+    let d = Holder(n: 4, ..outer.h)
+
+    // FIX: say which side gets a copy
+    let c = Holder(n: 3, ..b.clone())
+    println("{b.items.len()} {c.n} {w.len()} {f()} {d.n}")
+}

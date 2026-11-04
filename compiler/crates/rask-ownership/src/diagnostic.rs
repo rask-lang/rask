@@ -935,6 +935,18 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
+            LinearOverwritten { name, consume } => {
+                let fix = match consume.first() {
+                    Some(call) => format!("consume it first: `{}`, then assign", call),
+                    None => format!("consume `{}` before assigning a new value to it", name),
+                };
+                Diagnostic::error(format!("`{}` still holds a value that has to be consumed", name))
+                    .with_code("E0948")
+                    .with_primary(self.span, "assigning here drops the old value without consuming it")
+                    .with_fix(fix)
+                    .with_why("a linear value is consumed exactly once; writing over it would throw the first one away unconsumed, which is the leak linearity rules out [mem.linear/L1]")
+            }
+
             ResourceNotConsumed { name, consume } => {
                 let fix = match consume.as_slice() {
                     [] => format!(
@@ -1395,15 +1407,15 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            ForMutateStructuralMutation { collection, operation, via, loop_span } => {
+            ForMutateStructuralMutation { collection, operation, via, loop_span, loop_form } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, which a `for mutate` is iterating", callee, collection),
+                        format!("`{}` can resize `{}`, which a `{}` is iterating", callee, collection, loop_form),
                         format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
                     ),
                     None => (
-                        format!("cannot {} `{}` during `for mutate` — invalidates iteration", operation, collection),
-                        format!("{} not allowed during mutable iteration", operation),
+                        format!("cannot {} `{}` during `{}` — invalidates iteration", operation, collection, loop_form),
+                        format!("{} not allowed while `{}` is iterated", operation, collection),
                     ),
                 };
                 Diagnostic::error(headline)

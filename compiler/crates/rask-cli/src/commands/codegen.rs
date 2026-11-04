@@ -30,9 +30,8 @@ fn run_pipeline_with(
     let output = rask_compiler::compile_file_with(path, &config, transform);
 
     // Build source_files for display
-    let source_files: Vec<(std::path::PathBuf, String)> = if output.result.is_some() {
-        // Use the source from the compile result's check phase
-        vec![] // compile doesn't track source_files directly — read if needed
+    let source_files: Vec<(std::path::PathBuf, String)> = if !output.source_files.is_empty() {
+        output.source_files.clone()
     } else {
         match std::fs::read_to_string(path) {
             Ok(s) => vec![(std::path::PathBuf::from(path), s)],

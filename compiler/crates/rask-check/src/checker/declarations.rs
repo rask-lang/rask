@@ -131,6 +131,11 @@ impl TypeChecker {
                 self.with_type_params(params, |this| this.register_impl_methods(i, decl.id, decl.span));
             }
         }
+        for decl in decls {
+            if let DeclKind::Impl(i) = &decl.kind {
+                self.infer_mutate_self_from_places(i, decl.id);
+            }
+        }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
         // that all `extend` methods are registered — an error type's `message()`
         // may be defined in an `extend` block declared after the type that uses it.
@@ -1058,6 +1063,13 @@ impl TypeChecker {
                 // answer per type is exactly what that isn't.
                 if rask_resolve::is_builtin_type(base_name) {
                     self.check_builtin_core_conformance(i, span);
+                } else if !self.types.stdlib_mode && base_name.contains('.') {
+                    // A dotted header reads as a module's type, so the
+                    // header check let it pass, and a block for a type that
+                    // doesn't exist registered nowhere: `extend Nope.Thing { … }`
+                    // compiled, and so did `extend Shape.Circle`, a variant,
+                    // whose methods then didn't exist on `Shape`.
+                    self.report_unknown_type_name(base_name.to_string(), span);
                 }
                 return;
             }
@@ -1961,6 +1973,53 @@ impl TypeChecker {
         }
     }
 
+    /// PP4: every extern that stands for a C function-like macro, with its
+    /// body parsed once. By name, as `@context` externs are: an imported
+    /// header's declarations have no entry in `decl_symbols`.
+    pub(super) fn collect_c_macros(&mut self, decls: &[rask_ast::decl::Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                // How C spells a record, for a macro's C (PP4).
+                rask_ast::decl::DeclKind::Struct(s) => {
+                    if let Some(c) = rask_ast::attr::c_name(&s.attrs) {
+                        self.c_names.insert(s.name.clone(), (c, rask_ast::attr::c_name_header(&s.attrs)));
+                    }
+                }
+                rask_ast::decl::DeclKind::Union(u) => {
+                    if let Some(c) = rask_ast::attr::c_name(&u.attrs) {
+                        self.c_names.insert(u.name.clone(), (c, rask_ast::attr::c_name_header(&u.attrs)));
+                    }
+                }
+                rask_ast::decl::DeclKind::Extern(e) => {
+                    let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
+                        // A function a macro's body may call.
+                        let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
+                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        continue;
+                    };
+                    let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
+                    let body = attr.body.and_then(|text| {
+                        rask_c_parse::cexpr::parse_body(&text, &params).map(|expr| (text, expr))
+                    });
+                    self.c_macros.insert(
+                        e.name.clone(),
+                        super::type_defs::CMacroDef {
+                            name: e.name.clone(),
+                            c_name: match rask_ast::attr::c_name(&e.attrs) {
+                                Some(rask_ast::attr::CName::Spelled(c)) => c,
+                                _ => e.name.clone(),
+                            },
+                            params,
+                            body,
+                            header: attr.header,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// CB3: the signature a program calls a `@context` extern through: the
     /// context parameter gone, and the callback a closure without it. The
     /// closure is `take`: C keeps it, so it outlives this frame and carries
@@ -2132,6 +2191,46 @@ impl TypeChecker {
     ///
     /// The signature is read with the method's own parameters in scope on top
     /// of the owner's, which the caller has already pushed.
+    /// GC9 for the writes `method_signature`'s syntactic scan can't see:
+    /// `self.items.push(n)` writes when the field's type says `push` does,
+    /// and `self.inner.bump()` when `bump` is `mutate self`. That needs every
+    /// field and every method registered, so it runs after both, and turns
+    /// a private plain `self` into `mutate self` where the body writes
+    /// through a place. Callers then refuse a `let` receiver. check_fn asks
+    /// the same question (`body_mutates_self_place`) for the body.
+    fn infer_mutate_self_from_places(&mut self, i: &rask_ast::decl::ImplDecl, decl_id: rask_ast::NodeId) {
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else { return };
+        let self_ty = Type::Named(type_id);
+        let mut upgrade: Vec<String> = Vec::new();
+        for m in &i.methods {
+            let plain = m.params.iter().any(|p| p.name == "self" && !p.is_mutate && !p.is_take);
+            if m.is_pub || !plain || Self::body_writes_self(&m.body) {
+                continue;
+            }
+            if self.body_mutates_self_place(&m.body, &self_ty) {
+                let filed = self
+                    .filed_methods
+                    .decls
+                    .get(&(decl_id, m.name.clone()))
+                    .cloned()
+                    .unwrap_or_else(|| m.name.clone());
+                upgrade.push(filed);
+            }
+        }
+        if upgrade.is_empty() {
+            return;
+        }
+        if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+            self.types.get_mut(type_id)
+        {
+            for sig in methods.iter_mut() {
+                if upgrade.contains(&sig.name) && matches!(sig.self_param, SelfParam::Value) {
+                    sig.self_param = SelfParam::Mutate;
+                }
+            }
+        }
+    }
+
     pub(super) fn method_signature(
         &mut self,
         m: &FnDecl,

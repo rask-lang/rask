@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a float literal in integer arithmetic, iterating a number, and a
+// range over something that doesn't count
+//
+// Each of these slipped through while a literal's type was still open.
+// `x += 1.5` on an `i64` added 1 natively and 1.5 on the interpreter;
+// `for x in 5` segfaulted natively; `"a".."z"` was a `Range<string>` native
+// walked as nothing.
+
+func main() {
+    mut x: i64 = 1
+    // ERROR: an integer and a float don't meet under `+` [E0401]
+    x += 1.5
+    let a: i64 = 5
+    // ERROR: nor under `/` [E0401]
+    let b = a / 2.0
+    // ERROR: a number isn't a sequence [E0827]
+    for i in 5 {
+        println("{i}")
+    }
+    // ERROR: strings don't count [E0945]
+    for s in "a".."z" {
+        println("{s}")
+    }
+
+    // FIX: say the conversion, and count with numbers
+    let c = a.to<f64>()! / 2.0
+    for i in 0..5 {
+        println("{i} {x} {b} {c}")
+    }
+}

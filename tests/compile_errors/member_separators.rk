@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: two struct fields or enum variants side by side with nothing between
+//
+// A body's statements already needed a newline or `;` between them; a
+// struct's fields and an enum's variants didn't, so `enum Signal { Ready
+// Done }` read as two variants. One of the test files had exactly that typo.
+
+// ERROR: a field needs a comma or a new line after it [E0100]
+struct Point { x: i32 y: i32 }
+
+func main() {}

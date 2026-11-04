@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One claim per input type JSON can't read, each false, so the shrunk
+// counterexample shows how it was built.
+
+import kinds
+
+claim big_ok(big: i128, r: i64 or kinds.Fault, m: Map<u8, bool>) {
+    assert m.len() >= 0
+}
+
+claim result_false(r: u8 or kinds.Fault) {
+    match r {
+        u8 as n => {
+            assert n < 200
+        }
+        kinds.Fault as f => {
+            assert true
+        }
+    }
+}
+
+claim map_false(m: Map<i32, string>) {
+    assert m.len() < 2
+}
+
+claim big_false(big: u128) {
+    assert big < 1000
+}
+
+claim small_result(r: bool or kinds.Fault) {
+    assert true
+}

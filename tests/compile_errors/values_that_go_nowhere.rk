@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: expressions that look like values or places and aren't
+//
+// Each of these compiled. `let a = if c: 1` printed `()` on the interpreter
+// and 0 natively; `p?.x` on a plain `Point` gave 0 natively and failed on the
+// interpreter; `[0; -1]` overflowed a capacity; a second `discard` freed
+// nothing twice; `g<i32>(1)` on a non-generic `g` ran, and on a method failed
+// to link.
+
+struct Point { x: i32 }
+
+func g(x: i32) -> i32 {
+    return x
+}
+
+func main() {
+    let ready = false
+    // ERROR: no `else`, so the `if` has nothing to be when `ready` is false [E0947]
+    let a = if ready: 1
+    let p = Point(x: 1)
+    // ERROR: `?.` is for optionals [E0369]
+    let v: i32? = p?.x
+    // ERROR: a length is a `usize` [E0825]
+    let z = [0; -1]
+    // ERROR: `g` takes no type arguments [E0885]
+    let n = g<i32>(1)
+    let items = Vec.from([1])
+    discard items
+    // ERROR: it's already gone [E0336]
+    discard items
+
+    // FIX
+    let b = if ready: 1 else: 0
+    let w: i32? = p.x
+    println("{a} {v ?? 0} {z.len()} {n} {b} {w ?? 0}")
+}

@@ -255,16 +255,20 @@ pub struct FunctionRef {
     /// arguments (mem.unsafe/PT1). Lowering says so from the call's checked
     /// type, so liveness keeps those arguments alive while the pointer is.
     pub points_into_args: bool,
+    /// A call of a C function-like macro (struct.c-interop/PP4), as the
+    /// checker typed it. Not a symbol: a pass after lowering folds it to a
+    /// constant or calls a C function made for these argument types.
+    pub c_macro: Option<Box<rask_c_parse::cexpr::MacroCall>>,
 }
 
 impl FunctionRef {
     /// Internal Rask or stdlib call.
     pub fn internal(name: String) -> Self {
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false }
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true, elidable_clone: false, points_into_args: false }
+        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None }
     }
 }

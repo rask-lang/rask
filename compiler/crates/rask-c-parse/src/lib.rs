@@ -6,6 +6,7 @@
 //! constants) into a C-level AST. No libclang dependency. Handles the subset
 //! of C that appears in well-behaved library headers.
 
+pub mod cexpr;
 pub mod consteval;
 pub mod shim;
 mod lexer;
@@ -62,6 +63,24 @@ pub struct CStructDecl {
     pub fields: Vec<CField>,
     /// True if this is a forward declaration (no body).
     pub is_forward: bool,
+    pub naming: CNaming,
+}
+
+/// What C calls a record, which a macro's C has to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CNaming {
+    /// `struct point`.
+    Tag,
+    /// A typedef's name the anonymous record took
+    /// (`typedef struct { … } Rect;`): C spells it `Rect`.
+    Typedef,
+    /// A record nested in another without a tag. The tag here is made up,
+    /// and C has no name for it.
+    Anonymous,
+    /// A tagless record only pointer typedefs name
+    /// (`typedef struct { … } *Handle;`): C spells it `__typeof__(*(Handle)0)`,
+    /// one `*` per level of pointer.
+    Pointee { typedef: String, depth: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +88,9 @@ pub struct CField {
     pub name: String,
     pub ty: CType,
     pub bit_width: Option<u32>,
+    /// C wrote no name; `name` is made up (`anon2`, `pad3`), and C reaches
+    /// the member's own fields directly.
+    pub unnamed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

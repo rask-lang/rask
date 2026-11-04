@@ -500,7 +500,17 @@ typedef struct {
 
 static SimLink *links;
 static size_t   link_count, link_cap;
+
 static uint64_t next_seq;
+
+// No sockets and no links, between two claim inputs (sim.h). A socket the
+// last input left open is abandoned with its fd: nothing can reach it.
+void rask_sim_net_reset(void) {
+    fd_count = 0;
+    next_port = FIRST_EPHEMERAL_PORT;
+    link_count = 0;
+    next_seq = 0;
+}
 
 static SimSock *udp_on(int port) {
     for (size_t i = 0; i < fd_count; i++) {

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a static method called through a value, and an annotation nobody
+// declared
+//
+// `p.make()` for a `make()` with no `self` ran natively (dropping `p`) and
+// failed on the interpreter. An unknown `@name` was ignored outright, so the
+// typo `@resouce` turned a resource type into a plain struct with no warning.
+
+struct Point { x: i64 }
+
+extend Point {
+    func origin() -> Point {
+        return Point(x: 0)
+    }
+}
+
+// ERROR: no annotation by this name — `@resource` was meant [E0854]
+@resouce
+struct Conn { fd: i32 }
+
+func main() {
+    let p = Point(x: 1)
+    // ERROR: `origin` takes no `self` [E0946]
+    let q = p.origin()
+
+    // FIX: through the type
+    let r = Point.origin()
+    println("{q.x} {r.x} {p.x}")
+    let c = Conn(fd: 1)
+    println("{c.fd}")
+}

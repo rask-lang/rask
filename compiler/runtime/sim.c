@@ -880,6 +880,8 @@ int rask_sim_reseed(uint64_t seed) {
     faults_seen = 0;
     pthread_mutex_unlock(&g.lock);
     rask_map_set_seed(stream_seed(seed, STREAM_HASH));
+    rask_sim_fs_reset();
+    rask_sim_net_reset();
     return 1;
 }
 

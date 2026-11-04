@@ -13,7 +13,7 @@ Rask (working) ──→ Raido VM (Rask) ──→ Galaxy Gen ──→ History 
                                                                                GDL ──→ Stage 4
 ```
 
-Everything is Rask. Raido, Leden, Allgard, the game server — all written in Rask. These are language validation targets. Raido exercises low-level systems code (fixed-point arithmetic, arena allocation, bytecode dispatch). Leden exercises networking. Allgard exercises data structures and verification. The game server exercises everything.
+Everything is Rask. Raido, Leden, Allgard, the game server — all written in Rask. These are language validation targets. Raido exercises low-level systems code (deterministic arithmetic, arena allocation, bytecode dispatch). Leden exercises networking. Allgard exercises data structures and verification. The game server exercises everything.
 
 Stage 0 (simulations) validates game mechanics cheaply in Python before committing to implementation. Stage 1 doesn't need federation. One operator, one process, five simulated systems. Raido provides deterministic physics and galaxy generation. The game server enforces conservation laws internally. When you federate in Stage 2, you extract enforcement into Allgard.
 
@@ -78,7 +78,7 @@ Everything downstream depends on Raido. Galaxy generation, physics evaluation, c
 ### What to build
 
 A register-based VM that executes Raido bytecode with:
-- 32.32 fixed-point arithmetic (bitwise-identical results on every platform)
+- Deterministic int and float arithmetic (bitwise-identical results on every platform)
 - Arena-based memory (no GC, deterministic allocation)
 - Serializable execution state (pause, resume, migrate)
 - Content-addressed bytecode chunks (the script IS its hash)
@@ -92,10 +92,10 @@ A register-based VM that executes Raido bytecode with:
 
 ### Validation
 - Write the galaxy generation script. If Raido can generate 10,000 stars with positions, spectral classes, planets, and resource deposits from a single seed — and two independent runs produce bitwise-identical output — the VM works.
-- Write one crafting script (structural steel: Fe+C at 97:3). If the interaction function evaluates deterministically with fixed-point math, transformation physics works.
+- Write one crafting script (structural steel: Fe+C at 97:3). If the interaction function evaluates deterministically, transformation physics works.
 
 ### Implementation language
-Rask. Raido exercises exactly the kind of systems code Rask needs to prove it handles well — fixed-point arithmetic, arena allocation, bytecode dispatch loops, host interop through FFI. If Rask can't build a register VM cleanly, that's a language problem to fix, not to work around.
+Rask. Raido exercises exactly the kind of systems code Rask needs to prove it handles well — deterministic arithmetic, arena allocation, bytecode dispatch loops, host interop through FFI. If Rask can't build a register VM cleanly, that's a language problem to fix, not to work around.
 
 ## Phase 2: Galaxy Generation
 

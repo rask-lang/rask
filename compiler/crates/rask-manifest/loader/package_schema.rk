@@ -18,16 +18,26 @@ public func package_schema() -> Schema {
 
 public func package_history() -> Vec<Release> {
     mut adds = Vec<Change>.new()
-    mut fields = top_fields()
+    mut fields = release_1_fields()
     for f in fields.take_all() {
         adds.push(Change.Add(at: root(), field: f))
     }
     mut h = Vec<Release>.new()
     h.push(Release(version: 1, changes: adds))
+    // 2: the claims sources a package is held to (type.claims/W2).
+    h.push(Release(version: 2, changes: Vec<Change>.from([
+        Change.Add(at: root(), field: claims_field())
+    ])))
     return h
 }
 
 func top_fields() -> Vec<Field> {
+    mut fields = release_1_fields()
+    fields.push(claims_field())
+    return fields
+}
+
+func release_1_fields() -> Vec<Field> {
     return Vec<Field>.from([
         required("package", package_ty())
         optional("dependencies", map_of(dep_ty()))
@@ -37,6 +47,28 @@ func top_fields() -> Vec<Field> {
         optional("exclusive-features", map_of(exclusive_ty()))
         optional("profiles", map_of(profile_ty()))
     ])
+}
+
+// [claims]
+// repo = { path = "../shared-claims" }
+// acme = { git = "https://git.acme.dev/claims", rev = "v2.1" }
+// Where a source comes from is the variant, as for a dependency; nothing is
+// shared, since a claims source isn't code the package links.
+func claims_field() -> Field {
+    return optional("claims", map_of(Ty.Variant(
+        cases: Vec<Case>.from([
+            Case(name: "path", payload: Ty.Str, fields: Vec.new())
+            Case(
+                name: "git"
+                payload: Ty.Str
+                fields: Vec<Field>.from([
+                    optional("rev", Ty.Str)
+                    optional("branch", Ty.Str)
+                ])
+            )
+        ])
+        shared: Vec.new()
+    )))
 }
 
 func package_ty() -> Ty {

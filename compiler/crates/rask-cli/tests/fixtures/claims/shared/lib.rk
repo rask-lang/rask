@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A package held to claims from outside it: `../policy`, which the test
+// writes beside it, and a git repository it makes.
+
+public func double(x: u8) -> u16 {
+    return x.to<u16>()! * 2
+}
+
+func main() {}

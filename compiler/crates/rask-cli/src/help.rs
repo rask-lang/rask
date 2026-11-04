@@ -65,6 +65,8 @@ pub fn print_usage() {
     println!("{}", output::section_header("Debugging and Exploration:"));
     println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
     println!("  {} {}  Show a module's public API", output::command("api"), output::arg("<file | dir>"));
+    println!("  {} {}  List a package's claims and their verdicts", output::command("claims"), output::arg("[dir]"));
+    println!("  {}         Serve these commands to a coding agent's harness (MCP)", output::command("mcp"));
     println!("  {} {} Report all unsafe operations by category", output::command("unsafe"), output::arg("<file | dir>"));
 
     println!();
@@ -94,6 +96,16 @@ pub fn print_help_help() {
         output::command("help"));
     println!();
     println!("Shows the main help screen with all available commands.");
+    println!();
+    println!("{} {} {}  The language and how to work in a Rask project, for a coding agent",
+        output::command("rask"),
+        output::command("help"),
+        output::arg("agents"));
+    println!("{} {} {} {}  The AGENTS.md section that points an agent at it",
+        output::command("rask"),
+        output::command("help"),
+        output::arg("agents"),
+        output::arg("--snippet"));
     println!();
     println!("{}", output::section_header("Getting Help for Specific Commands:"));
     println!("  {} {} {}  Show help for a specific command",
@@ -480,6 +492,49 @@ pub fn print_fmt_help() {
         output::arg(""));
 }
 
+pub fn print_mcp_help() {
+    println!("{}", output::section_header("MCP"));
+    println!();
+    println!("Serve the compiler to a coding agent's harness over the Model Context Protocol:");
+    println!("JSON-RPC on stdin and stdout. It does nothing until a harness starts it.");
+    println!();
+    println!("{}: {} {}", "Usage".yellow(), output::command("rask"), output::command("mcp"));
+    println!();
+    println!("{}", output::section_header("Tools:"));
+    println!("  {}         Type-check a file or package; diagnostics as JSON", output::arg("check"));
+    println!("  {}  Run a package's claims; verdicts as JSON", output::arg("build_claims"));
+    println!("  {}       Explain an error code", output::arg("explain"));
+    println!("  {}           A module's public API as JSON", output::arg("api"));
+    println!("  {}      The language card and how to work in a Rask project", output::arg("briefing"));
+    println!();
+    println!("Each tool runs one `rask` command and answers with what it printed. The server");
+    println!("writes no files; applying a fix is left to the harness.");
+    println!();
+    println!("A harness config entry looks like:");
+    println!("  {{ \"command\": \"rask\", \"args\": [\"mcp\"] }}");
+}
+
+pub fn print_claims_help() {
+    println!("{}", output::section_header("Claims"));
+    println!();
+    println!("A package's claims (claims.rk, the sources under [claims], the stdlib's laws),");
+    println!("run the way a build runs them, with each one's verdict.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("claims"),
+        output::arg("[dir] [--since <rev> | --mutate]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Commits since <rev> that changed a claim and code it reaches", output::arg("--since <rev>"));
+    println!("  {}        Change the code claims reach in small ways; report changes no claim notices", output::arg("--mutate"));
+    println!("  {}  Fail every claim that held without being checked for every input", output::arg("--claims=strict"));
+    println!("  {}  Run sampled claims on N more seeds", output::arg("--claim-seeds N"));
+    println!("  {}          Verdicts as JSON", output::arg("--json"));
+    println!();
+    println!("`--since` and `--mutate` exit 1 when they find something, so CI can gate on them.");
+}
+
 pub fn print_api_help() {
     println!("{}", output::section_header("API"));
     println!();
@@ -718,10 +773,12 @@ pub fn print_init_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("init"),
-        output::arg("[name]"));
+        output::arg("[name] [--agents]"));
     println!();
     println!("If a name is given, creates a new directory.");
     println!("If no name, initializes in the current directory.");
+    println!("{} also adds a Rask section to AGENTS.md, for projects that use coding agents.",
+        output::arg("--agents"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}    Create new project in my-app/",

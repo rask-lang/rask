@@ -24,16 +24,9 @@ I want this without turning Rask into a proof language. Nobody writes a proof. T
 
 A claim checks what it says and nothing more. A package held to ten claims has ten things checked, not a proof that it's correct.
 
-> **Built so far.** A package's `claims.rk` (W1), checked by `rask build`,
-> `rask run`, `rask test` and `rask check --claims`; `rask check` type-checks
-> it (R1). Inputs are generated for `bool`, the integers up to 64 bits, `f64`,
-> `char`, `string`, `Vec<T>`, `T?`, pairs and triples, and payload-carrying
-> enums and structs whose fields are visible. Exhaustive (V2) and sampled (V3)
-> verdicts, shrinking (V1), the step budget (D2, `@claim_budget`) and the
-> seed (D1) work. Not yet: shared `[claims]` sources (W2, W3), interface claims
-> (G1, G2), cached verdicts and calls (D4, D5), strict mode (V6), hand-written
-> generators (IN2), the `rask claims` tool, and inputs of `f32`, 128-bit
-> integers, `Map` and `T or E`.
+> **Built so far.** Everything below except cached calls (D5), the solver
+> (V4) and registry claims sources (W3). Claims run in `rask build`, `rask run`, `rask test` and
+> `rask check --claims`; `rask check` type-checks them (R1).
 
 ## Declaration
 
@@ -42,7 +35,7 @@ A claim checks what it says and nothing more. A package held to ten claims has t
 | **CL1: Shape** | `claim name(params) { body }`. The parameters are the inputs the claim holds for, all of them. The body checks with `assert` and `check` (`std.testing/A1`, `A2`) and returns nothing |
 | **CL2: Claims sources only** | A claim is declared only in a claims source: a package's `claims.rk` (W1) or a file or directory its manifest lists under `[claims]` (W2). `claim` anywhere else is a compile error |
 | **CL3: Nothing depends on a claims source** | A claims source may also hold helper functions (a reference model, a generator). Code can't import it; it's reached only through `[claims]` (W2), and release builds strip it, like tests |
-| **CL4: Runs under sim** | A claim is compiled to native code and run on the sim runtime (`sim`): one thread at a time, with scheduling, the clock, I/O and faults all drawn from a seed. So a claim can do what a sim test can, `spawn` and I/O included. What sim refuses (`Thread.spawn`, C that escapes to the real world, `sim/B1`, `B2`) a claim can't reach either |
+| **CL4: Runs under sim** | A claim is compiled to native code and run on the sim runtime (`sim`): one thread at a time, with scheduling, the clock, I/O and faults all drawn from a seed. So a claim can do what a sim test can, `spawn` and I/O included. Each input starts in a fresh world: no tasks, no files written, no sockets. What sim refuses (`Thread.spawn`, C that escapes to the real world, `sim/B1`, `B2`) a claim can't reach either |
 | **CL5: Discarding an input** | A `return` before the end of the body discards that input. It counts neither for nor against the claim. That's how a claim states a precondition: `if !is_valid(x) { return }` |
 | **CL6: A panic is a failure** | If the code under the claim panics on an input (out of bounds, overflow, `unreachable()`), that input is a counterexample. A claim that just calls a function claims it never panics |
 
@@ -57,25 +50,39 @@ A package's own claims sit in one reserved file. A repo's, a company's, and an o
 | Rule | Description |
 |------|-------------|
 | **W1: `claims.rk` is reserved** | `claims.rk` in a package directory is always that package's claims, with nothing to configure, the way `build.rk` is always its build script. It's taken out of the package's own sources (an exception to `struct.modules/PO1`) and compiled as its own package. A package without a manifest still gets one |
-| **W2: Shared claims** | A package lists further claims sources it's held to under `[claims]`, each a file or a directory of claim files, wherever the repo or company keeps them. Every claim in `claims.rk` and in the listed sources is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims source importing the package that applies it is not a cycle |
-| **W3: Locked like dependencies** | A claims source from a registry or git is pinned in `rask.lock` with its checksum (`struct.packages/LK3`). Editing it locally fails the build, so the only way to change one is a visible lock update |
+| **W2: Shared claims** | A package lists further claims sources it's held to under `[claims]`, each a file or a directory of claim files, wherever the repo or company keeps them. Every claim in `claims.rk` and in the listed sources is checked in that package's build: a claim that imports the package checks its public API, and a generic claim (G1) checks its conforming types. `[claims]` isn't a code dependency, so a claims source importing the package that applies it is not a cycle. All of a package's claims sources compile together, as one package, so two of them can't declare the same name |
+| **W3: Locked like dependencies** | A claims source from git names a `rev` (or a `branch`), is fetched once into the user's cache, and is pinned in `rask.lock` with its checksum (`struct.packages/LK3`), under `[[claims]]`. Editing the checkout fails the build, so the only way to change one is a new `rev` in rask.toml, where review sees it. Claims sources from a registry wait for the registry |
 
 <!-- test: skip -->
 ```toml
 [claims]
 repo = { path = "../shared-claims" }                                # repo-wide
-acme = { git = "https://git.acme.dev/claims", version = "2.1" }     # company-wide
+acme = { git = "https://git.acme.dev/claims", rev = "v2.1" }        # company-wide
 ```
 
-The stdlib's interface laws are a claims source every package is held to without listing it.
+The stdlib's interface laws are a claims source every package is held to without listing it (G3).
 
 ## Inputs
 
 | Rule | Description |
 |------|-------------|
-| **IN1: Generated by type** | Each parameter's type must be generatable. Primitives, `string`, `Vec`, `Map`, tuples, `T?`, `T or E`, and structs and enums whose fields are all `public` and generatable get a generator derived automatically, the same way `Encode` is (`std.encoding/E12`, `E17`). A type with private fields can't be generated from outside its package; a claim builds one through its public API instead, usually by applying a generated list of operations |
-| **IN2: Own generator** | A type with an invariant its fields don't express (a sorted `Vec`, a valid AST) supplies its own generator in a claim file. Spelling open, see below |
+| **IN1: Built like a decode** | A claim's inputs are the values `json.decode` could build, so a parameter's type must be `Decode` (`std.encoding/E12`–`E17`). Some `Decode` types have no JSON form yet and are built anyway: `char`, 128-bit integers, tuples, enums, `T or E`, and maps keyed by a number, `bool` or `char`. Both walk one description of the type, so a field the wire form leaves out takes its default here as it does in a decode (`E13a`). A type a decode can't build is made inside the claim instead, through the package's API, usually by applying a generated list of operations. A map keyed by a struct or enum isn't built yet |
+| **IN2: Own generator** | A type with an invariant its fields don't express (a sorted `Vec`, a valid AST) builds itself: a claims file declares `T implements claims.Generate`, and a claim given a `T` gets what its `generate` returns, wherever the `T` sits in the input. `generate` draws from a `claims.Choices`: `make<U>()` builds a `U` the way an input is built, `below(n)` and `one_of(items)` pick. Those are the claim's own choices, so a generated input shrinks and replays like any other. A type that builds itself is always sampled, since its walk isn't known before it runs |
 | **IN3: Not generatable in v1** | `@resource` types, `Shared`, `Rack`/`Link`, and `any I` can't be claim parameters. A claim can still build them in its body from generated parts |
+
+<!-- test: skip -->
+```rask
+// claims.rk: the only way to a `SortedVec` is through `insert`
+ledger.SortedVec implements claims.Generate {
+    func generate(from: claims.Choices) -> ledger.SortedVec {
+        mut v = ledger.SortedVec.new()
+        for x in from.make<Vec<i64>>() {
+            v.insert(x)
+        }
+        return v
+    }
+}
+```
 
 ## Verdicts
 
@@ -88,7 +95,7 @@ Every claim ends with a verdict. Only a counterexample fails the build.
 | **V3: Sampled** | The claim held for N generated inputs (default 1,000). Reported, not an error. The verdict says the number and never rounds up to proven |
 | **V4: Proven** | Reserved for a solver backend, for claims that touch no scheduling point or I/O. Same claims, stronger verdict. Not part of v1 |
 | **V5: Out of budget** | An input ran past the claim's step budget. Reported with the input, not an error. Not finishing isn't the same as being shown false |
-| **V6: Strict mode** | `--claims strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
+| **V6: Strict mode** | `--claims=strict` turns every verdict except checked all and proven into an error. For CI that wants the stronger guarantee. Off by default |
 
 ```
 claims: game (held to game/claims)
@@ -116,10 +123,10 @@ A build failure that comes and goes between builds is worse than none, so checki
 | **D1: Seed from the claim** | The claim's seed derives from its name and the tokens of its body. Each input's sim seed derives from (claim seed, input index), so the inputs, schedules and faults are the same every build. Editing the claim draws new ones |
 | **D2: Step budget** | Each input gets a budget counted in steps, never wall-clock time. A claim build counts loop back-edges and calls; ordinary builds don't carry the counter. `@claim_budget(N)` on a claim raises it |
 | **D3: Toolchain-pinned** | A new compiler may change the generators and draw different inputs. That's a toolchain change like any other, and it can turn up a counterexample nobody saw before. That's the point of it |
-| **D4: Cached verdicts** | A verdict is cached under the claim's text and the semantic hashes of every function it reaches (`comp.architecture/IC2`). A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build |
+| **D4: Cached verdicts** | A verdict is cached under the claim's text, its seed and budget, the MIR of every function it reaches, the runtime and the compiler. A claim is re-checked only when something it reaches changed, so a large claim costs once per change, not once per build. Only a claim that held is cached: a false one runs and shrinks again until it holds |
 | **D5: Cached calls** | Calls a claim makes into the package it checks are memoized when the effects analysis finds them pure (no I/O, no scheduling point); an effectful call's result also depends on the sim state, not only its arguments. Pure calls are memoized on (the callee's semantic hash, the receiver and argument values), and the result holds the returned value and, for a `mutate` parameter, the value after the call. A pure call with the same inputs always gives the same result, and owned values mean nothing else can change behind it. Sampled operation lists share prefixes, so the state after `[Deposit(5), Withdraw(2)]` is computed once for every input that starts that way. The memo table is stored with the verdict cache (D4), keyed the same way, so it survives between builds until the callee changes |
 
-Deep random search belongs in `rask test`, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `rask test --claims --seeds N` runs every claim on N more seeds without changing what the build decides.
+Deep random search belongs outside the build, where flaky-on-a-new-seed is expected and the replay line handles it (`sim/I4`). `--claim-seeds N` runs every sampled claim on N more seeds after the build's own. A claim checked in full has nothing left to find and is skipped. The flag goes on the command line, never in a manifest, so what a plain build decides doesn't change.
 
 ## When claims run
 
@@ -147,8 +154,9 @@ claim antisymmetric<T: Comparable>(a: T, b: T) {
 
 | Rule | Description |
 |------|-------------|
-| **G1: Per conformance** | A claim with an interface bound is instantiated for each type in the applying package (W2) that conforms to the bound and is generatable (IN1). Each instantiation gets its own verdict |
+| **G1: Per conformance** | A claim with an interface bound is instantiated for each public type of the applying package (W2), a struct or enum without type parameters of its own, that conforms to the bound and is generatable (IN1). The checker decides both, the way it would for a call written by hand, and a type it refuses is left out. Each instantiation gets its own verdict, reported as `claim<pkg.Type>`. A generic claim nothing instantiates says so |
 | **G2: Across packages** | A generic claim applied through W2 reaches every conformance in the applying package, whichever package declared the interface |
+| **G3: The stdlib's laws** | The core interfaces' laws (`Equal` reflexive and symmetric, `Comparable` reflexive, antisymmetric and agreeing with `Equal`, `Hashable` agreeing with `Equal`, a clone equal to its original) are a claims source every package is held to. They're instantiated only for public types that declare their own conformance: a derived one meets them by construction |
 
 Finding every conformance is whole-program knowledge, which `std.reflect` refuses to hand user code (R2). Here the checker does it, the way monomorphization finds instantiations, and user code never sees the list.
 
@@ -156,15 +164,17 @@ Interfaces are nominal because a conformance is a statement about meaning (`type
 
 ## Weak claims
 
-A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, drops a branch, swaps two arguments) and reruns the claim. A claim that holds after every change isn't constraining that code, and it's reported. This is too slow for every build, so it's a tool and never part of one.
+A hand-written claim can still be weaker than its author thinks. `rask claims --mutate` makes small changes to the functions a claim reaches (flips a comparison, swaps `+` and `-` or `&&` and `||`, negates a `bool`, bumps an integer) and reruns the claims. A change a claim holds through is code that claim isn't constraining, and it's reported with the line and the change. Some changes mean the same thing as the original (`x > 9` and `x >= 10`), and no claim can notice those, so a report is something to read, not a score. This is too slow for every build, so it's a tool and never part of one. The changes are compiled from memory; the package on disk isn't touched.
 
 ## Tooling
 
 | Command | What it does |
 |---------|--------------|
-| `rask claims <path>` | Lists every claim with its verdict. The surface a reviewer reads, like `rask api` |
+| `rask claims <path>` | Lists every claim with its verdict, `--json` for tools. The surface a reviewer reads, like `rask api` |
 | `rask claims --mutate <path>` | Weak-claim report (above) |
-| `rask claims --since <rev>` | Lists commits since `<rev>` that changed a claim *and* a function that claim reaches. That's what it looks like when someone rewrites the grader along with the work |
+| `rask claims --since <rev>` | Lists commits since `<rev>` that changed a claim *and* a function that claim reaches. That's what it looks like when someone rewrites the grader along with the work. What a claim reaches is read off the code as it is now, so a function renamed since then isn't matched |
+
+`--since` and `--mutate` exit 1 when they find something, so CI can gate on them.
 
 ## What a claim can and can't say
 
@@ -187,9 +197,7 @@ Two cases are weak rather than impossible. Floats need tolerances, because NaN b
 
 ## Open
 
-- **Generator spelling** (IN2). An interface the type conforms to in its claim file is the likely shape. The name isn't picked.
 - **Solver backend** (V4). Rask's memory model is what makes this tractable. With no storable references, single ownership, and mutable borrows that exclude everything else, a prover rarely has to ask what else a write changed. Loops are the hard part. A proof needs an invariant, and when the solver can't infer one the verdict falls back to V2 or V3. Nobody is asked to write one, and whether they *may* is open.
 - **Function contracts.** A guarantee written on a function signature would read better than a separate claim for simple cases. `ensure` is taken (cleanup), so contracts would need their own word, and they would break CL2 by putting intent next to code an agent edits.
 - **Is public-only too strict?** Hard to tell before real packages use it. The sign would be packages making things `public` only so their own claims can reach them (an `is_balanced()` nobody else calls). If that shows up, the likely answer is private access for the package's own `claims.rk`, and only that.
 - **Claims over functions.** A shared claim can quantify over types (G1) but not over functions, so "no public function panics" can't be written once for everyone. That needs reflection over a package's functions, which doesn't exist.
-- **Manifest section.** `[claims]` is a new manifest section and goes through the schema's change history (`struct.manifest`).

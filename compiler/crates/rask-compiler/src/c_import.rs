@@ -51,6 +51,7 @@ pub fn expand(
     cx: &Context,
 ) -> Expanded {
     let mut out = Expanded::default();
+    out.diagnostics.extend(resolve_macro_headers(decls, cx));
     let imports: Vec<(rask_ast::decl::CImportDecl, Span)> = decls
         .iter()
         .filter_map(|d| match &d.kind {
@@ -134,14 +135,25 @@ pub fn expand(
                 .decls
                 .into_iter()
                 .filter(|d| match &d.kind {
-                    DeclKind::Extern(e) => externs.insert(e.name.clone()),
+                    DeclKind::Extern(e) if !is_macro(e) => externs.insert(e.name.clone()),
                     _ => true,
                 })
                 .collect();
+            keep_c_spelling(&mut new, &found.display().to_string());
             let mut map = package_scope::qualify_declarations(&mut new, &import.alias);
-            for d in &new {
-                if let DeclKind::Extern(e) = &d.kind {
-                    map.insert(e.name.clone(), e.name.clone());
+            for d in &mut new {
+                if let DeclKind::Extern(e) = &mut d.kind {
+                    if is_macro(e) {
+                        // A macro is no symbol: each header's is its own, under
+                        // its import's dotted name, which no Rask declaration
+                        // can take. Its C name is kept.
+                        let qualified = format!("{}.{}", import.alias, e.name);
+                        e.attrs.push(c_name_attr(&e.name));
+                        map.insert(e.name.clone(), qualified.clone());
+                        e.name = qualified;
+                    } else {
+                        map.insert(e.name.clone(), e.name.clone());
+                    }
                 }
             }
             // Externs dropped above as duplicates are still reachable by name.
@@ -169,6 +181,75 @@ pub fn expand(
     }
     decls.extend(generated);
     out
+}
+
+/// Qualifying renames `Surf` to `Surf_c`, and C still calls it `Surf`. A
+/// record whose C spelling was its Rask name gets that spelling written down
+/// before the rename, and every record the header it's declared in, for the
+/// C a macro call compiles into (PP4): a macro from one header can be handed
+/// a struct from another.
+fn keep_c_spelling(decls: &mut [Decl], header: &str) {
+    for d in decls {
+        let (name, attrs) = match &mut d.kind {
+            DeclKind::Struct(s) => (&s.name, &mut s.attrs),
+            DeclKind::Union(u) => (&u.name, &mut u.attrs),
+            _ => continue,
+        };
+        if rask_ast::attr::c_name(attrs).is_none() {
+            attrs.push(c_name_attr(name));
+        }
+        let Some(attr) = attrs.iter_mut().find(|a| a.is("c_name")) else { continue };
+        let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(header.to_string()), span: Span::new(0, 0) };
+        attr.args.get_or_insert_with(Vec::new).push(rask_ast::attr::AttrArg {
+            label: Some("header".to_string()),
+            value: rask_ast::attr::AttrValue::Expr(spelling),
+        });
+    }
+}
+
+/// A written `@c_macro(…, header: "a.h")` names its header the way
+/// `import c` does, beside the file it's written in. Resolved here, once, to
+/// the path the C it compiles into includes; a header `import c` translated
+/// already names its own path.
+fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    for d in decls.iter_mut() {
+        let DeclKind::Extern(e) = &mut d.kind else { continue };
+        let Some(attr) = e.attrs.iter_mut().find(|a| a.is("c_macro")) else { continue };
+        let Some(args) = attr.args.as_mut() else { continue };
+        let Some(arg) = args.iter_mut().find(|a| a.label.as_deref() == Some("header")) else { continue };
+        let Some(header) = arg.value.string() else { continue };
+        if Path::new(&header).is_absolute() {
+            continue;
+        }
+        match locate(&header, d.span.file_id, cx) {
+            Ok(path) => {
+                let path = canonical(&path).display().to_string();
+                arg.value = rask_ast::attr::AttrValue::Expr(Expr {
+                    id: rask_ast::NodeId::DUMMY,
+                    kind: ExprKind::String(path),
+                    span: d.span,
+                });
+            }
+            Err(msg) => diags.push(
+                Diagnostic::error(format!("C header not found: `{}`", header))
+                    .with_primary(d.span, format!("the header C macro `{}` is compiled with", e.name))
+                    .with_note(msg),
+            ),
+        }
+    }
+    diags
+}
+
+/// `@c_name("name")`.
+fn c_name_attr(name: &str) -> rask_ast::attr::Attr {
+    let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(name.to_string()), span: Span::new(0, 0) };
+    let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
+    rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg]))
+}
+
+fn is_macro(e: &rask_ast::decl::ExternDecl) -> bool {
+    rask_ast::attr::c_macro(&e.attrs).is_some()
 }
 
 /// A reference through a C import's alias to a name it doesn't have.
@@ -263,6 +344,36 @@ pub fn translate(
     ))
 }
 
+/// A hash of every C header `decls` imports, as the program will see it.
+///
+/// The build cache keys on this, so editing a header, or anything it
+/// includes, rebuilds (#1705). It hashes what the preprocessor produces, which
+/// is every included file's text after `#if`s are settled: the input the
+/// translation reads. A header that can't be found or preprocessed hashes its
+/// error, and the build that follows reports it.
+pub fn header_fingerprint(decls: &[Decl], cx: &Context) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for d in decls {
+        let DeclKind::CImport(import) = &d.kind else { continue };
+        for header in &import.headers {
+            header.hash(&mut hasher);
+            let text = locate(header, d.span.file_id, cx).and_then(|p| {
+                let p = canonical(&p);
+                match preprocess(&p, &header_dir(&p), cx) {
+                    Some(r) => r,
+                    None => std::fs::read_to_string(&p).map_err(|e| e.to_string()),
+                }
+            });
+            match text {
+                Ok(t) => t.hash(&mut hasher),
+                Err(e) => e.hash(&mut hasher),
+            }
+        }
+    }
+    hasher.finish()
+}
+
 fn header_dir(path: &Path) -> PathBuf {
     match path.parent() {
         Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
@@ -303,19 +414,13 @@ pub fn inline_wrappers(decls: &[Decl], cx: &Context) -> Result<Option<String>, V
     let mut out = String::new();
     let mut errors = Vec::new();
     for (header, names) in by_header {
-        let path = if Path::new(&header).is_file() {
-            PathBuf::from(&header)
-        } else {
-            let found = cx.source_dirs.values().map(|d| d.join(&header)).find(|p| p.is_file());
-            match found.map(Ok).unwrap_or_else(|| locate(&header, u16::MAX, cx)) {
-                Ok(p) => p,
-                Err(msg) => {
-                    errors.push(format!("`@inline_from(\"{}\")`: header not found ({})", header, msg));
-                    continue;
-                }
+        let path = match find_header(&header, cx) {
+            Ok(p) => p,
+            Err(msg) => {
+                errors.push(format!("`@inline_from(\"{}\")`: header not found ({})", header, msg));
+                continue;
             }
         };
-        let path = canonical(&path);
         let (parsed, _) = match parse(&path, cx) {
             Ok(p) => p,
             Err(msg) => {
@@ -334,6 +439,22 @@ pub fn inline_wrappers(decls: &[Decl], cx: &Context) -> Result<Option<String>, V
 }
 
 /// The header an extern's `@inline_from("…")` names.
+/// A header a generated declaration names (`@inline_from`, `@c_macro`'s
+/// `header:`), found as written, beside the program's files, or along the
+/// target compiler's search list, the way `import c` finds one.
+pub fn find_header(header: &str, cx: &Context) -> Result<PathBuf, String> {
+    let path = if Path::new(header).is_file() {
+        PathBuf::from(header)
+    } else {
+        let found = cx.source_dirs.values().map(|d| d.join(header)).find(|p| p.is_file());
+        match found {
+            Some(p) => p,
+            None => locate(header, u16::MAX, cx)?,
+        }
+    };
+    Ok(canonical(&path))
+}
+
 pub fn inline_header(e: &rask_ast::decl::ExternDecl) -> Option<String> {
     e.attrs.iter().find(|a| a.is("inline_from"))?.positional()?.string()
 }

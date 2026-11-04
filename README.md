@@ -57,7 +57,7 @@ Then:
 rask run examples/hello_world.rk
 ```
 
-Other commands: `rask check`, `rask lint`, `rask fmt`, `rask test`.
+Other commands: `rask build`, `rask check`, `rask test`, `rask lint`, `rask fmt`. `rask help` lists the rest.
 
 Next: read [Learning Rask](https://rask-lang.dev/book), or browse [examples/](examples/) if you'd rather read whole programs.
 

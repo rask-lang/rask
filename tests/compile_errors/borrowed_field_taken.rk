@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: taking a field out of something the caller lent
+//
+// `return self.items` from a `mutate self` method handed back the struct's own
+// vector: the return is the body's last act, so nothing could be put back, and
+// a push through the result showed in the struct. And `o.bag.finish()`, a
+// `take self` method on a field of a plain parameter, consumed the caller's
+// `bag` while the caller went on reading it.
+
+struct Bag { items: Vec<i32> }
+
+extend Bag {
+    func steal(mutate self) -> Vec<i32> {
+        // ERROR: the field is still the caller's [E0872]
+        return self.items
+    }
+    func finish(take self) -> u64 {
+        return self.items.len()
+    }
+}
+
+struct Outer { bag: Bag }
+
+func size(o: Outer) -> u64 {
+    // ERROR: `o` is only lent [E0835]
+    return o.bag.finish()
+}
+
+func main() {
+    mut b = Bag(items: [1])
+    let s = b.steal()
+    let o = Outer(bag: Bag(items: [2]))
+    println("{s.len()} {size(o)}")
+}

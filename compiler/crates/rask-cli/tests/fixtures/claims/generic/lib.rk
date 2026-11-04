@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Three public types for one generic claim: one ordered by its fields, one
+// with a hand-written order that breaks the law, and one a claim can't be
+// handed.
+
+public enum Size {
+    Small
+    Large
+}
+
+public struct Score {
+    public points: u8
+}
+
+// Ties go to whichever was asked first, so `compare` isn't antisymmetric.
+Score implements Comparable {
+    func compare(self, other: Score) -> Ordering {
+        if self.points == other.points {
+            return Ordering.Less
+        }
+        return self.points.compare(other.points)
+    }
+}
+
+public struct Vault {
+    private secret: i64
+}
+
+func main() {}

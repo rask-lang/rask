@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: (MIT OR Apache-2.0)
 #
-# C structs passed by value, on aarch64 under qemu.
+# C structs passed by value and returned by value, on aarch64 under qemu.
 #
 # Each calling convention cuts a struct argument up its own way, and the
 # x86_64 test (`a_c_struct_goes_by_value` in rask-cli) only ever saw System V.
@@ -55,7 +55,14 @@ qemu-aarch64 -L /usr/aarch64-linux-gnu "$WORK/prog" > "$WORK/out" 2>&1
 
 status=0
 for expected in "fields 6 7 4" "area 42" "vec2 3.75" "vec2d 3.75" "stamp 41.5" \
-                "triple 321" "rgba 4321" "mixed 50" "seg 4321" "tri 321"; do
+                "triple 321" "rgba 4321" "mixed 50" "seg 4321" "tri 321" \
+                "back rect 3 4" "back vec2 1.5 2.5" "back vec2d 1.25 2.5" \
+                "back stamp 0.5 7" "back triple 1 2 3" "back rgba 10 11 12 13" \
+                "back seg 1 2 3 4" "back tri 5 6 7" "round trip 42" \
+                "called area 42" "called vec2 3.75" "called stamp 41.5" \
+                "called triple 321" "called seg 4321" "called make 34" \
+                "called make vec2 26.5" "called make stamp 70.5" \
+                "called make triple 321" "called make tri 765" "called closure 45"; do
   if ! grep -qx "$expected" "$WORK/out"; then
     echo "FAIL  aarch64: expected \`$expected\`"
     status=1
@@ -65,4 +72,4 @@ if [ "$status" -ne 0 ]; then
   sed 's/^/      /' "$WORK/out"
   exit 1
 fi
-echo "ok    aarch64: every struct shape arrives as C reads it"
+echo "ok    aarch64: every struct shape arrives as C reads it, and comes back as C wrote it"

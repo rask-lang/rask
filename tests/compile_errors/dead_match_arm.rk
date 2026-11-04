@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `match` arm that can never run (type.enums/PM7)
+//
+// A bare name that isn't a variant binds, so a misspelt variant is a
+// catch-all and every arm below it is dead. As a warning that scrolled past;
+// an arm that can't run has no use, so it's an error.
+
+enum Shape { Circle, Square, Dot }
+
+func area(s: Shape) -> i32 {
+    return match s {
+        Circle => 1,
+        Sqare => 2,
+        // ERROR: `Sqare` binds, so it took every value left [E0949]
+        Dot => 3,
+    }
+}
+
+func twice(s: Shape) -> i32 {
+    return match s {
+        Circle => 1,
+        // ERROR: `Circle` is already tested above [E0949]
+        Circle => 2,
+        _ => 3,
+    }
+}
+
+func main() {
+    println("{area(Shape.Dot)} {twice(Shape.Dot)}")
+}

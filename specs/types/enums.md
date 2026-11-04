@@ -107,6 +107,7 @@ One keyword: `match`. The compiler infers binding modes from usage.
 | **PM2: Exhaustiveness** | All variants must be handled; compiler reports specific unhandled variants |
 | **PM3: Pattern guards** | Guarded variant must have unguarded fallback arm or wildcard after |
 | **PM4: Or-patterns** | Multiple patterns share an arm with `\|`; all must bind same names with compatible types |
+| **PM7: No dead arms** | An arm after a catch-all (`_`, or a bare name that binds), or a second unguarded test of the same variant, is a compile error |
 
 **Binding mode summary:**
 
@@ -152,9 +153,11 @@ match msg {                         // IDE ghost: [takes]
 | All variants matched | Valid |
 | Missing variant, no wildcard | Error: "non-exhaustive match, missing `VariantName`" |
 | Wildcard `_` present | Valid |
-| Unreachable pattern | Warning: "unreachable pattern" |
+| Unreachable pattern | Error: "unreachable match arm" (PM7) |
 
 Compiler reports which specific variants are unhandled.
+
+**PM7 is an error, not a warning.** A bare name that isn't a variant binds, so a misspelt variant (`Sqare => …`) is a catch-all and every arm below it never runs. As a warning, that scrolls past in a build log. An arm that can never run has no legitimate use, so I'd rather it stop the build; the cost is moving a temporary `_ =>` while editing.
 
 ## Pattern Guards
 

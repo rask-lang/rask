@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `as` between types that aren't both numbers
+//
+// `as` widens a number, takes a fieldless enum's discriminant, or boxes an
+// interface object (`as any I`). From anything else to a number it fell
+// through the check entirely: `"5" as i64` printed the string's address
+// natively and 5 on the interpreter, and `opt as i64` read the optional's tag.
+// `5 as string` slipped past the other way, while the `5` was still a
+// literal's open type.
+
+type Meters = i64
+enum Color { Red, Green }
+
+func main() {
+    // ERROR: a string doesn't become a number by casting — `.parse<i64>()` does that [E0838]
+    let a = "5" as i64
+    // ERROR: nor a number a string — that's interpolation [E0838]
+    let b = 5 as string
+    let o: i64? = 3
+    // ERROR: an optional isn't its payload [E0838]
+    let c = o as i64
+    let m: Meters = Meters(5)
+    // ERROR: a nominal type gives its value up through `.value`, not `as` [E0838]
+    let d = m as i64
+
+    // FIX: widening, and an enum's discriminant
+    let e = 5 as i64
+    let g = Color.Green as i64
+    println("{a} {b} {c} {d} {e} {g}")
+}

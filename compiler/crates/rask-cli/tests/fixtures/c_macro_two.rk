@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two headers define macros of the same name. A macro isn't a symbol, so
+// each import's is its own: computed, folded and compiled with its own
+// header (struct.c-interop/PP4).
+
+import c "c_macro_two_a.h" as ca
+import c "c_macro_two_b.h" as cb
+
+// What renaming `ca.G` the way header types are renamed would have called it.
+func G_ca(x: i32) -> i32 {
+    return x - 1000
+}
+
+func main() {
+    let n: i32 = 5
+    println("run {ca.G(n)} {cb.G(n)}")
+    println("const {ca.G(5)} {cb.G(5)}")
+    mut x = ca.Sa(v: 3)
+    mut y = cb.Sb(w: 0, v: 4)
+    println("read {unsafe ca.GETV(&x)} {unsafe cb.GETV(&y)}")
+    // b.h's macro on a.h's struct: compiled with both headers.
+    println("cross {unsafe cb.GETV(&x)}")
+    println("mine {G_ca(n)}")
+}

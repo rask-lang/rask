@@ -2808,11 +2808,16 @@ impl<'a> MirLowerer<'a> {
                 _ => {}
             }
 
-            let ret_ty = self
-                .func_sigs
-                .get(&func_name)
-                .map(|s| s.ret_ty.clone())
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156"));
+            // A C macro's declaration says `_`: the type is this call's.
+            let c_macro = self.ctx.c_macro_calls.get(&expr.id).cloned();
+            let ret_ty = match &c_macro {
+                Some(call) => c_macro_result(call),
+                None => self
+                    .func_sigs
+                    .get(&func_name)
+                    .map(|s| s.ret_ty.clone())
+                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156")),
+            };
 
             let result_local = self.builder.alloc_temp(ret_ty.clone());
 
@@ -2820,11 +2825,12 @@ impl<'a> MirLowerer<'a> {
                 Some(cc) => self.thread_context(&func_name, cc, arg_operands),
                 None => arg_operands,
             };
-            let func_ref = if self.ctx.extern_funcs.contains(&func_name) {
+            let mut func_ref = if self.ctx.extern_funcs.contains(&func_name) {
                 FunctionRef::extern_c(func_name)
             } else {
                 FunctionRef::internal(func_name)
             };
+            func_ref.c_macro = c_macro.map(Box::new);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
                 func: func_ref,
@@ -5211,6 +5217,25 @@ impl<'a> MirLowerer<'a> {
         let method = method.to_string();
         let method = &method;
 
+        // PP4: a C macro another package declares, `pa.F(x)`. The extern
+        // keeps its name, so the call is the bare one's.
+        if let Some(call) = self.ctx.c_macro_calls.get(&expr.id).cloned() {
+            let mut arg_operands = Vec::with_capacity(args.len());
+            for a in args {
+                arg_operands.push(self.lower_expr(&a.expr)?.0);
+            }
+            let ret_ty = c_macro_result(&call);
+            let result_local = self.builder.alloc_temp(ret_ty.clone());
+            let mut func_ref = FunctionRef::extern_c(method.clone());
+            func_ref.c_macro = Some(Box::new(call));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(result_local),
+                func: func_ref,
+                args: arg_operands,
+            }));
+            return Ok((MirOperand::Local(result_local), ret_ty));
+        }
+
         // `io.IoError.NotFound("x")` — a payload-carrying variant reached
         // through the module that exports its enum, which is the spelling IM1
         // asks for. The `module.Type.method()` flattening below turned it into
@@ -5230,6 +5255,16 @@ impl<'a> MirLowerer<'a> {
         if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
             return Ok(r);
         }
+
+        // `from.make<T>()` in a generator: a `T` built like a claim's input
+        // (type.claims/IN2), not noted as one.
+        if method == "make" && args.is_empty() && self.is_claim_choices(object) {
+            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                return Err(LoweringError::InvalidConstruct("Choices.make needs to know what to build".to_string()));
+            };
+            let (value, ty) = self.build_claim_value(&target)?;
+            return Ok((MirOperand::Local(value), ty));
+        }
         if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
             return Ok(r);
         }
@@ -5247,7 +5282,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_origin(object, method, args)? {
+        if let Some(r) = self.try_lower_origin(expr.id, object, method, args)? {
             return Ok(r);
         }
 
@@ -5787,6 +5822,16 @@ impl<'a> MirLowerer<'a> {
                             }));
                             let encoded = (MirOperand::Local(result_local), MirType::I64);
                             return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
+                        }
+
+                        // claims.input<T>(name) — build a claim's input (type.claims)
+                        if name == "claims" && method == "input" && args.len() == 1 {
+                            let Some(target) = self.ctx.lookup_raw_type(expr.id).filter(|t| !matches!(t, rask_types::Type::Var(_))) else {
+                                return Err(LoweringError::InvalidConstruct(
+                                    "claims.input needs to know what to build".to_string(),
+                                ));
+                            };
+                            return self.lower_claim_input(&args[0].expr, &target).map(Some);
                         }
 
                         // json.decode<T> — describe T to the runtime, decode into it
@@ -7486,12 +7531,15 @@ impl<'a> MirLowerer<'a> {
     /// `.origin()` on a Result → formatted origin string.
     fn try_lower_origin(
         &mut self,
+        call: rask_ast::NodeId,
         object: &Expr,
         method: &String,
         args: &[CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // ER16: .origin() on Result — read origin fields and format as string
-        if method == "origin" && args.is_empty() {
+        // ER16: .origin() on Result — read origin fields and format as string.
+        // A type with a method of its own by that name (`Point.origin()`)
+        // means that method.
+        if method == "origin" && args.is_empty() && !self.receiver_declares_method(call, "origin") {
             let (obj_op, obj_ty) = self.lower_expr(object)?;
             if matches!(obj_ty, MirType::Result { .. }) {
                 let result_local = self.builder.alloc_temp(MirType::Buffer);
@@ -9353,7 +9401,7 @@ impl<'a> MirLowerer<'a> {
     /// Vec field printed the *address* of its buffer as an integer, which is
     /// how `Holder { items: 609538720 }` came out where the interpreter says
     /// `Holder { items: [1, 2] }`.
-    fn debug_render_value(
+    pub(super) fn debug_render_value(
         &mut self,
         op: &MirOperand,
         ty: &MirType,
@@ -10271,7 +10319,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Concatenate a list of string operands left to right.
-    fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
+    pub(super) fn concat_all(&mut self, parts: Vec<MirOperand>) -> MirOperand {
         let mut iter = parts.into_iter();
         let Some(mut acc) = iter.next() else {
             return MirOperand::Constant(MirConst::String(String::new()));
@@ -11451,4 +11499,26 @@ fn field_slot(
     let MirType::Struct(sid) = result_ty else { return None };
     let index = layout?.fields.iter().position(|f| f.name == name)?;
     Some(crate::FieldSlot { layout: sid.id, field: index as u32 })
+}
+
+/// The MIR type a C macro call answers: the Rask number its C result type is,
+/// as the checker settled it (struct.c-interop/PP4).
+fn c_macro_result(call: &rask_c_parse::cexpr::MacroCall) -> MirType {
+    if let rask_c_parse::CType::Pointer(_) = rask_c_parse::cexpr::canonical(&call.result) {
+        return MirType::Ptr;
+    }
+    match rask_c_parse::cexpr::rask_scalar(&call.result) {
+        Some("bool") => MirType::Bool,
+        Some("i8") => MirType::I8,
+        Some("u8") => MirType::U8,
+        Some("i16") => MirType::I16,
+        Some("u16") => MirType::U16,
+        Some("i32") => MirType::I32,
+        Some("u32") => MirType::U32,
+        Some("u64") => MirType::U64,
+        Some("f32") => MirType::F32,
+        Some("f64") => MirType::F64,
+        // The checker records only numbers and pointers; i64 is the last.
+        _ => MirType::I64,
+    }
 }

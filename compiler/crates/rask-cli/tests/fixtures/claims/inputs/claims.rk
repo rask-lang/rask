@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The build can't make `v`, and says so at `v`.
+
+import inputs
+
+claim opens(v: inputs.Vault) {
+    assert true
+}

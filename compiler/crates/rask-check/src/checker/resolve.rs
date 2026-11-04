@@ -978,10 +978,30 @@ impl TypeChecker {
             return Ok(progress);
         }
 
-        // ER16: .origin() on any type returns the error origin string.
-        // Set by `try` at first propagation (ER15). Returns "<no origin>" if unset.
+        // `.origin()` on a result or an error enum is the string `try`
+        // recorded at first propagation, "<no origin>" if unset. Only there:
+        // asked of every type, it took over any method of that name, and the
+        // spec's own `Point.origin()` (SYNTAX.md) came back a `string`.
         if method == "origin" && args.is_empty() {
-            return self.unify(&ret, &Type::String, span);
+            let declares_its_own = match &ty {
+                Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
+                    Some(TypeDef::Struct { methods, .. })
+                    | Some(TypeDef::Enum { methods, .. })
+                    | Some(TypeDef::NominalAlias { methods, .. }) => methods.iter().any(|m| m.name == "origin"),
+                    _ => false,
+                },
+                _ => false,
+            };
+            let carries_origin = match &ty {
+                Type::Result { .. } => true,
+                Type::Named(id) | Type::Generic { base: id, .. } => {
+                    matches!(self.types.get(*id), Some(TypeDef::Enum { .. }))
+                }
+                _ => false,
+            };
+            if carries_origin && !declares_its_own {
+                return self.unify(&ret, &Type::String, span);
+            }
         }
 
         // `Vec.new<string>()` — a turbofish on a container constructor. The
@@ -3195,15 +3215,21 @@ impl TypeChecker {
         span: Span,
     ) -> Result<(), TypeError> {
         let arg = self.ctx.apply(arg);
+        // A float literal can only become a float, so `x + 2.5` on an `i64`
+        // is the same mix: native truncated it (`x += 1.5` added 1) and the
+        // interpreter added 1.5. An integer literal still fits a float
+        // receiver, which is why only this kind is settled here.
+        let float_literal = matches!(&arg, Type::Var(id)
+            if matches!(self.ctx.literal_vars.get(id), Some(super::inference::LiteralKind::Float)));
         let recv_int = Self::integer_is_signed(recv).is_some();
         let arg_int = Self::integer_is_signed(&arg).is_some();
         let recv_float = matches!(recv, Type::F32 | Type::F64);
-        let arg_float = matches!(arg, Type::F32 | Type::F64);
+        let arg_float = matches!(arg, Type::F32 | Type::F64) || float_literal;
         if (recv_int && arg_float) || (recv_float && arg_int) {
             return Err(TypeError::IntFloatArithmetic {
                 op: Self::operator_spelling(method),
                 left: recv.clone(),
-                right: arg,
+                right: if float_literal { Type::F64 } else { arg },
                 span,
             });
         }

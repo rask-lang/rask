@@ -48,3 +48,18 @@ test "the stdlib's C calls that can fail come back as `none`" {
     let missing = fs.read_text("/definitely/not/a/path/here.txt") catch _ => "gone"
     assert missing == "gone"
 }
+
+// C's `char **`: a pointer that may be absent, to pointers that may be. The
+// group ends at its `)` and the `?` after it is the outer pointer's, as for
+// an ungrouped `*T?` (mem.unsafe/PT6).
+func first_name(names: *(*u8?)?) -> i32 {
+    let list = names ?? return 0
+    let head = unsafe *list
+    return if head? { 2 } else { 1 }
+}
+
+test "a ? after a grouped pointee is the outer pointer's" {
+    assert first_name(none) == 0
+    let empty: Vec<*u8?> = [none]
+    assert first_name(unsafe empty.as_ptr()) == 1
+}
