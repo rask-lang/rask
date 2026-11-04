@@ -1242,12 +1242,23 @@ pub struct EnumRef {
     pub units: Vec<String>,
 }
 
+/// A literal its type builds (type.primitives/L9): `Fixed.from_float_literal(0.5)`.
+#[derive(Debug, Clone)]
+pub struct LiteralCall {
+    /// The type, by the name its functions are registered under.
+    pub owner: String,
+    pub method: String,
+    /// The literal, as the conversion's parameter takes it.
+    pub arg: ComptimeValue,
+}
+
 pub struct ComptimeInterpreter {
     env: ComptimeEnv,
     /// Each expression the checker typed as an enum, by its node. Nothing in
     /// the AST says `Level` names a type, and matching on the spelling picked
     /// the wrong enum when two shared a name.
     enums: HashMap<rask_ast::NodeId, EnumRef>,
+    literals: HashMap<rask_ast::NodeId, LiteralCall>,
 }
 
 impl ComptimeInterpreter {
@@ -1255,6 +1266,7 @@ impl ComptimeInterpreter {
         Self {
             env: ComptimeEnv::new(),
             enums: HashMap::new(),
+            literals: HashMap::new(),
         }
     }
 
@@ -1262,6 +1274,7 @@ impl ComptimeInterpreter {
         Self {
             env: ComptimeEnv::with_quota(quota),
             enums: HashMap::new(),
+            literals: HashMap::new(),
         }
     }
 
@@ -1313,7 +1326,7 @@ impl ComptimeInterpreter {
             let (owner, methods) = match &decl.kind {
                 DeclKind::Struct(st) => (Some(st.name.as_str()), st.methods.as_slice()),
                 DeclKind::Enum(e) => (Some(e.name.as_str()), e.methods.as_slice()),
-                DeclKind::Impl(i) => (i.target_ty.bare_name(), i.methods.as_slice()),
+                DeclKind::Impl(i) => (i.target_ty.last_segment(), i.methods.as_slice()),
                 _ => (None, &[][..]),
             };
             let Some(owner) = owner else { continue };
@@ -1343,6 +1356,19 @@ impl ComptimeInterpreter {
     }
 
     /// The expressions the checker typed as enums.
+    /// The literals the checker found their type builds. Evaluating one
+    /// calls the conversion, wherever it sits: a default, a `comptime` block,
+    /// another conversion's body.
+    pub fn know_literals(&mut self, literals: HashMap<rask_ast::NodeId, LiteralCall>) {
+        self.literals = literals;
+    }
+
+    /// Build the literal `node` names, if its type builds itself from literals.
+    pub fn eval_literal_call(&mut self, node: rask_ast::NodeId) -> Option<ComptimeResult<ComptimeValue>> {
+        let call = self.literals.get(&node)?.clone();
+        Some(self.call_type_function(&call.owner, &call.method, vec![call.arg]))
+    }
+
     pub fn know_enums(&mut self, enums: HashMap<rask_ast::NodeId, EnumRef>) {
         self.enums = enums;
     }
@@ -1358,6 +1384,11 @@ impl ComptimeInterpreter {
     }
 
     fn eval_expr_cf(&mut self, expr: &Expr) -> ComptimeResult<ControlFlow> {
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+            if let Some(built) = self.eval_literal_call(expr.id) {
+                return Ok(ControlFlow::Normal(built?));
+            }
+        }
         let value = match &expr.kind {
             // Literals. An explicit width suffix picks the variant so arithmetic
             // is checked at that width (type.overflow); unsuffixed defaults to

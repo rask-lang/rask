@@ -115,6 +115,8 @@ pub struct LiteralConversion {
     pub ty: TypeId,
     /// The literal's value, as the conversion's parameter takes it.
     pub value: LiteralValue,
+    /// The conversion, as the stdlib's interface declares it.
+    pub method: String,
     /// Where the literal is: a conversion that fails is an error here.
     pub span: rask_ast::Span,
 }
@@ -122,20 +124,10 @@ pub struct LiteralConversion {
 /// What a converted literal hands its conversion.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LiteralValue {
-    /// `FromIntLiteral.from_int_literal(value: i64)`.
+    /// For `FromIntLiteral`, whose conversion takes an `i64`.
     Int(i64),
-    /// `FromFloatLiteral.from_float_literal(value: f64)`.
+    /// For `FromFloatLiteral`, whose conversion takes an `f64`.
     Float(f64),
-}
-
-impl LiteralValue {
-    /// The conversion's method name.
-    pub fn method(self) -> &'static str {
-        match self {
-            LiteralValue::Int(_) => "from_int_literal",
-            LiteralValue::Float(_) => "from_float_literal",
-        }
-    }
 }
 
 impl TypedProgram {

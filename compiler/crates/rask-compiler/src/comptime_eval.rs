@@ -37,7 +37,24 @@ pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>
     }
     interp.register_functions(decls);
     interp.know_enums(enum_refs(typed));
+    interp.know_literals(literal_calls(typed));
     interp
+}
+
+/// Each literal its type builds (type.primitives/L9), as the call that builds it.
+fn literal_calls(typed: &TypedProgram) -> HashMap<rask_ast::NodeId, rask_comptime::LiteralCall> {
+    typed
+        .literal_conversions
+        .iter()
+        .filter_map(|(&node, conv)| {
+            let owner = typed.types.get(conv.ty)?.name().to_string();
+            let arg = match conv.value {
+                rask_check::LiteralValue::Int(n) => ComptimeValue::I64(n),
+                rask_check::LiteralValue::Float(x) => ComptimeValue::F64(x),
+            };
+            Some((node, rask_comptime::LiteralCall { owner, method: conv.method.clone(), arg }))
+        })
+        .collect()
 }
 
 /// Each expression the checker typed as an enum, with that enum's fieldless
@@ -253,15 +270,12 @@ impl Fold<'_, '_> {
     /// `from_int_literal` or `from_float_literal`, recorded under the
     /// literal's node like any other compile-time value.
     fn fold_literal(&mut self, node: rask_ast::NodeId, conv: &rask_check::LiteralConversion) {
-        let rask_check::LiteralConversion { ty, value, span } = conv;
+        let rask_check::LiteralConversion { ty, value, method, span } = conv;
         let Some(owner) = self.typed.types.get(*ty).map(|d| d.name().to_string()) else { return };
-        let arg = match *value {
-            rask_check::LiteralValue::Int(n) => ComptimeValue::I64(n),
-            rask_check::LiteralValue::Float(x) => ComptimeValue::F64(x),
-        };
         self.interp.reset_branch_count();
         self.interp.set_quota(DEFAULT_BRANCH_QUOTA);
-        match self.interp.call_type_function(&owner, value.method(), vec![arg]) {
+        let Some(built) = self.interp.eval_literal_call(node) else { return };
+        match built {
             Ok(v) => {
                 self.record(node, *span, v, None);
             }
@@ -273,7 +287,7 @@ impl Fold<'_, '_> {
                 self.diags.push(
                     Diagnostic::error(format!("`{shown}` can't be a `{owner}`: {e}"))
                         .with_code("E0383")
-                        .with_primary(*span, format!("built by `{owner}.{}` while compiling", value.method()))
+                        .with_primary(*span, format!("built by `{owner}.{method}` while compiling"))
                         .with_why(
                             "a literal in a slot of a type that builds itself from literals is \
                              that type's conversion, run while compiling (type.primitives/L9). \

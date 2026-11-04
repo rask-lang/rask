@@ -28,6 +28,20 @@ Ticks implements FromIntLiteral {
     }
 }
 
+// The method in a plain `extend` block is the same conversion.
+struct Count {
+    n: i64
+}
+
+extend Count {
+    // ERROR: E0955, wherever the method is written
+    func from_int_literal(value: i64) -> Count {
+        return Count(n: value)
+    }
+}
+
+Count implements FromIntLiteral {}
+
 func main() {
     // ERROR: E0825, the conversion takes an `i64`
     let t: Ticks = 99999999999999999999

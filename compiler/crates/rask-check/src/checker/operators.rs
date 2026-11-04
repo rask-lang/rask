@@ -286,13 +286,24 @@ impl TypeChecker {
             .unwrap_or_default();
         for id in &conformers {
             let name = self.types.type_name(*id);
-            // Only a primitive: a literal is never anything else.
+            // Only a primitive here: a type built from literals comes below.
             if !rask_ast::primitives::is_scalar(&name) {
                 continue;
             }
             let Ok(candidate) = super::resolve_type_expr(&TypeExpr::named(name), &self.types) else { continue };
             if self.literal_could_be(recv, &candidate) {
                 found.push(candidate);
+            }
+        }
+        // type.primitives/L9: no primitive takes the pair, so the literal can
+        // be a type that builds itself from literals — `1.0 - x` against
+        // `Fixed implements Sub`. Primitives first, as on the right.
+        if found.is_empty() {
+            for id in &conformers {
+                let candidate = Type::Named(*id);
+                if self.literal_builds(recv, &candidate) {
+                    found.push(candidate);
+                }
             }
         }
         match found.as_slice() {

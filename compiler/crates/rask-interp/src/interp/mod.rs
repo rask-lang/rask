@@ -875,6 +875,7 @@ impl Interpreter {
         child.call_type_args = self.call_type_args.clone();
         child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();
+        child.literal_conversions = self.literal_conversions.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.else_binding_types = self.else_binding_types.clone();

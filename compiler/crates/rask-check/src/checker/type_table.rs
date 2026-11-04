@@ -1375,6 +1375,17 @@ impl TypeTable {
         self.declares_conformance_to(type_id, iface, &TypeExpr::named(name))
     }
 
+    /// The conversion `FromFloatLiteral` (`float`) or `FromIntLiteral`
+    /// requires, read from its declaration in stdlib/ops.rk.
+    pub fn literal_conversion_method(&self, float: bool) -> Option<&str> {
+        let name = if float { "FromFloatLiteral" } else { "FromIntLiteral" };
+        let InterfaceIdent::Declared(id) = self.stdlib_interface_ident(name) else { return None };
+        match self.get(id)? {
+            TypeDef::Interface { methods, .. } => methods.first().map(|m| m.name.as_str()),
+            _ => None,
+        }
+    }
+
     /// Does the type conform to a *different* interface spelled `name`? A stdlib
     /// `Buffer` implements the stdlib's `Writer`, and a program declaring its own
     /// `Writer` hasn't changed that (#1329).

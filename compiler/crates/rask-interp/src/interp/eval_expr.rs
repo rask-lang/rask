@@ -2878,7 +2878,7 @@ impl Interpreter {
         use crate::value::{FloatKind, IntKind};
         let conv = self.literal_conversions[&expr.id].clone();
         let owner = self.types.get(conv.ty).map(|d| d.name().to_string()).unwrap_or_default();
-        let method = conv.value.method();
+        let method = conv.method.as_str();
         let arg = match conv.value {
             rask_check::LiteralValue::Int(n) => Value::Int(n, IntKind::I64),
             rask_check::LiteralValue::Float(x) => Value::Float(x, FloatKind::F64),

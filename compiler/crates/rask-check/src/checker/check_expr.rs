@@ -6851,7 +6851,9 @@ impl TypeChecker {
     /// `FromIntLiteral` first and `FromFloatLiteral` otherwise, the way it
     /// fills an `f64` slot; a float literal only `FromFloatLiteral`.
     pub(super) fn literal_builder(&self, kind: LiteralKind, ty: &Type) -> Option<(rask_types::TypeId, bool)> {
-        let Type::Named(id) = ty else { return None };
+        // A generic type's instance takes what its declaration does:
+        // `Quantity<Meters>` through `Quantity<U> implements FromFloatLiteral`.
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return None };
         if kind == LiteralKind::Integer && self.types.builds_from_literal(*id, false) {
             return Some((*id, false));
         }
@@ -6889,7 +6891,9 @@ impl TypeChecker {
                     }
                 },
             };
-            self.literal_conversions.insert(node, LiteralConversion { ty: id, value, span });
+            let Some(method) = self.types.literal_conversion_method(float) else { continue };
+            let method = method.to_string();
+            self.literal_conversions.insert(node, LiteralConversion { ty: id, value, method, span });
         }
     }
 
@@ -8253,7 +8257,7 @@ struct ArmReach {
 
 /// An unsuffixed literal, kept until its type is known (type.primitives/L9).
 #[derive(Debug, Clone, Copy)]
-pub(super) enum PendingLiteral {
+pub(crate) enum PendingLiteral {
     /// The token's value, and whether it's a bit pattern above `i128::MAX`.
     Int(i128, bool),
     Float(f64),

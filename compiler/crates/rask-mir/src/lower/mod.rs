@@ -338,11 +338,14 @@ const CONST_SLOT_VALUE_LOCAL: &str = "__const_slot_value";
 
 /// A literal initializer folds to a constant, so a copy per function is
 /// indistinguishable from a shared one. Must agree with `try_eval_const_init`.
-fn const_init_is_literal(init: &Expr) -> bool {
+///
+/// A literal some type builds itself from (type.primitives/L9) isn't one: its
+/// value is the folded result of the type's conversion, not the number written.
+fn const_init_is_literal(init: &Expr, ctx: &MirContext) -> bool {
     matches!(
         &init.kind,
         ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(_) | ExprKind::Bytes(_) | ExprKind::Bool(_)
-    )
+    ) && !ctx.folded.nodes.contains_key(&init.id)
 }
 
 /// Empty tables, for the fields a caller doesn't have. `'static`, so they
@@ -4237,7 +4240,7 @@ impl<'a> MirLowerer<'a> {
         let mut measured = HashMap::new();
         for d in all_decls {
             let DeclKind::Const(c) = &d.kind else { continue };
-            if const_init_is_literal(&c.init) || measured.contains_key(&c.name) {
+            if const_init_is_literal(&c.init, ctx) || measured.contains_key(&c.name) {
                 continue;
             }
             // `const N = comptime …` is already evaluated and folded into a
@@ -4775,6 +4778,9 @@ impl<'a> MirLowerer<'a> {
     /// Evaluate a module-level constant initializer to a MIR constant.
     /// Only handles simple literals; complex expressions fall through.
     fn try_eval_const_init(&self, expr: &Expr, ty_hint: Option<&TypeExpr>) -> Option<(MirOperand, MirType)> {
+        if !const_init_is_literal(expr, self.ctx) {
+            return None;
+        }
         match &expr.kind {
             ExprKind::Int(val, suffix) => {
                 let ty = if let Some(hint) = ty_hint {

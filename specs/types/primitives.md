@@ -80,9 +80,12 @@ func main() {
   `1` fills an `f64`. A float literal only through `FromFloatLiteral`.
 - A suffix wins: `3.5f64` is an `f64` in any slot, and an `f64` isn't a `Fixed`.
 - The slot is wherever the literal's type is decided: an annotation, a
-  parameter, a field, a collection element, an operator's right side. Under an
+  parameter or its default, a field or its default, a `const`, a collection
+  element, either side of an operator, code run at compile time. Under an
   operator a primitive pair comes first: with `Fixed implements Mul<i64>` and
   `Fixed implements Mul`, `x * 3` is the `i64` one and `x * 2.5` the `Fixed` one.
+- A generic type's instances take literals through its declaration's
+  conformance: `let d: Quantity<Meters> = 2.5`.
 - Two interfaces rather than one generic `FromLiteral<T>`: a type can take both
   kinds without two methods sharing a name.
 

@@ -49,6 +49,42 @@ Fixed implements Mul {
     }
 }
 
+Fixed implements Sub {
+    func sub(self, other: Fixed) -> Fixed {
+        return Fixed(raw: self.raw - other.raw)
+    }
+}
+
+const HALF: Fixed = 0.5
+
+func damped(x: Fixed, factor: Fixed = 0.25) -> i64 {
+    return x.raw + factor.raw
+}
+
+struct Spring {
+    stiffness: Fixed = 1.5
+}
+
+// A generic type takes literals through its declaration's conformance.
+struct Quantity<U> {
+    raw: i64
+}
+
+Quantity<U> implements FromFloatLiteral {
+    comptime func from_float_literal(value: f64) -> Quantity<U> {
+        return Quantity(raw: (value * 1000.0).to_int())
+    }
+}
+
+struct Meters {
+    unused: i64
+}
+
+comptime func half_raw() -> i64 {
+    let h: Fixed = 0.5
+    return h.raw
+}
+
 struct Body {
     mass: Fixed
     speed: Fixed
@@ -90,4 +126,35 @@ test "L9 — under an operator, primitive pairs first" {
     assert tripled.raw == 19327352832
     let doubled = a * 2.0
     assert doubled.raw == 3 * ONE
+}
+
+test "L9 — a const, a default argument and a field default" {
+    assert HALF.raw == 2147483648
+    let one: Fixed = 1
+    assert damped(one) == ONE + 1073741824
+    let s = Spring()
+    assert s.stiffness.raw == 6442450944
+}
+
+test "L9 — a literal on the left of an operator" {
+    let x: Fixed = 0.25
+    let rest = 1.0 - x
+    assert rest.raw == 3221225472
+}
+
+test "L9 — a generic type, and a literal inside comptime code" {
+    let d: Quantity<Meters> = 2.5
+    assert d.raw == 2500
+    let h = comptime half_raw()
+    assert h == 2147483648
+}
+
+test "L9 — inside a spawned task" {
+    using Multitasking {
+        let h = spawn {
+            let q: Fixed = 3.0
+            return q.raw
+        }
+        assert h.join()! == 3 * ONE
+    }
 }

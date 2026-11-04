@@ -860,6 +860,7 @@ impl TypeChecker {
             })
             .collect();
         self.check_union_members(decls);
+        self.check_literal_conversions(decls);
         self.check_user_annotations(decls);
         self.check_allow_names(decls);
         self.check_bound_names(decls);
