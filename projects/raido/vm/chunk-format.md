@@ -58,6 +58,8 @@ Serialized snapshots include the bytecode hash so the host can verify "this snap
 
 ## Imports and Exports
 
+**Yield reference maps** -- for each `yield` site, a bitmap of which registers hold arena references. The collector reads it to trace a suspended coroutine.
+
 **Imports** -- the extern structs and extern funcs the script uses from the published API module, and that module's hash. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
 
 **Module imports** -- other content-addressed chunks referenced via `import "name" as alias`. The import graph is part of the chunk's content hash. The host resolves import names to chunks.

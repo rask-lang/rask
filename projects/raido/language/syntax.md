@@ -63,9 +63,9 @@ func transfer(source: Ship, target: Ship, amount: int) { ... }
 transfer(source: attacker, target: cargo, amount: 50)
 ```
 
-### Function References
+### Functions as Values
 
-Named top-level functions can be used as values, and so can lambdas: inline functions that capture nothing.
+Named functions can be used as values, and so can closures: inline functions written `|params| body`.
 
 ```raido
 func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
@@ -77,7 +77,26 @@ ships.sort(|a: Ship, b: Ship| -> bool {         // block form
 })
 ```
 
-Parameter and return types come from where the lambda is used, or are written out. A lambda can't use a local from outside it; pass the value as a parameter instead. It compiles to an unnamed top-level function, so a lambda and a function reference are the same value.
+Parameter and return types come from where the closure is used, or are written out.
+
+A closure can use variables from around it:
+
+```raido
+let threshold = 10
+let weak = ships.filter(|s| s.health < threshold)
+let guard = coroutine(|| patrol(npc, post))
+```
+
+One rule: a variable a closure uses can't be assigned again afterwards, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else:
+
+```raido
+let count = 0
+let bump = || count += 1          // ERROR: `count` is used by a closure, so it can't change
+let tally = Tally { n: 0 }
+let bump = || tally.n += 1        // OK: the closure and the caller share `tally`
+```
+
+See [types.md](types.md#functions-as-values) for the full rules.
 
 ## Declarations
 
@@ -367,7 +386,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
 - **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs are arena references, primitives are values, and the arena is reset between evaluations. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
-- **No closures** -- Function references only. Captured mutable state is a verification hazard.
+- **Closures can't reassign what they capture** -- a Rask closure that doesn't outlive its frame can change a captured `mut` variable; Raido has no `mut`, and forbids reassigning a captured variable, so there's no hidden shared state.
 - **No character type** -- Strings only, so single quotes have no meaning.
 - **No `T or E`, `try` or `catch`** -- a failure aborts the host's call and rolls it back; absence is `T?`.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

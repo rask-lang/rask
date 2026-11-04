@@ -181,13 +181,26 @@ The host manages arena memory between evaluations:
 // Full reset -- clears arena, coroutines, everything
 vm.reset()
 
-// Frame-based cleanup for game loops
-vm.frame_begin()           // save arena position
+// Game loop: run the tick, then collect what's no longer reachable
 try vm.call("on_update", [raido.Value.float(dt)])
-vm.frame_end()             // reclaim frame-local allocations
+vm.frame_end()
 ```
 
-See [architecture.md](architecture.md#reset-and-frame_end) for details on what's persistent vs frame-local.
+`frame_end()` is a collection ([architecture.md](architecture.md#collection-at-frame-boundaries)). It may only be called between script calls; calling it from inside an extern function, while a script frame is running, is a host error.
+
+## Host References
+
+A value the host gets back from the VM that refers into the arena (a struct, array, string or closure) is valid until the next `frame_end()`, which may move it. To keep one longer, the host turns it into a `Root`:
+
+```rask
+let result = try vm.call("make_plan", [])
+let plan = vm.root(result)        // survives collections; the collector updates it
+// ... later ticks ...
+let value = vm.get(plan)
+vm.unroot(plan)
+```
+
+Roots are part of the serialized state, in creation order. A raw arena value kept across `frame_end()` is stale; in debug builds the VM detects the use and raises a host error rather than reading moved memory.
 
 ## Module Import Resolution
 
@@ -229,7 +242,7 @@ let vm2 = raido.Vm.deserialize(bytes)
 
 Format is versioned -- version header from day one. Deserialize rejects unknown versions with a clear error.
 
-Serializes: registers, call frames, coroutines, arena contents, PRNG state (4 x u32), fuel remaining, frame_base.
+Serializes: registers, call frames, coroutines, arena contents, root handles, PRNG state (4 x u32), fuel remaining.
 Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
 
 With static types, serialization is simpler -- no type tags per value. The deserializer knows the type of every register from the bytecode metadata.
@@ -259,7 +272,8 @@ No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 Every call the host makes into a script (`vm.call`, resuming a waiting handler) either completes or changes nothing:
 
-- **Arena state** is already per-call: the frame resets when the call returns.
+- **Arena allocations** made during the call are dropped by moving `top` back to where the call started.
+- **Arena writes** to objects that existed before the call (a coroutine's struct, a map held by a root) go into an undo log: each store records the slot's old value. On failure the log is replayed backwards. Objects allocated during the call need no logging, so the check is one comparison against the call's starting `top`.
 - **Extern field writes** go into a write buffer. Reads within the call see the buffered value; the buffer is applied when the call returns and dropped if it fails.
 - **Extern functions with effects** (`send_message`, `spawn_unit`) are registered as deferred: their calls are queued and run after the call succeeds, in call order. Pure extern functions (`noise`, `distance`) run immediately.
 

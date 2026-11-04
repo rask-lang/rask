@@ -10,7 +10,7 @@ Cooperative multitasking. Yield mid-function, resume later. Fully serializable -
 ## API
 
 ```raido
-// Create from function reference + args
+// Create from a function + args, or a closure
 let co = coroutine(patrol, entity, waypoints)
 
 // Resume
@@ -23,7 +23,7 @@ let s = co.status  // "suspended", "running", "dead"
 yield(value)
 ```
 
-`coroutine(func, args...)` creates a suspended coroutine from a function reference and initial arguments. `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
+`coroutine(func, args...)` creates a suspended coroutine from a function and its initial arguments, or from a closure. `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
 
 `co.resume(args...)` returns the value passed to `yield()`. If the coroutine fails, the failure aborts the host's call it ran in, like any other error, and the coroutine is dead.
 
@@ -70,9 +70,9 @@ func conversation(npc: Entity, player: Entity) {
 }
 ```
 
-## Function References, Not Closures
+## Functions and Closures
 
-Coroutines are created from function references -- named top-level functions or lambdas. No closures, no captured state. Context is passed as arguments.
+Coroutines are created from a function and its arguments, or from a closure that captures what it needs.
 
 ```raido
 // The function and its arguments are stored in the coroutine
@@ -88,6 +88,7 @@ func guard_loop(npc: Entity, post: Vec2, radius: float) {
 }
 
 let co = coroutine(guard_loop, guard, tower_pos, 50.0)
+let co2 = coroutine(|| guard_loop(guard, tower_pos, 50.0))   // the same, as a closure
 ```
 
 ## Resume with Value

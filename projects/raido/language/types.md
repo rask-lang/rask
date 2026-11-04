@@ -1,6 +1,6 @@
 <!-- id: raido.types -->
 <!-- status: proposed -->
-<!-- summary: Raido type system -- static types, ints and floats, structs, enums, optionals, function references -->
+<!-- summary: Raido type system -- static types, ints and floats, structs, enums, optionals, functions and closures -->
 <!-- depends: raido/README.md -->
 
 # Types
@@ -29,7 +29,7 @@ Statically typed. Function signatures are fully annotated, local variables are i
 
 ## Function Types
 
-`func(int, int) -> bool` -- describes the signature of a function reference. The value is a prototype index pointing to a named top-level function. No closures, no captured state.
+`func(int, int) -> bool` -- the type of a function value: a named function or a closure. See [Functions as Values](#functions-as-values).
 
 ## Float
 
@@ -191,27 +191,20 @@ let (lo, hi) = bounds(values)
 
 Tuples are anonymous arena-allocated structs. `(float, float)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
 
-## Function References
+## Functions as Values
 
-References to named top-level functions or to lambdas (`|a, b| a.health < b.health`). No captured state, no arena allocation. A function reference is a prototype index -- the simplest possible callable value. A lambda is compiled to an unnamed top-level function, so it's the same kind of value. It may not read a local of the function it's written in:
+A value of a function type (`func(Ship, Ship) -> bool`) is either a named function or a closure. Both are called the same way and can be stored, passed and returned.
 
-```raido
-let threshold = 10
-ships.filter(|s| s.health < threshold)   // ERROR: the lambda uses `threshold` from outside; pass it as a parameter
-```
+A **closure** captures the variables it uses from around it. The rules:
 
-```raido
-func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
+- **A captured variable can't be assigned again**, inside the closure or after it in the enclosing function. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made.
+- **Structs, arrays and maps are shared**, as everywhere in Raido. A closure that captured `ship` sees `ship.health` change, and can change it.
+- **Read-only stays read-only.** A closure that captures a parameter not marked `mutate` can't change it either, so passing a struct into a function still can't change it behind your back.
+- **Each loop iteration has its own variable**, so `for i in 0..3 { fs.push(|| i) }` makes closures that return 0, 1 and 2.
+- **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
+- **Closures aren't comparable.** There's no `==` on function values.
 
-let comparator = by_health
-ships.sort(comparator)
-
-// Coroutine creation -- function reference + initial arguments
-func patrol(npc: Entity, route: array<Vec2>) { ... }
-let co = coroutine(patrol, guard, waypoints)
-```
-
-No closures, no partial application. If you need to pass context, pass it as an argument.
+A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is an arena object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#layout)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
 
 ## Extern Types
 

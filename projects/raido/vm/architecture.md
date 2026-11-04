@@ -76,7 +76,7 @@ So proving is a profile, not the whole language. A chunk compiled as **provable*
 | Integer arithmetic only (i64) | Maps to field arithmetic with range checks. |
 | Fuel-bounded execution | Circuits need bounded loops. Fuel guarantees a max step count. |
 | Fixed arena size | Bounded memory = bounded memory-consistency constraints. |
-| Bump allocator (no GC) | Predictable allocation. No compaction to prove. |
+| Bump allocator | Predictable allocation. Provable chunks run with `reset()` between evaluations, so no collection has to be proven. |
 | Small opcode set | Small selector circuit per step. |
 | Static bytecode | Immutable during execution. Encoded once as a public input. |
 | Deterministic branching | All branches depend on register values. No nondeterminism. |
@@ -102,20 +102,21 @@ Reference: Blackman & Vigna, 2018. The algorithm is fixed -- changing it is a br
 
 ## Arena
 
-All VM-managed heap objects live in a single contiguous byte array. Bump allocator. No GC.
+All VM-managed heap objects live in a single contiguous byte array. Bump allocation; dead objects are reclaimed by a deterministic mark-compact collection at frame boundaries.
 
 ### Layout
 
-Arena is a flat `[u8]` with a bump pointer (`top: u32`). Every object starts with a 4-byte header:
+Arena is a flat `[u8]` with a bump pointer (`top: u32`). Every object starts with an 8-byte header:
 
 ```
-Object header (4 bytes):
-  kind (u8)   -- object kind tag (see table)
-  _pad (u8)   -- reserved, zero
-  size (u16)  -- object body size in bytes (max 65535 bytes per object)
+Object header (8 bytes):
+  kind (u8)      -- object kind tag (see table)
+  flags (u8)     -- bit 0: mark (used only during collection); others reserved, zero
+  type_id (u16)  -- struct/enum type, or element type for arrays and value type for maps
+  size (u32)     -- object body size in bytes
 ```
 
-The `kind` tag is not read during normal execution -- static typing means every access already knows the layout. The tag exists for serialization validation, debugging, and arena walkers (anything that inspects the arena without bytecode context).
+The collector needs `kind` and `type_id` to know which 8-byte slots of an object hold arena references; nothing else reads them during normal execution, since static typing means every access already knows the layout. They also serve serialization validation and debugging.
 
 **Object kind tags** (exhaustive):
 
@@ -127,12 +128,11 @@ The `kind` tag is not read during normal execution -- static typing means every 
 | 3 | Map | `live (u32) \| cap (u32) \| indices[cap] \| entries[cap]` |
 | 4 | Struct | `fields[N] (each 8 bytes)` |
 | 5 | Enum (with payload) | `payload fields[N] (each 8 bytes)` |
+| 6 | Closure | `proto (u32) \| _pad (u32) \| captures[N] (each 8 bytes)` |
 
-Values 6--255 are reserved. Types that live in registers -- `int`, `float`, `bool`, `T?`, func ref, simple enum (no payload) -- have no arena object and no kind tag. Coroutines are stored in a separate VM-side structure, not the arena.
+Values 7--255 are reserved. Types that live in registers -- `int`, `float`, `bool`, `T?` of a register type, a function reference with no captures, simple enum (no payload) -- have no arena object. Coroutines are stored in a separate VM-side structure, not the arena; their registers are roots for the collector.
 
-**The `size` field is the hard limit.** A u16 caps every object at 64 KB. An array or struct totaling more than 65535 bytes of body can't exist -- the allocator rejects it with `ArenaExhausted` before writing the header.
-
-All objects are 4-byte aligned. The bump pointer advances by `4 (header) + size`, rounded up to 4-byte alignment.
+All objects are 8-byte aligned. The bump pointer advances by `8 (header) + size`, rounded up to 8.
 
 ### Object Bodies
 
@@ -177,37 +177,28 @@ Simple enums (no payloads) are stored inline as a u32 discriminant in the regist
 
 - **Fixed size.** Set at VM creation. Exceeding = `ArenaExhausted` error.
 - **No auto-grow.** Hides allocation cost.
-- **Max object size: 64 KB** (u16 size field).
 - **Max arena: 4 GB** (u32 offsets). Practical limit set by config, usually 256 KB--4 MB.
 
-### reset() and frame_end()
+### Collection at Frame Boundaries
+
+Scripts allocate freely during a call. Dead objects are reclaimed only at points the host chooses, never in the middle of script code, so collection is deterministic and needs no stack maps for running frames.
 
 **`reset()`** -- sets `top = 0`. Clears all arena contents and coroutine state. Total wipe. Use between independent evaluations.
 
-**`frame_end()`** -- resets allocations made since the last `frame_begin()` marker, keeping everything below the marker.
+**`frame_end()`** -- a collection. Everything reachable from the roots survives, slid down in allocation order to the bottom of the arena (mark-compact; no second copy of the arena is needed). Everything else is gone. Then `top` is the end of the survivors.
 
-How it works:
-1. At VM creation or after `reset()`, host calls `vm.frame_begin()`. This saves `top` as the `frame_base`.
-2. Script runs. Allocations bump `top` above `frame_base`.
-3. Host calls `vm.frame_end()`. Sets `top = frame_base`. All frame allocations become dead.
-4. Next frame: host calls `vm.frame_begin()` again (saves current `top` as new `frame_base`).
+**Roots** are the `Root` handles the host holds ([interop.md](interop.md#host-references)). That includes the coroutines the host resumes each tick. Everything else lives because something reachable refers to it:
+- a reachable coroutine keeps its registers alive. The compiler emits a reference map for each `yield` site, since static types say exactly which registers hold arena references there;
+- a reachable closure keeps its captures alive;
+- structs, arrays, maps and enums keep their reference slots alive, found through each object's `type_id`.
 
-**What's persistent:** everything below `frame_base` -- data allocated before the first `frame_begin()` or between frames by host calls.
+A suspended coroutine nothing refers to can never be resumed, so it's collected with its registers. No script frame is running at `frame_end()`, so there are no other registers to scan.
 
-**What's frame-local:** everything above `frame_base` -- temporary strings from interpolation, arrays built during the frame, intermediate results.
+**Deterministic by construction.** The mark walks roots in a fixed order (coroutine table order, register index order, root-handle creation order) and sliding compaction keeps allocation order, so the arena's bytes after a collection are identical on every machine. Collection costs no fuel; it's the host's work, done at the host's chosen point. For replay, the host calls `frame_end()` at the same ticks on every machine, as it already adds fuel at the same points.
 
-If a script stores a frame-local value into persistent state, that value becomes a dangling offset after `frame_end()`. This is a **host bug**, not a VM bug.
+**Why not a frame/persistent split.** The arena used to keep allocations below a `frame_base` and throw away everything above it at `frame_end()`. A value made during a frame and kept past it (a coroutine's waypoints array, a struct stored in a long-lived map) then pointed at freed memory, and the spec called that a host bug. Coroutines and closures make keeping values past a frame the normal case, so the arena now finds what's still reachable instead of asking scripts to promise.
 
-The VM supports an optional debug mode to catch this:
-
-```rask
-let vm = raido.Vm.new(raido.Config {
-    arena_size: 256.kilobytes(),
-    debug_frame_writes: true,  // off by default
-})
-```
-
-When enabled, struct field writes and array/map mutations validate that any arena offset in the stored value is below `frame_base`. If the value points above `frame_base`, the VM raises a `FrameStoreViolation` error.
+**Cost.** A collection costs time proportional to what survives. A host with large long-lived state collects less often (every N frames, or when the arena passes a threshold); the deterministic-replay rule above applies to whatever schedule it picks.
 
 ## Resource Limits
 
@@ -247,7 +238,7 @@ Fixed at creation. Exceeding = `ArenaExhausted` error.
 
 `vm.serialize()` -> bytes. `Vm.deserialize(bytes)` -> restored VM.
 
-**Captures:** registers, call frames, coroutines, arena contents, PRNG state (4 x u32), fuel remaining, frame_base.
+**Captures:** registers, call frames, coroutines, arena contents, root handles, PRNG state (4 x u32), fuel remaining.
 
 **Does not capture:** host function closures (by name), bytecode (re-loaded by host).
 
@@ -404,7 +395,6 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 | `FuelExhausted` | Instruction budget reached zero |
 | `CallOverflow` | Call depth exceeded max_call_depth |
 | `CoroutineDead` | Resumed a finished coroutine |
-| `FrameStoreViolation` | Stored a frame-local value into persistent state (debug mode only) |
 | `HostError` | Raised by a host function |
 | `ScriptError` | Raised by `error(msg)` in script code |
 

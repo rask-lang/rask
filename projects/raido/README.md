@@ -10,7 +10,7 @@ Serializable state. Deterministic floats. Sandboxed -- the host controls all cap
 
 Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
 
-**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Coroutines and function references serve game scripting. Features that help neither get cut.
+**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Coroutines and closures serve game scripting. Features that help neither get cut.
 
 Two use case families, one VM:
 
@@ -121,7 +121,7 @@ func transform(x: int) -> int {
 | Structs/enums | User-defined, fixed layout | Structured data is the primary data model for all consumers. |
 | Collections | `array<T>` + `map<K, V>` | Maps to Rask's Vec/Map. Homogeneous, typed. |
 | Host data | `extern struct` / `extern func` | Compile-time type checking. Type mismatch = load error, not runtime error. |
-| Functions | Function references (no closures) | No captured state, no arena allocation. Enables composition without verification hazard. |
+| Functions | Named functions and closures | A captured variable can't be reassigned, so closures carry no hidden shared state. |
 | Optionals | `T?` with `Some`/`None` | Compiler-enforced null safety. No nil. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
@@ -148,7 +148,7 @@ func transform(x: int) -> int {
 
 | Spec | What it covers |
 |------|----------------|
-| [language/types.md](language/types.md) | Static type system, ints and floats, structs, enums, optionals, function references |
+| [language/types.md](language/types.md) | Static type system, ints and floats, structs, enums, optionals, functions and closures |
 | [language/syntax.md](language/syntax.md) | Grammar, variables, functions, control flow, operators, declarations |
 | [language/coroutines.md](language/coroutines.md) | Cooperative multitasking |
 | [language/stdlib.md](language/stdlib.md) | Configurable built-in modules |
@@ -196,12 +196,12 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
 | Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
-| Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop hosts opt into `frame_end()` for per-frame cleanup. No auto-grow -- hides allocation cost. |
+| Arena strategy | **Fixed arena; deterministic mark-compact collection at `frame_end()`.** | `reset()` between independent evaluations. Game loops call `frame_end()`, which keeps what's reachable from coroutines, closures and host roots and slides it down in allocation order, so the bytes are identical on every machine. Replaced a frame/persistent split under which keeping a value past a frame left a dangling reference. No auto-grow -- hides allocation cost. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **`extern struct` / `extern func`.** Script declares expected shapes, host binds at load time. | Compile-time type checking. Load-time mismatch detection. Replaces dynamic `host_ref` + vtable pattern. |
 | Type system | **Static.** Function signatures typed, locals inferred. | Runtime type errors are a divergence vector. Static types catch bugs before deployment -- critical when scripts are tradeable economic assets. |
-| Closures | **Cut.** Function references and lambdas that capture nothing. | Shared mutable upvalues are a verification hazard. A lambda with no captures is an unnamed function reference, so it's safe; sort keys and callbacks read the way JS, Python and Lua programmers expect. NPC state lives in host entities, not captured variables. |
+| Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Globals | **Cut.** No mutable global state. | Undermines statelessness between host calls. Script state lives in coroutine locals or host entities. |
 
