@@ -552,7 +552,9 @@ impl Interpreter {
             }
             "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(crate::float_math::pow(a, b)), k)) }
             "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(crate::float_math::powi(a, b as i32)), k)) }
-            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.rem_euclid(b)), k)) }
+            // AR2: the remainder takes the dividend's sign, which is C's `fmod`
+            // and native's answer. `rem_euclid` gave -7.25 % 2.0 as 0.75.
+            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a % b), k)) }
             "sin" => Ok(Value::Float(k.round(crate::float_math::sin(a)), k)),
             "cos" => Ok(Value::Float(k.round(crate::float_math::cos(a)), k)),
             "tan" => Ok(Value::Float(k.round(crate::float_math::tan(a)), k)),

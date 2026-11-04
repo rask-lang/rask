@@ -4,8 +4,8 @@
 // An n-body step plus a few thousand transcendental calls, folded into one
 // FNV-1a hash of the results' bit patterns. Every machine and both backends
 // have to print the same number: a change that moves one bit anywhere in here
-// changes it. tests/suite/t_float_bits_pinned.rk checks it on both backends,
-// tests/float_gate.sh on aarch64 under qemu.
+// changes it. tests/float_gate.sh pins it natively, on the interpreter and on
+// aarch64 under qemu.
 
 import math
 
