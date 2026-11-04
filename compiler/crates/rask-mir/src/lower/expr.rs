@@ -1630,6 +1630,7 @@ impl<'a> MirLowerer<'a> {
                 args,
                 type_args,
             } => {
+                let type_args = &self.checked_type_args(type_args);
                 let made = self.lower_method_call(expr, object, method, args, type_args)?;
                 self.note_ptr_block(object, method, &made.0);
                 Ok(made)

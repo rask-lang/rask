@@ -425,6 +425,7 @@ impl<'a> MirContext<'a> {
             enum_layouts,
             node_types: NodeMap::of(&records.node_types),
             call_targets: NodeMap::of(&records.call_targets),
+            instance_args: None,
             operator_targets: NodeMap::of(&records.operator_targets),
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
@@ -499,7 +500,9 @@ impl<'a> MirContext<'a> {
     /// key functions a map it builds needs.
     /// Lower what follows as `records`' instance: its records answer for its
     /// body's nodes before the checker's do.
-    pub fn enter_instance(&mut self, records: &'a rask_mono::InstanceRecords) {
+    pub fn enter_instance(&mut self, f: &'a rask_mono::MonoFunction) {
+        self.instance_args = Some((&f.type_args, &f.projections));
+        let records = &f.records;
         self.node_types.instance = Some(&records.node_types);
         self.node_types.cleared = Some(&records.no_node_type);
         self.call_targets.instance = Some(&records.call_targets);
@@ -654,6 +657,9 @@ pub struct MirContext<'a> {
     /// dispatched on, so lowering reads it instead of guessing a prefix from
     /// the receiver's syntactic shape.
     pub call_targets: NodeMap<'a, rask_check::Callee>,
+    /// The type arguments and projections of the instance being lowered:
+    /// what its own type parameters stand for in a type its body writes.
+    pub instance_args: Option<(&'a [rask_types::TypeBinding], &'a HashMap<(String, String), Type>)>,
     /// OR1: operator calls the checker resolved to a conformance.
     ///
     /// `a * b` is a machine instruction on some pairs and a call on others, and
@@ -891,6 +897,7 @@ impl<'a> MirContext<'a> {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
+            instance_args: None,
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
@@ -2170,6 +2177,28 @@ pub(crate) struct CatchFrame {
 }
 
 impl<'a> MirLowerer<'a> {
+    /// A type the body writes, as the instance being lowered reads it: its
+    /// own type parameters (and their `T.Out` projections) replaced by what
+    /// they stand for. Every instance shares the body's written types, so this
+    /// is where `reflect.fields<T>()` becomes `reflect.fields<Point>()`.
+    pub(crate) fn written_in_instance(&self, ty: &TypeExpr) -> TypeExpr {
+        let Some((bindings, projections)) = self.ctx.instance_args else { return ty.clone() };
+        let render = |t: &Type| self.ctx.type_defs.resolve_type_names(t).to_type_expr();
+        let projected = if projections.is_empty() {
+            ty.clone()
+        } else {
+            ty.substitute_projections(&|head, tail| {
+                projections.get(&(head.to_string(), tail.to_string())).map(render)
+            })
+        };
+        projected.substitute(&|name| bindings.iter().find(|b| b.param == name).map(|b| render(&b.ty)))
+    }
+
+    /// `written_in_instance` over a call's written type arguments.
+    pub(crate) fn checked_type_args(&self, written: &Option<Vec<TypeExpr>>) -> Option<Vec<TypeExpr>> {
+        written.as_ref().map(|w| w.iter().map(|t| self.written_in_instance(t)).collect())
+    }
+
     /// The checker's type for `node`, as MIR. `what` names the node for the
     /// error, which only a node made after checking can hit.
     pub(crate) fn checked_mir_type(&self, node: NodeId, what: &str) -> Result<MirType, LoweringError> {
@@ -8021,6 +8050,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             call_targets: NodeMap::of(&empty_targets),
+            instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
@@ -8115,6 +8145,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             call_targets: NodeMap::of(&empty_targets),
+            instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
@@ -8216,6 +8247,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             call_targets: NodeMap::of(&empty_targets),
+            instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,

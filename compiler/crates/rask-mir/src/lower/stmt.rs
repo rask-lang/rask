@@ -1380,6 +1380,7 @@ impl<'a> MirLowerer<'a> {
         if !is_reflect_fields {
             return Err(unsupported());
         }
+        let type_args = self.checked_type_args(type_args);
         let ty = type_args
             .as_ref()
             .and_then(|ta| ta.first())
@@ -1512,7 +1513,8 @@ impl<'a> MirLowerer<'a> {
         let taken = comptime_if::decide(cond, &mut |fact| {
             let answer = match &fact.kind {
                 ExprKind::MethodCall { object, method, type_args, .. } => {
-                    self.comptime_field_method_const(object, method, type_args)?
+                    let type_args = self.checked_type_args(type_args);
+                    self.comptime_field_method_const(object, method, &type_args)?
                 }
                 ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
                 _ => return None,

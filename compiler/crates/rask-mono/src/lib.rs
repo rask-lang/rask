@@ -9,11 +9,9 @@
 
 pub mod drop_names;
 pub mod runtime_abi;
-mod instantiate;
 mod reachability;
 pub mod reflect;
 
-pub use instantiate::instantiate_function;
 use rask_layout::{
     NameOf, Unsolved,
     arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
@@ -1389,60 +1387,6 @@ mod tests {
         let tp = dummy_typed_program();
         let result = monomorphize(&tp, &decls).unwrap();
         assert_eq!(result.functions.len(), 3);
-    }
-
-    // ── Instantiation ───────────────────────────────────────────
-
-    #[test]
-    fn instantiate_removes_type_params() {
-        let decl = make_generic_fn(
-            "identity",
-            vec!["T"],
-            vec![("x", "T")],
-            Some("T"),
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        let result = instantiate_function(&decl, &[Type::I32]);
-        if let DeclKind::Fn(f) = &result.kind {
-            assert!(f.type_params.is_empty());
-            assert_eq!(f.params[0].ty.as_ref().map(|t| t.to_string()).as_deref(), Some("i32")); // substituted
-        } else {
-            panic!("Expected function declaration");
-        }
-    }
-
-    #[test]
-    fn instantiate_preserves_body() {
-        let decl = make_generic_fn(
-            "identity",
-            vec!["T"],
-            vec![("x", "T")],
-            Some("T"),
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        let result = instantiate_function(&decl, &[Type::I64]);
-        if let DeclKind::Fn(f) = &result.kind {
-            assert_eq!(f.body.len(), 1);
-            assert!(matches!(f.body[0].kind, StmtKind::Return(Some(_))));
-        } else {
-            panic!("Expected function declaration");
-        }
-    }
-
-    #[test]
-    fn instantiate_fresh_node_ids() {
-        // Use a distinct NodeId for the original so we can verify the clone gets a different one
-        let mut decl = make_generic_fn(
-            "id",
-            vec!["T"],
-            vec![("x", "T")],
-            None,
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        decl.id = NodeId(9999);
-        let result = instantiate_function(&decl, &[Type::Bool]);
-        // Substitutor generates sequential IDs starting at 0, so result.id != 9999
-        assert_ne!(result.id, decl.id);
     }
 
     // ── Reachability walker ─────────────────────────────────────
