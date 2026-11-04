@@ -6177,7 +6177,15 @@ impl<'a> MirLowerer<'a> {
         // argument (`mul$f64`), because two conformances of one operator on one
         // type both call their method `mul`. That's the name the body was
         // emitted under, so it's the name to call.
-        let filed = self.ctx.operator_targets.get(&expr.id).map(|t| t.method.clone());
+        // GT7 the same for any generic interface: a call through a bound
+        // reaches whichever conformance this instantiation's type has filed
+        // it under (`render$0`), which monomorphization recorded.
+        let filed = self
+            .ctx
+            .operator_targets
+            .get(&expr.id)
+            .map(|t| t.method.clone())
+            .or_else(|| self.ctx.recorded_filed_method(expr.id, method));
         let method = filed.as_ref().unwrap_or(method);
 
         // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)

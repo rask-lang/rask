@@ -1259,6 +1259,9 @@ pub struct ComptimeInterpreter {
     /// the wrong enum when two shared a name.
     enums: HashMap<rask_ast::NodeId, EnumRef>,
     literals: HashMap<rask_ast::NodeId, LiteralCall>,
+    /// Nominal types (`type Cents = i64`). One is its underlying value, so
+    /// building one hands the value back and `.value` reads it.
+    nominals: std::collections::HashSet<String>,
 }
 
 impl ComptimeInterpreter {
@@ -1267,6 +1270,7 @@ impl ComptimeInterpreter {
             env: ComptimeEnv::new(),
             enums: HashMap::new(),
             literals: HashMap::new(),
+            nominals: std::collections::HashSet::new(),
         }
     }
 
@@ -1275,6 +1279,7 @@ impl ComptimeInterpreter {
             env: ComptimeEnv::with_quota(quota),
             enums: HashMap::new(),
             literals: HashMap::new(),
+            nominals: std::collections::HashSet::new(),
         }
     }
 
@@ -1319,6 +1324,11 @@ impl ComptimeInterpreter {
             if let DeclKind::Fn(f) = &decl.kind {
                 if f.is_comptime || !f.body.is_empty() {
                     self.env.register_function(f.name.clone(), f.clone());
+                }
+            }
+            if let DeclKind::TypeAlias(a) = &decl.kind {
+                if !a.is_transparent {
+                    self.nominals.insert(a.name.clone());
                 }
             }
             // A type's functions with no `self`, as `Type.name`: what
@@ -1487,6 +1497,11 @@ impl ComptimeInterpreter {
                 }
                 let obj = self.eval_expr(object)?;
                 match obj {
+                    // A nominal type's `.value` is the value itself
+                    // (`register_functions`); a struct field named `value`
+                    // is the arm below.
+                    ref scalar if field == "value" && !self.nominals.is_empty()
+                        && !matches!(scalar, ComptimeValue::Struct { .. }) => scalar.clone(),
                     ComptimeValue::Struct { name, fields } => {
                         fields.get(field).cloned().ok_or_else(|| {
                             ComptimeError::NoSuchField {
@@ -2372,6 +2387,13 @@ impl ComptimeInterpreter {
                 if let ComptimeValue::Closure { params, body, captures } = val {
                     self.env.count_branch()?;
                     return self.call_closure(&params, &body, &captures, arg_values);
+                }
+            }
+
+            // `Cents(250)`: a nominal type is its one value.
+            if self.nominals.contains(name) && self.env.get(name).is_none() {
+                if let [value] = arg_values.as_slice() {
+                    return Ok(value.clone());
                 }
             }
 

@@ -660,6 +660,23 @@ impl<'a> Monomorphizer<'a> {
                     self.instantiated_call_targets.insert(new_id, c);
                 }
             }
+            // GT7: a call through a bound naming a generic interface reaches
+            // whichever of this instantiation's conformances the bound names.
+            if let Some(call) = typed.conformance_calls.get(&old_id) {
+                let filed = self.instantiated_call_targets.get(&new_id).and_then(|c| match c {
+                    rask_check::Callee::Method { recv, .. } => {
+                        let args: Option<Vec<Type>> =
+                            call.args.iter().map(|a| Self::concretize(a, type_args, &bindings)).collect();
+                        typed.types.conformance_method_for(recv, &call.method, &args?)
+                    }
+                    _ => None,
+                });
+                if let (Some(filed), Some(rask_check::Callee::Method { method, .. })) =
+                    (filed, self.instantiated_call_targets.get_mut(&new_id))
+                {
+                    *method = filed;
+                }
+            }
             if let Some(target) = typed.operator_targets.get(&old_id) {
                 if let Some(recv) = Self::concretize(&target.recv, type_args, &bindings) {
                     // A bare `T: Mul` bound files the method under the

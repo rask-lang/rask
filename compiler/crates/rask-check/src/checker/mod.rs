@@ -40,7 +40,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{CContext, Callee, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name};
+pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -329,6 +329,8 @@ pub struct TypeChecker {
     pub(super) operator_targets: HashMap<NodeId, operators::OperatorTarget>,
     /// L9: literals built by their type's conformance.
     pub(super) literal_conversions: HashMap<NodeId, type_defs::LiteralConversion>,
+    /// GT7: calls through a bound naming a generic interface.
+    pub(super) conformance_calls: HashMap<NodeId, type_defs::ConformanceCall>,
     /// OR1: method calls that were operators before desugaring rewrote them.
     ///
     /// `a * b` and `a.mul(b)` are one node kind by the time the checker sees
@@ -706,6 +708,7 @@ impl TypeChecker {
             call_targets: HashMap::new(),
             operator_targets: HashMap::new(),
             literal_conversions: HashMap::new(),
+            conformance_calls: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
             fn_defaults: HashMap::new(),
@@ -845,6 +848,7 @@ impl TypeChecker {
             })
             .collect();
         self.collect_type_declarations(decls);
+        self.file_conformance_methods();
         self.extern_c_fns = decls
             .iter()
             .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Fn(f) if f.abi.is_some()))
@@ -1235,6 +1239,7 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             literal_conversions: std::mem::take(&mut self.literal_conversions),
+            conformance_calls: std::mem::take(&mut self.conformance_calls),
             interface_coercions,
             arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),

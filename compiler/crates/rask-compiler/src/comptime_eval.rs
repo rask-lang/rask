@@ -89,7 +89,11 @@ pub fn fold_comptime(
 
     let records = mono.node_records(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
-    let ctx = rask_mir::lower::MirContext::new(typed, &mono.struct_layouts, &mono.enum_layouts, &records, &type_names);
+    // Nominal types are what they wrap (`type Cents = i64` is an i64), the
+    // same view lowering takes, so a folded one is written as its value.
+    let nominals = crate::emit::nominal_underlying(typed);
+    let ctx = rask_mir::lower::MirContext::new(typed, &mono.struct_layouts, &mono.enum_layouts, &records, &type_names)
+        .with_nominal_underlying(&nominals);
 
     let mut fold = Fold { interp, typed, mono, ctx: &ctx, folded: Folded::default(), diags: Vec::new() };
 
@@ -287,7 +291,7 @@ impl Fold<'_, '_> {
                 self.diags.push(
                     Diagnostic::error(format!("`{shown}` can't be a `{owner}`: {e}"))
                         .with_code("E0383")
-                        .with_primary(*span, format!("built by `{owner}.{method}` while compiling"))
+                        .with_primary(*span, format!("built by `{owner}.{}` while compiling", rask_stdlib::operators::method_display(method)))
                         .with_why(
                             "a literal in a slot of a type that builds itself from literals is \
                              that type's conversion, run while compiling (type.primitives/L9). \

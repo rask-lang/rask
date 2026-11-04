@@ -184,7 +184,7 @@ impl TypeChecker {
     }
 
     /// Replace type parameter names (UnresolvedNamed) with concrete types.
-    pub(super) fn substitute_type_params(ty: &Type, subst: &HashMap<&str, Type>) -> Type {
+    pub fn substitute_type_params(ty: &Type, subst: &HashMap<&str, Type>) -> Type {
         match ty {
             Type::UnresolvedNamed(name) => {
                 if let Some(replacement) = subst.get(name.as_str()) {

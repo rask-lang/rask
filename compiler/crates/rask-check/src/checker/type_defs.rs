@@ -108,6 +108,17 @@ pub struct ModuleMethodSig {
 }
 
 
+/// type.generics/GT7: a call through a bound naming a generic interface's
+/// conformance. Which filed method that is depends on what the bound's
+/// parameter turns out to be, so the backends look it up per instantiation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConformanceCall {
+    /// The method as written.
+    pub method: String,
+    /// The bound's interface arguments, in the generic body's own terms.
+    pub args: Vec<Type>,
+}
+
 /// A literal built by its type's conformance (type.primitives/L9).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LiteralConversion {
@@ -555,6 +566,8 @@ pub struct TypedProgram {
     /// the literal's node. `let half: Fixed = 0.5` is `Fixed.from_literal(0.5)`,
     /// computed while compiling; the backends read the folded value.
     pub literal_conversions: HashMap<NodeId, LiteralConversion>,
+    /// GT7: calls through a bound that names a generic interface.
+    pub conformance_calls: HashMap<NodeId, ConformanceCall>,
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,

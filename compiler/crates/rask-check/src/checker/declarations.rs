@@ -78,6 +78,64 @@ impl TypeChecker {
     /// `typedef struct tag { … } Alias;` registers the struct under `tag` and
     /// `Alias` beside it pointing at it, so a program that writes `c.Alias`
     /// lands on the alias and has to hop.
+    /// type.generics/GT7: a type with more than one conformance of a generic
+    /// interface keeps one method per conformance, filed under a name of its
+    /// own (`render$0`, `render$1`, in declaration order). The declarations
+    /// and the calls are rewritten to that name (`FiledMethods`), so the
+    /// backends see one name per body. A type with one conformance keeps the
+    /// plain name. Runs once every block is registered, so the answer doesn't
+    /// depend on which block came first.
+    pub(super) fn file_conformance_methods(&mut self) {
+        let resolved: Vec<((rask_types::TypeId, String), Vec<Vec<Type>>)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .map(|(k, list)| {
+                let args = list
+                    .iter()
+                    .map(|e| e.written.iter().map(|a| resolve_type_expr(a, &self.types).unwrap_or(Type::Error)).collect())
+                    .collect();
+                (k.clone(), args)
+            })
+            .collect();
+        for (k, args) in resolved {
+            if let Some(list) = self.types.conformance_methods.get_mut(&k) {
+                for (e, a) in list.iter_mut().zip(args) {
+                    e.args = a;
+                }
+            }
+        }
+        let mut keys: Vec<(rask_types::TypeId, String)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .filter(|(_, list)| list.len() > 1)
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort_by(|a, b| (a.0 .0, &a.1).cmp(&(b.0 .0, &b.1)));
+        for (type_id, plain) in keys {
+            let entries = self.types.conformance_methods[&(type_id, plain.clone())].clone();
+            let mut filed_all = Vec::new();
+            for (i, entry) in entries.iter().enumerate() {
+                let filed = format!("{plain}${i}");
+                if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+                    self.types.get_mut(type_id)
+                {
+                    let params = |m: &MethodSig| m.params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>();
+                    if let Some(sig) = methods.iter_mut().find(|m| m.name == plain && params(m) == entry.params) {
+                        sig.name = filed.clone();
+                    }
+                }
+                self.filed_methods.decls.insert((entry.decl, plain.clone()), filed.clone());
+                filed_all.push(filed.clone());
+                if let Some(list) = self.types.conformance_methods.get_mut(&(type_id, plain.clone())) {
+                    list[i].filed = Some(filed);
+                }
+            }
+            self.types.filed_methods.entry((type_id, plain)).or_default().extend(filed_all);
+        }
+    }
+
     /// type.primitives/L9: a literal is built while compiling, so the
     /// conversion a type builds literals with has to be a `comptime func`.
     /// The interface can't say so, and the method may sit in any block on the
@@ -1278,18 +1336,16 @@ impl TypeChecker {
                     rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
                     sig.name = filed;
-                } else if let Some(filed) = interface.as_ref().and_then(|(t, _)| {
-                    self.types.filed_conformance_method(t, &self.types.type_name(type_id), &m.name)
+                } else if let Some(args) = interface.as_ref().and_then(|(t, _)| {
+                    self.types.generic_conformance_args(t, &self.types.type_name(type_id))
                 }) {
-                    // GT7: a generic interface's conformance files its methods
-                    // under the applied arguments, and the declarations and
-                    // the calls are rewritten to that name for the backends.
-                    let list = self.types.filed_methods.entry((type_id, m.name.clone())).or_default();
-                    if !list.contains(&filed) {
-                        list.push(filed.clone());
-                    }
-                    self.filed_methods.decls.insert((decl_id, m.name.clone()), filed.clone());
-                    sig.name = filed;
+                    // GT7: noted here, filed once every block is in
+                    // (`file_conformance_methods`).
+                    self.types
+                        .conformance_methods
+                        .entry((type_id, m.name.clone()))
+                        .or_default()
+                        .push(super::type_table::ConformanceMethod { written: args, args: Vec::new(), params: sig.params.iter().map(|(t, _)| t.clone()).collect(), decl: decl_id, filed: None });
                 }
                 sig
             })

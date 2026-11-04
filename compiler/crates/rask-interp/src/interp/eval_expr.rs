@@ -1569,6 +1569,7 @@ impl Interpreter {
                 // the call. Without this every parse ran the integer path and
                 // "3.5" came back as an error (#480).
                 let method = self.parse_target_method(method, type_args, expr.id);
+                let method = self.conformance_call_method(expr.id, object.id).unwrap_or(method);
 
                 // OR1: a pair the checker resolved to a conformance goes
                 // straight to that body. Going through `call_method` would hand

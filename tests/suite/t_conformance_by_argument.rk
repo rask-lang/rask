@@ -98,3 +98,85 @@ test "GT7 — FromLiteral<i64> and FromLiteral<f64> on one type" {
     assert c.n == 180
     assert d.n == 90
 }
+
+// A bound whose argument is the type parameter itself, written out or as the
+// `Rhs = Self` default. One conformance: the plain name, nothing filed.
+interface Combine<Rhs = Self> {
+    func combine(self, other: Rhs) -> i64
+}
+
+struct Thing {
+    n: i64
+}
+
+Thing implements Combine {
+    func combine(self, other: Thing) -> i64 {
+        return self.n + other.n
+    }
+}
+
+func comb<T: Combine>(t: T, u: T) -> i64 {
+    return t.combine(u)
+}
+
+func both<T: Render<Html> + Render<Json>>(t: T) -> string {
+    return "{t.render(Html(level: 7))}|{t.render(Json(pretty: true))}"
+}
+
+// An argument converts the way any call's does: an integer literal into an
+// f64, a value into its optional.
+interface Scale<K> {
+    func scale(self, k: K) -> i64
+}
+
+struct Meter {
+    v: i64
+}
+
+Meter implements Scale<f64> {
+    func scale(self, k: f64) -> i64 {
+        return (self.v.to_float() * k).to_int()
+    }
+}
+
+Meter implements Scale<Html?> {
+    func scale(self, k: Html?) -> i64 {
+        return k?.level ?? -1
+    }
+}
+
+// A nominal type built from literals.
+type Cents = i64
+
+Cents implements FromLiteral<i64> {
+    comptime func from_literal(value: i64) -> Cents {
+        return Cents(value * 100)
+    }
+}
+
+Cents implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Cents {
+        return Cents((value * 100.0).to_int())
+    }
+}
+
+test "GT7 — a bound argument that is the type parameter" {
+    assert comb(Thing(n: 1), Thing(n: 3)) == 4
+}
+
+test "GT7 — two bounds of one interface, picked by argument" {
+    assert both(Report(title: "q")) == "<h7>q</h7>|title: q"
+}
+
+test "GT7 — arguments convert as in any call" {
+    let m = Meter(v: 3)
+    assert m.scale(2) == 6
+    assert m.scale(Html(level: 4)) == 4
+}
+
+test "GT7 — a nominal type with both literal conversions" {
+    let a: Cents = 3
+    let b: Cents = 1.25
+    assert a.value == 300
+    assert b.value == 125
+}

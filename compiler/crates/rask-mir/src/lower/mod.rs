@@ -1698,6 +1698,19 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// GT7: the filed name the checker or monomorphization recorded for a
+    /// call written as `method` (`render$0` for `render`), if it has one.
+    pub fn recorded_filed_method(&self, node: NodeId, method: &str) -> Option<String> {
+        match self.call_targets.get(&node)? {
+            rask_check::Callee::Method { method: filed, .. }
+                if filed != method && rask_stdlib::operators::method_display(filed) == method =>
+            {
+                Some(filed.clone())
+            }
+            _ => None,
+        }
+    }
+
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         // OR1: an operator the pair resolved names its own receiver. Reading it
         // off the MIR type instead would collapse `f32` onto `f64` — the width
