@@ -13,7 +13,7 @@
 //
 // Needs SDL3 installed. With it under /opt/sdl:
 //   CPATH=/opt/sdl/include RASK_EXTRA_CFLAGS="-L/opt/sdl/lib -lSDL3" \
-//   LD_LIBRARY_PATH=/opt/sdl/lib rask run examples/sdl_tour.rk
+//   LD_LIBRARY_PATH=/opt/sdl/lib rask run examples/sdl_tour
 
 import c "SDL3/SDL.h"
 
