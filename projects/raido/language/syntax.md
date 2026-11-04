@@ -429,7 +429,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 `break`, `const`, `continue`, `deferred`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `pausing`, `return`, `struct`, `true`, `while`
 
-`error()` and `assert()` are built-in functions (core), not keywords.
+`error()`, `assert()` and `spawn()` are built-in functions (core), not keywords.
 
 ## Deliberate Divergences from Rask
 

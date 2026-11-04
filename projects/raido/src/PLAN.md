@@ -46,7 +46,8 @@ main.rk       demo: runs hand-assembled fib
 - The compiler. Until it exists, the capture rule, the published API module
   and the provable profile have nothing to live in.
 - Externs: `CALL_EXTERN`, `GET_FIELD`/`SET_FIELD`, the write buffer,
-  deferred and pausing calls, tasks and `vm.resume`, undo callbacks.
+  deferred and pausing calls, tasks, `SPAWN`, `vm.resume` and
+  `vm.spawned`, undo callbacks.
 - `CONCAT`, `ENUM_TAG`, `TAIL_CALL`, enums with payloads, string constants,
   the built-in methods (`push`, `sort`, ...), PRNG draws.
 - Arithmetic reads the operand tag to choose int or float. Typed opcodes from

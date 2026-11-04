@@ -120,7 +120,7 @@ func on_enemy_died(e: Enemy) {
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
 | Errors | `error()` aborts the call | Every host call into a script is a transaction: a failure throws away what the call changed and the host logs it. No error types, `try` or `catch` to learn; absence is `T?`. |
-| Pausing | Host functions marked `pausing` | `wait(2.0)` is an ordinary call that pauses the hook; the host resumes it with the result. No `yield`, no coroutine objects. Serializable. |
+| Pausing | Host functions marked `pausing`, and `spawn` | `wait(2.0)` is an ordinary call that pauses the hook; the host resumes it with the result. `spawn(f, args...)` starts another task. No `yield`, no coroutine objects. Serializable. |
 | Stdlib | Always present | Core functions, `math`, `bit` and the built-in methods. Nothing to opt into; the host adds capabilities through its API module. |
 
 ## Use Cases
@@ -198,7 +198,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Module state | **Top-level `let`.** | Every mod needs a counter or a flag that outlives one host call. Module variables are heap roots, so they're saved, restored and rolled back with everything else; `const` names a value that never changes. |
-| Pausing | **Host functions marked `pausing`; no `yield` or coroutines in the language.** | A modder writes `wait(2.0)` or `let choice = ask(player, "...")` and it reads like any call. The pausing function's signature types what goes out and what comes back, and nothing that calls it needs marking. Script-made coroutines would add a second way to do the same thing; a hook that loops and waits already runs as long as it likes. |
+| Pausing | **Host functions marked `pausing`; no `yield` or coroutines in the language.** | A modder writes `wait(2.0)` or `let choice = ask(player, "...")` and it reads like any call. The pausing function's signature types what goes out and what comes back, and nothing that calls it needs marking. Script-made coroutines and generators would add a second scheduler beside the host's for little a mod needs; `spawn` covers starting something that runs alongside. |
 | Parameters | **Shared by reference, no modes.** | Structs, arrays and maps behave as in JS, Python and Lua: a function can change what it's given. A read-only default needs a rule for every way a reference can be copied, and I'd rather have nothing to learn. |
 
 **String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`substring`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic -- Unicode case mapping tables are large and version-dependent.

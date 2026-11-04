@@ -116,7 +116,7 @@ Strings, arrays, maps, structs, enums with payloads, closures and tasks are heap
 | Struct | its fields |
 | Enum (with payload) | discriminant and payload fields |
 | Closure | prototype index and captured values |
-| Task | a paused hook: status, call frames and their registers |
+| Task | a hook that's paused or spawned and not yet started: status, call frames and their registers |
 
 How objects are laid out in memory is the implementation's business. Nothing in the language or the serialized form depends on it.
 
@@ -126,6 +126,7 @@ An object is **reachable** if a chain of references leads to it from a root. The
 
 - every module variable of every loaded chunk;
 - every host root handle, tasks included, in creation order;
+- tasks spawned by committed runs that the host hasn't collected with `vm.spawned()` yet, in spawn order;
 - while a call runs: every register of every active frame, all of the prototype's registers, including temporaries the compiler has finished with (they hold the same stale values on every machine, since execution is identical);
 - while a call runs: the undo log (the objects it writes back into, and their old values), the arguments queued for deferred extern functions, and the extern write buffer, since rollback and commit still need them;
 - the result of the host's last call, until the host's next call into the VM.
@@ -351,6 +352,7 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
+| `SPAWN A B` | ABC | Make a new task that will run `R[A]` with args `R[A+1..A+B]`. Queued until the run commits, then handed to the host. |
 | `CALL_EXTERN A Bx` | ABx | Call extern function `Bx` with its arguments in `R[A+1..]`; the result goes in `R[A]`. A deferred extern is queued instead. A pausing extern pauses the task; when the host resumes it, `R[A]` receives the value the host passed. |
 
 ## Error Types

@@ -19,6 +19,8 @@ Everything here is always present. I dropped the opt-in tiers: there's no reason
 
 `len(v: T) -> int` -- string byte length, array length, or map entry count.
 
+`spawn(f, args...)` -- start a new task running `f(args...)`, handed to the host if the current run commits. See [pausing.md](pausing.md#starting-a-task).
+
 `error(msg: string)` -- aborts the current call; its changes roll back and the host receives a ScriptError.
 
 `assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").

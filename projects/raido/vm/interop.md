@@ -71,6 +71,14 @@ let next = try vm.resume(task, raido.Value.void())
 
 A task handle is a root handle ([Host References](#host-references)): the task stays alive until the host drops it with `vm.unroot(task)`. Resuming a finished task is an error.
 
+Tasks a script starts with `spawn` come out of `vm.spawned()` after the run that made them commits, in spawn order, not yet started. The host starts one with `vm.resume(task, raido.Value.none())`:
+
+```rask
+for task in vm.spawned() {
+    schedule(task)          // later: vm.resume(task, raido.Value.none())
+}
+```
+
 See [chunk-format.md](chunk-format.md) for format details.
 
 ## The Published API
@@ -131,12 +139,12 @@ The API module declares `extern func` for host-provided functions with typed sig
 
 An extern function runs in one of two ways, and the API module says which, because a script can tell them apart:
 
-- **Immediate** (`extern func`): runs at the call and can return a value. It must either change nothing the script could later observe (`noise`, `distance`, reads), or be registered with an undo callback the VM runs if the call fails (`spawn` with a despawn).
+- **Immediate** (`extern func`): runs at the call and can return a value. It must either change nothing the script could later observe (`noise`, `distance`, reads), or be registered with an undo callback the VM runs if the call fails (`spawn_unit` with a despawn).
 - **Deferred** (`extern deferred func`): can't return a value. Its calls are queued and run after the script's call succeeds, in call order. A deferred effect isn't visible to the call that made it.
 
 ```raido
 extern func noise(quality: float, id: int, index: int) -> float
-extern func spawn(kind: string, pos: Vec2) -> Enemy        // registered with an undo
+extern func spawn_unit(kind: string, pos: Vec2) -> Enemy   // registered with an undo
 extern deferred func send_message(target: string, body: string)
 ```
 
@@ -159,7 +167,7 @@ vm.register_extern_func("noise", |ctx| {
     return raido.Value.float(compute_noise(quality, id, index))
 })
 
-vm.register_extern_func("spawn", spawn_handler, undo: |unit| despawn(unit))
+vm.register_extern_func("spawn_unit", spawn_handler, undo: |unit| despawn(unit))
 vm.register_extern_func("send_message", send_handler)   // deferred in the module
 ```
 
@@ -285,6 +293,7 @@ Every run of a script, from `vm.call` or `vm.resume` to the next pause or the en
 - **Extern field writes** go into a write buffer. Reads within the run see the buffered value; the buffer is applied in write order when the run commits and dropped if it fails.
 - **Immediate extern functions** with effects have their undo callbacks queued; on failure they run in reverse order.
 - **Deferred extern functions** are queued and run after the run commits, in call order.
+- **Spawned tasks** are queued the same way, and handed to the host through `vm.spawned()` only if the run commits.
 
 On commit the VM applies the write buffer, then runs the deferred calls, then discards the undo log. A failed run leaves the VM, and a task, exactly as before it started; the host gets the error, logs it, and usually drops the task.
 
