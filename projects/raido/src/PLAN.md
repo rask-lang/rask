@@ -40,6 +40,9 @@ main.rk       demo: runs hand-assembled fib
 
 ## Not yet
 
+- Native: six tests crash because the MIR inliner frees a field passed as
+  `self` (rask-lang/rask#1747). All tests pass on `--interp`.
+
 - The compiler. Until it exists, the capture rule, read-only tracking, the
   published API module and the provable profile have nothing to live in.
 - Coroutines and tasks: `COROUTINE`, `YIELD`, `RESUME`, `vm.resume`.

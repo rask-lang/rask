@@ -198,7 +198,7 @@ vm.reset()
 
 ## Host References
 
-A heap value the host gets back from a call (a struct, array, string, closure or coroutine) stays alive until the host's next call into the VM. To keep one longer, the host roots it, like Lua's registry:
+A heap value the host gets back from a call (a struct, array, string, closure or coroutine) stays alive until the host's next call into the VM finishes, and so does one the host makes for an argument. To keep one longer, the host roots it, like Lua's registry:
 
 ```rask
 let result = try vm.call("make_plan", [])
@@ -210,7 +210,7 @@ vm.unroot(plan)
 
 Roots are what the collector and serialization start from, and they're part of the serialized state, in creation order.
 
-Every heap value the host holds, rooted or not, is a handle: a slot index plus a generation number, never a pointer. A slot's generation goes up when its object is collected, so a handle to a collected object is detected on every use, in every build, and is a `HostError`. The host can't observe the collector by getting someone else's object back.
+Whether the host may still use a value is decided by reachability, never by whether the collector got to it: a value passed into a call must be reachable from a root, the last call's result, or something the host made since. Anything else is a `HostError`, collected or not, so the host can't observe the collector. Every heap value the host holds is a slot index plus a generation number, never a pointer, so a slot reused by a newer object is never mistaken for the old one.
 
 ## Module Import Resolution
 

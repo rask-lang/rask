@@ -51,6 +51,8 @@ extend Value {
         return Value(tag: TAG_ENUM, bits: disc)
     }
 
+    // Inside the VM a ref's tag word is just the kind. A ref handed to the
+    // host carries the slot's generation above it (heap.rk, `export`).
     func ref_to(slot: i64) -> Value {
         return Value(tag: TAG_REF, bits: slot)
     }

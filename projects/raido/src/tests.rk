@@ -397,25 +397,133 @@ test "strings and tuples compare by content, structs by identity" {
     assert h.equal(Value.from_float(0.0), Value.from_float(-0.0))
 }
 
-test "a handle to a collected object is caught every time" {
-    mut h = GcHeap.new(65536)
-    let s = h.new_string("kept briefly") catch _ => panic("alloc")
-    let handle = h.handle_of(s)
-    assert h.resolve(handle) is Value
-    h.collect(Value.none())
-    assert h.resolve(handle) is HeapError
-    // The slot gets reused; the old handle still doesn't see the new object.
-    let t = h.new_string("someone else") catch _ => panic("alloc")
-    assert t.bits == s.bits
-    assert h.resolve(handle) is HeapError
+// --- Values the host holds ---
+
+// The pair from the first call isn't rooted, so by the third call the host
+// no longer holds it, whether or not the collector has run.
+func stale_outcome(stress: bool) -> string {
+    mut vm = loaded(65536, stress)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    call0(mutate vm, P_BUMP)
+    call0(mutate vm, P_BUMP)
+    return fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([pair]))
 }
 
-test "a host root keeps an object alive until unrooted" {
-    mut h = GcHeap.new(65536)
-    let s = h.new_string("rooted") catch _ => panic("alloc")
-    let r = h.add_root(s)
-    h.collect(Value.none())
-    assert h.text_of(h.get_root(r) catch _ => panic("root")) == "rooted"
-    h.unroot(r)
-    assert h.get_root(r) is HeapError
+test "a value the host stopped holding is refused, collected or not" {
+    let normal = stale_outcome(false)
+    let stress = stale_outcome(true)
+    assert normal.starts_with("HostError")
+    assert stress == normal
+}
+
+test "the last result can be passed straight back in" {
+    mut vm = loaded(65536, true)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    assert fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([pair])) == "UnwrapNone"
+}
+
+test "a host root keeps a value usable across calls and collections" {
+    mut vm = loaded(65536, true)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    let r = vm.heap.add_root(pair) catch e => panic(e.message())
+    call0(mutate vm, P_BUMP)
+    call_int(mutate vm, P_CHURN, 30)
+    let again = vm.heap.get_root(r) catch e => panic(e.message())
+    assert fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([again])) == "UnwrapNone"
+    vm.heap.unroot(r)
+    assert vm.heap.get_root(r) is HeapError
+}
+
+test "a host string lives until the next call ends" {
+    mut vm = loaded(65536, true)
+    let s = vm.heap.host_string("hello") catch e => panic(e.message())
+    vm.heap.collect(Value.none())
+    let r = vm.heap.add_root(s) catch e => panic(e.message())
+    let back = vm.heap.get_root(r) catch e => panic(e.message())
+    assert vm.heap.text_of(back) == "hello"
+}
+
+test "a root index means the same root after save and load" {
+    mut vm = loaded(65536, false)
+    let x = vm.call(P_MAKE_PAIR, int_arg(1)) catch e => panic(e.message())
+    let r0 = vm.heap.add_root(x) catch e => panic(e.message())
+    let y = vm.call(P_MAKE_PAIR, int_arg(2)) catch e => panic(e.message())
+    let r1 = vm.heap.add_root(y) catch e => panic(e.message())
+    vm.heap.unroot(r0)
+    mut w = Vm.restore(test_chunk(), test_config(65536), vm.snapshot()) catch e => panic(e.message())
+    assert w.heap.get_root(r0) is HeapError
+    let back = w.heap.get_root(r1) catch e => panic(e.message())
+    assert w.heap.slot_of(back, 0).bits == 2
+}
+
+// --- The undo log is bounded by what a run touches ---
+
+test "writing one field many times logs it once" {
+    mut h = GcHeap.new(4096)
+    let b = h.new_record(OBJ_STRUCT, 0, 0, Vec<Value>.from([Value.from_int(0)])) catch _ => panic("alloc")
+    h.module_vars.push(b)
+    h.begin_run()
+    for i in 0..10_000 {
+        h.set_slot(b, 0, Value.from_int(i)) catch _ => panic("set")
+    }
+    assert h.undo.len() == 1
+    h.rollback()
+    assert h.slot_of(b, 0).bits == 0
+}
+
+test "pushing and popping many times saves the array once" {
+    mut h = GcHeap.new(4096)
+    let a = h.new_array(false, Vec<Value>.from([Value.from_int(1)])) catch _ => panic("alloc")
+    h.module_vars.push(a)
+    h.begin_run()
+    for i in 0..10_000 {
+        h.array_push(a, Value.from_int(i)) catch _ => panic("push")
+        h.array_pop(a)
+        h.set_slot(a, 0, Value.from_int(i)) catch _ => panic("set")
+    }
+    assert h.undo.len() == 1
+    h.rollback()
+    assert h.len_of(a) == 1
+    assert h.slot_of(a, 0).bits == 1
+}
+
+// --- Rolling back regrowth ---
+
+func long_text(n: i64) -> string {
+    mut s = ""
+    for _ in 0..n {
+        s = "{s}x"
+    }
+    return s
+}
+
+// An array shrinks inside a run, a collection sees it small, and the run
+// rolls back. The array is big again, and the next checkpoint must know.
+func regrow_outcome(stress: bool) -> string {
+    mut h = GcHeap.new(2000)
+    h.stress = stress
+    mut items: Vec<Value> = Vec.new()
+    for k in 0..64 {
+        items.push(Value.from_int(k))
+    }
+    let a = h.new_array(false, items) catch _ => panic("alloc")
+    h.module_vars.push(a)
+    h.module_vars.push(Value.none())
+    h.begin_run()
+    for _ in 0..60 {
+        h.array_pop(a)
+    }
+    for _ in 0..8 {
+        h.new_string(long_text(200)) catch _ => panic("garbage")
+    }
+    h.rollback()
+    let s = h.new_string(long_text(1500)) catch e => return e.message()
+    h.module_vars[1] = s
+    return ""
+}
+
+test "memory runs out at the same point after a rollback regrows a container" {
+    let normal = regrow_outcome(false)
+    assert normal == "MemoryExhausted"
+    assert regrow_outcome(true) == normal
 }

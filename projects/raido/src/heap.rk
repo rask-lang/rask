@@ -106,48 +106,37 @@ func logical_size(o: Obj) -> i64 {
 }
 
 // --- Undo log ---
-// Each entry says how to put one change back. Replayed newest first.
+// Bounded by what a run touches, not by how often: a slot is logged once per
+// run, and a container's first structural change (push, remove, a new map
+// key, sort) saves the whole of it once, after which nothing else in it is
+// logged. Replayed newest first.
 
 enum UndoOp {
     Slot
-    Pushed
-    Popped
-    Inserted
-    Removed
-    MapAdded
-    MapRemoved
+    Whole
     Module
-    Snapshot
 }
-// Slot: slots[idx] = old. Pushed: pop. Popped: push old. Inserted: remove
-// slots[idx]. Removed: insert old at idx. MapAdded: remove the last entry.
-// MapRemoved: insert key -> old at position idx. Module: module_vars[idx] =
-// old. Snapshot: slots = saved.
+// Slot: slots[idx] = old. Whole: slots and keys = saved ones. Module:
+// module_vars[idx] = old.
 
 struct UndoEntry {
     op: UndoOp
     obj: i64
     idx: i64
     old: Value
-    key: Value
     saved: Vec<Value>
+    saved_keys: Vec<Value>
 }
 
 func undo_entry(op: UndoOp, obj: i64, idx: i64, old: Value) -> UndoEntry {
-    return UndoEntry(op: op, obj: obj, idx: idx, old: old, key: Value.none(), saved: Vec.new())
+    return UndoEntry(op: op, obj: obj, idx: idx, old: old, saved: Vec.new(), saved_keys: Vec.new())
 }
 
-// A root the host holds. Root indices are never reused, so creation order is
-// index order and a stale index is always detectable.
+// A root the host holds. Root indices are never reused, and dead ones are
+// saved in snapshots, so an index means the same root after a load.
 struct HostRoot {
     value: Value
     live: bool
-}
-
-// A heap value the host holds without rooting: slot plus generation.
-struct Handle {
-    slot: i64
-    gen: i64
 }
 
 struct GcHeap {
@@ -162,6 +151,9 @@ struct GcHeap {
     run: i64
     next_run: i64
     undo: Vec<UndoEntry>
+    logged_slots: Map<string, bool>
+    whole_saved: Map<i64, bool>
+    host_made: Vec<Value>
     module_vars: Vec<Value>
     roots: Vec<HostRoot>
     stack: Vec<Value>
@@ -183,6 +175,9 @@ extend GcHeap {
             run: 0
             next_run: 0
             undo: Vec.new()
+            logged_slots: Map.new()
+            whole_saved: Map.new()
+            host_made: Vec.new()
             module_vars: Vec.new()
             roots: Vec.new()
             stack: Vec.new()
@@ -249,6 +244,9 @@ extend GcHeap {
                 found.push(r.value)
             }
         }
+        for v in self.host_made {
+            found.push(v)
+        }
         mut i: i64 = 0
         while i < self.stack_top {
             let v = self.stack[i]
@@ -262,8 +260,10 @@ extend GcHeap {
                 found.push(Value.ref_to(e.obj))
             }
             found.push(e.old)
-            found.push(e.key)
             for s in e.saved {
+                found.push(s)
+            }
+            for s in e.saved_keys {
                 found.push(s)
             }
         }
@@ -395,11 +395,11 @@ extend GcHeap {
     func begin_run(mutate self) {
         self.next_run = self.next_run + 1
         self.run = self.next_run
-        self.undo.clear()
+        self.clear_log()
     }
 
     func commit(mutate self) {
-        self.undo.clear()
+        self.clear_log()
         self.run = 0
     }
 
@@ -408,7 +408,14 @@ extend GcHeap {
             let e = self.undo.pop() ?? break
             self.apply_undo(e)
         }
+        self.clear_log()
         self.run = 0
+    }
+
+    func clear_log(mutate self) {
+        self.undo.clear()
+        self.logged_slots = Map.new()
+        self.whole_saved = Map.new()
     }
 
     func apply_undo(mutate self, take e: UndoEntry) {
@@ -417,35 +424,23 @@ extend GcHeap {
             UndoOp.Slot => {
                 self.objs[o].slots[e.idx] = e.old
             }
-            UndoOp.Pushed => {
-                let _ = self.objs[o].slots.pop()
-            }
-            UndoOp.Popped => {
-                self.objs[o].slots.push(e.old)
-            }
-            UndoOp.Inserted => {
-                let _ = self.objs[o].slots.remove(e.idx)
-            }
-            UndoOp.Removed => {
-                self.objs[o].slots.insert(e.idx, e.old)
-            }
-            UndoOp.MapAdded => {
-                let last = self.objs[o].keys.len().wrap<i64>() - 1
-                let k = self.key_text(self.objs[o].keys[last])
-                let _ = self.objs[o].keys.pop()
-                let _ = self.objs[o].slots.pop()
-                let _ = self.objs[o].index.remove(k)
-            }
-            UndoOp.MapRemoved => {
-                self.objs[o].keys.insert(e.idx, e.key)
-                self.objs[o].slots.insert(e.idx, e.old)
-                self.reindex(o, e.idx)
-            }
             UndoOp.Module => {
                 self.module_vars[e.idx] = e.old
             }
-            UndoOp.Snapshot => {
+            UndoOp.Whole => {
+                let before = logical_size(self.objs[o])
                 self.objs[o].slots = e.saved
+                self.objs[o].keys = e.saved_keys
+                if self.objs[o].kind == OBJ_MAP {
+                    self.objs[o].index = Map.new()
+                    self.reindex(o, 0)
+                }
+                // Growing back isn't an allocation, but the bound that lets
+                // a checkpoint skip collecting has to cover it.
+                let after = logical_size(self.objs[o])
+                if after > before {
+                    self.since_gc = self.since_gc + after - before
+                }
             }
         }
     }
@@ -454,20 +449,30 @@ extend GcHeap {
         return self.run != 0 && self.objs[slot].birth != self.run
     }
 
-    func log(mutate self, op: UndoOp, obj: i64, idx: i64, old: Value) {
-        if self.logged(obj) {
-            self.undo.push(undo_entry(op, obj, idx, old))
+    func log_slot(mutate self, o: i64, i: i64) {
+        if !self.logged(o) || self.whole_saved.contains(o) {
+            return
         }
+        let k = "{o}:{i}"
+        if self.logged_slots.contains(k) {
+            return
+        }
+        self.logged_slots.insert(k, true)
+        let old = self.objs[o].slots[i]
+        self.undo.push(undo_entry(UndoOp.Slot, o, i, old))
     }
 
-    // Before an operation that rearranges a whole container (sort, reverse).
-    func log_snapshot(mutate self, v: Value) {
-        let o = v.bits
-        if self.logged(o) {
-            mut e = undo_entry(UndoOp.Snapshot, o, 0, Value.none())
-            e.saved = self.objs[o].slots.clone()
-            self.undo.push(e)
+    // Before a change to a container's shape: push, pop, insert, remove, a
+    // new or removed map key, sort, reverse.
+    func log_whole(mutate self, o: i64) {
+        if !self.logged(o) || self.whole_saved.contains(o) {
+            return
         }
+        self.whole_saved.insert(o, true)
+        mut e = undo_entry(UndoOp.Whole, o, 0, Value.none())
+        e.saved = self.objs[o].slots.clone()
+        e.saved_keys = self.objs[o].keys.clone()
+        self.undo.push(e)
     }
 
     // --- Writing objects ---
@@ -479,13 +484,14 @@ extend GcHeap {
         if i < 0 || i >= n {
             return HeapError.IndexOutOfBounds(i, n)
         }
-        let old = self.objs[o].slots[i]
-        self.log(UndoOp.Slot, o, i, old)
+        self.log_slot(o, i)
         self.objs[o].slots[i] = x
     }
 
     func set_module(mutate self, i: i64, x: Value) {
-        if self.run != 0 {
+        let k = "m{i}"
+        if self.run != 0 && !self.logged_slots.contains(k) {
+            self.logged_slots.insert(k, true)
             let old = self.module_vars[i]
             self.undo.push(undo_entry(UndoOp.Module, 0, i, old))
         }
@@ -495,16 +501,18 @@ extend GcHeap {
     func array_push(mutate self, v: Value, x: Value) -> void or HeapError {
         let o = v.bits
         let before = logical_size(self.objs[o])
-        self.log(UndoOp.Pushed, o, 0, Value.none())
+        self.log_whole(o)
         self.objs[o].slots.push(x)
         try self.charge_growth(v, before)
     }
 
     func array_pop(mutate self, v: Value) -> Value? {
         let o = v.bits
-        let x = self.objs[o].slots.pop() ?? return none
-        self.log(UndoOp.Popped, o, 0, x)
-        return x
+        if self.objs[o].slots.len() == 0 {
+            return none
+        }
+        self.log_whole(o)
+        return self.objs[o].slots.pop()
     }
 
     func array_insert(mutate self, v: Value, i: i64, x: Value) -> void or HeapError {
@@ -514,7 +522,7 @@ extend GcHeap {
             return HeapError.IndexOutOfBounds(i, n)
         }
         let before = logical_size(self.objs[o])
-        self.log(UndoOp.Inserted, o, i, Value.none())
+        self.log_whole(o)
         self.objs[o].slots.insert(i, x)
         try self.charge_growth(v, before)
     }
@@ -525,9 +533,8 @@ extend GcHeap {
         if i < 0 || i >= n {
             return HeapError.IndexOutOfBounds(i, n)
         }
-        let x = self.objs[o].slots.remove(i)
-        self.log(UndoOp.Removed, o, i, x)
-        return x
+        self.log_whole(o)
+        return self.objs[o].slots.remove(i)
     }
 
     func charge_growth(mutate self, v: Value, before: i64) -> void or HeapError {
@@ -556,14 +563,13 @@ extend GcHeap {
         let o = m.bits
         let text = self.key_text(k)
         if self.objs[o].index.get(text)? as pos {
-            let old = self.objs[o].slots[pos]
-            self.log(UndoOp.Slot, o, pos, old)
+            self.log_slot(o, pos)
             self.objs[o].slots[pos] = x
             return
         }
         let before = logical_size(self.objs[o])
         let pos = self.objs[o].keys.len().wrap<i64>()
-        self.log(UndoOp.MapAdded, o, 0, Value.none())
+        self.log_whole(o)
         self.objs[o].keys.push(k)
         self.objs[o].slots.push(x)
         self.objs[o].index.insert(text, pos)
@@ -573,14 +579,11 @@ extend GcHeap {
     func map_remove(mutate self, m: Value, k: Value) -> Value? {
         let o = m.bits
         let text = self.key_text(k)
-        let pos = self.objs[o].index.remove(text) ?? return none
-        let key = self.objs[o].keys.remove(pos)
+        let pos = self.objs[o].index.get(text) ?? return none
+        self.log_whole(o)
+        let _ = self.objs[o].index.remove(text)
+        let _ = self.objs[o].keys.remove(pos)
         let old = self.objs[o].slots.remove(pos)
-        if self.logged(o) {
-            mut e = undo_entry(UndoOp.MapRemoved, o, pos, old)
-            e.key = key
-            self.undo.push(e)
-        }
         self.reindex(o, pos)
         return old
     }
@@ -641,8 +644,10 @@ extend GcHeap {
 
     // --- Host roots and handles (vm/interop.md, Host References) ---
 
-    func add_root(mutate self, v: Value) -> i64 {
-        self.roots.push(HostRoot(value: v, live: true))
+    // Takes a value the host holds; see `import`.
+    func add_root(mutate self, v: Value) -> i64 or HeapError {
+        let inside = try self.import(v)
+        self.roots.push(HostRoot(value: inside, live: true))
         return self.roots.len().wrap<i64>() - 1
     }
 
@@ -650,27 +655,105 @@ extend GcHeap {
         if r < 0 || r >= self.roots.len().wrap<i64>() || !self.roots[r].live {
             return HeapError.StaleHandle
         }
-        return self.roots[r].value
+        return self.export(self.roots[r].value)
     }
 
     func unroot(mutate self, r: i64) {
         if r >= 0 && r < self.roots.len().wrap<i64>() {
             self.roots[r].live = false
+            self.roots[r].value = Value.none()
         }
     }
 
-    func handle_of(self, v: Value) -> Handle {
-        return Handle(slot: v.bits, gen: self.objs[v.bits].gen)
+    // --- Values crossing to and from the host ---
+    // Inside the VM a ref is just a slot. A ref handed to the host also
+    // carries the slot's generation, so a slot reused by a newer object is
+    // never mistaken for the old one.
+    //
+    // What the host may pass back in is decided by reachability, not by
+    // whether the collector got there: a ref must be reachable from a root,
+    // the last call's result or something the host made since. Reachability
+    // is the same on every machine; collection timing isn't.
+
+    func export(self, v: Value) -> Value {
+        if !v.is_ref() {
+            return v
+        }
+        return Value(tag: TAG_REF | self.objs[v.bits].gen << 8, bits: v.bits)
     }
 
-    func resolve(self, h: Handle) -> Value or HeapError {
-        if h.slot < 0 || h.slot >= self.objs.len().wrap<i64>() {
+    func import(self, v: Value) -> Value or HeapError {
+        if !v.is_ref() {
+            return v
+        }
+        let slot = v.bits
+        if slot < 0 || slot >= self.objs.len().wrap<i64>() {
             return HeapError.StaleHandle
         }
-        if !self.objs[h.slot].live || self.objs[h.slot].gen != h.gen {
+        if !self.objs[slot].live || self.objs[slot].gen != v.tag >> 8 {
             return HeapError.StaleHandle
         }
-        return Value.ref_to(h.slot)
+        if !self.host_reachable(slot) {
+            return HeapError.StaleHandle
+        }
+        return Value.ref_to(slot)
+    }
+
+    // A string the host makes, for an argument. It stays alive until the
+    // host's next call finishes.
+    func host_string(mutate self, s: string) -> Value or HeapError {
+        let v = try self.new_string(s)
+        self.host_made.push(v)
+        return self.export(v)
+    }
+
+    func host_reachable(self, slot: i64) -> bool {
+        mut start: Vec<Value> = self.module_vars.clone()
+        for r in self.roots {
+            if r.live {
+                start.push(r.value)
+            }
+        }
+        for v in self.host_made {
+            start.push(v)
+        }
+        start.push(self.last_result)
+        // Most arguments are a root or the last result themselves.
+        for v in start {
+            if v.is_ref() && v.bits == slot {
+                return true
+            }
+        }
+        mut seen: Vec<bool> = Vec.new()
+        for _ in self.objs {
+            seen.push(false)
+        }
+        mut work: Vec<i64> = Vec.new()
+        for v in start {
+            if v.is_ref() && !seen[v.bits] {
+                seen[v.bits] = true
+                work.push(v.bits)
+            }
+        }
+        loop {
+            let o = work.pop() ?? break
+            if o == slot {
+                return true
+            }
+            for v in self.objs[o].slots {
+                if v.is_ref() && !seen[v.bits] {
+                    seen[v.bits] = true
+                    work.push(v.bits)
+                }
+            }
+            for v in self.objs[o].keys {
+                if v.is_ref() && !seen[v.bits] {
+                    seen[v.bits] = true
+                    work.push(v.bits)
+                }
+            }
+        }
+        return false
     }
 
     // --- The register stack ---

@@ -9,7 +9,7 @@
 //
 // Layout, little-endian:
 //   "RDSV" | version u16 | fuel i64 | prng 4 x u32 | since_checkpoint i64
-//   | modules u32, values | roots u32, values | objects u32, objects
+//   | modules u32, values | roots u32, (live u8, value) each | objects u32, objects
 // value:  tag word i64 | payload i64 (a ref's payload is its object number)
 // object: kind u8 | type_id i64 | disc i64 | tagged u8 | text u32 + bytes
 //         | slots u32, values | keys u32, values
@@ -125,13 +125,12 @@ func serialize(heap: GcHeap, m: MachineState) -> Vec<u8> {
     }
     put_i64(mutate out, heap.since_checkpoint)
     put_values(mutate out, heap.module_vars, nums)
-    mut live_roots: Vec<Value> = Vec.new()
+    // Dead roots too, so a root index means the same root after a load.
+    put_u32(mutate out, heap.roots.len().wrap<i64>())
     for r in heap.roots {
-        if r.live {
-            live_roots.push(r.value)
-        }
+        put_u8(mutate out, if r.live { 1 } else { 0 })
+        put_value(mutate out, r.value, nums)
     }
-    put_values(mutate out, live_roots, nums)
     put_u32(mutate out, nums.order.len().wrap<i64>())
     for slot in nums.order {
         put_u8(mutate out, heap.objs[slot].kind)
@@ -245,19 +244,23 @@ func read_snapshot(take saved: Vec<u8>, mutate heap: GcHeap) -> MachineState or 
     let nmods = try r.u32()
     r.pos = r.pos + nmods * 16
     let nroots = try r.u32()
-    r.pos = r.pos + nroots * 16
+    r.pos = r.pos + nroots * 17
     let count = try r.u32()
     let objs_start = r.pos
     r.pos = mod_start
     heap.module_vars = try r.values(count)
-    let root_vals = try r.values(count)
-    for v in root_vals {
-        heap.add_root(v)
+    let nr = try r.u32()
+    mut i: i64 = 0
+    while i < nr {
+        let live = (try r.u8()) == 1
+        let v = try r.value(count)
+        heap.roots.push(HostRoot(value: v, live: live))
+        i = i + 1
     }
     r.pos = objs_start
 
     mut live: i64 = 0
-    mut i: i64 = 0
+    i = 0
     while i < count {
         mut o = blank_obj(try r.u8())
         o.type_id = try r.i64()
