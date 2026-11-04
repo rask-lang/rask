@@ -6840,12 +6840,6 @@ impl TypeChecker {
         }
     }
 
-    /// Check every integer literal against the type it ended up with. Deferred
-    /// to here because at the literal itself the type is usually still a var.
-    ///
-    /// Without this `const b: u8 = 300` type-checked, and the backends then
-    /// disagreed about what it meant — the interpreter kept 300, codegen kept
-    /// the low byte.
     /// L9: the type a literal of `kind` builds when it lands in `ty`, and
     /// whether through `FromLiteral<f64>`. An integer literal takes
     /// `FromLiteral<i64>` first and `FromLiteral<f64>` otherwise, the way it
@@ -6873,6 +6867,15 @@ impl TypeChecker {
                 PendingLiteral::Float(_) => LiteralKind::Float,
             };
             let Some((id, float)) = self.literal_builder(kind, &ty) else { continue };
+            // A pattern switches on the literal's own bits, which aren't the
+            // built value's. A guard compares built values.
+            if self.pattern_literals.contains(&node) {
+                self.errors.push(TypeError::LiteralPatternOnBuiltType {
+                    ty: self.types.type_name(id),
+                    span,
+                });
+                continue;
+            }
             let value = match literal {
                 PendingLiteral::Float(x) => LiteralValue::Float(x),
                 PendingLiteral::Int(v, _) if float => LiteralValue::Float(v as f64),
@@ -6896,6 +6899,12 @@ impl TypeChecker {
         }
     }
 
+    /// Check every integer literal against the type it ended up with. Deferred
+    /// to here because at the literal itself the type is usually still a var.
+    ///
+    /// Without this `const b: u8 = 300` type-checked, and the backends then
+    /// disagreed about what it meant — the interpreter kept 300, codegen kept
+    /// the low byte.
     pub(super) fn validate_pending_int_literals(&mut self) {
         let pending = std::mem::take(&mut self.pending_int_literals);
         for (value, bit_pattern, ty, span) in pending {

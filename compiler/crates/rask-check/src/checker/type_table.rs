@@ -1469,7 +1469,7 @@ impl TypeTable {
     }
 
     /// The conversion `FromLiteral` requires, read from its declaration in
-    /// stdlib/ops.rk.
+    /// stdlib/num.rk.
     pub fn literal_conversion_method(&self) -> Option<&str> {
         let InterfaceIdent::Declared(id) = self.stdlib_interface_ident("FromLiteral") else { return None };
         match self.get(id)? {

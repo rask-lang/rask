@@ -80,6 +80,9 @@ func main() {
   `1` fills an `f64`. A float literal only through `FromLiteral<f64>`. A type
   may have both; the literal's kind picks the conformance (`type.generics/GT7`).
 - A suffix wins: `3.5f64` is an `f64` in any slot, and an `f64` isn't a `Fixed`.
+- A literal can't be a `match` pattern for such a type (E0958): a pattern
+  compares bits, and the built value's aren't the literal's. A guard compares
+  with `==`: `_ if x == 0 => …`.
 - The slot is wherever the literal's type is decided: an annotation, a
   parameter or its default, a field or its default, a `const`, a collection
   element, either side of an operator, code run at compile time. Under an

@@ -539,6 +539,9 @@ pub struct TypeChecker {
     /// L9: every unsuffixed literal, for the ones that land in a type built
     /// from literals.
     pub(super) pending_literals: Vec<(NodeId, check_expr::PendingLiteral, rask_ast::Span)>,
+    /// Literals written as `match` patterns. One of a type built from
+    /// literals can't be switched on (L9).
+    pub(super) pattern_literals: std::collections::HashSet<NodeId>,
     /// D2: `discard` on a Copy type, checked after literal defaulting.
     /// `let n = 7` is an unsolved integer var while the body is walked, so
     /// asking at the statement missed the commonest spelling of the case.
@@ -763,6 +766,7 @@ impl TypeChecker {
             pending_for_mutate: Vec::new(),
             pending_int_literals: Vec::new(),
             pending_literals: Vec::new(),
+            pattern_literals: std::collections::HashSet::new(),
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
             pending_comptime_field_names: Vec::new(),

@@ -2835,6 +2835,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
                     .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
             }
+            LiteralPatternOnBuiltType { ty, span } => {
+                Diagnostic::error(format!("a literal can't be a pattern for `{}`", ty))
+                    .with_code("E0958")
+                    .with_primary(*span, format!("`{}` builds this value from the literal", ty))
+                    .with_fix("compare in a guard: `_ if x == 0 => …`")
+                    .with_why(format!("a `{ty}` written as a literal is built by its `from_literal` while compiling (type.primitives/L9), so its bits aren't the literal's, and a pattern only compares bits. `==` compares the built values"))
+            }
             AmbiguousConformanceCall { ty, method, candidates, span } => {
                 let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
                     .with_code("E0957")

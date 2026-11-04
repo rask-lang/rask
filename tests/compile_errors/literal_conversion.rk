@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a type built from literals (type.primitives/L9)
-// Rejects: a conversion that isn't `comptime`, a literal the conversion panics
-// on, an integer literal past the `i64` the conversion takes, and a suffixed
-// literal, which keeps its own type.
+// Rejects: a conversion that isn't `comptime`, a literal pattern on a
+// literal-built type, an integer literal past the `i64` the conversion takes,
+// and a suffixed literal, which keeps its own type.
 
 struct Fixed {
     raw: i64
@@ -41,6 +41,15 @@ extend Count {
 }
 
 Count implements FromLiteral<i64> {}
+
+// A pattern compares bits, and a built value's bits aren't the literal's.
+func classify(x: Fixed) -> i64 {
+    match x {
+        // ERROR: E0958, a guard compares with `==`
+        0 => return 1,
+        _ => return 0,
+    }
+}
 
 func main() {
     // ERROR: E0825, the conversion takes an `i64`

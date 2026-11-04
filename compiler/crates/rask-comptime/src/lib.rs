@@ -1365,7 +1365,6 @@ impl ComptimeInterpreter {
         self.call_function(&func, args)
     }
 
-    /// The expressions the checker typed as enums.
     /// The literals the checker found their type builds. Evaluating one
     /// calls the conversion, wherever it sits: a default, a `comptime` block,
     /// another conversion's body.
@@ -1379,6 +1378,7 @@ impl ComptimeInterpreter {
         Some(self.call_type_function(&call.owner, &call.method, vec![call.arg]))
     }
 
+    /// The expressions the checker typed as enums.
     pub fn know_enums(&mut self, enums: HashMap<rask_ast::NodeId, EnumRef>) {
         self.enums = enums;
     }

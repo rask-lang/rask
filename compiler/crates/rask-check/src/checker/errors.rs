@@ -1319,6 +1319,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.primitives/L9: a literal pattern on a type built from literals.
+    #[error("a literal can't be a pattern for `{ty}`")]
+    LiteralPatternOnBuiltType {
+        ty: String,
+        span: Span,
+    },
+
     /// type.generics/GT7: more than one conformance's method takes the call.
     #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
     AmbiguousConformanceCall {
@@ -2060,6 +2067,7 @@ impl TypeError {
             | LiteralConversionNotComptime { .. }
             | NoConformanceTakes { .. }
             | AmbiguousConformanceCall { .. }
+            | LiteralPatternOnBuiltType { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }

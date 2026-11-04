@@ -3827,8 +3827,6 @@ impl TypeChecker {
         self.shape_fits(&param, &arg)
     }
 
-    /// Structural match, an open variable or an unbound type parameter on
-    /// either side matching anything.
     /// Could two conformance signatures' parameters be one type for some
     /// choice of the receiver's type parameters? Unlike `shape_fits`, a
     /// parameter named on both sides is the same unknown, bound once, and
@@ -3883,6 +3881,8 @@ impl TypeChecker {
         true
     }
 
+    /// Structural match, an open variable or an unbound type parameter on
+    /// either side matching anything.
     pub(super) fn shape_fits(&self, p: &Type, a: &Type) -> Option<bool> {
         let p = self.resolve_named(&self.ctx.apply(p));
         let a = self.resolve_named(&self.ctx.apply(a));

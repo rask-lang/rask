@@ -72,12 +72,6 @@ impl TypeChecker {
         }
     }
 
-    /// The field symbols of a C struct named in a namespace, following the
-    /// typedef if there is one.
-    ///
-    /// `typedef struct tag { … } Alias;` registers the struct under `tag` and
-    /// `Alias` beside it pointing at it, so a program that writes `c.Alias`
-    /// lands on the alias and has to hop.
     /// type.generics/GT7: a type with more than one conformance of a generic
     /// interface keeps one method per conformance, filed under a name of its
     /// own (`render$0`, `render$1`, in declaration order). The declarations
@@ -166,6 +160,12 @@ impl TypeChecker {
         }
     }
 
+    /// The field symbols of a C struct named in a namespace, following the
+    /// typedef if there is one.
+    ///
+    /// `typedef struct tag { … } Alias;` registers the struct under `tag` and
+    /// `Alias` beside it pointing at it, so a program that writes `c.Alias`
+    /// lands on the alias and has to hop.
     fn c_struct_fields(
         &self,
         id: rask_resolve::SymbolId,
