@@ -668,21 +668,30 @@ impl Interpreter {
                     span
                 ))
             }
-            // Package field access: lib.Color → look up lib$Color
-            Value::Package(pkg_name) => {
-                let prefixed = format!("{}${}", pkg_name, field);
+            // A member of one of the project's packages, `pa.Color`: the
+            // program's own declaration of that name.
+            Value::Package(pkg_name) if self.project_packages.contains(&pkg_name) => {
                 // Enums and structs both resolve to Value::Type so
-                // `lib.Color.Red` works through the normal enum
+                // `pa.Color.Red` works through the normal enum
                 // variant dispatch on the next `.Red` access.
-                if self.enums.contains_key(&prefixed)
-                    || self.struct_decls.contains_key(&prefixed)
-                    || self.methods.contains_key(&prefixed)
+                if self.enums.contains_key(field)
+                    || self.struct_decls.contains_key(field)
+                    || self.methods.contains_key(field)
                 {
-                    return Ok(Value::Type(prefixed));
+                    return Ok(Value::Type(field.to_string()));
                 }
-                if let Some(func) = self.functions.get(&prefixed) {
+                if let Some(func) = self.functions.get(field) {
                     return Ok(Value::Function { name: func.name.clone(), generics: None });
                 }
+                if let Some(value) = self.env.get(field) {
+                    return Ok(value);
+                }
+                Err(RuntimeDiagnostic::new(
+                    RuntimeError::UndefinedVariable(field.to_string()),
+                    span,
+                ))
+            }
+            Value::Package(pkg_name) => {
                 // A stdlib module with no Rust side of its own (`bits`)
                 // is bound as a package, but its types are registered
                 // under their bare names, like every stdlib type. The
@@ -1519,12 +1528,14 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                // Package-qualified call: lib.greet() → look up lib$greet
+                // A call into one of the project's packages, `pa.via_a(4)`:
+                // its declarations are the program's own, under their names.
                 if let Value::Package(pkg_name) = &receiver {
-                    let prefixed = format!("{}${}", pkg_name, method);
-                    if let Some(func) = self.functions.get(&prefixed).cloned() {
-                        let generics = self.call_generics(expr.id);
-                        return self.call_function(&func, arg_vals, generics);
+                    if self.project_packages.contains(pkg_name) {
+                        if let Some(func) = self.functions.get(method).cloned() {
+                            let generics = self.call_generics(expr.id);
+                            return self.call_function(&func, arg_vals, generics);
+                        }
                     }
                     // A bodiless `@native` declaration in the stdlib: answered
                     // by symbol, the way native codegen's dispatch table does.
@@ -3493,7 +3504,7 @@ impl Interpreter {
         }
         let mut vals = Vec::with_capacity(args.len());
         for (v, ty) in args.into_iter().zip(&call.args) {
-            let c = match v {
+            vals.push(match v {
                 Value::Int(i, _) => CVal::Int(i as i128, ty.clone()),
                 Value::Bool(b) => CVal::Int(b as i128, ty.clone()),
                 Value::Float(f, _) => CVal::Float(f, ty.clone()),
@@ -3504,20 +3515,14 @@ impl Interpreter {
                         other.type_name()
                     )))
                 }
-            };
-            vals.push(cexpr::convert(&c, ty).ok_or_else(|| {
-                RuntimeError::TypeError(format!("`{}` got an argument C can't convert", call.name))
-            })?);
+            });
         }
-        let body = cexpr::parse_body(&call.body, &call.params).map_err(RuntimeError::TypeError)?;
-        let undefined = || {
+        let result = call.compute(&vals).ok_or_else(|| {
             RuntimeError::Panic(format!(
                 "`{}` did what C leaves undefined: a division by zero or a shift past the width",
                 call.name
             ))
-        };
-        let result = cexpr::eval(&body, &vals).ok_or_else(undefined)?;
-        let result = cexpr::convert(&result, &call.result).ok_or_else(undefined)?;
+        })?;
         let kind = |name: &str| match name {
             "i8" => crate::value::IntKind::I8,
             "u8" => crate::value::IntKind::U8,

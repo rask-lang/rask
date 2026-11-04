@@ -56,6 +56,9 @@ pub struct Effects {
     /// Set when the function (or something it calls without an internal block) reaches `spawn`.
     /// NOT propagated via the regular call graph — uses unguarded-call edges only.
     pub needs_runtime: bool,
+    /// Runs C code: an extern, or a C macro that reads memory or calls C.
+    /// Only the compiled program can, so it's outside comptime (CT7).
+    pub c_code: bool,
 }
 
 impl Effects {
@@ -82,6 +85,7 @@ impl Effects {
         self.async_ |= other.async_;
         self.grow |= other.grow;
         self.shrink |= other.shrink;
+        self.c_code |= other.c_code;
     }
 
     /// Ghost text label for IDE display (IDE1): `[pure]`, or the effects
@@ -143,9 +147,10 @@ pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    arithmetic_macros: &std::collections::HashSet<String>,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
+    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets, arithmetic_macros);
     let warn_prints = warn.iter().any(|w| w == "blocking_print");
     let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
     (effects, warnings)

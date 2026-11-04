@@ -598,6 +598,22 @@ pub struct MacroCall {
     pub result_c: String,
 }
 
+impl MacroCall {
+    /// The call's value, computed the way C would: each argument converted to
+    /// the type the call gives it, the body evaluated, the result converted
+    /// to the call's result type. `None` for a macro that reads memory or
+    /// calls C, which only its compiled C can run, and for what C leaves
+    /// undefined (a division by zero, a shift past the width).
+    pub fn compute(&self, args: &[CVal]) -> Option<CVal> {
+        if self.header.is_some() {
+            return None;
+        }
+        let vals: Vec<CVal> = args.iter().zip(&self.args).map(|(v, ty)| convert(v, ty)).collect::<Option<_>>()?;
+        let body = parse_body(&self.body, &self.params).ok()?;
+        convert(&eval(&body, &vals)?, &self.result)
+    }
+}
+
 /// No names: a macro body the translation wrote stands on its own.
 struct NoNames;
 

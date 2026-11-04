@@ -227,6 +227,8 @@ pub fn check_compile_time_values(
 fn names_the_effect(e: &Effects) -> Option<&'static str> {
     if e.async_ {
         Some("concurrency")
+    } else if e.c_code {
+        Some("C code")
     } else if e.blocks {
         Some("a call that blocks")
     } else if e.prints {

@@ -1236,7 +1236,19 @@ impl TypeChecker {
                 // #1113). `strip_module_qualifier` only strips a head that
                 // really is a module, so an enum variant's `A4.N { v: 5 }` is
                 // untouched.
-                let base_name = rask_stdlib::modules::strip_module_qualifier(name);
+                //
+                // A package's struct, `pa.Pt { … }`, is the struct the resolver
+                // found through the package's exports (#1728).
+                let resolved_struct = self
+                    .resolved
+                    .resolutions
+                    .get(&expr.id)
+                    .and_then(|&sym| self.resolved.symbols.get(sym))
+                    .filter(|sym| matches!(sym.kind, SymbolKind::Struct { .. }))
+                    .map(|sym| sym.name.clone());
+                let base_name = resolved_struct
+                    .as_deref()
+                    .unwrap_or_else(|| rask_stdlib::modules::strip_module_qualifier(name));
                 // Annotations are comptime data — attached with @name(...),
                 // read through reflect, never constructed as runtime values.
                 if self.annotation_types.contains(base_name) {
@@ -1535,7 +1547,13 @@ impl TypeChecker {
                         Type::UnresolvedNamed(name.clone())
                     }
                 } else {
-                    Type::UnresolvedNamed(name.clone())
+                    // No type of that name. Left unresolved, the literal got as
+                    // far as lowering and failed there with an internal error.
+                    self.errors.push(TypeError::UndefinedName { name: name.clone(), span: expr.span });
+                    for field_init in fields {
+                        self.infer_expr(&field_init.value);
+                    }
+                    Type::Error
                 }
                 };
                 // `..base` supplies the fields nobody listed, so it has to be
@@ -4109,15 +4127,23 @@ impl TypeChecker {
         // that answer different types fought over it — `libpkg.twice(21)` then
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
-        // PP4: a C macro another package declares, `pa.F(x)`. An extern
-        // keeps its name across packages, as a C symbol does.
+        // PP4: a C macro another package declares, `pa.F(x)`: the extern the
+        // package exports under that name. A macro's name is unique in the
+        // program, which the resolver holds it to.
         let through_package = self
             .resolved
             .resolutions
             .get(&object.id)
             .and_then(|&sym| self.resolved.symbols.get(sym))
             .is_some_and(|sym| matches!(sym.kind, SymbolKind::ExternalPackage { .. }));
-        let macro_def = if through_package { self.c_macros.get(method).cloned() } else { None };
+        let macro_def = self
+            .resolved
+            .resolutions
+            .get(&call_id)
+            .and_then(|&sym| self.resolved.symbols.get(sym))
+            .filter(|sym| through_package && matches!(sym.kind, SymbolKind::ExternFunction { .. }))
+            .and_then(|sym| self.c_macros.get(&sym.name))
+            .cloned();
         if let Some(def) = macro_def {
             return self.check_c_macro_call(call_id, &def, args, span);
         }

@@ -9721,3 +9721,155 @@ fn check_on_a_package_directory_checks_every_file() {
     assert!(err_parse.contains("other.rk"), "the parse error should name its file: {err_parse}");
     assert!(!err_parse.contains("Is a directory"), "stderr: {err_parse}");
 }
+
+/// A project directory: `rask.toml` and the given files, by path.
+fn temp_project(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rask_{}_{}_{}", tag, std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@2\"\n\n[package]\nname = \"proj\"\nversion = \"0.1.0\"\ndescription = \"test\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    for (path, text) in files {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    dir
+}
+
+/// `rask run <mode> <dir>`: stdout and stderr together, and whether it worked.
+fn run_project(mode: &str, dir: &std::path::Path) -> (String, bool) {
+    let out = Command::new(rask_binary())
+        .args(["run", mode])
+        .arg(dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+    (format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)), out.status.success())
+}
+
+/// A sub-package's function and struct literal, from the root, on both
+/// backends: the interpreter couldn't find `pa.via_a` (#1730) and native
+/// lowering had no layout for `pa.Pt(v: 9)` (#1728).
+#[test]
+fn a_sub_packages_functions_and_structs_work_on_both_backends() {
+    let dir = temp_project(
+        "subpkg_both",
+        &[
+            ("pa/a.rk", "public func via_a(x: i32) -> i32 {\n    return x + 1\n}\n\npublic struct Pt {\n    public v: i32\n}\n"),
+            ("main.rk", "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 9)\n    println(\"{pa.via_a(4)} {p.v}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("5 9"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two packages import different headers as `c`. Each `c` means its own
+/// package's header: macros, folded or not, and structs (#1729).
+#[test]
+fn a_c_import_alias_means_its_own_packages_header() {
+    let dir = temp_project(
+        "calias",
+        &[
+            ("pa/a.h", "#ifndef A_H\n#define A_H\nstruct pt { int x; };\n#define F(X) ((X) + 1)\n#endif\n"),
+            ("b.h", "#ifndef B_H\n#define B_H\nstruct pt { long y; long z; };\n#define F(X) ((X) * 100)\n#endif\n"),
+            (
+                "pa/a.rk",
+                "import c \"a.h\" as c\n\npublic func via_a(x: i32) -> i32 {\n    return c.F(x) + c.F(1)\n}\n\n\
+                 public func pt_x() -> i32 {\n    let p = c.Pt(x: 7)\n    return p.x\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\nimport c \"b.h\" as c\n\nfunc main() {\n    let n = 4\n    let q = c.Pt(y: 7, z: 8)\n\
+                 \x20   println(\"{c.F(n)} {c.F(4)} {pa.via_a(n)} {q.z} {pa.pt_x()}\")\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 400 7 8 7"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A C macro is no link symbol, so its name doesn't repeat the way an
+/// extern's may: a function of the same name elsewhere in the program is a
+/// duplicate, not silently replaced by the macro (#1729).
+#[test]
+fn a_c_macro_and_a_function_of_one_name_are_a_duplicate() {
+    let dir = temp_project(
+        "macro_dup",
+        &[
+            ("pa/a.rk", "@c_macro(\"(X + 1)\")\npublic extern \"C\" func F(X: _) -> _\n"),
+            ("main.rk", "import pa\n\nfunc F(x: i32) -> i32 {\n    return x * 100\n}\n\nfunc main() {\n    println(\"{F(4)}\")\n}\n"),
+        ],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok, "{out}");
+    assert!(out.contains("E0201") && out.contains("`F`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A struct `bindc` wrote, handed to a macro from another header whose
+/// header includes the struct's own one, with no include guard anywhere.
+/// The macro's C needs the struct's header, and must not include it twice
+/// (#1729).
+#[test]
+fn a_bindc_struct_reaches_another_headers_macro() {
+    let dir = temp_project(
+        "bindc_struct",
+        &[
+            ("pa/s.h", "struct pt { int v; };\n"),
+            ("m.h", "#include \"pa/s.h\"\n#define PV(P) ((P)->v)\n"),
+            ("other.h", "#define PW(P) ((P)->v * 2)\n"),
+            ("main.rk", "import pa\nimport c \"m.h\" as m\nimport c \"other.h\" as o\n\nfunc main() {\n    mut p = pa.make(9)\n    println(\"{unsafe m.PV(&p)} {unsafe o.PW(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .arg("bindc")
+        .arg(dir.join("pa").join("s.h"))
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let mut bound = String::from_utf8_lossy(&bindc.stdout).to_string();
+    assert!(bound.contains("header: \"s.h\""), "bindc writes the struct's header:\n{bound}");
+    bound.push_str("\npublic func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n");
+    std::fs::write(dir.join("pa").join("s.rk"), bound).unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("9 18"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An arithmetic C macro in `comptime` is computed while compiling (#1731).
+#[test]
+fn an_arithmetic_c_macro_runs_in_comptime() {
+    for mode in ["--native", "--interp"] {
+        let (stdout, stderr, code) = run_capture(mode, "c_macro_comptime.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "16 8 40\n", "{mode}");
+    }
+}
+
+/// A macro that calls C, in `comptime`, is refused for what it is.
+#[test]
+fn a_c_macro_that_calls_c_is_refused_in_comptime_as_c_code() {
+    let dir = temp_project(
+        "macro_ct_c",
+        &[(
+            "main.rk",
+            "extern \"C\" func abs(x: c_int) -> c_int\n\n@c_macro(\"abs(X)\", header: \"stdlib.h\")\nextern \"C\" func G(X: _) -> _\n\n\
+             func main() {\n    let c = comptime G(2)\n    println(\"{c}\")\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok, "{out}");
+    assert!(out.contains("reaches C code at compile time"), "{out}");
+    assert!(!out.contains("blocks"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

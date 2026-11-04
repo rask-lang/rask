@@ -26,7 +26,8 @@ use crate::package_scope;
 /// What expanding a program's C imports produced.
 #[derive(Default)]
 pub struct Expanded {
-    /// Per alias: each C name and the name the compiler uses for it.
+    /// Per import, as a diagnostic spells it (`c`, or `pa.c` for a
+    /// sub-package's): each C name and the name the compiler uses for it.
     pub exports: HashMap<String, HashMap<String, String>>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -39,184 +40,204 @@ pub struct Context<'a> {
     pub os: &'a str,
 }
 
-/// Translate every `import c` in `decls`, append the declarations, and point
-/// the program's references at them.
+/// One package's declarations. An alias means the header that package
+/// imported, so each package's imports are expanded against its own.
+pub struct Unit<'a> {
+    pub decls: &'a mut Vec<Decl>,
+    /// `None` for the root package, or a single file.
+    pub package: Option<&'a str>,
+}
+
+/// Translate every `import c` in each unit, append the declarations to it, and
+/// point its references at them.
 ///
 /// The generated text is added to `source_files` so a diagnostic inside it
 /// renders; `next_id` keeps node ids unique across it.
 pub fn expand(
-    decls: &mut Vec<Decl>,
+    units: &mut [Unit],
     source_files: &mut Vec<(PathBuf, String)>,
     next_id: &mut u32,
     cx: &Context,
 ) -> Expanded {
     let mut out = Expanded::default();
-    out.diagnostics.extend(resolve_macro_headers(decls, cx));
-    let imports: Vec<(rask_ast::decl::CImportDecl, Span)> = decls
-        .iter()
-        .filter_map(|d| match &d.kind {
-            DeclKind::CImport(c) => Some((c.clone(), d.span)),
-            _ => None,
-        })
-        .collect();
-    if imports.is_empty() {
-        return out;
+    for unit in units.iter_mut() {
+        out.diagnostics.extend(resolve_macro_headers(unit.decls, cx));
     }
 
     // An extern the program declares itself replaces the header's (CI4), and
-    // one header imported twice declares each function once.
-    // The stdlib declares a few C functions for its own use (`strlen`,
-    // `fread`); its declaration stands too.
+    // one header imported twice, by one package or by two, declares each
+    // function once. The stdlib declares a few C functions for its own use
+    // (`strlen`, `fread`); its declaration stands too.
     let stdlib = rask_stdlib::StubRegistry::compilable_decls();
-    let mut externs: HashSet<String> = decls
+    let mut externs: HashSet<String> = units
         .iter()
+        .flat_map(|u| u.decls.iter())
         .chain(stdlib.iter())
         .filter_map(|d| match &d.kind {
-            DeclKind::Extern(e) => Some(e.name.clone()),
+            // A macro is no symbol, and only its own package's.
+            DeclKind::Extern(e) if !is_macro(e) => Some(e.name.clone()),
             _ => None,
         })
         .collect();
-    let mut done: HashSet<(PathBuf, String)> = HashSet::new();
-    let mut skipped: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut generated: Vec<Decl> = Vec::new();
 
-    for (import, span) in &imports {
-        for header in &import.headers {
-            let found = match locate(header, span.file_id, cx) {
-                Ok(p) => p,
-                Err(msg) => {
+    for unit in units.iter_mut() {
+        let imports: Vec<(rask_ast::decl::CImportDecl, Span)> = unit
+            .decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::CImport(c) => Some((c.clone(), d.span)),
+                _ => None,
+            })
+            .collect();
+        if imports.is_empty() {
+            continue;
+        }
+        let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut done: HashSet<(PathBuf, String)> = HashSet::new();
+        let mut skipped: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut generated: Vec<Decl> = Vec::new();
+
+        for (import, span) in &imports {
+            // A sub-package's `c` isn't the root's: its names carry the
+            // package too, so two packages' `c.Point` are two types.
+            let (qualifier, macro_prefix) = match unit.package {
+                None => (import.alias.clone(), import.alias.clone()),
+                Some(pkg) => (
+                    format!("{}_{}", import.alias, pkg.replace('.', "_")),
+                    format!("{}.{}", pkg, import.alias),
+                ),
+            };
+            for header in &import.headers {
+                let found = match locate(header, span.file_id, cx) {
+                    Ok(p) => p,
+                    Err(msg) => {
+                        out.diagnostics.push(
+                            Diagnostic::error(format!("C header not found: `{}`", header))
+                                .with_primary(*span, "imported here")
+                                .with_note(msg),
+                        );
+                        continue;
+                    }
+                };
+                if !done.insert((found.clone(), import.alias.clone())) {
+                    continue;
+                }
+                let found = canonical(&found);
+                let text = match translate(&found.display().to_string(), &found, &import.hiding, cx) {
+                    Ok(t) => t,
+                    Err(msg) => {
+                        out.diagnostics.push(
+                            Diagnostic::error(format!("couldn't read C header `{}`", header))
+                                .with_primary(*span, "imported here")
+                                .with_note(msg),
+                        );
+                        continue;
+                    }
+                };
+                skipped.entry(import.alias.clone()).or_default().extend(text.skipped);
+
+                let file_id = source_files.len() as u16;
+                source_files.push((PathBuf::from(format!("{} (as Rask)", found.display())), text.source.clone()));
+                let mut lexer = rask_lexer::Lexer::new_with_file_id(&text.source, file_id);
+                let lexed = lexer.tokenize();
+                let mut parser = rask_parser::Parser::new_with_file_id(lexed.tokens, *next_id, file_id);
+                let parsed = parser.parse();
+                *next_id = parser.next_node_id();
+                if !lexed.errors.is_empty() || !parsed.errors.is_empty() {
+                    for e in &lexed.errors {
+                        out.diagnostics.push(e.to_diagnostic());
+                    }
+                    for e in &parsed.errors {
+                        out.diagnostics.push(e.to_diagnostic());
+                    }
                     out.diagnostics.push(
-                        Diagnostic::error(format!("C header not found: `{}`", header))
+                        Diagnostic::error(format!("the Rask translation of `{}` doesn't parse", header))
                             .with_primary(*span, "imported here")
-                            .with_note(msg),
+                            .with_note("this is a bug in the C translator; `rask bindc` shows the text"),
                     );
                     continue;
                 }
-            };
-            if !done.insert((found.clone(), import.alias.clone())) {
-                continue;
-            }
-            let found = canonical(&found);
-            let text = match translate(&found.display().to_string(), &found, &import.hiding, cx) {
-                Ok(t) => t,
-                Err(msg) => {
-                    out.diagnostics.push(
-                        Diagnostic::error(format!("couldn't read C header `{}`", header))
-                            .with_primary(*span, "imported here")
-                            .with_note(msg),
-                    );
-                    continue;
-                }
-            };
-            skipped.entry(import.alias.clone()).or_default().extend(text.skipped);
-
-            let file_id = source_files.len() as u16;
-            source_files.push((PathBuf::from(format!("{} (as Rask)", found.display())), text.source.clone()));
-            let mut lexer = rask_lexer::Lexer::new_with_file_id(&text.source, file_id);
-            let lexed = lexer.tokenize();
-            let mut parser = rask_parser::Parser::new_with_file_id(lexed.tokens, *next_id, file_id);
-            let parsed = parser.parse();
-            *next_id = parser.next_node_id();
-            if !lexed.errors.is_empty() || !parsed.errors.is_empty() {
-                for e in &lexed.errors {
-                    out.diagnostics.push(e.to_diagnostic());
-                }
-                for e in &parsed.errors {
-                    out.diagnostics.push(e.to_diagnostic());
-                }
-                out.diagnostics.push(
-                    Diagnostic::error(format!("the Rask translation of `{}` doesn't parse", header))
-                        .with_primary(*span, "imported here")
-                        .with_note("this is a bug in the C translator; `rask bindc` shows the text"),
-                );
-                continue;
-            }
-            let mut new: Vec<Decl> = parsed
-                .decls
-                .into_iter()
-                .filter(|d| match &d.kind {
-                    DeclKind::Extern(e) if !is_macro(e) => externs.insert(e.name.clone()),
-                    _ => true,
-                })
-                .collect();
-            keep_c_spelling(&mut new, &found.display().to_string());
-            let mut map = package_scope::qualify_declarations(&mut new, &import.alias);
-            for d in &mut new {
-                if let DeclKind::Extern(e) = &mut d.kind {
-                    if is_macro(e) {
-                        // A macro is no symbol: each header's is its own, under
-                        // its import's dotted name, which no Rask declaration
-                        // can take. Its C name is kept.
-                        let qualified = format!("{}.{}", import.alias, e.name);
-                        e.attrs.push(c_name_attr(&e.name));
-                        map.insert(e.name.clone(), qualified.clone());
-                        e.name = qualified;
-                    } else {
-                        map.insert(e.name.clone(), e.name.clone());
+                let mut new: Vec<Decl> = parsed
+                    .decls
+                    .into_iter()
+                    .filter(|d| match &d.kind {
+                        DeclKind::Extern(e) if !is_macro(e) => externs.insert(e.name.clone()),
+                        _ => true,
+                    })
+                    .collect();
+                let mut map = package_scope::qualify_declarations(&mut new, &qualifier);
+                for d in &mut new {
+                    if let DeclKind::Extern(e) = &mut d.kind {
+                        if is_macro(e) {
+                            // A macro is no symbol: each header's is its own,
+                            // under its import's dotted name, which no Rask
+                            // declaration can take. Its C name is kept.
+                            let qualified = format!("{}.{}", macro_prefix, e.name);
+                            e.attrs.push(c_name_attr(&e.name));
+                            map.insert(e.name.clone(), qualified.clone());
+                            e.name = qualified;
+                        } else {
+                            map.insert(e.name.clone(), e.name.clone());
+                        }
                     }
                 }
-            }
-            // Externs dropped above as duplicates are still reachable by name.
-            for d in decls.iter().chain(generated.iter()).chain(stdlib.iter()) {
-                if let DeclKind::Extern(e) = &d.kind {
-                    map.entry(e.name.clone()).or_insert_with(|| e.name.clone());
+                // Externs dropped above as duplicates are still reachable by name.
+                for name in &externs {
+                    map.entry(name.clone()).or_insert_with(|| name.clone());
                 }
+                exports.entry(import.alias.clone()).or_default().extend(map);
+                generated.extend(new);
             }
-            out.exports.entry(import.alias.clone()).or_default().extend(map);
-            generated.extend(new);
+        }
+
+        package_scope::qualify_references(unit.decls, &exports, &HashSet::new());
+        let mut leftover = Leftover { exports: &exports, found: Vec::new() };
+        rewrite::rewrite_decls(unit.decls, &mut leftover);
+        for (alias, name, span) in leftover.found {
+            let why = skipped.get(&alias).and_then(|s| s.get(&name));
+            let d = Diagnostic::error(format!("`{}.{}` isn't in the imported header", alias, name))
+                .with_primary(span, "not translated");
+            out.diagnostics.push(match why {
+                Some(why) => d.with_note(format!("`{}` was skipped: {}", name, why)),
+                None => d.with_note(format!("no declaration named `{}`; `rask bindc` shows what the header translates to", name)),
+            });
+        }
+        unit.decls.extend(generated);
+        for (alias, map) in exports {
+            let spelled = match unit.package {
+                None => alias,
+                Some(pkg) => format!("{}.{}", pkg, alias),
+            };
+            out.exports.insert(spelled, map);
         }
     }
-
-    package_scope::qualify_references(decls, &out.exports, &HashSet::new());
-    let mut leftover = Leftover { exports: &out.exports, found: Vec::new() };
-    rewrite::rewrite_decls(decls, &mut leftover);
-    for (alias, name, span) in leftover.found {
-        let why = skipped.get(&alias).and_then(|s| s.get(&name));
-        let d = Diagnostic::error(format!("`{}.{}` isn't in the imported header", alias, name))
-            .with_primary(span, "not translated");
-        out.diagnostics.push(match why {
-            Some(why) => d.with_note(format!("`{}` was skipped: {}", name, why)),
-            None => d.with_note(format!("no declaration named `{}`; `rask bindc` shows what the header translates to", name)),
-        });
-    }
-    decls.extend(generated);
     out
 }
 
-/// Qualifying renames `Surf` to `Surf_c`, and C still calls it `Surf`. A
-/// record whose C spelling was its Rask name gets that spelling written down
-/// before the rename, and every record the header it's declared in, for the
-/// C a macro call compiles into (PP4): a macro from one header can be handed
-/// a struct from another.
-fn keep_c_spelling(decls: &mut [Decl], header: &str) {
-    for d in decls {
-        let (name, attrs) = match &mut d.kind {
-            DeclKind::Struct(s) => (&s.name, &mut s.attrs),
-            DeclKind::Union(u) => (&u.name, &mut u.attrs),
-            _ => continue,
-        };
-        if rask_ast::attr::c_name(attrs).is_none() {
-            attrs.push(c_name_attr(name));
-        }
-        let Some(attr) = attrs.iter_mut().find(|a| a.is("c_name")) else { continue };
-        let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(header.to_string()), span: Span::new(0, 0) };
-        attr.args.get_or_insert_with(Vec::new).push(rask_ast::attr::AttrArg {
-            label: Some("header".to_string()),
-            value: rask_ast::attr::AttrValue::Expr(spelling),
-        });
-    }
-}
-
-/// A written `@c_macro(…, header: "a.h")` names its header the way
-/// `import c` does, beside the file it's written in. Resolved here, once, to
-/// the path the C it compiles into includes; a header `import c` translated
-/// already names its own path.
+/// A written `header:` (`@c_macro(…, header: "a.h")`, `@c_name("struct pt",
+/// header: "a.h")`) names its header the way `import c` does, beside the file
+/// it's written in. Resolved here, once, to the path the C a macro call
+/// compiles into includes; a header `import c` translated already names its
+/// own path.
 fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for d in decls.iter_mut() {
-        let DeclKind::Extern(e) = &mut d.kind else { continue };
-        let Some(attr) = e.attrs.iter_mut().find(|a| a.is("c_macro")) else { continue };
-        let Some(args) = attr.args.as_mut() else { continue };
+        let (attr, what) = match &mut d.kind {
+            DeclKind::Extern(e) => {
+                let what = format!("the header C macro `{}` is compiled with", e.name);
+                (e.attrs.iter_mut().find(|a| a.is("c_macro")), what)
+            }
+            DeclKind::Struct(s) => {
+                let what = format!("the header that declares `{}` for C", s.name);
+                (s.attrs.iter_mut().find(|a| a.is("c_name")), what)
+            }
+            DeclKind::Union(u) => {
+                let what = format!("the header that declares `{}` for C", u.name);
+                (u.attrs.iter_mut().find(|a| a.is("c_name")), what)
+            }
+            _ => continue,
+        };
+        let Some(args) = attr.and_then(|a| a.args.as_mut()) else { continue };
         let Some(arg) = args.iter_mut().find(|a| a.label.as_deref() == Some("header")) else { continue };
         let Some(header) = arg.value.string() else { continue };
         if Path::new(&header).is_absolute() {
@@ -233,7 +254,7 @@ fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
             }
             Err(msg) => diags.push(
                 Diagnostic::error(format!("C header not found: `{}`", header))
-                    .with_primary(d.span, format!("the header C macro `{}` is compiled with", e.name))
+                    .with_primary(d.span, what)
                     .with_note(msg),
             ),
         }
@@ -461,6 +482,46 @@ pub fn inline_header(e: &rask_ast::decl::ExternDecl) -> Option<String> {
 
 fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Every file `path` includes, directly or not, as the target's C
+/// preprocessor follows them. `None` when there's no C compiler to ask, or it
+/// can't follow them.
+pub fn included_files(path: &Path, cx: &Context) -> Option<HashSet<PathBuf>> {
+    let cc = rask_c_parse::toolchain::c_compiler(cx.arch, cx.os).ok()?;
+    let output = std::process::Command::new(&cc.program)
+        .args(&cc.args)
+        .args(["-M", "-x", "c"])
+        .arg(format!("-I{}", header_dir(path).display()))
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `x.o: a.h b.h \` and so on: make's rule, a space in a name escaped.
+    let text = String::from_utf8_lossy(&output.stdout).replace("\\\n", " ");
+    let (_, deps) = text.split_once(": ")?;
+    let mut files = HashSet::new();
+    let mut current = String::new();
+    let mut chars = deps.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' if chars.peek() == Some(&' ') => current.push(chars.next().unwrap()),
+            c if c.is_whitespace() => {
+                if !current.is_empty() {
+                    files.insert(canonical(Path::new(&std::mem::take(&mut current))));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        files.insert(canonical(Path::new(&current)));
+    }
+    files.remove(&canonical(path));
+    Some(files)
 }
 
 /// `None` when there's no C compiler to ask.

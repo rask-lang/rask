@@ -1248,6 +1248,8 @@ pub struct ComptimeInterpreter {
     /// the AST says `Level` names a type, and matching on the spelling picked
     /// the wrong enum when two shared a name.
     enums: HashMap<rask_ast::NodeId, EnumRef>,
+    /// Each call the checker typed as a C function-like macro (PP4).
+    c_macros: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
 }
 
 impl ComptimeInterpreter {
@@ -1255,6 +1257,7 @@ impl ComptimeInterpreter {
         Self {
             env: ComptimeEnv::new(),
             enums: HashMap::new(),
+            c_macros: HashMap::new(),
         }
     }
 
@@ -1262,6 +1265,7 @@ impl ComptimeInterpreter {
         Self {
             env: ComptimeEnv::with_quota(quota),
             enums: HashMap::new(),
+            c_macros: HashMap::new(),
         }
     }
 
@@ -1314,6 +1318,62 @@ impl ComptimeInterpreter {
     /// The expressions the checker typed as enums.
     pub fn know_enums(&mut self, enums: HashMap<rask_ast::NodeId, EnumRef>) {
         self.enums = enums;
+    }
+
+    /// The calls the checker typed as C macros.
+    pub fn know_c_macros(&mut self, calls: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>) {
+        self.c_macros = calls;
+    }
+
+    /// A C macro called with values: its body computed the way C would.
+    fn eval_c_macro(&mut self, call: &rask_c_parse::cexpr::MacroCall, args: &[&Expr]) -> ComptimeResult<ComptimeValue> {
+        use rask_c_parse::cexpr::CVal;
+        if call.header.is_some() {
+            return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that takes a pointer, reads memory or calls C, which only the compiled program can run",
+                call.name
+            )));
+        }
+        let mut vals = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&call.args) {
+            let v = self.eval_expr(arg)?;
+            vals.push(match v {
+                ComptimeValue::Bool(b) => CVal::Int(b as i128, ty.clone()),
+                ComptimeValue::F32(f) => CVal::Float(f as f64, ty.clone()),
+                ComptimeValue::F64(f) => CVal::Float(f, ty.clone()),
+                other => match other.as_int() {
+                    Some((CtNum::Signed(i), _)) => CVal::Int(i, ty.clone()),
+                    Some((CtNum::Big(u), _)) => CVal::Int(u as i128, ty.clone()),
+                    None => return Err(ComptimeError::NotSupported(format!(
+                        "`{}` is a C macro, and got a `{}`",
+                        call.name,
+                        other.type_name()
+                    ))),
+                },
+            });
+        }
+        let result = call.compute(&vals).ok_or_else(|| ComptimeError::Panic(format!(
+            "`{}` did what C leaves undefined: a division by zero or a shift past the width",
+            call.name
+        )))?;
+        let scalar = rask_c_parse::cexpr::rask_scalar(&call.result);
+        Ok(match (scalar, result) {
+            (Some("bool"), CVal::Int(v, _)) => ComptimeValue::Bool(v != 0),
+            (Some("i8"), CVal::Int(v, _)) => ComptimeValue::I8(v as i8),
+            (Some("u8"), CVal::Int(v, _)) => ComptimeValue::U8(v as u8),
+            (Some("i16"), CVal::Int(v, _)) => ComptimeValue::I16(v as i16),
+            (Some("u16"), CVal::Int(v, _)) => ComptimeValue::U16(v as u16),
+            (Some("i32"), CVal::Int(v, _)) => ComptimeValue::I32(v as i32),
+            (Some("u32"), CVal::Int(v, _)) => ComptimeValue::U32(v as u32),
+            (Some("u64"), CVal::Int(v, _)) => ComptimeValue::U64(v as u64),
+            (_, CVal::Int(v, _)) => ComptimeValue::I64(v as i64),
+            (Some("f32"), CVal::Float(f, _)) => ComptimeValue::F32(f as f32),
+            (_, CVal::Float(f, _)) => ComptimeValue::F64(f),
+            (_, CVal::Str(_)) => return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that doesn't answer a number",
+                call.name
+            ))),
+        })
     }
 
     /// Evaluate a comptime expression.
@@ -1400,13 +1460,20 @@ impl ComptimeInterpreter {
             // Function call
             ExprKind::Call { func, args } => {
                 let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
-                self.eval_call(func, &arg_exprs)?
+                match self.c_macros.get(&expr.id).cloned() {
+                    Some(call) => self.eval_c_macro(&call, &arg_exprs)?,
+                    None => self.eval_call(func, &arg_exprs)?,
+                }
             }
 
-            // Method call (from desugared operators)
+            // Method call (from desugared operators), or a C macro through
+            // its package, `pa.F(x)`.
             ExprKind::MethodCall { object, method, args, .. } => {
                 let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
-                self.eval_method_call(object, method, &arg_exprs)?
+                match self.c_macros.get(&expr.id).cloned() {
+                    Some(call) => self.eval_c_macro(&call, &arg_exprs)?,
+                    None => self.eval_method_call(object, method, &arg_exprs)?,
+                }
             }
 
             // Field access

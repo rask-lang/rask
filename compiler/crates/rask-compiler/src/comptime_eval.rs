@@ -37,6 +37,7 @@ pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>
     }
     interp.register_functions(decls);
     interp.know_enums(enum_refs(typed));
+    interp.know_c_macros(typed.c_macro_calls.clone());
     interp
 }
 

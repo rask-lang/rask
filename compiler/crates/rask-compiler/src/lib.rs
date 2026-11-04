@@ -120,7 +120,13 @@ pub struct PackageContext {
 pub struct CheckResult {
     pub typed: TypedProgram,
     pub decls: Vec<Decl>,
+    /// Packages bound by name on the interpreter whose members it finds some
+    /// other way: the stdlib modules a single file imports, and a project's
+    /// dependencies, whose references are already rewritten to qualified names.
     pub package_names: Vec<String>,
+    /// A project's own sub-packages. Their declarations share the program's
+    /// namespace, so `pa.via_a` is `via_a`.
+    pub project_packages: Vec<String>,
     /// Each dependency's declarations, original name against the qualified one
     /// the rest of the pipeline uses. Kept so a diagnostic raised after the
     /// check can still say `libpkg.Cat` rather than `Cat_libpkg`.
@@ -202,6 +208,9 @@ pub fn prepare_interpreter(interp: &mut rask_interp::Interpreter, result: &Check
     }
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
+    }
+    if !result.project_packages.is_empty() {
+        interp.register_project_packages(&result.project_packages);
     }
 }
 
@@ -503,7 +512,7 @@ fn check_loaded_scoped(
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
     let c = c_import::expand(
-        &mut decls,
+        &mut [c_import::Unit { decls: &mut decls, package: None }],
         &mut source_files,
         &mut next_id,
         &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
@@ -590,7 +599,7 @@ fn check_loaded_scoped(
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.arithmetic_c_macros, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -620,6 +629,7 @@ fn check_loaded_scoped(
             typed,
             decls: parse_result.decls,
             package_names,
+            project_packages: Vec::new(),
             qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,
@@ -731,6 +741,7 @@ fn check_package_scoped(
     // struct, so calling it doesn't construct one", in a file the consumer
     // never wrote (#1112).
     let mut package_names = Vec::new();
+    let mut project_packages = Vec::new();
 
     // Names another package declared but did not make public, and where. A
     // package's own declarations are all merged now (#1100), so nothing stops
@@ -762,7 +773,11 @@ fn check_package_scoped(
         if pkg.id == pkg_ctx.root_id {
             continue;
         }
-        package_names.push(pkg.name.clone());
+        if pkg.is_external {
+            package_names.push(pkg.name.clone());
+        } else {
+            project_packages.push(pkg.name.clone());
+        }
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
         for decl in &decls {
             if !is_public_decl(decl) {
@@ -818,11 +833,9 @@ fn check_package_scoped(
     for (_, decls) in &merged {
         diags.extend(misplaced_claims(decls));
     }
-    for (_, decls) in merged {
-        pkg_ctx.all_decls.extend(decls);
-    }
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
+    // Before the merge: an alias means the header its own package imported.
     {
         let source_dirs: HashMap<u16, PathBuf> = pkg_ctx
             .registry
@@ -831,14 +844,21 @@ fn check_package_scoped(
             .flat_map(|p| p.files.iter())
             .filter_map(|f| Some((f.file_id, f.path.parent()?.to_path_buf())))
             .collect();
+        let names: HashMap<rask_resolve::PackageId, String> =
+            pkg_ctx.registry.packages().iter().map(|p| (p.id, p.name.clone())).collect();
+        let mut units = vec![c_import::Unit { decls: &mut pkg_ctx.all_decls, package: None }];
+        units.extend(merged.iter_mut().map(|(id, decls)| c_import::Unit { decls, package: Some(names[id].as_str()) }));
         let c = c_import::expand(
-            &mut pkg_ctx.all_decls,
+            &mut units,
             &mut source_files,
             pkg_ctx.registry.next_node_id_mut(),
             &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
         );
         exports.extend(c.exports);
         diags.extend(c.diagnostics);
+    }
+    for (_, decls) in merged {
+        pkg_ctx.all_decls.extend(decls);
     }
 
     // --- Build configuration into `comptime` code (CC1) ---
@@ -984,7 +1004,7 @@ fn check_package_scoped(
     // --- Effects ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.arithmetic_c_macros, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1015,6 +1035,7 @@ fn check_package_scoped(
             typed,
             decls: std::mem::take(&mut pkg_ctx.all_decls),
             package_names,
+            project_packages,
             qualified_names: exports.clone(),
             source_files: source_files.clone(),
             effects,

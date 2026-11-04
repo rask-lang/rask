@@ -876,6 +876,21 @@ impl Resolver {
                     );
                     exports.insert(c.name.clone(), sym_id);
                 }
+                // `pa.F(x)`, a C function or macro the package declares.
+                DeclKind::Extern(e) => {
+                    let sym_id = self.symbols.insert(
+                        e.name.clone(),
+                        SymbolKind::ExternFunction {
+                            abi: e.abi.clone(),
+                            params: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
+                            ret_ty: e.ret_ty.clone(),
+                        },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(e.name.clone(), sym_id);
+                }
                 _ => {}
             }
         }
@@ -1032,7 +1047,7 @@ impl Resolver {
     /// at the top level it meant the second `func f` silently won. Functions,
     /// types and constants share the namespace: `Point(…)` may be either a
     /// call or a construction. An `extern` may repeat an agreeing signature,
-    /// and is checked where it binds.
+    /// and is checked where it binds; a C macro's extern may not.
     fn reject_duplicate_declarations(&mut self, decls: &[Decl]) {
         if self.stdlib_mode {
             return;
@@ -1048,6 +1063,10 @@ impl Resolver {
                 DeclKind::TypeAlias(a) => a.name.as_str(),
                 DeclKind::Union(u) => u.name.as_str(),
                 DeclKind::Annotation(a) => a.name.as_str(),
+                // A C macro is no link symbol, so nothing about it repeats
+                // the way an extern's declaration may: a second one, or a
+                // function of its name, is a second thing called that.
+                DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => e.name.as_str(),
                 _ => continue,
             };
             match seen.get(name) {

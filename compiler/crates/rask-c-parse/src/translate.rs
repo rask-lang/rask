@@ -496,10 +496,11 @@ extern \"C\" func {}({}) -> _\n", d.text.trim(), attr, d.name, ps.join(", "))
         if s.is_forward {
             return format!("extern \"C\" struct {}\n", name);
         }
+        // The header goes with the spelling: a macro from another header
+        // handed one of these is compiled with this one too (PP4).
         let c_name = match self.c_spelling(s, is_union) {
             None => "@c_name(none)\n".to_string(),
-            Some(spelling) if spelling == name => String::new(),
-            Some(spelling) => format!("@c_name({})\n", quote(&spelling)),
+            Some(spelling) => format!("@c_name({}, header: {})\n", quote(&spelling), quote(self.opts.header)),
         };
         let mut out = if is_union {
             format!("{}public union {} {{\n", c_name, name)
