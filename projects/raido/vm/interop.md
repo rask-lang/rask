@@ -65,11 +65,33 @@ let result = try vm.call("process", [raido.Value.int(42)])
 
 See [chunk-format.md](chunk-format.md) for format details.
 
+## The Published API
+
+The host publishes its API as one Raido module of `extern` declarations: the structs it exposes, their fields, and the functions scripts may call. Every script compiled for that host sees the module already imported, under the host's chosen name (a game might call it `game`, or import its names directly). Scripts never write `extern` themselves.
+
+```raido
+// game_api.rd -- written by the engine authors, or generated from the
+// host's registrations, the way `rask bindc` generates bindings from a C header
+extern struct Enemy {
+    health: int
+    x: float
+    y: float
+    readonly name: string
+}
+
+extern func move_to(entity: Enemy, target: Vec2)
+extern func noise(quality: float, id: int, index: int) -> float
+```
+
+- **One copy of the API.** Adding a field or function to the engine changes the module; scripts don't each carry a stale copy.
+- **Checked at load.** The host's registered bindings must match the module's declarations, or `vm.load()` fails, so a host can't publish an API it doesn't implement.
+- **Part of identity.** The module's content hash is part of every chunk's import graph, so two scripts compiled against different API versions have different identities, and a chunk built for an old API refuses to load against a new one instead of misbehaving.
+
 ## Extern Structs
 
-Scripts declare `extern struct` to describe host-managed data shapes. The compiler type-checks all field access against these declarations. The host binds at `vm.load()`.
+The published API declares `extern struct` for host-managed data shapes. The compiler type-checks all field access against these declarations. The host binds at `vm.load()`.
 
-**Script side:**
+**API module:**
 ```raido
 extern struct Enemy {
     health: int
@@ -96,17 +118,17 @@ vm.register_extern_struct("Enemy", raido.ExternStruct {
 })
 ```
 
-**Type mismatch = load error.** If the script declares `health: int` but the host binds `health` as `float`, `vm.load()` fails. No runtime surprises.
+**Type mismatch = load error.** If the API module declares `health: int` but the host binds `health` as `float`, `vm.load()` fails. No runtime surprises.
 
-**Readonly enforcement.** Fields declared `readonly` in the script have no setter in the host binding (`null`). The compiler rejects writes to readonly fields at compile time.
+**Readonly enforcement.** Fields declared `readonly` in the API module have no setter in the host binding (`null`). The compiler rejects writes to readonly fields at compile time.
 
 **Runtime dispatch:** `GET_FIELD` / `SET_FIELD` index into the vtable by slot number. No string hashing, no map lookup. One indexed function pointer call per field access.
 
 ## Extern Funcs
 
-Scripts declare `extern func` for host-provided functions with typed signatures.
+The API module declares `extern func` for host-provided functions with typed signatures.
 
-**Script side:**
+**API module:**
 ```raido
 extern func move_to(entity: Enemy, target: Vec2)
 extern func noise(quality: float, id: int, index: int) -> float

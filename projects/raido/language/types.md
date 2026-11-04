@@ -215,7 +215,7 @@ No closures, no partial application. If you need to pass context, pass it as an 
 
 ## Extern Types
 
-Scripts declare the shapes they expect from the host. The compiler type-checks all access. The host binds at `vm.load()` -- type mismatch is a load error.
+The host's published API module declares the shapes it provides; scripts use them without declaring anything (see [syntax.md](syntax.md#the-hosts-api)). The compiler type-checks all access against the module.
 
 ```raido
 extern struct Enemy {

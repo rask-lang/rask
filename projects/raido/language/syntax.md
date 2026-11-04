@@ -115,9 +115,11 @@ enum Order {
 
 Variants accessed with dot syntax: `Order.Attack(target_id)`, `Stance.Aggressive`.
 
-### Extern Declarations
+### The Host's API
 
-Scripts declare the shapes they expect from the host. The compiler type-checks all access. The host binds at `vm.load()` -- type mismatch is a load error.
+Scripts don't declare what the host provides. The host publishes its API as a module of `extern` declarations, and every script sees it already imported: a mod for a game writes `move_to(enemy, home)` and `enemy.health` with nothing to set up. The compiler type-checks every use against the published module.
+
+`extern` is how that module is written, by whoever writes the host:
 
 ```raido
 extern struct Enemy {
@@ -131,6 +133,8 @@ extern func send_message(target: string, body: string)
 extern func noise(quality: float, id: int, index: int) -> float
 extern func move_to(entity: Enemy, target: Vec2)
 ```
+
+A script may not contain `extern` declarations of its own. See [vm/interop.md](../vm/interop.md#the-published-api) for how the module is published and checked.
 
 ### Extend
 
