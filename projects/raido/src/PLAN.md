@@ -1,7 +1,8 @@
 # Raido in Rask -- Implementation Plan
 
-> The spec moved on: values are 16-byte tagged, memory is a garbage-collected
-> heap with canonical serialization, and closures, transactional calls and the
+> The spec moved on (rask-lang/rask#1734, rask-lang/rask#1737): values are
+> 16-byte tagged, memory is a garbage-collected heap with canonical
+> serialization, and closures, transactional calls, module state and the
 > published API module are new. This plan and `arena.rk` describe the old bump
 > arena. rask-lang/rask#1736 lists what to build.
 

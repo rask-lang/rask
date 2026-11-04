@@ -1,85 +1,99 @@
 <!-- id: raido.stdlib -->
 <!-- status: proposed -->
-<!-- summary: Core functions, built-in methods, and opt-in modules -->
+<!-- summary: Core functions, math, bit and built-in methods, all always present, with exact conversion rules -->
 <!-- depends: raido/language/types.md, raido/language/syntax.md -->
 
 # Standard Library
 
-Three tiers: **core functions** (always present), **built-in methods** (always present, compiler-known), and **opt-in modules** (host enables).
-
-```rask
-let vm = raido.Vm.new(raido.Config {
-    stdlib: [raido.Stdlib.math, raido.Stdlib.bit],
-})
-```
+Everything here is always present. I dropped the opt-in tiers: there's no reason for a host to deny a script `sqrt`, and every example reached for it. A host adds capabilities through its API module, not by switching stdlib parts on.
 
 ## Core Functions
 
-Always available. A Raido VM without these isn't a Raido VM.
+`tostring(v: T) -> string` -- the text form of any value (rules below).
 
-`tostring(v: T) -> string` -- convert any value to string representation.
+`int(x: float) -> int` -- truncate toward zero; out of the `int` range is `IntegerOverflow`. `int(s: string) -> int?` -- an optional `-` then decimal digits; anything else, or a value out of range, is `None`.
 
-`int(x: float) -> int` -- truncate float toward zero. `int(s: string) -> int?` -- parse string to int, `None` on failure.
+`float(x: int) -> float` -- nearest float, ties to even. `float(s: string) -> float?` -- an optional `-`, digits, an optional `.` and digits, an optional `e` and signed digits. The result is the correctly rounded nearest float, so every machine reads the same string to the same bits. No `inf`, `nan` or hex; a value too large is `None`.
 
-`float(x: int) -> float` -- convert int to float. `float(s: string) -> float?` -- parse string to float, `None` on failure.
+`char(n: int) -> string` -- the one-byte string for `n` in 0..255.
 
-`len(v: T) -> int` -- string byte length, array length, or map entry count. `T` must be `string`, `array`, or `map` (compiler-enforced).
+`len(v: T) -> int` -- string byte length, array length, or map entry count.
 
 `error(msg: string)` -- aborts the current call; its changes roll back and the host receives a ScriptError.
 
 `assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").
 
-`print(v: string)` -- calls the host's print handler. Default: no-op. Host can override via `vm.set_print(handler)`.
+`print(v: string)` -- calls the host's print handler, immediately. It's a log, not an effect: a call that later fails has still printed. Default handler: no-op.
 
-Scripts don't catch errors; a failure ends the call. See [syntax.md](syntax.md#errors).
+`coroutine(f, args...) -> coroutine` -- see [coroutines.md](coroutines.md).
 
-## Built-in Methods
+### tostring
 
-Compiler-known methods on primitive and collection types. Always available, not opt-in. See [types.md](types.md#built-in-methods) for the complete list.
+| Value | Text |
+|-------|------|
+| `int` | decimal, `-` for negatives |
+| `float` | the shortest decimal that reads back to the same bits, always with a `.` or an exponent: `0.1`, `3.0`, `-0.0`, `1e+21`, `5e-324`. Plain digits when `1e-7 <= abs(x) < 1e21`, otherwise `d.ddde±n` |
+| `bool` | `true`, `false` |
+| `string` | itself |
+| enum | `Order.Attack(3)`, `Stance.Aggressive` |
+| `T?` | `Some(...)`, `None` |
+| struct, tuple, array, map | `Ship { id: 1, health: 90 }`, `(1, 2)`, `[1, 2]`, `{"a": 1}`, with each part converted by these rules. A struct already being printed further up shows as `Ship { ... }` |
+| function, coroutine, extern struct | `<func name>`, `<coroutine>`, `<Enemy>` |
 
-User-defined structs get methods via `extend` blocks — same dot syntax, same calling convention. Libraries can provide the same ergonomics as the stdlib.
+String interpolation `"{x}"` uses `tostring`.
 
-**`int`:** `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `abs`
+## math
 
-**`string`:** `len`, `sub`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `ends_with`, `rep`, `byte`, `char`
+All correctly rounded, so the same on every machine. Called by bare name.
 
-**`array<T>`:** `len`, `get`, `push`, `pop`, `insert`, `remove`, `sort`, `contains`, `join`, `reverse`
+`floor(x: float) -> int`, `ceil(x: float) -> int`, `round(x: float) -> int` -- `round` takes ties away from zero (`round(2.5) == 3`, `round(-2.5) == -3`). Out of the `int` range is `IntegerOverflow`.
 
-**`map<K, V>`:** `len`, `get`, `keys`, `values`, `contains`, `remove`
+`sqrt(x: float) -> float` -- the IEEE operation.
 
-## math (opt-in)
+`min(a, b)`, `max(a, b)` -- on two `int`s or two `float`s. For floats, `-0.0` counts as less than `0.0`, so `min(0.0, -0.0)` is `-0.0` whichever order the arguments come in.
 
-All deterministic: correctly rounded, so the same on every machine. Host enables via config.
+`clamp(x, lo, hi)` -- `min(max(x, lo), hi)`, on `int`s or `float`s. `lerp(a: float, b: float, t: float) -> float` -- `a + (b - a) * t`, rounded at each step.
 
-`abs(x: float) -> float`, `floor(x: float) -> int`, `ceil(x: float) -> int`, `round(x: float) -> int`
+`sin`, `cos`, `atan2(y, x)`, `exp`, `log` -- correctly rounded, the same functions Rask uses.
 
-`sqrt(x: float) -> float` -- the IEEE operation, correctly rounded.
-
-`min(a: float, b: float) -> float`, `max(a: float, b: float) -> float`
-
-`clamp(x: float, lo: float, hi: float) -> float`, `lerp(a: float, b: float, t: float) -> float`
-
-`sin(x: float) -> float`, `cos(x: float) -> float`, `atan2(y: float, x: float) -> float` -- correctly rounded, the same functions Rask uses.
-
-`random() -> float` -- float in [0, 1). `random(n: int) -> int` -- int in [0, n). Uses VM's xoshiro128++ PRNG.
+`random() -> float` -- in [0, 1). `random(n: int) -> int` -- in [0, n); `n <= 0` is an error. Both draw from the VM's PRNG; [vm/architecture.md](../vm/architecture.md#prng) has the exact bit recipes.
 
 `pi: float` -- the double nearest to pi.
 
-## bit (opt-in)
+## bit
 
-Bitwise operations on `int` values. Host enables via config.
+Bitwise operations on `int`, as a 64-bit two's complement pattern.
 
-`bit.and(a: int, b: int) -> int`, `bit.or(a: int, b: int) -> int`, `bit.xor(a: int, b: int) -> int`, `bit.not(a: int) -> int`
+`bit.and(a, b)`, `bit.or(a, b)`, `bit.xor(a, b)`, `bit.not(a)`
 
-`bit.lshift(a: int, n: int) -> int`, `bit.rshift(a: int, n: int) -> int` -- logical shift (not arithmetic).
+`bit.lshift(a, n)`, `bit.rshift(a, n)` -- logical shifts; `n` outside 0..63 is an error.
+
+## Built-in Methods
+
+Compiler-known methods on primitive and collection types. [types.md](types.md#built-in-methods) has the signatures.
+
+**`int`:** `wrapping_add`, `wrapping_sub`, `wrapping_mul`, `abs`
+
+**`float`:** `abs`
+
+**`string`:** `len`, `substring`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `ends_with`, `rep`, `byte`
+
+**`array<T>`:** `len`, `get`, `push`, `pop`, `insert`, `remove`, `sort`, `filter`, `contains`, `join`, `reverse`
+
+**`map<K, V>`:** `len`, `get`, `keys`, `values`, `contains`, `remove`; writes are `m[k] = v`
+
+**`coroutine`:** `resume`, `done`
+
+User-defined structs get methods via `extend` blocks, same dot syntax.
 
 ## What Hosts Add
 
-Domain-specific functions via `extern func` declarations in scripts:
+Domain functions come from the host's published API module, which every script sees already imported:
 
 ```raido
+// game_api.rd
 extern func spawn_enemy(kind: string, pos: Vec2) -> Enemy
-extern func play_sound(name: string)
+extern deferred func play_sound(name: string)
 ```
 
-The host binds these at load time. See [vm/interop.md](../vm/interop.md) for host-side registration.
+See [vm/interop.md](../vm/interop.md#the-published-api).

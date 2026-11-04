@@ -26,6 +26,7 @@ Statically typed. Function signatures are fully annotated, local variables are i
 | `map<K, V>` | Key-value store. `K` restricted to `string` or `int`. Insertion-ordered. |
 | `T?` | Optional. Either `Some(value)` or `None`. |
 | `(T, U, ...)` | Tuple. Lightweight grouping for multi-return. |
+| `coroutine` | A suspended function. See [coroutines.md](coroutines.md). |
 
 ## Function Types
 
@@ -38,6 +39,7 @@ A 64-bit IEEE 754 double, the number type JS, Python, Lua and C all have.
 - **Same bits on every machine.** `+ - * /` and `sqrt` are correctly rounded by IEEE 754, so they agree everywhere. The VM never fuses a multiply and an add, and `sin`, `cos`, `exp` and the rest are correctly rounded, so they agree too. The full profile is rask-lang/rask#1683, the same one Rask's own floats follow.
 - **No NaN, no infinity.** An operation that would produce either (`0.0 / 0.0`, `sqrt(-1.0)`, an overflow) is a runtime error, like integer overflow. So a bad value fails where it's made instead of spreading, and no script ever sees NaN's platform-dependent bits.
 - **Literal rule:** a decimal point means `float`, no decimal means `int`. `42` is int, `42.0` is float, `0xff` is int.
+- **Zero has a sign**, as in IEEE: `-0.0 == 0.0`, but `tostring(-0.0)` is `"-0.0"` and `atan2` tells them apart. `1.0 / -0.0` is an error like `1.0 / 0.0`.
 - **Use `int` for money and anything counted or conserved.** Floats round; store cents, not dollars. A script that uses only `int` can be proven with zero knowledge ([vm/architecture.md](../vm/architecture.md#provable-profile)).
 
 ## Struct
@@ -91,7 +93,7 @@ extend Money {
     }
 
     func percent(self, rate: int) -> Money {
-        return Money { cents: self.cents * rate / 100 }
+        return Money { cents: self.cents * rate // 100 }
     }
 
     func deposit(mutate self, amount: Money) {
@@ -103,7 +105,7 @@ extend Money {
     }
 
     func to_string(self) -> string {
-        return "{self.cents / 100}.{self.cents % 100}"
+        return "{self.cents // 100}.{self.cents % 100}"
     }
 }
 
@@ -174,7 +176,7 @@ if entity.shield is Some(s): apply_damage(s)
 let target = find_ship(ships, target_id) is Some else { continue }
 ```
 
-Stored as u8 tag (0=None, 1=Some) + 7 bytes payload.
+Optionals nest: `map<string, int?>.get(k)` is an `int??`, where `None` means the key is missing and `Some(None)` means it's there holding `None`. `Some` costs nothing at run time; [vm/architecture.md](../vm/architecture.md#value-representation) has the representation.
 
 ## Tuples
 
@@ -197,12 +199,12 @@ A value of a function type (`func(Ship, Ship) -> bool`) is either a named functi
 
 A **closure** captures the variables it uses from around it. The rules:
 
-- **A captured variable can't be assigned again**, inside the closure or after it in the enclosing function. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made.
+- **A captured variable is never assigned after its `let`**, anywhere in the enclosing function: before the closure, after it, inside it, or around a loop that contains it. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made. Module variables aren't captured; a closure reads them like any other code does.
 - **Structs, arrays and maps are shared**, as everywhere in Raido. A closure that captured `ship` sees `ship.health` change, and can change it.
-- **Read-only stays read-only.** A closure that captures a parameter not marked `mutate` can't change it either, so passing a struct into a function still can't change it behind your back.
+- **Read-only stays read-only.** A closure that captures a read-only value can't change it, and what it returns is read-only too ([Variables](#variables)).
 - **Each loop iteration has its own variable**, so `for i in 0..3 { fs.push(|| i) }` makes closures that return 0, 1 and 2.
 - **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
-- **Closures aren't comparable.** There's no `==` on function values.
+- **Closures aren't comparable.** There's no `==` on function values ([Equality](#equality)).
 
 A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
 
@@ -222,6 +224,8 @@ extern func move_to(entity: Enemy, target: Vec2)
 extern func noise(quality: float, id: int, index: int) -> float
 ```
 
+An extern struct is a handle to something the host owns, not a copy, so its fields hold only what can be read and written as one value: `int`, `float`, `bool`, `string`, an enum without payloads, another extern struct, or an optional of one of those. A collection the host owns is reached through extern functions (`storage_get(b, "wood")`). That way every write to host data goes through a setter the VM can buffer and roll back.
+
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
 ## Variables
@@ -235,7 +239,7 @@ ship = other_ship   // OK
 shipp = other_ship  // ERROR: `shipp` isn't declared; did you mean `ship`?
 ```
 
-**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter. A `mutate` parameter changes the struct the caller passed, and the signature says so. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
+**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter, including an extern struct. A `mutate` parameter changes the struct the caller passed, and the signature says so. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
 
 ```raido
 func apply_damage(mutate ship: Ship, amount: int) {
@@ -250,12 +254,24 @@ func damaged(ship: Ship, amount: int) -> Ship {
 }
 ```
 
-For host entity mutation, use extern struct fields -- the host controls the data:
+Read-only follows the value, so a function can't get around it by copying the reference. Anything reached from a read-only value is read-only: a local initialised from it, a field or element read from it, a struct built with `..it`, a closure or coroutine that captured it, and the result of any call that was passed it. A read-only value can't be written through, passed as `mutate`, or stored in a field, collection or module variable.
 
 ```raido
-extern struct Enemy { health: int, x: float, y: float }
-func damage_enemy(enemy: Enemy, amount: int) {
-    enemy.health -= amount  // OK: extern struct field write goes through host setter
+func inspect(s: Ship) {
+    let t = s
+    t.health = 0                // ERROR: `t` is read-only, it came from `s`
+    let w = s.weapons[0]
+    log_all.push(w)             // ERROR: storing a read-only value
+}
+```
+
+Assigning a read-only value to a writable local is an error too, so a local is read-only or not for its whole life. The rule is coarse on purpose: the compiler decides it from signatures alone, and a function that needs to hand back part of a parameter for writing takes it `mutate`.
+
+Extern struct fields follow the same rule; a write goes through the host's setter:
+
+```raido
+func damage_enemy(mutate enemy: Enemy, amount: int) {
+    enemy.health -= amount
 }
 ```
 
@@ -266,7 +282,8 @@ func damage_enemy(enemy: Enemy, amount: int) {
 | Expression | Result | Notes |
 |-----------|--------|-------|
 | `int + int` | `int` | Also `-`, `*`, `%` |
-| `int / int` | `float` | Division always returns float |
+| `int / int` | `float` | `/` always returns float |
+| `int // int` | `int` | Truncates toward zero: `7 // 2 == 3`, `-7 // 2 == -3` |
 | `float + float` | `float` | All ops |
 
 **Mixed arithmetic -- int promotes to float:**
@@ -279,13 +296,13 @@ func damage_enemy(enemy: Enemy, amount: int) {
 
 Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the int rounds to the nearest float, as in every language with doubles.
 
-**Narrowing requires explicit conversion:** `float -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
+**Narrowing requires explicit conversion:** `float -> int` always requires `int(x)`, which truncates toward zero, or `floor`, `ceil` or `round`. A result outside the `int` range is an `IntegerOverflow` error. No implicit narrowing.
 
 **Integer overflow:** panics by default. Use built-in wrapping methods on `int` for explicit wrapping (see [Built-in Methods](#built-in-methods)).
 
 **Float overflow:** producing an infinity is a runtime error (see [Float](#float)).
 
-**Modulo:** follows the sign of the dividend. `7 % 3 == 1`, `-7 % 3 == -1`.
+**Modulo:** follows the sign of the dividend, so `a == (a // b) * b + a % b`. `7 % 3 == 1`, `-7 % 3 == -1`.
 
 **String comparison:** lexicographic by bytes (UTF-8 byte order). `"a" < "b"` is `true`.
 
@@ -294,12 +311,27 @@ Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the i
 - Function signatures are fully typed (parameters + return type)
 - Local variables inferred from initializer: `let x = 42` -> `x` is `int`
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
-- No interfaces or interfaces
+- No interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
-- `??` supplies the other branch on an optional: `value ?? fallback` (both sides same type)
+- `??` supplies the other branch on an optional: `value ?? fallback`, where `fallback` has the inner type or leaves the block (`return`, `break`, `continue`, `error`)
 - Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on any variable, including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
-- Sort stability is required -- `array.sort()` uses a stable sort algorithm
+- `array.sort()` is the merge sort in [vm/architecture.md](../vm/architecture.md#formal-contract), so the comparator is called the same number of times, in the same order, everywhere
+
+## Equality
+
+`==` and `!=` compare by content for values and by identity for things you change in place:
+
+| Type | `==` means |
+|------|-----------|
+| `int`, `float`, `bool`, enums without payloads | same value |
+| `string` | same bytes |
+| tuples, enums with payloads, `T?` | same shape and equal parts, recursively; the parts must be comparable |
+| extern structs | the same host object |
+| structs, arrays, maps, coroutines | the same object |
+| functions and closures | not comparable; compile error |
+
+So `"a" == "a"`, `(1, 2) == (1, 2)` and `Order.Attack(3) == Order.Attack(3)` are all true. Identity is a yes-or-no answer about the object graph, so it doesn't depend on memory layout or on the collector.
 
 ## Built-in Methods
 
@@ -312,34 +344,40 @@ Compiler-known methods on primitive and collection types. These are not user-ext
 - `wrapping_mul(other: int) -> int` -- wrapping multiplication
 - `abs() -> int` -- absolute value (panics on i64 min)
 
-**`array<T>` methods (always available, not opt-in):**
+**`float` methods:** `abs() -> float`.
+
+**`array<T>` methods:**
 
 - `len() -> int`
 - `get(i: int) -> T?` -- safe access, returns `None` on out-of-bounds
 - `push(v: T)`, `pop() -> T?`, `insert(i: int, v: T)`, `remove(i: int) -> T`
-- `sort(cmp: func(T, T) -> bool)` -- stable sort
-- `contains(v: T) -> bool`, `join(sep: string) -> string`, `reverse()`
+- `sort(cmp: func(T, T) -> bool)` -- stable; `cmp(a, b)` means `a` goes first
+- `filter(keep: func(T) -> bool) -> array<T>` -- new array of the items `keep` accepts
+- `contains(v: T) -> bool` (by `==`), `join(sep: string) -> string` (for `array<string>`), `reverse()`
 
-**`map<K, V>` methods (always available, not opt-in):**
+**`map<K, V>` methods:**
 
 - `len() -> int`
 - `get(k: K) -> V?` -- safe access, returns `None` on missing key
 - `keys() -> array<K>`, `values() -> array<V>`
-- `contains(k: K) -> bool`, `remove(k: K)`
+- `contains(k: K) -> bool`, `remove(k: K) -> V?`
+- writes use index syntax: `m[k] = v` inserts or replaces ([syntax.md](syntax.md#collections))
 
-**`string` methods (always available, not opt-in):**
+**`string` methods:**
 
 - `len() -> int` -- byte length
-- `substring(start: int, end: int) -> string` -- extract by byte offset, allocates
+- `substring(start: int, end: int) -> string` -- bytes `start` up to `end`, allocates; out of range is an error
 - `find(pattern: string) -> int?` -- literal substring search
 - `upper() -> string`, `lower() -> string` -- ASCII only
 - `split(sep: string) -> array<string>`, `trim() -> string`
 - `starts_with(prefix: string) -> bool`, `ends_with(suffix: string) -> bool`
-- `rep(n: int) -> string`, `byte(i: int) -> int`, `char(n: int) -> string`
+- `rep(n: int) -> string`, `byte(i: int) -> int`
+
+`char(n: int) -> string` is a core function, not a method: the one-byte string for `n` in 0..255.
 
 ## Maps
 
-Insertion-ordered. Deterministic iteration order. Keys restricted to `string` or `int` -- types with stable, deterministic equality and hashing.
+Insertion-ordered. Deterministic iteration order. Replacing a key's value keeps its place; removing it and inserting again moves it to the end. Keys restricted to `string` or `int` -- types with stable, deterministic equality and hashing.
 
 ```raido
 let lookup: map<string, int> = {"iron": 26, "gold": 79}

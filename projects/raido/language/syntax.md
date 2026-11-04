@@ -36,7 +36,28 @@ let name: string = get_name()  // explicit type annotation (optional)
 
 `let` declares a variable, as in JS. Assigning to a name that was never declared is an error, so a typo can't quietly make a new variable. Unlike Rask, there's no `mut`: every variable can be reassigned and its fields changed. See [types.md](types.md#variables).
 
-No `global` keyword. Script state lives in coroutine locals or host entities.
+### Module State
+
+A `let` at the top level of a script is a module variable. It's set when the host loads the script and keeps its value between host calls, so a death counter or a "notified once" flag lives there:
+
+```raido
+let deaths = 0
+let notified = false
+let spawned: array<Unit> = []
+
+func on_unit_died(u: Unit) {
+    deaths += 1
+}
+```
+
+Module variables are part of the VM's state: serialized with it, and rolled back with everything else when a call fails. Each loaded chunk has its own; an imported module's variables belong to that module, read as `combat.hits`. Its initializer runs once, in declaration order, when the chunk is loaded; if one fails, the load fails.
+
+`const` names a value that never changes. Its initializer is a constant expression: literals, arithmetic and other constants.
+
+```raido
+const MAX_WAVES = 10
+const SPAWN_RADIUS = 12.5
+```
 
 ## Functions
 
@@ -87,13 +108,16 @@ let weak = ships.filter(|s| s.health < threshold)
 let guard = coroutine(|| patrol(npc, post))
 ```
 
-One rule: a variable a closure uses can't be assigned again afterwards, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else:
+One rule: a variable a closure uses is never assigned after its `let`, anywhere in the function, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else, or in a module variable:
 
 ```raido
 let count = 0
 let bump = || count += 1          // ERROR: `count` is used by a closure, so it can't change
 let tally = Tally { n: 0 }
 let bump = || tally.n += 1        // OK: the closure and the caller share `tally`
+
+let x = 0
+loop { x += 1; fs.push(|| x) }    // ERROR: `x` is assigned after its `let`
 ```
 
 See [types.md](types.md#functions-as-values) for the full rules.
@@ -151,6 +175,21 @@ extern struct Enemy {
 extern func send_message(target: string, body: string)
 extern func noise(quality: float, id: int, index: int) -> float
 extern func move_to(entity: Enemy, target: Vec2)
+```
+
+A host function that changes the world and returns nothing can be marked `deferred`: its calls are queued and run only when the script's call succeeds (see [vm/interop.md](../vm/interop.md#calls-are-transactions)).
+
+```raido
+extern deferred func send_message(target: string, body: string)
+```
+
+The module also declares what `yield` passes to the host and what comes back, written like a function (see [coroutines.md](coroutines.md#the-yield-type)), and may contain ordinary Raido functions built on top:
+
+```raido
+enum Wait { Seconds(float), NextTick }
+extern yield(Wait) -> void
+
+func wait(seconds: float) { yield Wait.Seconds(seconds) }
 ```
 
 A script may not contain `extern` declarations of its own. See [vm/interop.md](../vm/interop.md#the-published-api) for how the module is published and checked.
@@ -218,7 +257,7 @@ for i in 0..10 { print(i) }           // 0 through 9 (exclusive)
 for i in 0..=10 { print(i) }          // 0 through 10 (inclusive)
 for name, score in leaderboard { print("{name}: {score}") }
 
-// loop -- infinite loop with break value
+// loop -- runs until `break` or `return`
 loop {
     let msg = receive() is Some else { break }
     handle(msg)
@@ -330,14 +369,14 @@ let next_state = FleetState { ships: new_ships, tick: state.tick + 1, ..state }
 | Precedence | Operators |
 |-----------|-----------|
 | 1 (highest) | `!`, `-` (unary) |
-| 2 | `*`, `/`, `%` |
+| 2 | `*`, `/`, `//`, `%` |
 | 3 | `+`, `-` |
 | 4 | `<`, `>`, `<=`, `>=`, `==`, `!=` |
 | 5 | `&&` |
 | 6 | `\|\|` |
 | 7 (lowest) | `??` |
 
-`&&`/`||` short-circuit and return `bool`. `??` unwraps optionals with a default.
+`&&`/`||` short-circuit and return `bool`. `??` unwraps optionals with a default. `/` always gives a `float`; `//` divides two ints and truncates toward zero, matching `%` (see [types.md](types.md#arithmetic-rules)).
 
 No `#` length operator -- use `len()` from core. No `..` concat operator -- string interpolation covers it.
 
@@ -358,14 +397,25 @@ func find_target(ships: array<Ship>, id: int) -> Ship? { ... }
 let target = find_target(ships, id) ?? return        // nothing to do this tick
 ```
 
+The right side of `??` has the optional's inner type, or leaves the block: `return`, `break`, `continue` or `error(...)`.
+
 ## Collections
 
 ```raido
 let colors: array<string> = ["red", "green", "blue"]
 let point: map<string, int> = {"x": 10, "y": 20}
+
+colors[0] = "crimson"                  // replace; out of range is an error
+point["z"] = 5                         // insert, or replace if the key exists
+let x = point["x"]                     // read; a missing key is an error
+let w = point.get("w") ?? 0            // read that may miss
+point["x"] += 1                        // read then write; the key must exist
+point.remove("y")
 ```
 
 Array literal type is inferred from elements. Map literal type is inferred from entries. Empty collections need type annotation or context.
+
+During `for item in arr`, the loop reads `arr[0]`, `arr[1]`, ... while the index is below the array's current length, so pushes inside the loop are visited and removals shift what's left. During `for k, v in m`, adding or removing a key is an error; assigning to an existing key is fine.
 
 ## Wrapping Arithmetic
 
@@ -377,13 +427,14 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 ## Keywords
 
-`break`, `continue`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `while`, `yield`
+`break`, `const`, `continue`, `deferred`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `mutate`, `return`, `struct`, `true`, `while`, `yield`
 
-`coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
+`yield` works like `return` without ending the function: `yield` or `yield value`, and it evaluates to what the resumer passed back (`let choice = yield prompt`). `coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.
 
 ## Deliberate Divergences from Rask
 
 - **No `public`/package visibility** -- Raido scripts are single-file. All declarations are visible within the script and importable by other chunks.
+- **Module-level `let`** -- Rask has no mutable globals; a Raido script's top-level `let` is state that lives between host calls.
 - **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs, arrays and maps are references to a garbage-collected heap; primitives are values. `mutate` is the only parameter mode, and it means what it means in Rask: the function may change what it's given.
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
 - **Closures can't reassign what they capture** -- a Rask closure that doesn't outlive its frame can change a captured `mut` variable; Raido has no `mut`, and forbids reassigning a captured variable, so there's no hidden shared state.

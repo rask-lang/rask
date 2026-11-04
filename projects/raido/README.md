@@ -38,7 +38,6 @@ Raido's differentiators vs Lua/WASM/JS:
 | Sandboxed | Yes (no I/O) | Partial | Yes | Partial |
 | Safe host interop | Yes (no unsafe) | No | No | No |
 | Static types | Yes | No | Yes | No |
-| Tiny VM | ~1 KB base | ~20 KB | Runtime-dependent | Heavy |
 
 ## Host API
 
@@ -54,7 +53,7 @@ let vm = raido.Vm.new(raido.Config(
 ))
 ensure vm.close()
 
-// Register extern bindings before loading
+// Bind what the published API module (game_api.rd) declares
 vm.register_extern_struct("Enemy", raido.ExternStruct(
     fields: [
         raido.Field.int("health", get_health, set_health)
@@ -65,10 +64,13 @@ vm.register_extern_struct("Enemy", raido.ExternStruct(
 ))
 vm.register_extern_func("move_to", move_to_handler)
 
-let chunk = try vm.compile("script.rd", source)
-try vm.load(chunk)  // fails if extern declarations don't match bindings
+let chunk = try vm.compile("script.rd", source, api)
+try vm.load(chunk)  // checks bindings, then runs the script's top-level `let`s
 
-let result = try vm.call("process", [raido.Value.int(42)])
+match try vm.call("on_tick", [raido.Value.float(dt)]) {
+    raido.Outcome.Done(result) => use(result)
+    raido.Outcome.Yielded(task, _) => waiting.push(task)  // vm.resume(task, v) later
+}
 
 // Serialize entire VM state
 let snapshot = vm.serialize()
@@ -79,31 +81,22 @@ let vm2 = raido.Vm.deserialize(snapshot)
 
 ## Script Example
 
+`Enemy`, `move_to` and `wait` come from the host's published API module; the script declares nothing to use them.
+
 ```raido
-struct Vec2 { x: float, y: float }
+const THRESHOLD = 10
+let kills = 0                                // module state: lives between host calls
 
-extern struct Enemy {
-    health: int
-    x: float
-    y: float
-    readonly name: string
+func chase(mutate attacker: Enemy, target: Enemy) {
+    loop {
+        move_to(attacker, Vec2 { x: target.x, y: target.y })
+        wait(0.5)                            // yields; the host resumes this call later
+    }
 }
 
-extern func move_to(entity: Enemy, target: Vec2)
-
-func chase(attacker: Enemy, target: Enemy) {
-    let dest = Vec2 { x: target.x, y: target.y }
-    move_to(attacker, dest)
-}
-
-func process(input: int) -> int {
-    let data = transform(input)
-    return if data > threshold { data } else { 0 }
-}
-
-func transform(x: int) -> int {
-    if x < 0 { error("negative input") }    // aborts the host's call; its changes roll back
-    return x * scale + offset
+func on_enemy_died(e: Enemy) {
+    kills += 1
+    if kills > THRESHOLD { error("too many") }  // aborts the call; its changes roll back
 }
 ```
 
@@ -119,15 +112,16 @@ func transform(x: int) -> int {
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
 | Sandbox | No I/O. Host provides all capabilities. | Safe to run untrusted code. |
 | Structs/enums | User-defined, fixed layout | Structured data is the primary data model for all consumers. |
-| Collections | `array<T>` + `map<K, V>` | Maps to Rask's Vec/Map. Homogeneous, typed. |
-| Host data | `extern struct` / `extern func` | Compile-time type checking. Type mismatch = load error, not runtime error. |
+| Collections | `array<T>` + `map<K, V>` | Maps to Rask's Vec/Map. Homogeneous, typed. `m[k] = v` inserts. |
+| Host data | Published API module of `extern struct` / `extern func` | Compile-time type checking. Type mismatch = load error, not runtime error. |
+| Script state | Top-level `let` | Lives between host calls, saved and rolled back like the rest of the heap. |
 | Functions | Named functions and closures | A captured variable can't be reassigned, so closures carry no hidden shared state. |
 | Optionals | `T?` with `Some`/`None` | Compiler-enforced null safety. No nil. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
 | Errors | `error()` aborts the call | Every host call into a script is a transaction: a failure throws away what the call changed and the host logs it. No error types, `try` or `catch` to learn; absence is `T?`. |
-| Coroutines | `coroutine(f, args...)`, methods | Create/resume/yield. Method-based. Serializable. |
-| Stdlib | Core functions + built-in methods always present, `math`/`bit` opt-in | Collection/string methods are always available. Host controls math and bitwise access. |
+| Coroutines | Every host call can yield | A hook that yields becomes a task the host resumes. Scripts can make their own with `coroutine(f, args...)`. Serializable. |
+| Stdlib | Always present | Core functions, `math`, `bit` and the built-in methods. Nothing to opt into; the host adds capabilities through its API module. |
 
 ## Use Cases
 
@@ -183,7 +177,7 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 - **Privacy.** Re-execution requires sharing inputs. A domain proving it minted an asset correctly might not want to reveal its crafting formula, resource stockpile, or internal pricing. A ZK proof proves "this output came from this script" without revealing the inputs.
 - **Expensive scripts.** Galaxy generation, large physics simulations — scripts where re-execution is costly and many parties need to verify. The executor proves once, verifiers check cheaply.
 
-Chunks compiled under the provable profile use only `int` arithmetic, so with bounded execution, flat memory and static bytecode they have the properties ZK circuits need. Floats are too costly to prove, so a provable chunk can't use them. See [vm/architecture.md](vm/architecture.md#provable-profile). The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
+Chunks compiled under the provable profile use only `int` arithmetic, so with bounded execution, bounded memory and static bytecode they have the properties ZK circuits need. Floats are too costly to prove, so a provable chunk can't use them. See [vm/architecture.md](vm/architecture.md#provable-profile). The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
 
 **What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization, ZK-compatible architecture.
 
@@ -196,20 +190,21 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
 | Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
-| Memory | **Garbage-collected heap the script can't observe.** | Coroutines and closures keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, and serialization walks the object graph in a fixed order, so both are identical on every machine. Values carry a 16-byte tag-and-payload so the collector needs no help from the compiler. |
+| Memory | **Garbage-collected heap the script can't observe.** | Coroutines, closures and module state keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, checked at points fixed by the allocation count, and serialization walks the object graph in a fixed order, so both are identical on every machine. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
-| Host data model | **`extern struct` / `extern func`.** Script declares expected shapes, host binds at load time. | Compile-time type checking. Load-time mismatch detection. Replaces dynamic `host_ref` + vtable pattern. |
+| Host data model | **A published API module of `extern struct` / `extern func`.** The host declares its shapes once; scripts see them already imported. | Compile-time type checking. Load-time mismatch detection. The module's hash is part of every script's identity. |
 | Type system | **Static.** Function signatures typed, locals inferred. | Runtime type errors are a divergence vector. Static types catch bugs before deployment -- critical when scripts are tradeable economic assets. |
 | Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
-| Globals | **Cut.** No mutable global state. | Undermines statelessness between host calls. Script state lives in coroutine locals or host entities. |
+| Module state | **Top-level `let`.** | Every mod needs a counter or a flag that outlives one host call. Module variables are heap roots, so they're saved, restored and rolled back with everything else; `const` names a value that never changes. |
+| Yield | **One yield type per host, declared in its API module.** | `yield` passes values between script and host. Typing it per function would colour every function that calls one that waits; typing it per host keeps `wait(2.0)` an ordinary call. |
 
-**String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`sub`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic -- Unicode case mapping tables are large and version-dependent.
+**String encoding depth.** ASCII-only for case operations (`upper`/`lower`), byte-indexed for slicing (`substring`/`byte`). No Unicode-aware operations in the VM. If a script needs Unicode (rare for game scripting, modding, rules), the host provides it as a host function. Keeps the VM tiny and deterministic -- Unicode case mapping tables are large and version-dependent.
 
 ## Deferred
 
-- **Map growth strategy.** Load factor threshold and growth factor need benchmarking. Open addressing with linear probing is decided; the tuning constants are implementation detail.
+- **Map growth strategy.** Open addressing with linear probing is decided; the load factor is implementation detail. The memory limit counts a logical capacity derived from the entry count, so it doesn't depend on the tuning.
 - **Serialization migration.** Version header exists. Forward/backward compatibility policy depends on how the format evolves in practice. Premature to specify migration rules before the first format change.
 - **Generics beyond built-ins.** `array<T>`, `map<K, V>`, `T?`, function types cover the need. No user-defined generics.
-- **Interfaces / interfaces.** Functions, not methods.
+- **Interfaces.** Functions, not methods.
