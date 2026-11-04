@@ -43,7 +43,9 @@ pub struct Resolver {
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
     current_package: Option<PackageId>,
-    package_bindings: HashMap<String, PackageId>,
+    /// What an import path names, and from which package each file imports.
+    import_index: crate::ImportIndex,
+    file_package_ids: HashMap<u16, PackageId>,
     imported_symbols: HashSet<String>,
     /// Packages the manifest declares under a `scope` this build doesn't
     /// link, name -> scope. Read when an import fails, so the error says why
@@ -107,7 +109,8 @@ impl Resolver {
             resolutions: HashMap::new(),
             errors: Vec::new(),
             current_package: None,
-            package_bindings: HashMap::new(),
+            import_index: crate::ImportIndex::default(),
+            file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
             unlinked_scopes: HashMap::new(),
             imported_type_names: HashSet::new(),
@@ -612,8 +615,11 @@ impl Resolver {
         }
         resolver.current_package = Some(current_package);
 
+        resolver.import_index = crate::ImportIndex::new(registry, current_package);
         for pkg in registry.packages() {
-            resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
+            for file in &pkg.files {
+                resolver.file_package_ids.insert(file.file_id, pkg.id);
+            }
         }
 
         // Which package owns each file, for the checks that need to know who
@@ -1430,11 +1436,19 @@ impl Resolver {
             );
         }
 
-        if path.len() == 1 {
-            let pkg_name = &path[0];
+        // The package the path names, from the package this file is in:
+        // `import pa.sub` binds `sub` (IM2), and so does `import sub` inside
+        // `pa`.
+        let importer = self.file_package_ids.get(&span.file_id).copied();
+        let found = self.import_index.package(path, importer);
+        let names_package = found.filter(|(_, n)| *n == path.len()).map(|(id, _)| id);
+
+        if path.len() == 1 || names_package.is_some() {
+            let pkg_name = path.last().unwrap();
             let binding_name = import_decl.alias.as_ref().unwrap_or(pkg_name).clone();
 
-            let stdlib_module = BuiltinModuleKind::from_name(pkg_name.as_str());
+            let stdlib_module =
+                if path.len() == 1 { BuiltinModuleKind::from_name(pkg_name.as_str()) } else { None };
 
             if let Some(module_kind) = stdlib_module {
                 let sym_id = self.symbols.insert(
@@ -1462,8 +1476,8 @@ impl Resolver {
                 // Module functions are accessed qualified (os.env), but types
                 // (Command, File, Signal) are used unqualified per convention.
                 self.register_module_functions(module_kind, span);
-            } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
-                // External package import — register as a package namespace
+            } else if let Some(pkg_id) = names_package {
+                // Another package — register it as a namespace
                 if import_decl.is_glob {
                     // Glob import: bring all public symbols directly into scope
                     if let Some(exports) = self.package_exports.get(&pkg_id).cloned() {
@@ -1538,8 +1552,8 @@ impl Resolver {
                 }
             }
 
-            // Try to resolve from external package exports
-            if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
+            // A member of another package: `import pa.f`, `import pa.sub.f`.
+            if let Some((pkg_id, _)) = found.filter(|(_, n)| *n == path.len() - 1) {
                 if let Some(exports) = self.package_exports.get(&pkg_id) {
                     if let Some(&exported_sym) = exports.get(symbol_name) {
                         // Bind the actual exported symbol into scope
@@ -1676,18 +1690,14 @@ impl Resolver {
                         }
                     }
                 }
+            } else if found.is_some() {
+                // A package that has no public member of that name.
+                self.errors.push(ResolveError::undefined(path.join("."), span));
+                return;
             } else {
-                // Unknown package — create variable binding as fallback
-                let sym_id = self.symbols.insert(
-                    binding_name.clone(),
-                    SymbolKind::Variable { mutable: false },
-                    None,
-                    span,
-                    false,
-                );
-                if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
-                    self.errors.push(e);
-                }
+                let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
+                self.errors.push(ResolveError::unknown_package_in_scope(path.clone(), scope, span));
+                return;
             }
 
             // Not in stdlib_mode: `imported_symbols` records what the *program*

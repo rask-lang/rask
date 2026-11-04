@@ -767,9 +767,7 @@ fn check_package_scoped(
     // (`pa.sub` → `f_pa_sub`): it's a package of its own (modules/PO3), and
     // its names are reached only through it (IM1, #1744). Its entry point
     // keeps its name, since that's what the program starts from.
-    let root = pkg_ctx.registry.get(pkg_ctx.root_id);
-    let root_path_len = root.map_or(0, |p| p.path.len());
-    let root_name = root.map(|p| p.name.clone()).unwrap_or_default();
+    let index = rask_resolve::ImportIndex::new(&pkg_ctx.registry, pkg_ctx.root_id);
     // A sub-package's `main` is the entry point only when the root has none,
     // as in a `src/` layout. Otherwise it's an ordinary name of its package.
     let root_has_entry = pkg_ctx.all_decls.iter().any(|d| {
@@ -778,7 +776,6 @@ fn check_package_scoped(
     // Each package's suffix, unique however its path and name are spelled:
     // `pa/sub` and `pa_sub/` would both be `_pa_sub` otherwise.
     let mut suffixes: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut import_names: HashMap<rask_resolve::PackageId, String> = HashMap::new();
     // Every private declaration's qualified name.
     let mut private: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
@@ -787,11 +784,7 @@ fn check_package_scoped(
             continue;
         }
         // How the program's imports name it.
-        let import_name = if pkg.is_external || pkg.path.len() <= root_path_len {
-            pkg.name.clone()
-        } else {
-            pkg.path[root_path_len..].join(".")
-        };
+        let import_name = index.key(pkg.id).unwrap_or(&pkg.name).to_string();
         package_names.push(import_name.clone());
         let base = import_name.replace('.', "_");
         let mut suffix = base.clone();
@@ -817,7 +810,6 @@ fn check_package_scoped(
             }
             private_elsewhere.entry(name).or_default().push(entry);
         }
-        import_names.insert(pkg.id, import_name.clone());
         exports.insert(import_name, map);
         merged.push((pkg.id, decls));
     }
@@ -832,7 +824,7 @@ fn check_package_scoped(
             .iter()
             .flat_map(|(_, decls)| package_scope::annotation_names(decls))
             .collect();
-        let root_scope = package_scope::ImportScope { exports, root: &root_name, importer: None, private: &private };
+        let root_scope = package_scope::ImportScope { exports, index: &index, importer: None, private: &private };
         let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
@@ -845,12 +837,7 @@ fn check_package_scoped(
                 .map(unimported_annotation_diagnostic),
         );
         for (id, decls) in merged.iter_mut() {
-            let scope = package_scope::ImportScope {
-                exports,
-                root: &root_name,
-                importer: import_names.get(id).map(String::as_str),
-                private: &private,
-            };
+            let scope = package_scope::ImportScope { exports, index: &index, importer: Some(*id), private: &private };
             let visible = visible_packages(decls, &scope);
             package_scope::qualify_references(decls, &visible, &annotations);
             let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);

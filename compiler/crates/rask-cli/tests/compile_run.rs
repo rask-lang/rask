@@ -10042,6 +10042,11 @@ fn sub_package_imports_in_every_spelling() {
         let (out, ok) = run_project(mode, &dir);
         assert!(ok && out.contains("4 5 30"), "{mode}:\n{out}");
     }
+    // From the root, `pa/sub` is `pa.sub`: its last segment alone names
+    // nothing, wherever it sits.
+    std::fs::write(dir.join("main.rk"), "import sub\n\nfunc main() {\n    println(\"{sub.f(1)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

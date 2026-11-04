@@ -181,19 +181,13 @@ pub fn qualify_references(
     rewrite::rewrite_decls(decls, &mut r);
 }
 
-/// What an import path can name, from one package.
-///
-/// A package's key in `exports` is its path from the root (`pa.sub`), or a
-/// dependency's name. An import may also spell it with the root package's
-/// name in front (`import proj.pa`), from the importing package
-/// (`import sub` inside `pa`), or by its last segment alone when only one
-/// package ends that way, which is how the resolver finds it too.
+/// What an import path names, from one package: `ImportIndex`'s answer, the
+/// resolver's too, as a key in `exports`.
 pub struct ImportScope<'a> {
     pub exports: &'a HashMap<String, HashMap<String, String>>,
-    /// The root package's name.
-    pub root: &'a str,
-    /// The importing package's key; `None` for the root.
-    pub importer: Option<&'a str>,
+    pub index: &'a rask_resolve::ImportIndex,
+    /// The importing package.
+    pub importer: Option<rask_resolve::PackageId>,
     /// The qualified names a package keeps to itself, which `import pa.*`
     /// leaves out.
     pub private: &'a std::collections::HashSet<String>,
@@ -201,31 +195,11 @@ pub struct ImportScope<'a> {
 
 impl ImportScope<'_> {
     /// The package an import path names, as its key in `exports`, and how
-    /// many of the path's segments that takes: the longest prefix that is
-    /// one. `import pa.sub.f` is `pa.sub`, two segments, then the member `f`.
+    /// many of the path's segments that takes.
     pub fn package(&self, path: &[String]) -> Option<(String, usize)> {
-        (1..=path.len()).rev().find_map(|n| self.key(&path[..n]).map(|k| (k, n)))
-    }
-
-    fn key(&self, segments: &[String]) -> Option<String> {
-        let written = segments.join(".");
-        let mut candidates = vec![written.clone()];
-        if segments.len() > 1 && segments[0] == self.root {
-            candidates.push(segments[1..].join("."));
-        }
-        if let Some(importer) = self.importer {
-            candidates.push(format!("{}.{}", importer, written));
-        }
-        if let Some(k) = candidates.into_iter().find(|k| self.exports.contains_key(k)) {
-            return Some(k);
-        }
-        let [only] = segments else { return None };
-        let mut ending: Vec<&String> =
-            self.exports.keys().filter(|k| k.rsplit('.').next() == Some(only.as_str())).collect();
-        match ending.len() {
-            1 => ending.pop().cloned(),
-            _ => None,
-        }
+        let (id, n) = self.index.package(path, self.importer)?;
+        let key = self.index.key(id)?;
+        self.exports.contains_key(key).then(|| (key.to_string(), n))
     }
 }
 
