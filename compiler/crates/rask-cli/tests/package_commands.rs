@@ -174,14 +174,23 @@ fn serve(mut stream: std::net::TcpStream, root: &Path) {
 }
 
 fn rask(dir: &Path, args: &[&str]) -> Run {
+    rask_env(dir, args, &[])
+}
+
+/// `rask` with extra environment, which overrides the defaults.
+fn rask_env(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Run {
     let reg = registry();
-    let out: Output = Command::new(env!("CARGO_BIN_EXE_rask"))
-        .args(args)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rask"));
+    cmd.args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1")
         .env("CLICOLOR_FORCE", "0")
         .env("RASK_REGISTRY", &reg.url)
-        .env("RASK_CACHE", &reg.cache)
+        .env("RASK_CACHE", &reg.cache);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out: Output = cmd
         // Bypasses any agent proxy for the loopback registry.
         .env("NO_PROXY", "127.0.0.1")
         .env("no_proxy", "127.0.0.1")
@@ -468,6 +477,24 @@ fn add_and_remove_keep_the_lock_up_to_date() {
     let run = ok(dir.path(), &["remove", "json"]);
     assert!(run.stdout.contains("Removed rask.lock (no dependencies left)"), "{:?}", run);
     assert!(!dir.path().join("rask.lock").exists());
+}
+
+/// A download goes to a path of this process's own, never one another `rask`
+/// may be using. The archive used to land at `<tmp>/json-1.5.2.tar.gz` for
+/// every process, so two fetches at once deleted or overwrote each other's
+/// file mid-extraction: "cache I/O error: No such file or directory", seen as
+/// a flaky `add_and_remove_keep_the_lock_up_to_date`. Here something already
+/// occupies that shared path, as another process's download would, and the
+/// fetch must not care.
+#[test]
+fn a_fetch_does_not_use_a_download_path_another_process_holds() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let tmp = TempDir::new("tmp");
+    fs::create_dir_all(tmp.path().join("json-1.5.2.tar.gz")).unwrap();
+    let cache = TempDir::new("cache");
+    let run = rask_env(dir.path(), &["add", "json", "^1.0"], &[("TMPDIR", tmp.path()), ("RASK_CACHE", cache.path())]);
+    assert_eq!(run.code, 0, "{:?}", run);
 }
 
 #[test]
