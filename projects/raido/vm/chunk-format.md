@@ -58,7 +58,7 @@ Serialized snapshots include the bytecode hash so the host can verify "this snap
 
 ## Imports and Exports
 
-**Imports** -- extern structs and extern funcs the script declares. Derived from `extern struct` and `extern func` declarations. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
+**Imports** -- the extern structs and extern funcs the script uses from the published API module, and that module's hash. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
 
 **Module imports** -- other content-addressed chunks referenced via `import "name" as alias`. The import graph is part of the chunk's content hash. The host resolves import names to chunks.
 
