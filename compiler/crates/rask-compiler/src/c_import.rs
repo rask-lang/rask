@@ -199,22 +199,8 @@ pub fn expand(
                         _ => true,
                     })
                     .collect();
+                // A macro is no symbol: each header's `F` is its own, `c.F`.
                 let mut map = package_scope::qualify_declarations(&mut new, &qualifier, false);
-                for d in &mut new {
-                    if let DeclKind::Extern(e) = &mut d.kind {
-                        if is_macro(e) {
-                            // A macro is no symbol: each header's is its own,
-                            // under its import's dotted name, which no Rask
-                            // declaration can take. Its C name is kept.
-                            let qualified = format!("{}.{}", qualifier, e.name);
-                            e.attrs.push(c_name_attr(&e.name));
-                            map.insert(e.name.clone(), qualified.clone());
-                            e.name = qualified;
-                        } else {
-                            map.insert(e.name.clone(), e.name.clone());
-                        }
-                    }
-                }
                 // Externs dropped above as duplicates are still reachable by name.
                 for name in &externs {
                     map.entry(name.clone()).or_insert_with(|| name.clone());
@@ -296,13 +282,6 @@ fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
         }
     }
     diags
-}
-
-/// `@c_name("name")`.
-fn c_name_attr(name: &str) -> rask_ast::attr::Attr {
-    let spelling = Expr { id: rask_ast::NodeId::DUMMY, kind: ExprKind::String(name.to_string()), span: Span::new(0, 0) };
-    let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
-    rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg]))
 }
 
 fn is_macro(e: &rask_ast::decl::ExternDecl) -> bool {

@@ -9802,21 +9802,67 @@ fn a_c_import_alias_means_its_own_packages_header() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A C macro is no link symbol, so its name doesn't repeat the way an
-/// extern's may: a function of the same name elsewhere in the program is a
-/// duplicate, not silently replaced by the macro (#1729).
+/// A C macro is no link symbol, so it belongs to its package like a
+/// function: `pa`'s macro `F` and the root's `func F` are two things, each
+/// reached by its own name (#1729, #1744). Within one package a function and
+/// a macro of one name are a duplicate.
 #[test]
-fn a_c_macro_and_a_function_of_one_name_are_a_duplicate() {
+fn a_c_macro_belongs_to_its_package() {
     let dir = temp_project(
-        "macro_dup",
+        "macro_pkg",
         &[
-            ("pa/a.rk", "@c_macro(\"(X + 1)\")\npublic extern \"C\" func F(X: _) -> _\n"),
-            ("main.rk", "import pa\n\nfunc F(x: i32) -> i32 {\n    return x * 100\n}\n\nfunc main() {\n    println(\"{F(4)}\")\n}\n"),
+            ("pa/a.rk", "@c_macro(\"(X + 1)\")\npublic extern \"C\" func F(X: _) -> _\n\npublic func twice(x: i32) -> i32 {\n    return F(F(x))\n}\n"),
+            ("main.rk", "import pa\n\nfunc F(x: i32) -> i32 {\n    return x * 100\n}\n\nfunc main() {\n    let n: i32 = 4\n    println(\"{F(4)} {pa.F(n)} {pa.twice(n)} {comptime pa.F(1)}\")\n}\n"),
         ],
     );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 5 6 2"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "macro_dup",
+        &[(
+            "main.rk",
+            "@c_macro(\"(X + 1)\")\nextern \"C\" func F(X: _) -> _\n\nfunc F(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{F(4)}\")\n}\n",
+        )],
+    );
     let (out, ok) = run_project("--native", &dir);
-    assert!(!ok, "{out}");
-    assert!(out.contains("E0201") && out.contains("`F`"), "{out}");
+    assert!(!ok && out.contains("E0201") && out.contains("`F`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package's names are reached only through it (modules/IM1), and a
+/// root declaration may share one (#1744). Nested packages bind their last
+/// segment (IM2), and a `src/` layout's `main` is still the entry point.
+#[test]
+fn a_sub_package_is_its_own_namespace() {
+    let dir = temp_project(
+        "subpkg_ns",
+        &[
+            ("pa/a.rk", "import pa.sub\n\npublic func f(x: i32) -> i32 {\n    return sub.f(x) + 1\n}\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x * 10\n}\n"),
+            ("main.rk", "import pa\n\nfunc f(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{f(2)} {pa.f(2)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("2 21"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{sub.f(2)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "a package's names aren't reachable without importing it:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "subpkg_src",
+        &[("src/main.rk", "func helper() -> i32 {\n    return 7\n}\n\nfunc main() {\n    println(\"{helper()}\")\n}\n")],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('7'), "{mode}:\n{out}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

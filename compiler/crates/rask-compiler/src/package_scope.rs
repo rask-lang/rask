@@ -57,15 +57,21 @@ pub fn qualified(pkg: &str, name: &str) -> String {
 /// the same place.
 ///
 /// A name something outside the program uses keeps it, and is in the map as
-/// itself, so `pkg.name` still reaches it: an extern (a C symbol, or a C
-/// macro), a function with a foreign ABI, which C calls, and, in one of the
-/// project's own packages, the entry point (`main`, or `@entry`). A `src/`
-/// layout puts `main` in a sub-package.
+/// itself, so `pkg.name` still reaches it: a C symbol, a function with a
+/// foreign ABI, which C calls, and, in one of the project's own packages,
+/// the entry point (`main`, or `@entry`). A `src/` layout puts `main` in a
+/// sub-package. A C macro is no symbol, so it's the package's own, as
+/// `pkg.F`: a dotted name, which no Rask declaration can take, so the
+/// program's own `F_pkg` can't meet it. Its C name goes in `@c_name`.
 pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
     let mut kept: HashMap<String, String> = HashMap::new();
     for decl in decls.iter() {
         match &decl.kind {
+            DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => {
+                map.insert(e.name.clone(), format!("{}.{}", pkg, e.name));
+                continue;
+            }
             DeclKind::Extern(e) => {
                 kept.insert(e.name.clone(), e.name.clone());
                 continue;
@@ -89,6 +95,14 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) ->
     }
 
     qualify::qualify_in_place(decls, &map);
+    for decl in decls.iter_mut() {
+        let DeclKind::Extern(e) = &mut decl.kind else { continue };
+        let Some(q) = map.get(&e.name) else { continue };
+        if rask_ast::attr::c_name(&e.attrs).is_none() {
+            e.attrs.push(c_name_attr(&e.name));
+        }
+        e.name = q.clone();
+    }
     // An attachment of the package's own annotation names it too. Only those:
     // `@rename` must stay `@rename` whatever the package calls a function.
     let annotations: HashMap<String, String> = map
@@ -99,6 +113,17 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) ->
     rename_attachments(decls, &annotations);
     map.extend(kept);
     map
+}
+
+/// `@c_name("name")`.
+fn c_name_attr(name: &str) -> rask_ast::attr::Attr {
+    let spelling = Expr {
+        id: rask_ast::NodeId::DUMMY,
+        kind: ExprKind::String(name.to_string()),
+        span: rask_ast::Span::new(0, 0),
+    };
+    let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
+    rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg]))
 }
 
 /// The qualified names of every annotation in `decls`, for the two

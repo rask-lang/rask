@@ -285,7 +285,10 @@ fn discover_package(root: &Path) -> Result<Option<PackageContext>, rask_resolve:
     let root_id = registry.discover(root)?;
     let Some(root_pkg) = registry.get(root_id) else { return Ok(None) };
     let all_decls: Vec<Decl> = root_pkg.all_decls().cloned().collect();
-    if all_decls.is_empty() {
+    // A `src/` layout has nothing at the root and the program in a
+    // sub-package; that's still a package. Only one with no code anywhere
+    // isn't.
+    if registry.packages().iter().all(|p| p.all_decls().next().is_none()) {
         return Ok(None);
     }
     Ok(Some(PackageContext { registry, root_id, all_decls }))
