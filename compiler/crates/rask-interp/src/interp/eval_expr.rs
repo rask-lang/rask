@@ -942,6 +942,9 @@ impl Interpreter {
 
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
+            ExprKind::Int(..) | ExprKind::Float(..) if self.literal_conversions.contains_key(&expr.id) => {
+                self.build_from_literal(expr)
+            }
             ExprKind::Int(n, suffix) => {
                 use rask_ast::token::IntSuffix;
                 use crate::value::IntKind;
@@ -2867,6 +2870,28 @@ impl Interpreter {
             _ => Ok(Value::Unit),
         }
     }
+    /// type.primitives/L9: a literal its type builds, through the same
+    /// `from_int_literal` / `from_float_literal` the compile-time fold runs
+    /// for native code.
+    #[inline(never)]
+    fn build_from_literal(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
+        use crate::value::{FloatKind, IntKind};
+        let conv = self.literal_conversions[&expr.id].clone();
+        let owner = self.types.get(conv.ty).map(|d| d.name().to_string()).unwrap_or_default();
+        let method = conv.value.method();
+        let arg = match conv.value {
+            rask_check::LiteralValue::Int(n) => Value::Int(n, IntKind::I64),
+            rask_check::LiteralValue::Float(x) => Value::Float(x, FloatKind::F64),
+        };
+        let func = self.methods.get(&owner).and_then(|m| m.get(method)).cloned().ok_or_else(|| {
+            RuntimeDiagnostic::new(
+                RuntimeError::NoSuchMethod { ty: owner.clone(), method: method.to_string() },
+                expr.span,
+            )
+        })?;
+        self.call_function(&func, vec![arg], None)
+    }
+
     /// `with a as x, b as y { … }` — the box family's scoped access.
     ///
     /// Its own function so its locals stay out of `eval_expr`'s frame. Rust

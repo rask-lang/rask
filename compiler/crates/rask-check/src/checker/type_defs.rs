@@ -108,6 +108,36 @@ pub struct ModuleMethodSig {
 }
 
 
+/// A literal built by its type's conformance (type.primitives/L9).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiteralConversion {
+    /// The type the literal builds.
+    pub ty: TypeId,
+    /// The literal's value, as the conversion's parameter takes it.
+    pub value: LiteralValue,
+    /// Where the literal is: a conversion that fails is an error here.
+    pub span: rask_ast::Span,
+}
+
+/// What a converted literal hands its conversion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiteralValue {
+    /// `FromIntLiteral.from_int_literal(value: i64)`.
+    Int(i64),
+    /// `FromFloatLiteral.from_float_literal(value: f64)`.
+    Float(f64),
+}
+
+impl LiteralValue {
+    /// The conversion's method name.
+    pub fn method(self) -> &'static str {
+        match self {
+            LiteralValue::Int(_) => "from_int_literal",
+            LiteralValue::Float(_) => "from_float_literal",
+        }
+    }
+}
+
 impl TypedProgram {
     /// What a method call's declaration says it does (`@grows`, `@shrinks`,
     /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
@@ -529,6 +559,10 @@ pub struct TypedProgram {
     /// backends read the answer here rather than each deciding again from the
     /// receiver alone.
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
+    /// type.primitives/L9: number literals a type builds itself from, keyed by
+    /// the literal's node. `let half: Fixed = 0.5` is `Fixed.from_float_literal(0.5)`,
+    /// computed while compiling; the backends read the folded value.
+    pub literal_conversions: HashMap<NodeId, LiteralConversion>,
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,

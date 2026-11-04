@@ -94,6 +94,23 @@ public interface Shr<Rhs = Self> {
     func shr(self, rhs: Rhs) -> Self.Out
 }
 
+// ─── Literals ───────────────────────────────────────────────────
+
+/// A type a number literal can build (type.primitives/L9): `let half: Fixed =
+/// 0.5` is `Fixed.from_float_literal(0.5)`, computed while compiling, so the
+/// binary holds the constant and no float. The conformance has to be a
+/// `comptime func`, and a literal it panics on is a compile error there.
+public interface FromFloatLiteral {
+    func from_float_literal(value: f64) -> Self
+}
+
+/// `FromFloatLiteral` for integer literals: `let t: Ticks = 60` is
+/// `Ticks.from_int_literal(60)`. Two interfaces rather than one generic one,
+/// so a type can take both kinds without two methods sharing a name.
+public interface FromIntLiteral {
+    func from_int_literal(value: i64) -> Self
+}
+
 // ─── Range indexing ─────────────────────────────────────────────
 
 /// `x[a..b]`, `x[a..]`, `x[..b]` and `x[a..=b]` (type.operators/IX4): a piece

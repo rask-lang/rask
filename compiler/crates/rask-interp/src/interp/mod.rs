@@ -240,6 +240,8 @@ pub struct Interpreter {
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_check::OperatorTarget>,
+    /// type.primitives/L9: literals their type builds (`TypedProgram::literal_conversions`).
+    pub(crate) literal_conversions: HashMap<rask_ast::NodeId, rask_check::LiteralConversion>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -492,6 +494,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -536,6 +539,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -586,6 +590,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -703,6 +708,7 @@ impl Interpreter {
         self.err_returns = typed.err_returns.clone();
         self.c_macro_calls = typed.c_macro_calls.clone();
         self.operator_targets = typed.operator_targets.clone();
+        self.literal_conversions = typed.literal_conversions.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());

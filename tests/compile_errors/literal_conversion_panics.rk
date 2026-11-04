@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a literal its type's conversion panics on (type.primitives/L9)
+// Rejects: `1e12` in a `Fixed` slot, which the 32.32 conversion refuses. The
+// conversion runs while compiling, so the panic is an error at the literal.
+// In a file of its own: the fold that runs the conversion only runs once the
+// program type-checks.
+
+struct Fixed {
+    raw: i64
+}
+
+Fixed implements FromFloatLiteral {
+    comptime func from_float_literal(value: f64) -> Fixed {
+        if value.abs() >= 2147483648.0 {
+            panic("out of range for 32.32")
+        }
+        return Fixed(raw: (value * 4294967296.0).to_int())
+    }
+}
+
+func main() {
+    // ERROR: E0383, the conversion panics while compiling
+    let big: Fixed = 1e12
+    println("{big.raw}")
+}

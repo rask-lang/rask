@@ -141,13 +141,26 @@ impl TypeChecker {
                 // an integer and `2.0` only a float. One conformance of the
                 // right kind is the only answer — which is what `duration / 2`
                 // needs, against `Div<i64>` and `Div<Duration>`.
-                let kind_match: Vec<&TypeExpr> = declared
+                let mut kind_match: Vec<&TypeExpr> = declared
                     .iter()
                     .filter(|applied| {
                         self.applied_rhs_type(applied)
                             .is_some_and(|rhs| self.literal_could_be(arg, &rhs))
                     })
                     .collect();
+                // type.primitives/L9: with no primitive pair for it, a literal
+                // can still be a type that builds itself from literals —
+                // `half + 1.5` against `Fixed implements Add`. Primitive pairs
+                // first, so `reading * 3` stays `Mul<i64>` beside `Mul<Fixed>`.
+                if kind_match.is_empty() {
+                    kind_match = declared
+                        .iter()
+                        .filter(|applied| {
+                            self.applied_rhs_type(applied)
+                                .is_some_and(|rhs| self.literal_builds(arg, &rhs))
+                        })
+                        .collect();
+                }
                 if let [only] = kind_match.as_slice() {
                     return self.matched(self_id, &iface, only, method, args);
                 }
@@ -336,6 +349,14 @@ impl TypeChecker {
             }
             _ => false,
         }
+    }
+
+    /// Could an unsuffixed literal be this type through its conformance to
+    /// `FromIntLiteral` or `FromFloatLiteral` (type.primitives/L9)?
+    fn literal_builds(&self, literal: &Type, candidate: &Type) -> bool {
+        let Type::Var(id) = self.ctx.apply(literal) else { return false };
+        let Some(kind) = self.ctx.literal_vars.get(&id).copied() else { return false };
+        self.literal_builder(kind, &self.resolve_named(candidate)).is_some()
     }
 
     /// Which interface named `base` the receiver's operator conformances are to.

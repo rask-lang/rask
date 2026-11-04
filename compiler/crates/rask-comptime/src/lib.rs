@@ -1308,7 +1308,38 @@ impl ComptimeInterpreter {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
             }
+            // A type's functions with no `self`, as `Type.name`: what
+            // `Fixed.from_float_literal(0.5)` and the calls inside it reach.
+            let (owner, methods) = match &decl.kind {
+                DeclKind::Struct(st) => (Some(st.name.as_str()), st.methods.as_slice()),
+                DeclKind::Enum(e) => (Some(e.name.as_str()), e.methods.as_slice()),
+                DeclKind::Impl(i) => (i.target_ty.bare_name(), i.methods.as_slice()),
+                _ => (None, &[][..]),
+            };
+            let Some(owner) = owner else { continue };
+            for m in methods {
+                let takes_self = m.params.first().is_some_and(|p| p.name == "self");
+                if !takes_self && (m.is_comptime || !m.body.is_empty()) {
+                    self.env.register_function(format!("{owner}.{}", m.name), m.clone());
+                }
+            }
         }
+    }
+
+    /// Call `Type.name(args)`, a function `register_functions` registered.
+    pub fn call_type_function(
+        &mut self,
+        owner: &str,
+        name: &str,
+        args: Vec<ComptimeValue>,
+    ) -> ComptimeResult<ComptimeValue> {
+        let qualified = format!("{owner}.{name}");
+        let func = self
+            .env
+            .get_function(&qualified)
+            .cloned()
+            .ok_or(ComptimeError::UndefinedFunction(qualified))?;
+        self.call_function(&func, args)
     }
 
     /// The expressions the checker typed as enums.
@@ -2347,6 +2378,11 @@ impl ComptimeInterpreter {
                 let arg_values = arg_values?;
                 return self.call_static_method(name, method, arg_values);
             }
+            // A program type's own function: `Fixed.from_int(3)`.
+            if self.env.get(name).is_none() && self.env.get_function(&format!("{name}.{method}")).is_some() {
+                let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
+                return self.call_type_function(name, method, arg_values?);
+            }
         }
 
         // Mutating Vec methods: push, pop — need to update the variable in-place
@@ -2735,6 +2771,44 @@ impl ComptimeInterpreter {
                     return Ok(ComptimeValue::Bool(arr.contains(needle)));
                 }
                 _ => {} // fall through to numeric/string methods
+            }
+        }
+
+        // A float's exact methods: every one has a single right answer, so
+        // the value computed here is the one the program would compute. The
+        // transcendental ones (`sin`, `exp`) aren't here: the runtime's are
+        // correctly rounded and Rust's aren't, and a constant that differs from
+        // the run-time answer in the last bit is worse than an error.
+        if let Some(x) = match obj {
+            ComptimeValue::F64(x) => Some(*x),
+            ComptimeValue::F32(x) => Some(f64::from(*x)),
+            _ => None,
+        } {
+            let same_width = |v: f64| match obj {
+                ComptimeValue::F32(_) => ComptimeValue::F32(v as f32),
+                _ => ComptimeValue::F64(v),
+            };
+            match method {
+                // Toward zero. A value with no `i64` is an error, not the
+                // saturated or wrapped one a run-time conversion gives.
+                "to_int" => {
+                    let t = x.trunc();
+                    return if t.is_finite() && t >= -9_223_372_036_854_775_808.0 && t < 9_223_372_036_854_775_808.0 {
+                        Ok(ComptimeValue::I64(t as i64))
+                    } else {
+                        Err(ComptimeError::IntegerOverflow(format!("{x:?} has no `i64` value")))
+                    };
+                }
+                "floor" => return Ok(same_width(x.floor())),
+                "ceil" => return Ok(same_width(x.ceil())),
+                "round" => return Ok(same_width(x.round())),
+                "trunc" => return Ok(same_width(x.trunc())),
+                "abs" => return Ok(same_width(x.abs())),
+                "sqrt" => return Ok(same_width(x.sqrt())),
+                "is_nan" => return Ok(ComptimeValue::Bool(x.is_nan())),
+                "is_finite" => return Ok(ComptimeValue::Bool(x.is_finite())),
+                "is_inf" => return Ok(ComptimeValue::Bool(x.is_infinite())),
+                _ => {}
             }
         }
 

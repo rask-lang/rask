@@ -1757,6 +1757,12 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
                     // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {
@@ -1790,6 +1796,12 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
                     // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {

@@ -4095,6 +4095,14 @@ impl Parser {
                 // in here is what lets `i64::MIN` be written: the lexer sees
                 // 9223372036854775808 on its own, which only fits `u64`, so
                 // leaving the `-` as an operator asked for `neg` on a `u64`.
+                // A float literal folds its sign the same way, so `-3.5` is the
+                // literal a type built from literals sees (type.primitives/L9),
+                // not `neg` on one. Every float type is signed, so every
+                // suffix folds.
+                if let ExprKind::Float(v, suffix) = operand.kind {
+                    let kind = ExprKind::Float(-v, suffix);
+                    return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                }
                 if let ExprKind::Int(v, suffix) = operand.kind {
                     match suffix {
                         None => {

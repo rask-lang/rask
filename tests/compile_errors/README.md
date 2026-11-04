@@ -36,6 +36,8 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [type_errors.rk](type_errors.rk) | Implicit bool conversion, narrowing `as`, float comparison, Option no-auto-unwrap, try type mismatch, branch type mismatch, break value types |
+| [literal_conversion.rk](literal_conversion.rk) | A type built from literals (`type.primitives/L9`): a `from_int_literal` that isn't `comptime` (E0955), an integer literal past the `i64` the conversion takes, and a suffixed literal, which keeps its own type |
+| [literal_conversion_panics.rk](literal_conversion_panics.rk) | A literal the type's conversion panics on is a compile error at the literal (L9). Its own file: the conversion runs in the fold, after the program type-checks |
 | [cast_rules.rk](cast_rules.rk) | `as` cast rules: narrowing (CV2), sign reinterpret (CV3), float→int (CV4), int→char (CH5), int↔bool (BL3); conversion methods used where their policy means nothing — `floor` on an integer, `wrap` to a float, `round` int→int, `clamp` on a float (CV11–CV16, E0818); `as` to a collection or a struct, which reinterprets bits rather than converting and needs `unsafe` to say so (E0838, #862) |
 | [atomic_payload_and_signature.rk](atomic_payload_and_signature.rk) | An `Atomic` payload that isn't one word (GA2, E0384), `fetch_add` on a `bool` (GA3, E0402), and `store` given a string. The checker answered atomics from its own table and dropped every argument mismatch; the signatures come from `sync.rk` now |
 | [primitive_conformances.rk](primitive_conformances.rk) | A float filling `T: BitAnd`, an unsigned integer filling `T: Neg`. The conformance check kept its own list of what a primitive answers and it disagreed with the method resolver, so both type-checked and failed later (E0333) |

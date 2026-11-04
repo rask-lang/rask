@@ -1319,6 +1319,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.primitives/L9: a `FromIntLiteral` or `FromFloatLiteral`
+    /// conversion that isn't a `comptime func`.
+    #[error("`{ty}.{method}` builds literals, so it has to be a `comptime func`")]
+    LiteralConversionNotComptime {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// A struct or variant literal that gives one field two values.
     #[error("field `{field}` of `{ty}` is given twice")]
     FieldGivenTwice {
@@ -2029,6 +2038,7 @@ impl TypeError {
             | InvalidConvert { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
+            | LiteralConversionNotComptime { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }

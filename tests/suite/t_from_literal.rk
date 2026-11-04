@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.primitives/L9 — a number type built from literals (#1682).
+//
+// Raido's 32.32 `Fixed`, taking `0.5` and `3` directly. The conversion runs
+// while compiling, so native code holds the bit pattern and no float; the
+// interpreter runs the same function and has to agree.
+
+struct Fixed {
+    raw: i64
+}
+
+const ONE: i64 = 4294967296
+
+extend Fixed {
+    func from_int(n: i64) -> Fixed {
+        return Fixed(raw: n * ONE)
+    }
+}
+
+Fixed implements FromFloatLiteral {
+    comptime func from_float_literal(value: f64) -> Fixed {
+        return Fixed(raw: (value * 4294967296.0).to_int())
+    }
+}
+
+Fixed implements FromIntLiteral {
+    // A conversion may call the type's other functions at compile time.
+    comptime func from_int_literal(value: i64) -> Fixed {
+        return Fixed.from_int(value)
+    }
+}
+
+Fixed implements Add {
+    func add(self, other: Fixed) -> Fixed {
+        return Fixed(raw: self.raw + other.raw)
+    }
+}
+
+// A primitive pair beside the `Fixed` one: `x * 3` is this, not `x * Fixed(3)`.
+Fixed implements Mul<i64> {
+    func mul(self, k: i64) -> Fixed {
+        return Fixed(raw: self.raw * k)
+    }
+}
+
+Fixed implements Mul {
+    func mul(self, other: Fixed) -> Fixed {
+        return Fixed(raw: (self.raw >> 16) * (other.raw >> 16))
+    }
+}
+
+struct Body {
+    mass: Fixed
+    speed: Fixed
+}
+
+func raw_of(x: Fixed) -> i64 {
+    return x.raw
+}
+
+test "L9 — an annotated binding" {
+    let half: Fixed = 0.5
+    assert half.raw == 2147483648
+    let neg: Fixed = -3.5
+    assert neg.raw == -15032385536
+}
+
+test "L9 — an integer literal through from_int_literal" {
+    let three: Fixed = 3
+    assert three.raw == 3 * ONE
+    let minus: Fixed = -2
+    assert minus.raw == -2 * ONE
+}
+
+test "L9 — parameter, field and collection element" {
+    assert raw_of(0.25) == 1073741824
+    let b = Body(mass: 2, speed: 1.5)
+    assert b.mass.raw == 2 * ONE
+    assert b.speed.raw == 6442450944
+    mut v: Vec<Fixed> = Vec.new()
+    v.push(0.75)
+    assert v[0].raw == 3221225472
+}
+
+test "L9 — under an operator, primitive pairs first" {
+    let a: Fixed = 1.5
+    let sum = a + 0.5
+    assert sum.raw == 2 * ONE
+    let tripled = a * 3
+    assert tripled.raw == 19327352832
+    let doubled = a * 2.0
+    assert doubled.raw == 3 * ONE
+}

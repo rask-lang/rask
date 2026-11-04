@@ -1367,6 +1367,14 @@ impl TypeTable {
         self.declares_conformance(type_id, &generate)
     }
 
+    /// Does the type build itself from a number literal through the stdlib's
+    /// `FromIntLiteral` or `FromFloatLiteral` (type.primitives/L9)?
+    pub fn builds_from_literal(&self, type_id: TypeId, float: bool) -> bool {
+        let name = if float { "FromFloatLiteral" } else { "FromIntLiteral" };
+        let iface = self.stdlib_interface_ident(name);
+        self.declares_conformance_to(type_id, iface, &TypeExpr::named(name))
+    }
+
     /// Does the type conform to a *different* interface spelled `name`? A stdlib
     /// `Buffer` implements the stdlib's `Writer`, and a program declaring its own
     /// `Writer` hasn't changed that (#1329).

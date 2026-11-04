@@ -2835,6 +2835,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
                     .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
             }
+            LiteralConversionNotComptime { ty, method, span } => {
+                Diagnostic::error(format!("`{}.{}` builds literals, so it has to be a `comptime func`", ty, method))
+                    .with_code("E0955")
+                    .with_primary(*span, "runs at run time as written")
+                    .with_fix(format!("comptime func {}(…)", method))
+                    .with_why("a literal of a type that builds itself from literals is computed while compiling, so the program holds the constant and never runs the conversion (type.primitives/L9)")
+            }
             FieldGivenTwice { ty, field, span } => {
                 Diagnostic::error(format!("field `{}` of `{}` is given twice", field, ty))
                     .with_code("E0941")

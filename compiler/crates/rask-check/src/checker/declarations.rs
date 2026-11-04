@@ -78,6 +78,27 @@ impl TypeChecker {
     /// `typedef struct tag { … } Alias;` registers the struct under `tag` and
     /// `Alias` beside it pointing at it, so a program that writes `c.Alias`
     /// lands on the alias and has to hop.
+    /// type.primitives/L9: the stdlib's `FromIntLiteral` and
+    /// `FromFloatLiteral` are run while compiling, so their conversion has to
+    /// be a `comptime func`. The interface can't say so itself.
+    fn check_literal_conversion(&mut self, block: &rask_ast::decl::ImplDecl, written: &TypeExpr, name: &str) {
+        let method = match name {
+            "FromIntLiteral" => "from_int_literal",
+            "FromFloatLiteral" => "from_float_literal",
+            _ => return,
+        };
+        if self.types.written_interface_ident(written) != self.types.stdlib_interface_ident(name) {
+            return;
+        }
+        for m in block.methods.iter().filter(|m| m.name == method && !m.is_comptime) {
+            self.errors.push(TypeError::LiteralConversionNotComptime {
+                ty: block.target_ty.to_string(),
+                method: method.to_string(),
+                span: m.span,
+            });
+        }
+    }
+
     fn c_struct_fields(
         &self,
         id: rask_resolve::SymbolId,
@@ -1228,8 +1249,9 @@ impl TypeChecker {
         // name it's filed under so the two don't overwrite each other here —
         // and so they don't emit one symbol between them downstream.
         let interface = i.interface.as_ref().map(|t| (t, self.types.interface_name(t)));
-        if let Some((_, name)) = &interface {
+        if let Some((written, name)) = &interface {
             self.conformance_interfaces.insert(decl_id, name.clone());
+            self.check_literal_conversion(i, written, name);
         }
         let new_methods: Vec<_> = i
             .methods
