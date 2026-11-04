@@ -441,6 +441,7 @@ static void task_entry_run(TaskEntry *entry) {
 }
 
 static void *task_thread_entry(void *arg) {
+    rask_fp_reset();
     rask_outside_thread_start();
     task_entry_run((TaskEntry *)arg);
     rask_outside_thread_exit();

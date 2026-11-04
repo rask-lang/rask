@@ -141,13 +141,26 @@ impl TypeChecker {
                 // an integer and `2.0` only a float. One conformance of the
                 // right kind is the only answer — which is what `duration / 2`
                 // needs, against `Div<i64>` and `Div<Duration>`.
-                let kind_match: Vec<&TypeExpr> = declared
+                let mut kind_match: Vec<&TypeExpr> = declared
                     .iter()
                     .filter(|applied| {
                         self.applied_rhs_type(applied)
                             .is_some_and(|rhs| self.literal_could_be(arg, &rhs))
                     })
                     .collect();
+                // type.primitives/L9: with no primitive pair for it, a literal
+                // can still be a type that builds itself from literals —
+                // `half + 1.5` against `Fixed implements Add`. Primitive pairs
+                // first, so `reading * 3` stays `Mul<i64>` beside `Mul<Fixed>`.
+                if kind_match.is_empty() {
+                    kind_match = declared
+                        .iter()
+                        .filter(|applied| {
+                            self.applied_rhs_type(applied)
+                                .is_some_and(|rhs| self.literal_builds(arg, &rhs))
+                        })
+                        .collect();
+                }
                 if let [only] = kind_match.as_slice() {
                     return self.matched(self_id, &iface, only, method, args);
                 }
@@ -273,13 +286,24 @@ impl TypeChecker {
             .unwrap_or_default();
         for id in &conformers {
             let name = self.types.type_name(*id);
-            // Only a primitive: a literal is never anything else.
+            // Only a primitive here: a type built from literals comes below.
             if !rask_ast::primitives::is_scalar(&name) {
                 continue;
             }
             let Ok(candidate) = super::resolve_type_expr(&TypeExpr::named(name), &self.types) else { continue };
             if self.literal_could_be(recv, &candidate) {
                 found.push(candidate);
+            }
+        }
+        // type.primitives/L9: no primitive takes the pair, so the literal can
+        // be a type that builds itself from literals — `1.0 - x` against
+        // `Fixed implements Sub`. Primitives first, as on the right.
+        if found.is_empty() {
+            for id in &conformers {
+                let candidate = Type::Named(*id);
+                if self.literal_builds(recv, &candidate) {
+                    found.push(candidate);
+                }
             }
         }
         match found.as_slice() {
@@ -336,6 +360,14 @@ impl TypeChecker {
             }
             _ => false,
         }
+    }
+
+    /// Could an unsuffixed literal be this type through its conformance to
+    /// `FromLiteral` (type.primitives/L9)?
+    fn literal_builds(&self, literal: &Type, candidate: &Type) -> bool {
+        let Type::Var(id) = self.ctx.apply(literal) else { return false };
+        let Some(kind) = self.ctx.literal_vars.get(&id).copied() else { return false };
+        self.literal_builder(kind, &self.resolve_named(candidate)).is_some()
     }
 
     /// Which interface named `base` the receiver's operator conformances are to.

@@ -72,6 +72,94 @@ impl TypeChecker {
         }
     }
 
+    /// type.generics/GT7: a type with more than one conformance of a generic
+    /// interface keeps one method per conformance, filed under a name of its
+    /// own (`render$0`, `render$1`, in declaration order). The declarations
+    /// and the calls are rewritten to that name (`FiledMethods`), so the
+    /// backends see one name per body. A type with one conformance keeps the
+    /// plain name. Runs once every block is registered, so the answer doesn't
+    /// depend on which block came first.
+    pub(super) fn file_conformance_methods(&mut self) {
+        let resolved: Vec<((rask_types::TypeId, String), Vec<Vec<Type>>)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .map(|(k, list)| {
+                let args = list
+                    .iter()
+                    .map(|e| e.written.iter().map(|a| resolve_type_expr(a, &self.types).unwrap_or(Type::Error)).collect())
+                    .collect();
+                (k.clone(), args)
+            })
+            .collect();
+        for (k, args) in resolved {
+            if let Some(list) = self.types.conformance_methods.get_mut(&k) {
+                for (e, a) in list.iter_mut().zip(args) {
+                    e.args = a;
+                }
+            }
+        }
+        let mut keys: Vec<(rask_types::TypeId, String)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .filter(|(_, list)| list.len() > 1)
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort_by(|a, b| (a.0 .0, &a.1).cmp(&(b.0 .0, &b.1)));
+        for (type_id, plain) in keys {
+            let entries = self.types.conformance_methods[&(type_id, plain.clone())].clone();
+            let mut filed_all = Vec::new();
+            for (i, entry) in entries.iter().enumerate() {
+                let filed = format!("{plain}${i}");
+                if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+                    self.types.get_mut(type_id)
+                {
+                    let params = |m: &MethodSig| m.params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>();
+                    if let Some(sig) = methods.iter_mut().find(|m| m.name == plain && params(m) == entry.params) {
+                        sig.name = filed.clone();
+                    }
+                }
+                self.filed_methods.decls.insert((entry.decl, plain.clone()), filed.clone());
+                filed_all.push(filed.clone());
+                if let Some(list) = self.types.conformance_methods.get_mut(&(type_id, plain.clone())) {
+                    list[i].filed = Some(filed);
+                }
+            }
+            self.types.filed_methods.entry((type_id, plain)).or_default().extend(filed_all);
+        }
+    }
+
+    /// type.primitives/L9: a literal is built while compiling, so the
+    /// conversion a type builds literals with has to be a `comptime func`.
+    /// The interface can't say so, and the method may sit in any block on the
+    /// type, so every block is asked once every conformance is known.
+    pub(super) fn check_literal_conversions(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let (owner, methods) = match &decl.kind {
+                DeclKind::Struct(st) => (st.name.as_str(), st.methods.as_slice()),
+                DeclKind::Enum(e) => (e.name.as_str(), e.methods.as_slice()),
+                DeclKind::Impl(i) => match i.target_ty.last_segment() {
+                    Some(n) => (n, i.methods.as_slice()),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let Some(id) = self.types.get_type_id(owner) else { continue };
+            for m in methods.iter().filter(|m| !m.is_comptime) {
+                let builds = self.types.literal_conversion_method() == Some(m.name.as_str())
+                    && [false, true].into_iter().any(|float| self.types.builds_from_literal(id, float));
+                if builds {
+                    self.errors.push(TypeError::LiteralConversionNotComptime {
+                        ty: owner.to_string(),
+                        method: m.name.clone(),
+                        span: m.span,
+                    });
+                }
+            }
+        }
+    }
+
     /// The field symbols of a C struct named in a namespace, following the
     /// typedef if there is one.
     ///
@@ -633,8 +721,10 @@ impl TypeChecker {
     }
 
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
-        // MN3: two conformances wanting different methods of one name is an
-        // error; the way out is a nominal type of its own.
+        // MN3: two conformances of one interface whose methods of one name
+        // take the same arguments is an error: a call picks between them by
+        // its arguments (GT7) and has nothing to go on. The way out is a
+        // nominal type of its own.
         let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
@@ -672,7 +762,14 @@ impl TypeChecker {
                 let theirs = checker.required_signatures(&self_ty, &other);
                 for a in &mine {
                     if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
-                        if !checker.signatures_agree(a, b) {
+                        // Could the two take the same arguments for some
+                        // instantiation? A type parameter matches anything:
+                        // `Render<T>` and `Render<Html>` on `Boxed<T>` meet at
+                        // `Boxed<Html>`.
+                        let mut bound = std::collections::HashMap::new();
+                        let same_args = a.params.len() == b.params.len()
+                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| self.could_coincide(x, y, &mut bound));
+                        if same_args {
                             clash = Some(a.name.clone());
                             break;
                         }
@@ -1244,6 +1341,16 @@ impl TypeChecker {
                     rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
                     sig.name = filed;
+                } else if let Some(args) = interface.as_ref().and_then(|(t, _)| {
+                    self.types.generic_conformance_args(t, &self.types.type_name(type_id))
+                }) {
+                    // GT7: noted here, filed once every block is in
+                    // (`file_conformance_methods`).
+                    self.types
+                        .conformance_methods
+                        .entry((type_id, m.name.clone()))
+                        .or_default()
+                        .push(super::type_table::ConformanceMethod { written: args, args: Vec::new(), params: sig.params.iter().map(|(t, _)| t.clone()).collect(), decl: decl_id, filed: None });
                 }
                 sig
             })

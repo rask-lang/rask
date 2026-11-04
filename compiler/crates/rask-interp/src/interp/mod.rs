@@ -240,6 +240,10 @@ pub struct Interpreter {
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_check::OperatorTarget>,
+    /// type.primitives/L9: literals their type builds (`TypedProgram::literal_conversions`).
+    pub(crate) literal_conversions: HashMap<rask_ast::NodeId, rask_check::LiteralConversion>,
+    /// type.generics/GT7: calls through a bound naming a generic interface.
+    pub(crate) conformance_calls: HashMap<rask_ast::NodeId, rask_check::ConformanceCall>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -399,6 +403,20 @@ impl Interpreter {
         rask_check::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
 
+    /// type.generics/GT7: the filed method a call through a bound reaches in
+    /// this instantiation, the lookup monomorphization makes for native code.
+    pub(crate) fn conformance_call_method(&self, call: rask_ast::NodeId, object: rask_ast::NodeId) -> Option<String> {
+        let target = self.conformance_calls.get(&call)?;
+        let outer = self.generic_frames.last().and_then(|f| f.as_deref());
+        let concrete = |ty: &rask_types::Type| match outer {
+            Some(outer) => rask_check::substitute_type(ty, outer),
+            None => ty.clone(),
+        };
+        let recv = concrete(self.node_types.get(&object)?);
+        let args: Vec<rask_types::Type> = target.args.iter().map(concrete).collect();
+        self.types.conformance_method_for(&recv, &target.method, &args)
+    }
+
     /// The generic frame for a call written at `call` with no receiver.
     pub(crate) fn call_generics(&self, call: rask_ast::NodeId) -> GenericFrame {
         self.generic_frame_for_call(call, None)
@@ -492,6 +510,8 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
+            conformance_calls: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -536,6 +556,8 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
+            conformance_calls: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -586,6 +608,8 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
+            conformance_calls: HashMap::new(),
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -703,6 +727,8 @@ impl Interpreter {
         self.err_returns = typed.err_returns.clone();
         self.c_macro_calls = typed.c_macro_calls.clone();
         self.operator_targets = typed.operator_targets.clone();
+        self.literal_conversions = typed.literal_conversions.clone();
+        self.conformance_calls = typed.conformance_calls.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
@@ -869,6 +895,8 @@ impl Interpreter {
         child.call_type_args = self.call_type_args.clone();
         child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();
+        child.literal_conversions = self.literal_conversions.clone();
+        child.conformance_calls = self.conformance_calls.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.else_binding_types = self.else_binding_types.clone();

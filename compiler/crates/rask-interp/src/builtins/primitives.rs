@@ -550,19 +550,21 @@ impl Interpreter {
                 let bits = if a.is_nan() { 0x7ff8_0000_0000_0000 } else { a.to_bits() };
                 Ok(Value::Int(bits as i64, crate::value::IntKind::U64))
             }
-            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.powf(b)), k)) }
-            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(a.powi(b as i32)), k)) }
-            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.rem_euclid(b)), k)) }
-            "sin" => Ok(Value::Float(k.round(a.sin()), k)),
-            "cos" => Ok(Value::Float(k.round(a.cos()), k)),
-            "tan" => Ok(Value::Float(k.round(a.tan()), k)),
-            "asin" => Ok(Value::Float(k.round(a.asin()), k)),
-            "acos" => Ok(Value::Float(k.round(a.acos()), k)),
-            "atan" => Ok(Value::Float(k.round(a.atan()), k)),
-            "ln" => Ok(Value::Float(k.round(a.ln()), k)),
-            "log10" => Ok(Value::Float(k.round(a.log10()), k)),
-            "log2" => Ok(Value::Float(k.round(a.log2()), k)),
-            "exp" => Ok(Value::Float(k.round(a.exp()), k)),
+            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(crate::float_math::pow(a, b)), k)) }
+            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(crate::float_math::powi(a, b as i32)), k)) }
+            // AR2: the remainder takes the dividend's sign, which is C's `fmod`
+            // and native's answer. `rem_euclid` gave -7.25 % 2.0 as 0.75.
+            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a % b), k)) }
+            "sin" => Ok(Value::Float(k.round(crate::float_math::sin(a)), k)),
+            "cos" => Ok(Value::Float(k.round(crate::float_math::cos(a)), k)),
+            "tan" => Ok(Value::Float(k.round(crate::float_math::tan(a)), k)),
+            "asin" => Ok(Value::Float(k.round(crate::float_math::asin(a)), k)),
+            "acos" => Ok(Value::Float(k.round(crate::float_math::acos(a)), k)),
+            "atan" => Ok(Value::Float(k.round(crate::float_math::atan(a)), k)),
+            "ln" => Ok(Value::Float(k.round(crate::float_math::ln(a)), k)),
+            "log10" => Ok(Value::Float(k.round(crate::float_math::log10(a)), k)),
+            "log2" => Ok(Value::Float(k.round(crate::float_math::log2(a)), k)),
+            "exp" => Ok(Value::Float(k.round(crate::float_math::exp(a)), k)),
             "trunc" => Ok(Value::Float(k.round(a.trunc()), k)),
             "fract" => Ok(Value::Float(k.round(a.fract()), k)),
             _ => Err(RuntimeError::NoSuchMethod {

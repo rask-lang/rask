@@ -659,7 +659,7 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, typed, Some(cfg));
 
-    if !comptime_eval::has_comptime(decls) {
+    if !comptime_eval::has_comptime(decls, typed) {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks

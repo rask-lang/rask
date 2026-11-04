@@ -1243,7 +1243,45 @@ impl TypeChecker {
                     }
                 };
 
-                if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                // GT7: conformances to a generic interface, picked by the
+                // call's arguments.
+                let picked = match self.pick_conformance_method(*type_id, &methods, &method, &args, &HashMap::new()) {
+                    ConformancePick::NotFiled => None,
+                    ConformancePick::Found(sig) => Some(sig),
+                    ConformancePick::Wait(candidates) => {
+                        self.waiting_conformance_calls.insert(
+                            (span.file_id, span.start, span.end),
+                            (self.render_type(&ty), method.clone(), candidates, span),
+                        );
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty: ty.clone(),
+                            method,
+                            args,
+                            ret,
+                            span,
+                            call_node,
+                        });
+                        return Ok(false);
+                    }
+                    ConformancePick::NoneFits(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(self.no_conformance_takes(&ty, &method, &args, candidates, span));
+                    }
+                    ConformancePick::Ambiguous(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(TypeError::AmbiguousConformanceCall {
+                            ty: self.render_type(&ty),
+                            method,
+                            candidates,
+                            span,
+                        });
+                    }
+                };
+                if let Some(sig) = &picked {
+                    self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                    self.record_filed_call(call_node, &sig.name);
+                }
+                if let Some(method_sig) = picked.as_ref().or_else(|| methods.iter().find(|m| m.name == method)) {
                     // Instantiate generic type params with fresh vars so a
                     // bare `Vec.new()` produces a Vec carrying a fresh element
                     // var instead of the literal "T" placeholder. Without this
@@ -1495,12 +1533,60 @@ impl TypeChecker {
                     }
                 };
 
+                // GT7: conformances to a generic interface, picked by the
+                // call's arguments.
+                let receiver_subst: HashMap<&str, Type> = type_params
+                    .iter()
+                    .map(String::as_str)
+                    .zip(generic_args.iter().filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    }))
+                    .collect();
+                let conformance_pick = match self.pick_conformance_method(*base, &methods, &method, &args, &receiver_subst) {
+                    ConformancePick::NotFiled => None,
+                    ConformancePick::Found(sig) => Some(sig),
+                    ConformancePick::Wait(candidates) => {
+                        self.waiting_conformance_calls.insert(
+                            (span.file_id, span.start, span.end),
+                            (self.render_type(&ty), method.clone(), candidates, span),
+                        );
+                        self.deferred_methods.push(TypeConstraint::HasMethod {
+                            ty: ty.clone(),
+                            method,
+                            args,
+                            ret,
+                            span,
+                            call_node,
+                        });
+                        return Ok(false);
+                    }
+                    ConformancePick::NoneFits(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(self.no_conformance_takes(&ty, &method, &args, candidates, span));
+                    }
+                    ConformancePick::Ambiguous(candidates) => {
+                        self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                        return Err(TypeError::AmbiguousConformanceCall {
+                            ty: self.render_type(&ty),
+                            method,
+                            candidates,
+                            span,
+                        });
+                    }
+                };
+
                 // The block whose header this receiver fits, where two blocks
                 // declare the method (`TypeTable::filed_methods`).
                 let filed = self.types.filed_methods.get(&(*base, method.clone())).cloned().unwrap_or_default();
                 let candidates: Vec<&MethodSig> =
                     methods.iter().filter(|m| m.name == method || filed.contains(&m.name)).collect();
-                let found = if candidates.len() > 1 {
+                if conformance_pick.is_some() {
+                    self.waiting_conformance_calls.remove(&(span.file_id, span.start, span.end));
+                }
+                let found = if conformance_pick.is_some() {
+                    conformance_pick.as_ref()
+                } else if candidates.len() > 1 {
                     let settled = generic_args.iter().all(|a| match a {
                         GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
                         _ => true,
@@ -1807,16 +1893,66 @@ impl TypeChecker {
             .unwrap_or_default();
 
         // Find a bound interface that declares `method`, pulling out its signature.
+        // GT7: two bounds of one generic interface (`T: Render<Html> +
+        // Render<Json>`) both declare it, and the arguments pick which.
         let receiver = Type::UnresolvedNamed(param.clone());
-        let sig = {
+        let declaring: Vec<(MethodSig, TypeExpr)> = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-            bounds.iter().find_map(|tr| {
-                checker
-                    .interface_methods_written(tr)
-                    .into_iter()
-                    .find(|m| m.name == method)
-            })
+            bounds
+                .iter()
+                .filter_map(|tr| {
+                    checker
+                        .interface_methods_written(tr)
+                        .into_iter()
+                        .find(|m| m.name == method)
+                        .map(|m| (m, tr.clone()))
+                })
+                .collect()
         };
+        // The interface's own parameters, as the bound applies them: through
+        // `T: Render<Html>`, `render` takes an `Html`.
+        let declaring: Vec<(MethodSig, TypeExpr)> = declaring
+            .into_iter()
+            .map(|(mut m, tr)| {
+                let bound_args = self.types.interface_param_bindings(&tr, &param);
+                if !bound_args.is_empty() {
+                    let subst: HashMap<&str, Type> = bound_args.iter().map(|(n, t)| (n.as_str(), t.clone())).collect();
+                    for (p, _) in &mut m.params {
+                        *p = Self::substitute_type_params(p, &subst);
+                    }
+                    m.ret = Self::substitute_type_params(&m.ret, &subst);
+                }
+                (m, tr)
+            })
+            .collect();
+        let chosen = if declaring.len() > 1 {
+            let fitting: Vec<&(MethodSig, TypeExpr)> = declaring
+                .iter()
+                .filter(|(m, _)| {
+                    m.params.len() == args.len()
+                        && all_fit(m.params.iter().zip(&args).map(|((p, _), a)| self.arg_fits(p, a, LiteralTier::OwnKind)))
+                            != Some(false)
+                })
+                .collect();
+            match fitting.as_slice() {
+                [only] => Some((*only).clone()),
+                _ => declaring.first().cloned(),
+            }
+        } else {
+            declaring.first().cloned()
+        };
+        let (sig, bound) = chosen.unzip();
+
+        // GT7: the bound names the conformance, and which body that is depends
+        // on the type `T` turns out to be. Monomorphization and the
+        // interpreter look it up per instantiation
+        // (`TypeTable::conformance_method_for`).
+        if let (Some(b), Some(node)) = (&bound, call_node) {
+            if let Some(written) = self.types.generic_conformance_args(b, &param) {
+                let args = written.iter().map(|a| super::resolve_type_expr(a, &self.types).unwrap_or(Type::Error)).collect();
+                self.conformance_calls.insert(node, super::type_defs::ConformanceCall { method: method.clone(), args });
+            }
+        }
 
         // OR1/OR4: an operator reached through a bound resolves to the pair the
         // *bound* names — `T: Mul<f64>` is `Mul<f64>`, whichever type `T` turns
@@ -3558,5 +3694,313 @@ impl TypeChecker {
                 || super::parse_type::resolve_type_expr(&rask_ast::ty::TypeExpr::named(leaf), &self.types)
                     .is_ok_and(|t| self.resolve_named(&t) == self.resolve_named(actual))
         })
+    }
+}
+
+/// What GT7's pick between a type's conformances to one generic interface
+/// came to.
+pub(super) enum ConformancePick {
+    /// The method isn't a conformance method filed under its arguments.
+    NotFiled,
+    /// The arguments pick this one.
+    Found(MethodSig),
+    /// An argument hasn't settled enough to say; the conformances still in
+    /// the running.
+    Wait(Vec<String>),
+    /// Every argument is known and more than one conformance takes them.
+    Ambiguous(Vec<String>),
+    /// No conformance takes these arguments; the candidates' signatures.
+    NoneFits(Vec<String>),
+}
+
+impl TypeChecker {
+    /// type.generics/GT7: a type conforming to one generic interface more
+    /// than once has one filed method per conformance (`render$0`,
+    /// `render$1`), and the call's argument types pick one, the way an
+    /// operator's right operand picks its pair (OR1). An argument fits the
+    /// way it would be passed: an integer literal into a float, a value into
+    /// its optional. An unsuffixed literal takes a primitive parameter before
+    /// a type built from literals. `subst` binds the receiver's own type
+    /// parameters.
+    pub(super) fn pick_conformance_method(
+        &self,
+        type_id: crate::TypeId,
+        methods: &[MethodSig],
+        method: &str,
+        args: &[Type],
+        subst: &HashMap<&str, Type>,
+    ) -> ConformancePick {
+        let Some(entries) = self.types.conformance_methods.get(&(type_id, method.to_string())) else {
+            return ConformancePick::NotFiled;
+        };
+        let candidates: Vec<&MethodSig> = entries
+            .iter()
+            .filter_map(|e| e.filed.as_ref())
+            .filter_map(|f| methods.iter().find(|m| &m.name == f))
+            .collect();
+        if candidates.is_empty() {
+            return ConformancePick::NotFiled;
+        }
+        for tier in [LiteralTier::OwnKind, LiteralTier::Float, LiteralTier::Built] {
+            let mut fits = Vec::new();
+            let mut unsure = false;
+            for sig in candidates.iter().filter(|s| s.params.len() == args.len()) {
+                let verdict = all_fit(sig.params.iter().zip(args).map(|((p, _), a)| {
+                    self.arg_fits(&Self::substitute_type_params(p, subst), a, tier)
+                }));
+                match verdict {
+                    Some(false) => continue,
+                    None => unsure = true,
+                    Some(true) => {}
+                }
+                fits.push(*sig);
+            }
+            let named = |fits: &[&MethodSig]| fits.iter().map(|s| self.render_signature(method, s)).collect();
+            // A tie between primitives an unsuffixed literal could be breaks
+            // toward the type the literal would have on its own (L1, L4, L6):
+            // `m.scale(2)` against `Scale<i32>` and `Scale<i64>` is the `i32`.
+            if fits.len() > 1 && !unsure {
+                let defaulted: Vec<&MethodSig> = fits
+                    .iter()
+                    .copied()
+                    .filter(|sig| {
+                        sig.params.iter().zip(args).all(|((p, _), a)| match self.ctx.apply(a) {
+                            Type::Var(id) => match self.ctx.literal_vars.get(&id) {
+                                // An integer that reached the floats is a
+                                // float the way `1` fills an `f64` slot.
+                                Some(_) if tier == LiteralTier::Float => self.resolve_named(p) == Type::F64,
+                                Some(kind) => self.resolve_named(p) == self.ctx.literal_default(id, *kind),
+                                None => true,
+                            },
+                            _ => true,
+                        })
+                    })
+                    .collect();
+                if let [only] = defaulted.as_slice() {
+                    return ConformancePick::Found((*only).clone());
+                }
+            }
+            match (fits.as_slice(), unsure) {
+                ([only], false) => return ConformancePick::Found((*only).clone()),
+                ([], _) => continue,
+                (_, true) => return ConformancePick::Wait(named(&fits)),
+                (_, false) => return ConformancePick::Ambiguous(named(&fits)),
+            }
+        }
+        ConformancePick::NoneFits(candidates.iter().map(|s| self.render_signature(method, s)).collect())
+    }
+
+    /// Could `arg` be passed where `param` is? `None` while that depends on
+    /// a variable still open. `tier` is how far an unsuffixed literal may
+    /// reach.
+    fn arg_fits(&self, param: &Type, arg: &Type, tier: LiteralTier) -> Option<bool> {
+        let param = self.resolve_named(param);
+        let arg = self.resolve_named(&self.ctx.apply(arg));
+        if let Some(inner) = param.as_option() {
+            if arg.as_option().is_none() && !matches!(arg, Type::None) {
+                return self.arg_fits(inner, &arg, tier);
+            }
+        }
+        if matches!(param, Type::Var(_)) {
+            return None;
+        }
+        if let Type::Var(id) = arg {
+            let Some(kind) = self.ctx.literal_vars.get(&id).copied() else { return None };
+            let float = matches!(param, Type::F32 | Type::F64);
+            let int = matches!(
+                param,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+            );
+            let integer = kind == super::inference::LiteralKind::Integer;
+            // An integer has to fit: `300` isn't a `u8`.
+            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param)) {
+                (Some(&v), Some((lo, hi))) => v >= lo && (v < 0 || (v as u128) <= hi),
+                _ => true,
+            };
+            return Some(match tier {
+                LiteralTier::OwnKind => if integer { int && holds() } else { float },
+                LiteralTier::Float => integer && float,
+                LiteralTier::Built => self.literal_builder(kind, &param).is_some(),
+            });
+        }
+        self.shape_fits(&param, &arg)
+    }
+
+    /// Could two conformance signatures' parameters be one type for some
+    /// choice of the receiver's type parameters? Unlike `shape_fits`, a
+    /// parameter named on both sides is the same unknown, bound once, and
+    /// can't contain itself: `T` and `Vec<T>` never meet.
+    pub(super) fn could_coincide(&self, a: &Type, b: &Type, bound: &mut HashMap<String, Type>) -> bool {
+        let a = self.resolve_named(a);
+        let b = self.resolve_named(b);
+        let param = |t: &Type| match t {
+            Type::UnresolvedNamed(n) if rask_ast::type_params::is_type_param_name(n) => Some(n.clone()),
+            _ => None,
+        };
+        if let Some(n) = param(&a) {
+            return self.bind_param(n, &b, bound);
+        }
+        if let Some(n) = param(&b) {
+            return self.bind_param(n, &a, bound);
+        }
+        let generic_args = |x: &[GenericArg], y: &[GenericArg], bound: &mut HashMap<String, Type>| {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(x, y)| match (x, y) {
+                    (GenericArg::Type(x), GenericArg::Type(y)) => self.could_coincide(x, y, bound),
+                    (x, y) => x == y,
+                })
+        };
+        match (&a, &b) {
+            (Type::Generic { base: b1, args: x }, Type::Generic { base: b2, args: y }) => b1 == b2 && generic_args(x, y, bound),
+            (Type::UnresolvedGeneric { name: n1, args: x }, Type::UnresolvedGeneric { name: n2, args: y }) => {
+                n1 == n2 && generic_args(x, y, bound)
+            }
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.could_coincide(x, y, bound))
+            }
+            (Type::Result { ok: o1, err: e1 }, Type::Result { ok: o2, err: e2 }) => {
+                self.could_coincide(o1, o2, bound) && self.could_coincide(e1, e2, bound)
+            }
+            (Type::Array { elem: e1, len: l1 }, Type::Array { elem: e2, len: l2 }) => l1 == l2 && self.could_coincide(e1, e2, bound),
+            _ => a == b,
+        }
+    }
+
+    fn bind_param(&self, name: String, other: &Type, bound: &mut HashMap<String, Type>) -> bool {
+        if matches!(other, Type::UnresolvedNamed(n) if *n == name) {
+            return true;
+        }
+        if let Some(prev) = bound.get(&name).cloned() {
+            return self.could_coincide(&prev, other, bound);
+        }
+        if mentions_param(other, &name) {
+            return false;
+        }
+        bound.insert(name, other.clone());
+        true
+    }
+
+    /// Structural match, an open variable or an unbound type parameter on
+    /// either side matching anything.
+    pub(super) fn shape_fits(&self, p: &Type, a: &Type) -> Option<bool> {
+        let p = self.resolve_named(&self.ctx.apply(p));
+        let a = self.resolve_named(&self.ctx.apply(a));
+        let generic_args = |x: &[GenericArg], y: &[GenericArg]| -> Option<bool> {
+            if x.len() != y.len() {
+                return Some(false);
+            }
+            all_fit(x.iter().zip(y).map(|(x, y)| match (x, y) {
+                (GenericArg::Type(x), GenericArg::Type(y)) => self.shape_fits(x, y),
+                (x, y) => Some(x == y),
+            }))
+        };
+        match (&p, &a) {
+            (Type::Var(_), _) | (_, Type::Var(_)) => None,
+            (Type::UnresolvedNamed(n), _) | (_, Type::UnresolvedNamed(n))
+                if rask_ast::type_params::is_type_param_name(n) => None,
+            (Type::Generic { base: b1, args: x }, Type::Generic { base: b2, args: y }) => {
+                if b1 != b2 { Some(false) } else { generic_args(x, y) }
+            }
+            (Type::UnresolvedGeneric { name: n1, args: x }, Type::UnresolvedGeneric { name: n2, args: y }) => {
+                if n1 != n2 { Some(false) } else { generic_args(x, y) }
+            }
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                if x.len() != y.len() { Some(false) } else { all_fit(x.iter().zip(y).map(|(x, y)| self.shape_fits(x, y))) }
+            }
+            (Type::Result { ok: o1, err: e1 }, Type::Result { ok: o2, err: e2 }) => {
+                all_fit([self.shape_fits(o1, o2), self.shape_fits(e1, e2)].into_iter())
+            }
+            (Type::Array { elem: e1, len: l1 }, Type::Array { elem: e2, len: l2 }) => {
+                if l1 != l2 { Some(false) } else { self.shape_fits(e1, e2) }
+            }
+            _ if p.has_unsolved_var() || a.has_unsolved_var() => None,
+            _ => Some(p == a),
+        }
+    }
+
+    /// An argument's type for a message. An unsuffixed literal has none yet,
+    /// so it's named by its kind.
+    fn render_argument(&self, arg: &Type) -> String {
+        let arg = self.ctx.apply(arg);
+        match &arg {
+            Type::Var(id) => match self.ctx.literal_vars.get(id) {
+                Some(super::inference::LiteralKind::Integer) => "an integer literal".to_string(),
+                Some(super::inference::LiteralKind::Float) => "a float literal".to_string(),
+                None => self.render_type(&arg),
+            },
+            _ => self.render_type(&arg),
+        }
+    }
+
+    /// `render(self, f: Html) -> string`, for naming a candidate.
+    fn render_signature(&self, method: &str, sig: &MethodSig) -> String {
+        let params: Vec<String> = sig.params.iter().map(|(t, _)| self.render_type(t)).collect();
+        format!("{}({}) -> {}", method, params.join(", "), self.render_type(&sig.ret))
+    }
+
+    /// A call reaches a filed method: the backends see that name
+    /// (`FiledMethods`), and dispatch keys on it (CALL6).
+    pub(super) fn record_filed_call(&mut self, call_node: Option<NodeId>, filed: &str) {
+        let Some(node) = call_node else { return };
+        self.filed_methods.calls.insert(node, filed.to_string());
+        if let Some(Callee::Method { method: called, .. }) = self.call_targets.get_mut(&node) {
+            *called = filed.to_string();
+        }
+    }
+
+    pub(super) fn no_conformance_takes(
+        &self,
+        ty: &Type,
+        method: &str,
+        args: &[Type],
+        candidates: Vec<String>,
+        span: Span,
+    ) -> TypeError {
+        TypeError::NoConformanceTakes {
+            ty: self.render_type(ty),
+            method: method.to_string(),
+            args: args.iter().map(|a| self.render_argument(a)).collect(),
+            candidates,
+            span,
+        }
+    }
+}
+
+/// How far an unsuffixed literal argument reaches when GT7 picks a
+/// conformance, tried in order: a primitive of its own kind, then (for an
+/// integer) a float, then a type built from literals (L9).
+#[derive(Clone, Copy, PartialEq)]
+enum LiteralTier {
+    OwnKind,
+    Float,
+    Built,
+}
+
+/// Every verdict true is true, any false is false, otherwise not yet known.
+fn all_fit(verdicts: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut known = true;
+    for v in verdicts {
+        match v {
+            Some(false) => return Some(false),
+            None => known = false,
+            Some(true) => {}
+        }
+    }
+    known.then_some(true)
+}
+
+/// Does `ty` name the type parameter `name` anywhere inside it?
+fn mentions_param(ty: &Type, name: &str) -> bool {
+    match ty {
+        Type::UnresolvedNamed(n) => n == name,
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args.iter().any(|a| match a {
+            GenericArg::Type(t) => mentions_param(t, name),
+            _ => false,
+        }),
+        Type::Tuple(items) => items.iter().any(|t| mentions_param(t, name)),
+        Type::Result { ok, err } => mentions_param(ok, name) || mentions_param(err, name),
+        Type::Array { elem, .. } => mentions_param(elem, name),
+        _ => false,
     }
 }

@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.operators/AR2 for floats: the remainder takes the dividend's sign, on
+// both backends. The interpreter computed the Euclidean remainder, so
+// -7.25 % 2.0 came out 0.75 there and -1.25 natively.
+
+test "AR2 — a float remainder follows the dividend" {
+    assert -7.25 % 2.0 == -1.25
+    assert 7.25 % -2.0 == 1.25
+    assert 7.25 % 2.0 == 1.25
+    let x: f32 = -7.25
+    let m: f32 = 2.0
+    assert x % m == -1.25
+}

@@ -1946,6 +1946,7 @@ static void rask_fatal_signal(int sig) {
 }
 
 int main(int argc, char **argv) {
+    rask_fp_reset();
     signal(SIGPIPE, SIG_IGN);
     signal(SIGSEGV, rask_fatal_signal);
     signal(SIGILL, rask_fatal_signal);

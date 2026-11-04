@@ -1252,6 +1252,8 @@ mod tests {
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),
             operator_targets: std::collections::HashMap::new(),
+            literal_conversions: std::collections::HashMap::new(),
+            conformance_calls: std::collections::HashMap::new(),
             interface_coercions: std::collections::HashMap::new(),
             arm_widenings: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),

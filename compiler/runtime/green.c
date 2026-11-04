@@ -889,6 +889,7 @@ static GreenTask *find_work(GreenScheduler *s, Worker *w) {
 }
 
 static void *worker_entry(void *arg) {
+    rask_fp_reset();
     Worker *w = (Worker *)arg;
     GreenScheduler *s = w->sched;
     tl_worker = w;
