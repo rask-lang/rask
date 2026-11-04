@@ -127,7 +127,7 @@ An object is **reachable** if a chain of references leads to it from a root. The
 - every module variable of every loaded chunk;
 - every host root handle, tasks included, in creation order;
 - while a call runs: every register of every active frame, all of the prototype's registers, including temporaries the compiler has finished with (they hold the same stale values on every machine, since execution is identical);
-- while a call runs: the undo log's old values, the arguments queued for deferred extern functions, and the extern write buffer, since rollback and commit still need them;
+- while a call runs: the undo log (the objects it writes back into, and their old values), the arguments queued for deferred extern functions, and the extern write buffer, since rollback and commit still need them;
 - the result of the host's last call, until the host's next call into the VM.
 
 A value the host holds without rooting is not a root. Using one after it's collected is detected every time ([interop.md](interop.md#host-references)).
@@ -158,7 +158,7 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 
 **Capacity here is computed from the length**, not taken from the real buffer: the smallest power of two that's at least 4 and at least the number of items. So a `remove`, a rolled-back `push` or a save and load can't make two VMs disagree, whatever their real buffers hold. An object's **allocation size** is its logical size when it's made, plus the increase whenever it grows.
 
-**When the limit is checked.** Checking reachability at every allocation would be exact and, near the limit, would run a full collection each time: quadratic and unmetered. So the limit is checked at **checkpoints** instead. The VM counts allocation sizes, and a checkpoint happens whenever the count since the last one reaches an eighth of the limit. At a checkpoint the reachable total must be at most the limit, or the call fails with `MemoryExhausted`. The count is part of the VM state and is serialized, so checkpoints fall at the same allocation everywhere.
+**When the limit is checked.** Checking reachability at every allocation would be exact and, near the limit, would run a full collection each time: quadratic and unmetered. So the limit is checked at **checkpoints** instead. The VM counts allocation sizes, and a checkpoint happens whenever the count since the last one reaches an eighth of the limit. A checkpoint comes right after the allocation that reached it, and the object just made or grown counts as reachable. At a checkpoint the reachable total must be at most the limit, or the call fails with `MemoryExhausted`. The count is part of the VM state and is serialized, so checkpoints fall at the same allocation everywhere. Like fuel, it isn't rolled back when a call fails.
 
 An implementation needs to collect at a checkpoint only when what it knew was live after its last collection, plus what's been allocated since, could exceed the limit. Near the limit that's one full collection per eighth of the limit allocated, which is linear. Real memory stays under about 1.125 times the limit plus garbage.
 
@@ -281,8 +281,8 @@ Result stored in register as `bool`.
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `NEW_ARRAY A B` | ABC | `R[A] = new array`. `B` items from `R[A+1..A+B]` as initial elements. |
-| `NEW_MAP A B` | ABC | `R[A] = new map`. `B` key-value pairs from `R[A+1..A+2B]`. |
+| `NEW_ARRAY A B C` | ABC | `R[A] = new array`. `B` items from `R[A+1..A+B]` as initial elements. `C` is 1 when the element type keeps its tag. |
+| `NEW_MAP A B C` | ABC | `R[A] = new map`. `B` key-value pairs from `R[A+1..A+2B]`. `C` is 1 when the value type keeps its tag. |
 | `GET_INDEX A B C` | ABC | `R[A] = R[B][R[C]]`. Array: int index, bounds-checked. Map: key lookup, missing key = `KeyNotFound`. |
 | `SET_INDEX A B C` | ABC | `R[A][R[B]] = R[C]`. Array: bounds-checked. Map: insert or replace. |
 

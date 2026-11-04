@@ -1,88 +1,107 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido value types — the things that live in registers and the arena
+// Raido values: an 8-byte tag word and an 8-byte payload (vm/architecture.md,
+// Value Representation).
 //
-// Every register in the VM holds one Value. Raido scripts are statically
-// typed (no runtime type tags), but the Rask host implementation uses a
-// tagged enum to represent register contents generically.
+// No instruction reads the tag; the compiler knows every register's type. The
+// collector reads it to find references, and serialization reads it to write
+// a value without knowing its static type.
+//
+// A Raido `float` is a Rask f64, held here as its bit pattern. The VM raises
+// an error on any operation that would produce NaN or an infinity, so neither
+// ever lives in a register.
 
-// --- Floats ---
-// A Raido `float` is a Rask f64. Determinism across machines comes from the
-// strict float profile (no fused multiply-add, correctly rounded math, see
-// rask-lang/rask#1683), and an operation that would produce NaN or an
-// infinity is a runtime error, so neither ever lives in a register.
+// The low byte of the tag word. Zero is unused so a zeroed word is invalid.
+const TAG_INT: i64 = 1
+const TAG_FLOAT: i64 = 2
+const TAG_BOOL: i64 = 3
+const TAG_NONE: i64 = 4
+const TAG_FUNC: i64 = 5
+const TAG_ENUM: i64 = 6
+const TAG_REF: i64 = 7
+const TAG_EXTERN: i64 = 8
 
-// --- Value enum ---
-// This is what lives in every VM register.
-
-enum Value {
-    None
-    Bool(bool)
-    Int(i64)
-    Float(f64)
-    Str(i64)
-    Array(i64)
-    MapVal(i64)
-    Struct(i64)
-    Enum(i64, i64)
-    Couroutine(i64)
-    FuncRef(i64)
-    HostRef(i64, i64)
+struct Value {
+    tag: i64
+    bits: i64
 }
-// Arena offset pointing to a string object
-// Arena offset pointing to an array object
-// Arena offset pointing to a map object
-// Arena offset pointing to a struct object
-// (discriminant, payload arena offset)
-// Coroutine ID (index into VM's coroutine table)
-// Prototype index
-// (type_id, ref_id) — opaque reference to host data
 
 extend Value {
-    func is_truthy(self) -> bool {
-        // Check if a value is "truthy" — everything except None and false
-        match self {
-            Value.None => return false
-            Value.Bool(b) => return b
-            _ => return true
-        }
-        // Needs arena to read actual content
+    func from_int(n: i64) -> Value {
+        return Value(tag: TAG_INT, bits: n)
     }
 
-    func type_name(self) -> string {
-        match self {
-            Value.None => return "none"
-            Value.Bool(_) => return "bool"
-            Value.Int(_) => return "int"
-            Value.Float(_) => return "float"
-            Value.Str(_) => return "string"
-            Value.Array(_) => return "array"
-            Value.MapVal(_) => return "map"
-            Value.Struct(_) => return "struct"
-            Value.Enum(_, _) => return "enum"
-            Value.Couroutine(_) => return "coroutine"
-            Value.FuncRef(_) => return "function"
-            Value.HostRef(_, _) => return "host_ref"
-        }
+    func from_float(x: f64) -> Value {
+        return Value(tag: TAG_FLOAT, bits: x.to_bits().wrap<i64>())
     }
 
-    func to_display(self) -> string {
-        match self {
-            Value.None => return "none"
-            Value.Bool(b) => return if b {
-                return "true"
-            } else {
-                return "false"
-            }
-            Value.Int(n) => return "{n}"
-            Value.Float(n) => return "{n}"
-            Value.Str(_) => return "<string>"
-            Value.Array(_) => return "<array>"
-            Value.MapVal(_) => return "<map>"
-            Value.Struct(_) => return "<struct>"
-            Value.Enum(tag, _) => return "<enum:{tag}>"
-            Value.Couroutine(id) => return "<coroutine:{id}>"
-            Value.FuncRef(idx) => return "<func:{idx}>"
-            Value.HostRef(t, r) => return "<host_ref:{t}:{r}>"
+    func from_bool(b: bool) -> Value {
+        return Value(tag: TAG_BOOL, bits: if b { 1 } else { 0 })
+    }
+
+    // `None` is depth 0; `Some(None)` is depth 1, and so on.
+    func none() -> Value {
+        return Value(tag: TAG_NONE, bits: 0)
+    }
+
+    func func_ref(proto: i64) -> Value {
+        return Value(tag: TAG_FUNC, bits: proto)
+    }
+
+    func enum_disc(disc: i64) -> Value {
+        return Value(tag: TAG_ENUM, bits: disc)
+    }
+
+    func ref_to(slot: i64) -> Value {
+        return Value(tag: TAG_REF, bits: slot)
+    }
+
+    // The extern struct's type index rides in the tag word above the kind byte.
+    func extern_ref(type_idx: i64, id: i64) -> Value {
+        return Value(tag: TAG_EXTERN | type_idx << 8, bits: id)
+    }
+
+    func kind(self) -> i64 {
+        return self.tag & 0xFF
+    }
+
+    func extern_type(self) -> i64 {
+        return self.tag >> 8
+    }
+
+    func is_ref(self) -> bool {
+        return self.kind() == TAG_REF
+    }
+
+    func as_float(self) -> f64 {
+        return f64.from_bits(self.bits.wrap<u64>())
+    }
+
+    func as_bool(self) -> bool {
+        return self.bits != 0
+    }
+
+    // Optionals cost nothing: `Some(x)` of a non-none value is `x` itself,
+    // and wrapping a none adds one to its depth.
+    func wrap_some(self) -> Value {
+        if self.kind() == TAG_NONE {
+            return Value(tag: TAG_NONE, bits: self.bits + 1)
         }
+        return self
+    }
+
+    func is_some(self) -> bool {
+        return self.kind() != TAG_NONE || self.bits > 0
+    }
+
+    // Caller checks `is_some` first; unwrapping `None` is the VM's error.
+    func unwrap_some(self) -> Value {
+        if self.kind() == TAG_NONE {
+            return Value(tag: TAG_NONE, bits: self.bits - 1)
+        }
+        return self
+    }
+
+    func same(self, other: Value) -> bool {
+        return self.tag == other.tag && self.bits == other.bits
     }
 }
