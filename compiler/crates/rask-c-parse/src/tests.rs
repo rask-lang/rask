@@ -36,6 +36,33 @@ use crate::*;
         }
     }
 
+    // #1727: a type spelled with its tag used to swallow the declaration.
+    #[test]
+    fn tagged_types_in_declarations() {
+        let r = parse(
+            "struct node { int v; };\n\
+             struct node *ny(struct node *n);\n\
+             struct node mk(int v);\n\
+             enum color pick(enum color c);\n\
+             typedef struct node *NP, N2;\n",
+        );
+        let funcs: Vec<_> = r.decls.iter().filter_map(|i| match &i.decl {
+            CDecl::Function(f) => Some((f.name.as_str(), f.ret_ty.clone())),
+            _ => None,
+        }).collect();
+        let node = CType::StructTag("node".into());
+        assert_eq!(funcs, vec![
+            ("ny", CType::Pointer(Box::new(node.clone()))),
+            ("mk", node.clone()),
+            ("pick", CType::EnumTag("color".into())),
+        ]);
+        let typedefs: Vec<_> = r.decls.iter().filter_map(|i| match &i.decl {
+            CDecl::Typedef(t) => Some((t.name.as_str(), t.target.clone())),
+            _ => None,
+        }).collect();
+        assert_eq!(typedefs, vec![("NP", CType::Pointer(Box::new(node.clone()))), ("N2", node)]);
+    }
+
     #[test]
     fn parse_struct_with_fields() {
         let r = parse("struct Point { int x; int y; };");
