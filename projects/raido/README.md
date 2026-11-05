@@ -175,6 +175,13 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 
 **Primary: bilateral re-execution.** Both parties run the same script with the same inputs, compare outputs. Simple, fast — typical Raido scripts (combat, crafting, minting) are thousands of instructions, sub-millisecond to re-execute. This is the default verification mode.
 
+**What a verification run is.** Re-execution only proves something if both sides run the same thing the same way, so a run that someone else will check follows four rules:
+
+- **A fresh VM.** The checker loads the chunk into a new VM and makes one `vm.call`. Module variables hold only what their initializers made, so the result can't depend on history the checker never saw.
+- **The config is an input.** Fuel, memory limit and call depth change results (enough fuel or not, `MemoryExhausted` or not), so the claim carries them alongside the arguments.
+- **Only host functions the checker has.** The chunk's hash already names the API module it was compiled against. A script meant for checking is compiled against an API both sides implement identically, usually one the protocol above publishes, or none at all. Every function in it is immediate and pure.
+- **Nothing that only means something live.** No pausing, no `spawn`, no deferred calls. A run that tries one fails, so the claim fails.
+
 **Future: ZK proofs.** For two cases where re-execution doesn't work:
 
 - **Privacy.** Re-execution requires sharing inputs. A domain proving it minted an asset correctly might not want to reveal its crafting formula, resource stockpile, or internal pricing. A ZK proof proves "this output came from this script" without revealing the inputs.

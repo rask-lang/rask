@@ -725,7 +725,7 @@ Proofs are the trust-bootstrapping mechanism. When two Domains that have never i
 
 ### Verifiable Proofs
 
-For Transforms backed by [Raido](../raido/) scripts, a Proof includes the script hash, inputs, and outputs. The receiving Domain fetches the script and re-executes — determinism guarantees identical results. This turns a trust-based Proof into a mechanically verifiable one.
+For Transforms backed by [Raido](../raido/) scripts, a Proof includes the script hash, inputs, the config it ran under (fuel, memory limit, call depth) and outputs. The receiving Domain fetches the script and re-executes in a fresh VM — determinism guarantees identical results. This turns a trust-based Proof into a mechanically verifiable one.
 
 **Required for mint/burn.** Every `create` and `destroy` Transform must include a verifiable Proof. This is not negotiable — it's how [Conservation Law 1](CONSERVATION.md#verifiable-minting) is structurally enforced. A domain that can't produce a verifiable minting Proof can't mint.
 

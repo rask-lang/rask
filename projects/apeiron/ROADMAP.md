@@ -13,7 +13,7 @@ Rask (working) ──→ Raido VM (Rask) ──→ Galaxy Gen ──→ History 
                                                                                GDL ──→ Stage 4
 ```
 
-Everything is Rask. Raido, Leden, Allgard, the game server — all written in Rask. These are language validation targets. Raido exercises low-level systems code (deterministic arithmetic, arena allocation, bytecode dispatch). Leden exercises networking. Allgard exercises data structures and verification. The game server exercises everything.
+Everything is Rask. Raido, Leden, Allgard, the game server — all written in Rask. These are language validation targets. Raido exercises low-level systems code (deterministic arithmetic, a garbage collector, bytecode dispatch). Leden exercises networking. Allgard exercises data structures and verification. The game server exercises everything.
 
 Stage 0 (simulations) validates game mechanics cheaply in Python before committing to implementation. Stage 1 doesn't need federation. One operator, one process, five simulated systems. Raido provides deterministic physics and galaxy generation. The game server enforces conservation laws internally. When you federate in Stage 2, you extract enforcement into Allgard.
 
@@ -79,14 +79,15 @@ Everything downstream depends on Raido. Galaxy generation, physics evaluation, c
 
 A register-based VM that executes Raido bytecode with:
 - Deterministic int and float arithmetic (bitwise-identical results on every platform)
-- Arena-based memory (no GC, deterministic allocation)
+- A garbage-collected heap scripts can't observe (deterministic memory limit, canonical serialization)
 - Serializable execution state (pause, resume, migrate)
 - Content-addressed bytecode chunks (the script IS its hash)
 - Host interop (the game server calls Raido, Raido calls back for object access)
+- Bytecode verification (a partner's chunk is type-checked before it runs)
 - Fuel metering (bounded execution — scripts can't loop forever)
 
 ### What to skip initially
-- Coroutines (spec'd but not needed for Phase 2-3)
+- Pausing hooks and `spawn` (spec'd but not needed for Phase 2-3: galaxy generation, physics and crafting are single calls)
 - Full stdlib (build what galaxy gen needs, expand later)
 - Optimization (correctness first — determinism is non-negotiable)
 
@@ -95,7 +96,7 @@ A register-based VM that executes Raido bytecode with:
 - Write one crafting script (structural steel: Fe+C at 97:3). If the interaction function evaluates deterministically, transformation physics works.
 
 ### Implementation language
-Rask. Raido exercises exactly the kind of systems code Rask needs to prove it handles well — deterministic arithmetic, arena allocation, bytecode dispatch loops, host interop through FFI. If Rask can't build a register VM cleanly, that's a language problem to fix, not to work around.
+Rask. Raido exercises exactly the kind of systems code Rask needs to prove it handles well — deterministic arithmetic, a garbage collector and its rollback log, bytecode dispatch loops, host interop through FFI. If Rask can't build a register VM cleanly, that's a language problem to fix, not to work around.
 
 ## Phase 2: Galaxy Generation
 
