@@ -93,7 +93,7 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 
 ### rask-mono — Monomorphization
 - `src/reachability.rs` — discovers reachable functions from main(), name mangling
-- `src/instantiate.rs` — creates concrete function copies with substituted types
+- `src/instance.rs` — `Instance`: a generic function at one set of type arguments. The body's checker records read with the arguments in, when asked; nothing is copied per instance
 - `src/lib.rs` — MonoProgram, MonoFunction, the order layouts are computed in
 
 ### rask-mir — Mid-level IR (SSA control-flow graph)

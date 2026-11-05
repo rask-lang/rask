@@ -184,6 +184,9 @@ pub struct ExternDecl {
 /// A function declaration.
 #[derive(Debug, Clone)]
 pub struct FnDecl {
+    /// Identifies this function to later passes: the checker files its
+    /// resolved signature under it.
+    pub id: NodeId,
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,

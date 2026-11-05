@@ -10,7 +10,6 @@ use crate::{
     MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
-use rask_ast::ty::TypeExpr;
 use rask_layout::StructLayout;
 
 impl<'a> MirLowerer<'a> {
@@ -48,7 +47,7 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| {
                 let first = elems.first()?;
                 let raw = self.ctx.lookup_raw_type(first.id)?.clone();
-                match raw {
+                match &*raw {
                     rask_types::Type::Var(_) => None,
                     resolved => Some(self.ctx.type_to_mir(&resolved)),
                 }
@@ -136,21 +135,16 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_map_from_pairs(
         &mut self,
         call: &Expr,
-        written: &[TypeExpr],
         arg: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let elems: &[Expr] = match &arg.kind {
             ExprKind::Array(elems) => elems,
             _ => &[],
         };
-        // The checker knows the map's own type; the spelling answers when it
-        // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
-        // recorded type). The first pair is the last resort.
+        // The checker knows the map's own type. The first pair is the last
+        // resort.
         let arg_ty = |i: usize| -> Option<MirType> {
             self.container_elem_mir_type(call.id, i)
-        };
-        let spelled_ty = |i: usize| -> Option<MirType> {
-            written.get(i).map(|arg| self.ctx.resolve_type_expr(arg))
         };
         let pair_ty = |i: usize| -> Option<MirType> {
             elems.first().and_then(|e| match &e.kind {
@@ -161,10 +155,8 @@ impl<'a> MirLowerer<'a> {
             })
         };
 
-        let key_ty = arg_ty(0).or_else(|| spelled_ty(0)).or_else(|| pair_ty(0))
-            .unwrap_or(MirType::I64);
-        let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
-            .unwrap_or(MirType::I64);
+        let key_ty = arg_ty(0).or_else(|| pair_ty(0)).unwrap_or(MirType::I64);
+        let val_ty = arg_ty(1).or_else(|| pair_ty(1)).unwrap_or(MirType::I64);
 
         let mut args = vec![
             MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
@@ -182,7 +174,6 @@ impl<'a> MirLowerer<'a> {
         // `Vec` a `Vec`.
         let desc = |i: usize, fallback: &MirType| -> MirType {
             self.container_elem_type(call.id, i)
-                .or_else(|| written.get(i).map(|arg| self.ctx.resolve_type_expr(arg)))
                 .unwrap_or_else(|| fallback.clone())
         };
         args.push(crate::elem_strs::elem(desc(0, &key_ty)));
@@ -960,9 +951,9 @@ impl<'a> MirLowerer<'a> {
             // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
             // element type lives in the tuple's first component. Everything else
             // (Vec/Map/Shared/Mutex) resolves to the wrapper directly.
-            let container = match ty {
+            let container = match &*ty {
                 Type::Tuple(elems) => elems.first()?,
-                other => other,
+                other => &other,
             };
             let GenericArg::Type(inner) = generic_args(container)?.get(index)? else {
                 return None;
@@ -1001,9 +992,9 @@ impl<'a> MirLowerer<'a> {
     ) -> Option<rask_types::Type> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(node_id)?;
-        let container = match ty {
+        let container = match &*ty {
             Type::Tuple(elems) => elems.first()?,
-            other => other,
+            other => &other,
         };
         let args = match container {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,

@@ -255,7 +255,7 @@ impl<'a> MirLowerer<'a> {
         // String match
         let is_string_match = matches!(scrutinee_ty, MirType::Buffer)
             || self.ctx.lookup_raw_type(scrutinee.id)
-                .map_or(false, |ty| matches!(ty, rask_types::Type::String));
+                .map_or(false, |ty| matches!(&*ty, rask_types::Type::String));
         if is_string_match {
             return self.lower_string_match(scrutinee_op, arms);
         }
@@ -281,7 +281,7 @@ impl<'a> MirLowerer<'a> {
 
         let is_result_or_option = if !is_enum {
             self.ctx.lookup_raw_type(scrutinee.id).map_or(false, |ty| {
-                matches!(ty, rask_types::Type::Result { .. })
+                matches!(&*ty, rask_types::Type::Result { .. })
             })
         } else {
             false
@@ -611,7 +611,7 @@ impl<'a> MirLowerer<'a> {
                     // is generic and this payload was declared as one of its
                     // parameters, so the checker's instantiation decides instead
                     // where it can (#871).
-                    let scrutinee_raw = self.ctx.lookup_raw_type(scrutinee.id).cloned();
+                    let scrutinee_raw = self.ctx.lookup_raw_type(scrutinee.id).map(std::borrow::Cow::into_owned);
                     let variant_fields: Option<Vec<(MirType, u32, u32)>> =
                         enum_layout_id.and_then(|idx| {
                             self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
@@ -1844,7 +1844,7 @@ impl<'a> MirLowerer<'a> {
         if !self.reads_borrowed_storage(scrutinee) {
             return;
         }
-        let Some(ty) = self.ctx.lookup_raw_type(scrutinee.id).cloned() else { return };
+        let Some(ty) = self.ctx.lookup_raw_type(scrutinee.id).map(std::borrow::Cow::into_owned) else { return };
         let mut bound = Vec::new();
         self.pattern_binding_types(pattern, scrutinee_ty, &ty, &mut bound);
         for (name, ty) in bound {

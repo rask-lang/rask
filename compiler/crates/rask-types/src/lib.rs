@@ -11,6 +11,6 @@ pub mod abi;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use defs::{
-    conformance_symbol, ErrorWrap, InterfaceAssocType, InterfaceTypeParam, MemberDecl, MethodOrigin,
+    conformance_symbol, ErrorWrap, FnSignature, InterfaceAssocType, InterfaceTypeParam, MemberDecl, MethodOrigin,
     MethodSig, SelfParam, TypeBinding, TypeDef, VariantDecl,
 };

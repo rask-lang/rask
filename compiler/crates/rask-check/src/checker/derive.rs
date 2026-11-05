@@ -1229,21 +1229,21 @@ impl TypeChecker {
         self.field(ordering, variant)
     }
 
-    fn method(&self, name: &str, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
+    fn method(&mut self, name: &str, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
         let mut params = vec![param("self", TypeExpr::named("Self"))];
         if takes_other {
             params.push(param("other", TypeExpr::named("Self")));
         }
-        fn_decl(name, params, ret, body)
+        fn_decl(self.derived_id(), name, params, ret, body)
     }
 
-    fn free_fn(&self, name: &str, ty: &Type, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
+    fn free_fn(&mut self, name: &str, ty: &Type, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
         let written = self.written(ty);
         let mut params = vec![param("a", written.clone())];
         if takes_other {
             params.push(param("b", written));
         }
-        fn_decl(name, params, ret, body)
+        fn_decl(self.derived_id(), name, params, ret, body)
     }
 }
 
@@ -1269,8 +1269,9 @@ fn param(name: &str, ty: TypeExpr) -> Param {
     }
 }
 
-fn fn_decl(name: &str, params: Vec<Param>, ret: &str, body: Vec<Stmt>) -> FnDecl {
+fn fn_decl(id: NodeId, name: &str, params: Vec<Param>, ret: &str, body: Vec<Stmt>) -> FnDecl {
     FnDecl {
+        id,
         name: name.to_string(),
         type_params: Vec::new(),
         params,

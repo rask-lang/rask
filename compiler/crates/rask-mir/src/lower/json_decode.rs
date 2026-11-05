@@ -696,7 +696,7 @@ impl<'a> MirLowerer<'a> {
     /// Is `object` a generator's `claims.Choices`?
     pub(super) fn is_claim_choices(&self, object: &rask_ast::expr::Expr) -> bool {
         matches!(
-            self.ctx.lookup_raw_type(object.id),
+            self.ctx.lookup_raw_type(object.id).as_deref(),
             Some(Type::Named(id)) if self.ctx.type_names.get(&id).map(String::as_str) == Some("Choices")
         )
     }
@@ -778,7 +778,7 @@ impl<'a> MirLowerer<'a> {
         expr: &rask_ast::expr::Expr,
         type_args: &Option<Vec<rask_ast::ty::TypeExpr>>,
     ) -> Result<Type, LoweringError> {
-        if let Some(Type::Result { ok, .. }) = self.ctx.lookup_raw_type(expr.id) {
+        if let Some(Type::Result { ok, .. }) = self.ctx.lookup_raw_type(expr.id).as_deref() {
             if !matches!(**ok, Type::Var(_)) {
                 return Ok((**ok).clone());
             }

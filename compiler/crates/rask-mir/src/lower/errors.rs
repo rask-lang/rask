@@ -264,7 +264,7 @@ impl<'a> MirLowerer<'a> {
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
             Some(interface_name) => {
-                let concrete = match self.ctx.lookup_raw_type(inner.id) {
+                let concrete = match self.ctx.lookup_raw_type(inner.id).as_deref() {
                     Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
                     _ => None,
                 };

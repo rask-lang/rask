@@ -127,7 +127,7 @@ impl<'a> MirLowerer<'a> {
     /// `Vec_len` plus element loads, so anything that isn't laid out that way
     /// must keep falling through to normal method dispatch.
     fn is_iterable_source(&self, expr: &Expr) -> bool {
-        match self.ctx.lookup_raw_type(expr.id) {
+        match self.ctx.lookup_raw_type(expr.id).as_deref() {
             Some(Type::Array { .. }) => return true,
             Some(Type::UnresolvedGeneric { name, .. }) if name == "Vec" => return true,
             Some(Type::UnresolvedNamed(name)) if name == "Vec" => return true,
@@ -157,7 +157,12 @@ impl<'a> MirLowerer<'a> {
                 if meta.type_prefix.as_deref() == Some("Vec") {
                     return true;
                 }
-                if meta.full_type.as_ref().is_some_and(|t| t.name().as_deref() == Some("Vec")) {
+                if meta
+                    .checked_type
+                    .as_ref()
+                    .and_then(|t| self.generic_head(t))
+                    .is_some_and(|(name, _)| name == "Vec")
+                {
                     return true;
                 }
             }
@@ -1578,11 +1583,11 @@ impl<'a> MirLowerer<'a> {
     /// total order, not IEEE `<`; a string, a 128-bit integer or an aggregate
     /// isn't one comparable word at all.
     fn extreme_fuses(&self, call: &Expr) -> bool {
-        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option()) else {
+        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option().cloned()) else {
             return false;
         };
         matches!(
-            self.ctx.type_to_mir(elem),
+            self.ctx.type_to_mir(&elem),
             MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
                 | MirType::U8 | MirType::U16 | MirType::U32
                 | MirType::Char | MirType::Bool

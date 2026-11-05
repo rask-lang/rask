@@ -43,6 +43,9 @@ pub trait Rewrite {
     /// Every attribute: on a declaration, a field, a variant, a method. A user
     /// annotation's name is a reference like any other (type.annotations/AN5).
     fn attr(&mut self, _a: &mut Attr) {}
+    /// Every function and method, before its parts — for a rewriter that gives
+    /// a copy its own identity.
+    fn func(&mut self, _f: &mut FnDecl) {}
 }
 
 /// The attribute, then the expressions among its values: `@default(Color.Red)`
@@ -174,6 +177,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
 }
 
 fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
+    r.func(f);
     rewrite_attrs(&mut f.attrs, r);
     for tp in &mut f.type_params {
         for bound in &mut tp.bounds {

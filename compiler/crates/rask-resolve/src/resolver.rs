@@ -3098,6 +3098,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: vec![],
@@ -3443,6 +3444,7 @@ mod tests {
         Decl {
             id: NodeId(100),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: vec![],
@@ -3939,6 +3941,7 @@ mod tests {
         let main_decl = Decl {
             id: NodeId(12),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(),
                 type_params: vec![],
                 params: vec![],
