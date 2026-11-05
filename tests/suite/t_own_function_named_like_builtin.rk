@@ -26,6 +26,15 @@ test "the program's own max" {
     assert max(10, 4) == 6
 }
 
+test "inside a task too" {
+    using Multitasking {
+        let t = spawn {
+            return max(10, 4)
+        }
+        assert (t.join() catch _ => 0) == 6
+    }
+}
+
 test "the stdlib still uses its own" {
     let v: Vec<i64> = [3, 9, 4]
     assert (v.max() ?? 0) == 9
