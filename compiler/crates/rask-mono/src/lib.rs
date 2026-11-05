@@ -9,17 +9,17 @@
 
 pub mod drop_names;
 pub mod runtime_abi;
-mod instantiate;
+mod instance;
 mod reachability;
 pub mod reflect;
 
-pub use instantiate::instantiate_function;
 use rask_layout::{
     NameOf, Unsolved,
     arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
     compute_union_layout, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
 };
 use rask_stdlib::is_stdlib_span;
+pub use instance::Instance;
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;
@@ -54,31 +54,6 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
-    /// Types and dispatch targets for the nodes of instantiated generic bodies.
-    ///
-    /// Those nodes don't exist in the checker's output — they were created
-    /// here — so without these, every lookup inside an instantiated body misses
-    /// and lowering falls back to guessing from AST shape.
-    pub instantiated_node_types: HashMap<NodeId, Type>,
-    /// Which original node each node of an instantiated body copies.
-    pub node_origins: HashMap<NodeId, NodeId>,
-    pub instantiated_call_targets: HashMap<NodeId, rask_check::Callee>,
-    /// OR1: operator calls a conformance answered, in instantiated bodies.
-    pub instantiated_operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
-    /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
-    pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
-    /// ER14a: instantiated `??` nodes whose right side is still wrapped.
-    pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
-    /// ER9: error-side returns in instantiated bodies.
-    pub instantiated_err_returns: HashSet<NodeId>,
-    pub instantiated_escaping_closures: HashSet<NodeId>,
-    /// CM3: lent captures on instantiated closures.
-    pub instantiated_lent_captures: HashMap<NodeId, Vec<String>>,
-    pub instantiated_field_reuses: HashSet<NodeId>,
-    pub instantiated_return_moves: HashMap<NodeId, Vec<String>>,
-    /// Closures in instantiated bodies that may not reach another task, each
-    /// decided from its copy's concrete capture types (#1356).
-    pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// (instance layout, method) → the symbol in that vtable slot, for a
     /// generic instance boxed as `any I`. `BufferedReader$Buffer` and `read`
     /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
@@ -137,25 +112,16 @@ impl NodeRecords {
     }
 }
 
-impl MonoProgram {
-    /// The checker's records merged with the ones carried onto instantiated
-    /// bodies.
-    pub fn node_records(&self, typed: &TypedProgram) -> NodeRecords {
-        let mut r = NodeRecords::from_typed(typed);
-        r.node_types.extend(self.instantiated_node_types.iter().map(|(k, v)| (*k, v.clone())));
-        r.call_targets.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
-        r.operator_targets
-            .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
-        r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
-        r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
-        r.err_returns.extend(self.instantiated_err_returns.iter().copied());
-        r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
-        r.lent_captures.extend(self.instantiated_lent_captures.iter().map(|(k, v)| (*k, v.clone())));
-        r.field_reuses.extend(self.instantiated_field_reuses.iter().copied());
-        r.return_moves.extend(self.instantiated_return_moves.iter().map(|(k, v)| (*k, v.clone())));
-        r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
-        r
-    }
+
+/// Which instance each call in a function's body goes to, worked out while
+/// walking it. A generic body's calls go to different instances in each of its
+/// instances, so these are per function; everything else about an instance is
+/// read through `Instance`.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceCalls {
+    /// Call node → the symbol of the instance it calls.
+    pub call_rewrites: HashMap<NodeId, String>,
+    pub map_key_fns: HashMap<NodeId, MapKeyFns>,
 }
 
 /// Monomorphized function instance
@@ -163,6 +129,12 @@ pub struct MonoFunction {
     pub name: String,
     /// The type parameters this copy fixes, each named by the parameter it binds.
     pub type_args: Vec<TypeBinding>,
+    /// What each `T.Out` the function writes is on this instance, keyed
+    /// `("T", "Out")` (AT6/AT8).
+    pub projections: HashMap<(String, String), Type>,
+    /// The instances its calls go to, for a generic instance. Empty for a
+    /// function with no type arguments: those are in `MonoProgram::call_rewrites`.
+    pub calls: InstanceCalls,
     pub body: Decl,
 }
 
@@ -982,12 +954,22 @@ fn monomorphize_inner(
         .collect();
 
     // Every instantiation the program mentions: in an expression's type, as a
-    // call's type argument, or as a field of a concrete type.
+    // call's type argument, or as a field of a concrete type. A generic body's
+    // expression types count at each of its instances.
+    let instance_node_types: Vec<Type> = mono
+        .results
+        .iter()
+        .filter(|f| !f.type_args.is_empty())
+        .flat_map(|f| {
+            let inst = Instance::new(&f.type_args, &f.projections, program);
+            reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
+        })
+        .collect();
     let mut reached: Vec<(String, Vec<Type>)> = Vec::new();
     for ty in program
         .node_types
         .values()
-        .chain(mono.instantiated_node_types.values())
+        .chain(instance_node_types.iter())
         // A type argument is an instantiation even when nothing builds one.
         // `reflect.fields<Box2<string>>()` names the type and never constructs
         // it, so it appeared in no expression's type — and the layout that
@@ -1036,18 +1018,6 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
-        instantiated_node_types: mono.instantiated_node_types,
-        node_origins: mono.node_origins,
-        instantiated_call_targets: mono.instantiated_call_targets,
-        instantiated_operator_targets: mono.instantiated_operator_targets,
-        instantiated_error_wraps: mono.instantiated_error_wraps,
-        instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
-        instantiated_err_returns: mono.instantiated_err_returns,
-        instantiated_escaping_closures: mono.instantiated_escaping_closures,
-        instantiated_lent_captures: mono.instantiated_lent_captures,
-        instantiated_field_reuses: mono.instantiated_field_reuses,
-        instantiated_return_moves: mono.instantiated_return_moves,
-        instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
         vtable_symbols: mono.vtable_symbols,
     })
 }
@@ -1162,6 +1132,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: params
@@ -1201,6 +1172,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: type_params
                     .into_iter()
@@ -1243,6 +1215,7 @@ mod tests {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
             mutate_self_fns: std::collections::HashSet::new(),
+            fn_sigs: HashMap::new(),
             c_fn_pointers: std::collections::HashSet::new(),
             c_contexts: std::collections::HashMap::new(),
             c_macro_calls: std::collections::HashMap::new(),
@@ -1413,60 +1386,6 @@ mod tests {
         assert_eq!(result.functions.len(), 3);
     }
 
-    // ── Instantiation ───────────────────────────────────────────
-
-    #[test]
-    fn instantiate_removes_type_params() {
-        let decl = make_generic_fn(
-            "identity",
-            vec!["T"],
-            vec![("x", "T")],
-            Some("T"),
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        let result = instantiate_function(&decl, &[Type::I32]);
-        if let DeclKind::Fn(f) = &result.kind {
-            assert!(f.type_params.is_empty());
-            assert_eq!(f.params[0].ty.as_ref().map(|t| t.to_string()).as_deref(), Some("i32")); // substituted
-        } else {
-            panic!("Expected function declaration");
-        }
-    }
-
-    #[test]
-    fn instantiate_preserves_body() {
-        let decl = make_generic_fn(
-            "identity",
-            vec!["T"],
-            vec![("x", "T")],
-            Some("T"),
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        let result = instantiate_function(&decl, &[Type::I64]);
-        if let DeclKind::Fn(f) = &result.kind {
-            assert_eq!(f.body.len(), 1);
-            assert!(matches!(f.body[0].kind, StmtKind::Return(Some(_))));
-        } else {
-            panic!("Expected function declaration");
-        }
-    }
-
-    #[test]
-    fn instantiate_fresh_node_ids() {
-        // Use a distinct NodeId for the original so we can verify the clone gets a different one
-        let mut decl = make_generic_fn(
-            "id",
-            vec!["T"],
-            vec![("x", "T")],
-            None,
-            vec![return_stmt(Some(ident_expr("x")))],
-        );
-        decl.id = NodeId(9999);
-        let result = instantiate_function(&decl, &[Type::Bool]);
-        // Substitutor generates sequential IDs starting at 0, so result.id != 9999
-        assert_ne!(result.id, decl.id);
-    }
-
     // ── Reachability walker ─────────────────────────────────────
 
     #[test]
@@ -1564,6 +1483,7 @@ mod tests {
 
     fn make_method(name: &str, params: Vec<(&str, &str)>, ret_ty: Option<&str>, body: Vec<Stmt>) -> FnDecl {
         FnDecl {
+            id: rask_ast::NodeId::DUMMY,
             name: name.to_string(),
             type_params: vec![],
             params: params

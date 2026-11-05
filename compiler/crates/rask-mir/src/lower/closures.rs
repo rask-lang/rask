@@ -52,7 +52,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     ty_str
                         .as_ref()
-                        .map(|t| self.ctx.resolve_type_expr(t))
+                        .map(|t| self.ctx.type_to_mir(t))
                         .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"))
                 };
                 let id = wb.add_param(format!("__a{}", i), ty);
@@ -125,7 +125,7 @@ impl<'a> MirLowerer<'a> {
             for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
                     .as_ref()
-                    .map(|t| self.ctx.resolve_type_expr(t))
+                    .map(|t| self.ctx.type_to_mir(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
                 let id = wb.add_param(format!("__c{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -333,7 +333,7 @@ impl<'a> MirLowerer<'a> {
         ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
-        expected_param_tys: &[TypeExpr],
+        expected_param_tys: &[MirType],
         closure_id: Option<NodeId>,
         for_spawn: bool,
     ) -> Result<TypedOperand, LoweringError> {
@@ -398,13 +398,14 @@ impl<'a> MirLowerer<'a> {
         // return, and the checker says so — down to the guess instead.
         let checked_ret = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
-            .and_then(|ty| match ty {
+            .and_then(|ty| match &*ty {
                 rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
                 _ => None,
             });
-        let closure_ret = ret_ty
-            .map(|t| self.ctx.resolve_type_expr(t))
-            .or(checked_ret)
+        // The checker's type for the closure first: inside a generic body the
+        // written annotation names a type parameter.
+        let closure_ret = checked_ret
+            .or_else(|| ret_ty.map(|t| self.ctx.resolve_type_expr(t)))
             .unwrap_or_else(|| if inferred_void {
                 MirType::Void
             } else {
@@ -426,7 +427,7 @@ impl<'a> MirLowerer<'a> {
         // was neither annotated nor pinned by the callee's signature.
         let checked_params: Vec<MirType> = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
-            .and_then(|ty| match ty {
+            .and_then(|ty| match &*ty {
                 rask_types::Type::Fn { params, .. } => Some(
                     params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect()
                 ),
@@ -440,13 +441,13 @@ impl<'a> MirLowerer<'a> {
         let outer_param_names = self.save_names(params.iter().map(|p| p.name.as_str()).collect());
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
-            // Written annotation first, then the type the callee declares for
-            // this position, then what the checker inferred.
-            let written = param.ty.clone()
-                .or_else(|| expected_param_tys.get(i).cloned());
-            let param_ty = written.as_ref()
-                .map(|t| self.ctx.resolve_type_expr(t))
-                .or_else(|| checked_params.get(i).cloned())
+            // What the checker inferred first, then the written annotation,
+            // then the type the callee declares for this position — the last
+            // two only for a closure made after checking.
+            let written = param.ty.clone();
+            let param_ty = checked_params.get(i).cloned()
+                .or_else(|| written.as_ref().map(|t| self.ctx.resolve_type_expr(t)))
+                .or_else(|| expected_param_tys.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             // A `mutate` parameter takes the caller's address the way a
             // declared function's does, so one function type means one calling
@@ -613,11 +614,11 @@ impl<'a> MirLowerer<'a> {
         let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
         // `type_prefix` is the shared answer to "what is this type called", and
         // it knows about stdlib types the local name table doesn't carry.
-        let name = super::MirContext::type_prefix(ty, self.ctx.type_names)?;
+        let name = super::MirContext::type_prefix(&ty, self.ctx.type_names)?;
         if name != "Sequence" && name != "SequenceMut" {
             return None;
         }
-        let args = match ty {
+        let args = match &*ty {
             rask_types::Type::Generic { args, .. }
             | rask_types::Type::UnresolvedGeneric { args, .. } => args,
             _ => return None,
@@ -993,7 +994,7 @@ impl<'a> MirLowerer<'a> {
             let is_fn = self
                 .ctx
                 .lookup_raw_type(e.id)
-                .is_some_and(|t| matches!(t, rask_types::Type::Fn { .. }));
+                .is_some_and(|t| matches!(&*t, rask_types::Type::Fn { .. }));
             if is_fn && !out.contains(&local) {
                 out.push(local);
             }
