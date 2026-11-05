@@ -25,7 +25,7 @@ Everything here is always present. I dropped the opt-in tiers: there's no reason
 
 `assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").
 
-`print(values...)` -- any number of values of any type, converted with `tostring` and joined by single spaces, as one line to the host's print handler: `print("hp", hp, pos)` prints `hp 90 Vec2 { x: 1.0, y: 2.0 }`. It runs immediately and is a log, not an effect: a call that later fails has still printed. Default handler: no-op.
+`print(values...)` -- any number of values of any type, converted with `tostring` and joined by single spaces, as one line in the VM's print log, which the host reads with `vm.printed()`: `print("hp", hp, pos)` writes `hp 90 Vec2 { x: 1.0, y: 2.0 }`. It's a log, not an effect: a call that later fails has still printed.
 
 
 ### tostring

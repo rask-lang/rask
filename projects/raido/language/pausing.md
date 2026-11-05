@@ -59,7 +59,7 @@ match try vm.call("on_talk", [npc, player]) {
     raido.Outcome.Paused(task, call) => dialogue.open(task, call)
 }
 // when the player picks:
-try vm.resume(task, raido.Value.string("quest"))
+try vm.resume(task, try vm.new_string("quest"))
 ```
 
 A task can pause any number of calls deep; the whole stack pauses. It lives as long as the host keeps it. A hook that loops forever is fine, and that's how a mod keeps behaviour going across ticks.

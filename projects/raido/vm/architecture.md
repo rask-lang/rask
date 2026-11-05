@@ -129,7 +129,7 @@ An object is **reachable** if a chain of references leads to it from a root. The
 - every module variable of every loaded chunk;
 - every live host root handle (tasks are root handles), in creation order;
 - tasks spawned by committed runs that the host hasn't collected with `vm.spawned()` yet, in spawn order;
-- the result of the host's last call, and values the host made for arguments (`vm.string(...)`), until the host's next call starts. Once it starts, the arguments it was given are in registers;
+- the result of the host's last call, and values the host made for arguments (`vm.new_string(...)`), until the host's next call starts. Once it starts, the arguments it was given are in registers;
 - while a call runs: every register of every active frame, all of the prototype's registers;
 - while a call runs: the undo log (the objects it writes back into, and their old values), the arguments of queued deferred calls, and the queued spawns.
 
@@ -169,7 +169,7 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 - making a string, array, map, struct, tuple, enum with payload, closure or cell (`NEW_*`, `CLOSURE`, `NEW_CELL`, `CONCAT`): its logical size;
 - a built-in whose result is a new string, array or map: one allocation of the result at its final size, even when it equals an input (`lower()` on a lowercase string still allocates);
 - an array or map growing: the increase in logical size;
-- a string entering from the host (a getter, an extern's result, a resume value, `vm.string`): its logical size, each time;
+- a string entering from the host (a getter, an extern's result, a resume value, `vm.new_string`): its logical size, each time;
 - `SPAWN`: a task whose saved frame is the entry frame of the function it will run;
 - a task pausing: the increase in its logical size, if its saved frames are bigger than before. A running task's frames are registers and don't count as part of the task.
 
@@ -217,7 +217,7 @@ Reachable memory is limited at creation. Exceeding it = `MemoryExhausted` error.
 
 ## Serialization
 
-`vm.serialize()` -> bytes. `Vm.deserialize(bytes, chunks)` -> restored VM, given the chunks the snapshot names by hash. Serialization happens between host calls.
+`vm.snapshot()` -> bytes. `Vm.restore(bytes, chunks, bindings)` -> restored VM, given the chunks the snapshot names by hash. Serialization happens between host calls.
 
 **Captures:** the config (memory limit, call depth, profile), each loaded chunk's hash in load order, module variables, the root handles in creation order (dead ones too, so a root index means the same root after a load), the spawn queue in order, the objects reachable from all of these, PRNG state, fuel remaining, and the allocation count since the last checkpoint. The host finds its tasks again by their root indices.
 

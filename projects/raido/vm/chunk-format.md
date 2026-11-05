@@ -5,7 +5,7 @@
 
 # Chunk Format
 
-A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metadata, and enough structure for validation and trust.
+A compiled chunk is the output of `raido.compile()`. Contains bytecode, type metadata, and enough structure for validation and trust.
 
 ## Format
 
@@ -61,8 +61,8 @@ Leaving any of these out would let one hash run under two meanings: the same byt
 The host uses this however it wants -- comparing against expected hashes, including in audit logs, verifying snapshots came from a known script. The VM computes the hash and exposes it. The VM does not own the trust model.
 
 ```rask
-let chunk = try vm.compile("script.rd", source, api)
-let hash = chunk.hash()  // [u8; 32]
+let chunk = try raido.compile("script.rd", source, api, Vec.new(), raido.CompileOpts.default())
+let hash = chunk.hash()  // 32 bytes
 ```
 
 Serialized snapshots include the bytecode hash so the host can verify "this snapshot came from this script" on restore.
@@ -76,20 +76,13 @@ Serialized snapshots include the bytecode hash so the host can verify "this snap
 **Exports** -- top-level `func` declarations with their typed signatures. The host can inspect what's callable and what types are expected without reading source.
 
 ```rask
-let chunk = try vm.compile("script.rd", source, api)
-chunk.imports()         // extern declarations used
-chunk.module_imports()  // ["combat_utils", "physics_common"]
-chunk.exports()         // [("on_update", ...), ("process", ...)]
-
-// Load fails fast if externs aren't satisfied
-vm.register_extern_struct("Enemy", ...)
-vm.register_extern_func("move_to", move_to_handler)
-try vm.load(chunk)  // fails if any extern unbound
+chunk.exports()         // name, parameter types and result type of each
+try vm.load(chunk, library)  // fails if the bindings leave out anything the API needs
 ```
 
 ## Validation
 
-`vm.compile()` checks source; `raido.Chunk.decode(bytes)` checks bytecode from disk or network, recomputes the hash, and verifies every function ([architecture.md](architecture.md#verification)). Beyond the per-instruction checks there:
+`raido.compile()` checks source; `raido.Chunk.decode(bytes)` checks bytecode from disk or network, recomputes the hash, and verifies every function ([architecture.md](architecture.md#verification)). Beyond the per-instruction checks there:
 
 - the format version is recognized;
 - the type table is consistent: no undefined type references;
@@ -187,9 +180,7 @@ Optional. Stripped by default in release, included with a compile flag.
 - **Function names.** Maps prototype indices to names. Powers readable stack traces.
 
 ```rask
-let chunk = try vm.compile("script.rd", source, api, raido.CompileOpts {
-    debug_info: true,
-})
+let chunk = try raido.compile("script.rd", source, api, Vec.new(), raido.CompileOpts(debug_info: true, profile: raido.Profile.Normal))
 ```
 
 When debug info is absent, stack traces show `<chunk>:proto[3]:offset[42]` instead of `script.rd:27 in process()`.

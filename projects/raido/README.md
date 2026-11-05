@@ -46,38 +46,30 @@ Example using Rask as the host language (any language with C FFI can host Raido)
 ```rask
 import raido
 
-let vm = raido.Vm.new(raido.Config(
-    memory_limit: 256.kilobytes()
-    initial_fuel: 100_000
-    max_call_depth: 256
-))
-ensure vm.close()
+let api = try raido.compile_api("game_api.rd", api_source)
 
-// Bind what the published API module (game_api.rd) declares
-vm.register_extern_struct("Enemy", raido.ExternStruct(
-    fields: [
-        raido.Field.int("health", get_health, set_health)
-        raido.Field.float("x", get_x, set_x)
-        raido.Field.float("y", get_y, set_y)
-        raido.Field.string("name", get_name, null)  // readonly
-    ]
-))
-vm.register_extern_func("move_to", [raido.Type.extern("Enemy"), raido.Type.struct("Vec2")], raido.Type.void, move_to_handler)
+// Handlers for what the published API module declares
+mut bindings = raido.Bindings.new(api)
+bindings.getter("Enemy", "health", get_health)
+bindings.setter("Enemy", "health", set_health)
+bindings.immediate("noise", noise_handler)
 
-let chunk = try vm.compile("script.rd", source, api)
-try vm.load(chunk)  // checks bindings, then runs the script's top-level `let`s
+let chunk = try raido.compile("script.rd", source, api, Vec.new(), raido.CompileOpts.default())
+mut vm = raido.Vm.new(raido.Config.default(), bindings)
+try vm.load(chunk, Vec.new())  // checks bindings, then runs the script's top-level `let`s
 
-match try vm.call("on_tick", [raido.Value.float(dt)]) {
+match try vm.call("on_tick", [raido.Value.from_float(dt)]) {
     raido.Outcome.Done(result) => use(result)
     raido.Outcome.Paused(task, call) => waiting.push(task)  // vm.resume(task, result) later
 }
+for c in vm.deferred() { apply(c) }
 
-// Serialize entire VM state
-let snapshot = vm.serialize()
-
-// Restore later, possibly on a different machine
-let vm2 = raido.Vm.deserialize(snapshot)
+// Save the whole VM, and restore it later, possibly on a different machine
+let snapshot = vm.snapshot()
+let vm2 = try raido.Vm.restore(snapshot, [chunk], bindings_again)
 ```
+
+[vm/interop.md](vm/interop.md) has the exact contract.
 
 ## Script Example
 
