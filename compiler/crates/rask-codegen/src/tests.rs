@@ -2021,7 +2021,7 @@ mod tests {
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-        boxed_methods: Default::default(),
+        vtables: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2036,7 +2036,7 @@ mod tests {
     /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-        boxed_methods: Default::default(),
+        vtables: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
@@ -2087,7 +2087,7 @@ mod tests {
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             type_names: Default::default(),
-        boxed_methods: Default::default(),
+        vtables: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
