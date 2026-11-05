@@ -863,6 +863,17 @@ impl<'a> MirContext<'a> {
             .or_else(|| self.symbols.native(&callee, self.type_defs))
     }
 
+    /// The function a name used as a value refers to, at this instance: the
+    /// copy for the type arguments recorded at the name.
+    pub fn function_value(&self, name_node: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        let type_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(name_node).unwrap_or_default(),
+            None => typed.call_type_args.get(&name_node).cloned().unwrap_or_default(),
+        };
+        self.symbols.function_value(name_node, type_args, typed).map(|f| f.symbol)
+    }
+
     /// The error a `try` boxes into the function's `any I`, at this instance,
     /// and the interface's symbol (`TypedProgram::erased_try_errors`).
     pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {

@@ -662,14 +662,18 @@ impl<'a> Monomorphizer<'a> {
         matches!(decl.map(|d| &d.kind), Some(DeclKind::Fn(f)) if !f.body.is_empty())
     }
 
-    /// A non-generic top-level function with a body — the only thing a bare
-    /// name can refer to as a value. Methods and generics are excluded: there
-    /// are no type arguments at a bare-name reference to instantiate them with.
-    fn is_plain_fn(&self, name: &str) -> bool {
-        matches!(
-            self.fn_table.get(name).map(|d| &d.kind),
-            Some(DeclKind::Fn(f)) if !f.body.is_empty() && f.type_params.is_empty()
-        )
+
+    /// Every function a test or benchmark runner calls (`RUNNER_ENTRY`).
+    pub fn add_runner_entries(&mut self) {
+        let entries: Vec<String> = self
+            .fn_table
+            .iter()
+            .filter(|(_, d)| matches!(&d.kind, DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is(crate::RUNNER_ENTRY))))
+            .map(|(symbol, _)| symbol.clone())
+            .collect();
+        for symbol in entries {
+            self.enqueue(symbol, Vec::new());
+        }
     }
 
     /// Seed the work queue with main()
@@ -1385,7 +1389,11 @@ impl<'a> Monomorphizer<'a> {
                 if let Some(call) = resolved {
                     self.enqueue(call.qualified, call.type_args);
                 }
-                self.visit_expr(func);
+                // A name being called isn't a function value; anything else in
+                // that position (a closure, a field holding one) is walked.
+                if !matches!(func.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. }) {
+                    self.visit_expr(func);
+                }
                 for arg in args {
                     self.visit_expr(&arg.expr);
                 }
@@ -1695,18 +1703,15 @@ impl<'a> Monomorphizer<'a> {
             // Treated as a leaf, the function was never marked reachable, so
             // nothing emitted it and MIR lowering reported the name as an
             // unresolved variable.
-            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
+            ExprKind::Ident(_) | ExprKind::GenericName { .. } => {
                 // A generic one is instantiated where it's named: the checker
                 // recorded its type arguments under this node, the same as for
                 // a call, and MIR reads the rewrite to point the function value
                 // at that copy. Enqueuing one with no arguments produced a
                 // call to the uninstantiated `T_greet` that nothing emits.
                 let type_args = self.type_args_at(expr.id);
-                if !type_args.is_empty() && self.has_instantiable_body(name) {
-                    self.set_rewrite(expr.id, mangle_name(name, &type_args, self.typed.map(|t| &t.types)));
-                    self.enqueue(name.clone(), type_args);
-                } else if self.is_plain_fn(name) {
-                    self.enqueue(name.clone(), Vec::new());
+                if let Some(f) = self.typed.and_then(|t| self.symbols.function_value(expr.id, type_args, t)) {
+                    self.enqueue(f.qualified, f.type_args);
                 }
             }
         }

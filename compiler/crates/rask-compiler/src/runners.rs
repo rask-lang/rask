@@ -7,8 +7,7 @@
 //! monomorphization, through `compile_file_with`'s hook.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::Stmt;
 use rask_ast::{NodeId, Span};
 
 /// Turn `test` blocks into `__test_N` functions. Returns `(display name,
@@ -34,7 +33,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                 // function it's a compile error, and the two must not be
                 // told apart by the return type they share.
                 let marker = rask_ast::attr::Attr::synthetic("test_body", None);
-                test_fns.push(body_fn(decl, fn_name, t.body.clone(), vec![marker]));
+                test_fns.push(body_fn(decl, fn_name, t.body.clone(), vec![marker, entry_marker()]));
             }
             // @test functions — include as tests, keep the original function too
             DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is("test")) && f.params.is_empty() => {
@@ -48,8 +47,22 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     }
 
     decls.retain(|d| !matches!(&d.kind, DeclKind::Test(_)));
+    // An `@test` function runs as it is, and is an entry like a block's.
+    for decl in decls.iter_mut() {
+        if let DeclKind::Fn(f) = &mut decl.kind {
+            if f.attrs.iter().any(|a| a.is("test")) && tests.iter().any(|(_, name)| *name == f.name) {
+                f.attrs.push(entry_marker());
+            }
+        }
+    }
     install_runner(decls, test_fns, &tests);
     tests
+}
+
+/// Marks a function the runner calls. Monomorphization takes each as a root
+/// (`rask_mono::RUNNER_ENTRY`); nothing in the program calls them.
+fn entry_marker() -> rask_ast::attr::Attr {
+    rask_ast::attr::Attr::synthetic(rask_mono::RUNNER_ENTRY, None)
 }
 
 /// Turn `benchmark` blocks into `__bench_N` functions. Returns `(display
@@ -65,7 +78,7 @@ pub fn extract_benchmarks(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(S
             }
             let fn_name = format!("__bench_{}", benchmarks.len());
             benchmarks.push((b.name.clone(), fn_name.clone()));
-            bench_fns.push(body_fn(decl, fn_name, b.body.clone(), vec![]));
+            bench_fns.push(body_fn(decl, fn_name, b.body.clone(), vec![entry_marker()]));
         }
     }
 
@@ -88,7 +101,7 @@ fn install_runner(decls: &mut Vec<Decl>, body_fns: Vec<Decl>, entries: &[(String
     }
     decls.extend(body_fns);
     if !entries.is_empty() || !has_main {
-        decls.push(main_calling(entries));
+        decls.push(empty_main());
     }
 }
 
@@ -120,29 +133,11 @@ fn body_fn(block: &Decl, name: String, body: Vec<Stmt>, attrs: Vec<rask_ast::att
     }
 }
 
-/// `func main() { f1() f2() … }`. Codegen generates the real entry point;
-/// this one is here so monomorphization reaches every entry.
-fn main_calling(entries: &[(String, String)]) -> Decl {
+/// An empty `main`: codegen generates the runner's real entry point, and
+/// monomorphization reaches each entry as a root of its own.
+fn empty_main() -> Decl {
     let span = Span::new(0, 0);
-    let mut body: Vec<Stmt> = entries.iter().map(|(_, fn_name)| Stmt {
-        id: NodeId(0),
-        kind: StmtKind::Expr(Expr {
-            id: NodeId(0),
-            kind: ExprKind::Call {
-                func: Box::new(Expr {
-                    id: NodeId(0),
-                    kind: ExprKind::Ident(fn_name.clone()),
-                    span,
-                }),
-                args: vec![],
-            },
-            span,
-        }),
-        span,
-    }).collect();
-    if !entries.is_empty() {
-        body.push(Stmt { id: NodeId(0), kind: StmtKind::Return(None), span });
-    }
+    let body = Vec::new();
     Decl {
         id: NodeId(0),
         kind: DeclKind::Fn(FnDecl {

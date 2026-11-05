@@ -2348,11 +2348,8 @@ impl<'a> MirLowerer<'a> {
                 self.load_folded(&folded)
             } else if let Some(fnval) = self
                 .ctx
-                .call_rewrites
-                .get(&expr.id)
-                .cloned()
+                .function_value(expr.id)
                 .and_then(|copy| self.lower_fn_as_value(&copy))
-                .or_else(|| self.lower_fn_as_value(name))
             {
                 // Not a variable: a function's name used as a value. A generic
                 // one names the copy monomorphization made for this use.

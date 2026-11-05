@@ -113,6 +113,20 @@ impl Symbols {
         Some(ResolvedCall { qualified, type_args, symbol })
     }
 
+    /// A function named as a value (`http.serve(addr, handle)`, `let f =
+    /// make<i32>`): the symbol of the function the name resolved to, of the
+    /// copy for the type arguments the checker recorded at the name. `None`
+    /// when the name is a variable, or the function has no body in Rask.
+    pub fn function_value(
+        &self,
+        name_node: NodeId,
+        type_args: Vec<TypeBinding>,
+        typed: &rask_check::TypedProgram,
+    ) -> Option<ResolvedCall> {
+        let sym = *typed.resolutions.get(&name_node)?;
+        self.free_call(&rask_check::Callee::Free(sym), type_args, typed)
+    }
+
     /// The runtime entry point a native method or module function is called
     /// by: `{type or module}_{name}`, the spelling the C dispatch table files
     /// it under. Only for a call with no body in Rask behind it.
