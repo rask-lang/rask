@@ -460,7 +460,6 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
-            call_rewrites: CallMap::of(empty::node_names()),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -517,7 +516,6 @@ impl<'a> MirContext<'a> {
         self.call_targets.instance = inst.map(|i| (i, (|inst: &rask_mono::Instance<'_>, id: NodeId| inst.call_target(id)) as fn(&rask_mono::Instance<'_>, NodeId) -> Option<rask_check::Callee>));
         self.operator_targets.instance = inst.map(|i| (i, (|inst: &rask_mono::Instance<'_>, id: NodeId| inst.operator_target(id)) as fn(&rask_mono::Instance<'_>, NodeId) -> Option<rask_check::OperatorTarget>));
         self.task_bound_closures.instance = inst;
-        self.call_rewrites.instance = Some(&f.calls.call_rewrites);
         self.map_key_fns.instance = Some(&f.calls.map_key_fns);
     }
 
@@ -528,7 +526,6 @@ impl<'a> MirContext<'a> {
             .filter(|f| !f.type_args.is_empty())
             .map(|f| (f.name.clone(), f))
             .collect();
-        self.call_rewrites = CallMap::of(&mono.call_rewrites);
         self.map_key_fns = CallMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
@@ -650,8 +647,6 @@ pub struct MirContext<'a> {
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
-    /// Call expression NodeId → mangled callee name for generic function calls.
-    pub call_rewrites: CallMap<'a, String>,
     /// A map-building call → the `hash`/`eq` its keys go through (#1391).
     pub map_key_fns: CallMap<'a, rask_mono::MapKeyFns>,
     /// (struct, field) → the method that builds that field's decode default.
@@ -874,6 +869,14 @@ impl<'a> MirContext<'a> {
         self.symbols.function_value(name_node, type_args, typed).map(|f| f.symbol)
     }
 
+    /// The `message()` symbol of each error the result at `node` can carry,
+    /// one per union member in member order (`Symbols::error_messages`).
+    pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
+        let result = self.lookup_raw_type(node)?;
+        let calls = self.symbols.error_messages(&result, self.type_defs)?;
+        Some(calls.into_iter().map(|c| c.symbol).collect())
+    }
+
     /// The error a `try` boxes into the function's `any I`, at this instance,
     /// and the interface's symbol (`TypedProgram::erased_try_errors`).
     pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {
@@ -941,8 +944,6 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
             std::sync::LazyLock::new(HashMap::new);
-        static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
-            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_check::Callee>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_OPERATOR_TARGETS:
@@ -984,7 +985,6 @@ impl<'a> MirContext<'a> {
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
-            call_rewrites: CallMap::of(&EMPTY_REWRITES),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -8103,7 +8103,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8141,7 +8140,6 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -8202,7 +8200,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8240,7 +8237,6 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -8308,7 +8304,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8346,7 +8341,6 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),

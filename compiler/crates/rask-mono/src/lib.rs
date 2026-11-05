@@ -65,8 +65,6 @@ pub struct MonoProgram {
     /// whatever needs to know what it is — which handle a field owns, say —
     /// reads the name here rather than off the type's rendering.
     pub type_names: HashMap<rask_types::TypeId, String>,
-    /// Call expression NodeId → mangled callee name for generic function calls.
-    pub call_rewrites: HashMap<NodeId, String>,
     /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
     /// and the functions that are (#1391).
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
@@ -135,14 +133,12 @@ impl NodeRecords {
 }
 
 
-/// Which instance each call in a function's body goes to, worked out while
-/// walking it. A generic body's calls go to different instances in each of its
-/// instances, so these are per function; everything else about an instance is
-/// read through `Instance`.
+/// The key functions each map-building call in a function's body needs,
+/// worked out while walking it. A generic body's differ in each of its
+/// instances, so these are per function; what a call runs is read through
+/// `Symbols` at the instance.
 #[derive(Debug, Clone, Default)]
 pub struct InstanceCalls {
-    /// Call node → the symbol of the instance it calls.
-    pub call_rewrites: HashMap<NodeId, String>,
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
 }
 
@@ -154,8 +150,9 @@ pub struct MonoFunction {
     /// What each `T.Out` the function writes is on this instance, keyed
     /// `("T", "Out")` (AT6/AT8).
     pub projections: HashMap<(String, String), Type>,
-    /// The instances its calls go to, for a generic instance. Empty for a
-    /// function with no type arguments: those are in `MonoProgram::call_rewrites`.
+    /// Its map-building calls' key functions, for a generic instance. Empty
+    /// for a function with no type arguments: those are in
+    /// `MonoProgram::map_key_fns`.
     pub calls: InstanceCalls,
     pub body: Decl,
 }
@@ -1037,7 +1034,6 @@ fn monomorphize_inner(
         struct_layouts,
         enum_layouts,
         type_names: program.types.type_name_map(),
-        call_rewrites: mono.call_rewrites,
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,

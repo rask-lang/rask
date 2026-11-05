@@ -287,10 +287,8 @@ impl<'a> MirLowerer<'a> {
             // bisecting the test.
             let text = self
                 .ctx
-                .call_rewrites
-                .get(&try_id)
-                .cloned()
-                .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
+                .error_messages(inner.id)
+                .and_then(|messages| self.emit_error_message_text(&messages, err_val, &err_ty));
             match text {
                 Some(text) => {
                     let joined = self.builder.alloc_temp(MirType::Buffer);

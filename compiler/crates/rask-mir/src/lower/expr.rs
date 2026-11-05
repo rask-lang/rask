@@ -750,11 +750,10 @@ impl<'a> MirLowerer<'a> {
     /// message that only says which kind of `!` failed.
     fn lower_forced_error_panic(
         &mut self,
-        outer: &Expr,
         inner: &Expr,
         val: &MirOperand,
     ) -> Result<bool, LoweringError> {
-        let Some(msg_fn) = self.ctx.call_rewrites.get(&outer.id).cloned() else {
+        let Some(messages) = self.ctx.error_messages(inner.id) else {
             return Ok(false);
         };
         let found = self.ctx.lookup_raw_type(inner.id);
@@ -770,7 +769,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: self.payload_field(val.clone(), &result_ty, &err_ty),
         }));
 
-        let Some(text) = self.emit_error_message_text(&msg_fn, payload, &err_ty) else {
+        let Some(text) = self.emit_error_message_text(&messages, payload, &err_ty) else {
             return Ok(false);
         };
 
@@ -784,29 +783,28 @@ impl<'a> MirLowerer<'a> {
 
     /// Call the error's `message()` and hand back the string local.
     ///
-    /// `msg_fn` is the rewrite reachability recorded: every `{Type}_message`
-    /// body it queued for this site, joined by `|`. One name is a concrete
-    /// error type; several is a union, where which member is present isn't
-    /// known until run time, so the calls sit behind a switch on the member
-    /// index. `None` when the set doesn't match the type — a switch missing an
-    /// arm would call a function nothing emits.
+    /// `messages` is one symbol per error the value can be
+    /// (`MirContext::error_messages`): one for a concrete error type, one per
+    /// member for a union, where which member is present isn't known until
+    /// run time, so the calls sit behind a switch on the member index.
     pub(super) fn emit_error_message_text(
         &mut self,
-        msg_fn: &str,
+        messages: &[String],
         payload: crate::LocalId,
         err_ty: &MirType,
     ) -> Option<crate::LocalId> {
-        let queued: Vec<&str> = msg_fn.split('|').collect();
         let err_ty = err_ty.clone();
         let text = self.builder.alloc_temp(MirType::Buffer);
         if let MirType::Union(members) = err_ty.clone() {
-            let arms = self.union_message_arms(&members, &queued)?;
+            if members.len() != messages.len() {
+                return None;
+            }
             // A union discriminates by the member index it carries at offset
             // 0, not by a one-byte tag — the same read `match` does.
             let idx = self.emit_enum_tag(MirOperand::Local(payload));
             let merge = self.builder.create_block();
             let blocks: Vec<crate::BlockId> =
-                arms.iter().map(|_| self.builder.create_block()).collect();
+                members.iter().map(|_| self.builder.create_block()).collect();
             let cases: Vec<(u64, crate::BlockId)> = blocks
                 .iter()
                 .enumerate()
@@ -818,7 +816,7 @@ impl<'a> MirLowerer<'a> {
                 cases,
                 default,
             }));
-            for (i, (member_ty, fn_name)) in arms.into_iter().enumerate() {
+            for (i, (member_ty, fn_name)) in members.into_iter().zip(messages.iter()).enumerate() {
                 self.builder.switch_to_block(blocks[i]);
                 let member_size = member_ty.size();
                 let member = self.builder.alloc_temp(member_ty.clone());
@@ -833,7 +831,7 @@ impl<'a> MirLowerer<'a> {
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(text),
-                    func: FunctionRef::internal(fn_name),
+                    func: FunctionRef::internal(fn_name.clone()),
                     args: vec![MirOperand::Local(member)],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -842,32 +840,14 @@ impl<'a> MirLowerer<'a> {
             }
             self.builder.switch_to_block(merge);
         } else {
-            let [only] = queued[..] else { return None };
+            let [only] = messages else { return None };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(text),
-                func: FunctionRef::internal(only.to_string()),
+                func: FunctionRef::internal(only.clone()),
                 args: vec![MirOperand::Local(payload)],
             }));
         }
         Some(text)
-    }
-
-    /// `(member type, message fn)` per union member, in member-index order.
-    /// `None` when any member's `{Name}_message` isn't among the bodies
-    /// reachability queued — a switch missing an arm would call a function
-    /// nothing emits, which is worse than the generic message it replaces.
-    fn union_message_arms(
-        &self,
-        members: &[MirType],
-        queued: &[&str],
-    ) -> Option<Vec<(MirType, String)>> {
-        members
-            .iter()
-            .map(|m| {
-                let name = format!("{}_message", self.mir_type_name(m)?);
-                queued.contains(&name.as_str()).then(|| (m.clone(), name))
-            })
-            .collect()
     }
 
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
@@ -2089,7 +2069,7 @@ impl<'a> MirLowerer<'a> {
                         text.to_string(),
                     ))],
                 }));
-            } else if !self.lower_forced_error_panic(expr, inner, &val)? {
+            } else if !self.lower_forced_error_panic(inner, &val)? {
                 // No message to reach for: an absent `T?`, or an error
                 // type whose `message()` has no body to instantiate.
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -5768,21 +5748,18 @@ impl<'a> MirLowerer<'a> {
                             // `json_encode_i64` printed the enum's own address
                             // (#689).
                             //
-                            // Which body that is, is reachability's call, not
-                            // ours: it recorded the name here and compiled the
-                            // body because of the record. Naming it here instead
-                            // meant codegen looked up a `JsonValue_to_string`
-                            // nobody had queued.
+                            // Monomorphization queued the same body
+                            // (`Symbols::json_value_encoder`).
                             if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
                                 let body = self
                                     .ctx
-                                    .call_rewrites
-                                    .get(&expr.id)
-                                    .cloned()
+                                    .symbols
+                                    .json_value_encoder(pretty, self.ctx.type_defs)
+                                    .map(|c| c.symbol)
                                     .ok_or_else(|| {
                                         LoweringError::InvalidConstruct(
-                                            "json.encode on a JsonValue, but reachability \
-                                             queued no encoder for it"
+                                            "json.encode on a JsonValue, but JsonValue has no \
+                                             encoder in Rask"
                                                 .to_string(),
                                         )
                                     })?;

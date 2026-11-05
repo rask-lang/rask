@@ -120,9 +120,6 @@ pub struct Monomorphizer<'a> {
     pub too_deep: Option<Vec<String>>,
     /// Resulting instantiated functions
     pub results: Vec<MonoFunction>,
-    /// Call expression NodeId → mangled callee name.
-    /// Used by MIR lowering to rewrite calls to generic function instantiations.
-    pub call_rewrites: HashMap<NodeId, String>,
     /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// The field defaults each decoded struct calls (`note_decode_defaults`).
@@ -430,7 +427,6 @@ impl<'a> Monomorphizer<'a> {
             shown: HashMap::new(),
             too_deep: None,
             results: Vec::new(),
-            call_rewrites: HashMap::new(),
             bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
@@ -491,7 +487,6 @@ impl<'a> Monomorphizer<'a> {
         }
         out
     }
-
 
     /// Re-key `method_table` on type identity instead of declaration order.
     fn bind_methods_by_type(&mut self, typed: &TypedProgram) {
@@ -602,7 +597,6 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-
     /// Set the external package module names for cross-package call discovery.
     pub fn set_package_modules(&mut self, modules: std::collections::HashSet<String>) {
         self.package_modules = modules;
@@ -650,18 +644,6 @@ impl<'a> Monomorphizer<'a> {
             }
         }
     }
-
-    /// Is there a body here to make a concrete copy of? Stdlib stubs declare a
-    /// signature and an empty block — the implementation is in the runtime.
-    fn has_instantiable_body(&self, name: &str) -> bool {
-        let decl = self
-            .fn_table
-            .get(name)
-            .copied()
-            .or_else(|| self.method_table.get(name));
-        matches!(decl.map(|d| &d.kind), Some(DeclKind::Fn(f)) if !f.body.is_empty())
-    }
-
 
     /// Every function a test or benchmark runner calls (`RUNNER_ENTRY`).
     pub fn add_runner_entries(&mut self) {
@@ -712,14 +694,6 @@ impl<'a> Monomorphizer<'a> {
                 self.enqueue(name, Vec::new());
             }
         }
-    }
-
-
-    /// Where a call's instance goes: the instance being walked has its own,
-    /// since every instance shares the body's node ids.
-    fn set_rewrite(&mut self, call: NodeId, symbol: String) {
-        let map = if self.in_instance { &mut self.records.call_rewrites } else { &mut self.call_rewrites };
-        map.insert(call, symbol);
     }
 
     fn map_key_fns_here(&mut self) -> &mut HashMap<NodeId, crate::MapKeyFns> {
@@ -927,45 +901,15 @@ impl<'a> Monomorphizer<'a> {
         Some(Type::UnresolvedGeneric { name: head.to_string(), args: out })
     }
 
-    /// The name of the type the checker gave a node, if it has one.
-    /// The `{ErrType}_message` bodies a `r!` on this operand could need: one
-    /// for a concrete error type, one per member for a union. Empty for an
-    /// optional (`err` is `none`) and whenever any candidate has no body,
-    /// since a switch that can't cover every member is worse than the message
-    /// it replaces.
-    fn forced_error_message_fns(&self, id: NodeId) -> Vec<String> {
-        let Some(typed) = self.typed else { return Vec::new() };
-        let Some(ty) = self.node_type(id)
-        else {
-            return Vec::new();
-        };
-        let ty = &ty;
-        let Type::Result { err, .. } = ty else { return Vec::new() };
-        if **err == Type::None {
-            return Vec::new();
+    /// The `message()` bodies an error out of `id` renders through
+    /// (`Symbols::error_messages`), queued: `r!` and a `try` in a test call
+    /// them, and nothing in the source names them.
+    fn queue_error_messages(&mut self, id: NodeId) {
+        let Some(typed) = self.typed else { return };
+        let Some(result) = self.node_type(id) else { return };
+        for call in self.symbols.error_messages(&result, &typed.types).unwrap_or_default() {
+            self.enqueue(call.qualified, call.type_args);
         }
-        let members: Vec<&Type> = match &**err {
-            Type::Union(types) => types.iter().collect(),
-            other => vec![other],
-        };
-        let mut names = Vec::new();
-        for member in members {
-            // `receiver_name` answers "Result" for a nested result and a bare
-            // primitive name for a primitive; neither can carry a `message()`,
-            // and E0344 means neither is a legal error type anyway. Asking the
-            // method table for a body settles all of it at once — including an
-            // error type whose `message()` is derived (ER6), since the derive
-            // runs in desugaring and is an ordinary method by now.
-            let Some(name) = rask_check::receiver_name(member, &typed.types) else {
-                return Vec::new();
-            };
-            let mangled = format!("{}_message", name);
-            if !self.has_instantiable_body(&mangled) {
-                return Vec::new();
-            }
-            names.push(mangled);
-        }
-        names
     }
 
     /// The element `compare` a `sort()` on this receiver will be lowered to.
@@ -1401,26 +1345,20 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let type_args = self.type_args_at(expr.id);
 
-                // `json.encode(v)` where v is a JsonValue is `v.to_string()` —
-                // the encoder is in stdlib/json.rk, in Rask. The name of that
-                // body is decided here, by the pass that compiles it, and MIR
-                // reads the rewrite. Naming it in lowering instead is how
-                // `json.encode` on a JsonValue came out of codegen as
-                // `Function not found: JsonValue_to_string`: nothing had
-                // queued the body, because the pass that queues bodies never
-                // heard the name.
+                // `json.encode(v)` where v is a JsonValue is `v.to_string()`,
+                // the encoder in stdlib/json.rk. MIR asks
+                // `Symbols::json_value_encoder` the same question; when only
+                // lowering named it, nothing had queued the body and codegen
+                // reported `Function not found: JsonValue_to_string`.
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "json")
                     && matches!(method.as_str(), "encode" | "encode_pretty")
                     && args.len() == 1
                     && self.arg_type_name(args[0].expr.id).as_deref() == Some("JsonValue")
                 {
-                    let body = if method == "encode_pretty" {
-                        "JsonValue_to_string_pretty".to_string()
-                    } else {
-                        "JsonValue_to_string".to_string()
-                    };
-                    self.set_rewrite(expr.id, body.clone());
-                    self.enqueue(body, Vec::new());
+                    let pretty = method == "encode_pretty";
+                    if let Some(call) = self.typed.and_then(|t| self.symbols.json_value_encoder(pretty, &t.types)) {
+                        self.enqueue(call.qualified, call.type_args);
+                    }
                     for arg in args {
                         self.visit_expr(&arg.expr);
                     }
@@ -1541,18 +1479,10 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Try { expr: e } => {
                 // T20: a `try` in a test block ends that test rather than
                 // propagating, and what it reports is the error's own
-                // `message()`. Same shape as `r!` above — the name is decided
-                // here, where bodies are queued, and MIR reads the rewrite.
-                // Only in a test body: anywhere else the error goes to the
-                // caller and nothing here needs to print it.
+                // `message()`, which MIR resolves the same way. Only in a test
+                // body: anywhere else the error goes to the caller.
                 if self.in_test_body {
-                    let names = self.forced_error_message_fns(e.id);
-                    if !names.is_empty() {
-                        self.set_rewrite(expr.id, names.join("|"));
-                        for name in names {
-                            self.enqueue(name, Vec::new());
-                        }
-                    }
+                    self.queue_error_messages(e.id);
                 }
                 // ER32: the error leaves boxed as the function's `any I`.
                 if let Some(erased) = self.typed.and_then(|t| t.erased_try_errors.get(&expr.id)) {
@@ -1573,30 +1503,11 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
             ExprKind::Unwrap { expr: e, message, .. } => {
-                // ER15: `r!` panics *using* the error's `message()`. Lowering
-                // can't name that method itself — the same lesson as
-                // `json.encode` above, which came out of codegen as "Function
-                // not found: JsonValue_to_string" because nothing had queued
-                // the body. So the name is decided here, where bodies are
-                // queued, and MIR reads the rewrite (#1009).
-                //
-                // Only when no custom message was written (`r! "msg"` says
-                // what to print), and only for a concrete error type: a union
-                // needs a switch on the member, which is more than a rewrite
-                // can carry.
+                // ER15: `r!` panics *using* the error's `message()`, a body
+                // nothing in the source names (#1009). Only when no custom
+                // message was written: `r! "msg"` says what to print.
                 if message.is_none() {
-                    let names = self.forced_error_message_fns(e.id);
-                    if !names.is_empty() {
-                        // A union error contributes one per member. The rewrite
-                        // carries the whole set joined by `|`, which no mangled
-                        // name can contain, and lowering matches each member
-                        // against it — so the two never have to agree on the
-                        // order members come out in.
-                        self.set_rewrite(expr.id, names.join("|"));
-                        for name in names {
-                            self.enqueue(name, Vec::new());
-                        }
-                    }
+                    self.queue_error_messages(e.id);
                 }
                 self.visit_expr(e)
             }

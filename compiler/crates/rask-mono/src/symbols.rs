@@ -127,6 +127,47 @@ impl Symbols {
         self.free_call(&rask_check::Callee::Free(sym), type_args, typed)
     }
 
+    /// The `message()` body of each error a `T or E` can carry, in the
+    /// order of the union's members when `E` is one (the member index a
+    /// value carries picks the arm). `None` when any of them has no body in
+    /// Rask, or `E` is an optional's `none`: a switch missing an arm would
+    /// call a function nothing emits.
+    pub fn error_messages(&self, result: &Type, types: &rask_check::TypeTable) -> Option<Vec<ResolvedCall>> {
+        let Type::Result { err, .. } = result else { return None };
+        let members: Vec<&Type> = match &**err {
+            Type::None => return None,
+            Type::Union(members) => members.iter().collect(),
+            other => vec![other],
+        };
+        members
+            .into_iter()
+            .map(|member| {
+                let callee = rask_check::Callee::Method {
+                    recv: member.clone(),
+                    method: "message".to_string(),
+                    package: None,
+                    body: types.method_body(member, "message", None),
+                };
+                self.method_call(&callee, Vec::new(), types)
+            })
+            .collect()
+    }
+
+    /// What `json.encode(v)` runs for a `JsonValue`: the value's own
+    /// `to_string` (`to_string_pretty` for `encode_pretty`), the encoder in
+    /// stdlib/json.rk.
+    pub fn json_value_encoder(&self, pretty: bool, types: &rask_check::TypeTable) -> Option<ResolvedCall> {
+        let json_value = types.lookup("JsonValue")?;
+        let method = if pretty { "to_string_pretty" } else { "to_string" };
+        let callee = rask_check::Callee::Method {
+            body: types.method_body(&json_value, method, None),
+            recv: json_value,
+            method: method.to_string(),
+            package: None,
+        };
+        self.method_call(&callee, Vec::new(), types)
+    }
+
     /// The runtime entry point a native method or module function is called
     /// by: `{type or module}_{name}`, the spelling the C dispatch table files
     /// it under. Only for a call with no body in Rask behind it.
