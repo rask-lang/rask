@@ -22,6 +22,12 @@ const P_SET_BOX_FAIL: i64 = 11
 const P_FIB: i64 = 12
 const P_MAKE_PAIR: i64 = 13
 const P_POKE_DROP_FAIL: i64 = 14
+const P_MAKE_COUNTER: i64 = 15
+const P_BUMP_CELL: i64 = 16
+const P_STORE_COUNTER: i64 = 17
+const P_TICK: i64 = 18
+const P_TICK_FAIL: i64 = 19
+const P_SHARED: i64 = 20
 
 func test_chunk() -> Chunk {
     mut c = Chunk.new()
@@ -153,6 +159,58 @@ func test_chunk() -> Chunk {
         op3(Opcode.UNWRAP, 2, 0, 0)
         opx(Opcode.RETURN, 255, 0)
     ])))
+    // make_counter() -> func() -> int: let n = 0; return || { n += 1; return n }
+    c.add_proto(make_proto("make_counter", 0, 4, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 0, 0)
+        op3(Opcode.NEW_CELL, 1, 0, 0)
+        op3(Opcode.MOVE, 3, 1, 0)
+        opx(Opcode.CLOSURE, 2, P_BUMP_CELL)
+        opx(Opcode.RETURN, 2, 0)
+    ])))
+    mut bump = make_proto("bump", 0, 3, Vec<u32>.from([
+        op3(Opcode.GET_CAPTURE, 0, 0, 0)
+        op3(Opcode.GET_CELL, 1, 0, 0)
+        opx(Opcode.LOAD_INT, 2, 1)
+        op3(Opcode.ADD, 1, 1, 2)
+        op3(Opcode.SET_CELL, 0, 1, 0)
+        opx(Opcode.RETURN, 1, 0)
+    ]))
+    bump.captures = 1
+    c.add_proto(bump)
+    // store_counter(): module var 2 = make_counter()
+    c.add_proto(make_proto("store_counter", 0, 1, Vec<u32>.from([
+        opx(Opcode.FUNC_REF, 0, P_MAKE_COUNTER)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.SET_MODULE, 0, 2)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // tick() -> int: the stored counter's next value
+    c.add_proto(make_proto("tick", 0, 1, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 2)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.RETURN, 0, 0)
+    ])))
+    // tick_fail(): tick, then fail
+    c.add_proto(make_proto("tick_fail", 0, 2, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 2)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.LOAD_NONE, 1, 0)
+        op3(Opcode.UNWRAP, 1, 1, 0)
+        opx(Opcode.RETURN, 0, 0)
+    ])))
+    // shared() -> int: let n = 0; let b = || { n += 1 }; b(); b(); return n
+    c.add_proto(make_proto("shared", 0, 6, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 0, 0)
+        op3(Opcode.NEW_CELL, 1, 0, 0)
+        op3(Opcode.MOVE, 3, 1, 0)
+        opx(Opcode.CLOSURE, 2, P_BUMP_CELL)
+        op3(Opcode.MOVE, 4, 2, 0)
+        op3(Opcode.CALL, 4, 0, 0)
+        op3(Opcode.MOVE, 4, 2, 0)
+        op3(Opcode.CALL, 4, 0, 0)
+        op3(Opcode.GET_CELL, 5, 1, 0)
+        opx(Opcode.RETURN, 5, 0)
+    ])))
     c.init = P_INIT
     return c
 }
@@ -259,7 +317,41 @@ test "closures capture and outlive their maker" {
     assert call_int(mutate vm, P_APPLY, 1) == 11
 }
 
+test "a closure and its function share a reassigned variable" {
+    mut vm = loaded(65536, false)
+    assert call0(mutate vm, P_SHARED) == 2
+}
+
+test "a counter closure keeps its count across calls and collections" {
+    mut vm = loaded(65536, true)
+    call0(mutate vm, P_STORE_COUNTER)
+    assert call0(mutate vm, P_TICK) == 1
+    call_int(mutate vm, P_CHURN, 20)
+    assert call0(mutate vm, P_TICK) == 2
+    assert call0(mutate vm, P_TICK) == 3
+}
+
 // --- Transactions ---
+
+test "a failed call rolls back a cell write" {
+    mut vm = loaded(65536, false)
+    call0(mutate vm, P_STORE_COUNTER)
+    assert call0(mutate vm, P_TICK) == 1
+    assert fails_with(mutate vm, P_TICK_FAIL, Vec.new()) == "UnwrapNone"
+    assert call0(mutate vm, P_TICK) == 2
+}
+
+test "a counter survives a save and load" {
+    mut a = loaded(65536, false)
+    call0(mutate a, P_STORE_COUNTER)
+    call0(mutate a, P_TICK)
+    call0(mutate a, P_TICK)
+    mut b = Vm.restore(test_chunk(), test_config(65536), a.snapshot()) catch e => panic(e.message())
+    assert same_bytes(b.snapshot(), a.snapshot())
+    assert call0(mutate b, P_TICK) == 3
+    assert call0(mutate a, P_TICK) == 3
+}
+
 
 test "a failed call rolls back module variables" {
     mut vm = loaded(65536, false)

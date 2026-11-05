@@ -57,7 +57,10 @@ enum Opcode: u8 {
     GET_CAPTURE = 41,
     GET_MODULE = 42,
     SET_MODULE = 43,
-    SPAWN = 44
+    SPAWN = 44,
+    NEW_CELL = 45,
+    GET_CELL = 46,
+    SET_CELL = 47
 }
 
 extend Opcode {
@@ -108,6 +111,9 @@ extend Opcode {
             Opcode.GET_MODULE => return "GET_MODULE"
             Opcode.SET_MODULE => return "SET_MODULE"
             Opcode.SPAWN => return "SPAWN"
+            Opcode.NEW_CELL => return "NEW_CELL"
+            Opcode.GET_CELL => return "GET_CELL"
+            Opcode.SET_CELL => return "SET_CELL"
         }
     }
 }

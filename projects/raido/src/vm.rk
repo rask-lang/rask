@@ -422,6 +422,19 @@ extend Vm {
                     let v = self.heap.slot_of(self.frames[fi].closure, b)
                     self.set(a, v)
                 }
+                Opcode.NEW_CELL => {
+                    let v = self.heap.new_record(OBJ_CELL, 0, 0, Vec<Value>.from([self.reg(b)])) catch e => return heap_err(e)
+                    self.set(a, v)
+                }
+                Opcode.GET_CELL => {
+                    let v = self.heap.slot_of(self.reg(b), 0)
+                    self.set(a, v)
+                }
+                Opcode.SET_CELL => {
+                    let cell = self.reg(a)
+                    let v = self.reg(b)
+                    self.heap.set_slot(cell, 0, v) catch e => return heap_err(e)
+                }
                 Opcode.GET_MODULE => {
                     let v = self.heap.module_vars[decode_bx(instr)]
                     self.set(a, v)

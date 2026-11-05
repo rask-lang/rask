@@ -118,7 +118,7 @@ If a hook fails halfway (`error(...)`, a bad index), everything it changed rolls
 | Collections | `array<T>` + `map<K, V>` | Maps to Rask's Vec/Map. Homogeneous, typed. `m[k] = v` inserts. |
 | Host data | Published API module of `extern struct` / `extern func` | Compile-time type checking. Type mismatch = load error, not runtime error. |
 | Script state | Top-level `let` | Lives between host calls, saved and rolled back like the rest of the heap. |
-| Functions | Named functions and closures | A captured variable can't be reassigned, so closures carry no hidden shared state. |
+| Functions | Named functions and closures | A closure shares the variables it captures with the function that made it, as in Lua and JS. |
 | Optionals | `T?` with `Some`/`None` | Compiler-enforced null safety. No nil. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
@@ -198,7 +198,7 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **A published API module of `extern struct` / `extern func`.** The host declares its shapes once; scripts see them already imported. | Compile-time type checking. Load-time mismatch detection. The module's hash is part of every script's identity. |
 | Type system | **Static.** Function signatures typed, locals inferred. | Runtime type errors are a divergence vector. Static types catch bugs before deployment -- critical when scripts are tradeable economic assets. |
-| Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
+| Closures | **Capture by sharing the variable, as in Lua and JS.** | I first forbade reassigning a captured variable, to keep closures free of hidden shared state. But Raido already shares every struct, array and map by reference, so the rule only forced counters into a struct and broke Lua's most common closure idiom. A reassigned captured variable lives in a heap cell; one that's never reassigned is copied, at no cost. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Module state | **Top-level `let`.** | Every mod needs a counter or a flag that outlives one host call. Module variables are heap roots, so they're saved, restored and rolled back with everything else; `const` names a value that never changes. |
 | Pausing | **Host functions marked `pausing`; no `yield` or coroutines in the language.** | A modder writes `wait(2.0)` or `let choice = ask(player, "...")` and it reads like any call. The pausing function's signature types what goes out and what comes back, and nothing that calls it needs marking. Script-made coroutines and generators would add a second scheduler beside the host's for little a mod needs; `spawn` covers starting something that runs alongside. |

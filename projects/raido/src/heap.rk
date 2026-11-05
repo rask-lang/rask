@@ -20,6 +20,7 @@ const OBJ_STRUCT: i64 = 4
 const OBJ_TUPLE: i64 = 5
 const OBJ_ENUM: i64 = 6
 const OBJ_CLOSURE: i64 = 7
+const OBJ_CELL: i64 = 8
 
 enum HeapError {
     MemoryExhausted
@@ -46,6 +47,7 @@ extend HeapError {
 //   struct, tuple: type_id, slots (fields)
 //   enum:    type_id, disc, slots (payload)
 //   closure: type_id (prototype), slots (captures)
+//   cell:    slots (one value: a captured variable that gets reassigned)
 struct Obj {
     kind: i64
     gen: i64

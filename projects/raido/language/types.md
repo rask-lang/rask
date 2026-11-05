@@ -197,13 +197,15 @@ A value of a function type (`func(Ship, Ship) -> bool`) is either a named functi
 
 A **closure** captures the variables it uses from around it. The rules:
 
-- **A captured variable is never assigned after its `let`**, anywhere in the enclosing function: before the closure, after it, inside it, or around a loop that contains it. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made. Module variables aren't captured; a closure reads them like any other code does.
+- **A closure shares the variables it captures** with the function that made it, as in JS and Lua. If either one assigns the variable, the other sees the new value, and a closure can keep a counter: `let n = 0; let bump = || n += 1`. Module variables aren't captured; a closure reads and writes them like any other code does.
 - **Structs, arrays and maps are shared**, as everywhere in Raido. A closure that captured `ship` sees `ship.health` change, and can change it.
 - **Each loop iteration has its own variable**, so `for i in 0..3 { fs.push(|| i) }` makes closures that return 0, 1 and 2.
 - **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
 - **Closures aren't comparable.** There's no `==` on function values ([Equality](#equality)).
 
 A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a paused hook, a struct field, a host root.
+
+A captured variable that's never assigned after its `let` (the usual case) is copied into the closure, which costs nothing extra. One that is assigned lives in a small heap cell that the function and its closures share, the way Lua's upvalues work. The compiler decides which from the function's text; nothing in the language shows the difference.
 
 ## Extern Types
 

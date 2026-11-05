@@ -109,16 +109,17 @@ let weak = ships.filter(|s| s.health < threshold)
 let nearest = |u: Unit| distance(u, home)
 ```
 
-One rule: a variable a closure uses is never assigned after its `let`, anywhere in the function, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else, or in a module variable:
+The closure shares those variables with the function that made it, as in JS and Lua, so it can change them and see changes:
 
 ```raido
 let count = 0
-let bump = || count += 1          // ERROR: `count` is used by a closure, so it can't change
-let tally = Tally { n: 0 }
-let bump = || tally.n += 1        // OK: the closure and the caller share `tally`
+let bump = || count += 1
+bump()
+bump()
+print(count)                      // 2
 
-let x = 0
-loop { x += 1; fs.push(|| x) }    // ERROR: `x` is assigned after its `let`
+let fs: array<func() -> int> = []
+for i in 0..3 { fs.push(|| i) }   // each iteration has its own `i`: 0, 1, 2
 ```
 
 See [types.md](types.md#functions-as-values) for the full rules.
@@ -438,7 +439,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 - **Module-level `let`** -- Rask has no mutable globals; a Raido script's top-level `let` is state that lives between host calls.
 - **No ownership** -- No moves, no borrowing, no `take`, no `.clone()`. Structs, arrays and maps are references to a garbage-collected heap; primitives are values. There are no parameter modes: a function can change what it's given, as in JS, Python and Lua.
 - **No `mut`** -- `let` declares, and every variable can be reassigned, as in JS, Lua and C. Rask code that uses `let` still compiles here; Raido code moved to Rask gets a clear "declare it `mut`" error.
-- **Closures can't reassign what they capture** -- a Rask closure that doesn't outlive its frame can change a captured `mut` variable; Raido has no `mut`, and forbids reassigning a captured variable, so there's no hidden shared state.
+- **Closures share what they capture** -- a Rask closure can change a captured `mut` variable only while it doesn't outlive its frame; a Raido closure shares the variable for as long as the closure lives, as in Lua, since the collector keeps it alive.
 - **No character type** -- Strings only, so single quotes have no meaning.
 - **No `T or E`, `try` or `catch`** -- a failure aborts the host's call and rolls it back; absence is `T?`.
 - **No `using` context clauses** -- Host data access is through `extern struct`, not context parameters.

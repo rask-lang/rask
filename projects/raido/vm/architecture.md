@@ -28,7 +28,7 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 | `none` | depth: `None` is 0, `Some(None)` is 1, `Some(Some(None))` is 2 |
 | `func` | prototype index (a function or a closure that captures nothing) |
 | `enum` | discriminant (an enum with no payloads) |
-| `ref` | reference to a heap object: string, array, map, struct, tuple, enum with payload, closure, task |
+| `ref` | reference to a heap object: string, array, map, struct, tuple, enum with payload, closure, cell, task |
 | `const` | a string constant in a loaded chunk: chunk load position in the high 32 bits, constant index in the low |
 | `extern` | the host's 64-bit id for one of its objects; the tag word also holds the extern struct's type index |
 
@@ -117,6 +117,7 @@ Strings, arrays, maps, structs, tuples, enums with payloads, closures and tasks 
 | Struct, tuple | its fields; a tuple's can't change |
 | Enum (with payload) | discriminant and payload fields |
 | Closure | prototype index and captured values |
+| Cell | one value: a captured variable that's assigned after its `let`, shared by the function and its closures |
 | Task | a hook that's paused or spawned and not yet started: status, call frames and their registers |
 
 How objects are laid out in memory is the implementation's business. Nothing in the language or the serialized form depends on it.
@@ -158,13 +159,14 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 | Array | 16 + 8 per slot of capacity (16 for element types that keep their tag) |
 | Map | 16 + 24 per slot of capacity, or 32 when the value type keeps its tag (keys never do) |
 | Struct, tuple, enum payload, closure | 16 + 16 per field or capture |
+| Cell | 32 |
 | Task | 64 + 16 per register in its saved frames |
 
 **Capacity here is computed from the length**, not taken from the real buffer: the smallest power of two that's at least 4 and at least the number of items. So a `remove`, a rolled-back `push` or a save and load can't make two VMs disagree, whatever their real buffers hold.
 
 **What counts as an allocation.** The checkpoints below depend on counting allocations the same way everywhere, so the list is closed:
 
-- making a string, array, map, struct, tuple, enum with payload or closure (`NEW_*`, `CLOSURE`, `CONCAT`): its logical size;
+- making a string, array, map, struct, tuple, enum with payload, closure or cell (`NEW_*`, `CLOSURE`, `NEW_CELL`, `CONCAT`): its logical size;
 - a built-in whose result is a new string, array or map: one allocation of the result at its final size, even when it equals an input (`lower()` on a lowercase string still allocates);
 - an array or map growing: the increase in logical size;
 - a string entering from the host (a getter, an extern's result, a resume value, `vm.string`): its logical size, each time;
@@ -232,6 +234,7 @@ Reachable memory is limited at creation. Exceeding it = `MemoryExhausted` error.
   - struct or tuple: u32 type index, values;
   - enum with payload: u32 type index, u32 variant, values;
   - closure: the function, values;
+  - cell: its value;
   - task: status byte (0 not started, 1 paused), u32 frame count, then each frame outermost first: the function, u32 instruction offset, u8 result register, u32 register count, registers.
 
 Containers are written with every value's full 16 bytes, whatever they store in memory.
@@ -346,10 +349,15 @@ Jumps are relative to the next instruction.
 | `FUNC_REF A Bx` | ABx | `R[A]` = function `Bx` |
 | `CLOSURE A Bx` | ABx | `R[A]` = new closure of function `Bx`, capturing `R[A+1..A+n]`, where `n` is its capture count |
 | `GET_CAPTURE A B` | ABC | `R[A]` = capture `B` of the running closure |
+| `NEW_CELL A B` | ABC | `R[A]` = new cell holding `R[B]` |
+| `GET_CELL A B` | ABC | `R[A]` = the value in cell `R[B]` |
+| `SET_CELL A B` | ABC | the value in cell `R[A]` = `R[B]`, logged for rollback |
 | `GET_MODULE A Bx` | ABx | `R[A]` = module variable `Bx`. Reading one whose initializer hasn't run = `Uninitialized` |
 | `SET_MODULE A Bx` | ABx | module variable `Bx` = `R[A]`, logged for rollback |
 
 The callee sees its arguments in `R[0..B-1]` of its own window.
+
+A variable that a closure captures and that's assigned after its `let` lives in a cell from its declaration on: the register holds the cell, reads and writes go through `GET_CELL` and `SET_CELL`, and `CLOSURE` captures the cell. A loop makes a new cell each iteration, so each iteration's closures share their own. A cell's register type is `cell<T>`, so the verifier checks the value type through it.
 
 ### Optionals
 

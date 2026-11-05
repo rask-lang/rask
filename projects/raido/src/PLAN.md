@@ -32,7 +32,8 @@ main.rk       demo: runs hand-assembled fib
   allocation; tests check it changes neither results, snapshot bytes nor the
   instruction where memory runs out.
 - Canonical serialization and restore.
-- Closures: `CLOSURE`, `GET_CAPTURE`, calls through a closure.
+- Closures: `CLOSURE`, `GET_CAPTURE`, calls through a closure, and cells
+  (`NEW_CELL`, `GET_CELL`, `SET_CELL`) for captured variables that change.
 - Transactions: every `vm.call` is a run; writes to objects older than the run,
   module variable writes and the PRNG state roll back on failure.
 - Module variables: `GET_MODULE`, `SET_MODULE`, an `init` prototype run at load.
@@ -43,7 +44,8 @@ main.rk       demo: runs hand-assembled fib
 - `apply_undo` borrows its entry and clones what it restores, to dodge a
   native double free (rask-lang/rask#1748). Drop that once it's fixed.
 
-- The compiler. Until it exists, the capture rule, the published API module
+- The compiler. Until it exists, deciding which captured variables need cells, the published API
+  module
   and the provable profile have nothing to live in.
 - Externs: `CALL_EXTERN`, `GET_FIELD`/`SET_FIELD`, the write buffer,
   deferred and pausing calls, tasks, `SPAWN`, `vm.resume` and
