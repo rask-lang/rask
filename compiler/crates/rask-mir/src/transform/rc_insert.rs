@@ -694,12 +694,15 @@ fn insert_aggregate_release(
                 {
                     if is_tracked(src) {
                         ev.push(ownership::Event::Alias { dst: *dst, src: *src });
-                    } else if matches!(ty_of.get(src), Some(MirType::Link(_))) {
-                        // The node a link points at (`mem.racks/RK2`): the rack
-                        // owns it, and a name reaching it through the link
-                        // borrows. Inlining `a.sum()` on a `Link<Task>` binds
-                        // `self` this way, and taken over it released the node's
-                        // fields while the rack still held them (#1285).
+                    } else if matches!(ty_of.get(src), Some(MirType::Link(_) | MirType::Ptr)) {
+                        // An address names storage somebody else owns, so a
+                        // name reaching it borrows. The node a link points at
+                        // belongs to the rack (`mem.racks/RK2`); inlining
+                        // `a.sum()` on a `Link<Task>` binds `self` this way, and
+                        // taken over it released the node's fields while the
+                        // rack still held them (#1285). Inlining `o.inner.get()`
+                        // binds `self` to the field's address the same way, and
+                        // taken over it freed `o.inner` (#1747).
                         ev.push(ownership::Event::Other(*dst));
                     } else if aggregates.contains(dst) {
                         // Copied in from a local this pass can't see into: a

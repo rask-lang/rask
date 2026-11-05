@@ -1,186 +1,561 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido VM — executes bytecode
+// Raido VM — executes bytecode against the garbage-collected heap.
 //
-// HOW IT WORKS
-// ============
+// The dispatch loop fetches one 32-bit instruction, decodes it, and does what
+// it says. Registers live on the heap's register stack (heap.rk), because
+// every register of every active frame is a GC root. A frame's window is
+// `stack[base .. base + num_registers]`.
 //
-// The VM is a loop that fetches one instruction at a time, decodes it,
-// and does what it says. This is called the "dispatch loop."
+// Every host call is one run (vm/interop.md, Calls Are Transactions): the
+// heap logs writes to objects older than the run, and a failure replays the
+// log backwards, so the call changes nothing.
 //
-// State:
-//   - registers: a flat Vec<Value>. Each call frame gets a window of 256.
-//     R[0] through R[255] for the first frame, R[256]-R[511] for the next, etc.
-//     base_reg tells us where the current frame starts.
-//   - call_stack: tracks where to return to after a function call
-//   - fuel: counts down with every instruction. Hits 0 → error.
-//
-// Execution:
-//   1. Fetch instruction at code[pc]
-//   2. Increment pc
-//   3. Decode the opcode and operands
-//   4. Match on the opcode, do the thing
-//   5. Repeat
-//
-// That's it. A VM is just a big match statement in a loop.
+// Arithmetic reads the operand's tag to pick int or float. The bytecode
+// format has one ADD for both; a compiler that emits typed variants would
+// let the loop skip that check, and nothing observable would change.
 
 enum VmError {
-    TypeError(string)
     DivisionByZero
+    IntegerOverflow
+    FloatError
     IndexOutOfBounds(i64, i64)
-    KeyNotFound(string)
+    KeyNotFound
     UnwrapNone
-    ArenaExhausted
+    MemoryExhausted
     FuelExhausted
     CallOverflow
-    CoroutineDead
-    ReadOnlyField
-    ScriptError(string)
     HostError(string)
+    // Bytecode the validator should have rejected, or an opcode this VM
+    // doesn't run yet.
+    Malformed(string)
 }
-// (index, length)
 
 extend VmError {
     func message(self) -> string {
         match self {
-            VmError.TypeError(msg) => return "TypeError: {msg}"
             VmError.DivisionByZero => return "DivisionByZero"
-            VmError.IndexOutOfBounds(idx, len) => return "IndexOutOfBounds: index {idx}, length {len}"
-            VmError.KeyNotFound(key) => return "KeyNotFound: {key}"
+            VmError.IntegerOverflow => return "IntegerOverflow"
+            VmError.FloatError => return "FloatError"
+            VmError.IndexOutOfBounds(i, n) => return "IndexOutOfBounds: index {i}, length {n}"
+            VmError.KeyNotFound => return "KeyNotFound"
             VmError.UnwrapNone => return "UnwrapNone"
-            VmError.ArenaExhausted => return "ArenaExhausted"
+            VmError.MemoryExhausted => return "MemoryExhausted"
             VmError.FuelExhausted => return "FuelExhausted"
             VmError.CallOverflow => return "CallOverflow"
-            VmError.CoroutineDead => return "CoroutineDead"
-            VmError.ReadOnlyField => return "ReadOnlyField"
-            VmError.ScriptError(msg) => return "ScriptError: {msg}"
             VmError.HostError(msg) => return "HostError: {msg}"
+            VmError.Malformed(msg) => return "Malformed: {msg}"
         }
     }
 }
 
-struct CallFrame {
-    proto_idx: i64
-    pc: i64
-    base_reg: i64
+func heap_err(e: HeapError) -> VmError {
+    match e {
+        HeapError.MemoryExhausted => return VmError.MemoryExhausted
+        HeapError.IndexOutOfBounds(i, n) => return VmError.IndexOutOfBounds(i, n)
+        HeapError.KeyNotFound => return VmError.KeyNotFound
+        HeapError.StaleHandle => return VmError.HostError("handle to a collected object")
+    }
 }
-// Which prototype we're executing (index into chunk)
-// Program counter: index into prototype.code
-// Where this frame's registers start in the flat vec
 
-struct Vm {
-    chunk: Chunk
-    registers: Vec<Value>
-    call_stack: Vec<CallFrame>
-    fuel: i64
+struct Frame {
+    proto: i64
+    pc: i64
+    base: i64
+    // Absolute stack index the result goes to; -1 for the entry frame.
+    ret: i64
+    closure: Value
+}
+
+struct Config {
+    memory_limit: i64
+    initial_fuel: i64
     max_call_depth: i64
 }
 
+struct Vm {
+    chunk: Chunk
+    heap: GcHeap
+    frames: Vec<Frame>
+    fuel: i64
+    max_call_depth: i64
+    prng: Prng
+}
+
+// --- PRNG seeding (vm/architecture.md, PRNG) ---
+
+// SplitMix64's constants as i64 bit patterns: 0x9E3779B97F4A7C15,
+// 0xBF58476D1CE4E5B9, 0x94D049BB133111EB.
+const SPLITMIX_GAMMA: i64 = -7046029254386353131
+const SPLITMIX_M1: i64 = -4658895280553007687
+const SPLITMIX_M2: i64 = -7723592293110705685
+
+// Logical shift right on the 64-bit pattern.
+func shr(x: i64, n: i64) -> i64 {
+    return (x.wrap<u64>() >> n.wrap<u64>()).wrap<i64>()
+}
+
+func splitmix_step(z: i64) -> i64 {
+    mut r = z
+    r = (r ^ shr(r, 30)).wrapping_mul(SPLITMIX_M1)
+    r = (r ^ shr(r, 27)).wrapping_mul(SPLITMIX_M2)
+    return r ^ shr(r, 31)
+}
+
+// xoshiro128++ state: four 32-bit words, each held in an i64.
+struct Prng {
+    s0: i64
+    s1: i64
+    s2: i64
+    s3: i64
+}
+
+func seed_state(seed: i64) -> Prng {
+    let z1 = seed.wrapping_add(SPLITMIX_GAMMA)
+    let z2 = z1.wrapping_add(SPLITMIX_GAMMA)
+    let r1 = splitmix_step(z1)
+    let r2 = splitmix_step(z2)
+    return Prng(
+        s0: r1 & 0xFFFFFFFF
+        s1: shr(r1, 32) & 0xFFFFFFFF
+        s2: r2 & 0xFFFFFFFF
+        s3: shr(r2, 32) & 0xFFFFFFFF
+    )
+}
+
+func check_float(x: f64) -> Value or VmError {
+    if !x.is_finite() {
+        return VmError.FloatError
+    }
+    return Value.from_float(x)
+}
+
+func as_number(v: Value) -> f64 {
+    if v.kind() == TAG_INT {
+        return v.bits.round<f64>()
+    }
+    return v.as_float()
+}
+
 extend Vm {
-    func new(take chunk: Chunk, fuel: i64) -> Vm {
-        mut regs = Vec.new()
-        mut i = 0
-        while i < 256 {
-            regs.push(Value.None)
+    func new(take chunk: Chunk, config: Config) -> Vm {
+        mut heap = GcHeap.new(config.memory_limit)
+        mut i: i64 = 0
+        while i < chunk.module_vars {
+            heap.module_vars.push(Value.none())
             i = i + 1
         }
-
         return Vm(
             chunk: chunk
-            registers: regs
-            call_stack: Vec.new()
-            fuel: fuel
-            max_call_depth: 256
+            heap: heap
+            frames: Vec.new()
+            fuel: config.initial_fuel
+            max_call_depth: config.max_call_depth
+            prng: seed_state(0)
         )
     }
 
-    func get_reg(self, idx: i64) -> Value {
-        // --- Register access (relative to current frame) ---
-        let base = if self.call_stack.len() > 0 {
-            self.call_stack.last().base_reg
-        } else {
-            0
-        }
-        return self.registers.get(base + idx)!
+    // vm.serialize(): the canonical snapshot (vm/architecture.md, Serialization).
+    func snapshot(self) -> Vec<u8> {
+        return serialize(self.heap, MachineState(fuel: self.fuel, prng: self.prng.clone()))
     }
 
-    func set_reg(self, idx: i64, take val: Value) {
-        let base = if self.call_stack.len() > 0 {
-            self.call_stack.last().base_reg
-        } else {
-            0
+    // Vm.deserialize(): the host re-supplies the chunk and config.
+    func restore(take chunk: Chunk, config: Config, take saved: Vec<u8>) -> Vm or SnapshotError {
+        let vars = chunk.module_vars
+        mut vm = Vm.new(chunk, config)
+        vm.heap.module_vars.clear()
+        let m = try read_snapshot(saved, mutate vm.heap)
+        if vm.heap.module_vars.len().wrap<i64>() != vars {
+            return bad("snapshot has {vm.heap.module_vars.len()} module variables, the chunk {vars}")
         }
-        self.registers.set(base + idx, val)
+        vm.fuel = m.fuel
+        vm.prng = m.prng.clone()
+        return vm
     }
 
-    func execute(self) -> Value or VmError {
-        // =====================================================
-        // Dispatch loop — implement opcodes incrementally
-        // =====================================================
-        //
-        // Suggested order:
-        //   1. LOAD_TRUE, LOAD_FALSE, LOAD_INT, LOAD_CONST, LOAD_NONE → can load values
-        //   2. ADD, SUB, MUL, DIV, NEG → arithmetic works
-        //   3. RETURN → can get a result back
-        //   4. EQ, LT, LE, NOT → comparisons work
-        //   5. JMP, JMP_IF, JMP_IF_NOT → control flow (if/while)
-        //   6. CALL, FUNC_REF → function calls (fibonacci!)
-        //   7. Everything else
-        //
-        mut pc = 0
-        let code = self.chunk.main.code
+    func seed(mutate self, s: i64) {
+        self.prng = seed_state(s)
+    }
 
+    // Run the module initialisers, as one transaction.
+    func load(mutate self) -> void or VmError {
+        if self.chunk.init >= 0 {
+            let init = self.chunk.init
+            try self.call(init, Vec.new())
+        }
+    }
+
+    // One host call: a run that commits or changes nothing.
+    func call(mutate self, proto: i64, args: Vec<Value>) -> Value or VmError {
+        if self.frames.len() > 0 {
+            return VmError.HostError("call into the VM from inside a call")
+        }
+        mut inside: Vec<Value> = Vec.new()
+        for a in args {
+            let v = self.heap.import(a) catch _ => return VmError.HostError("argument is a value the VM no longer holds for the host; root it to keep it")
+            inside.push(v)
+        }
+        // The last result and host-made values were roots until this call
+        // started; from here the arguments are in registers.
+        self.heap.last_result = Value.none()
+        self.heap.host_made.clear()
+        self.heap.begin_run()
+        let prng_before = self.prng.clone()
+        let result = self.enter(proto, inside) catch e => {
+            self.frames.clear()
+            self.heap.pop_frame(0)
+            self.heap.rollback()
+            self.prng = prng_before
+            return e
+        }
+        self.heap.commit()
+        self.heap.last_result = result
+        return self.heap.export(result)
+    }
+
+    func call_named(mutate self, name: string, args: Vec<Value>) -> Value or VmError {
+        let p = self.chunk.find(name) ?? return VmError.HostError("no function `{name}`")
+        return try self.call(p, args)
+    }
+
+    func enter(mutate self, proto: i64, args: Vec<Value>) -> Value or VmError {
+        let size = self.chunk.protos[proto].num_registers
+        let base = self.heap.push_frame(size)
+        mut i: i64 = 0
+        for a in args {
+            self.heap.stack[base + i] = a
+            i = i + 1
+        }
+        self.frames.push(Frame(proto: proto, pc: 0, base: base, ret: -1, closure: Value.none()))
+        return try self.execute()
+    }
+
+    func reg(self, r: i64) -> Value {
+        return self.heap.stack[self.frames[self.frames.len() - 1].base + r]
+    }
+
+    func set(mutate self, r: i64, v: Value) {
+        let base = self.frames[self.frames.len() - 1].base
+        self.heap.stack[base + r] = v
+    }
+
+    func execute(mutate self) -> Value or VmError {
         loop {
             if self.fuel <= 0 {
                 return VmError.FuelExhausted
             }
             self.fuel = self.fuel - 1
 
-            if pc >= code.len() {
-                return Value.None
+            let fi = self.frames.len() - 1
+            let proto = self.frames[fi].proto
+            let pc = self.frames[fi].pc
+            if pc >= self.chunk.protos[proto].code.len().wrap<i64>() {
+                return VmError.Malformed("ran off the end of {self.chunk.protos[proto].name}")
             }
-
-            let instr = code.get(pc) ?? return VmError.ScriptError("pc out of bounds: {pc}")
-            pc = pc + 1
-            let op = decode_opcode(instr) ?? return VmError.ScriptError("unknown opcode: {decode_op(instr)}")
+            let instr = self.chunk.protos[proto].code[pc]
+            self.frames[fi].pc = pc + 1
+            let op = decode_opcode(instr) ?? return VmError.Malformed("unknown opcode {decode_op(instr)}")
+            let a = decode_a(instr)
+            let b = decode_b(instr)
+            let c = decode_c(instr)
 
             match op {
-                Opcode.LOAD_TRUE => {
-                    let a = decode_a(instr)
-                    self.set_reg(a, Value.Bool(true))
-                }
-                Opcode.LOAD_FALSE => {
-                    let a = decode_a(instr)
-                    self.set_reg(a, Value.Bool(false))
-                }
+                Opcode.LOAD_TRUE => self.set(a, Value.from_bool(true))
+                Opcode.LOAD_FALSE => self.set(a, Value.from_bool(false))
                 Opcode.LOAD_INT => {
-                    let a = decode_a(instr)
                     let bx = decode_bx(instr)
-                    let val = if bx >= 32768 {
-                        bx - 65536
-                    } else {
-                        bx
-                    }
-                    self.set_reg(a, Value.Int(val))
+                    self.set(a, Value.from_int(if bx >= 32768 { bx - 65536 } else { bx }))
                 }
                 Opcode.LOAD_CONST => {
-                    let a = decode_a(instr)
-                    let bx = decode_bx(instr)
-                    let val = self.chunk.main.constants.get(bx) ?? continue
-                    self.set_reg(a, val)
+                    let v = self.chunk.protos[proto].constants[decode_bx(instr)]
+                    self.set(a, v)
                 }
-                Opcode.LOAD_NONE => {
-                    let a = decode_a(instr)
-                    self.set_reg(a, Value.None)
+                Opcode.LOAD_NONE => self.set(a, Value.none())
+                Opcode.MOVE => {
+                    let v = self.reg(b)
+                    self.set(a, v)
                 }
-                Opcode.RETURN => {
-                    let a = decode_a(instr)
-                    if a == 255 {
-                        return Value.None
+                // One arm per opcode, no `A | B` patterns: native matches only
+                // the first alternative (workaround for rask-lang/rask#1732).
+                Opcode.ADD => try self.do_arith(op, a, b, c)
+                Opcode.SUB => try self.do_arith(op, a, b, c)
+                Opcode.MUL => try self.do_arith(op, a, b, c)
+                Opcode.MOD => try self.do_arith(op, a, b, c)
+                Opcode.DIV => {
+                    let y = as_number(self.reg(c))
+                    if y == 0.0 {
+                        return VmError.DivisionByZero
                     }
-                    return self.get_reg(a)
+                    let v = try check_float(as_number(self.reg(b)) / y)
+                    self.set(a, v)
                 }
-                _ => return VmError.ScriptError("unimplemented opcode: {op.name()}")
+                Opcode.IDIV => {
+                    let x = self.reg(b).bits
+                    let y = self.reg(c).bits
+                    if y == 0 {
+                        return VmError.DivisionByZero
+                    }
+                    let q = x.checked_div(y) ?? return VmError.IntegerOverflow
+                    self.set(a, Value.from_int(q))
+                }
+                Opcode.NEG => {
+                    let x = self.reg(b)
+                    if x.kind() == TAG_INT {
+                        let zero: i64 = 0
+                        let n = zero.checked_sub(x.bits) ?? return VmError.IntegerOverflow
+                        self.set(a, Value.from_int(n))
+                    } else {
+                        self.set(a, Value.from_float(-x.as_float()))
+                    }
+                }
+                Opcode.EQ => {
+                    let eq = self.heap.equal(self.reg(b), self.reg(c))
+                    self.set(a, Value.from_bool(eq))
+                }
+                Opcode.LT => {
+                    let less = self.less(self.reg(b), self.reg(c), false)
+                    self.set(a, Value.from_bool(less))
+                }
+                Opcode.LE => {
+                    let less = self.less(self.reg(b), self.reg(c), true)
+                    self.set(a, Value.from_bool(less))
+                }
+                Opcode.NOT => {
+                    let x = self.reg(b)
+                    self.set(a, Value.from_bool(!x.as_bool()))
+                }
+                Opcode.LEN => {
+                    let n = self.heap.len_of(self.reg(b))
+                    self.set(a, Value.from_int(n))
+                }
+                Opcode.NEW_ARRAY => {
+                    mut items: Vec<Value> = Vec.new()
+                    mut i: i64 = 1
+                    while i <= b {
+                        items.push(self.reg(a + i))
+                        i = i + 1
+                    }
+                    let v = self.heap.new_array(c == 1, items) catch e => return heap_err(e)
+                    self.set(a, v)
+                }
+                Opcode.NEW_MAP => {
+                    let m = self.heap.new_map(c == 1) catch e => return heap_err(e)
+                    self.set(a, m)
+                    mut i: i64 = 0
+                    while i < b {
+                        let k = self.reg(a + 1 + 2 * i)
+                        let v = self.reg(a + 2 + 2 * i)
+                        self.heap.map_set(m, k, v) catch e => return heap_err(e)
+                        i = i + 1
+                    }
+                }
+                Opcode.GET_INDEX => {
+                    let obj = self.reg(b)
+                    let key = self.reg(c)
+                    if self.heap.kind_of(obj) == OBJ_MAP {
+                        let v = self.heap.map_get(obj, key) ?? return VmError.KeyNotFound
+                        self.set(a, v)
+                    } else {
+                        let v = self.heap.array_get(obj, key.bits) catch e => return heap_err(e)
+                        self.set(a, v)
+                    }
+                }
+                Opcode.SET_INDEX => {
+                    let obj = self.reg(a)
+                    let key = self.reg(b)
+                    let v = self.reg(c)
+                    if self.heap.kind_of(obj) == OBJ_MAP {
+                        self.heap.map_set(obj, key, v) catch e => return heap_err(e)
+                    } else {
+                        self.heap.set_slot(obj, key.bits, v) catch e => return heap_err(e)
+                    }
+                }
+                Opcode.NEW_STRUCT => {
+                    let t = decode_bx(instr)
+                    let n = self.chunk.structs[t].field_count
+                    let kind = if self.chunk.structs[t].is_tuple { OBJ_TUPLE } else { OBJ_STRUCT }
+                    mut fields: Vec<Value> = Vec.new()
+                    mut i: i64 = 1
+                    while i <= n {
+                        fields.push(self.reg(a + i))
+                        i = i + 1
+                    }
+                    let v = self.heap.new_record(kind, t, 0, fields) catch e => return heap_err(e)
+                    self.set(a, v)
+                }
+                Opcode.GET_STRUCT_FIELD => {
+                    let v = self.heap.slot_of(self.reg(b), c)
+                    self.set(a, v)
+                }
+                Opcode.SET_STRUCT_FIELD => {
+                    let obj = self.reg(a)
+                    let v = self.reg(c)
+                    self.heap.set_slot(obj, b, v) catch e => return heap_err(e)
+                }
+                Opcode.JMP => {
+                    self.frames[fi].pc = pc + 1 + decode_sbx(instr)
+                }
+                Opcode.JMP_IF => {
+                    if self.reg(a).as_bool() {
+                        self.frames[fi].pc = pc + 1 + decode_sbx(instr)
+                    }
+                }
+                Opcode.JMP_IF_NOT => {
+                    if !self.reg(a).as_bool() {
+                        self.frames[fi].pc = pc + 1 + decode_sbx(instr)
+                    }
+                }
+                Opcode.FUNC_REF => self.set(a, Value.func_ref(decode_bx(instr)))
+                Opcode.CLOSURE => {
+                    let p = decode_bx(instr)
+                    let n = self.chunk.protos[p].captures
+                    mut caps: Vec<Value> = Vec.new()
+                    mut i: i64 = 1
+                    while i <= n {
+                        caps.push(self.reg(a + i))
+                        i = i + 1
+                    }
+                    let v = self.heap.new_record(OBJ_CLOSURE, p, 0, caps) catch e => return heap_err(e)
+                    self.set(a, v)
+                }
+                Opcode.GET_CAPTURE => {
+                    let v = self.heap.slot_of(self.frames[fi].closure, b)
+                    self.set(a, v)
+                }
+                Opcode.NEW_CELL => {
+                    let v = self.heap.new_record(OBJ_CELL, 0, 0, Vec<Value>.from([self.reg(b)])) catch e => return heap_err(e)
+                    self.set(a, v)
+                }
+                Opcode.GET_CELL => {
+                    let v = self.heap.slot_of(self.reg(b), 0)
+                    self.set(a, v)
+                }
+                Opcode.SET_CELL => {
+                    let cell = self.reg(a)
+                    let v = self.reg(b)
+                    self.heap.set_slot(cell, 0, v) catch e => return heap_err(e)
+                }
+                Opcode.GET_MODULE => {
+                    let v = self.heap.module_vars[decode_bx(instr)]
+                    self.set(a, v)
+                }
+                Opcode.SET_MODULE => {
+                    let v = self.reg(a)
+                    self.heap.set_module(decode_bx(instr), v)
+                }
+                Opcode.CALL => try self.do_call(a, b)
+                Opcode.RETURN => {
+                    let v = if a == 255 { Value.none() } else { self.reg(a) }
+                    let ret = self.frames[fi].ret
+                    self.heap.pop_frame(self.frames[fi].base)
+                    let _ = self.frames.pop()
+                    if ret < 0 {
+                        return v
+                    }
+                    self.heap.stack[ret] = v
+                }
+                Opcode.IS_SOME => {
+                    let x = self.reg(b)
+                    self.set(a, Value.from_bool(x.is_some()))
+                }
+                Opcode.UNWRAP => {
+                    let x = self.reg(b)
+                    if !x.is_some() {
+                        return VmError.UnwrapNone
+                    }
+                    self.set(a, x.unwrap_some())
+                }
+                Opcode.WRAP_SOME => {
+                    let x = self.reg(b)
+                    self.set(a, x.wrap_some())
+                }
+                _ => return VmError.Malformed("{op.name()} isn't implemented yet")
             }
         }
+    }
+
+    func do_arith(mutate self, op: Opcode, a: i64, b: i64, c: i64) -> void or VmError {
+        let v = try self.arith(op, self.reg(b), self.reg(c))
+        self.set(a, v)
+    }
+
+    func arith(self, op: Opcode, x: Value, y: Value) -> Value or VmError {
+        if x.kind() == TAG_INT && y.kind() == TAG_INT {
+            let p = x.bits
+            let q = y.bits
+            let r = match op {
+                Opcode.ADD => p.checked_add(q)
+                Opcode.SUB => p.checked_sub(q)
+                Opcode.MUL => p.checked_mul(q)
+                _ => {
+                    if q == 0 {
+                        return VmError.DivisionByZero
+                    }
+                    // Sign follows the dividend; MIN % -1 is 0, not overflow.
+                    if q == -1 {
+                        0
+                    } else {
+                        p % q
+                    }
+                }
+            }
+            let n = r ?? return VmError.IntegerOverflow
+            return Value.from_int(n)
+        }
+        let p = as_number(x)
+        let q = as_number(y)
+        let r = match op {
+            Opcode.ADD => p + q
+            Opcode.SUB => p - q
+            Opcode.MUL => p * q
+            _ => {
+                if q == 0.0 {
+                    return VmError.DivisionByZero
+                }
+                p % q
+            }
+        }
+        return try check_float(r)
+    }
+
+    func less(self, x: Value, y: Value, or_equal: bool) -> bool {
+        if x.kind() == TAG_INT && y.kind() == TAG_INT {
+            return if or_equal { x.bits <= y.bits } else { x.bits < y.bits }
+        }
+        if x.is_ref() {
+            let s = self.heap.text_of(x)
+            let t = self.heap.text_of(y)
+            return if or_equal { s <= t } else { s < t }
+        }
+        let p = as_number(x)
+        let q = as_number(y)
+        return if or_equal { p <= q } else { p < q }
+    }
+
+    // CALL A B: callee in R[A], args in R[A+1..A+B], result back in R[A].
+    func do_call(mutate self, a: i64, nargs: i64) -> void or VmError {
+        if self.frames.len().wrap<i64>() >= self.max_call_depth {
+            return VmError.CallOverflow
+        }
+        let callee = self.reg(a)
+        mut closure = Value.none()
+        mut proto: i64 = 0
+        if callee.kind() == TAG_FUNC {
+            proto = callee.bits
+        } else if callee.is_ref() && self.heap.kind_of(callee) == OBJ_CLOSURE {
+            closure = callee
+            proto = self.heap.objs[callee.bits].type_id
+        } else {
+            return VmError.Malformed("call of a value that isn't a function")
+        }
+        let caller_base = self.frames[self.frames.len() - 1].base
+        let size = self.chunk.protos[proto].num_registers
+        let base = self.heap.push_frame(size)
+        mut i: i64 = 0
+        while i < nargs {
+            self.heap.stack[base + i] = self.heap.stack[caller_base + a + 1 + i]
+            i = i + 1
+        }
+        self.frames.push(Frame(proto: proto, pc: 0, base: base, ret: caller_base + a, closure: closure))
     }
 }

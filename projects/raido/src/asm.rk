@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Hand assembly for tests and the demo, until the compiler emits bytecode.
+
+func op3(op: Opcode, a: i64, b: i64, c: i64) -> u32 {
+    return encode_abc(op, a, b, c)
+}
+
+func opx(op: Opcode, a: i64, bx: i64) -> u32 {
+    return encode_abx(op, a, bx)
+}
+
+func jump(op: Opcode, a: i64, offset: i64) -> u32 {
+    return encode_asbx(op, a, offset)
+}
+
+func make_proto(name: string, arity: i64, regs: i64, take code: Vec<u32>) -> Prototype {
+    mut p = Prototype.new(name, arity, regs)
+    p.code = code
+    return p
+}
+
+// fib(n), recursive. Prototype index `self_idx` names itself.
+func fib_proto(self_idx: i64) -> Prototype {
+    return make_proto("fib", 1, 7, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 1, 2)
+        op3(Opcode.LT, 2, 0, 1)
+        jump(Opcode.JMP_IF_NOT, 2, 1)
+        opx(Opcode.RETURN, 0, 0)
+        opx(Opcode.FUNC_REF, 3, self_idx)
+        opx(Opcode.LOAD_INT, 5, 1)
+        op3(Opcode.SUB, 4, 0, 5)
+        op3(Opcode.CALL, 3, 1, 0)
+        opx(Opcode.FUNC_REF, 4, self_idx)
+        opx(Opcode.LOAD_INT, 6, 2)
+        op3(Opcode.SUB, 5, 0, 6)
+        op3(Opcode.CALL, 4, 1, 0)
+        op3(Opcode.ADD, 3, 3, 4)
+        opx(Opcode.RETURN, 3, 0)
+    ]))
+}

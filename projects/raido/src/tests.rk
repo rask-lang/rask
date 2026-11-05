@@ -1,0 +1,621 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// VM and heap tests, on hand-assembled bytecode.
+
+// --- Programs ---
+//
+// One chunk exercises module state, structs, maps, closures and failure.
+// Module variable 0 holds a map<int, Box>; 1 holds a counter; 2 a closure.
+// Struct type 0 is `Box { v: int }`; type 1 is the tuple `(int, int)`.
+
+const P_INIT: i64 = 0
+const P_BUMP: i64 = 1
+const P_BUMP_FAIL: i64 = 2
+const P_CHURN: i64 = 3
+const P_GET: i64 = 4
+const P_SIZE: i64 = 5
+const P_POKE_FAIL: i64 = 6
+const P_MAKE_ADDER: i64 = 7
+const P_ADDER: i64 = 8
+const P_STORE_ADDER: i64 = 9
+const P_APPLY: i64 = 10
+const P_SET_BOX_FAIL: i64 = 11
+const P_FIB: i64 = 12
+const P_MAKE_PAIR: i64 = 13
+const P_POKE_DROP_FAIL: i64 = 14
+const P_MAKE_COUNTER: i64 = 15
+const P_BUMP_CELL: i64 = 16
+const P_STORE_COUNTER: i64 = 17
+const P_TICK: i64 = 18
+const P_TICK_FAIL: i64 = 19
+const P_SHARED: i64 = 20
+
+func test_chunk() -> Chunk {
+    mut c = Chunk.new()
+    c.module_vars = 3
+    c.structs.push(StructLayout(name: "Box", field_count: 1, is_tuple: false))
+    c.structs.push(StructLayout(name: "(int, int)", field_count: 2, is_tuple: true))
+
+    // init: m = {}, count = 0
+    c.add_proto(make_proto("init", 0, 2, Vec<u32>.from([
+        op3(Opcode.NEW_MAP, 0, 0, 0)
+        opx(Opcode.SET_MODULE, 0, 0)
+        opx(Opcode.LOAD_INT, 1, 0)
+        opx(Opcode.SET_MODULE, 1, 1)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // bump() -> int: count += 1
+    c.add_proto(make_proto("bump", 0, 2, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 1)
+        opx(Opcode.LOAD_INT, 1, 1)
+        op3(Opcode.ADD, 0, 0, 1)
+        opx(Opcode.SET_MODULE, 0, 1)
+        opx(Opcode.RETURN, 0, 0)
+    ])))
+    // bump_fail(): count += 1, then divide by zero
+    c.add_proto(make_proto("bump_fail", 0, 3, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 1)
+        opx(Opcode.LOAD_INT, 1, 1)
+        op3(Opcode.ADD, 0, 0, 1)
+        opx(Opcode.SET_MODULE, 0, 1)
+        opx(Opcode.LOAD_INT, 1, 0)
+        op3(Opcode.IDIV, 2, 0, 1)
+        opx(Opcode.RETURN, 2, 0)
+    ])))
+    // churn(n) -> int: for i in 0..n { let junk = [i, i]; m[i] = Box { v: i } }
+    c.add_proto(make_proto("churn", 1, 7, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 1, 0)
+        opx(Opcode.LOAD_INT, 2, 0)
+        op3(Opcode.LT, 3, 2, 0)
+        jump(Opcode.JMP_IF_NOT, 3, 9)
+        op3(Opcode.MOVE, 5, 2, 0)
+        op3(Opcode.MOVE, 6, 2, 0)
+        op3(Opcode.NEW_ARRAY, 4, 2, 0)
+        op3(Opcode.MOVE, 5, 2, 0)
+        opx(Opcode.NEW_STRUCT, 4, 0)
+        op3(Opcode.SET_INDEX, 1, 2, 4)
+        opx(Opcode.LOAD_INT, 5, 1)
+        op3(Opcode.ADD, 2, 2, 5)
+        jump(Opcode.JMP, 0, -11)
+        op3(Opcode.LEN, 3, 1, 0)
+        opx(Opcode.RETURN, 3, 0)
+    ])))
+    // get(k) -> int: m[k].v
+    c.add_proto(make_proto("get", 1, 3, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 1, 0)
+        op3(Opcode.GET_INDEX, 2, 1, 0)
+        op3(Opcode.GET_STRUCT_FIELD, 2, 2, 0)
+        opx(Opcode.RETURN, 2, 0)
+    ])))
+    // size() -> int: len(m)
+    c.add_proto(make_proto("size", 0, 2, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 0)
+        op3(Opcode.LEN, 1, 0, 0)
+        opx(Opcode.RETURN, 1, 0)
+    ])))
+    // poke_fail(): m[1000] = Box { v: 7 }; m[0] = Box { v: 7 }; fail
+    c.add_proto(make_proto("poke_fail", 0, 5, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 0)
+        opx(Opcode.LOAD_INT, 3, 7)
+        opx(Opcode.NEW_STRUCT, 2, 0)
+        opx(Opcode.LOAD_INT, 1, 1000)
+        op3(Opcode.SET_INDEX, 0, 1, 2)
+        opx(Opcode.LOAD_INT, 1, 0)
+        op3(Opcode.SET_INDEX, 0, 1, 2)
+        op3(Opcode.UNWRAP, 4, 4, 0)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // make_adder(n) -> func(int) -> int: |x| x + n
+    c.add_proto(make_proto("make_adder", 1, 3, Vec<u32>.from([
+        op3(Opcode.MOVE, 2, 0, 0)
+        opx(Opcode.CLOSURE, 1, P_ADDER)
+        opx(Opcode.RETURN, 1, 0)
+    ])))
+    mut adder = make_proto("adder", 1, 3, Vec<u32>.from([
+        op3(Opcode.GET_CAPTURE, 1, 0, 0)
+        op3(Opcode.ADD, 2, 0, 1)
+        opx(Opcode.RETURN, 2, 0)
+    ]))
+    adder.captures = 1
+    c.add_proto(adder)
+    // store_adder(n): closure = make_adder(n)
+    c.add_proto(make_proto("store_adder", 1, 3, Vec<u32>.from([
+        opx(Opcode.FUNC_REF, 1, P_MAKE_ADDER)
+        op3(Opcode.MOVE, 2, 0, 0)
+        op3(Opcode.CALL, 1, 1, 0)
+        opx(Opcode.SET_MODULE, 1, 2)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // apply(x) -> int: closure(x)
+    c.add_proto(make_proto("apply", 1, 3, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 1, 2)
+        op3(Opcode.MOVE, 2, 0, 0)
+        op3(Opcode.CALL, 1, 1, 0)
+        opx(Opcode.RETURN, 1, 0)
+    ])))
+    // set_box_fail(k): m[k].v = 99, then fail
+    c.add_proto(make_proto("set_box_fail", 1, 4, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 1, 0)
+        op3(Opcode.GET_INDEX, 2, 1, 0)
+        opx(Opcode.LOAD_INT, 3, 99)
+        op3(Opcode.SET_STRUCT_FIELD, 2, 0, 3)
+        opx(Opcode.LOAD_NONE, 3, 0)
+        op3(Opcode.UNWRAP, 3, 3, 0)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    c.add_proto(fib_proto(P_FIB))
+    // make_pair(n) -> (int, int): (n, n)
+    c.add_proto(make_proto("make_pair", 1, 4, Vec<u32>.from([
+        op3(Opcode.MOVE, 2, 0, 0)
+        op3(Opcode.MOVE, 3, 0, 0)
+        opx(Opcode.NEW_STRUCT, 1, 1)
+        opx(Opcode.RETURN, 1, 0)
+    ])))
+    // poke_drop_fail(p): p.1 = 5, drop p, allocate a Box, fail
+    c.add_proto(make_proto("poke_drop_fail", 1, 3, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 1, 5)
+        op3(Opcode.SET_STRUCT_FIELD, 0, 1, 1)
+        opx(Opcode.LOAD_NONE, 0, 0)
+        opx(Opcode.NEW_STRUCT, 1, 0)
+        op3(Opcode.UNWRAP, 2, 0, 0)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // make_counter() -> func() -> int: let n = 0; return || { n += 1; return n }
+    c.add_proto(make_proto("make_counter", 0, 4, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 0, 0)
+        op3(Opcode.NEW_CELL, 1, 0, 0)
+        op3(Opcode.MOVE, 3, 1, 0)
+        opx(Opcode.CLOSURE, 2, P_BUMP_CELL)
+        opx(Opcode.RETURN, 2, 0)
+    ])))
+    mut bump = make_proto("bump", 0, 3, Vec<u32>.from([
+        op3(Opcode.GET_CAPTURE, 0, 0, 0)
+        op3(Opcode.GET_CELL, 1, 0, 0)
+        opx(Opcode.LOAD_INT, 2, 1)
+        op3(Opcode.ADD, 1, 1, 2)
+        op3(Opcode.SET_CELL, 0, 1, 0)
+        opx(Opcode.RETURN, 1, 0)
+    ]))
+    bump.captures = 1
+    c.add_proto(bump)
+    // store_counter(): module var 2 = make_counter()
+    c.add_proto(make_proto("store_counter", 0, 1, Vec<u32>.from([
+        opx(Opcode.FUNC_REF, 0, P_MAKE_COUNTER)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.SET_MODULE, 0, 2)
+        opx(Opcode.RETURN, 255, 0)
+    ])))
+    // tick() -> int: the stored counter's next value
+    c.add_proto(make_proto("tick", 0, 1, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 2)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.RETURN, 0, 0)
+    ])))
+    // tick_fail(): tick, then fail
+    c.add_proto(make_proto("tick_fail", 0, 2, Vec<u32>.from([
+        opx(Opcode.GET_MODULE, 0, 2)
+        op3(Opcode.CALL, 0, 0, 0)
+        opx(Opcode.LOAD_NONE, 1, 0)
+        op3(Opcode.UNWRAP, 1, 1, 0)
+        opx(Opcode.RETURN, 0, 0)
+    ])))
+    // shared() -> int: let n = 0; let b = || { n += 1 }; b(); b(); return n
+    c.add_proto(make_proto("shared", 0, 6, Vec<u32>.from([
+        opx(Opcode.LOAD_INT, 0, 0)
+        op3(Opcode.NEW_CELL, 1, 0, 0)
+        op3(Opcode.MOVE, 3, 1, 0)
+        opx(Opcode.CLOSURE, 2, P_BUMP_CELL)
+        op3(Opcode.MOVE, 4, 2, 0)
+        op3(Opcode.CALL, 4, 0, 0)
+        op3(Opcode.MOVE, 4, 2, 0)
+        op3(Opcode.CALL, 4, 0, 0)
+        op3(Opcode.GET_CELL, 5, 1, 0)
+        opx(Opcode.RETURN, 5, 0)
+    ])))
+    c.init = P_INIT
+    return c
+}
+
+func test_config(limit: i64) -> Config {
+    return Config(memory_limit: limit, initial_fuel: 10_000_000, max_call_depth: 256)
+}
+
+func loaded(limit: i64, stress: bool) -> Vm {
+    mut vm = Vm.new(test_chunk(), test_config(limit))
+    vm.heap.stress = stress
+    vm.load() catch e => panic("load failed: {e.message()}")
+    return vm
+}
+
+func int_arg(n: i64) -> Vec<Value> {
+    return Vec<Value>.from([Value.from_int(n)])
+}
+
+func call_int(mutate vm: Vm, proto: i64, n: i64) -> i64 {
+    let v = vm.call(proto, int_arg(n)) catch e => panic("call failed: {e.message()}")
+    return v.bits
+}
+
+func call0(mutate vm: Vm, proto: i64) -> i64 {
+    let v = vm.call(proto, Vec.new()) catch e => panic("call failed: {e.message()}")
+    return v.bits
+}
+
+func fails_with(mutate vm: Vm, proto: i64, args: Vec<Value>) -> string {
+    match vm.call(proto, args) {
+        Value => return ""
+        VmError as e => return e.message()
+    }
+}
+
+func snapshot(vm: Vm) -> Vec<u8> {
+    return vm.snapshot()
+}
+
+func same_bytes(a: Vec<u8>, b: Vec<u8>) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    mut i: i64 = 0
+    while i < a.len().wrap<i64>() {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// --- Encoding ---
+
+test "instruction encoding round-trips" {
+    let instr = encode_abc(Opcode.ADD, 3, 1, 2)
+    assert decode_a(instr) == 3 && decode_b(instr) == 1 && decode_c(instr) == 2
+    assert decode_sbx(encode_asbx(Opcode.JMP, 0, -5)) == -5
+    assert decode_sbx(encode_asbx(Opcode.JMP, 0, 10)) == 10
+}
+
+// --- Values ---
+
+test "optionals nest without boxing" {
+    let x = Value.from_int(5)
+    assert x.wrap_some().same(x)
+    let nothing = Value.none()
+    let some_none = nothing.wrap_some()
+    assert !nothing.is_some()
+    assert some_none.is_some()
+    assert some_none.unwrap_some().same(nothing)
+    assert !some_none.same(nothing)
+}
+
+test "PRNG seeding is SplitMix64 as specified" {
+    // SplitMix64 from 0 gives 0xE220A8397B1DCDAF, then 0x6E789E6AA1B965F4.
+    let s = seed_state(0)
+    assert s.s0 == 0x7B1DCDAF
+    assert s.s1 == 0xE220A839
+    assert s.s2 == 0xA1B965F4
+    assert s.s3 == 0x6E789E6A
+}
+
+// --- Execution ---
+
+test "recursive calls" {
+    mut vm = loaded(65536, false)
+    assert call_int(mutate vm, P_FIB, 15) == 610
+}
+
+test "module state lives between calls" {
+    mut vm = loaded(65536, false)
+    assert call0(mutate vm, P_BUMP) == 1
+    assert call0(mutate vm, P_BUMP) == 2
+}
+
+test "closures capture and outlive their maker" {
+    mut vm = loaded(65536, true)
+    call_int(mutate vm, P_STORE_ADDER, 10)
+    assert call_int(mutate vm, P_APPLY, 5) == 15
+    vm.heap.collect(Value.none())
+    assert call_int(mutate vm, P_APPLY, 1) == 11
+}
+
+test "a closure and its function share a reassigned variable" {
+    mut vm = loaded(65536, false)
+    assert call0(mutate vm, P_SHARED) == 2
+}
+
+test "a counter closure keeps its count across calls and collections" {
+    mut vm = loaded(65536, true)
+    call0(mutate vm, P_STORE_COUNTER)
+    assert call0(mutate vm, P_TICK) == 1
+    call_int(mutate vm, P_CHURN, 20)
+    assert call0(mutate vm, P_TICK) == 2
+    assert call0(mutate vm, P_TICK) == 3
+}
+
+// --- Transactions ---
+
+test "a failed call rolls back a cell write" {
+    mut vm = loaded(65536, false)
+    call0(mutate vm, P_STORE_COUNTER)
+    assert call0(mutate vm, P_TICK) == 1
+    assert fails_with(mutate vm, P_TICK_FAIL, Vec.new()) == "UnwrapNone"
+    assert call0(mutate vm, P_TICK) == 2
+}
+
+test "a counter survives a save and load" {
+    mut a = loaded(65536, false)
+    call0(mutate a, P_STORE_COUNTER)
+    call0(mutate a, P_TICK)
+    call0(mutate a, P_TICK)
+    mut b = Vm.restore(test_chunk(), test_config(65536), a.snapshot()) catch e => panic(e.message())
+    assert same_bytes(b.snapshot(), a.snapshot())
+    assert call0(mutate b, P_TICK) == 3
+    assert call0(mutate a, P_TICK) == 3
+}
+
+
+test "a failed call rolls back module variables" {
+    mut vm = loaded(65536, false)
+    call0(mutate vm, P_BUMP)
+    assert fails_with(mutate vm, P_BUMP_FAIL, Vec.new()) == "DivisionByZero"
+    assert call0(mutate vm, P_BUMP) == 2
+}
+
+test "a failed call rolls back map inserts and replacements" {
+    mut vm = loaded(65536, false)
+    call_int(mutate vm, P_CHURN, 3)
+    assert fails_with(mutate vm, P_POKE_FAIL, Vec.new()) == "UnwrapNone"
+    assert call0(mutate vm, P_SIZE) == 3
+    assert call_int(mutate vm, P_GET, 0) == 0
+    assert fails_with(mutate vm, P_GET, int_arg(1000)) == "KeyNotFound"
+}
+
+test "a failed call rolls back struct field writes" {
+    mut vm = loaded(65536, false)
+    call_int(mutate vm, P_CHURN, 3)
+    assert fails_with(mutate vm, P_SET_BOX_FAIL, int_arg(2)) == "UnwrapNone"
+    assert call_int(mutate vm, P_GET, 2) == 2
+}
+
+test "rollback keeps the objects it writes back into alive" {
+    // The pair comes from an earlier call and only the host holds it, so
+    // once the second call drops it, only the undo log still needs it.
+    mut vm = loaded(65536, true)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    assert fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([pair])) == "UnwrapNone"
+    assert vm.heap.objs[pair.bits].slots.len() == 2
+}
+
+test "map remove rolls back to the same position" {
+    mut h = GcHeap.new(65536)
+    let m = h.new_map(false) catch _ => panic("alloc")
+    h.module_vars.push(m)
+    for k in 0..4 {
+        h.map_set(m, Value.from_int(k), Value.from_int(k * 10)) catch _ => panic("set")
+    }
+    h.begin_run()
+    h.map_remove(m, Value.from_int(1))
+    h.map_set(m, Value.from_int(1), Value.from_int(-1)) catch _ => panic("set")
+    h.rollback()
+    assert h.objs[m.bits].keys[1].bits == 1
+    assert (h.map_get(m, Value.from_int(1)) ?? Value.none()).bits == 10
+    assert h.objs[m.bits].keys[3].bits == 3
+}
+
+test "array pushes, pops and removes roll back" {
+    mut h = GcHeap.new(65536)
+    let a = h.new_array(false, Vec<Value>.from([Value.from_int(1), Value.from_int(2)])) catch _ => panic("alloc")
+    h.module_vars.push(a)
+    h.begin_run()
+    h.array_push(a, Value.from_int(3)) catch _ => panic("push")
+    h.array_remove(a, 0) catch _ => panic("remove")
+    h.array_pop(a)
+    h.rollback()
+    assert h.len_of(a) == 2
+    assert h.objs[a.bits].slots[0].bits == 1
+    assert h.objs[a.bits].slots[1].bits == 2
+}
+
+// --- The collector can't be observed ---
+
+test "collecting at every allocation changes nothing a script sees" {
+    mut a = loaded(1_000_000, false)
+    mut b = loaded(1_000_000, true)
+    assert call_int(mutate a, P_CHURN, 200) == 200
+    assert call_int(mutate b, P_CHURN, 200) == 200
+    assert call_int(mutate a, P_GET, 150) == call_int(mutate b, P_GET, 150)
+    assert b.heap.collections > a.heap.collections
+    assert a.fuel == b.fuel
+    assert same_bytes(snapshot(a), snapshot(b))
+}
+
+test "memory runs out at the same instruction whether or not garbage was collected" {
+    mut a = loaded(16384, false)
+    mut b = loaded(16384, true)
+    assert fails_with(mutate a, P_CHURN, int_arg(1000)) == "MemoryExhausted"
+    assert fails_with(mutate b, P_CHURN, int_arg(1000)) == "MemoryExhausted"
+    assert a.fuel == b.fuel
+    // The failed call rolled back: the map is empty again in both.
+    assert call0(mutate a, P_SIZE) == 0
+    assert call0(mutate b, P_SIZE) == 0
+}
+
+test "garbage alone never exhausts memory" {
+    // 200 boxes kept fit in 16 KB; the 200 junk arrays beside them don't
+    // have to, because they're unreachable when the limit is checked.
+    mut vm = loaded(16384, false)
+    assert call_int(mutate vm, P_CHURN, 150) == 150
+}
+
+// --- Serialization ---
+
+test "a snapshot loads back into a VM that carries on the same" {
+    mut a = loaded(1_000_000, false)
+    call_int(mutate a, P_CHURN, 50)
+    call_int(mutate a, P_STORE_ADDER, 7)
+    let saved = snapshot(a)
+    mut b = Vm.restore(test_chunk(), test_config(1_000_000), saved.clone()) catch e => panic(e.message())
+    assert same_bytes(snapshot(b), saved)
+    assert call_int(mutate b, P_GET, 42) == 42
+    assert call_int(mutate b, P_APPLY, 1) == call_int(mutate a, P_APPLY, 1)
+    assert call0(mutate b, P_BUMP) == call0(mutate a, P_BUMP)
+}
+
+test "unreachable objects aren't written" {
+    // churn leaves 20 junk arrays behind, unreachable but not yet collected.
+    mut a = loaded(1_000_000, false)
+    call_int(mutate a, P_CHURN, 20)
+    let total = a.heap.objs.len().wrap<i64>() - a.heap.free.len().wrap<i64>()
+    let b = Vm.restore(test_chunk(), test_config(1_000_000), a.snapshot()) catch e => panic(e.message())
+    // The map and its 20 boxes.
+    assert b.heap.objs.len() == 21
+    assert total > 21
+}
+
+// --- Equality and host handles ---
+
+test "strings and tuples compare by content, structs by identity" {
+    mut h = GcHeap.new(65536)
+    let s1 = h.new_string("a") catch _ => panic("alloc")
+    let s2 = h.new_string("a") catch _ => panic("alloc")
+    assert h.equal(s1, s2)
+    let pair = Vec<Value>.from([Value.from_int(1), Value.from_int(2)])
+    let t1 = h.new_record(OBJ_TUPLE, 1, 0, pair.clone()) catch _ => panic("alloc")
+    let t2 = h.new_record(OBJ_TUPLE, 1, 0, pair.clone()) catch _ => panic("alloc")
+    assert h.equal(t1, t2)
+    let b1 = h.new_record(OBJ_STRUCT, 0, 0, pair.clone()) catch _ => panic("alloc")
+    let b2 = h.new_record(OBJ_STRUCT, 0, 0, pair) catch _ => panic("alloc")
+    assert !h.equal(b1, b2)
+    assert h.equal(b1, b1)
+    assert h.equal(Value.from_float(0.0), Value.from_float(-0.0))
+}
+
+// --- Values the host holds ---
+
+// The pair from the first call isn't rooted, so by the third call the host
+// no longer holds it, whether or not the collector has run.
+func stale_outcome(stress: bool) -> string {
+    mut vm = loaded(65536, stress)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    call0(mutate vm, P_BUMP)
+    call0(mutate vm, P_BUMP)
+    return fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([pair]))
+}
+
+test "a value the host stopped holding is refused, collected or not" {
+    let normal = stale_outcome(false)
+    let stress = stale_outcome(true)
+    assert normal.starts_with("HostError")
+    assert stress == normal
+}
+
+test "the last result can be passed straight back in" {
+    mut vm = loaded(65536, true)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    assert fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([pair])) == "UnwrapNone"
+}
+
+test "a host root keeps a value usable across calls and collections" {
+    mut vm = loaded(65536, true)
+    let pair = vm.call(P_MAKE_PAIR, int_arg(3)) catch e => panic(e.message())
+    let r = vm.heap.add_root(pair) catch e => panic(e.message())
+    call0(mutate vm, P_BUMP)
+    call_int(mutate vm, P_CHURN, 30)
+    let again = vm.heap.get_root(r) catch e => panic(e.message())
+    assert fails_with(mutate vm, P_POKE_DROP_FAIL, Vec<Value>.from([again])) == "UnwrapNone"
+    vm.heap.unroot(r)
+    assert vm.heap.get_root(r) is HeapError
+}
+
+test "a host string lives until the next call starts" {
+    mut vm = loaded(65536, true)
+    let s = vm.heap.host_string("hello") catch e => panic(e.message())
+    vm.heap.collect(Value.none())
+    let r = vm.heap.add_root(s) catch e => panic(e.message())
+    let back = vm.heap.get_root(r) catch e => panic(e.message())
+    assert vm.heap.text_of(back) == "hello"
+}
+
+test "a root index means the same root after save and load" {
+    mut vm = loaded(65536, false)
+    let x = vm.call(P_MAKE_PAIR, int_arg(1)) catch e => panic(e.message())
+    let r0 = vm.heap.add_root(x) catch e => panic(e.message())
+    let y = vm.call(P_MAKE_PAIR, int_arg(2)) catch e => panic(e.message())
+    let r1 = vm.heap.add_root(y) catch e => panic(e.message())
+    vm.heap.unroot(r0)
+    mut w = Vm.restore(test_chunk(), test_config(65536), vm.snapshot()) catch e => panic(e.message())
+    assert w.heap.get_root(r0) is HeapError
+    let back = w.heap.get_root(r1) catch e => panic(e.message())
+    assert w.heap.slot_of(back, 0).bits == 2
+}
+
+// --- The undo log is bounded by what a run touches ---
+
+test "writing one field many times logs it once" {
+    mut h = GcHeap.new(4096)
+    let b = h.new_record(OBJ_STRUCT, 0, 0, Vec<Value>.from([Value.from_int(0)])) catch _ => panic("alloc")
+    h.module_vars.push(b)
+    h.begin_run()
+    for i in 0..10_000 {
+        h.set_slot(b, 0, Value.from_int(i)) catch _ => panic("set")
+    }
+    assert h.undo.len() == 1
+    h.rollback()
+    assert h.slot_of(b, 0).bits == 0
+}
+
+test "pushing and popping many times saves the array once" {
+    mut h = GcHeap.new(4096)
+    let a = h.new_array(false, Vec<Value>.from([Value.from_int(1)])) catch _ => panic("alloc")
+    h.module_vars.push(a)
+    h.begin_run()
+    for i in 0..10_000 {
+        h.array_push(a, Value.from_int(i)) catch _ => panic("push")
+        h.array_pop(a)
+        h.set_slot(a, 0, Value.from_int(i)) catch _ => panic("set")
+    }
+    assert h.undo.len() == 1
+    h.rollback()
+    assert h.len_of(a) == 1
+    assert h.slot_of(a, 0).bits == 1
+}
+
+// --- Rolling back regrowth ---
+
+func long_text(n: i64) -> string {
+    mut s = ""
+    for _ in 0..n {
+        s = "{s}x"
+    }
+    return s
+}
+
+// An array shrinks inside a run, a collection sees it small, and the run
+// rolls back. The array is big again, and the next checkpoint must know.
+func regrow_outcome(stress: bool) -> string {
+    mut h = GcHeap.new(2000)
+    h.stress = stress
+    mut items: Vec<Value> = Vec.new()
+    for k in 0..64 {
+        items.push(Value.from_int(k))
+    }
+    let a = h.new_array(false, items) catch _ => panic("alloc")
+    h.module_vars.push(a)
+    h.module_vars.push(Value.none())
+    h.begin_run()
+    for _ in 0..60 {
+        h.array_pop(a)
+    }
+    for _ in 0..8 {
+        h.new_string(long_text(200)) catch _ => panic("garbage")
+    }
+    h.rollback()
+    let s = h.new_string(long_text(1500)) catch e => return e.message()
+    h.module_vars[1] = s
+    return ""
+}
+
+test "memory runs out at the same point after a rollback regrows a container" {
+    let normal = regrow_outcome(false)
+    assert normal == "MemoryExhausted"
+    assert regrow_outcome(true) == normal
+}

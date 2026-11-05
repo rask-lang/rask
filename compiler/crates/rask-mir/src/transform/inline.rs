@@ -406,8 +406,36 @@ fn try_inline_call(
     // Map callee LocalIds → new caller LocalIds
     let mut local_map: HashMap<LocalId, LocalId> = HashMap::new();
 
-    // Map callee params to argument operands (we'll assign args to new locals)
+    // Map callee params to argument operands. An aggregate argument that is
+    // already a local of the parameter's type is the parameter: the body
+    // works on the caller's storage directly. A fresh local would be a byte
+    // copy (codegen copies whole aggregates on assignment), and the copy would
+    // take over ownership and keep handles the caller later replaces, so
+    // `rollback(h)` swapping in a new map left the copy to free the old one
+    // a second time (#1747). The callee can't have reassigned the parameter
+    // itself, or the binding would clobber the caller's local.
+    let callee_defines: std::collections::HashSet<LocalId> = callee
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(crate::analysis::uses::stmt_def)
+        .collect();
+    let caller_ty = |id: LocalId| caller.local_ty(id).cloned();
+    let mut bound_to_arg: std::collections::HashSet<LocalId> = std::collections::HashSet::new();
+    for (i, param) in callee.params.iter().enumerate() {
+        let Some(MirOperand::Local(arg)) = args.get(i) else { continue };
+        if param.ty.passed_by_address()
+            && caller_ty(*arg).as_ref() == Some(&param.ty)
+            && !callee_defines.contains(&param.id)
+        {
+            local_map.insert(param.id, *arg);
+            bound_to_arg.insert(param.id);
+        }
+    }
     for param in callee.params.iter() {
+        if bound_to_arg.contains(&param.id) {
+            continue;
+        }
         let new_id = LocalId(next_local);
         next_local += 1;
         local_map.insert(param.id, new_id);
@@ -474,7 +502,7 @@ fn try_inline_call(
     // First, assign args to param locals
     let mut entry_prefix: Vec<MirStmt> = Vec::new();
     for (i, param) in callee.params.iter().enumerate() {
-        if i < args.len() {
+        if i < args.len() && !bound_to_arg.contains(&param.id) {
             let new_param_local = local_map[&param.id];
             entry_prefix.push(MirStmt::new(
                 MirStmtKind::Assign {

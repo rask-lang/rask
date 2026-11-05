@@ -23,7 +23,7 @@ Every unit of every asset is accounted for. The ledger always balances. Minting 
 
 ### Verifiable Minting
 
-Every `create` and `destroy` Transform must be backed by a [Raido](../raido/) script. The script is content-addressed — any domain can fetch it and re-execute to verify the mint or burn independently.
+Every `create` and `destroy` Transform must be backed by a [Raido](../raido/) script. The script is content-addressed — any domain can fetch it and re-execute to verify the mint or burn independently. It takes everything it depends on as inputs and calls no host functions ([what a transform script may use](README.md#what-a-transform-script-may-use)), so re-running it needs nothing but the script, the inputs and the config.
 
 This is not optional. General transforms (transfer, mutate, split, merge) can use trust-based Proofs or optionally verifiable Raido Proofs. But minting and burning — the operations that change total supply — are always verifiable. If you can't re-execute the minting logic, you can't audit supply. And if you can't audit supply, Law 1 is just a claim.
 

@@ -240,9 +240,14 @@ Both direct transfers and intermediary chains use the bilateral escrow protocol 
 
 1. A Raido script (content-addressed bytecode chunk)
 2. The inputs to the script
-3. The outputs (the claimed result)
+3. The Raido config it ran under: fuel, memory limit, call depth
+4. The outputs (the claimed result)
 
-The receiving domain fetches the script (Leden content store), re-executes with the same inputs. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
+The receiving domain fetches the script (Leden content store), verifies the bytecode, and re-executes with the same inputs and config in a fresh VM. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
+
+### What a Transform Script May Use
+
+A script that someone else re-executes follows Raido's [verification-run rules](../raido/README.md#verification-modes): one call in a fresh VM, no pausing, no `spawn`, no deferred calls. Allgard adds the API rule. A transform script is compiled against no host API at all: its inputs are its arguments and its result is its return value. A script that reads the world through a host function couldn't be checked by a domain without that host, so it isn't a transform script. A domain that needs world data in a mint passes it in as an input, where the Proof records it.
 
 ### Required: Verifiable Minting
 
@@ -289,10 +294,11 @@ Supply audit entries carry the Raido chunk format version alongside each script 
 |-------|------|---------|
 | `script_hash` | `[u8; 32]` | Content hash of the minting/burning script |
 | `chunk_version` | `uint` | Chunk format version the script was compiled under |
+| `config` | `bytes` | Fuel, memory limit and call depth it ran under |
 | `inputs` | `bytes` | Serialized inputs to the script |
 | `outputs` | `bytes` | Claimed outputs |
 
-A verifying domain fetches the script (via Leden content store), checks that its content hash matches, confirms it can execute that chunk version, and re-runs it. If the verifier doesn't support the chunk version, it cannot mechanically verify that entry — but can still cross-check totals against bilateral transfer history and audit gossip.
+A verifying domain fetches the script (via Leden content store), checks that its content hash matches, confirms it can execute that chunk version, and re-runs it under the recorded config. If the verifier doesn't support the chunk version, it cannot mechanically verify that entry — but can still cross-check totals against bilateral transfer history and audit gossip.
 
 Historical audit entries remain valid indefinitely. The script hash pins the exact bytecode; the chunk version pins the execution semantics. A verifier needs a VM that supports that version to re-execute. In practice, the set of chunk versions used across the network grows slowly — VMs carry support for all released versions.
 
