@@ -21,7 +21,7 @@ type FuncName = String;
 
 /// Run effect inference on declarations.
 pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
-    infer_with_reach(decls, &[], targets).0
+    infer_with_reach(decls, &[], targets, &Default::default()).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -35,8 +35,9 @@ pub fn infer_with_reach(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    c_macros: &crate::CMacros,
 ) -> (EffectMap, HashSet<FuncName>) {
-    let mut pass = InferPass::new(targets);
+    let mut pass = InferPass::new(targets, c_macros);
     pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
     (pass.effects, runtime_only)
@@ -51,6 +52,8 @@ struct Cx<'a> {
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
     targets: &'t MethodTargets,
+    /// What each C macro's body does, by the checker's reading.
+    c_macros: &'t crate::CMacros,
     /// The imports of the unit being collected, for what a name at a call
     /// site means.
     imports: sources::ImportedNames,
@@ -78,9 +81,10 @@ struct InferPass<'t> {
 }
 
 impl<'t> InferPass<'t> {
-    fn new(targets: &'t MethodTargets) -> Self {
+    fn new(targets: &'t MethodTargets, c_macros: &'t crate::CMacros) -> Self {
         Self {
             targets,
+            c_macros,
             imports: sources::ImportedNames::default(),
             scan_reach: true,
             effects: HashMap::new(),
@@ -337,17 +341,25 @@ impl<'t> InferPass<'t> {
     // ── Phase 2: Extern declarations ────────────────────────────────
 
     /// INF5: a C function could do anything, so it blocks and touches ambient
-    /// state unless its declaration says `@memory_only`.
+    /// state unless its declaration says `@memory_only`. Either way it's C
+    /// code. A C macro has its body's effects: arithmetic is pure, since the
+    /// compiler computes it; a field read is C code; a call has the effects
+    /// of the C function it calls.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
                 // `@ambient`: reads ambient state (the clock, randomness) but
                 // never waits, which is a protocol engine's whole shape.
                 let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
-                let effects = if says("memory_only") {
-                    Effects::default()
+                let effects = if let Some(body) = self.c_macros.get(&e.name) {
+                    if !body.calls.is_empty() {
+                        self.call_graph.entry(e.name.clone()).or_default().extend(body.calls.iter().cloned());
+                    }
+                    Effects { c_code: body.touches_memory, ..Default::default() }
+                } else if says("memory_only") {
+                    Effects { c_code: true, ..Default::default() }
                 } else {
-                    Effects { blocks: !says("ambient"), ambient: true, ..Default::default() }
+                    Effects { blocks: !says("ambient"), ambient: true, c_code: true, ..Default::default() }
                 };
                 self.effects.insert(e.name.clone(), effects);
             }
@@ -369,7 +381,7 @@ impl<'t> InferPass<'t> {
         let mut work: Vec<String> = self
             .effects
             .iter()
-            .filter(|(_, e)| !e.is_pure())
+            .filter(|(_, e)| !e.is_pure() || e.c_code)
             .map(|(k, _)| k.clone())
             .collect();
         while let Some(callee) = work.pop() {
@@ -892,7 +904,7 @@ mod tests {
     /// the way the compiler runs it.
     fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
         let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-        infer_with_reach(decls, &stdlib, targets).0
+        infer_with_reach(decls, &stdlib, targets, &Default::default()).0
     }
 
     fn target(name: &str) -> rask_ast::decl::MethodTarget {

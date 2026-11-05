@@ -56,6 +56,10 @@ pub struct Effects {
     /// Set when the function (or something it calls without an internal block) reaches `spawn`.
     /// NOT propagated via the regular call graph — uses unguarded-call edges only.
     pub needs_runtime: bool,
+    /// Runs C code: an extern, or a C macro that reads memory or calls C.
+    /// Only the compiled program can, so it's outside comptime (CT7). Not
+    /// an effect in PU1's sense: `strlen` is pure and still C.
+    pub c_code: bool,
 }
 
 impl Effects {
@@ -82,6 +86,7 @@ impl Effects {
         self.async_ |= other.async_;
         self.grow |= other.grow;
         self.shrink |= other.shrink;
+        self.c_code |= other.c_code;
     }
 
     /// Ghost text label for IDE display (IDE1): `[pure]`, or the effects
@@ -132,6 +137,9 @@ pub struct EffectWarning {
 /// call's node.
 pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 
+/// The checker's reading of each C macro's body, by the macro's name.
+pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
+
 /// Run effect inference on a program and the stdlib it was checked with.
 ///
 /// The stdlib's bodies are inferred too, so a call into it carries what the
@@ -143,9 +151,10 @@ pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    c_macros: &CMacros,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
+    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets, c_macros);
     let warn_prints = warn.iter().any(|w| w == "blocking_print");
     let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
     (effects, warnings)

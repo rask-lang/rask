@@ -210,6 +210,18 @@ pub struct FnDecl {
     pub decl_start: usize,
 }
 
+impl ExternDecl {
+    /// The C symbol it links to: its `@c_name` when the program knows it by
+    /// another name (a package qualifies its externs like its functions),
+    /// else its name.
+    pub fn c_symbol(&self) -> String {
+        match crate::attr::c_name(&self.attrs) {
+            Some(crate::attr::CName::Spelled(c)) => c,
+            _ => self.name.clone(),
+        }
+    }
+}
+
 impl FnDecl {
     /// Declared without a Rask body: the backend implements it (`@native`,
     /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`
@@ -290,6 +302,16 @@ impl DeclaredEffects {
 }
 
 /// What the checker resolved a method call to, for the passes after it:
+/// What a C function-like macro's body does, as the checker read it
+/// (struct.c-interop/PP4): effect inference gives the macro its body's effects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CMacroBody {
+    /// Reads a field through a pointer, or calls into C.
+    pub touches_memory: bool,
+    /// The C functions it calls, by name.
+    pub calls: Vec<String>,
+}
+
 /// `"Type.method"` with the receiver's declared type (`Handle.join` for
 /// `t.join()` on a `Handle<i64>`), and the method's declared effect.
 #[derive(Debug, Clone, PartialEq, Eq)]

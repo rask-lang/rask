@@ -233,6 +233,8 @@ fn names_the_effect(e: &Effects) -> Option<&'static str> {
         Some("output to the terminal")
     } else if e.ambient {
         Some("state outside the program")
+    } else if e.c_code {
+        Some("C code")
     } else {
         None
     }

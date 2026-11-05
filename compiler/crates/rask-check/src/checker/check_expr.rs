@@ -1535,7 +1535,13 @@ impl TypeChecker {
                         Type::UnresolvedNamed(name.clone())
                     }
                 } else {
-                    Type::UnresolvedNamed(name.clone())
+                    // No type of that name. Left unresolved, the literal got as
+                    // far as lowering and failed there with an internal error.
+                    self.errors.push(TypeError::UndefinedName { name: name.clone(), span: expr.span });
+                    for field_init in fields {
+                        self.infer_expr(&field_init.value);
+                    }
+                    Type::Error
                 }
                 };
                 // `..base` supplies the fields nobody listed, so it has to be
@@ -3117,7 +3123,7 @@ impl TypeChecker {
         }
 
         // PP4: a C function-like macro, typed per call from its arguments.
-        // Named bare or through a package (`pa.F`).
+        // `pa.F(x)` arrives bare: package references are rewritten first.
         {
                 let def = self
                 .resolved
@@ -4109,19 +4115,6 @@ impl TypeChecker {
         // that answer different types fought over it — `libpkg.twice(21)` then
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
-        // PP4: a C macro another package declares, `pa.F(x)`. An extern
-        // keeps its name across packages, as a C symbol does.
-        let through_package = self
-            .resolved
-            .resolutions
-            .get(&object.id)
-            .and_then(|&sym| self.resolved.symbols.get(sym))
-            .is_some_and(|sym| matches!(sym.kind, SymbolKind::ExternalPackage { .. }));
-        let macro_def = if through_package { self.c_macros.get(method).cloned() } else { None };
-        if let Some(def) = macro_def {
-            return self.check_c_macro_call(call_id, &def, args, span);
-        }
-
         if let Some(ret) = self.check_package_call(call_id, object, args, span) {
             return ret;
         }

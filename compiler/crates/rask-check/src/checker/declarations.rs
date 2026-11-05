@@ -1994,7 +1994,8 @@ impl TypeChecker {
                     let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
                         // A function a macro's body may call.
                         let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
-                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        // By its C name: a macro's body calls it as C does.
+                        self.c_functions.insert(e.c_symbol(), (params, e.ret_ty.clone(), e.is_variadic));
                         continue;
                     };
                     let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();

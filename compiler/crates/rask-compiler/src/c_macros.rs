@@ -25,16 +25,14 @@ use crate::variadic::Wrapper;
 fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
     let mut vals = Vec::with_capacity(args.len());
     for (a, ty) in args.iter().zip(&call.args) {
-        let v = match a {
+        vals.push(match a {
             MirOperand::Constant(MirConst::Int(i)) => CVal::Int(*i as i128, ty.clone()),
             MirOperand::Constant(MirConst::Bool(b)) => CVal::Int(*b as i128, ty.clone()),
             MirOperand::Constant(MirConst::Float(f)) => CVal::Float(*f, ty.clone()),
             _ => return None,
-        };
-        vals.push(cexpr::convert(&v, ty)?);
+        });
     }
-    let body = cexpr::parse_body(&call.body, &call.params).ok()?;
-    Some(match cexpr::convert(&cexpr::eval(&body, &vals)?, &call.result)? {
+    Some(match call.compute(&vals)? {
         CVal::Int(v, ty) if rask_c_parse::cexpr::rask_scalar(&ty) == Some("bool") => MirConst::Bool(v != 0),
         // A `u64` above `i64::MAX` keeps its bits.
         CVal::Int(v, _) => MirConst::Int(v as i64),
@@ -75,12 +73,11 @@ fn wrapper(call: &MacroCall) -> Option<Wrapper> {
     let param_types: Vec<TypeExpr> = call.args.iter().map(sig_type).collect::<Option<_>>()?;
     let ret_ty = sig_type(&call.result)?;
     let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
-    // `cb.F` → `2cb_1F`: each part after its length, so no alias, macro
-    // name or argument types run into another's however they're spelled.
-    let symbol = match call.symbol.split_once('.') {
-        Some((alias, name)) => format!("{}{}_{}{}", alias.len(), alias, name.len(), name),
-        None => format!("{}{}", call.symbol.len(), call.symbol),
-    };
+    // `cb.F` → `2cb_1F`, `pa.c.F` → `2pa_1c_1F`: each part after its
+    // length, so no package, alias, macro name or argument types run into
+    // another's however they're spelled.
+    let symbol: Vec<String> = call.symbol.split('.').map(|part| format!("{}{}", part.len(), part)).collect();
+    let symbol = symbol.join("_");
     let name = if parts.is_empty() {
         format!("rask_macro_{}", symbol)
     } else {

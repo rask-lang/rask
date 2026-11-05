@@ -231,6 +231,20 @@ impl CParser {
         }
     }
 
+    /// At `struct`/`union`/`enum`: does a body or a bare `tag;` follow?
+    fn defines_tagged_type(&self) -> bool {
+        let mut rest = self.tokens[self.pos.min(self.tokens.len())..]
+            .iter()
+            .skip(1)
+            .map(|t| &t.kind)
+            .filter(|k| **k != CTokenKind::Newline);
+        match rest.next() {
+            Some(CTokenKind::LBrace) => true,
+            Some(CTokenKind::Ident(_)) => matches!(rest.next(), Some(CTokenKind::LBrace | CTokenKind::Semi)),
+            _ => false,
+        }
+    }
+
     fn skip_newlines(&mut self) {
         while self.peek() == CTokenKind::Newline {
             self.advance();
@@ -397,8 +411,11 @@ impl CParser {
 
         self.skip_newlines();
 
-        // struct/union/enum with possible tag
+        // A struct/union/enum definition or forward declaration. Anything else
+        // that starts with one (`struct node *f(void);`, `typedef struct node
+        // *P;`) only uses it as a type, and is parsed like any declaration.
         match self.peek() {
+            _ if !self.defines_tagged_type() => {}
             CTokenKind::Struct => {
                 self.advance();
                 return self.parse_struct_or_union_decl(true, is_typedef);
@@ -790,29 +807,6 @@ impl CParser {
             return Ok(None);
         }
 
-        // No body — this is a type specifier in a declaration, not a definition.
-        // e.g., `struct foo *ptr;`
-        if self.peek() != CTokenKind::LBrace {
-            if is_typedef {
-                // `typedef struct tag name;`
-                let name = self.expect_ident()?;
-                self.expect(&CTokenKind::Semi)?;
-                let tag_name = tag.unwrap_or_else(|| name.clone());
-                return Ok(Some(vec![CDecl::Typedef(CTypedef {
-                    name,
-                    target: if is_struct {
-                        CType::StructTag(tag_name)
-                    } else {
-                        CType::UnionTag(tag_name)
-                    },
-                })]));
-            }
-            // `struct tag <declarator>` — variable of struct type
-            // Rewind isn't clean here; skip to semicolon.
-            self.skip_to_semi_or_brace();
-            return Ok(None);
-        }
-
         // Parse body
         self.expect(&CTokenKind::LBrace)?;
         self.outer.push(tag.clone());
@@ -1051,19 +1045,6 @@ impl CParser {
                 variants: Vec::new(),
                 is_forward: true,
             })]));
-        }
-
-        if self.peek() != CTokenKind::LBrace {
-            if is_typedef {
-                let name = self.expect_ident()?;
-                self.expect(&CTokenKind::Semi)?;
-                return Ok(Some(vec![CDecl::Typedef(CTypedef {
-                    name,
-                    target: CType::EnumTag(tag.unwrap_or_default()),
-                })]));
-            }
-            self.skip_to_semi_or_brace();
-            return Ok(None);
         }
 
         self.expect(&CTokenKind::LBrace)?;

@@ -325,7 +325,10 @@ fn emit_inner(
         DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => None,
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
-            link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
+            link_name: Some(match crate::c_import::inline_header(e) {
+                Some(_) => rask_c_parse::shim::wrapper_symbol(&e.c_symbol()),
+                None => e.c_symbol(),
+            }),
             // The parser rejects an extern parameter without a type.
             param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
             ret_ty: e.ret_ty.clone(),
@@ -430,6 +433,7 @@ fn write_inline_wrappers(
     // macros of the same name each mean their own.
     let mut by_header: BTreeMap<Vec<std::path::PathBuf>, String> = BTreeMap::new();
     let mut errors = Vec::new();
+    let mut includes: HashMap<std::path::PathBuf, HashSet<std::path::PathBuf>> = HashMap::new();
     for (headers, w) in macros {
         let mut paths = Vec::new();
         for header in headers {
@@ -439,6 +443,19 @@ fn write_inline_wrappers(
                 Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
             }
         }
+        // A header another one on the list includes already comes with it.
+        // Included a second time, one without an include guard redefines
+        // everything in it.
+        for p in &paths {
+            if !includes.contains_key(p) {
+                let found = crate::c_import::included_files(p, &cx).unwrap_or_default();
+                includes.insert(p.clone(), found);
+            }
+        }
+        let brought_in = |p: &std::path::PathBuf| {
+            paths.iter().any(|q| q != p && includes[q].contains(p) && !includes[p].contains(q))
+        };
+        let paths: Vec<std::path::PathBuf> = paths.iter().filter(|p| !brought_in(p)).cloned().collect();
         let src = by_header.entry(paths.clone()).or_insert_with(|| {
             paths.iter().map(|p| format!("#include \"{}\"\n", p.display())).collect()
         });

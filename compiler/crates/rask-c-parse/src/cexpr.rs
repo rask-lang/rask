@@ -91,6 +91,37 @@ pub fn touches_memory(e: &CExpr) -> bool {
     }
 }
 
+/// The functions `e` calls, by name, in order, without repeats.
+pub fn calls(e: &CExpr) -> Vec<String> {
+    fn walk(e: &CExpr, out: &mut Vec<String>) {
+        match e {
+            CExpr::Param(_) | CExpr::Lit(_) => {}
+            CExpr::Unary(_, x) | CExpr::Cast(_, x) => walk(x, out),
+            CExpr::Member { base, .. } => walk(base, out),
+            CExpr::Binary(_, a, b) => {
+                walk(a, out);
+                walk(b, out);
+            }
+            CExpr::Ternary(c, a, b) => {
+                walk(c, out);
+                walk(a, out);
+                walk(b, out);
+            }
+            CExpr::Call { func, args } => {
+                if !out.contains(func) {
+                    out.push(func.clone());
+                }
+                for a in args {
+                    walk(a, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(e, &mut out);
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
     Neg,
@@ -596,6 +627,22 @@ pub struct MacroCall {
     /// function a run-time call goes to declares.
     pub arg_c: Vec<String>,
     pub result_c: String,
+}
+
+impl MacroCall {
+    /// The call's value, computed the way C would: each argument converted to
+    /// the type the call gives it, the body evaluated, the result converted
+    /// to the call's result type. `None` for a macro that reads memory or
+    /// calls C, which only its compiled C can run, and for what C leaves
+    /// undefined (a division by zero, a shift past the width).
+    pub fn compute(&self, args: &[CVal]) -> Option<CVal> {
+        if self.header.is_some() {
+            return None;
+        }
+        let vals: Vec<CVal> = args.iter().zip(&self.args).map(|(v, ty)| convert(v, ty)).collect::<Option<_>>()?;
+        let body = parse_body(&self.body, &self.params).ok()?;
+        convert(&eval(&body, &vals)?, &self.result)
+    }
 }
 
 /// No names: a macro body the translation wrote stands on its own.
