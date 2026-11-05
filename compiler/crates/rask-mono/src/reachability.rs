@@ -138,10 +138,14 @@ pub struct Monomorphizer<'a> {
     /// The records of the generic instance being worked out: what the
     /// checker recorded for its body's nodes, with its arguments in. Moved
     /// into its `MonoFunction` when the instance is done.
-    records: crate::InstanceRecords,
+    records: crate::InstanceCalls,
     /// Whether the function being walked is a generic instance, whose records
     /// are its own rather than the program's.
     in_instance: bool,
+    /// The type arguments of the instance being walked; empty for a function
+    /// that isn't generic.
+    instance_args: Vec<TypeBinding>,
+    instance_projections: HashMap<(String, String), Type>,
     /// Interface name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
     /// `any Interface` makes every such method of the concrete type reachable even
@@ -520,7 +524,9 @@ impl<'a> Monomorphizer<'a> {
             decode_defaults: HashMap::new(),
             claim_generators: HashMap::new(),
             in_test_body: false,
-            records: crate::InstanceRecords::default(),
+            records: crate::InstanceCalls::default(),
+            instance_args: Vec::new(),
+            instance_projections: HashMap::new(),
             in_instance: false,
             interface_methods,
             interface_coercions: HashMap::new(),
@@ -547,294 +553,6 @@ impl<'a> Monomorphizer<'a> {
         mono.interface_methods = rask_check::interface_vtable_methods(&typed.types);
         mono.bind_methods_by_type(typed);
         mono
-    }
-
-    /// Copy the checker's per-node records onto an instantiated body.
-    ///
-    /// The copy's nodes are new, so nothing the checker recorded reaches them
-    /// on their own ids. Each one knows which original node it came from, which
-    /// is enough to bring the type and the dispatch target across.
-    ///
-    /// Types recorded against the *generic* body still mention its type
-    /// parameters, so they're substituted on the way over: a receiver the
-    /// checker typed `T` becomes the concrete type this instantiation is for.
-    /// A record that still names a type parameter afterwards is dropped rather
-    /// than carried — a wrong answer here is worse than no answer, because
-    /// lowering's fallbacks can recognise absence but not incorrectness.
-    fn carry_node_records(
-        &mut self,
-        nodes: &[NodeId],
-        type_args: &[Type],
-        param_names: &[String],
-    ) {
-        let bindings: HashMap<&str, &Type> = param_names
-            .iter()
-            .map(|n| n.as_str())
-            .zip(type_args.iter())
-            .collect();
-        for &id in nodes {
-            if let Some(args) = self.call_type_args.get(&id) {
-                let concrete: Vec<TypeBinding> = args
-                    .iter()
-                    .map(|b| TypeBinding::new(
-                        b.param.clone(),
-                        Self::substitute_param(&b.ty, &bindings, type_args),
-                    ))
-                    .collect();
-                if !concrete.is_empty() {
-                    self.records.call_type_args.insert(id, concrete);
-                }
-            }
-        }
-        let Some(typed) = self.typed else { return };
-        for &id in nodes {
-            if let Some(ty) = typed.node_types.get(&id) {
-                match Self::concretize(ty, type_args, &bindings) {
-                    Some(concrete) => { self.records.node_types.insert(id, concrete); }
-                    None => { self.records.no_node_type.insert(id); }
-                }
-            }
-            if let Some(callee) = typed.call_targets.get(&id) {
-                let carried = match callee {
-                    rask_check::Callee::Free(sym) => Some(rask_check::Callee::Free(*sym)),
-                    rask_check::Callee::Method { recv, method, package } => {
-                        Self::concretize(recv, type_args, &bindings).map(|recv| {
-                            rask_check::Callee::Method {
-                                recv,
-                                method: method.clone(),
-                                package: package.clone(),
-                            }
-                        })
-                    }
-                };
-                match carried {
-                    Some(c) => { self.records.call_targets.insert(id, c); }
-                    None => { self.records.no_call_target.insert(id); }
-                }
-            }
-            if let Some(target) = typed.operator_targets.get(&id) {
-                // Absent unless one is worked out below: a receiver that still
-                // names a parameter has no target either.
-                self.records.no_operator_target.insert(id);
-                if let Some(recv) = Self::concretize(&target.recv, type_args, &bindings) {
-                    // A bare `T: Mul` bound files the method under the
-                    // parameter's own name (`mul$T`); it means this
-                    // instantiation's type.
-                    let rhs = target
-                        .rhs
-                        .as_deref()
-                        .and_then(|rhs| bindings.get(rhs).copied())
-                        .and_then(|bound| Self::nameable_type(bound, &typed.types))
-                        .and_then(|bound| Self::type_spelling(&bound));
-                    let method = match &rhs {
-                        Some(name) => format!("{}${}", target.operator, name),
-                        None => target.method.clone(),
-                    };
-                    // Two primitives are the language's own pair, the same
-                    // answer the checker gives `5 * 5` outside a generic body:
-                    // no conformance, so no operator target, and the call is the
-                    // plain operator method.
-                    let rhs_is_primitive = match target.rhs.as_deref() {
-                        None => true,
-                        Some(r) => match bindings.get(r) {
-                            Some(t) => rask_check::primitive_spelling(t).is_some(),
-                            None => rask_ast::primitives::is_builtin_value_type(r),
-                        },
-                    };
-                    let language_pair =
-                        rask_check::primitive_spelling(&recv).is_some() && rhs_is_primitive;
-                    // The call target the checker recorded for the same node
-                    // names the method the same way, `mul$T`, and that is what
-                    // reachability enqueues. Left as it was, the operator's
-                    // dispatch said `Meters_mul$Meters` while nothing generated
-                    // it, and `i32_mul$i32` for a pair that has no body (#1472).
-                    if let Some(rask_check::Callee::Method { method: m, .. }) =
-                        self.records.call_targets.get_mut(&id)
-                    {
-                        *m = if language_pair { target.operator.clone() } else { method.clone() };
-                    }
-                    if !language_pair {
-                        self.records.no_operator_target.remove(&id);
-                        self.records.operator_targets.insert(
-                            id,
-                            rask_check::OperatorTarget {
-                                recv,
-                                method,
-                                operator: target.operator.clone(),
-                                rhs: rhs.or_else(|| target.rhs.clone()),
-                                applied: target.applied.clone(),
-                                builtin: target.builtin,
-                            },
-                        );
-                    }
-                }
-            }
-            // What doesn't depend on the type arguments (ER31a's wrap, ER14a's
-            // shape, ER9's side, CM1/CM3, field reuses, return moves) is the
-            // checker's record of the same node, which every instance shares.
-            // A closure that captured a link or a `Local` box of a concrete
-            // type is task-bound in every copy. One whose capture has a type
-            // parameter's type is decided here, where that type is known:
-            // `keep<T>`'s `spawn { … x … }` over `x: T` is task-bound in
-            // `keep<Link<Node>>` and not in `keep<i64>`.
-            let task_bound = typed.task_bound_closures.contains(&id)
-                || typed.generic_closure_captures.get(&id).is_some_and(|captures| {
-                    typed.types.generic_closure_task_bound(captures, |ty| {
-                        Self::concretize(ty, type_args, &bindings)
-                    })
-                });
-            if task_bound {
-                self.records.task_bound_closures.insert(id);
-            }
-        }
-    }
-
-    /// A type argument with this instantiation's parameters filled in. Bind by
-    /// name first — `pair<A, B>` calling `level1(a)` records `[A]`, and only the
-    /// name says which of the two arguments that is. The positional fallback
-    /// covers a single-parameter instantiation whose name list is unavailable.
-    fn substitute_param(ty: &Type, bindings: &HashMap<&str, &Type>, type_args: &[Type]) -> Type {
-        if let Type::UnresolvedNamed(name) = ty {
-            if let Some(bound) = bindings.get(name.as_str()) {
-                return (*bound).clone();
-            }
-        }
-        Self::concretize(ty, type_args, bindings).unwrap_or_else(|| ty.clone())
-    }
-
-    /// A recorded type with this instantiation's arguments substituted in, or
-    /// `None` if it still refers to something only the generic body knows.
-    ///
-    /// Single-letter uppercase names are type parameters (type.gradual/PC3), so
-    /// they're the marker for "this came from the generic and wasn't resolved".
-    /// The name a concrete type is spelled by, for a conformance method's
-    /// filed name. `None` for anything a conformance header can't name.
-    fn type_spelling(ty: &Type) -> Option<String> {
-        rask_check::primitive_spelling(ty).map(str::to_string).or_else(|| match ty {
-            Type::UnresolvedNamed(name) => Some(name.clone()),
-            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
-            _ => None,
-        })
-    }
-
-    fn concretize(
-        ty: &Type,
-        type_args: &[Type],
-        bindings: &HashMap<&str, &Type>,
-    ) -> Option<Type> {
-        // A last-resort guess at whether a name is a type parameter, for the
-        // instantiations that reach here with no name list. `bindings` is the
-        // real answer and is checked first everywhere below — this only decides
-        // what to do when it is empty.
-        //
-        // It is one uppercase letter, and it used to be the *only* test. That
-        // made every multi-letter parameter invisible: `Output`, `Item`, `Elem`
-        // carried through verbatim, and MIR then resolved the leftover name
-        // against real types. `Vec<Output>` inside `map_all<Item, Output>` got
-        // the layout of the stdlib struct `os.Output` and freed two of its
-        // string fields out of an i32 (#1247).
-        fn looks_like_type_param(name: &str) -> bool {
-            let mut chars = name.chars();
-            matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
-        }
-        match ty {
-            // The receiver is the type parameter itself. Bind by name, which is
-            // the only thing that says *which* parameter it is: this used to be
-            // positional and gave up whenever a function had more than one, so
-            // `describe_all<T: Describable, U: Describable>` carried no dispatch
-            // target for either `first.describe()` or `second.describe()` and
-            // lowering fell back to guessing (#425).
-            Type::UnresolvedNamed(name) => {
-                if let Some(bound) = bindings.get(name.as_str()) {
-                    return Some((*bound).clone());
-                }
-                if !looks_like_type_param(name) {
-                    // An ordinary named type — a struct, an enum — which this
-                    // instantiation has nothing to say about.
-                    return Some(ty.clone());
-                }
-                // No name list available — a single argument still pins it.
-                if type_args.len() == 1 { Some(type_args[0].clone()) } else { None }
-            }
-            // `Vec<T>` and friends: carry it only when every argument came
-            // through concrete, and carry the *substituted* form. Returning the
-            // original meant a copy made for `Pair<i32, string>` still recorded
-            // its result as `Pair<B, A>`, so nothing could name the layout that
-            // copy's caller was passing (#814).
-            Type::UnresolvedGeneric { name, args } => {
-                // A parameter used as the *base* of a generic is one this
-                // instantiation can't name a layout for, whatever it's called.
-                if bindings.contains_key(name.as_str()) || looks_like_type_param(name) {
-                    return None;
-                }
-                Some(Type::UnresolvedGeneric {
-                    name: name.clone(),
-                    args: Self::concretize_args(args, type_args, bindings)?,
-                })
-            }
-            Type::Generic { base, args } => Some(Type::Generic {
-                base: *base,
-                args: Self::concretize_args(args, type_args, bindings)?,
-            }),
-            Type::Tuple(elems) => Some(Type::Tuple(Self::concretize_all(
-                elems, type_args, bindings,
-            )?)),
-            Type::Union(elems) => Some(Type::Union(Self::concretize_all(
-                elems, type_args, bindings,
-            )?)),
-            Type::Array { elem, len } => Some(Type::Array {
-                elem: Box::new(Self::concretize(elem, type_args, bindings)?),
-                len: *len,
-            }),
-            Type::RawPtr(inner) => Some(Type::RawPtr(Box::new(Self::concretize(
-                inner, type_args, bindings,
-            )?))),
-            Type::Result { ok, err } => Some(Type::Result {
-                ok: Box::new(Self::concretize(ok, type_args, bindings)?),
-                err: Box::new(Self::concretize(err, type_args, bindings)?),
-            }),
-            Type::Fn { params, ret } => Some(Type::Fn {
-                params: params
-                    .iter()
-                    .map(|p| {
-                        Some(rask_types::FnParam { mode: p.mode, ty: Self::concretize(&p.ty, type_args, bindings)? })
-                    })
-                    .collect::<Option<_>>()?,
-                ret: Box::new(Self::concretize(ret, type_args, bindings)?),
-            }),
-            Type::Var(_) => None,
-            other => Some(other.clone()),
-        }
-    }
-
-    /// `concretize` over a list — `None` if any element still refers to a
-    /// parameter this instantiation doesn't bind.
-    fn concretize_all(
-        tys: &[Type],
-        type_args: &[Type],
-        bindings: &HashMap<&str, &Type>,
-    ) -> Option<Vec<Type>> {
-        tys.iter()
-            .map(|t| Self::concretize(t, type_args, bindings))
-            .collect()
-    }
-
-    /// `concretize` over generic arguments. A const argument has no type in it,
-    /// so it carries over unchanged.
-    fn concretize_args(
-        args: &[rask_types::GenericArg],
-        type_args: &[Type],
-        bindings: &HashMap<&str, &Type>,
-    ) -> Option<Vec<rask_types::GenericArg>> {
-        args.iter()
-            .map(|arg| match arg {
-                rask_types::GenericArg::Type(inner) => {
-                    Self::concretize(inner, type_args, bindings)
-                        .map(|t| rask_types::GenericArg::Type(Box::new(t)))
-                }
-                other => Some(other.clone()),
-            })
-            .collect()
     }
 
     /// Re-key `method_table` on type identity instead of declaration order.
@@ -914,9 +632,10 @@ impl<'a> Monomorphizer<'a> {
     /// with a `BufferedReader<Buffer>` needs `BufferedReader_read$Buffer`.
     fn mark_boxed_instance_methods(&mut self, id: NodeId, interface_name: &str) {
         let Some(typed) = self.typed else { return };
-        let Some(ty) = self.node_type(id).cloned() else {
+        let Some(ty) = self.node_type(id) else {
             return;
         };
+        let ty = &ty;
         let Type::Generic { base, args } = &ty else { return };
         let name = typed.types.type_name(*base);
         if !self.bounded_generic_owners.contains(&name) {
@@ -1110,8 +829,9 @@ impl<'a> Monomorphizer<'a> {
             }
             self.seen.insert(key.clone(), true);
             self.current = Some((key, item.depth));
-            self.records = crate::InstanceRecords::default();
+            self.records = crate::InstanceCalls::default();
             self.in_instance = !item.type_args.is_empty();
+            self.instance_args = item.type_args.clone();
 
             let original = match self.fn_table.get(&item.name) {
                 Some(decl) => *decl,
@@ -1123,17 +843,15 @@ impl<'a> Monomorphizer<'a> {
 
             // Instantiate: if type_args present, clone AST with substitution.
             // Otherwise use original decl directly.
-            // A generic body is lowered once per instance as it is: what
-            // differs between instances is in the instance's records, worked
-            // out here for every node of the body.
+            // A generic body is lowered once per instance as it is; what
+            // differs is read through the instance (`Instance`).
             let concrete = original.clone();
-            let mut projections = HashMap::new();
-            if !item.type_args.is_empty() {
-                let param_names: Vec<String> = item.type_args.iter().map(|b| b.param.clone()).collect();
-                projections = self.projections_for(&concrete, &item.type_args);
-                let typed_args: Vec<Type> = item.type_args.iter().map(|b| b.ty.clone()).collect();
-                self.carry_node_records(&body_nodes(&concrete), &typed_args, &param_names);
-            }
+            let projections = if item.type_args.is_empty() {
+                HashMap::new()
+            } else {
+                self.projections_for(&concrete, &item.type_args)
+            };
+            self.instance_projections = projections.clone();
 
             // Walk the concrete body to discover more calls (M4: transitive)
             if let DeclKind::Fn(fn_decl) = &concrete.kind {
@@ -1150,7 +868,7 @@ impl<'a> Monomorphizer<'a> {
                 name: mangled,
                 type_args: item.type_args,
                 projections,
-                records: std::mem::take(&mut self.records),
+                calls: std::mem::take(&mut self.records),
                 body: concrete,
             });
         }
@@ -1222,17 +940,13 @@ impl<'a> Monomorphizer<'a> {
             .collect()
     }
 
-    /// The resolved type arguments at a call site. A node inside an
-    /// instantiated copy has an id the checker never saw, so its arguments come
-    /// from what `carry_node_records` substituted.
+    /// The resolved type arguments at a call site, at the instance being
+    /// walked.
     fn type_args_at(&self, id: NodeId) -> Vec<TypeBinding> {
-        let args = self
-            .records
-            .call_type_args
-            .get(&id)
-            .or_else(|| self.call_type_args.get(&id))
-            .cloned()
-            .unwrap_or_default();
+        let args = match self.instance() {
+            Some(inst) => inst.call_type_args(id).unwrap_or_default(),
+            None => self.call_type_args.get(&id).cloned().unwrap_or_default(),
+        };
         // Kept as the checker typed them, ids and all: names are spelled where a
         // symbol or a copied declaration needs text (`mangle_name`, `run`), and
         // nowhere else (#1393).
@@ -1260,7 +974,7 @@ impl<'a> Monomorphizer<'a> {
     /// still standing for itself would mangle to `One_get$A`, which is an
     /// instance of nothing.
     fn receiver_bindings(&self, call_id: NodeId, qualified: &str) -> Vec<TypeBinding> {
-        match self.call_target(call_id) {
+        match self.call_target(call_id).as_ref() {
             Some(rask_check::Callee::Method { recv, .. }) => self.bindings_for(recv, qualified),
             _ => Vec::new(),
         }
@@ -1392,6 +1106,7 @@ impl<'a> Monomorphizer<'a> {
         else {
             return Vec::new();
         };
+        let ty = &ty;
         let Type::Result { err, .. } = ty else { return Vec::new() };
         if **err == Type::None {
             return Vec::new();
@@ -1435,6 +1150,7 @@ impl<'a> Monomorphizer<'a> {
     fn sort_comparator_fn(&self, recv_id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self.node_type(recv_id)?;
+        let ty = &ty;
         let args = match ty {
             Type::Generic { base, args } if typed.types.type_name(*base) == "Vec" => args,
             Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
@@ -1466,6 +1182,7 @@ impl<'a> Monomorphizer<'a> {
         let Some(ty) = self.node_type(id) else {
             return;
         };
+        let ty = &ty;
 
         let key = match ty {
             Type::Generic { base, args } if typed.types.type_name(*base) == "Map" => args.first(),
@@ -1640,16 +1357,17 @@ impl<'a> Monomorphizer<'a> {
         if !is_input {
             return;
         }
-        let Some(ty) = self.node_type(id).cloned() else {
+        let Some(ty) = self.node_type(id) else {
             return;
         };
+        let ty = &ty;
         self.queue_decode_defaults(&ty, &mut HashSet::new());
     }
 
     fn decodes_json_value(&self, id: NodeId) -> bool {
         let Some(typed) = self.typed else { return false };
         let ty = self.node_type(id);
-        match ty {
+        match &ty {
             Some(rask_types::Type::Result { ok, .. }) => {
                 rask_check::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
             }
@@ -1660,6 +1378,7 @@ impl<'a> Monomorphizer<'a> {
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self.node_type(id)?;
+        let ty = &ty;
         rask_check::receiver_name(ty, &typed.types)
     }
 
@@ -1669,26 +1388,27 @@ impl<'a> Monomorphizer<'a> {
     /// body's record still names the type parameter. Reading only the latter
     /// is what widened `self[i].hash()` inside `Vec_hash$i64` to every `hash`
     /// there is, the generic `Vec_hash` among them, which then had no `T`.
-    fn call_target(&self, id: NodeId) -> Option<&rask_check::Callee> {
-        if let Some(found) = self.records.call_targets.get(&id) {
-            return Some(found);
+    fn call_target(&self, id: NodeId) -> Option<rask_check::Callee> {
+        match self.instance() {
+            Some(inst) => inst.call_target(id),
+            None => self.typed?.call_targets.get(&id).cloned(),
         }
-        if self.records.no_call_target.contains(&id) {
-            return None;
-        }
-        self.typed?.call_targets.get(&id)
     }
 
-    /// The type of a node in the body being walked: the instance's, else the
-    /// checker's, unless the instance has none on purpose.
-    fn node_type(&self, id: NodeId) -> Option<&Type> {
-        if let Some(found) = self.records.node_types.get(&id) {
-            return Some(found);
+    /// The type of a node in the body being walked, at the instance being
+    /// walked.
+    fn node_type(&self, id: NodeId) -> Option<Type> {
+        match self.instance() {
+            Some(inst) => inst.node_type(id),
+            None => self.typed?.node_types.get(&id).cloned(),
         }
-        if self.records.no_node_type.contains(&id) {
-            return None;
-        }
-        self.typed?.node_types.get(&id)
+    }
+
+    /// The instance being walked, when it is one.
+    fn instance(&self) -> Option<crate::Instance<'_>> {
+        let typed = self.typed?;
+        (!self.instance_args.is_empty())
+            .then(|| crate::Instance::new(&self.instance_args, &self.instance_projections, typed))
     }
 
     /// The body a plain call reaches when the checker dispatched it as a
@@ -1696,7 +1416,7 @@ impl<'a> Monomorphizer<'a> {
     /// ordinary function call.
     fn module_function_body(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
-        match self.call_target(id)? {
+        match &self.call_target(id)? {
             rask_check::Callee::Method { recv, method, .. } => {
                 Some(format!("{}_{}", rask_check::receiver_name(recv, &typed.types)?, method))
             }
@@ -1912,7 +1632,7 @@ impl<'a> Monomorphizer<'a> {
                 // across and nothing looked at it (#1065).
                 let dispatched = self.typed.and_then(|typed| {
                     let callee = self.call_target(expr.id)?;
-                    match callee {
+                    match &callee {
                         // An instantiated copy's receiver comes through as the
                         // name it was substituted with rather than as an interned
                         // id, so resolve that too — otherwise the call falls back
@@ -2045,7 +1765,7 @@ impl<'a> Monomorphizer<'a> {
                     // generic body a receiver reads as an unresolved name, and
                     // which body it means is decided at instantiation. Those
                     // still take every candidate.
-                    let dispatch = match self
+                    let dispatch = match &self
                         .typed
                         .and_then(|typed| self.call_target(expr.id).map(|c| (c, typed)))
                     {
@@ -2121,7 +1841,7 @@ impl<'a> Monomorphizer<'a> {
                                     let recv = self
                                         .typed
                                         .and_then(|t| self.call_target(expr.id).map(|c| (c, t)))
-                                        .and_then(|(c, t)| match c {
+                                        .and_then(|(c, t)| match &c {
                                             Callee::Method { recv, .. } => {
                                                 rask_check::receiver_name(recv, &t.types)
                                             }
@@ -2395,7 +2115,7 @@ impl<'a> Monomorphizer<'a> {
 
 /// Every expression and statement node of a declaration's body: what an
 /// instance has records for.
-fn body_nodes(decl: &Decl) -> Vec<NodeId> {
+pub(crate) fn body_nodes(decl: &Decl) -> Vec<NodeId> {
     struct Collect(Vec<NodeId>);
     impl rask_ast::rewrite::Rewrite for Collect {
         fn expr(&mut self, e: &mut rask_ast::expr::Expr) {

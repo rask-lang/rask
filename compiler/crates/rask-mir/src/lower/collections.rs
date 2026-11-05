@@ -47,7 +47,7 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| {
                 let first = elems.first()?;
                 let raw = self.ctx.lookup_raw_type(first.id)?.clone();
-                match raw {
+                match &*raw {
                     rask_types::Type::Var(_) => None,
                     resolved => Some(self.ctx.type_to_mir(&resolved)),
                 }
@@ -951,9 +951,9 @@ impl<'a> MirLowerer<'a> {
             // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
             // element type lives in the tuple's first component. Everything else
             // (Vec/Map/Shared/Mutex) resolves to the wrapper directly.
-            let container = match ty {
+            let container = match &*ty {
                 Type::Tuple(elems) => elems.first()?,
-                other => other,
+                other => &other,
             };
             let GenericArg::Type(inner) = generic_args(container)?.get(index)? else {
                 return None;
@@ -992,9 +992,9 @@ impl<'a> MirLowerer<'a> {
     ) -> Option<rask_types::Type> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(node_id)?;
-        let container = match ty {
+        let container = match &*ty {
             Type::Tuple(elems) => elems.first()?,
-            other => other,
+            other => &other,
         };
         let args = match container {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,

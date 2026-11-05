@@ -398,7 +398,7 @@ impl<'a> MirLowerer<'a> {
         // return, and the checker says so — down to the guess instead.
         let checked_ret = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
-            .and_then(|ty| match ty {
+            .and_then(|ty| match &*ty {
                 rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
                 _ => None,
             });
@@ -427,7 +427,7 @@ impl<'a> MirLowerer<'a> {
         // was neither annotated nor pinned by the callee's signature.
         let checked_params: Vec<MirType> = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
-            .and_then(|ty| match ty {
+            .and_then(|ty| match &*ty {
                 rask_types::Type::Fn { params, .. } => Some(
                     params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect()
                 ),
@@ -614,11 +614,11 @@ impl<'a> MirLowerer<'a> {
         let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
         // `type_prefix` is the shared answer to "what is this type called", and
         // it knows about stdlib types the local name table doesn't carry.
-        let name = super::MirContext::type_prefix(ty, self.ctx.type_names)?;
+        let name = super::MirContext::type_prefix(&ty, self.ctx.type_names)?;
         if name != "Sequence" && name != "SequenceMut" {
             return None;
         }
-        let args = match ty {
+        let args = match &*ty {
             rask_types::Type::Generic { args, .. }
             | rask_types::Type::UnresolvedGeneric { args, .. } => args,
             _ => return None,
@@ -994,7 +994,7 @@ impl<'a> MirLowerer<'a> {
             let is_fn = self
                 .ctx
                 .lookup_raw_type(e.id)
-                .is_some_and(|t| matches!(t, rask_types::Type::Fn { .. }));
+                .is_some_and(|t| matches!(&*t, rask_types::Type::Fn { .. }));
             if is_fn && !out.contains(&local) {
                 out.push(local);
             }

@@ -9,6 +9,7 @@
 
 pub mod drop_names;
 pub mod runtime_abi;
+mod instance;
 mod reachability;
 pub mod reflect;
 
@@ -18,6 +19,7 @@ use rask_layout::{
     compute_union_layout, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
 };
 use rask_stdlib::is_stdlib_span;
+pub use instance::Instance;
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;
@@ -111,30 +113,15 @@ impl NodeRecords {
 }
 
 
-/// What the checker recorded for a generic body's nodes, worked out again for
-/// one instance: the types with its arguments in, the calls it makes to other
-/// instances. Keyed by the body's own node ids, which every instance shares.
+/// Which instance each call in a function's body goes to, worked out while
+/// walking it. A generic body's calls go to different instances in each of its
+/// instances, so these are per function; everything else about an instance is
+/// read through `Instance`.
 #[derive(Debug, Clone, Default)]
-pub struct InstanceRecords {
-    pub node_types: HashMap<NodeId, Type>,
-    pub call_targets: HashMap<NodeId, rask_check::Callee>,
-    pub operator_targets: HashMap<NodeId, rask_check::OperatorTarget>,
-    /// Closures that may not reach another task, decided from this
-    /// instance's concrete capture types (#1356).
-    pub task_bound_closures: HashSet<NodeId>,
+pub struct InstanceCalls {
     /// Call node → the symbol of the instance it calls.
     pub call_rewrites: HashMap<NodeId, String>,
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
-    /// The type arguments each call in the body passes, with this
-    /// instance's in.
-    pub call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
-    /// Nodes this instance has no record for where the generic body has one:
-    /// a type or call target that still names a parameter after substitution,
-    /// an operator two primitives answer themselves. The body's record would
-    /// be wrong here, so it doesn't answer either.
-    pub no_node_type: HashSet<NodeId>,
-    pub no_call_target: HashSet<NodeId>,
-    pub no_operator_target: HashSet<NodeId>,
 }
 
 /// Monomorphized function instance
@@ -145,9 +132,9 @@ pub struct MonoFunction {
     /// What each `T.Out` the function writes is on this instance, keyed
     /// `("T", "Out")` (AT6/AT8).
     pub projections: HashMap<(String, String), Type>,
-    /// This instance's records for its body's nodes. Empty for a function
-    /// with no type arguments: the checker's own records are its.
-    pub records: InstanceRecords,
+    /// The instances its calls go to, for a generic instance. Empty for a
+    /// function with no type arguments: those are in `MonoProgram::call_rewrites`.
+    pub calls: InstanceCalls,
     pub body: Decl,
 }
 
@@ -967,12 +954,22 @@ fn monomorphize_inner(
         .collect();
 
     // Every instantiation the program mentions: in an expression's type, as a
-    // call's type argument, or as a field of a concrete type.
+    // call's type argument, or as a field of a concrete type. A generic body's
+    // expression types count at each of its instances.
+    let instance_node_types: Vec<Type> = mono
+        .results
+        .iter()
+        .filter(|f| !f.type_args.is_empty())
+        .flat_map(|f| {
+            let inst = Instance::new(&f.type_args, &f.projections, program);
+            reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
+        })
+        .collect();
     let mut reached: Vec<(String, Vec<Type>)> = Vec::new();
     for ty in program
         .node_types
         .values()
-        .chain(mono.results.iter().flat_map(|f| f.records.node_types.values()))
+        .chain(instance_node_types.iter())
         // A type argument is an instantiation even when nothing builds one.
         // `reflect.fields<Box2<string>>()` names the type and never constructs
         // it, so it appeared in no expression's type — and the layout that

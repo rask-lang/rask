@@ -127,11 +127,10 @@ fn call_targets_records_free_and_method_dispatch() {
 }
 
 #[test]
-fn each_instance_has_its_own_records_for_the_shared_body() {
-    // Every instance of a generic function shares its body's node ids, so what
-    // differs between them lives in the instance's records. Two instances of
-    // `identity` give the same `x` two different types; keyed globally by
-    // node, the second would have replaced the first.
+fn each_instance_reads_the_shared_body_at_its_own_arguments() {
+    // Every instance of a generic function shares its body's node ids; what
+    // differs between them is read through the instance. Two instances of
+    // `identity` give the same `x` two different types.
     let path = tmp_rk(r#"
         func identity<T>(x: T) -> T {
             return x
@@ -152,9 +151,11 @@ fn each_instance_has_its_own_records_for_the_shared_body() {
         .filter(|f| f.name.starts_with("identity$"))
         .collect();
     assert_eq!(instances.len(), 2, "expected an instantiation per type argument");
-    let (a, b) = (&instances[0].records.node_types, &instances[1].records.node_types);
-    assert!(!a.is_empty() && !b.is_empty(), "each instance carries records for its body");
-    let differs = a.iter().any(|(id, ty)| b.get(id).is_some_and(|other| other != ty));
+    let a = rask_mono::Instance::new(&instances[0].type_args, &instances[0].projections, &result.typed);
+    let b = rask_mono::Instance::new(&instances[1].type_args, &instances[1].projections, &result.typed);
+    let differs = result.typed.node_types.keys().any(|&id| {
+        matches!((a.node_type(id), b.node_type(id)), (Some(x), Some(y)) if x != y)
+    });
     assert!(differs, "the two instances type a shared node differently");
     let _ = std::fs::remove_file(&path);
 }
