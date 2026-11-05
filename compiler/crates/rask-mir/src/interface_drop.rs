@@ -69,8 +69,9 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
     // nothing — a boxed error leaked on every failing call, which is every
     // `or Error` in the language.
     let hands_back = functions_handing_back_a_interface_box(fns);
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
     for func in fns.iter_mut() {
-        insert_for_function(func, &callee_escapes, &hands_back);
+        insert_for_function(func, &callee_escapes, &hands_back, &targets);
     }
 }
 
@@ -80,6 +81,7 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
 /// fixed point for the same reason: handing one back is transitive, so a
 /// wrapper that just forwards what it called joins the set on a later pass.
 fn functions_handing_back_a_interface_box(fns: &[MirFunction]) -> HashSet<String> {
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
     let mut names: HashSet<String> = HashSet::new();
     loop {
         let before = names.len();
@@ -93,7 +95,7 @@ fn functions_handing_back_a_interface_box(fns: &[MirFunction]) -> HashSet<String
             // *name* holds it is the same question the caller's side asks, so
             // ask it the same way: an interface-object destination is the box, and
             // a wrapper destination holds it in its payload.
-            fresh.extend(boxes_handed_over(func, &names));
+            fresh.extend(boxes_handed_over(func, &names, &targets));
             fresh.extend(boxes_parked_in_a_wrapper(func, &fresh));
             if fresh.is_empty() {
                 continue;
@@ -346,12 +348,29 @@ fn wrapper_stays_here(func: &MirFunction, carriers: &HashSet<LocalId>) -> bool {
 ///
 /// Which name owns the wrapper's payload is `box_read_out_of`'s question, and
 /// the same one for a wrapper this frame assembled itself.
-fn boxes_handed_over(func: &MirFunction, hands_back: &HashSet<String>) -> HashSet<LocalId> {
+///
+/// A closure call counts when every body the closure may be hands one back:
+/// `let g = |x| -> i64 or Error { … }` then `try g(n)` is the same hand-over
+/// as a call to a named function, and the box leaked.
+fn boxes_handed_over(
+    func: &MirFunction,
+    hands_back: &HashSet<String>,
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashSet<LocalId> {
     let ty_of = local_types(func);
     let mut out: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        let MirStmtKind::Call { dst: Some(dst), func: callee, .. } = &stmt.kind else { continue };
-        if !hands_back.contains(&callee.name) {
+        let (dst, hands) = match &stmt.kind {
+            MirStmtKind::Call { dst: Some(dst), func: callee, .. } => (dst, hands_back.contains(&callee.name)),
+            MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => (
+                dst,
+                targets
+                    .known(&func.name, *closure)
+                    .is_some_and(|bodies| bodies.iter().all(|b| hands_back.contains(b))),
+            ),
+            _ => continue,
+        };
+        if !hands {
             continue;
         }
         if is_box(&ty_of, dst) {
@@ -370,9 +389,10 @@ fn insert_for_function(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) {
     let mut interface_locals = collect_fresh_interface_locals(func);
-    interface_locals.extend(boxes_handed_over(func, hands_back));
+    interface_locals.extend(boxes_handed_over(func, hands_back, targets));
     if interface_locals.is_empty() {
         return;
     }
@@ -406,7 +426,7 @@ fn insert_for_function(
             made.insert(*dst);
         }
     }
-    made.extend(boxes_handed_over(func, hands_back));
+    made.extend(boxes_handed_over(func, hands_back, targets));
     made.extend(boxes_parked_in_a_wrapper(func, &interface_locals));
 
     let facts = box_facts(func, &interface_locals, &made, callee_escapes);

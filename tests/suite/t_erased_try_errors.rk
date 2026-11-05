@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `try` whose concrete error leaves into `T or Error` boxes the error on the
+// way out. Each shape here once reached the caller unboxed or not at all:
+//
+// - on a call chain (`try name(n).to_uppercase()`) the box was looked for at
+//   the whole chain's type, a `string`, and lowering found no vtable;
+// - in a closure that writes `-> T or Error`, the body was checked before the
+//   written return type was read, so nothing knew the error was erased and
+//   the caller read a bare error as a box (segfault), and once it was boxed
+//   nothing freed the box a closure call handed back;
+// - `try s.parse<i64>()` and `try base64.decode(s)`: the call's error type was
+//   still open at the `try` and got settled as `any Error` itself, so again
+//   nothing boxed it (segfault).
+
+import base64
+
+enum E1 {
+    Bad(i64)
+}
+
+E1 implements Error {
+    func message(self) -> string {
+        match self {
+            E1.Bad(n) => return "bad {n}",
+        }
+    }
+}
+
+func name(n: i64) -> string or E1 {
+    if n < 0 {
+        return E1.Bad(n)
+    }
+    return "ok"
+}
+
+func f1(n: i64) -> i64 or E1 {
+    if n < 0 {
+        return E1.Bad(n)
+    }
+    return n
+}
+
+func on_chain(n: i64) -> string or Error {
+    let s = try name(n).to_uppercase()
+    return s
+}
+
+func via_closure(n: i64) -> i64 or Error {
+    let g = |x: i64| -> i64 or Error {
+        let v = try f1(x)
+        return v * 2
+    }
+    return try g(n)
+}
+
+func returned_by_closure(n: i64) -> i64 or Error {
+    let g = |x: i64| -> i64 or Error {
+        if x < 0 {
+            return E1.Bad(x)
+        }
+        return x * 2
+    }
+    return try g(n)
+}
+
+func parse_it(s: string) -> i64 or Error {
+    let n = try s.parse<i64>()
+    return n
+}
+
+func decode_it(s: string) -> usize or Error {
+    let raw = try base64.decode(s)
+    return raw.len()
+}
+
+func failed_s(r: string or Error) -> string {
+    if r is string as _v {
+        return "ok"
+    } else as e {
+        return e.message()
+    }
+}
+
+func failed_i(r: i64 or Error) -> string {
+    if r is i64 as _v {
+        return "ok"
+    } else as e {
+        return e.message()
+    }
+}
+
+func failed_u(r: usize or Error) -> string {
+    if r is usize as _v {
+        return "ok"
+    } else as e {
+        return e.message()
+    }
+}
+
+test "a try on a call chain boxes the step's error" {
+    assert failed_s(on_chain(-3)) == "bad -3"
+    assert on_chain(1) is string
+}
+
+test "a closure's written return type erases the error its body propagates" {
+    assert failed_i(via_closure(-3)) == "bad -3"
+    assert (via_closure(4) catch _ => 0) == 8
+    assert failed_i(returned_by_closure(-5)) == "bad -5"
+}
+
+test "a stdlib call's error is boxed, not taken for the box" {
+    assert failed_i(parse_it("zz")) == "non-numeric character"
+    assert (parse_it("12") catch _ => 0) == 12
+    assert failed_u(decode_it("!")) != "ok"
+    assert (decode_it("aGk=") catch _ => 0) == 2
+}

@@ -2091,10 +2091,17 @@ impl TypeChecker {
                 // fact instead, a body of type `void` met `void or E` as a
                 // mismatch, so a consumer that can't fail couldn't fill a slot
                 // whose error type was generic.
-                let expected_ret = if declared_ret.is_none() {
-                    self.closure_return_expectations.remove(&expr.id)
-                } else {
-                    None
+                //
+                // A written return type is that declaration. Read only after the
+                // body was checked, a `try` in the body met an open return type
+                // and couldn't tell its error was being erased into `any I`, so
+                // nothing boxed it.
+                let declared_ty = declared_ret
+                    .as_ref()
+                    .map(|declared| self.resolve_written(declared, expr.span).unwrap_or(Type::Error));
+                let expected_ret = match &declared_ty {
+                    Some(declared) => Some(declared.clone()),
+                    None => self.closure_return_expectations.remove(&expr.id),
                 };
                 let closure_return_type = expected_ret.clone().unwrap_or_else(|| self.ctx.fresh_var());
                 self.current_return_type = Some(closure_return_type.clone());
@@ -2136,14 +2143,8 @@ impl TypeChecker {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
 
-                // Check declared return type if present
-                let ret_ty = if let Some(declared) = declared_ret {
-                    let expected_ret = self.resolve_written(declared, expr.span)
-                        .unwrap_or(Type::Error);
-                    if let Err(err) = self.unify(&closure_return_type, &expected_ret, expr.span) {
-                        self.errors.push(err);
-                    }
-                    expected_ret
+                let ret_ty = if let Some(declared) = declared_ty {
+                    declared
                 } else {
                     // A body that diverges returns nothing, so no constraint
                     // reaches the return variable: `spawn { panic("boom") }`
@@ -5247,7 +5248,12 @@ impl TypeChecker {
     ) {
         let src = self.ctx.apply(err);
         let target = self.ctx.apply(ret_err);
-        if matches!(src, Type::Var(_)) && self.wrap_candidate(&target) {
+        // An error type still open would be settled by the target itself:
+        // unified with `any Error`, a `parse<i64>()`'s error became the box
+        // instead of the `ParseError` going into one, and nothing boxed it.
+        // Wait for the call to say what it is, as for an enum to wrap it in.
+        let erasing = matches!(target, Type::InterfaceObject { .. });
+        if matches!(src, Type::Var(_)) && (erasing || self.wrap_candidate(&target)) {
             self.pending_try_errors.push((node, src, target, span));
             return;
         }
@@ -5267,8 +5273,10 @@ impl TypeChecker {
         }
         // ER32: a concrete error leaving into `any I` is boxed there.
         if let Type::InterfaceObject { interface_name, decl } = self.ctx.apply(target) {
-            if !matches!(self.ctx.apply(src), Type::InterfaceObject { .. }) {
-                self.erased_try_errors.insert(node, self.types.interface_symbol(&interface_name, decl));
+            let error = self.ctx.apply(src);
+            if !matches!(error, Type::InterfaceObject { .. }) {
+                let interface = self.types.interface_symbol(&interface_name, decl);
+                self.erased_try_errors.insert(node, super::type_defs::ErasedError { error, interface });
             }
         }
     }

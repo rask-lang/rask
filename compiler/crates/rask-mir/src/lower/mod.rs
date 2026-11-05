@@ -393,6 +393,7 @@ mod empty {
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
     empty_of!(vtables, HashMap<(rask_types::Type, String), rask_mono::VTable>);
+    empty_of!(erased_try_errors, HashMap<NodeId, rask_check::ErasedError>);
 }
 
 impl<'a> MirContext<'a> {
@@ -657,7 +658,7 @@ pub struct MirContext<'a> {
     /// Monomorphization's vtables, by (concrete type, interface).
     pub vtables: &'a HashMap<(rask_types::Type, String), rask_mono::VTable>,
     /// See `TypedProgram::erased_try_errors`.
-    pub erased_try_errors: &'a HashMap<NodeId, String>,
+    pub erased_try_errors: &'a HashMap<NodeId, rask_check::ErasedError>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -826,6 +827,17 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// The error a `try` boxes into the function's `any I`, at this instance,
+    /// and the interface's symbol (`TypedProgram::erased_try_errors`).
+    pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {
+        let erased = self.erased_try_errors.get(&try_id)?;
+        let error = match &self.node_types.instance {
+            Some((inst, _)) => inst.ty(&erased.error)?,
+            None => erased.error.clone(),
+        };
+        Some((error, erased.interface.clone()))
+    }
+
     /// The checker's signature for `f`, with the type arguments of the instance
     /// `symbol` names written in. `None` for a function made after checking.
     pub fn instance_sig(&self, f: &rask_ast::decl::FnDecl, symbol: &str) -> Option<rask_types::FnSignature> {
@@ -911,7 +923,7 @@ impl<'a> MirContext<'a> {
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
-            erased_try_errors: &EMPTY_COERCIONS,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &EMPTY_ESCAPING,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8068,7 +8080,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
-            erased_try_errors: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8166,7 +8178,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
-            erased_try_errors: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8271,7 +8283,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
-            erased_try_errors: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,

@@ -40,7 +40,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name};
+pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name, ErasedError};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -382,7 +382,7 @@ pub struct TypeChecker {
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
     /// See `TypedProgram::erased_try_errors`.
-    pub(super) erased_try_errors: HashMap<NodeId, String>,
+    pub(super) erased_try_errors: HashMap<NodeId, type_defs::ErasedError>,
     /// See `TypedProgram::arm_widenings`.
     pub(super) arm_widenings: HashMap<NodeId, Type>,
     /// CB1/CB2: function values coerced to a C function pointer, and where.
@@ -1242,7 +1242,10 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
-            erased_try_errors: std::mem::take(&mut self.erased_try_errors),
+            erased_try_errors: std::mem::take(&mut self.erased_try_errors)
+                .into_iter()
+                .map(|(id, e)| (id, type_defs::ErasedError { error: self.ctx.apply(&e.error), interface: e.interface }))
+                .collect(),
             arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),

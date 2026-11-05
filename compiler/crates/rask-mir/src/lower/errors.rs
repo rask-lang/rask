@@ -189,8 +189,8 @@ impl<'a> MirLowerer<'a> {
         // bare concrete value. The caller then read its first two words as
         // {data, vtable} and called through whatever the second one happened
         // to be, which is a segfault as soon as anyone asks for `.message()`.
-        let box_interface: Option<String> = match (&handler, &wrap) {
-            (None, None) => self.ctx.erased_try_errors.get(&try_id).cloned(),
+        let box_interface: Option<(rask_types::Type, String)> = match (&handler, &wrap) {
+            (None, None) => self.ctx.erased_try_error(try_id),
             _ => None,
         };
         let err_val = match &handler {
@@ -246,15 +246,11 @@ impl<'a> MirLowerer<'a> {
         // ER32: box after any ER31a wrap, so the two compose in the one order
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
-            Some(interface_name) => {
-                let concrete = match self.ctx.lookup_raw_type(inner.id).as_deref() {
-                    Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
-                    _ => None,
-                };
+            Some((concrete, interface_name)) => {
                 let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
-                    concrete.as_ref(),
+                    Some(concrete),
                     interface_name,
                 )?;
                 match boxed {

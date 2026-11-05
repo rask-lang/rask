@@ -1659,12 +1659,14 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
                 }
-                // ER32: the error leaves boxed as the function's `any I`. It
-                // is the error of the step the `try` sits on (ER16a).
-                if let Some(interface_name) = self.typed.and_then(|t| t.erased_try_errors.get(&expr.id)).cloned() {
-                    let step = self.typed.and_then(|t| t.try_chain_placement.get(&expr.id)).copied().unwrap_or(e.id);
-                    if let Some(Type::Result { err, .. }) = self.node_type(step) {
-                        self.mark_boxed(*err, &interface_name);
+                // ER32: the error leaves boxed as the function's `any I`.
+                if let Some(erased) = self.typed.and_then(|t| t.erased_try_errors.get(&expr.id)) {
+                    let error = match self.instance() {
+                        Some(inst) => inst.ty(&erased.error),
+                        None => Some(erased.error.clone()),
+                    };
+                    if let Some(error) = error {
+                        self.mark_boxed(error, &erased.interface);
                     }
                 }
                 self.visit_expr(e)
