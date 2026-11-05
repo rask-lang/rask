@@ -393,6 +393,7 @@ mod empty {
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
     empty_of!(vtables, HashMap<(rask_types::Type, String), rask_mono::VTable>);
+    empty_of!(symbols, rask_mono::Symbols);
     empty_of!(erased_try_errors, HashMap<NodeId, rask_check::ErasedError>);
 }
 
@@ -464,6 +465,7 @@ impl<'a> MirContext<'a> {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             vtables: empty::vtables(),
+            symbols: empty::symbols(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -531,6 +533,7 @@ impl<'a> MirContext<'a> {
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
         self.vtables = &mono.vtables;
+        self.symbols = &mono.symbols;
         self
     }
 
@@ -655,6 +658,9 @@ pub struct MirContext<'a> {
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: &'a HashMap<String, String>,
+    /// Every function's symbol, and what a method call runs, from
+    /// monomorphization.
+    pub symbols: &'a rask_mono::Symbols,
     /// Monomorphization's vtables, by (concrete type, interface).
     pub vtables: &'a HashMap<(rask_types::Type, String), rask_mono::VTable>,
     /// See `TypedProgram::erased_try_errors`.
@@ -827,6 +833,18 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// What a method call runs, at this instance: the body's symbol and the
+    /// type arguments it was made for. `None` when no body in Rask is behind
+    /// the call (a native, a primitive's operation, a builtin).
+    pub fn method_call(&self, call: NodeId) -> Option<rask_mono::MethodCall> {
+        let callee = self.call_targets.get(&call)?;
+        let own_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(call).unwrap_or_default(),
+            None => self.typed?.call_type_args.get(&call).cloned().unwrap_or_default(),
+        };
+        self.symbols.method_call(&callee, own_args, self.type_defs)
+    }
+
     /// The error a `try` boxes into the function's `any I`, at this instance,
     /// and the interface's symbol (`TypedProgram::erased_try_errors`).
     pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {
@@ -942,6 +960,7 @@ impl<'a> MirContext<'a> {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
             instance_args: None,
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
@@ -8099,6 +8118,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8197,6 +8217,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8302,6 +8323,7 @@ mod tests {
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
             vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),

@@ -11,6 +11,7 @@ pub mod drop_names;
 pub mod runtime_abi;
 mod instance;
 mod reachability;
+mod symbols;
 pub mod reflect;
 
 use rask_layout::{
@@ -20,6 +21,7 @@ use rask_layout::{
 };
 use rask_stdlib::is_stdlib_span;
 pub use instance::Instance;
+pub use symbols::{MethodCall, Symbols};
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;
@@ -73,6 +75,8 @@ pub struct MonoProgram {
     /// The one place a vtable's name and slots are decided; lowering points a
     /// box at an entry and codegen builds the data from it.
     pub vtables: HashMap<(Type, String), VTable>,
+    /// Every function's symbol by its declaration, and what a call runs.
+    pub symbols: Symbols,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -1033,6 +1037,7 @@ fn monomorphize_inner(
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
         vtables: mono.vtables,
+        symbols: mono.symbols,
     })
 }
 

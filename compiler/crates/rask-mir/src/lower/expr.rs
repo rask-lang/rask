@@ -5920,9 +5920,8 @@ impl<'a> MirLowerer<'a> {
                             // where the callee read an option's tag (#1348).
                             let callee_sig: Option<super::FuncSig> = self
                                 .ctx
-                                .call_rewrites
-                                .get(&expr.id)
-                                .and_then(|k| self.func_sigs.get(k))
+                                .method_call(expr.id)
+                                .and_then(|c| self.func_sigs.get(&c.symbol))
                                 .or_else(|| self.func_sigs.get(&func_name))
                                 .cloned();
                             let callee_params: Vec<Option<Type>> = callee_sig
@@ -6084,9 +6083,8 @@ impl<'a> MirLowerer<'a> {
                             // to a `Box_new` nobody emits (#820).
                             let func_name = self
                                 .ctx
-                                .call_rewrites
-                                .get(&expr.id)
-                                .cloned()
+                                .method_call(expr.id)
+                                .map(|c| c.symbol)
                                 .unwrap_or(func_name);
                             // `Shared.new/mutex/local` settle the strategy, so
                             // the constructor call resolves to that strategy's
@@ -6242,30 +6240,30 @@ impl<'a> MirLowerer<'a> {
             .map(|p| p.as_str().trim().to_string())
             .unwrap_or_default();
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
-        let callee_sig = {
-            let mut keys: Vec<String> = Vec::new();
-            // A method of a generic type is emitted per instantiation
-            // (`BufferedReader_read$Buffer`), and that is the only name its
-            // signature is filed under. Without it a `mutate` argument to one
-            // went by value into a parameter the body reads through a pointer.
-            if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
-                keys.push(mangled.clone());
+        // A body in Rask is the one `method_call` names, and its signature is
+        // filed under that symbol: per instantiation for a generic type's
+        // method (`BufferedReader_read$Buffer`). Only a native, which has no
+        // body to name, is looked up by the name its receiver spells.
+        let callee_sig = match self.ctx.method_call(expr.id) {
+            Some(call) => self.func_sigs.get(&call.symbol).cloned(),
+            None => {
+                let mut keys: Vec<String> = Vec::new();
+                if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
+                    keys.push(format!("{}_{}", prefix, dispatch_method));
+                }
+                if let Some(prefix) = self
+                    .ctx
+                    .lookup_raw_type(object.id)
+                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                    .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+                {
+                    keys.push(format!("{}_{}", prefix, dispatch_method));
+                }
+                if let Some(recv) = object.name() {
+                    keys.push(format!("{}_{}", recv, dispatch_method));
+                }
+                keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
             }
-            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
-                keys.push(format!("{}_{}", prefix, dispatch_method));
-            }
-            if let Some(prefix) = self
-                .ctx
-                .lookup_raw_type(object.id)
-                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            {
-                keys.push(format!("{}_{}", prefix, dispatch_method));
-            }
-            if let Some(recv) = object.name() {
-                keys.push(format!("{}_{}", recv, dispatch_method));
-            }
-            keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
         let callee_params: Vec<Option<Type>> = callee_sig
             .as_ref()
@@ -6455,9 +6453,8 @@ impl<'a> MirLowerer<'a> {
 
         // A method with its own type parameters was monomorphized per call, so
         // dispatch has to name the copy rather than the generic body.
-        let qualified_name = self.ctx.call_rewrites
-            .get(&expr.id)
-            .cloned()
+        let qualified_name = self.ctx.method_call(expr.id)
+            .map(|c| c.symbol)
             .unwrap_or(qualified_name);
 
         // `Shared<T, S>` is one type over three runtime families (conc.sync/SH2).
@@ -10470,7 +10467,7 @@ impl<'a> MirLowerer<'a> {
                 // that is — `to_string` or a `message` bridged to it — was
                 // settled during reachability; without that name the receiver
                 // would be handed to `string_pad` as if the pointer were text.
-                match self.ctx.call_rewrites.get(&expr.id).cloned() {
+                match self.ctx.method_call(expr.id).map(|c| c.symbol) {
                     Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
                     None => {
                         let (op, _) = self

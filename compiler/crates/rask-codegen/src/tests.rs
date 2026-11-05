@@ -2022,6 +2022,7 @@ mod tests {
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
         vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2037,6 +2038,7 @@ mod tests {
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
         vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
@@ -2088,6 +2090,7 @@ mod tests {
         rask_mono::MonoProgram {
             type_names: Default::default(),
         vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![

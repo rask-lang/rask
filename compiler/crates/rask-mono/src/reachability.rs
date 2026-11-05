@@ -87,8 +87,9 @@ pub struct Monomorphizer<'a> {
     /// Methods extracted from struct/enum/impl declarations (owned).
     /// Keyed by qualified name: "Type_method".
     method_table: HashMap<String, Decl>,
-    /// Each function declaration's symbol, by the declaration's id.
-    symbol_of_decl: HashMap<NodeId, String>,
+    /// Every function's symbol by its declaration, and what a method call
+    /// runs (`crate::Symbols`).
+    pub symbols: crate::Symbols,
     bound_symbols: HashMap<NodeId, String>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<TypeBinding>>,
@@ -157,11 +158,6 @@ pub struct Monomorphizer<'a> {
     /// All declarations, for roots that don't come from a function body
     /// (module-level `const` initializers).
     decls: &'a [Decl],
-    /// Qualified method name → the type parameters of the type it's declared on.
-    /// `One_get` → `("One", ["A"])`. A method's own signature never mentions
-    /// where `A` came from, so without this the receiver's instantiation has no
-    /// name to bind to (#814).
-    method_owners: HashMap<String, MethodOwner>,
     /// Types with a type parameter that carries an interface bound
     /// (`BufferedReader<R: Reader>`). Their methods call through that
     /// parameter, so a body only exists per instantiation — see the widening
@@ -171,21 +167,7 @@ pub struct Monomorphizer<'a> {
     pub vtables: HashMap<(Type, String), crate::VTable>,
 }
 
-/// The generic type a method is declared on.
-#[derive(Clone)]
-struct MethodOwner {
-    /// Type parameter names in declaration order, bounds stripped. A tuple
-    /// argument contributes each of its members, so `Sequence<(K, V)>` says
-    /// `["K", "V"]` — the two names a call binds — rather than one name that
-    /// happens to be spelled `(K, V)`.
-    params: Vec<String>,
-    /// The target as written, so the receiver's type can be rebuilt by
-    /// substituting into it. Reconstructing it as `base<args…>` is only right
-    /// when the parameters sit directly under the angle brackets:
-    /// `extend Sequence<(K, V)>` came back as `Sequence<i32>`, dropping `V`,
-    /// and the receiver then had a scalar element type where a pair was due.
-    template: TypeExpr,
-}
+use crate::symbols::MethodOwner;
 
 /// The owner an `extend` header writes: `extend One<A, B>` gives `One` with
 /// `["A", "B"]`. `None` when the header carries no arguments.
@@ -436,7 +418,6 @@ impl<'a> Monomorphizer<'a> {
             too_deep: None,
             results: Vec::new(),
             call_rewrites: HashMap::new(),
-            symbol_of_decl: HashMap::new(),
             bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
@@ -449,7 +430,7 @@ impl<'a> Monomorphizer<'a> {
             interface_methods,
             interface_coercions: HashMap::new(),
             decls,
-            method_owners,
+            symbols: crate::Symbols { by_decl: HashMap::new(), owners: method_owners },
             bounded_generic_owners,
             vtables: HashMap::new(),
         }
@@ -470,7 +451,7 @@ impl<'a> Monomorphizer<'a> {
         // `interface Writer` and the stdlib's shared one entry (#1426).
         mono.interface_methods = rask_check::interface_vtable_methods(&typed.types);
         mono.bind_methods_by_type(typed);
-        mono.symbol_of_decl = mono.symbols_by_decl();
+        mono.symbols.by_decl = mono.symbols_by_decl();
         mono
     }
 
@@ -556,7 +537,7 @@ impl<'a> Monomorphizer<'a> {
             let Some(qualified) = typed
                 .types
                 .method_body(ty, &method, None)
-                .and_then(|decl| self.symbol_of_decl.get(&decl).cloned())
+                .and_then(|decl| self.symbols.by_decl.get(&decl).cloned())
             else {
                 slots.push(crate::VTableSlot { method, symbol: String::new() });
                 continue;
@@ -565,7 +546,7 @@ impl<'a> Monomorphizer<'a> {
                 Type::Generic { base, args }
                     if self.bounded_generic_owners.contains(&typed.types.type_name(*base)) =>
                 {
-                    match self.method_owners.get(&qualified) {
+                    match self.symbols.owners.get(&qualified) {
                         Some(owner) => owner
                             .params
                             .iter()
@@ -817,32 +798,6 @@ impl<'a> Monomorphizer<'a> {
         out
     }
 
-    /// A method's own type arguments, minus any that name one of the owning
-    /// type's parameters.
-    ///
-    /// `func wrapped_width(self) -> i64 where T: Sized2` inside `extend Wrap<T>`
-    /// puts `T` in the *method's* parameter list — a `where` clause adds an entry
-    /// for any name it doesn't already find there, and the parser can't see that
-    /// the enclosing header declared it. The receiver has already bound `T`, so
-    /// taking a second argument for it bound it twice, and the second one was an
-    /// unsolved inference variable. The copy came out as
-    /// `Wrap_wrapped_width$Wide__` with `_` substituted over `Wide`, and
-    /// `self.value.width()` then had no receiver type to dispatch on (#872).
-    ///
-    /// The name is what decides, so this is exact. It used to bail out unless
-    /// the argument count matched the method's parameter list, which meant a
-    /// method whose arguments arrived one short kept the duplicate.
-    fn own_type_args(
-        &self,
-        qualified: &str,
-        args: Vec<TypeBinding>,
-    ) -> Vec<TypeBinding> {
-        let Some(owner) = self.method_owners.get(qualified) else { return args };
-        args.into_iter()
-            .filter(|b| !owner.params.contains(&b.param))
-            .collect()
-    }
-
     /// The resolved type arguments at a call site, at the instance being
     /// walked.
     fn type_args_at(&self, id: NodeId) -> Vec<TypeBinding> {
@@ -856,63 +811,12 @@ impl<'a> Monomorphizer<'a> {
         args
     }
 
-    /// The receiver's own type parameters, bound to what this call site fixed
-    /// them to.
-    ///
-    /// A method declared in `extend One<A>` takes `A` from the extend header, not
-    /// from its own signature, so the checker's per-call record — which is the
-    /// *method's* own arguments — is empty for it. Nothing named a copy per
-    /// instantiation, so one shared `One_get` served both an 8-byte and a
-    /// 24-byte `self` (#814).
-    ///
-    /// The receiver's type comes from `call_targets`, the checker's dispatch
-    /// record, and the header's parameters bind against it as written — so a
-    /// parameter nested in a tuple binds to the matching member instead of the
-    /// whole argument. `extend Sequence<(K, V)>` used to zip its two names
-    /// against the receiver's one argument: `K` took `(i64, i64)` and `V` bound
-    /// to nothing (#1046).
-    ///
-    /// Empty unless every part of the receiver is settled and nameable, and
-    /// every parameter the header declares comes out bound. A type parameter
-    /// still standing for itself would mangle to `One_get$A`, which is an
-    /// instance of nothing.
-    fn receiver_bindings(&self, call_id: NodeId, qualified: &str) -> Vec<TypeBinding> {
-        match self.call_target(call_id).as_ref() {
-            Some(rask_check::Callee::Method { recv, .. }) => self.bindings_for(recv, qualified),
-            _ => Vec::new(),
-        }
-    }
-
-    /// `receiver_bindings` for a receiver type in hand.
+    /// `Symbols::receiver_bindings` for a receiver type in hand.
     fn bindings_for(&self, recv: &Type, qualified: &str) -> Vec<TypeBinding> {
-        let Some(owner) = self.method_owners.get(qualified) else { return Vec::new() };
-        let Some(typed) = self.typed else { return Vec::new() };
-        let Type::Generic { args, .. } = recv else { return Vec::new() };
-
-        // Name every argument first: a `Type::Named` prints as `<type#7>`, which
-        // names nothing downstream, and a nested instantiation has to say which
-        // inner type — `get` on `Wrap<Wrap<i32>>` hands back a `Wrap<i32>` and on
-        // `Wrap<i32>` an `i32`, so one body can't serve both (#871).
-        let mut actuals = Vec::with_capacity(args.len());
-        for arg in args {
-            let rask_types::GenericArg::Type(t) = arg else { return Vec::new() };
-            if Self::nameable_type(t.as_ref(), &typed.types).is_none() {
-                return Vec::new();
-            }
-            actuals.push(rask_types::GenericArg::Type(t.clone()));
+        match self.typed {
+            Some(typed) => self.symbols.receiver_bindings(recv, qualified, &typed.types),
+            None => Vec::new(),
         }
-
-        let templates = owner.template.args();
-        let Some(bound) = rask_check::bind_header_patterns(&typed.types, &templates, &actuals) else {
-            return Vec::new();
-        };
-        if bound.len() != owner.params.len() {
-            return Vec::new();
-        }
-        bound
-            .into_iter()
-            .map(|(param, ty)| TypeBinding::new(param, ty))
-            .collect()
     }
 
     /// The same type, spelled so both a symbol name and a layout lookup can be
@@ -1533,28 +1437,14 @@ impl<'a> Monomorphizer<'a> {
                 }
 
                 match self.call_target(expr.id) {
-                    Some(Callee::Method { body: Some(decl), .. }) => {
+                    Some(callee @ Callee::Method { body: Some(_), .. }) => {
                         // A native has a declaration and no body to compile.
-                        if let Some(qualified) = self.symbol_of_decl.get(&decl).cloned() {
-                            // A method on a generic type gets one body per
-                            // receiver instantiation, so `One<Big>.get()` and
-                            // `One<i64>.get()` don't share a `self` layout.
-                            // Receiver arguments come first, then the method's
-                            // own (#814).
-                            let recv_args = if self.has_instantiable_body(&qualified) {
-                                self.receiver_bindings(expr.id, &qualified)
-                            } else {
-                                Vec::new()
-                            };
-                            let own_args = self.own_type_args(&qualified, type_args.clone());
-                            let type_args: Vec<TypeBinding> = recv_args.into_iter().chain(own_args).collect();
-                            let symbol = if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
-                                mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types))
-                            } else {
-                                qualified.clone()
-                            };
-                            self.set_rewrite(expr.id, symbol);
-                            self.enqueue(qualified, type_args);
+                        // MIR asks `Symbols::method_call` the same question.
+                        if let Some(call) = self
+                            .typed
+                            .and_then(|t| self.symbols.method_call(&callee, type_args.clone(), &t.types))
+                        {
+                            self.enqueue(call.qualified, call.type_args);
                         }
                     }
                     // A union of error types switches on its member at run
@@ -1562,7 +1452,7 @@ impl<'a> Monomorphizer<'a> {
                     Some(Callee::Method { recv: Type::Union(members), method: m, package, body: None }) => {
                         for member in &members {
                             let body = self.typed.and_then(|t| t.types.method_body(member, &m, package.as_deref()));
-                            if let Some(symbol) = body.and_then(|d| self.symbol_of_decl.get(&d).cloned()) {
+                            if let Some(symbol) = body.and_then(|d| self.symbols.by_decl.get(&d).cloned()) {
                                 self.enqueue(symbol, Vec::new());
                             }
                         }
