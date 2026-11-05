@@ -656,6 +656,7 @@ impl TypeChecker {
                     self.free_fn(&name, ty, true, "Ordering", body)
                 }
             };
+            self.symbol_runs(sym, f.id);
             let id = self.derived_id();
             self.resolved.decl_symbols.insert(id, sym);
             self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
@@ -671,6 +672,8 @@ impl TypeChecker {
                 params: Vec::new(),
                 ret_ty: Some(ret_written),
                 is_unsafe: false,
+                // Set by `symbol_runs` once the body is written.
+                decl: rask_ast::NodeId::DUMMY,
             },
             None,
             SP,
@@ -936,10 +939,21 @@ impl TypeChecker {
                 default: None,
             })
             .collect();
+        self.symbol_runs(sym, f.id);
         let id = self.derived_id();
         self.resolved.decl_symbols.insert(id, sym);
         self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
         name
+    }
+
+    /// A wrapper's symbol is made before its body, so it learns which
+    /// declaration a call to it runs once there is one.
+    fn symbol_runs(&mut self, sym: rask_resolve::SymbolId, fn_id: rask_ast::NodeId) {
+        if let Some(rask_resolve::SymbolKind::Function { decl, .. }) =
+            self.resolved.symbols.get_mut(sym).map(|s| &mut s.kind)
+        {
+            *decl = fn_id;
+        }
     }
 
     /// Whether copying the bytes is the whole of a clone: scalars, and the

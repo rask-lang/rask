@@ -21,7 +21,7 @@ use rask_layout::{
 };
 use rask_stdlib::is_stdlib_span;
 pub use instance::Instance;
-pub use symbols::{MethodCall, Symbols};
+pub use symbols::{ResolvedCall, Symbols};
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;

@@ -836,13 +836,31 @@ impl<'a> MirContext<'a> {
     /// What a method call runs, at this instance: the body's symbol and the
     /// type arguments it was made for. `None` when no body in Rask is behind
     /// the call (a native, a primitive's operation, a builtin).
-    pub fn method_call(&self, call: NodeId) -> Option<rask_mono::MethodCall> {
+    pub fn method_call(&self, call: NodeId) -> Option<rask_mono::ResolvedCall> {
         let callee = self.call_targets.get(&call)?;
         let own_args = match &self.node_types.instance {
             Some((inst, _)) => inst.call_type_args(call).unwrap_or_default(),
             None => self.typed?.call_type_args.get(&call).cloned().unwrap_or_default(),
         };
         self.symbols.method_call(&callee, own_args, self.type_defs)
+    }
+
+    /// What a call written as `f(…)` runs, at this instance: a function by
+    /// its declaration, or a module's function imported bare (`sleep(d)`
+    /// after `import time.sleep`), or a native module function by its runtime
+    /// name. `None` for a builtin or a closure held in a variable.
+    pub fn call_symbol(&self, call: NodeId) -> Option<String> {
+        let callee = self.call_targets.get(&call)?;
+        let type_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(call).unwrap_or_default(),
+            None => self.typed?.call_type_args.get(&call).cloned().unwrap_or_default(),
+        };
+        let typed = self.typed?;
+        self.symbols
+            .free_call(&callee, type_args.clone(), typed)
+            .or_else(|| self.symbols.method_call(&callee, type_args, self.type_defs))
+            .map(|c| c.symbol)
+            .or_else(|| self.symbols.native(&callee, self.type_defs))
     }
 
     /// The error a `try` boxes into the function's `any I`, at this instance,
@@ -3057,8 +3075,7 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Call { func, .. } => match &func.kind {
                 ExprKind::Ident(callee) => {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| callee.clone());
+                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| callee.clone());
                     self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
                 }
                 _ => None,

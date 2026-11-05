@@ -617,6 +617,8 @@ pub struct FunctionStub {
     pub name: String,
     /// The declaration this came from, as every other stdlib accessor numbers it.
     pub decl_id: rask_ast::NodeId,
+    /// The function's own id (`FnDecl::id`), the one its body is compiled under.
+    pub fn_id: rask_ast::NodeId,
     /// Parameters with no written type are left out of a stub's signature:
     /// every stdlib parameter is annotated.
     pub params: Vec<(String, TypeExpr)>,
@@ -946,6 +948,7 @@ impl StubRegistry {
                 self.functions.push(FunctionStub {
                     name: f.name.clone(),
                     decl_id: decl.id,
+                    fn_id: f.id,
                     params: f.params.iter()
                         .filter(|p| p.name != "self")
                         .filter_map(|p| Some((p.name.clone(), p.ty.clone()?)))

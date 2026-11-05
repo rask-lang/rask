@@ -2534,8 +2534,7 @@ impl<'a> MirLowerer<'a> {
             // signature: the modes are part of it (type.functions/FT1).
             let callee_sig: Option<super::FuncSig> = self.value_call_sig(func).or_else(|| {
                 func.name().and_then(|name| {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| name.to_string());
+                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string());
                     self.func_sigs.get(&key).cloned()
                 })
             });
@@ -2574,12 +2573,9 @@ impl<'a> MirLowerer<'a> {
             // Lower the callee expression and emit an indirect ClosureCall.
             let func_name = match func.name() {
                 Some(name) => {
-                    // Check for monomorphized generic call rewrite
-                    if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
-                        mangled.clone()
-                    } else {
-                        name.to_string()
-                    }
+                    // What the checker resolved, at this instance; the written
+                    // name only for what has no body in Rask (a builtin).
+                    self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string())
                 }
                 _ => {
                     let (callee_op, _callee_ty) = self.lower_expr(func)?;

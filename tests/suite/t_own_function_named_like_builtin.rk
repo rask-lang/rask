@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A program's own function named like a stdlib one is the one its calls run.
+// Native code dispatched on the bare name, so `clamp(42)` here reached
+// builtins.rk's three-argument `clamp<T>` and failed (#1706). The stdlib's
+// version stays reachable for the stdlib's own calls.
+
+func clamp(x: i64) -> i64 {
+    if x > 10 {
+        return 10
+    }
+    return x
+}
+
+func max(a: i64, b: i64) -> i64 {
+    // Deliberately not the maximum, so running the stdlib's instead shows.
+    return a - b
+}
+
+test "the program's own clamp" {
+    assert clamp(42) == 10
+    assert clamp(3) == 3
+}
+
+test "the program's own max" {
+    assert max(10, 4) == 6
+}
+
+test "the stdlib still uses its own" {
+    let v: Vec<i64> = [3, 9, 4]
+    assert (v.max() ?? 0) == 9
+}

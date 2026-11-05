@@ -287,7 +287,7 @@ impl<'a> Monomorphizer<'a> {
         call_type_args: &'a HashMap<NodeId, Vec<TypeBinding>>,
         conformance_interfaces: &HashMap<NodeId, String>,
     ) -> Self {
-        let mut fn_table = HashMap::new();
+        let mut fn_table: HashMap<String, &Decl> = HashMap::new();
         let mut method_table = HashMap::new();
         let mut method_owners: HashMap<String, MethodOwner> = HashMap::new();
 
@@ -326,13 +326,26 @@ impl<'a> Monomorphizer<'a> {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    fn_table.insert(f.name.clone(), decl);
-                    // Also register under base name for generic functions:
-                    // parser stores "foo<T: Interface>" but call sites use "foo"
-                    let base = f.name.as_str();
-                    if base != f.name {
-                        fn_table.insert(base.to_string(), decl);
-                    }
+                    // One entry per declaration. A program function named like
+                    // a stdlib one keeps the plain name and the stdlib's goes
+                    // by a qualified symbol, so each call reaches the body the
+                    // checker resolved it to. One entry per *name* kept
+                    // whichever came last, and a program's own `clamp` was
+                    // compiled as calls to the stdlib's (#1706).
+                    let symbol = match fn_table.get(&f.name) {
+                        Some(other) if other.id != decl.id => {
+                            let std_symbol = rask_types::conformance_symbol(&f.name, "std");
+                            if rask_stdlib::is_stdlib_span(decl.span) {
+                                std_symbol
+                            } else {
+                                let stdlib_one = fn_table.remove(&f.name).expect("checked above");
+                                fn_table.insert(std_symbol, stdlib_one);
+                                f.name.clone()
+                            }
+                        }
+                        _ => f.name.clone(),
+                    };
+                    fn_table.insert(symbol, decl);
                 }
                 DeclKind::Struct(s) => {
                     for method in &s.methods {
@@ -430,7 +443,7 @@ impl<'a> Monomorphizer<'a> {
             interface_methods,
             interface_coercions: HashMap::new(),
             decls,
-            symbols: crate::Symbols { by_decl: HashMap::new(), owners: method_owners },
+            symbols: crate::Symbols { by_decl: HashMap::new(), owners: method_owners, instantiable: HashSet::new() },
             bounded_generic_owners,
             vtables: HashMap::new(),
         }
@@ -452,6 +465,15 @@ impl<'a> Monomorphizer<'a> {
         mono.interface_methods = rask_check::interface_vtable_methods(&typed.types);
         mono.bind_methods_by_type(typed);
         mono.symbols.by_decl = mono.symbols_by_decl();
+        mono.symbols.instantiable = mono
+            .method_table
+            .values()
+            .chain(mono.fn_table.values().copied())
+            .filter_map(|d| match &d.kind {
+                DeclKind::Fn(f) if !f.body.is_empty() => Some(f.id),
+                _ => None,
+            })
+            .collect();
         mono
     }
 
@@ -1218,18 +1240,6 @@ impl<'a> Monomorphizer<'a> {
             .then(|| crate::Instance::new(&self.instance_args, &self.instance_projections, typed))
     }
 
-    /// The body a plain call reaches when the checker dispatched it as a
-    /// method — only a module function imported bare does that. `None` for an
-    /// ordinary function call.
-    fn module_function_body(&self, id: NodeId) -> Option<String> {
-        let typed = self.typed?;
-        match &self.call_target(id)? {
-            rask_check::Callee::Method { recv, method, .. } => {
-                Some(format!("{}_{}", rask_check::receiver_name(recv, &typed.types)?, method))
-            }
-            rask_check::Callee::Free(_) => None,
-        }
-    }
 
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
@@ -1359,34 +1369,21 @@ impl<'a> Monomorphizer<'a> {
 
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                if let Some(body) = self.module_function_body(expr.id) {
-                    // `sleep(d)` after `import time.sleep`: the checker
-                    // dispatched it to the module's namespace, so the body is
-                    // the one `time.sleep(d)` reaches. The callee's own name
-                    // names nothing (#1359).
-                    let type_args = self.type_args_at(expr.id);
-                    let mangled = if !type_args.is_empty() && self.has_instantiable_body(&body) {
-                        mangle_name(&body, &type_args, self.typed.map(|t| &t.types))
-                    } else {
-                        body.clone()
-                    };
-                    self.set_rewrite(expr.id, mangled);
-                    self.enqueue(body, type_args);
-                } else if let Some(name) = func.name() {
-                    // `make<i32>(2)`: the written arguments are already in
-                    // `type_args_at`, put there by the checker (#712).
-                    let name = &name.to_string();
-                    let type_args = self.type_args_at(expr.id);
-                    // Record call rewrite so MIR lowering uses the mangled name.
-                    // Only for functions with a body to instantiate — a stdlib
-                    // stub generic in its signature but backed by one C entry
-                    // point would otherwise get a call to `name$i64` that
-                    // nothing emits.
-                    if !type_args.is_empty() && self.has_instantiable_body(name) {
-                        let mangled = mangle_name(name, &type_args, self.typed.map(|t| &t.types));
-                        self.set_rewrite(expr.id, mangled);
-                    }
-                    self.enqueue(name.clone(), type_args);
+                // The checker said what the call runs: a function by its
+                // symbol, or for `sleep(d)` after `import time.sleep` the
+                // module's function (#1359). `make<i32>(2)`'s written
+                // arguments are in `type_args_at` (#712). MIR resolves the
+                // same call with the same `Symbols`.
+                let type_args = self.type_args_at(expr.id);
+                let resolved = match (self.typed, self.call_target(expr.id)) {
+                    (Some(typed), Some(callee)) => self
+                        .symbols
+                        .free_call(&callee, type_args.clone(), typed)
+                        .or_else(|| self.symbols.method_call(&callee, type_args, &typed.types)),
+                    _ => None,
+                };
+                if let Some(call) = resolved {
+                    self.enqueue(call.qualified, call.type_args);
                 }
                 self.visit_expr(func);
                 for arg in args {

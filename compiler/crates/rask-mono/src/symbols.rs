@@ -36,11 +36,15 @@ pub struct Symbols {
     pub(crate) by_decl: HashMap<NodeId, String>,
     /// A method of a generic type, by symbol → the type it's declared on.
     pub(crate) owners: HashMap<String, MethodOwner>,
+    /// The declarations with a body to make a copy of per instance. A stdlib
+    /// function generic in its signature but backed by one C entry point
+    /// isn't one: mangling a call to it names a symbol nothing emits.
+    pub(crate) instantiable: std::collections::HashSet<NodeId>,
 }
 
-/// A call that runs a body in Rask.
+/// A call that runs a body in Rask, a method's or a free function's.
 #[derive(Debug, Clone)]
-pub struct MethodCall {
+pub struct ResolvedCall {
     /// The body's symbol before type arguments: what is generated.
     pub qualified: String,
     /// The receiver's type arguments, then the method's own.
@@ -67,7 +71,7 @@ impl Symbols {
         callee: &rask_check::Callee,
         own_args: Vec<TypeBinding>,
         types: &rask_check::TypeTable,
-    ) -> Option<MethodCall> {
+    ) -> Option<ResolvedCall> {
         let rask_check::Callee::Method { recv, body: Some(decl), .. } = callee else { return None };
         let qualified = self.by_decl.get(decl)?.clone();
         let own_args: Vec<TypeBinding> = match self.owners.get(&qualified) {
@@ -81,7 +85,40 @@ impl Symbols {
         } else {
             mangle_name(&qualified, &type_args, Some(types))
         };
-        Some(MethodCall { qualified, type_args, symbol })
+        Some(ResolvedCall { qualified, type_args, symbol })
+    }
+
+    /// What a call to a free function runs: `callee` is the checker's target,
+    /// `type_args` the arguments the call passes it. `None` for a function
+    /// with nothing compiled from Rask behind it.
+    pub fn free_call(
+        &self,
+        callee: &rask_check::Callee,
+        type_args: Vec<TypeBinding>,
+        typed: &rask_check::TypedProgram,
+    ) -> Option<ResolvedCall> {
+        let rask_check::Callee::Free(sym) = callee else { return None };
+        let decl = match &typed.symbols.get(*sym)?.kind {
+            rask_resolve::SymbolKind::Function { decl, .. } => decl,
+            rask_resolve::SymbolKind::BuiltinFunction { decl: Some(decl), .. } => decl,
+            _ => return None,
+        };
+        let qualified = self.by_decl.get(decl)?.clone();
+        let type_args = if self.instantiable.contains(decl) { type_args } else { Vec::new() };
+        let symbol = if type_args.is_empty() {
+            qualified.clone()
+        } else {
+            mangle_name(&qualified, &type_args, Some(&typed.types))
+        };
+        Some(ResolvedCall { qualified, type_args, symbol })
+    }
+
+    /// The runtime entry point a native method or module function is called
+    /// by: `{type or module}_{name}`, the spelling the C dispatch table files
+    /// it under. Only for a call with no body in Rask behind it.
+    pub fn native(&self, callee: &rask_check::Callee, types: &rask_check::TypeTable) -> Option<String> {
+        let rask_check::Callee::Method { recv, method, .. } = callee else { return None };
+        Some(format!("{}_{}", rask_check::receiver_name(recv, types)?, method))
     }
 
     /// The receiver's own type parameters, bound to what this receiver fixes
