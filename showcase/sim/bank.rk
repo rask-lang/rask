@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The sim showcase (rask-lang.dev/showcase/sim/). Two transfers out of one
+// account, run at the same time. Every touch of the balances holds the lock,
+// so there's no data race, and the test still fails: each transfer checks
+// the balance in one `with` block and debits it in another.
+import sync.Shared
+
+struct Bank {
+    balances: Vec<i64>
+}
+
+const bank = Shared.new(Bank(balances: [100, 0, 0]))
+
+func transfer(from: i64, to: i64, amount: i64) -> bool {
+    let balance = with bank.read() as b { b.balances[from] }
+    println("sees {balance}, sending {amount}")
+    if balance < amount {
+        return false
+    }
+    with bank.write() as b {
+        b.balances[from] -= amount
+        b.balances[to] += amount
+    }
+    return true
+}
+
+test "an account never goes below zero" {
+    using Multitasking {
+        let to_bob = spawn { transfer(0, 1, 80) }
+        ensure to_bob.detach()
+        let to_carol = spawn { transfer(0, 2, 80) }
+        ensure to_carol.detach()
+        let _ = to_bob.join()!
+        let _ = to_carol.join()!
+    }
+    let alice = with bank.read() as b { b.balances[0] }
+    assert alice >= 0, "alice is at {alice}"
+}
