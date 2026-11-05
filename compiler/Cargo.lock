@@ -1515,6 +1515,7 @@ dependencies = [
  "rask-lexer",
  "rask-mono",
  "rask-parser",
+ "rask-resolve",
  "rask-stdlib",
  "rask-types",
  "thiserror",

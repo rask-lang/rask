@@ -1042,6 +1042,14 @@ impl Interpreter {
             ExprKind::None => Ok(Value::none()),
 
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
+                // A name the checker resolved to a function is that function,
+                // whatever else the spelling is bound to here (a builtin).
+                if let Some(key) = self.named_function(expr.id) {
+                    return Ok(Value::Function {
+                        name: key.to_string(),
+                        generics: self.call_generics(expr.id),
+                    });
+                }
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
                 }

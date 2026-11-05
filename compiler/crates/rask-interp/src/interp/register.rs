@@ -140,7 +140,6 @@ impl Interpreter {
         let (_, _, cache) = rask_mono::compute_declared_layouts(decls, &self.types);
         self.layout_cache = cache;
 
-        let mut program_fns: std::collections::HashSet<String> = std::collections::HashSet::new();
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -153,18 +152,27 @@ impl Interpreter {
                     if f.attrs.iter().any(|a| a.is("test")) {
                         test_fns.push(f.clone());
                     }
-                    // A program function named like a stdlib one is the one
-                    // the program's calls mean (#1706): the stdlib's doesn't
-                    // replace it, whichever comes first.
-                    let fn_name = f.name.clone();
-                    if rask_stdlib::is_stdlib_span(decl.span) {
-                        if !program_fns.contains(&fn_name) {
-                            self.functions.insert(fn_name, f.clone());
+                    // One entry per declaration, keyed the way monomorphization
+                    // names them: a program function named like a stdlib one
+                    // keeps the name, and the stdlib's goes by `name~std`
+                    // (#1706). A call finds its entry through the declaration
+                    // the checker resolved it to (`named_function`).
+                    let std_key = rask_types::conformance_symbol(&f.name, "std");
+                    let key = match self.functions.get(&f.name) {
+                        Some(other) if other.id != f.id => {
+                            if rask_stdlib::is_stdlib_span(decl.span) {
+                                std_key
+                            } else {
+                                let stdlib_one = self.functions.remove(&f.name).expect("checked above");
+                                self.function_keys.insert(stdlib_one.id, std_key.clone());
+                                self.functions.insert(std_key, stdlib_one);
+                                f.name.clone()
+                            }
                         }
-                    } else {
-                        program_fns.insert(fn_name.clone());
-                        self.functions.insert(fn_name, f.clone());
-                    }
+                        _ => f.name.clone(),
+                    };
+                    self.function_keys.insert(f.id, key.clone());
+                    self.functions.insert(key, f.clone());
                 }
                 DeclKind::Enum(e) => {
                     let base_name = e.name.clone();
@@ -356,12 +364,6 @@ impl Interpreter {
             .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
         self.env
             .define("drop".to_string(), Value::Builtin(BuiltinKind::Drop));
-        // The program's own function over a builtin of the same name (#1706).
-        for name in &program_fns {
-            if matches!(self.env.get(name), Some(Value::Builtin(_))) {
-                self.env.define(name.clone(), Value::Function { name: name.clone(), generics: Default::default() });
-            }
-        }
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env

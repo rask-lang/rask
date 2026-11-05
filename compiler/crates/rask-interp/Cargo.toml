@@ -12,6 +12,7 @@ rask-comptime = { path = "../rask-comptime" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
+rask-resolve = { path = "../rask-resolve" }
 rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 rask-stdlib = { path = "../rask-stdlib" }
