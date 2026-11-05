@@ -27,7 +27,7 @@ That's it. The rest is details.
 Game-specific concerns on top of the federation model:
 
 - **Standard asset types** — the founding cluster shares a common set of game object types (swords, characters, regions, currency). Travel between gards with standard types is seamless.
-- **Lockstep simulation** — deterministic lockstep for small groups (2-16 participants). Raido's fixed-point arithmetic and seedable PRNG guarantee bitwise-identical results across machines.
+- **Lockstep simulation** — deterministic lockstep for small groups (2-16 participants). Raido's deterministic arithmetic and seedable PRNG guarantee bitwise-identical results across machines.
 - **UGC sandboxing** — entity scripts, modding, NPC AI via Raido. Scripts get only the references the host hands them. Fuel-limited.
 - **Verifiable crafting** — crafting recipes, damage formulas, and economic transforms are Raido scripts. Cross-gard crafting is [verifiable](../allgard/README.md#verifiable-transforms) — the receiving gard re-executes the script to confirm the result.
 - **Cross-gard rate limiting** — Conservation Law 5 is per-gard. Coordinated abuse from multiple gards needs application-level policy.

@@ -7,7 +7,7 @@ paths:
 
 | Project | Decision | Spec |
 |---------|----------|------|
-| Raido | Deterministic scripting VM: 32.32 fixed-point, serializable state, content-addressed bytecode. Independent project, also the verification engine for Allgard's verifiable transforms | `projects/raido/` |
+| Raido | Deterministic scripting VM: int and strict-profile f64 (an int-only provable profile for ZK), serializable state, content-addressed bytecode. Independent project, also the verification engine for Allgard's verifiable transforms | `projects/raido/` |
 | Leden | Capability-based networking protocol: sessions, capabilities, object references, gossip discovery | `projects/leden/` |
 | Allgard | Federation model: primitives, conservation laws, domain sovereignty, bilateral trust, owner presence, distributed beacon | `projects/allgard/` |
 | GDL | Gard Description Language: content schema for describing gards over Leden. Regions, entities, affordances, appearance, style system, spatial protocol | `projects/gdl/` |

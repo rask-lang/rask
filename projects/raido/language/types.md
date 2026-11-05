@@ -1,20 +1,20 @@
 <!-- id: raido.types -->
 <!-- status: proposed -->
-<!-- summary: Raido type system -- static types, fixed-point numbers, structs, enums, optionals, function references -->
+<!-- summary: Raido type system -- static types, ints and floats, structs, enums, optionals, functions and closures -->
 <!-- depends: raido/README.md -->
 
 # Types
 
-Statically typed. Function signatures are fully annotated, local variables are inferred from their initializer. No runtime type tags -- the compiler knows every register's type at every instruction.
+Statically typed. Function signatures are fully annotated, local variables are inferred from their initializer. The compiler knows every register's type at every instruction, so nothing dispatches on type at run time.
 
 ## Primitives
 
 | Type | Size | Description |
 |------|------|-------------|
 | `int` | i64 | Counters, IDs, indices, bitfields. |
-| `number` | i64 (32.32 fixed-point) | Physics, coordinates, economics. Deterministic. |
+| `float` | f64 | Physics, coordinates, fractions. Deterministic on every machine. |
 | `bool` | i64 (0 or 1) | `true`/`false`. |
-| `string` | u32 arena offset | Immutable UTF-8. Dialogue, identifiers, messages. |
+| `string` | heap reference | Immutable UTF-8. Dialogue, identifiers, messages. |
 
 ## Composite Types
 
@@ -29,53 +29,41 @@ Statically typed. Function signatures are fully annotated, local variables are i
 
 ## Function Types
 
-`func(int, int) -> bool` -- describes the signature of a function reference. The value is a prototype index pointing to a named top-level function. No closures, no captured state.
+`func(int, int) -> bool` -- the type of a function value: a named function or a closure. See [Functions as Values](#functions-as-values).
 
-## Number (Fixed-Point 32.32)
+## Float
 
-Stored as i64. 32 integer bits (signed), 32 fractional bits.
+A 64-bit IEEE 754 double, the number type JS, Python, Lua and C all have.
 
-- **Range:** +/-2.1 billion. **Precision:** ~2^-32 (~9.6 decimal digits).
-- **Deterministic.** Integer math. Same result on every platform.
-- **Fast.** Add/sub = single i64 op. Mul/div = 128-bit intermediate.
-- **No NaN/infinity.** Division by zero = runtime error. Number overflow saturates. Integer overflow panics (use `wrapping_*` methods for explicit wrapping).
-- Scripts write `3.14`, compiler converts to fixed-point.
-- **Literal rule:** decimal point means `number`, no decimal means `int`. `42` is int, `42.0` is number, `0xff` is int.
-
-### Why 32.32 over 48.16
-
-I chose 32.32 over 48.16. 48.16 gives more integer range (~140 trillion vs ~2.1 billion) but only ~4.8 decimal digits of fractional precision. Simulation showed that's too coarse for real use cases:
-
-- **Physics accumulation** (10K frames at 1/60): 32.32 error 6e-7, 48.16 error 4e-2
-- **Damping chains** (1000 frames x 0.999): 32.32 error 6e-5, 48.16 error 2.6
-- **Financial sums** (0.01 x 10K): 32.32 error 2e-6, 48.16 error 5e-2
-
-The 2.1B integer ceiling is real but manageable -- `int` (i64) handles large values. Use `int` for entity IDs, large counters, and scores. Use `number` for positions, velocities, fractions, and math.
+- **Same bits on every machine.** `+ - * /` and `sqrt` are correctly rounded by IEEE 754, so they agree everywhere. The VM never fuses a multiply and an add, and `sin`, `cos`, `exp` and the rest are correctly rounded, so they agree too. The full profile is rask-lang/rask#1683, the same one Rask's own floats follow.
+- **No NaN, no infinity.** An operation that would produce either (`0.0 / 0.0`, `sqrt(-1.0)`, an overflow) is a runtime error, like integer overflow. So a bad value fails where it's made instead of spreading, and no script ever sees NaN's platform-dependent bits.
+- **Literal rule:** a decimal point means `float`, no decimal means `int`. `42` is int, `42.0` is float, `0xff` is int.
+- **Use `int` for money and anything counted or conserved.** Floats round; store cents, not dollars. A script that uses only `int` can be proven with zero knowledge ([vm/architecture.md](../vm/architecture.md#provable-profile)).
 
 ## Struct
 
-User-defined named records. Fields are fixed at compile time. Layout is determined by the compiler -- field order in the arena matches declaration order.
+User-defined named records. Fields are fixed at compile time. Fields are numbered in declaration order.
 
 ```raido
-struct Vec2 { x: number, y: number }
+struct Vec2 { x: float, y: float }
 
 struct Ship {
     id: int
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     shield: Shield?
 }
 ```
 
-Structs are arena-allocated. A struct value in a register is a u32 arena offset. All fields occupy 8 bytes each (i64) regardless of logical type -- bools are stored as i64 0/1, arena offsets are zero-extended. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
+Structs are heap objects; a struct value is a reference. Field access compiles to `GET_STRUCT_FIELD` / `SET_STRUCT_FIELD` with the field index known at compile time.
 
-**Pass by reference.** A struct parameter is an arena offset. Multiple bindings can point to the same struct. Mutation through a `let` binding is visible through all bindings to the same offset. See [Const and Let](#const-and-let) for mutation rules.
+**Pass by reference.** Multiple bindings can point to the same struct. A change made through any binding or a `mutate` parameter is visible through all of them. See [Variables](#variables).
 
 **Struct update syntax** copies all fields, overriding specific ones:
 
 ```raido
-const damaged = Ship { health: ship.health - dmg, ..ship }
+let damaged = Ship { health: ship.health - dmg, ..ship }
 ```
 
 **Field shorthand** -- omit the value when the variable name matches the field name:
@@ -86,7 +74,7 @@ return Star { id: index, x, y, z, spectral, planet_count, luminosity }
 
 ## Extend
 
-Add methods to any struct or enum. Methods use `self` as the first parameter — always const (no mutation through `self`). The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
+Add methods to any struct or enum. Methods take `self` as the first parameter, read-only unless written `mutate self`. The compiler desugars `x.method(args)` into a normal function call with `x` as the first argument. No new opcodes, no vtable, no dynamic dispatch.
 
 ```raido
 struct Money {
@@ -106,8 +94,12 @@ extend Money {
         return Money { cents: self.cents * rate / 100 }
     }
 
-    func to_number(self) -> number {
-        return number(self.cents) / 100.0
+    func deposit(mutate self, amount: Money) {
+        self.cents += amount.cents
+    }
+
+    func to_number(self) -> float {
+        return float(self.cents) / 100.0
     }
 
     func to_string(self) -> string {
@@ -115,18 +107,21 @@ extend Money {
     }
 }
 
-const price = Money.from_dollars(10)
-const tax = price.percent(8)
-const total = price.add(tax)
+let price = Money.from_dollars(10)
+let tax = price.percent(8)
+let total = price.add(tax)
+
+let wallet = Money.from_dollars(5)
+wallet.deposit(total)       // `mutate self` changes wallet
 ```
 
 **Rules:**
 
-- `self` is always const — methods can read fields but not mutate them. Return a new value instead.
+- `self` is read-only by default. `mutate self` lets the method change the value.
 - Methods without `self` are static: `Money.from_dollars(10)`. Called via `Type.method()`.
 - Methods with `self` are instance: `price.add(tax)`. Called via `value.method()`.
 - Multiple `extend` blocks on the same type are allowed (useful for imported modules adding methods).
-- Extend works on `struct` and `enum` types. Not on primitives — `int`, `number`, `bool`, `string` have compiler-known built-in methods only.
+- Extend works on `struct` and `enum` types. Not on primitives — `int`, `float`, `bool`, `string` have compiler-known built-in methods only.
 - Extend blocks are part of the chunk's type table and content hash.
 
 ## Enum
@@ -145,26 +140,26 @@ enum Order {
     Attack(int)
     Retreat
     HoldPosition
-    Allocate { system: int, power: number }
+    Allocate { system: int, power: float }
 }
 ```
 
 Variants are accessed with dot syntax: `Order.Attack(target_id)`, `Stance.Aggressive`.
 
-Simple enums (no payloads) are stored inline as a u32 discriminant in the register -- no arena allocation. Enums with payloads use a u32 discriminant + u32 arena offset in the register. The arena body contains only the payload fields (no redundant discriminant -- the register already has it).
+Simple enums (no payloads) are a discriminant in the register, with no heap object. Enums with payloads are heap objects holding the discriminant and the payload fields.
 
 ## Optionals
 
 `T?` is the optional type. Either `Some(value)` or `None`. Compiler-enforced -- you can't use an optional without handling the `None` case.
 
 ```raido
-const shield: Shield? = find_shield(inventory)
+let shield: Shield? = find_shield(inventory)
 
 // Null coalescing
-const defense = shield ?? default_shield
+let defense = shield ?? default_shield
 
 // Force unwrap -- panics on None
-const order = orders.get(ship.id)!
+let order = orders.get(ship.id)!
 
 // Pattern matching
 match shield {
@@ -186,80 +181,79 @@ Stored as u8 tag (0=None, 1=Some) + 7 bytes payload.
 Lightweight multi-return without defining a struct.
 
 ```raido
-func bounds(arr: array<number>) -> (number, number) {
+func bounds(arr: array<float>) -> (float, float) {
     // ...
     return (lo, hi)
 }
 
-const (lo, hi) = bounds(values)
+let (lo, hi) = bounds(values)
 ```
 
-Tuples are anonymous arena-allocated structs. `(number, number)` is a 2-field struct with 8 bytes per field. The compiler generates internal type entries for tuple types -- no user-visible struct name. Arena allocation is cheap (bump pointer) and frames get reset between evaluations.
+Tuples are anonymous structs. `(float, float)` is a 2-field struct. The compiler generates internal type entries for tuple types -- no user-visible struct name.
 
-## Function References
+## Functions as Values
 
-References to named top-level functions. No captured state, no arena allocation. A function reference is a prototype index -- the simplest possible callable value.
+A value of a function type (`func(Ship, Ship) -> bool`) is either a named function or a closure. Both are called the same way and can be stored, passed and returned.
 
-```raido
-func by_health(a: Ship, b: Ship) -> bool { return a.health < b.health }
+A **closure** captures the variables it uses from around it. The rules:
 
-const comparator = by_health
-ships.sort(comparator)
+- **A captured variable can't be assigned again**, inside the closure or after it in the enclosing function. Because of that rule, capturing the variable and capturing its value can't be told apart, so there's nothing about capture modes to learn: a closure sees exactly what was there when it was made.
+- **Structs, arrays and maps are shared**, as everywhere in Raido. A closure that captured `ship` sees `ship.health` change, and can change it.
+- **Read-only stays read-only.** A closure that captures a parameter not marked `mutate` can't change it either, so passing a struct into a function still can't change it behind your back.
+- **Each loop iteration has its own variable**, so `for i in 0..3 { fs.push(|| i) }` makes closures that return 0, 1 and 2.
+- **A closure can't use itself.** `let f = || f()` is an error, since `f` isn't declared until the closure is made. Recursion uses a named function.
+- **Closures aren't comparable.** There's no `==` on function values.
 
-// Coroutine creation -- function reference + initial arguments
-func patrol(npc: Entity, route: array<Vec2>) { ... }
-const co = coroutine(patrol, guard, waypoints)
-```
-
-No closures, no partial application. If you need to pass context, pass it as an argument.
+A closure that captures nothing costs nothing: it's a prototype index in a register, the same as a named function. One that captures is a heap object holding the prototype and the captured values ([vm/architecture.md](../vm/architecture.md#heap)), and lives as long as anything refers to it: a coroutine, a struct field, a host root.
 
 ## Extern Types
 
-Scripts declare the shapes they expect from the host. The compiler type-checks all access. The host binds at `vm.load()` -- type mismatch is a load error.
+The host's published API module declares the shapes it provides; scripts use them without declaring anything (see [syntax.md](syntax.md#the-hosts-api)). The compiler type-checks all access against the module.
 
 ```raido
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
 extern func move_to(entity: Enemy, target: Vec2)
-extern func noise(quality: number, id: int, index: int) -> number
+extern func noise(quality: float, id: int, index: int) -> float
 ```
 
 See [vm/interop.md](../vm/interop.md) for host-side binding.
 
-## Const and Mut
+## Variables
 
-`const` and `mut` control mutability of the binding **and the data it reaches**:
-
-- `const x = ...` -- cannot reassign `x`, cannot mutate fields through `x`
-- `mut x = ...` -- can reassign `x`, can mutate fields through `x`
+`let` declares a variable. Every variable can be reassigned and its fields changed; there's no immutable binding to learn. Assigning to a name that was never declared is a compile error.
 
 ```raido
-const ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // ERROR: ship is const
-ship = other_ship  // ERROR: ship is const
-
-mut ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
-ship.health -= 10  // OK: ship is mut
-ship = other_ship  // OK: ship is mut
+let ship = Ship { id: 1, health: 100, x: 0.0, y: 0.0, shield: None }
+ship.health -= 10   // OK
+ship = other_ship   // OK
+shipp = other_ship  // ERROR: `shipp` isn't declared; did you mean `ship`?
 ```
 
-**Function parameters are const.** A function cannot mutate a struct passed to it. Return a modified copy instead:
+**Parameters are read-only unless marked `mutate`.** Same rule for `self` and for any other parameter. A `mutate` parameter changes the struct the caller passed, and the signature says so. Structs are references, so every binding to the same struct sees the change, as in Lua or Python:
 
 ```raido
-func apply_damage(ship: Ship, amount: int) -> Ship {
-    return Ship { health: ship.health - amount, ..ship }
+func apply_damage(mutate ship: Ship, amount: int) {
+    ship.health -= amount
+}
+
+let ship = spawn_ship()
+apply_damage(ship, 10)      // ship.health is now 10 lower
+
+func damaged(ship: Ship, amount: int) -> Ship {
+    return Ship { health: ship.health - amount, ..ship }   // or return a copy
 }
 ```
 
 For host entity mutation, use extern struct fields -- the host controls the data:
 
 ```raido
-extern struct Enemy { health: int, x: number, y: number }
+extern struct Enemy { health: int, x: float, y: float }
 func damage_enemy(enemy: Enemy, amount: int) {
     enemy.health -= amount  // OK: extern struct field write goes through host setter
 }
@@ -272,24 +266,24 @@ func damage_enemy(enemy: Enemy, amount: int) {
 | Expression | Result | Notes |
 |-----------|--------|-------|
 | `int + int` | `int` | Also `-`, `*`, `%` |
-| `int / int` | `number` | Division always returns number |
-| `number + number` | `number` | All ops |
+| `int / int` | `float` | Division always returns float |
+| `float + float` | `float` | All ops |
 
-**Mixed arithmetic -- int promotes to number:**
+**Mixed arithmetic -- int promotes to float:**
 
 | Expression | Result | Notes |
 |-----------|--------|-------|
-| `int + number` | `number` | int operand promoted to 32.32 fixed-point |
-| `number + int` | `number` | Same |
-| `int CMP number` | `bool` | Promotion for comparison too |
+| `int + float` | `float` | int operand converted to float |
+| `float + int` | `float` | Same |
+| `int CMP float` | `bool` | Promotion for comparison too |
 
-Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds number's 32-bit integer range, the promotion panics at runtime. In practice, ints mixed with numbers are small (counts, indices, loop variables).
+Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the int rounds to the nearest float, as in every language with doubles.
 
-**Narrowing requires explicit conversion:** `number -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
+**Narrowing requires explicit conversion:** `float -> int` always requires `int(x)`, which truncates toward zero. No implicit narrowing.
 
 **Integer overflow:** panics by default. Use built-in wrapping methods on `int` for explicit wrapping (see [Built-in Methods](#built-in-methods)).
 
-**Number overflow:** saturates to +/-max value.
+**Float overflow:** producing an infinity is a runtime error (see [Float](#float)).
 
 **Modulo:** follows the sign of the dividend. `7 % 3 == 1`, `-7 % 3 == -1`.
 
@@ -298,12 +292,12 @@ Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds num
 ## Type Rules
 
 - Function signatures are fully typed (parameters + return type)
-- Local variables inferred from initializer: `const x = 42` -> `x` is `int`
+- Local variables inferred from initializer: `let x = 42` -> `x` is `int`
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
 - No interfaces or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
 - `??` supplies the other branch on an optional: `value ?? fallback` (both sides same type)
-- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `let` l-values including chained access (`ships[i].health -= damage`)
+- Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on any variable, including chained access (`ships[i].health -= damage`)
 - Force unwrap: `value!` panics if `None`
 - Sort stability is required -- `array.sort()` uses a stable sort algorithm
 
@@ -348,6 +342,6 @@ Compiler-known methods on primitive and collection types. These are not user-ext
 Insertion-ordered. Deterministic iteration order. Keys restricted to `string` or `int` -- types with stable, deterministic equality and hashing.
 
 ```raido
-const lookup: map<string, int> = {"iron": 26, "gold": 79}
-const entry = lookup.get("iron")  // returns int?
+let lookup: map<string, int> = {"iron": 26, "gold": 79}
+let entry = lookup.get("iron")  // returns int?
 ```
