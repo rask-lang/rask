@@ -3,8 +3,8 @@
 // A `try` whose concrete error leaves into `T or Error` boxes the error on the
 // way out. Each shape here once reached the caller unboxed or not at all:
 //
-// - on a call chain (`try name(n).to_uppercase()`) the box was looked for at
-//   the whole chain's type, a `string`, and lowering found no vtable;
+// - on a call chain (`try name(n).len()`) the box was looked for at the
+//   whole chain's type, a `usize`, and lowering found no vtable;
 // - in a closure that writes `-> T or Error`, the body was checked before the
 //   written return type was read, so nothing knew the error was erased and
 //   the caller read a bare error as a box (segfault), and once it was boxed
@@ -41,9 +41,9 @@ func f1(n: i64) -> i64 or E1 {
     return n
 }
 
-func on_chain(n: i64) -> string or Error {
-    let s = try name(n).to_uppercase()
-    return s
+func on_chain(n: i64) -> usize or Error {
+    let len = try name(n).len()
+    return len
 }
 
 func via_closure(n: i64) -> i64 or Error {
@@ -74,14 +74,6 @@ func decode_it(s: string) -> usize or Error {
     return raw.len()
 }
 
-func failed_s(r: string or Error) -> string {
-    if r is string as _v {
-        return "ok"
-    } else as e {
-        return e.message()
-    }
-}
-
 func failed_i(r: i64 or Error) -> string {
     if r is i64 as _v {
         return "ok"
@@ -99,8 +91,8 @@ func failed_u(r: usize or Error) -> string {
 }
 
 test "a try on a call chain boxes the step's error" {
-    assert failed_s(on_chain(-3)) == "bad -3"
-    assert on_chain(1) is string
+    assert failed_u(on_chain(-3)) == "bad -3"
+    assert (on_chain(1) catch _ => 0) == 2
 }
 
 test "a closure's written return type erases the error its body propagates" {
