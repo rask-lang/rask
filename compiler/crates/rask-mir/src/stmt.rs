@@ -160,6 +160,9 @@ pub enum MirStmtKind {
         /// runtime, which reads it back on release.
         concrete_align: u32,
         vtable_name: String,
+        /// The symbol in each vtable slot, in the interface's method order,
+        /// as monomorphization resolved them. Empty where it had no record.
+        method_symbols: Vec<String>,
     },
     /// Call a method through an interface object's vtable.
     InterfaceCall {

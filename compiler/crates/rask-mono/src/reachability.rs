@@ -170,9 +170,8 @@ pub struct Monomorphizer<'a> {
     /// parameter, so a body only exists per instantiation — see the widening
     /// in `visit_expr`.
     bounded_generic_owners: HashSet<String>,
-    /// (instance layout, method) → the symbol its vtable slot holds, for the
-    /// instances `mark_boxed_instance_methods` queued.
-    pub vtable_symbols: HashMap<(String, String), String>,
+    /// (boxed type, interface) → each vtable slot's symbol (`mark_boxed_methods`).
+    pub boxed_methods: HashMap<(Type, String), Vec<String>>,
 }
 
 /// The generic type a method is declared on.
@@ -505,7 +504,7 @@ impl<'a> Monomorphizer<'a> {
             decls,
             method_owners,
             bounded_generic_owners,
-            vtable_symbols: HashMap::new(),
+            boxed_methods: HashMap::new(),
         }
     }
 
@@ -626,39 +625,49 @@ impl<'a> Monomorphizer<'a> {
     fn mark_boxed_methods(&mut self, id: NodeId, interface_name: &str) {
         let Some(typed) = self.typed else { return };
         let Some(ty) = self.node_type(id) else { return };
+        let key = (ty.clone(), interface_name.to_string());
+        if self.boxed_methods.contains_key(&key) {
+            return;
+        }
         let Some(methods) = self.interface_methods.get(interface_name).cloned() else { return };
+        let mut slots = Vec::with_capacity(methods.len());
         for method in methods {
-            let Some(decl) = typed.types.method_body(&ty, &method, None) else { continue };
-            let Some(qualified) = self.symbol_of_decl.get(&decl).cloned() else { continue };
-            let Type::Generic { base, args } = &ty else {
-                self.enqueue(qualified, Vec::new());
+            let Some(qualified) = typed
+                .types
+                .method_body(&ty, &method, None)
+                .and_then(|decl| self.symbol_of_decl.get(&decl).cloned())
+            else {
+                // Nothing to point the slot at; codegen reports it by name.
+                slots.push(String::new());
                 continue;
             };
-            let name = typed.types.type_name(*base);
-            if !self.bounded_generic_owners.contains(&name) {
-                self.enqueue(qualified, Vec::new());
-                continue;
-            }
-            let Some(owner) = self.method_owners.get(&qualified) else { continue };
-            let bindings: Vec<TypeBinding> = owner
-                .params
-                .iter()
-                .zip(args.iter())
-                .filter_map(|(param, arg)| match arg {
-                    rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
-                    _ => None,
-                })
-                .collect();
-            // The vtable is named after the instance's layout
-            // (`BufferedReader$Buffer`) and the body after the method
-            // (`BufferedReader_read$Buffer`); codegen joins the two here.
-            let arg_tys: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
-            if let Some(layout) = rask_layout::generic_instance_name(&name, &arg_tys, &typed.types.type_name_map()) {
-                let symbol = mangle_name(&qualified, &bindings, Some(&typed.types));
-                self.vtable_symbols.insert((layout, method.clone()), symbol);
-            }
+            let bindings = match &ty {
+                Type::Generic { base, args }
+                    if self.bounded_generic_owners.contains(&typed.types.type_name(*base)) =>
+                {
+                    match self.method_owners.get(&qualified) {
+                        Some(owner) => owner
+                            .params
+                            .iter()
+                            .zip(args.iter())
+                            .filter_map(|(param, arg)| match arg {
+                                rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
+                                _ => None,
+                            })
+                            .collect(),
+                        None => Vec::new(),
+                    }
+                }
+                _ => Vec::new(),
+            };
+            slots.push(if bindings.is_empty() {
+                qualified.clone()
+            } else {
+                mangle_name(&qualified, &bindings, Some(&typed.types))
+            });
             self.enqueue(qualified, bindings);
         }
+        self.boxed_methods.insert(key, slots);
     }
 
     /// A method of a type whose parameter has an interface bound

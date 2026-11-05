@@ -926,6 +926,10 @@ impl<'a> MirLowerer<'a> {
         let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
         let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
         let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
+        let method_symbols = concrete
+            .and_then(|t| self.ctx.boxed_methods.get(&(t.clone(), interface_name.to_string())))
+            .cloned()
+            .unwrap_or_default();
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::InterfaceBox {
             dst: result_local,
@@ -935,6 +939,7 @@ impl<'a> MirLowerer<'a> {
             concrete_size,
             concrete_align,
             vtable_name,
+            method_symbols,
         }));
 
         (MirOperand::Local(result_local), interface_obj_ty)

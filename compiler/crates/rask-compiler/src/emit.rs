@@ -274,16 +274,11 @@ fn referred_to(f: &MirFunction, input: &BackEnd) -> Vec<String> {
             MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => out.push(n.clone()),
             MirStmtKind::ClosureCreate { func_name, .. } => out.push(func_name.clone()),
             MirStmtKind::EnsureHookRegister { thunk, .. } => out.push(thunk.clone()),
-            MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
+            MirStmtKind::InterfaceBox { concrete_type, interface_name, method_symbols, .. } => {
                 let methods = interface_methods
                     .get_or_insert_with(|| rask_check::interface_vtable_methods(&input.typed.types));
-                for method in methods.get(interface_name).into_iter().flatten() {
-                    out.push(
-                        input.mono.vtable_symbols
-                            .get(&(concrete_type.clone(), method.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{concrete_type}_{method}")),
-                    );
+                for (i, method) in methods.get(interface_name).into_iter().flatten().enumerate() {
+                    out.push(vtable_slot_symbol(method_symbols, i, concrete_type, method));
                 }
             }
             _ => {}
@@ -559,6 +554,17 @@ fn extern_func_names(decls: &[Decl]) -> HashSet<String> {
 }
 
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
+/// The symbol a vtable slot holds: the one monomorphization resolved for the
+/// box site. Workaround (#1770): a box an erased error return makes
+/// (`T or Error`) has no record, because reachability can't see which error
+/// types those are, so its slot is still spelled from the layout's name.
+fn vtable_slot_symbol(method_symbols: &[String], slot: usize, concrete_type: &str, method: &str) -> String {
+    match method_symbols.get(slot) {
+        Some(symbol) if !symbol.is_empty() => symbol.clone(),
+        _ => format!("{concrete_type}_{method}"),
+    }
+}
+
 fn collect_vtables(
     functions: &[MirFunction],
     interface_methods: &HashMap<String, Vec<String>>,
@@ -570,7 +576,7 @@ fn collect_vtables(
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
                 let rask_mir::MirStmtKind::InterfaceBox {
-                    concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
+                    concrete_type, interface_name, concrete_size, concrete_align, vtable_name, method_symbols, ..
                 } = &stmt.kind else {
                     continue;
                 };
@@ -581,11 +587,7 @@ fn collect_vtables(
                 let vt_methods = methods.iter().enumerate()
                     .map(|(i, method_name)| rask_codegen::vtable::VTableMethod {
                         name: method_name.clone(),
-                        func_name: mono
-                            .vtable_symbols
-                            .get(&(concrete_type.clone(), method_name.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{}_{}", concrete_type, method_name)),
+                        func_name: vtable_slot_symbol(method_symbols, i, concrete_type, method_name),
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();

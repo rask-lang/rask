@@ -54,11 +54,9 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
-    /// (instance layout, method) → the symbol in that vtable slot, for a
-    /// generic instance boxed as `any I`. `BufferedReader$Buffer` and `read`
-    /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
-    /// from each other.
-    pub vtable_symbols: HashMap<(String, String), String>,
+    /// (boxed type, interface) → the symbol in each of the vtable's slots, in
+    /// the interface's method order: what a box site of that type runs.
+    pub boxed_methods: HashMap<(Type, String), Vec<String>>,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -1018,7 +1016,7 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
-        vtable_symbols: mono.vtable_symbols,
+        boxed_methods: mono.boxed_methods,
     })
 }
 

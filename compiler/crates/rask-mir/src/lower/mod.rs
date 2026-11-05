@@ -392,6 +392,7 @@ mod empty {
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
+    empty_of!(boxed_methods, HashMap<(rask_types::Type, String), Vec<String>>);
 }
 
 impl<'a> MirContext<'a> {
@@ -460,6 +461,7 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            boxed_methods: empty::boxed_methods(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -526,6 +528,7 @@ impl<'a> MirContext<'a> {
         self.map_key_fns = CallMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
+        self.boxed_methods = &mono.boxed_methods;
         self
     }
 
@@ -650,6 +653,9 @@ pub struct MirContext<'a> {
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: &'a HashMap<String, String>,
+    /// (boxed type, interface) → each vtable slot's symbol, from
+    /// monomorphization.
+    pub boxed_methods: &'a HashMap<(rask_types::Type, String), Vec<String>>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -920,6 +926,7 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            boxed_methods: empty::boxed_methods(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
             instance_args: None,
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
@@ -8075,6 +8082,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            boxed_methods: empty::boxed_methods(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8171,6 +8179,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            boxed_methods: empty::boxed_methods(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8274,6 +8283,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            boxed_methods: empty::boxed_methods(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
