@@ -40,17 +40,20 @@ impl<'a> Instance<'a> {
     /// `ty` at this instance, or `None` if it names something the instance
     /// doesn't bind. Projections first, while `T.Out` still names `T`.
     pub fn ty(&self, ty: &Type) -> Option<Type> {
-        let projected = if self.projections.is_empty() {
-            std::borrow::Cow::Borrowed(ty)
-        } else {
-            let keyed: HashMap<String, Type> = self
-                .projections
-                .iter()
-                .map(|((param, assoc), t)| (format!("{param}.{assoc}"), t.clone()))
-                .collect();
-            std::borrow::Cow::Owned(rask_check::substitute_type(ty, &keyed))
-        };
-        concretize(&projected, &self.args(), &self.bindings())
+        concretize(&self.project(ty), &self.args(), &self.bindings())
+    }
+
+    /// `ty` with each `T.Out` this instance knows put in.
+    fn project<'t>(&self, ty: &'t Type) -> std::borrow::Cow<'t, Type> {
+        if self.projections.is_empty() {
+            return std::borrow::Cow::Borrowed(ty);
+        }
+        let keyed: HashMap<String, Type> = self
+            .projections
+            .iter()
+            .map(|((param, assoc), t)| (format!("{param}.{assoc}"), t.clone()))
+            .collect();
+        std::borrow::Cow::Owned(rask_check::substitute_type(ty, &keyed))
     }
 
     /// The type the checker recorded for a node of the body, at this instance.
@@ -64,7 +67,7 @@ impl<'a> Instance<'a> {
         let (bindings, type_args) = (self.bindings(), self.args());
         let out: Vec<TypeBinding> = args
             .iter()
-            .map(|b| TypeBinding::new(b.param.clone(), substitute_param(&b.ty, &bindings, &type_args)))
+            .map(|b| TypeBinding::new(b.param.clone(), substitute_param(&self.project(&b.ty), &bindings, &type_args)))
             .collect();
         (!out.is_empty()).then_some(out)
     }
