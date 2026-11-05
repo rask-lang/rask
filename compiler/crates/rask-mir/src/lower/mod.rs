@@ -392,7 +392,7 @@ mod empty {
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
-    empty_of!(boxed_methods, HashMap<(rask_types::Type, String), Vec<String>>);
+    empty_of!(vtables, HashMap<(rask_types::Type, String), rask_mono::VTable>);
 }
 
 impl<'a> MirContext<'a> {
@@ -441,6 +441,7 @@ impl<'a> MirContext<'a> {
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
+            erased_try_errors: &typed.erased_try_errors,
             arm_widenings: &typed.arm_widenings,
             c_fn_pointers: &typed.c_fn_pointers,
             c_contexts: &typed.c_contexts,
@@ -461,7 +462,7 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
-            boxed_methods: empty::boxed_methods(),
+            vtables: empty::vtables(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -528,7 +529,7 @@ impl<'a> MirContext<'a> {
         self.map_key_fns = CallMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
-        self.boxed_methods = &mono.boxed_methods;
+        self.vtables = &mono.vtables;
         self
     }
 
@@ -653,9 +654,10 @@ pub struct MirContext<'a> {
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: &'a HashMap<String, String>,
-    /// (boxed type, interface) → each vtable slot's symbol, from
-    /// monomorphization.
-    pub boxed_methods: &'a HashMap<(rask_types::Type, String), Vec<String>>,
+    /// Monomorphization's vtables, by (concrete type, interface).
+    pub vtables: &'a HashMap<(rask_types::Type, String), rask_mono::VTable>,
+    /// See `TypedProgram::erased_try_errors`.
+    pub erased_try_errors: &'a HashMap<NodeId, String>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -909,6 +911,7 @@ impl<'a> MirContext<'a> {
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
+            erased_try_errors: &EMPTY_COERCIONS,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &EMPTY_ESCAPING,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -926,7 +929,7 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
-            boxed_methods: empty::boxed_methods(),
+            vtables: empty::vtables(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
             instance_args: None,
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
@@ -8065,6 +8068,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8082,7 +8086,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
-            boxed_methods: empty::boxed_methods(),
+            vtables: empty::vtables(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8162,6 +8166,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8179,7 +8184,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
-            boxed_methods: empty::boxed_methods(),
+            vtables: empty::vtables(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8266,6 +8271,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: &empty_coercions,
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8283,7 +8289,7 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
-            boxed_methods: empty::boxed_methods(),
+            vtables: empty::vtables(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),

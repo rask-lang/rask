@@ -90,9 +90,6 @@ pub struct Monomorphizer<'a> {
     /// Each function declaration's symbol, by the declaration's id.
     symbol_of_decl: HashMap<NodeId, String>,
     bound_symbols: HashMap<NodeId, String>,
-    /// Reverse lookup: bare method name → list of qualified names.
-    /// Used to resolve instance method calls where receiver type is unknown.
-    method_by_bare_name: HashMap<String, Vec<String>>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<TypeBinding>>,
     /// Type checker output, when monomorphizing a real program. The standalone
@@ -170,15 +167,13 @@ pub struct Monomorphizer<'a> {
     /// parameter, so a body only exists per instantiation — see the widening
     /// in `visit_expr`.
     bounded_generic_owners: HashSet<String>,
-    /// (boxed type, interface) → each vtable slot's symbol (`mark_boxed_methods`).
-    pub boxed_methods: HashMap<(Type, String), Vec<String>>,
+    /// Every vtable a box site needs (`mark_boxed`).
+    pub vtables: HashMap<(Type, String), crate::VTable>,
 }
 
 /// The generic type a method is declared on.
 #[derive(Clone)]
 struct MethodOwner {
-    /// Bare name — `One` out of `One<A>`.
-    base: String,
     /// Type parameter names in declaration order, bounds stripped. A tuple
     /// argument contributes each of its members, so `Sequence<(K, V)>` says
     /// `["K", "V"]` — the two names a call binds — rather than one name that
@@ -203,10 +198,10 @@ fn header_owner(target: &TypeExpr) -> Option<MethodOwner> {
             other => params.push(other.to_string()),
         }
     }
-    if params.is_empty() {
+    if params.is_empty() || target.name().is_none() {
         return None;
     }
-    Some(MethodOwner { base: target.name()?, params, template: target.clone() })
+    Some(MethodOwner { params, template: target.clone() })
 }
 
 /// Methods declared directly by a type declaration or an `extend` block.
@@ -256,13 +251,12 @@ fn operator_filed_name(decl: &Decl, method: &FnDecl, conformance_interfaces: &Ha
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
-/// qualified name (Type_method). Also records the bare→qualified mapping.
+/// qualified name (Type_method).
 fn register_method(
     target: &TypeExpr,
     method: &FnDecl,
     parent_decl: &Decl,
     method_table: &mut HashMap<String, Decl>,
-    method_by_bare_name: &mut HashMap<String, Vec<String>>,
     method_owners: &mut HashMap<String, MethodOwner>,
     owner_params: &HashMap<String, Vec<String>>,
 ) {
@@ -280,7 +274,6 @@ fn register_method(
             .get(&type_name)
             .filter(|params| !params.is_empty())
             .map(|params| MethodOwner {
-                base: type_name.clone(),
                 template: TypeExpr::generic(
                     type_name.clone(),
                     params.iter().map(TypeExpr::named).collect(),
@@ -300,11 +293,7 @@ fn register_method(
         kind: DeclKind::Fn(method.clone()),
         span: parent_decl.span,
     };
-    method_table.insert(qualified.clone(), wrapped);
-    method_by_bare_name
-        .entry(method.name.clone())
-        .or_default()
-        .push(qualified);
+    method_table.insert(qualified, wrapped);
 }
 
 impl<'a> Monomorphizer<'a> {
@@ -318,7 +307,6 @@ impl<'a> Monomorphizer<'a> {
     ) -> Self {
         let mut fn_table = HashMap::new();
         let mut method_table = HashMap::new();
-        let mut method_by_bare_name: HashMap<String, Vec<String>> = HashMap::new();
         let mut method_owners: HashMap<String, MethodOwner> = HashMap::new();
 
         // Type parameters per declared type, by bare name — PC1, so a struct
@@ -352,23 +340,6 @@ impl<'a> Monomorphizer<'a> {
             })
             .collect();
 
-        // Every type a method could belong to. `Type_method`-shaped free
-        // functions are registered as instance methods below, and without this
-        // the "type" half was whatever came before the first underscore —
-        // making `print_fields` a `fields` method (see below).
-        let mut declared_types: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for decl in decls {
-            let name = match &decl.kind {
-                DeclKind::Struct(s) => s.name.clone(),
-                DeclKind::Enum(e) => e.name.clone(),
-                DeclKind::Impl(i) => match i.target_ty.name() {
-                    Some(n) => n,
-                    None => continue,
-                },
-                _ => continue,
-            };
-            declared_types.insert(name);
-        }
 
         for decl in decls {
             match &decl.kind {
@@ -380,35 +351,12 @@ impl<'a> Monomorphizer<'a> {
                     if base != f.name {
                         fn_table.insert(base.to_string(), decl);
                     }
-                    // Free functions with Type_method naming (e.g. compiled stdlib
-                    // wrappers) should also be discoverable as instance methods.
-                    //
-                    // Only when the half before the underscore is a type that
-                    // exists. Any underscore used to do, so an ordinary function
-                    // named `print_fields` was filed as a `fields` method of a
-                    // type called `print`. A call to `something.fields()` whose
-                    // receiver this pass couldn't pin down then swept it up along
-                    // with the real ones — and handed it that call's type
-                    // arguments. `reflect.fields<T>()` inside an uninstantiated
-                    // generic template did exactly that, so `print_fields` got
-                    // queued with a `T` that was still an open variable and MIR
-                    // was asked to lower `print_fields$_` (#931).
-                    if let Some(underscore_pos) = f.name.find('_') {
-                        let (owner, bare_method) =
-                            (&f.name[..underscore_pos], &f.name[underscore_pos + 1..]);
-                        if !bare_method.is_empty() && declared_types.contains(owner) {
-                            method_by_bare_name
-                                .entry(bare_method.to_string())
-                                .or_default()
-                                .push(f.name.clone());
-                        }
-                    }
                 }
                 DeclKind::Struct(s) => {
                     for method in &s.methods {
                         register_method(
                             &TypeExpr::named(s.name.as_str()), method, decl,
-                            &mut method_table, &mut method_by_bare_name,
+                            &mut method_table,
                             &mut method_owners, &owner_params,
                         );
                     }
@@ -417,7 +365,7 @@ impl<'a> Monomorphizer<'a> {
                     for method in &e.methods {
                         register_method(
                             &TypeExpr::named(e.name.as_str()), method, decl,
-                            &mut method_table, &mut method_by_bare_name,
+                            &mut method_table,
                             &mut method_owners, &owner_params,
                         );
                     }
@@ -439,7 +387,7 @@ impl<'a> Monomorphizer<'a> {
                         };
                         register_method(
                             &i.target_ty, method, decl,
-                            &mut method_table, &mut method_by_bare_name,
+                            &mut method_table,
                             &mut method_owners, &owner_params,
                         );
                     }
@@ -477,7 +425,6 @@ impl<'a> Monomorphizer<'a> {
         Self {
             fn_table,
             method_table,
-            method_by_bare_name,
             call_type_args,
             typed: None,
             package_modules: std::collections::HashSet::new(),
@@ -504,7 +451,7 @@ impl<'a> Monomorphizer<'a> {
             decls,
             method_owners,
             bounded_generic_owners,
-            boxed_methods: HashMap::new(),
+            vtables: HashMap::new(),
         }
     }
 
@@ -578,15 +525,6 @@ impl<'a> Monomorphizer<'a> {
                         kind: DeclKind::Fn(with_self_type(method, &self_owner)),
                         span: decl.span,
                     };
-                    if suffix.is_some() {
-                        // Boxing as `any Interface` enqueues by bare method
-                        // name, and the disambiguated symbol is the only
-                        // one either body now answers to.
-                        self.method_by_bare_name
-                            .entry(method.name.clone())
-                            .or_default()
-                            .push(qualified.clone());
-                    }
                     self.bound_symbols.insert(method.id, qualified.clone());
                     self.method_table.insert(qualified, body);
                 }
@@ -599,49 +537,31 @@ impl<'a> Monomorphizer<'a> {
         self.interface_coercions = coercions.clone();
     }
 
-    /// Boxing a value as `any Interface` needs every object-compatible method of
-    /// the concrete type in the vtable. The receiver type isn't resolved here,
-    /// so enqueue every implementation of each compatible method name — the
-    /// same conservative widening used for ordinary instance calls.
-    fn mark_interface_object_methods(&mut self, interface_name: &str) {
-        let base = interface_name;
-        let Some(methods) = self.interface_methods.get(base).cloned() else { return };
-        for method in methods {
-            if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
-                for qname in qualified_names {
-                    if !self.needs_instantiation(&qname) {
-                        self.enqueue(qname, Vec::new());
-                    }
-                }
-            }
-        }
-    }
-
-    /// The vtable methods of the value boxed at `id`: the boxed type's own
-    /// body for each method the interface's vtable holds. An instance of a
+    /// The vtable boxing `ty` as `any interface_name` points at: the boxed
+    /// type's own body for each of the interface's methods. An instance of a
     /// type that `needs_instantiation` gets the instance's body:
     /// `io.copy(reader, …)` with a `BufferedReader<Buffer>` needs
     /// `BufferedReader_read$Buffer`.
-    fn mark_boxed_methods(&mut self, id: NodeId, interface_name: &str) {
+    fn mark_boxed(&mut self, ty: Type, interface_name: &str) {
         let Some(typed) = self.typed else { return };
-        let Some(ty) = self.node_type(id) else { return };
-        let key = (ty.clone(), interface_name.to_string());
-        if self.boxed_methods.contains_key(&key) {
+        let key = (ty, interface_name.to_string());
+        if self.vtables.contains_key(&key) {
             return;
         }
+        let ty = &key.0;
         let Some(methods) = self.interface_methods.get(interface_name).cloned() else { return };
         let mut slots = Vec::with_capacity(methods.len());
         for method in methods {
+            // No body is left empty, and codegen reports the slot by name.
             let Some(qualified) = typed
                 .types
-                .method_body(&ty, &method, None)
+                .method_body(ty, &method, None)
                 .and_then(|decl| self.symbol_of_decl.get(&decl).cloned())
             else {
-                // Nothing to point the slot at; codegen reports it by name.
-                slots.push(String::new());
+                slots.push(crate::VTableSlot { method, symbol: String::new() });
                 continue;
             };
-            let bindings = match &ty {
+            let bindings: Vec<TypeBinding> = match ty {
                 Type::Generic { base, args }
                     if self.bounded_generic_owners.contains(&typed.types.type_name(*base)) =>
                 {
@@ -660,26 +580,25 @@ impl<'a> Monomorphizer<'a> {
                 }
                 _ => Vec::new(),
             };
-            slots.push(if bindings.is_empty() {
+            let symbol = if bindings.is_empty() {
                 qualified.clone()
             } else {
                 mangle_name(&qualified, &bindings, Some(&typed.types))
-            });
+            };
+            slots.push(crate::VTableSlot { method, symbol });
             self.enqueue(qualified, bindings);
         }
-        self.boxed_methods.insert(key, slots);
+        let name = format!(".vtable.{}.{}", self.vtables.len(), interface_name);
+        self.vtables.insert(key, crate::VTable { name, slots });
     }
 
-    /// A method of a type whose parameter has an interface bound
-    /// (`BufferedReader<R: Reader>`). Its body calls through `R`, so there is
-    /// no template to lower on its own: an instance is reached through a call
-    /// the checker pinned to it, which binds `R`. A widened call has nothing
-    /// to bind it with.
-    fn needs_instantiation(&self, qualified: &str) -> bool {
-        self.method_owners
-            .get(qualified)
-            .is_some_and(|o| self.bounded_generic_owners.contains(&o.base))
+    /// The vtable for the value at `id`, boxed as `any interface_name`.
+    fn mark_boxed_value(&mut self, id: NodeId, interface_name: &str) {
+        if let Some(ty) = self.node_type(id) {
+            self.mark_boxed(ty, interface_name);
+        }
     }
+
 
     /// Set the external package module names for cross-package call discovery.
     pub fn set_package_modules(&mut self, modules: std::collections::HashSet<String>) {
@@ -788,25 +707,6 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    /// ER32: a function whose error side is `any Interface` boxes every error that
-    /// leaves it, and the box needs a vtable whether or not anyone calls
-    /// through it.
-    ///
-    /// Nothing in the call graph says which concrete errors those are. The
-    /// program need never name the type: `func main() -> void or Error` with a
-    /// `try io.read_line()` in it boxes an `IoError` that appears nowhere in
-    /// the source, so `IoError_message` was never queued and codegen stopped at
-    /// "vtable method IoError.message" (#1107). Cast sites have had the same
-    /// answer since TR5 — mark every method of that name — so this uses it.
-    fn mark_erased_error_methods(&mut self, f: &rask_ast::decl::FnDecl) {
-        let Some(TypeExpr::Result { err, .. }) = &f.ret_ty else { return };
-        let interface_name = match err.as_ref() {
-            TypeExpr::Any(t) => t.to_string(),
-            e if e.is_name("Error") => "Error".to_string(),
-            _ => return,
-        };
-        self.mark_interface_object_methods(&interface_name);
-    }
 
     /// Where a call's instance goes: the instance being walked has its own,
     /// since every instance shares the body's node ids.
@@ -859,7 +759,6 @@ impl<'a> Monomorphizer<'a> {
 
             // Walk the concrete body to discover more calls (M4: transitive)
             if let DeclKind::Fn(fn_decl) = &concrete.kind {
-                self.mark_erased_error_methods(fn_decl);
                 self.in_test_body = fn_decl.attrs.iter().any(|a| a.is("test_body"));
                 for stmt in &fn_decl.body {
                     self.visit_stmt(stmt);
@@ -1546,7 +1445,7 @@ impl<'a> Monomorphizer<'a> {
         // TR5: implicit coercion to `any Interface` (function arg, field, element)
         // with no written-out cast — the checker flags these by NodeId.
         if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
-            self.mark_boxed_methods(expr.id, &interface_name);
+            self.mark_boxed_value(expr.id, &interface_name);
         }
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
@@ -1760,6 +1659,14 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
                 }
+                // ER32: the error leaves boxed as the function's `any I`. It
+                // is the error of the step the `try` sits on (ER16a).
+                if let Some(interface_name) = self.typed.and_then(|t| t.erased_try_errors.get(&expr.id)).cloned() {
+                    let step = self.typed.and_then(|t| t.try_chain_placement.get(&expr.id)).copied().unwrap_or(e.id);
+                    if let Some(Type::Result { err, .. }) = self.node_type(step) {
+                        self.mark_boxed(*err, &interface_name);
+                    }
+                }
                 self.visit_expr(e)
             }
             ExprKind::Take { place: e } => self.visit_expr(e),
@@ -1847,7 +1754,7 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
                 if let TypeExpr::Any(interface) = ty {
-                    self.mark_boxed_methods(inner.id, &interface.to_string());
+                    self.mark_boxed_value(inner.id, &interface.to_string());
                 }
                 self.visit_expr(inner);
             }

@@ -5263,6 +5263,13 @@ impl TypeChecker {
             let inner_err = self.fmt_ty(&self.ctx.apply(src));
             let outer_err = self.fmt_ty(&self.ctx.apply(target));
             self.errors.push(TypeError::TryErrorMismatch { inner_err, outer_err, span });
+            return;
+        }
+        // ER32: a concrete error leaving into `any I` is boxed there.
+        if let Type::InterfaceObject { interface_name, decl } = self.ctx.apply(target) {
+            if !matches!(self.ctx.apply(src), Type::InterfaceObject { .. }) {
+                self.erased_try_errors.insert(node, self.types.interface_symbol(&interface_name, decl));
+            }
         }
     }
 

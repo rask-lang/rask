@@ -381,6 +381,8 @@ pub struct TypeChecker {
     /// interface's symbol (`TypeTable::interface_symbol`).
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
+    /// See `TypedProgram::erased_try_errors`.
+    pub(super) erased_try_errors: HashMap<NodeId, String>,
     /// See `TypedProgram::arm_widenings`.
     pub(super) arm_widenings: HashMap<NodeId, Type>,
     /// CB1/CB2: function values coerced to a C function pointer, and where.
@@ -718,6 +720,7 @@ impl TypeChecker {
             in_assign_target: false,
             in_stmt_expr: false,
             interface_coercions: HashMap::new(),
+            erased_try_errors: HashMap::new(),
             arm_widenings: HashMap::new(),
             c_fn_pointers: HashMap::new(),
             extern_c_fns: std::collections::HashSet::new(),
@@ -1239,6 +1242,7 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
+            erased_try_errors: std::mem::take(&mut self.erased_try_errors),
             arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),

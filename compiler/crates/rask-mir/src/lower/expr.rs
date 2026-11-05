@@ -909,13 +909,22 @@ impl<'a> MirLowerer<'a> {
 
     /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
     /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
+    /// The vtable is the one monomorphization made for this type and interface.
     pub(super) fn emit_interface_box(
         &mut self,
         val: MirOperand,
         concrete_mir_ty: &MirType,
         concrete: Option<&rask_types::Type>,
         interface_name: &str,
-    ) -> (MirOperand, MirType) {
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        let vtable_name = concrete
+            .and_then(|t| self.ctx.vtables.get(&(t.clone(), interface_name.to_string())))
+            .map(|vt| vt.name.clone())
+            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
+                "no vtable was made for boxing `{}` as `any {}`",
+                concrete.map(|t| self.ctx.type_defs.resolve_type_names(t).to_string()).unwrap_or_else(|| "?".into()),
+                interface_name,
+            )))?;
         // A layout names itself; a buffer doesn't say whether it's a string or
         // bytes, so that name comes from the checker.
         let concrete_type = self.mir_type_name(concrete_mir_ty)
@@ -923,13 +932,8 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| "unknown".to_string());
         let concrete_size = (concrete_mir_ty.size() as i64) as u32;
         let concrete_align = concrete_mir_ty.align();
-        let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
         let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
         let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
-        let method_symbols = concrete
-            .and_then(|t| self.ctx.boxed_methods.get(&(t.clone(), interface_name.to_string())))
-            .cloned()
-            .unwrap_or_default();
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::InterfaceBox {
             dst: result_local,
@@ -939,10 +943,9 @@ impl<'a> MirLowerer<'a> {
             concrete_size,
             concrete_align,
             vtable_name,
-            method_symbols,
         }));
 
-        (MirOperand::Local(result_local), interface_obj_ty)
+        Ok((MirOperand::Local(result_local), interface_obj_ty))
     }
 
     /// Wrap a lowered closure into the layers its parameter declares.
@@ -1536,7 +1539,7 @@ impl<'a> MirLowerer<'a> {
         if !matches!(ty, MirType::InterfaceObject { .. }) {
             if let Some(interface_name) = self.ctx.interface_coercions.get(&expr.id).cloned() {
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return Ok(self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name));
+                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name);
             }
         }
         Ok((op, ty))
@@ -2149,7 +2152,7 @@ impl<'a> MirLowerer<'a> {
                 let interface_name = interface.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return Ok(self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name));
+                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name);
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;

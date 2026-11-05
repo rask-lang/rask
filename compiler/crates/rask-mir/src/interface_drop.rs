@@ -788,7 +788,6 @@ mod tests {
             concrete_size: 32,
             concrete_align: 8,
             vtable_name: ".vtable.Loud__Speaker".into(),
-            method_symbols: Vec::new(),
         })
     }
 

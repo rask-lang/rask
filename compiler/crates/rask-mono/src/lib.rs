@@ -36,6 +36,21 @@ pub struct MapKeyFns {
     pub eq: String,
 }
 
+/// What boxing one concrete type as `any I` points at.
+#[derive(Debug, Clone)]
+pub struct VTable {
+    pub name: String,
+    /// One per interface method, in the interface's order.
+    pub slots: Vec<VTableSlot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VTableSlot {
+    pub method: String,
+    /// The body the slot calls.
+    pub symbol: String,
+}
+
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
@@ -54,9 +69,10 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
-    /// (boxed type, interface) → the symbol in each of the vtable's slots, in
-    /// the interface's method order: what a box site of that type runs.
-    pub boxed_methods: HashMap<(Type, String), Vec<String>>,
+    /// Every vtable the program boxes into, by (concrete type, interface).
+    /// The one place a vtable's name and slots are decided; lowering points a
+    /// box at an entry and codegen builds the data from it.
+    pub vtables: HashMap<(Type, String), VTable>,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -1016,7 +1032,7 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
-        boxed_methods: mono.boxed_methods,
+        vtables: mono.vtables,
     })
 }
 
@@ -1224,6 +1240,7 @@ mod tests {
             call_targets: std::collections::HashMap::new(),
             operator_targets: std::collections::HashMap::new(),
             interface_coercions: std::collections::HashMap::new(),
+            erased_try_errors: HashMap::new(),
             arm_widenings: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),
             conformance_disambiguation: std::collections::HashMap::new(),

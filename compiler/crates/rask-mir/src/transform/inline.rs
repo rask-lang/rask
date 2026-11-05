@@ -807,7 +807,6 @@ fn remap_stmt(
             concrete_size,
             concrete_align,
             vtable_name,
-            method_symbols,
         } => MirStmtKind::InterfaceBox {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             value: remap_operand(value, local_map),
@@ -816,7 +815,6 @@ fn remap_stmt(
             concrete_size: *concrete_size,
             concrete_align: *concrete_align,
             vtable_name: vtable_name.clone(),
-            method_symbols: method_symbols.clone(),
         },
         MirStmtKind::InterfaceCall {
             dst,
