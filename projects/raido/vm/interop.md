@@ -66,7 +66,11 @@ extend CompileOpts {
 public struct CompileError {
     public file: string
     public line: i64
-    public message: string
+    public text: string
+}
+
+extend CompileError {
+    public func message(self) -> string {}
 }
 
 extend Api {
@@ -88,7 +92,11 @@ public struct Export {
 }
 
 public struct DecodeError {
-    public message: string
+    public text: string
+}
+
+extend DecodeError {
+    public func message(self) -> string {}
 }
 
 // --- Bindings ---
@@ -105,7 +113,11 @@ extend Bindings {
 }
 
 public struct HostFailure {
-    public message: string
+    public text: string
+}
+
+extend HostFailure {
+    public func message(self) -> string {}
 }
 
 // --- Values ---
@@ -157,7 +169,7 @@ extend Vm {
     public func fuel(self) -> i64 {}
     public func set_fuel(mutate self, fuel: i64) {}
 
-    public func call(mutate self, export: string, args: Vec<Value>) -> Outcome or ScriptError {}
+    public func call(mutate self, name: string, args: Vec<Value>) -> Outcome or ScriptError {}
     public func resume(mutate self, task: Root, value: Value) -> Outcome or ScriptError {}
 
     // Queues, drained in order. Each fills only when a run commits.
@@ -184,13 +196,21 @@ extend Vm {
 }
 
 public struct SnapshotError {
-    public message: string
+    public text: string
+}
+
+extend SnapshotError {
+    public func message(self) -> string {}
 }
 
 public struct ScriptError {
     public kind: ErrorKind
-    public message: string
+    public text: string
     public trace: Vec<TraceFrame>
+}
+
+extend ScriptError {
+    public func message(self) -> string {}
 }
 
 public enum ErrorKind {
@@ -222,7 +242,7 @@ public struct TraceFrame {
 }
 ```
 
-Each error type has `func message(self) -> string`. `ErrorKind` and the trace are part of the determinism contract ([architecture.md](architecture.md#formal-contract)); message text isn't.
+`ErrorKind` and the trace are part of the determinism contract ([architecture.md](architecture.md#formal-contract)); message text isn't.
 
 Anything not listed here is the implementation's own business. A host that sticks to this contract can swap one implementation for another.
 

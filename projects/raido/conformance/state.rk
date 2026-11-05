@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Module state, rollback, deferred calls, closures and snapshots, against
+// vm/interop.md (Calls Are Transactions) and vm/architecture.md
+// (Serialization).
+
+import raido
+
+const STATE: string = """
+struct Box {{ v: int }}
+
+let counter = 0
+let log: array<int> = []
+let table: map<int, int> = {{}}
+let box = Box {{ v: 0 }}
+
+func state() -> string {{
+    return "{{counter}} {{log}} {{table}} {{box.v}}"
+}}
+
+func apply(csv: string, fail: bool) {{
+    for part in csv.split(",") {{
+        let x = int(part)!
+        let op = x % 4
+        if op == 0 {{
+            counter += 1
+        }} else if op == 1 || op == -1 {{
+            log.push(x)
+        }} else if op == 2 || op == -2 {{
+            table[x] = counter
+        }} else {{
+            box.v = x
+            if len(log) > 0 {{ log.remove(0) }}
+        }}
+        note(x)
+    }}
+    if fail {{ error("stop") }}
+}}
+"""
+
+func apply_args(mutate vm: raido.Vm, v: Vec<i64>, fail: bool) -> Vec<raido.Value> {
+    let csv = vm.new_string(joined(v)) catch e => panic("new_string: {e.message()}")
+    return Vec<raido.Value>.from([csv, raido.Value.from_bool(fail)])
+}
+
+// A call that fails changes no module state and hands the host no deferred
+// call; one that succeeds hands over every deferred call, in call order.
+claim a_call_commits_whole_or_not_at_all(warmup: Vec<i64>, v: Vec<i64>, fail: bool) {
+    if v.len() == 0 || warmup.len() == 0 {
+        return
+    }
+    mut vm = vm_with(STATE)
+    let w = apply_args(mutate vm, warmup, false)
+    call_text(mutate vm, "apply", w)
+    vm.deferred()
+    let before = call_text(mutate vm, "state", Vec.new())
+    let args = apply_args(mutate vm, v, fail)
+    let result = call_text(mutate vm, "apply", args)
+    let notes = vm.deferred()
+    let after = call_text(mutate vm, "state", Vec.new())
+    if fail {
+        assert result == "error:ScriptError"
+        assert after == before
+        assert notes.len() == 0
+    } else {
+        assert result == "None"
+        assert notes.len() == v.len()
+        mut i: i64 = 0
+        for c in notes {
+            assert c.name == "note"
+            let got = c.args[0].as_int() ?? panic("note's argument isn't an int")
+            assert got == v[i]
+            i = i + 1
+        }
+    }
+}
+
+// A snapshot restores to a VM that writes the same snapshot and answers the
+// same from then on.
+claim a_restored_vm_carries_on_the_same(first: Vec<i64>, next: Vec<i64>) {
+    if first.len() == 0 || next.len() == 0 {
+        return
+    }
+    mut a = vm_with(STATE)
+    let f = apply_args(mutate a, first, false)
+    call_text(mutate a, "apply", f)
+    a.deferred()
+    let saved = a.snapshot()
+    let chunks = Vec<raido.Chunk>.from([compiled(STATE)])
+    mut b = raido.Vm.restore(saved.clone(), chunks, raido.Bindings.new(test_api())) catch e => panic("restore: {e.message()}")
+    assert same_bytes(b.snapshot(), saved)
+    assert call_text(mutate b, "state", Vec.new()) == call_text(mutate a, "state", Vec.new())
+    let na = apply_args(mutate a, next.clone(), false)
+    let nb = apply_args(mutate b, next, false)
+    call_text(mutate a, "apply", na)
+    call_text(mutate b, "apply", nb)
+    assert call_text(mutate b, "state", Vec.new()) == call_text(mutate a, "state", Vec.new())
+}
+
+func same_bytes(x: Vec<u8>, y: Vec<u8>) -> bool {
+    if x.len() != y.len() {
+        return false
+    }
+    mut i: i64 = 0
+    while i < x.len().wrap<i64>() {
+        if x[i] != y[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+const CLOSURES: string = """
+let counter = make_counter()
+
+func make_counter() -> func() -> int {{
+    let c = 0
+    return || -> int {{
+        c += 1
+        return c
+    }}
+}}
+
+func bump() -> int {{ return counter() }}
+
+func each_own(n: int) -> array<int> {{
+    let fs: array<func() -> int> = []
+    for i in 0..n {{ fs.push(|| i) }}
+    let out: array<int> = []
+    for f in fs {{ out.push(f()) }}
+    return out
+}}
+"""
+
+// A closure shares the variable it captured, across calls, and each loop
+// iteration has its own variable.
+claim closures_share_what_they_capture(n: u8) {
+    mut vm = vm_with(CLOSURES)
+    let count = n as i64
+    mut last = "none yet"
+    for _ in 0..count {
+        last = call_text(mutate vm, "bump", Vec.new())
+    }
+    if count > 0 {
+        assert last == "{count}"
+    }
+    mut want: Vec<i64> = Vec.new()
+    for i in 0..count {
+        want.push(i)
+    }
+    assert call_text(mutate vm, "each_own", one_int(count)) == shown(want)
+}
+
+const MEMORY: string = """
+func churn(rounds: int) -> int {{
+    let kept = 0
+    for i in 0..rounds {{
+        let junk = [i, i, i, i]
+        kept += len(junk)
+    }}
+    return kept
+}}
+"""
+
+// Garbage alone never exhausts memory: whatever the collector does, nothing
+// here is reachable for long, so the limit is never crossed.
+claim garbage_alone_never_exhausts_memory(rounds: u16) {
+    let config = raido.Config(memory_limit: 64_000, fuel: 100_000_000, max_call_depth: 64, profile: raido.Profile.Normal)
+    mut vm = vm_with_config(MEMORY, config)
+    let n = rounds as i64
+    assert call_text(mutate vm, "churn", one_int(n)) == "{n * 4}"
+}

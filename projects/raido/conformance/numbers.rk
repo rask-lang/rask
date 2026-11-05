@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Integers, floats and the conversions between them, against the rules in
+// language/types.md and language/stdlib.md.
+
+import raido
+
+const INT_OPS: string = """
+func add(a: int, b: int) -> int {{ return a + b }}
+func sub(a: int, b: int) -> int {{ return a - b }}
+func mul(a: int, b: int) -> int {{ return a * b }}
+func idiv(a: int, b: int) -> int {{ return a // b }}
+func rem(a: int, b: int) -> int {{ return a % b }}
+"""
+
+claim integer_arithmetic_follows_the_spec(a: i64, b: i64) {
+    mut vm = vm_with(INT_OPS)
+    assert call_text(mutate vm, "add", int_args(a, b)) == spec_add(a, b)
+    assert call_text(mutate vm, "sub", int_args(a, b)) == spec_sub(a, b)
+    assert call_text(mutate vm, "mul", int_args(a, b)) == spec_mul(a, b)
+    assert call_text(mutate vm, "idiv", int_args(a, b)) == spec_idiv(a, b)
+    assert call_text(mutate vm, "rem", int_args(a, b)) == spec_mod(a, b)
+}
+
+const CONVERSIONS: string = """
+func round_trip(n: int) -> bool {{ return int(float(n)) == n }}
+func truncate(x: float) -> int {{ return int(x) }}
+func round_half(n: int) -> int {{ return round(float(n) + 0.5) }}
+"""
+
+// Every i32 is exact in a double, so int -> float -> int gives it back.
+claim small_ints_survive_a_trip_through_float(n: i32) {
+    mut vm = vm_with(CONVERSIONS)
+    assert call_text(mutate vm, "round_trip", one_int(n as i64)) == "true"
+}
+
+// int(x) truncates toward zero, and a value outside the int range is an
+// IntegerOverflow, never a wrapped or saturated int.
+claim float_to_int_truncates_or_overflows(x: f64) {
+    if !x.is_finite() {
+        return
+    }
+    mut vm = vm_with(CONVERSIONS)
+    let got = call_text(mutate vm, "truncate", Vec<raido.Value>.from([raido.Value.from_float(x)]))
+    // 2^63 is exactly representable; anything at or above it, or below -2^63, overflows
+    if x >= 9223372036854775808.0 || x < -9223372036854775808.0 {
+        assert got == "error:IntegerOverflow"
+    } else {
+        assert got == "{x.to_int()}"
+    }
+}
+
+// round takes ties away from zero: n + 0.5 rounds up for n >= 0 and down to n
+// for n < 0 (-2.5 -> -3).
+claim round_takes_ties_away_from_zero(n: i32) {
+    mut vm = vm_with(CONVERSIONS)
+    let want: i64 = if n >= 0 { (n as i64) + 1 } else { n as i64 }
+    assert call_text(mutate vm, "round_half", one_int(n as i64)) == "{want}"
+}
+
+const FLOAT_TEXT: string = """
+func reads_back(x: float) -> bool {{
+    let s = tostring(x)
+    let has_point = s.find(".") is Some(_)
+    let has_exp = s.find("e") is Some(_)
+    return (has_point || has_exp) && float(s) == Some(x)
+}}
+"""
+
+// tostring of a float always shows a point or an exponent, and reads back to
+// the same value. Two implementations can pick their own algorithm only if
+// it keeps this.
+claim float_text_reads_back_exactly(x: f64) {
+    if !x.is_finite() {
+        return
+    }
+    mut vm = vm_with(FLOAT_TEXT)
+    assert call_text(mutate vm, "reads_back", Vec<raido.Value>.from([raido.Value.from_float(x)])) == "true"
+}
+
+const INT_TEXT: string = """
+func shown(n: int) -> string {{ return tostring(n) }}
+func parsed(n: int) -> int? {{ return int(tostring(n)) }}
+"""
+
+claim int_text_is_plain_decimal(n: i64) {
+    mut vm = vm_with(INT_TEXT)
+    assert call_text(mutate vm, "shown", one_int(n)) == "{n}"
+    assert call_text(mutate vm, "parsed", one_int(n)) == "Some({n})"
+}
+
+const TYPED: string = """
+func twice(n: int) -> int {{ return n * 2 }}
+"""
+
+// A value of the wrong type from the host never reaches the script.
+claim a_mistyped_host_value_is_refused(x: f64) {
+    if !x.is_finite() {
+        return
+    }
+    mut vm = vm_with(TYPED)
+    let got = call_text(mutate vm, "twice", Vec<raido.Value>.from([raido.Value.from_float(x)]))
+    assert got == "error:HostError"
+}
