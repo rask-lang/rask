@@ -1555,48 +1555,6 @@ mod tests {
     }
 
     #[test]
-    fn method_call_on_value_enqueues_instance_method() {
-        // main calls p.distance() — instance method via bare name
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![
-                    expr_stmt(method_call_expr(ident_expr("p"), "distance", vec![])),
-                    return_stmt(None),
-                ],
-            ),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Impl(ImplDecl {
-                    interface: None,
-                    target_ty: rask_parser::parse_type("Point").unwrap(),
-                    methods: vec![
-                        make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
-                    ],
-                    doc: None,
-                    is_unsafe: false,
-                    is_pub: false,
-                    where_bounds: vec![],
-                    assoc_bindings: Vec::new(),
-                }),
-                span: sp(),
-            },
-        ];
-
-        let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
-        mono.add_entry("main");
-        mono.run();
-
-        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"main"));
-        // Instance call on "p" enqueues via bare name → Point_distance (from method_by_bare_name)
-        assert!(names.contains(&"Point_distance"), "instance method should be reachable: {:?}", names);
-    }
-
-    #[test]
     fn method_in_impl_block_reachable() {
         // main calls Counter.increment() via extend block
         let decls = vec![

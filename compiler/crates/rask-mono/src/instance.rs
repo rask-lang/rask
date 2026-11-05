@@ -76,12 +76,25 @@ impl<'a> Instance<'a> {
     /// primitives answer is the plain operator method, the same answer the
     /// checker gives `5 * 5` outside a generic body.
     pub fn call_target(&self, id: NodeId) -> Option<rask_check::Callee> {
+        Some(match self.dispatch(id)? {
+            // A call on a type parameter runs whatever this instance's type
+            // declares for it.
+            rask_check::Callee::Method { recv, method, package, body: None } => {
+                let body = self.typed.types.method_body(&recv, &method, package.as_deref());
+                rask_check::Callee::Method { recv, method, package, body }
+            }
+            callee => callee,
+        })
+    }
+
+    fn dispatch(&self, id: NodeId) -> Option<rask_check::Callee> {
         let callee = match self.typed.call_targets.get(&id)? {
             rask_check::Callee::Free(sym) => rask_check::Callee::Free(*sym),
-            rask_check::Callee::Method { recv, method, package } => rask_check::Callee::Method {
+            rask_check::Callee::Method { recv, method, package, body } => rask_check::Callee::Method {
                 recv: self.ty(recv)?,
                 method: method.clone(),
                 package: package.clone(),
+                body: *body,
             },
         };
         let Some((method, language_pair)) = self.operator(id) else { return Some(callee) };
@@ -91,10 +104,10 @@ impl<'a> Instance<'a> {
             // was, the operator's dispatch said `Meters_mul$Meters` while
             // nothing generated it, and `i32_mul$i32` for a pair that has no
             // body (#1472).
-            rask_check::Callee::Method { recv, package, .. } => {
+            rask_check::Callee::Method { recv, package, body, .. } => {
                 let target = self.typed.operator_targets.get(&id)?;
                 let method = if language_pair { target.operator.clone() } else { method };
-                Some(rask_check::Callee::Method { recv, method, package })
+                Some(rask_check::Callee::Method { recv, method, package, body })
             }
             free => Some(free),
         }

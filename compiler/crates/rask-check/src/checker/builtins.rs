@@ -30,6 +30,7 @@ impl BuiltinModules {
             let sigs: Vec<ModuleMethodSig> = methods.iter().map(|m| {
                 ModuleMethodSig {
                     name: m.name.clone(),
+                    body: m.has_body.then_some(m.decl),
                     params: m.params.iter().map(|(_, ty)| stub_type(ty)).collect(),
                     ret: stub_type(&m.ret_ty),
                     type_param_bounds: m.type_param_bounds.iter()

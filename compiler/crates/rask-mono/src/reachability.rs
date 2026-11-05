@@ -87,6 +87,9 @@ pub struct Monomorphizer<'a> {
     /// Methods extracted from struct/enum/impl declarations (owned).
     /// Keyed by qualified name: "Type_method".
     method_table: HashMap<String, Decl>,
+    /// Each function declaration's symbol, by the declaration's id.
+    symbol_of_decl: HashMap<NodeId, String>,
+    bound_symbols: HashMap<NodeId, String>,
     /// Reverse lookup: bare method name → list of qualified names.
     /// Used to resolve instance method calls where receiver type is unknown.
     method_by_bare_name: HashMap<String, Vec<String>>,
@@ -207,39 +210,6 @@ fn header_owner(target: &TypeExpr) -> Option<MethodOwner> {
     Some(MethodOwner { base: target.name()?, params, template: target.clone() })
 }
 
-/// What the checker's record says a method call dispatches to.
-///
-/// See the call-site comment in `visit_expr`: the difference between "no body,
-/// and none is wanted" and "not decided yet" is what stops reachability
-/// enqueuing every method that shares a name (#1062).
-enum Dispatch {
-    /// One body, named.
-    Body(String),
-    /// A primitive's operation — an instruction, not a body.
-    Intrinsic,
-    /// The receiver isn't decided here, so any candidate could be the one.
-    Unknown,
-}
-
-/// A receiver that can only ever be itself.
-///
-/// No user body can hang off these — there is no `extend i64` that mono would
-/// mangle as `i64_add` — and none of them is a type parameter in disguise, which
-/// is the case that has to stay open. So a call on one of these with no body in
-/// the table needs nothing generated at all.
-fn is_primitive_receiver(name: &str) -> bool {
-    matches!(
-        name,
-        "bool" | "char" | "string" | "bytes"
-            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-            | "f32" | "f64"
-            // A raw pointer's methods are the compiler's own (mem.unsafe).
-            | "Ptr"
-    )
-}
-
-
 /// Methods declared directly by a type declaration or an `extend` block.
 fn methods_of(decl: &Decl) -> &[FnDecl] {
     match &decl.kind {
@@ -275,6 +245,15 @@ fn with_self_type(method: &FnDecl, owner: &TypeExpr) -> FnDecl {
         }
     }
     method
+}
+
+/// OR4: `Mul<f64>` and `Mul<Meters>` on one type both call their method
+/// `mul`, so a conformance's operator method goes by the name with the applied
+/// argument in it, the name the checker files it under.
+fn operator_filed_name(decl: &Decl, method: &FnDecl, conformance_interfaces: &HashMap<NodeId, String>) -> Option<String> {
+    let DeclKind::Impl(i) = &decl.kind else { return None };
+    let (t, iface) = i.interface.as_ref().zip(conformance_interfaces.get(&decl.id))?;
+    rask_stdlib::operators::conformance_method_name(&i.target_ty, t, iface, &method.name)
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
@@ -452,16 +431,7 @@ impl<'a> Monomorphizer<'a> {
                         // first. The applied argument goes into the name, the
                         // same rule the checker files them under.
                         let filed;
-                        let filed_name = i
-                            .interface
-                            .as_ref()
-                            .zip(conformance_interfaces.get(&decl.id))
-                            .and_then(|(t, iface)| {
-                                rask_stdlib::operators::conformance_method_name(
-                                    &i.target_ty, t, iface, &method.name,
-                                )
-                            });
-                        let method = match filed_name {
+                        let method = match operator_filed_name(decl, method, conformance_interfaces) {
                             Some(name) => {
                                 filed = FnDecl { name, ..method.clone() };
                                 &filed
@@ -520,6 +490,8 @@ impl<'a> Monomorphizer<'a> {
             too_deep: None,
             results: Vec::new(),
             call_rewrites: HashMap::new(),
+            symbol_of_decl: HashMap::new(),
+            bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
             claim_generators: HashMap::new(),
@@ -552,8 +524,25 @@ impl<'a> Monomorphizer<'a> {
         // `interface Writer` and the stdlib's shared one entry (#1426).
         mono.interface_methods = rask_check::interface_vtable_methods(&typed.types);
         mono.bind_methods_by_type(typed);
+        mono.symbol_of_decl = mono.symbols_by_decl();
         mono
     }
+
+    /// Each function and method declaration's symbol. A method of a type
+    /// takes the one `bind_methods_by_type` filed it under; the rest are
+    /// registered under one name each.
+    fn symbols_by_decl(&self) -> HashMap<NodeId, String> {
+        let mut out: HashMap<NodeId, String> = self.bound_symbols.clone();
+        let mut entries: Vec<(&String, &Decl)> =
+            self.method_table.iter().chain(self.fn_table.iter().map(|(k, d)| (k, *d))).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        for (name, decl) in entries {
+            let DeclKind::Fn(f) = &decl.kind else { continue };
+            out.entry(f.id).or_insert_with(|| name.clone());
+        }
+        out
+    }
+
 
     /// Re-key `method_table` on type identity instead of declaration order.
     fn bind_methods_by_type(&mut self, typed: &TypedProgram) {
@@ -578,7 +567,9 @@ impl<'a> Monomorphizer<'a> {
                 // asks for the same name.
                 let suffix = typed.conformance_disambiguation.get(&decl_id);
                 for method in methods_of(decl) {
-                    let plain = format!("{}_{}", type_name, method.name);
+                    let name = operator_filed_name(decl, method, &typed.conformance_interfaces)
+                        .unwrap_or_else(|| method.name.clone());
+                    let plain = format!("{}_{}", type_name, name);
                     let qualified = match suffix {
                         Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
                         None => plain,
@@ -597,6 +588,7 @@ impl<'a> Monomorphizer<'a> {
                             .or_default()
                             .push(qualified.clone());
                     }
+                    self.bound_symbols.insert(method.id, qualified.clone());
                     self.method_table.insert(qualified, body);
                 }
             }
@@ -626,24 +618,27 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    /// The vtable methods of the value boxed at `id`, when it's an instance of
-    /// a type that `needs_instantiation`. The widening above skips those, and
-    /// this is the one place that knows the instance: `io.copy(reader, …)`
-    /// with a `BufferedReader<Buffer>` needs `BufferedReader_read$Buffer`.
-    fn mark_boxed_instance_methods(&mut self, id: NodeId, interface_name: &str) {
+    /// The vtable methods of the value boxed at `id`: the boxed type's own
+    /// body for each method the interface's vtable holds. An instance of a
+    /// type that `needs_instantiation` gets the instance's body:
+    /// `io.copy(reader, …)` with a `BufferedReader<Buffer>` needs
+    /// `BufferedReader_read$Buffer`.
+    fn mark_boxed_methods(&mut self, id: NodeId, interface_name: &str) {
         let Some(typed) = self.typed else { return };
-        let Some(ty) = self.node_type(id) else {
-            return;
-        };
-        let ty = &ty;
-        let Type::Generic { base, args } = &ty else { return };
-        let name = typed.types.type_name(*base);
-        if !self.bounded_generic_owners.contains(&name) {
-            return;
-        }
+        let Some(ty) = self.node_type(id) else { return };
         let Some(methods) = self.interface_methods.get(interface_name).cloned() else { return };
         for method in methods {
-            let qualified = format!("{name}_{method}");
+            let Some(decl) = typed.types.method_body(&ty, &method, None) else { continue };
+            let Some(qualified) = self.symbol_of_decl.get(&decl).cloned() else { continue };
+            let Type::Generic { base, args } = &ty else {
+                self.enqueue(qualified, Vec::new());
+                continue;
+            };
+            let name = typed.types.type_name(*base);
+            if !self.bounded_generic_owners.contains(&name) {
+                self.enqueue(qualified, Vec::new());
+                continue;
+            }
             let Some(owner) = self.method_owners.get(&qualified) else { continue };
             let bindings: Vec<TypeBinding> = owner
                 .params
@@ -1542,8 +1537,7 @@ impl<'a> Monomorphizer<'a> {
         // TR5: implicit coercion to `any Interface` (function arg, field, element)
         // with no written-out cast — the checker flags these by NodeId.
         if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
-            self.mark_interface_object_methods(&interface_name);
-            self.mark_boxed_instance_methods(expr.id, &interface_name);
+            self.mark_boxed_methods(expr.id, &interface_name);
         }
         if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             self.note_map_key_fns(expr.id);
@@ -1587,7 +1581,7 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_expr(&arg.expr);
                 }
             }
-            ExprKind::MethodCall { object, method, args, type_args: written_type_args, .. } => {
+            ExprKind::MethodCall { object, method, args, .. } => {
                 let type_args = self.type_args_at(expr.id);
 
                 // `json.encode(v)` where v is a JsonValue is `v.to_string()` —
@@ -1616,44 +1610,9 @@ impl<'a> Monomorphizer<'a> {
                     return;
                 }
 
-                // CALL6 already picked the receiver type. Use it rather than
-                // widening to every method sharing the bare name — that pulled
-                // in unrelated stdlib bodies and lowered them out of context.
-                // Only user-defined receivers steer reachability here. A stdlib
-                // receiver is recorded too, but its body isn't a user function
-                // to enqueue — those keep the name-based path below.
-                // The instantiated map first. A node inside a copy has an id
-                // the checker never saw, so reading only `typed.call_targets`
-                // made every method call in an instantiated body invisible:
-                // nothing enqueued the callee, and codegen then asked for a
-                // symbol nobody emitted. `self.walk().map(f)` inside a generic
-                // method was "Function not found: Sequence_map" for exactly
-                // that reason — `carry_node_records` had brought the record
-                // across and nothing looked at it (#1065).
-                let dispatched = self.typed.and_then(|typed| {
-                    let callee = self.call_target(expr.id)?;
-                    match &callee {
-                        // An instantiated copy's receiver comes through as the
-                        // name it was substituted with rather than as an interned
-                        // id, so resolve that too — otherwise the call falls back
-                        // to widening by bare name, and a conformance method
-                        // filed as `mul$f64` has no bare name to be found under.
-                        Callee::Method { method, recv, package } => callee
-                            .recv_type_id()
-                            .or_else(|| match recv {
-                                Type::UnresolvedNamed(name)
-                                | Type::UnresolvedGeneric { name, .. } => {
-                                    typed.types.get_type_id(name)
-                                }
-                                _ => None,
-                            })
-                            .map(|id| {
-                                (typed.types.type_name(id), method.clone(), package.clone())
-                            }),
-                        _ => None,
-                    }
-                });
-
+                // The checker said which declaration the call runs, and an
+                // instance says it for a call on its type parameter. The
+                // symbol is that declaration's; no name is built here.
                 // `sort()` on a Vec of aggregates needs the element type's own
                 // `compare`, and nothing in the source names it — see
                 // `sort_comparator_fn`. Before either branch below, because a
@@ -1665,217 +1624,53 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
 
-                if let Some((type_name, method_name, conformance_pkg)) = dispatched {
-                    // XC5: ask for the calling package's own version of this
-                    // method, and take the plain one when there isn't a
-                    // separate body under that package. A block on someone
-                    // else's type is emitted with its package in the symbol, so
-                    // "does `{Type}_{method}~{pkg}` exist" is the whole
-                    // question — and it is answerable here whether or not the
-                    // receiver was generic in the source, which asking the
-                    // checker to resolve the block was not.
-                    let plain = format!("{}_{}", type_name, method_name);
-                    let mut qualified = conformance_pkg
-                        .as_ref()
-                        .map(|pkg| rask_types::conformance_symbol(&plain, pkg))
-                        .filter(|q| self.method_table.contains_key(q))
-                        .unwrap_or(plain);
-                    // A `{x}` and a `{x:>10}` both need the receiver's own
-                    // rendering — `to_string`, or `message` for an error type
-                    // that gets Displayable from it (std.fmt/D5). Neither name
-                    // is what the call says, so resolve it here and record the
-                    // answer for lowering; nothing downstream can see which of
-                    // the two a given type actually defines.
-                    if method_name == "to_string" || method_name == "__fmt" {
-                        let renderer = [
-                            format!("{}_to_string", type_name),
-                            format!("{}_message", type_name),
-                        ]
-                        .into_iter()
-                        .find(|name| self.method_table.contains_key(name));
-                        if let Some(name) = renderer.filter(|n| *n != qualified) {
-                            qualified = name.clone();
-                            self.set_rewrite(expr.id, name);
+                match self.call_target(expr.id) {
+                    Some(Callee::Method { body: Some(decl), .. }) => {
+                        // A native has a declaration and no body to compile.
+                        if let Some(qualified) = self.symbol_of_decl.get(&decl).cloned() {
+                            // A method on a generic type gets one body per
+                            // receiver instantiation, so `One<Big>.get()` and
+                            // `One<i64>.get()` don't share a `self` layout.
+                            // Receiver arguments come first, then the method's
+                            // own (#814).
+                            let recv_args = if self.has_instantiable_body(&qualified) {
+                                self.receiver_bindings(expr.id, &qualified)
+                            } else {
+                                Vec::new()
+                            };
+                            let own_args = self.own_type_args(&qualified, type_args.clone());
+                            let type_args: Vec<TypeBinding> = recv_args.into_iter().chain(own_args).collect();
+                            let symbol = if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
+                                mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types))
+                            } else {
+                                qualified.clone()
+                            };
+                            self.set_rewrite(expr.id, symbol);
+                            self.enqueue(qualified, type_args);
                         }
                     }
-                    // A method on a generic type gets one body per receiver
-                    // instantiation, so `One<Big>.get()` and `One<i64>.get()`
-                    // don't share a `self` layout. Receiver arguments come
-                    // first, then the method's own — `instantiation_params`
-                    // reads the two lists back in that order (#814).
-                    let recv_args = if self.has_instantiable_body(&qualified) {
-                        self.receiver_bindings(expr.id, &qualified)
-                    } else {
-                        Vec::new()
-                    };
-                    let own_args = self.own_type_args(&qualified, type_args.clone());
-                    let type_args: Vec<TypeBinding> =
-                        recv_args.into_iter().chain(own_args).collect();
-                    // A method with type parameters gets one body per set
-                    // of arguments, same as a generic function — so the
-                    // call has to name the copy. Only where there's a body
-                    // to instantiate: a stdlib stub like `Map<K, V>.len()`
-                    // is generic in its signature and resolves to one C
-                    // entry point, so mangling it produced a call to
-                    // `Map_len$string_string` that nothing emits.
-                    if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
-                        self.set_rewrite(
-                            expr.id,
-                            mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types)),
-                        );
-                    }
-                    self.enqueue(qualified, type_args);
-                } else {
-                    // Static method call: Type.method() → enqueue "Type_method"
-                    // Cross-package call: pkg.func() → enqueue "func" (the function
-                    // is registered under its original name from the dependency).
-                    if let Some(name) = object.name() {
-                        if self.package_modules.contains(name) {
-                            self.enqueue(method.clone(), type_args.clone());
-                        } else {
-                            self.enqueue(format!("{}_{}", name, method), type_args.clone());
-                        }
-                    }
-
-                    // A stdlib receiver — `string`, `Vec`, a primitive — has no
-                    // TypeId, so the branch above passed it over. The checker
-                    // still recorded what it dispatched to, and `receiver_name`
-                    // spells those the same way mono mangles them, so the one
-                    // body is nameable.
-                    //
-                    // Widening instead is what made one interpolation reachable
-                    // from half the stdlib: every `len`, every `to_string`, and
-                    // the JSON encoder with them. That's how `Metadata_compare`
-                    // came to be generated for programs that never touch `fs`
-                    // (#1062).
-                    // `sort()` on a Vec of aggregates needs the element type's
-                    // own `compare`, and nothing in the source names it — see
-                    // `sort_comparator_fn`.
-                    // Three outcomes, and only the third may widen.
-                    //
-                    // A body to enqueue is the ordinary case. "No body, and
-                    // none is wanted" is a primitive's: `add` on an `i64` is an
-                    // instruction, not a body, and a call whose receiver is an
-                    // `i64` cannot possibly land on `SystemTime_add`. Widening
-                    // there was work with no use — 83 widened calls and 43
-                    // extra functions for a four-line program, the JSON encoder
-                    // and `Metadata_compare` among them (#1062).
-                    //
-                    // What genuinely isn't known is a type parameter: inside a
-                    // generic body a receiver reads as an unresolved name, and
-                    // which body it means is decided at instantiation. Those
-                    // still take every candidate.
-                    let dispatch = match &self
-                        .typed
-                        .and_then(|typed| self.call_target(expr.id).map(|c| (c, typed)))
-                    {
-                        Some((Callee::Method { recv, method: m, package }, typed)) => {
-                            match rask_check::receiver_name(recv, &typed.types) {
-                                Some(name) => {
-                                    // `{x}` reaches `to_string` or, for an error
-                                    // type, `message` (std.fmt/D5) — same
-                                    // resolution the branch above does.
-                                    let candidates = if m == "to_string" || m == "__fmt" {
-                                        vec![
-                                            format!("{name}_to_string"),
-                                            format!("{name}_message"),
-                                        ]
-                                    } else {
-                                        // XC5: the checker said which package's
-                                        // block this call reaches, and that is
-                                        // the symbol its body was emitted under.
-                                        let plain = format!("{name}_{m}");
-                                        vec![match package {
-                                            Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
-                                            None => plain,
-                                        }]
-                                    };
-                                    match candidates
-                                        .into_iter()
-                                        .find(|q| self.method_table.contains_key(q))
-                                    {
-                                        Some(q) => Dispatch::Body(q),
-                                        None if is_primitive_receiver(&name) => {
-                                            Dispatch::Intrinsic
-                                        }
-                                        // A `@builtin` the checker pinned to its
-                                        // type — `Shared.read` — is lowered by
-                                        // the compiler itself. Widening it made
-                                        // every `with x.read()` reach every
-                                        // stream's `read`.
-                                        None if rask_stdlib::lookup_method(&name, m)
-                                            .is_some_and(|s| s.builtin) =>
-                                        {
-                                            Dispatch::Intrinsic
-                                        }
-                                        None => Dispatch::Unknown,
-                                    }
-                                }
-                                None => Dispatch::Unknown,
+                    // A union of error types switches on its member at run
+                    // time, so each member's own body is reachable.
+                    Some(Callee::Method { recv: Type::Union(members), method: m, package, body: None }) => {
+                        for member in &members {
+                            let body = self.typed.and_then(|t| t.types.method_body(member, &m, package.as_deref()));
+                            if let Some(symbol) = body.and_then(|d| self.symbol_of_decl.get(&d).cloned()) {
+                                self.enqueue(symbol, Vec::new());
                             }
                         }
-                        _ => Dispatch::Unknown,
-                    };
-
-                    match dispatch {
-                        Dispatch::Body(qualified) => {
-                            // Only `message` standing in for `to_string` needs
-                            // recording; the plain case is the name lowering
-                            // would build anyway.
-                            if qualified != format!("{}_{}", qualified.rsplit_once('_').map(|(t, _)| t).unwrap_or(""), method) {
-                                self.set_rewrite(expr.id, qualified.clone());
-                            }
-                            self.enqueue(qualified, type_args.clone());
-                        }
-                        // A primitive's operation: nothing to generate, and
-                        // nothing else this call could mean.
-                        Dispatch::Intrinsic => {}
-                        // The receiver isn't decided yet — enqueue every method
-                        // with this bare name and let the unused ones fall out.
-                        Dispatch::Unknown => {
-                            if let Some(qualified_names) = self.method_by_bare_name.get(method) {
-                                // What is left of #1062, and the only way to see
-                                // it: the widening is invisible in the output
-                                // except as functions nobody called.
-                                if std::env::var("RASK_LIST_WIDENED_CALLS").is_ok() {
-                                    let recv = self
-                                        .typed
-                                        .and_then(|t| self.call_target(expr.id).map(|c| (c, t)))
-                                        .and_then(|(c, t)| match &c {
-                                            Callee::Method { recv, .. } => {
-                                                rask_check::receiver_name(recv, &t.types)
-                                            }
-                                            _ => None,
-                                        })
-                                        .unwrap_or_else(|| "unknown".to_string());
-                                    eprintln!(
-                                        "[widened] .{}() on {} in {} — {} candidates",
-                                        method,
-                                        recv,
-                                        self.current.as_ref().map_or("?", |(f, _)| f.as_str()),
-                                        qualified_names.len(),
-                                    );
-                                }
-                                // Not a generic type's derived method. With no
-                                // receiver to bind its parameters from, the copy
-                                // is the template itself, and its `x.clone()` on
-                                // a bare `T` payload can't be lowered. A derived
-                                // method is only ever reached through a call the
-                                // checker pinned to its type, which binds `T`
-                                // (#1434). Hand-written generic methods still
-                                // widen: a `v.take_while(p)` whose receiver the
-                                // checker couldn't name depends on it.
-                                let derived = self
-                                    .typed
-                                    .map(|t| &t.derived_generic_methods);
-                                // Nor one that `needs_instantiation`.
-                                for qname in qualified_names.clone() {
-                                    if !derived.is_some_and(|d| d.contains(&qname))
-                                        && !self.needs_instantiation(&qname)
-                                    {
-                                        self.enqueue(qname, type_args.clone());
-                                    }
-                                }
+                    }
+                    // A primitive's operation or a builtin the compiler lowers
+                    // itself: nothing to generate.
+                    Some(Callee::Method { body: None, .. }) => {}
+                    // Not a method the checker dispatched: `Type.method()` on a
+                    // type the checker routed elsewhere, or `pkg.func()`
+                    // reaching another package's function by its own name.
+                    _ => {
+                        if let Some(name) = object.name() {
+                            if self.package_modules.contains(name) {
+                                self.enqueue(method.clone(), type_args.clone());
+                            } else {
+                                self.enqueue(format!("{}_{}", name, method), type_args.clone());
                             }
                         }
                     }
@@ -2043,7 +1838,7 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
                 if let TypeExpr::Any(interface) = ty {
-                    self.mark_interface_object_methods(&interface.to_string());
+                    self.mark_boxed_methods(inner.id, &interface.to_string());
                 }
                 self.visit_expr(inner);
             }

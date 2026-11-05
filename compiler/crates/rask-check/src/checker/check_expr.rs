@@ -4149,6 +4149,7 @@ impl TypeChecker {
                         recv: Type::UnresolvedNamed(module.to_string()),
                         method: method.to_string(),
                         package: None,
+                        body: self.types.builtin_modules.get_method(module, method).and_then(|m| m.body),
                     },
                 );
                 return self.check_module_method(module, method, args, type_args, span);
@@ -4674,6 +4675,7 @@ impl TypeChecker {
                         recv: resolved_obj.clone(),
                         method: method.to_string(),
                         package: None,
+                        body: None,
                     },
                 );
                 return ret;
@@ -4889,6 +4891,7 @@ impl TypeChecker {
                     recv: Type::UnresolvedNamed(module.to_string()),
                     method: function.to_string(),
                     package: None,
+                    body: self.types.builtin_modules.get_method(module, function).and_then(|m| m.body),
                 },
             );
             let type_args = (!type_args.is_empty()).then_some(type_args);

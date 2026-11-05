@@ -1147,12 +1147,12 @@ impl TypeChecker {
                     type_defs::Callee::Free(sym) => type_defs::Callee::Free(*sym),
                     // Left as interned ids, not normalized to names: the
                     // receiver's `TypeId` is what dispatch keys on.
-                    type_defs::Callee::Method { recv, method, package } => {
-                        type_defs::Callee::Method {
-                            recv: self.ctx.apply(recv),
-                            method: method.clone(),
-                            package: package.clone(),
-                        }
+                    type_defs::Callee::Method { recv, method, package, body } => {
+                        let recv = self.ctx.apply(recv);
+                        // A derived method gets its body after the calls to
+                        // it were checked, so those are answered here.
+                        let body = body.or_else(|| self.types.method_body(&recv, method, package.as_deref()));
+                        type_defs::Callee::Method { recv, method: method.clone(), package: package.clone(), body }
                     }
                 };
                 (*id, settled)

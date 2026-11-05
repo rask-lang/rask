@@ -164,8 +164,11 @@ impl TypeChecker {
                 self.types.get_mut(id)
             {
                 for m in methods.iter_mut() {
-                    if names.contains(&m.name) && m.name != "compare" {
-                        m.origin = rask_types::MethodOrigin::Derived;
+                    if let Some(f) = written.iter().find(|f| f.name == m.name) {
+                        m.decl = Some(f.id);
+                        if m.name != "compare" {
+                            m.origin = rask_types::MethodOrigin::Derived;
+                        }
                     }
                 }
             }

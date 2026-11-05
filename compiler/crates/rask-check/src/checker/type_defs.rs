@@ -35,6 +35,11 @@ pub enum Callee {
         /// more than one declares it. `None` is the ordinary case — one block,
         /// one body, nothing to choose between.
         package: Option<String>,
+        /// The declaration the call runs, when the checker could tell: the
+        /// receiver was concrete and the method has a body of its own. A
+        /// receiver that is a type parameter leaves it to each instance
+        /// (`TypeTable::method_body`).
+        body: Option<NodeId>,
     },
 }
 
@@ -91,6 +96,8 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct ModuleMethodSig {
     pub name: String,
+    /// The declaration a call runs, when it has a body in Rask.
+    pub body: Option<NodeId>,
     pub params: Vec<Type>,
     pub ret: Type,
     /// Interface bounds on the method's own type parameters, as the stub wrote them

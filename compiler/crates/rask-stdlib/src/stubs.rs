@@ -442,6 +442,8 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
+    /// The declaration's id, the same one the compiled stdlib carries.
+    pub decl: rask_ast::NodeId,
     /// Visible to a program: declared `public`, or part of a conformance,
     /// whose methods carry the conformance's visibility (TV1). A stdlib module
     /// is its own package, so a member without it is the module's own and a
@@ -1110,6 +1112,7 @@ fn fn_to_method_stub(
 
     MethodStub {
         name: bare_name,
+        decl: f.id,
         is_pub: f.is_pub || in_conformance,
         takes_self,
         mutate_self,
