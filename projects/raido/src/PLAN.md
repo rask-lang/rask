@@ -3,6 +3,15 @@
 The spec is in `../language/` and `../vm/`. This file says what the Rask
 implementation has and what it doesn't yet.
 
+This implementation is a reference. The maintainer is building Raido from
+scratch by hand as a test project; the code here is something to compare
+against, not the thing to finish.
+
+Any further VM work goes in this order: the spec first, then conformance
+tests, then the implementation. The tests are written against the spec, not
+against this code, so any implementation (the hand-built one included) can
+be checked by running them.
+
 ## Files
 
 ```
