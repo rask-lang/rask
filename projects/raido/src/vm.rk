@@ -195,19 +195,20 @@ extend Vm {
             let v = self.heap.import(a) catch _ => return VmError.HostError("argument is a value the VM no longer holds for the host; root it to keep it")
             inside.push(v)
         }
+        // The last result and host-made values were roots until this call
+        // started; from here the arguments are in registers.
         self.heap.last_result = Value.none()
+        self.heap.host_made.clear()
         self.heap.begin_run()
         let prng_before = self.prng.clone()
         let result = self.enter(proto, inside) catch e => {
             self.frames.clear()
             self.heap.pop_frame(0)
             self.heap.rollback()
-            self.heap.host_made.clear()
             self.prng = prng_before
             return e
         }
         self.heap.commit()
-        self.heap.host_made.clear()
         self.heap.last_result = result
         return self.heap.export(result)
     }

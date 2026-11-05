@@ -434,7 +434,7 @@ test "a host root keeps a value usable across calls and collections" {
     assert vm.heap.get_root(r) is HeapError
 }
 
-test "a host string lives until the next call ends" {
+test "a host string lives until the next call starts" {
     mut vm = loaded(65536, true)
     let s = vm.heap.host_string("hello") catch e => panic(e.message())
     vm.heap.collect(Value.none())

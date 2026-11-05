@@ -50,5 +50,6 @@ main.rk       demo: runs hand-assembled fib
   `vm.spawned`, undo callbacks.
 - `CONCAT`, `ENUM_TAG`, `TAIL_CALL`, enums with payloads, string constants,
   the built-in methods (`push`, `sort`, ...), PRNG draws.
-- Arithmetic reads the operand tag to choose int or float. Typed opcodes from
-  the compiler would remove that.
+- The spec's instruction set is now typed (`ADD_I`/`ADD_F`, `ITOF`, `LT_S`,
+  `NEW_ENUM`, `CALL_BUILTIN`, map iteration, `RETURN_VOID`) and verified at
+  decode. The VM still has one `ADD` that reads the tag, and no verifier.

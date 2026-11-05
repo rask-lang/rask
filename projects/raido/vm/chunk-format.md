@@ -14,16 +14,19 @@ A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metada
 | header              |  magic bytes, format version, profile
 | content_hash        |  SHA-256 of everything below that carries meaning
 +---------------------+
-| type_table          |  struct layouts, enum definitions, extern declarations
+| type_table          |  struct, tuple and enum layouts, extern declarations
+| variants[]          |  (enum type, variant) pairs for NEW_ENUM
 | api_hash            |  content hash of the published API module
 | imports[]           |  extern funcs + extern structs this script uses
+| builtins[]          |  the built-ins it calls, by name, for CALL_BUILTIN
 | module_imports[]    |  content-addressed module dependencies (name + hash)
-| module_vars[]       |  top-level `let`s: name, type, initializer prototype
+| functions[]         |  own prototypes, then imported functions (module, name)
+| module_vars[]       |  own top-level `let`s (name, type), then imported ones (module, name)
+| init                |  the prototype that runs the initializers, in declaration order
 | exports[]           |  top-level functions the host can call
 +---------------------+
-| constants           |  constant pool (strings, floats)
-| prototypes[]        |  function prototypes (register count, arity, param types, return type)
-| bytecode            |  instructions
+| constants           |  ints, floats and strings
+| prototypes[]        |  register types, arity, capture count, return type, bytecode
 +---------------------+
 | debug (optional)    |  source locations, function names
 +---------------------+
@@ -44,6 +47,10 @@ The type table contains:
 - **Extern func declarations.** Name, parameter types, return type, and whether it's immediate, deferred or pausing.
 
 The type table is part of the content hash -- changing a struct definition changes the chunk's identity.
+
+Every index an instruction carries points into one of these tables, so bytecode never names anything by string at run time. Imported functions and module variables, and the built-ins, are named in their tables and resolved once at load: a built-in name the VM doesn't know, or an import that doesn't export the name, fails the load. A built-in table by name, rather than a global numbering, means adding a built-in later doesn't renumber anyone's bytecode.
+
+Each prototype lists a type for every register. A register holds that type for the whole function, which is what lets the verifier check each instruction on its own ([architecture.md](architecture.md#verification)).
 
 ## Content Identity
 
@@ -82,20 +89,14 @@ try vm.load(chunk)  // fails if any extern unbound
 
 ## Validation
 
-Single-pass structural validation runs during `vm.compile()` (for source) or `raido.Chunk.decode()` (for pre-compiled bytecode). Rejects malformed chunks before execution.
+`vm.compile()` checks source; `raido.Chunk.decode(bytes)` checks bytecode from disk or network, recomputes the hash, and verifies every function ([architecture.md](architecture.md#verification)). Beyond the per-instruction checks there:
 
-Checks:
-- Register indices within frame size
-- Jump targets within bytecode bounds
-- Constant pool indices valid
-- Prototype indices valid (for `FUNC_REF`, `CLOSURE`, `NEW_STRUCT`), module variable indices valid
-- A provable chunk contains no float constants or float instructions
-- Struct field indices within field count
-- Extern struct/func declarations match host bindings (types, field count, readonly flags)
-- Format version recognized
-- Type table consistency (no undefined type references)
+- the format version is recognized;
+- the type table is consistent: no undefined type references;
+- every table index is in range;
+- a provable chunk contains no float constants or float instructions.
 
-`raido.Chunk.decode(bytes)` validates pre-compiled bytecode from disk or network and recomputes the hash. If validation fails, it returns an error -- no partial execution, no undefined behavior.
+Extern declarations are checked against the host's bindings at `vm.load()`. If any check fails, nothing runs.
 
 ## Version Compatibility
 

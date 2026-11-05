@@ -189,7 +189,7 @@ func bounds(arr: array<float>) -> (float, float) {
 let (lo, hi) = bounds(values)
 ```
 
-Tuples are anonymous structs. `(float, float)` is a 2-field struct. The compiler generates internal type entries for tuple types -- no user-visible struct name.
+Tuples are anonymous structs. `(float, float)` is a 2-field struct. The compiler generates internal type entries for tuple types -- no user-visible struct name. A tuple can't be changed after it's made, which is why `==` compares tuples by content. Read a part with `t.0` and `t.1`, or with `let (a, b) = t`.
 
 ## Functions as Values
 
@@ -274,6 +274,8 @@ Extern struct fields work the same way; a write goes through the host's setter (
 
 Conversion is exact for ints within +/-2^53 (about 9 * 10^15). Beyond that the int rounds to the nearest float, as in every language with doubles.
 
+**An int also widens wherever a float is expected:** an argument (`wait(1)`), a field (`Vec2 { x: 0, y: 0 }`), an element of a float array, a value assigned to a `float` variable, a return value. It never narrows on its own. So `let t = 0` makes an `int`, and `t += dt` with a float `dt` is a compile error that suggests `let t = 0.0`.
+
 **Narrowing requires explicit conversion:** `float -> int` always requires `int(x)`, which truncates toward zero, or `floor`, `ceil` or `round`. A result outside the `int` range is an `IntegerOverflow` error. No implicit narrowing.
 
 **Integer overflow:** panics by default. Use built-in wrapping methods on `int` for explicit wrapping (see [Built-in Methods](#built-in-methods)).
@@ -344,14 +346,14 @@ Compiler-known methods on primitive and collection types. These are not user-ext
 **`string` methods:**
 
 - `len() -> int` -- byte length
-- `substring(start: int, end: int) -> string` -- bytes `start` up to `end`, allocates; out of range is an error
-- `find(pattern: string) -> int?` -- literal substring search
+- `substring(start: int, end: int) -> string` -- bytes `start` up to `end`. Out of range is `IndexOutOfBounds`; an offset inside a multi-byte character is `ArgumentError`, so the result is always valid UTF-8
+- `find(pattern: string) -> int?` -- byte offset of the first match; an empty pattern matches at 0
 - `upper() -> string`, `lower() -> string` -- ASCII only
-- `split(sep: string) -> array<string>`, `trim() -> string`
+- `split(sep: string) -> array<string>` -- an empty `sep` is `ArgumentError`; `trim() -> string` -- removes ASCII space, `\t`, `\n` and `\r` from both ends
 - `starts_with(prefix: string) -> bool`, `ends_with(suffix: string) -> bool`
-- `rep(n: int) -> string`, `byte(i: int) -> int`
+- `rep(n: int) -> string` -- negative `n` is `ArgumentError`; `byte(i: int) -> int`
 
-`char(n: int) -> string` is a core function, not a method: the one-byte string for `n` in 0..255.
+`char(n: int) -> string` is a core function, not a method: the one-character string for an ASCII code.
 
 ## Maps
 

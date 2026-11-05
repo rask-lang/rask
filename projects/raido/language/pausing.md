@@ -9,14 +9,17 @@ A hook can call a host function that takes time, like `wait(2.0)` or `ask(player
 
 ```raido
 func on_guard_spawned(g: Unit) {
+    let route = patrol_route(g)
+    let next = 0
     loop {
-        for wp in g.route {
-            while !near(g, wp) {
-                move_toward(g, wp)
-                wait(0.1)
-            }
+        if nearest_enemy(g, 8.0) is Some(e) {
+            attack(g, e)
+        } else if near(g, route[next]) {
+            next = (next + 1) % len(route)
+        } else {
+            move_toward(g, route[next])
         }
-        if nearest_enemy(g, 8.0) is Some(e) { attack(g, e) }
+        wait(0.1)
     }
 }
 
@@ -28,6 +31,8 @@ func on_talk(npc: Unit, player: Unit) {
 
 There's no `yield`, no coroutine object and no `async`. A function that pauses looks like one that doesn't, and so does everything that calls it.
 
+A hook that loops has to pause on every path round the loop. The guard above waits at the bottom of each pass whatever it did; one that only waited while walking would spin at its post until the fuel ran out.
+
 I left out script-driven coroutines and generators on purpose. They'd buy lazy sequences and a script running its own schedule. Mod data is small enough to return an array, a callback covers "visit everything", and the host already interleaves tasks. What they'd cost is a concept, typing rules for what goes in and out, and a hard question about what `wait` means inside a generator that a `for` loop is draining.
 
 ## Where Pausing Comes From
@@ -38,6 +43,8 @@ The host's API module marks the functions that take time as `pausing`:
 // game_api.rd
 extern pausing func wait(seconds: float)
 extern pausing func ask(player: Unit, prompt: string) -> string
+extern deferred func attack(attacker: Unit, target: Unit)
+extern deferred func move_toward(u: Unit, p: Vec2)
 ```
 
 The script can't pause any other way. What a pausing function means is the host's business: `wait` might count ticks, `ask` might open a dialogue box.

@@ -21,10 +21,11 @@ Strings are a first-class type. Immutable, UTF-8.
 "hello"                     // basic string
 "hello {name}"              // interpolation -- any expression in {}
 "value: {x + 1}"            // expressions in interpolation
+"hp: {ratio * 100.0:.1}%"   // with a format spec: one decimal place
 "a literal \{ brace"        // \{ escapes interpolation
 ```
 
-Escape sequences: `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`. Single quotes aren't string delimiters; there's no character type.
+Escape sequences: `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`. Single quotes aren't string delimiters; there's no character type. Format specs are in [stdlib.md](stdlib.md#formatting).
 
 ## Variables
 
@@ -50,7 +51,7 @@ func on_unit_died(u: Unit) {
 }
 ```
 
-Module variables are part of the VM's state: serialized with it, and rolled back with everything else when a call fails. Each loaded chunk has its own; an imported module's variables belong to that module, read as `combat.hits`. Its initializer runs once, in declaration order, when the chunk is loaded; if one fails, the load fails.
+Module variables are part of the VM's state: serialized with it, and rolled back with everything else when a call fails. Each loaded chunk has its own; an imported module's variables belong to that module, read as `combat.hits`. Its initializer runs once, in declaration order, when the chunk is loaded; if one fails, the load fails. An initializer that reaches a module variable further down, through a function call, before that one is set is an `Uninitialized` error at load.
 
 `const` names a value that never changes. Its initializer is a constant expression: literals, arithmetic and other constants.
 
@@ -98,14 +99,14 @@ ships.sort(|a: Ship, b: Ship| -> bool {         // block form
 })
 ```
 
-Parameter and return types come from where the closure is used, or are written out.
+Parameter and return types come from where the closure is used, such as the parameter it's passed to. With nothing to say what they are, write them out.
 
 A closure can use variables from around it:
 
 ```raido
 let threshold = 10
 let weak = ships.filter(|s| s.health < threshold)
-let nearest = |u| distance(u, home)
+let nearest = |u: Unit| distance(u, home)
 ```
 
 One rule: a variable a closure uses is never assigned after its `let`, anywhere in the function, inside the closure or outside it. To share a changing value, put it in a struct, which is shared by reference like everything else, or in a module variable:
@@ -429,7 +430,7 @@ let h = seed.wrapping_mul(6364136223846793005).wrapping_add(index)
 
 `break`, `const`, `continue`, `deferred`, `else`, `enum`, `extend`, `extern`, `false`, `for`, `func`, `if`, `import`, `in`, `let`, `loop`, `match`, `pausing`, `return`, `struct`, `true`, `while`
 
-`error()`, `assert()` and `spawn()` are built-in functions (core), not keywords.
+`error()`, `assert()` and `spawn()` are built-in functions (core), not keywords. A script can't declare a name the standard library or the host's API module already uses (`len`, `print`, `spawn`, `wait`): that's a compile error, so a name always means the same thing.
 
 ## Deliberate Divergences from Rask
 

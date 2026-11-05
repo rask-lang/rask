@@ -10,7 +10,7 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 ## Core Properties
 
 - **Register-based.** Each call frame has a fixed-size register window. Instructions encode register operands directly.
-- **Statically typed.** The compiler knows every register's type, so instructions never dispatch on type. Values still carry a small tag, for the collector, serialization and debugging.
+- **Statically typed.** Every register has one type for the whole function, recorded in the chunk, and the VM verifies bytecode against those types before running it. Arithmetic never looks at a value's tag. Values carry one anyway, for the collector, serialization and `CALL`.
 - **Deterministic.** Strict IEEE floats, specified PRNG, insertion-ordered maps. Identical execution on every platform.
 - **Serializable.** Entire state -> bytes -> restore, in a canonical form that's identical on every machine.
 - **Send, not Sync.** Movable between threads, not shareable.
@@ -18,7 +18,7 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 
 ## Value Representation
 
-**16 bytes per value: an 8-byte tag word and an 8-byte payload.** The compiler already knows every register's type, so no instruction reads the tag. The collector does, to find references, and so do serialization and the debugger.
+**16 bytes per value: an 8-byte tag word and an 8-byte payload.** The verified register types mean arithmetic and field access never read the tag. The collector does, to find references; so do serialization and the debugger; and `CALL` does, to tell a plain function from a closure.
 
 | Tag | Payload |
 |-----|---------|
@@ -28,12 +28,13 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 | `none` | depth: `None` is 0, `Some(None)` is 1, `Some(Some(None))` is 2 |
 | `func` | prototype index (a function or a closure that captures nothing) |
 | `enum` | discriminant (an enum with no payloads) |
-| `ref` | reference to a heap object: string, array, map, struct, enum with payload, closure, task |
+| `ref` | reference to a heap object: string, array, map, struct, tuple, enum with payload, closure, task |
+| `const` | a string constant in a loaded chunk: chunk load position in the high 32 bits, constant index in the low |
 | `extern` | the host's 64-bit id for one of its objects; the tag word also holds the extern struct's type index |
 
-**Optionals cost nothing.** `Some(x)` of a value that isn't `none` is `x` itself. Wrapping a `none` adds one to its depth, and unwrapping takes one off, so `int??` keeps `None` and `Some(None)` apart without a box. 256 registers x 16 bytes = 4 KB per call frame. A frame's registers start as `none` (depth 0).
+**Optionals cost nothing.** `Some(x)` of a value that isn't `none` is `x` itself. Wrapping a `none` adds one to its depth, and unwrapping takes one off, so `int??` keeps `None` and `Some(None)` apart without a box. 256 registers x 16 bytes = 4 KB per call frame. A frame's registers start as `none` (depth 0); the verifier makes sure none is read before it's written.
 
-**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart (an optional of a non-reference type such as `int?`, or a function value that may be a closure) keep 16-byte slots. An optional of a reference type uses a null payload for `None` and stays at 8 bytes; an optional of an optional keeps its tag. Struct fields, closure captures and a paused task's registers keep their tags, since one object mixes types there.
+**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart keep 16-byte slots: an optional of a non-reference type such as `int?`, any function type, `string` (a heap string or a constant), and an enum type with at least one payload variant (its other variants are plain discriminants). An optional of a reference type uses a null payload for `None` and stays at 8 bytes; an optional of an optional keeps its tag. Struct fields, closure captures and a paused task's registers keep their tags, since one object mixes types there.
 
 ## Determinism
 
@@ -45,11 +46,11 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 
 ### Formal Contract
 
-- **Register-level equivalence.** Same bytecode + same inputs + same fuel -> identical register state at every instruction boundary.
+- **Register-level equivalence.** Same bytecode + same inputs + same config (fuel, memory limit, call depth) -> identical register state at every instruction boundary. Two parties re-executing a script agree on the config as part of the inputs.
 - **Map iteration order** preserved across serialize/deserialize (insertion-ordered).
 - **Pause sequence** is deterministic -- the same pausing calls in the same order, with the same arguments.
-- **Error kind and stack trace structure** are part of the contract. Exact error message text is not.
-- **Fuel cost** is 1 per instruction, no exceptions. A built-in that calls back into script code (`sort`, `filter`) costs 1, plus the instructions of each callback. Fuel spent by a call that fails stays spent.
+- **Error kind and stack trace** are part of the contract: the trace is each frame's chunk, prototype index and instruction offset. Function names and source lines come from debug info and aren't. Exact message text isn't either.
+- **Fuel cost** is in [Fuel](#fuel-instruction-budget). Fuel spent by a call that fails stays spent.
 - **Memory exhaustion** is deterministic -- it depends on what's reachable at points fixed by the allocation count, not on when garbage was collected ([Memory Limit](#memory-limit)).
 - **PRNG state evolution** is part of the contract ([PRNG](#prng)).
 - **Float arithmetic** follows the strict profile above -- bitwise identical on all platforms. Conversions to and from text are exact too ([stdlib.md](../language/stdlib.md#core-functions)).
@@ -69,7 +70,7 @@ A ZK proof works over arithmetic in a prime field: additions and multiplications
 
 So proving is a profile, not the whole language. A chunk compiled as **provable** may not use `float`, so `/` is out and integer division is `//`; the compiler rejects the rest, and the chunk's header records the profile so a prover accepts only provable chunks. Minting, crafting, trades and anything conserved already count in `int`, so the scripts worth proving are the ones the profile allows.
 
-The profile changes one other rule. A provable chunk never collects, so its memory limit counts everything it allocated since the last `reset()`, reachable or not. That's a different point of running out than a normal chunk's, which is why the profile is in the header and in the content hash: one hash never runs under two rules.
+The profile changes one other rule. A provable VM never collects, so at each checkpoint its limit counts everything allocated since the last `reset()`, reachable or not. That's a different point of running out than a normal VM's, which is why the profile is in the chunk header and in the content hash, and why a VM runs in one profile: it loads only chunks of that profile, imports included. One hash never runs under two rules. A provable chunk can't use `float` from the API module either.
 
 **What the provable profile relies on:**
 
@@ -104,7 +105,7 @@ Reference: Blackman & Vigna, 2018. The algorithm is fixed -- changing it is a br
 
 ## Heap
 
-Strings, arrays, maps, structs, enums with payloads, closures and tasks are heap objects. A value refers to one with a `ref`. The heap is garbage collected. String constants live in the chunk, not the heap, and cost nothing against the limit.
+Strings, arrays, maps, structs, tuples, enums with payloads, closures and tasks are heap objects. A value refers to one with a `ref`. The heap is garbage collected. String constants live in the chunk, not the heap: a `const` value, costing nothing against the limit.
 
 **Object kinds:**
 
@@ -113,7 +114,7 @@ Strings, arrays, maps, structs, enums with payloads, closures and tasks are heap
 | String | immutable UTF-8 bytes |
 | Array | length and values, growable |
 | Map | entries in insertion order, keys `int` or `string` |
-| Struct | its fields |
+| Struct, tuple | its fields; a tuple's can't change |
 | Enum (with payload) | discriminant and payload fields |
 | Closure | prototype index and captured values |
 | Task | a hook that's paused or spawned and not yet started: status, call frames and their registers |
@@ -125,13 +126,15 @@ How objects are laid out in memory is the implementation's business. Nothing in 
 An object is **reachable** if a chain of references leads to it from a root. The roots are fixed so that reachability is the same on every implementation:
 
 - every module variable of every loaded chunk;
-- every host root handle, tasks included, in creation order;
+- every live host root handle (tasks are root handles), in creation order;
 - tasks spawned by committed runs that the host hasn't collected with `vm.spawned()` yet, in spawn order;
-- while a call runs: every register of every active frame, all of the prototype's registers, including temporaries the compiler has finished with (they hold the same stale values on every machine, since execution is identical);
-- while a call runs: the undo log (the objects it writes back into, and their old values), the arguments queued for deferred extern functions, and the extern write buffer, since rollback and commit still need them;
-- the result of the host's last call, until the host's next call into the VM.
+- the result of the host's last call, and values the host made for arguments (`vm.string(...)`), until the host's next call starts. Once it starts, the arguments it was given are in registers;
+- while a call runs: every register of every active frame, all of the prototype's registers;
+- while a call runs: the undo log (the objects it writes back into, and their old values), the arguments of queued deferred calls, and the queued spawns.
 
-A value the host holds without rooting is not a root. Using one after it's collected is detected every time ([interop.md](interop.md#host-references)).
+A built-in that runs a callback (`sort`, `filter`) keeps nothing out of sight of the collector: the container it works on is in a register, and the callback can't change it (that's `ModifiedDuringIteration`).
+
+A value the host holds without rooting is not a root ([interop.md](interop.md#host-references)).
 
 ### Why the collector is invisible
 
@@ -153,17 +156,28 @@ The VM has a configured limit on **reachable** memory, measured in a logical siz
 |--------|--------------|
 | String | 16 + byte length |
 | Array | 16 + 8 per slot of capacity (16 for element types that keep their tag) |
-| Map | 16 + 24 per slot of capacity, plus 8 for each of key and value that keeps its tag |
-| Struct, enum payload, closure | 16 + 16 per field or capture |
-| Task | 64 + 16 per register in its frames |
+| Map | 16 + 24 per slot of capacity, or 32 when the value type keeps its tag (keys never do) |
+| Struct, tuple, enum payload, closure | 16 + 16 per field or capture |
+| Task | 64 + 16 per register in its saved frames |
 
-**Capacity here is computed from the length**, not taken from the real buffer: the smallest power of two that's at least 4 and at least the number of items. So a `remove`, a rolled-back `push` or a save and load can't make two VMs disagree, whatever their real buffers hold. An object's **allocation size** is its logical size when it's made, plus the increase whenever it grows.
+**Capacity here is computed from the length**, not taken from the real buffer: the smallest power of two that's at least 4 and at least the number of items. So a `remove`, a rolled-back `push` or a save and load can't make two VMs disagree, whatever their real buffers hold.
 
-**When the limit is checked.** Checking reachability at every allocation would be exact and, near the limit, would run a full collection each time: quadratic and unmetered. So the limit is checked at **checkpoints** instead. The VM counts allocation sizes, and a checkpoint happens whenever the count since the last one reaches an eighth of the limit. A checkpoint comes right after the allocation that reached it, and the object just made or grown counts as reachable. At a checkpoint the reachable total must be at most the limit, or the call fails with `MemoryExhausted`. The count is part of the VM state and is serialized, so checkpoints fall at the same allocation everywhere. Like fuel, it isn't rolled back when a call fails.
+**What counts as an allocation.** The checkpoints below depend on counting allocations the same way everywhere, so the list is closed:
+
+- making a string, array, map, struct, tuple, enum with payload or closure (`NEW_*`, `CLOSURE`, `CONCAT`): its logical size;
+- a built-in whose result is a new string, array or map: one allocation of the result at its final size, even when it equals an input (`lower()` on a lowercase string still allocates);
+- an array or map growing: the increase in logical size;
+- a string entering from the host (a getter, an extern's result, a resume value, `vm.string`): its logical size, each time;
+- `SPAWN`: a task whose saved frame is the entry frame of the function it will run;
+- a task pausing: the increase in its logical size, if its saved frames are bigger than before. A running task's frames are registers and don't count as part of the task.
+
+Nothing else allocates: not a built-in's intermediate values or work space, not iteration, not the undo log. An implementation may share identical strings internally, but counts as if it didn't.
+
+**When the limit is checked.** Checking reachability at every allocation would be exact and, near the limit, would run a full collection each time: quadratic and unmetered. So the limit is checked at **checkpoints** instead. The VM counts allocation sizes since the last checkpoint. When an allocation brings the count to an eighth of the limit or more, a checkpoint happens right after it and the count goes back to zero; one allocation makes at most one checkpoint. At a checkpoint the reachable total, counting the object just made or grown, must be at most the limit, or the call fails with `MemoryExhausted`. A single allocation bigger than the whole limit fails at once, before anything is allocated. The count is part of the VM state and is serialized. Like fuel, it isn't rolled back when a call fails.
 
 An implementation needs to collect at a checkpoint only when what it knew was live after its last collection, plus what's been allocated since, could exceed the limit. Near the limit that's one full collection per eighth of the limit allocated, which is linear. Real memory stays under about 1.125 times the limit plus garbage.
 
-**`reset()`** clears the heap and all tasks, and runs every module's initializers again. Use it between independent evaluations.
+**`reset()`** clears the heap, every root handle (tasks included) and the spawn queue, re-seeds the PRNG with the last seed, sets the allocation count to zero, and runs every module's initializers again as one run. Fuel and config are kept. Use it between independent evaluations.
 
 ## Resource Limits
 
@@ -171,7 +185,7 @@ Three runaway vectors, three limits:
 
 ### Fuel (instruction budget)
 
-Every instruction costs 1 fuel. Reaching zero = `FuelExhausted` error.
+Every instruction costs 1 fuel. An instruction whose work grows with its data costs more: `CALL_BUILTIN`, `CONCAT`, `NEW_ARRAY`, `NEW_MAP` and `EQ` cost 1 plus the size of every string, array or map they take or produce, where a string's size is its byte length divided by 8, rounded up, an array's is its length and a map's is its entry count. A result whose size is known before the work starts (`rep`, `substring`, `CONCAT`) is charged before the work, so `"x".rep(10_000_000_000)` runs out of fuel instead of allocating. A built-in that runs a callback also pays for the callback's own instructions. Reaching zero = `FuelExhausted` error.
 
 ```rask
 let vm = raido.Vm.new(raido.Config {
@@ -187,13 +201,13 @@ vm.add_fuel(50_000)
 vm.set_fuel(100_000)
 ```
 
-Fuel is serialized. For deterministic replay, hosts must add fuel at the same points.
+Fuel is serialized and shared by everything the VM runs. A host gives each call its budget with `vm.set_fuel` before it. For deterministic replay, hosts must set fuel at the same points.
 
 ### Call Depth
 
 Max call stack depth. Default 256. The depth is the number of frames on the running stack. `CALL` adds one and `RETURN` removes one. Resuming a task puts all of its frames back on the stack, and pausing takes them all off, so a task paused five calls deep counts five while it runs and nothing while it's paused. Exceeding the limit is a `CallOverflow` error.
 
-`TAIL_CALL` reuses the current frame -- doesn't increment.
+`TAIL_CALL` reuses the current frame and doesn't increment. The reused frame starts fresh, as a new call's would: every register is `none` before the arguments go in.
 
 ### Memory
 
@@ -201,17 +215,30 @@ Reachable memory is limited at creation. Exceeding it = `MemoryExhausted` error.
 
 ## Serialization
 
-`vm.serialize()` -> bytes. `Vm.deserialize(bytes)` -> restored VM.
+`vm.serialize()` -> bytes. `Vm.deserialize(bytes, chunks)` -> restored VM, given the chunks the snapshot names by hash. Serialization happens between host calls.
 
-Serialization happens between host calls, so the roots are the module variables and the host root handles ([Roots](#roots)).
+**Captures:** the config (memory limit, call depth, profile), each loaded chunk's hash in load order, module variables, the root handles in creation order (dead ones too, so a root index means the same root after a load), the spawn queue in order, the objects reachable from all of these, PRNG state, fuel remaining, and the allocation count since the last checkpoint. The host finds its tasks again by their root indices.
 
-**Captures:** each loaded chunk's hash and module variables, the root handles in creation order, the objects reachable from them, PRNG state (4 x u32), fuel remaining, and the allocation count since the last checkpoint.
+**Canonical form.** Serialization walks the object graph depth first from the roots in a fixed order (module variables by chunk load order then declaration order, then root handles in creation order, then the spawn queue, then each object's slots in order), numbers each object the first time it's reached, and writes objects by number. Two VMs in the same state write the same bytes, whatever their memory layout or collection history. Unreachable objects aren't written.
 
-**Canonical form.** Serialization walks the object graph depth first from the roots in a fixed order (module variables by chunk load order then declaration order, then root handles in creation order, then each object's slots in order), numbers each object the first time it's reached, and writes objects by number. Two VMs in the same state write the same bytes, whatever their memory layout or collection history. Unreachable objects aren't written.
+**Bytes.** Integers are little-endian. After a header (`RDSV`, the format version, the config, PRNG, fuel and allocation count) come the chunk hashes, then the module variables, roots, spawn queue and objects, each list prefixed with a u32 count.
 
-**Extern references** are written as the extern struct's name and the host's 64-bit id. The host's ids have to mean the same thing after a load: entity ids, not pointers.
+- A **value** is its 16 bytes: the tag word, then the payload. A `ref`'s payload is the object's number. An uninitialized module variable is the tag word 0. A dead root is a single 0 byte; a live one is a 1 byte and then its value.
+- A **function** is named by a u32: chunk load position in the high 16 bits, prototype index in the low 16.
+- An **object** is a kind byte, then:
+  - string: u32 byte length, bytes;
+  - array: u32 element count, values;
+  - map: u32 entry count, then key and value for each entry in insertion order;
+  - struct or tuple: u32 type index, values;
+  - enum with payload: u32 type index, u32 variant, values;
+  - closure: the function, values;
+  - task: status byte (0 not started, 1 paused), u32 frame count, then each frame outermost first: the function, u32 instruction offset, u8 result register, u32 register count, registers.
 
-**Does not capture:** host function closures (by name), bytecode (re-loaded by host).
+Containers are written with every value's full 16 bytes, whatever they store in memory.
+
+**Extern references** are written as values too: the tag word holds the extern struct's type index in the API module, and the payload is the host's 64-bit id. The host's ids have to mean the same thing after a load: entity ids, not pointers.
+
+**Does not capture:** host function bindings, bytecode (the host supplies the chunks).
 
 Format version in the header. Unknown version = `VersionMismatch` error on deserialize.
 
@@ -222,93 +249,83 @@ Instructions are 32 bits. Three formats:
 ```
 ABC:  op(8) | A(8)  | B(8)  | C(8)       -- 3 register operands
 ABx:  op(8) | A(8)  | Bx(16)             -- register + 16-bit unsigned index
-AsBx: op(8) | A(8)  | sBx(16, signed)    -- register + 16-bit signed offset
+AsBx: op(8) | A(8)  | sBx(16, signed)    -- register + 16-bit signed value
 ```
 
-Register operands are 8-bit (0--255). Constant/index operands are 16-bit (0--65535).
+Register operands are 8-bit (0--255). Index operands are 16-bit (0--65535). Opcodes are numbered from 0 in the order of the tables below.
 
-### Opcodes
+Indexes in `Bx` point into the chunk's own tables ([chunk-format.md](chunk-format.md)): constants, types, enum variants, functions, module variables, built-ins and externs. The function and module-variable tables list imported ones too, resolved at load, so `combat.hits` is a `GET_MODULE` like any other.
 
-~44 instructions. Each described with format, operands, and exact behavior.
-
-#### Load/Move
+### Load and Move
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
 | `LOAD_TRUE A` | ABx | `R[A] = true` |
 | `LOAD_FALSE A` | ABx | `R[A] = false` |
-| `LOAD_INT A Bx` | ABx | `R[A] = Bx as i64` (16-bit signed, sign-extended) |
-| `LOAD_CONST A Bx` | ABx | `R[A] = K[Bx]` (constant pool lookup) |
-| `LOAD_NONE A` | ABx | `R[A] = None` (optional with tag=0) |
+| `LOAD_INT A sBx` | AsBx | `R[A] = sBx` |
+| `LOAD_CONST A Bx` | ABx | `R[A] = K[Bx]`: an int, a float, or a string constant |
+| `LOAD_NONE A` | ABx | `R[A] = None` |
 | `MOVE A B` | ABC | `R[A] = R[B]` |
 
-#### Arithmetic
+### Arithmetic
 
-All arithmetic is type-specific -- the compiler emits the correct variant based on operand types. No runtime type dispatch. In mixed `int`/`float` expressions, the compiler converts the `int` operand to `float` before the operation.
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `ADD A B C` | ABC | `R[A] = R[B] + R[C]` |
-| `SUB A B C` | ABC | `R[A] = R[B] - R[C]` |
-| `MUL A B C` | ABC | `R[A] = R[B] * R[C]` |
-| `DIV A B C` | ABC | `R[A] = R[B] / R[C]` on floats (division by zero = `DivisionByZero` error) |
-| `IDIV A B C` | ABC | `R[A] = R[B] // R[C]` on ints, truncating toward zero |
-| `MOD A B C` | ABC | `R[A] = R[B] % R[C]` (sign follows dividend) |
-| `NEG A B` | ABC | `R[A] = -R[B]` |
-
-**Result types:** `int OP int -> int`, except `DIV`, whose int operands the compiler converts first, so it always returns `float`. `float OP float -> float`. Mixed ops: compiler promotes int to float, result is `float`. Integer overflow panics. A float result that is NaN or infinite raises `FloatError`.
-
-#### Comparison
-
-Result stored in register as `bool`.
+Int and float have their own instructions. `int` meeting `float` goes through `ITOF` first.
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `EQ A B C` | ABC | `R[A] = R[B] == R[C]`, by content or identity per [Equality](../language/types.md#equality) |
-| `LT A B C` | ABC | `R[A] = R[B] < R[C]` |
-| `LE A B C` | ABC | `R[A] = R[B] <= R[C]` |
+| `ADD_I`, `SUB_I`, `MUL_I` `A B C` | ABC | `R[A] = R[B] op R[C]` on ints. Overflow = `IntegerOverflow` |
+| `IDIV A B C` | ABC | `R[A] = R[B] // R[C]`, truncating. Zero = `DivisionByZero`; `MIN // -1` = `IntegerOverflow` |
+| `MOD_I A B C` | ABC | `R[A] = R[B] % R[C]`, sign of the dividend. Zero = `DivisionByZero`; `MIN % -1` is 0 |
+| `NEG_I A B` | ABC | `R[A] = -R[B]`. `-MIN` = `IntegerOverflow` |
+| `ADD_F`, `SUB_F`, `MUL_F`, `DIV_F`, `MOD_F` `A B C` | ABC | `R[A] = R[B] op R[C]` on floats. A zero divisor = `DivisionByZero`, checked first; any other non-finite result = `FloatError`. `MOD_F` is the IEEE `fmod`, sign of the dividend |
+| `NEG_F A B` | ABC | `R[A] = -R[B]` |
+| `ITOF A B` | ABC | `R[A] = float(R[B])`, nearest, ties to even |
 
-`NE`, `GT`, `GE` not needed -- compiler emits `EQ` + `NOT`, or swaps operands.
-
-#### Logic / Misc
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `NOT A B` | ABC | `R[A] = !R[B]` (boolean negation) |
-| `LEN A B` | ABC | `R[A] = len(R[B])` (string byte length, array length, map length) |
-| `CONCAT A B C` | ABC | `R[A] = tostring(R[B]) ++ tostring(R[C])` (allocates a string) |
-
-#### Collections
+### Comparison and Logic
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `NEW_ARRAY A B C` | ABC | `R[A] = new array`. `B` items from `R[A+1..A+B]` as initial elements. `C` is 1 when the element type keeps its tag. |
-| `NEW_MAP A B C` | ABC | `R[A] = new map`. `B` key-value pairs from `R[A+1..A+2B]`. `C` is 1 when the value type keeps its tag. |
-| `GET_INDEX A B C` | ABC | `R[A] = R[B][R[C]]`. Array: int index, bounds-checked. Map: key lookup, missing key = `KeyNotFound`. |
-| `SET_INDEX A B C` | ABC | `R[A][R[B]] = R[C]`. Array: bounds-checked. Map: insert or replace. |
+| `EQ A B C` | ABC | `R[A] = R[B] == R[C]`, by content or identity per [Equality](../language/types.md#equality); both operands have the same type |
+| `LT_I`, `LE_I`, `LT_F`, `LE_F`, `LT_S`, `LE_S` `A B C` | ABC | `R[A] = R[B] < R[C]` or `<=` on ints, floats, or strings by bytes |
+| `NOT A B` | ABC | `R[A] = !R[B]` |
+| `LEN A B` | ABC | `R[A]` = byte length, array length or map entry count of `R[B]` |
+| `CONCAT A B C` | ABC | `R[A]` = the `C` strings `R[B..B+C-1]` joined, as one new string |
 
-#### Structs
+`!=`, `>` and `>=` are `EQ` then `NOT`, or the operands swapped.
 
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `NEW_STRUCT A Bx` | ABx | Allocate struct of type `Bx`, fields from registers starting at `A+1`. |
-| `GET_STRUCT_FIELD A B C` | ABC | `R[A] = R[B].fields[C]`. Field index known at compile time. |
-| `SET_STRUCT_FIELD A B C` | ABC | `R[A].fields[B] = R[C]`. |
-
-#### Enums
+### Collections
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `ENUM_TAG A B` | ABC | `R[A] = discriminant(R[B])`. For `match` dispatch. |
+| `NEW_ARRAY A B C` | ABC | `R[A]` = new array of the `B` items `R[A+1..A+B]`. `C` is 1 when the element type keeps its tag |
+| `NEW_MAP A B C` | ABC | `R[A]` = new map of the `B` pairs in `R[A+1..A+2B]`. `C` is 1 when the value type keeps its tag |
+| `GET_INDEX A B C` | ABC | `R[A] = R[B][R[C]]`. Array: bounds-checked. Map: missing key = `KeyNotFound` |
+| `SET_INDEX A B C` | ABC | `R[A][R[B]] = R[C]`. Array: bounds-checked. Map: insert or replace |
+| `MAP_KEY_AT A B C` | ABC | `R[A]` = the key at position `R[C]` of map `R[B]`, in insertion order |
+| `MAP_VALUE_AT A B C` | ABC | `R[A]` = the value at position `R[C]` |
+| `MAP_VERSION A B` | ABC | `R[A]` = how many keys have been added to or removed from `R[B]` since it was made |
 
-#### Host Fields (extern struct)
+`for` compiles to these. Over an array it reads `R[i]` while `i` is below the current length. Over a map it records `MAP_VERSION` at the start and compares before each step; a difference is `ModifiedDuringIteration`. That holds across a pause too: if another hook adds a key while the loop waits, the next step fails.
+
+### Structs, Tuples and Enums
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `GET_FIELD A B C` | ABC | `R[A] = R[B].fields[C]`. `C` is the vtable slot index. Calls the host getter. |
-| `SET_FIELD A B C` | ABC | `R[A].fields[B] = R[C]`. Calls the host setter. Readonly field = compile error. |
+| `NEW_STRUCT A Bx` | ABx | `R[A]` = new struct or tuple of type `Bx`, fields from `R[A+1..]` |
+| `GET_STRUCT_FIELD A B C` | ABC | `R[A] = R[B].fields[C]`, struct or tuple |
+| `SET_STRUCT_FIELD A B C` | ABC | `R[A].fields[B] = R[C]`, struct only |
+| `NEW_ENUM A Bx` | ABx | `R[A]` = variant `Bx` from the chunk's variant table, payload from `R[A+1..]`. A variant without a payload is an `enum` value, not an allocation |
+| `ENUM_TAG A B` | ABC | `R[A]` = the variant number of `R[B]` |
+| `GET_PAYLOAD A B C` | ABC | `R[A]` = payload field `C` of `R[B]` |
 
-#### Control Flow
+### Host Struct Fields
+
+| Op | Fmt | Semantics |
+|----|-----|-----------|
+| `GET_FIELD A B C` | ABC | `R[A]` = field `C` of the extern struct `R[B]`, through the host's getter |
+| `SET_FIELD A B C` | ABC | field `B` of the extern struct `R[A]` = `R[C]`, through the host's setter, logged for rollback ([interop.md](interop.md#calls-are-transactions)) |
+
+### Control Flow
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
@@ -316,44 +333,41 @@ Result stored in register as `bool`.
 | `JMP_IF A sBx` | AsBx | `if R[A]: PC += sBx` |
 | `JMP_IF_NOT A sBx` | AsBx | `if !R[A]: PC += sBx` |
 
-Jumps are relative to the *next* instruction (PC after decode, before jump).
+Jumps are relative to the next instruction.
 
-#### Functions
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `CALL A B C` | ABC | Call `R[A]` with args `R[A+1..A+B]`. `B` = arg count. Result in `R[A]`. |
-| `TAIL_CALL A B` | ABC | Same as `CALL` but reuses current frame. No call depth increment. |
-| `RETURN A` | ABx | Return `R[A]` to caller. If `A = 255`, return void. |
-| `FUNC_REF A Bx` | ABx | `R[A] = reference to prototype Bx`. For function references. |
-| `CLOSURE A Bx` | ABx | `R[A] = new closure` of prototype `Bx`, capturing `R[A+1..A+n]` where `n` is the prototype's capture count. |
-| `GET_CAPTURE A B` | ABC | `R[A] = capture B` of the running closure. |
-
-#### Module Variables
+### Functions
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `GET_MODULE A Bx` | ABx | `R[A] = module variable Bx` of the running chunk. |
-| `SET_MODULE A Bx` | ABx | `module variable Bx = R[A]`, logged for rollback. |
+| `CALL A B` | ABC | Call `R[A]` with args `R[A+1..A+B]`; the result goes in `R[A]` |
+| `TAIL_CALL A B` | ABC | The same, reusing the current frame, and ending this function: its result is this function's result |
+| `RETURN A` | ABx | Return `R[A]` |
+| `RETURN_VOID` | ABx | Return nothing |
+| `FUNC_REF A Bx` | ABx | `R[A]` = function `Bx` |
+| `CLOSURE A Bx` | ABx | `R[A]` = new closure of function `Bx`, capturing `R[A+1..A+n]`, where `n` is its capture count |
+| `GET_CAPTURE A B` | ABC | `R[A]` = capture `B` of the running closure |
+| `GET_MODULE A Bx` | ABx | `R[A]` = module variable `Bx`. Reading one whose initializer hasn't run = `Uninitialized` |
+| `SET_MODULE A Bx` | ABx | module variable `Bx` = `R[A]`, logged for rollback |
 
-**Call convention:** caller places function in `R[A]`, args in `R[A+1..A+B]`. Callee sees args in `R[0..B-1]` of its own window. Single return value placed in caller's `R[A]` after return.
+The callee sees its arguments in `R[0..B-1]` of its own window.
 
-#### Optionals
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `IS_SOME A B` | ABC | `R[A] = bool(R[B] is Some)`. Check optional tag. |
-| `UNWRAP A B` | ABC | `R[A] = payload(R[B])`. Panics with `UnwrapNone` if None. |
-| `WRAP_SOME A B` | ABC | `R[A] = Some(R[B])`. Construct optional from value. |
-
-`LOAD_NONE` (in Load/Move) constructs `None`. The compiler emits `IS_SOME` + `JMP_IF_NOT` for `is Some` patterns, `??`, and match arms. `UNWRAP` is used for `!` force unwrap and after successful `IS_SOME` checks.
-
-#### Host Calls
+### Optionals
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `SPAWN A B` | ABC | Make a new task that will run `R[A]` with args `R[A+1..A+B]`. Queued until the run commits, then handed to the host. |
-| `CALL_EXTERN A Bx` | ABx | Call extern function `Bx` with its arguments in `R[A+1..]`; the result goes in `R[A]`. A deferred extern is queued instead. A pausing extern pauses the task; when the host resumes it, `R[A]` receives the value the host passed. |
+| `IS_SOME A B` | ABC | `R[A] = R[B] is Some` |
+| `UNWRAP A B` | ABC | `R[A]` = the value inside `R[B]`. `None` = `UnwrapNone` |
+| `WRAP_SOME A B` | ABC | `R[A] = Some(R[B])` |
+
+### Built-ins and the Host
+
+| Op | Fmt | Semantics |
+|----|-----|-----------|
+| `CALL_BUILTIN A Bx` | ABx | Call built-in `Bx` with its arguments in `R[A+1..]`; the result goes in `R[A]` |
+| `CALL_EXTERN A Bx` | ABx | Call extern `Bx` the same way. A deferred extern is queued instead. A pausing extern pauses the task; on resume, `R[A]` gets the value the host passed |
+| `SPAWN A B` | ABC | Queue a new task that will run `R[A]` with args `R[A+1..A+B]`; handed to the host if the run commits |
+
+A built-in or extern takes as many arguments as its signature says.
 
 ## Error Types
 
@@ -361,33 +375,48 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 
 | Kind | Cause |
 |------|-------|
-| `DivisionByZero` | Division or modulo by zero |
-| `IntegerOverflow` | Integer arithmetic overflow (non-wrapping) |
+| `DivisionByZero` | Integer or float division or remainder by zero |
+| `IntegerOverflow` | Integer arithmetic or conversion out of range |
 | `FloatError` | A float operation produced NaN or an infinity |
-| `IndexOutOfBounds` | Array index < 0 or >= len |
+| `IndexOutOfBounds` | Array index, or string offset, outside the valid range |
 | `KeyNotFound` | Map key doesn't exist (on direct access) |
 | `UnwrapNone` | Force unwrap (`!`) on `None` |
+| `ArgumentError` | A built-in got an argument outside what it accepts: `random(0)`, `rep(-1)`, a shift outside 0..63, `split("")`, a `substring` that cuts a character |
+| `Uninitialized` | A module variable read before its initializer ran |
+| `ModifiedDuringIteration` | A map gained or lost a key during `for` over it, or a `sort`/`filter` callback changed the array it's working on |
+| `PauseNotAllowed` | A pausing extern called in a built-in's callback or a module initializer |
 | `MemoryExhausted` | Reachable memory exceeded the configured limit |
 | `FuelExhausted` | Instruction budget reached zero |
 | `CallOverflow` | Call depth exceeded max_call_depth |
-| `ModifiedDuringIteration` | Added or removed a map key inside `for` over that map |
-| `HostError` | Raised by a host function, or a host misuse: a stale handle, a call into the VM from inside an extern |
+| `HostError` | Raised by a host function, or a host misuse: a stale handle, a value of the wrong type, a call into the VM from inside an extern, resuming a finished task |
 | `ScriptError` | Raised by `error(msg)` in script code |
 
-All errors carry: kind, message (string), and a stack trace (array of `{file, line, function}` if debug info is present, `{proto_idx, pc_offset}` if not).
+All errors carry: kind, message (string), and a stack trace: chunk, prototype index and instruction offset per frame, plus file, line and function name when debug info is present.
 
 Scripts can't catch any of these. An error unwinds the whole call stack to the host, which receives it as a `raido.ScriptError`, and the call's changes are rolled back ([interop.md](interop.md#calls-are-transactions)).
 
-**Eliminated by static types:** `TypeError` (impossible by construction), `ReadOnlyField` (compiler rejects writes to `readonly` extern fields).
+**Eliminated by static types and verification:** `TypeError` and `ReadOnlyField` (the compiler rejects writes to `readonly` extern fields, the verifier rejects them in bytecode).
+
+## Verification
+
+Bytecode can come from someone else: a trading partner's chunk, a mod downloaded as bytes. `raido.Chunk.decode` verifies it before anything runs, so a chunk that passes can't make the VM misread a value, whoever wrote it. It's one pass per function:
+
+- every instruction's operands have the types its row above requires, using the function's register types: `ADD_I` takes two `int` registers, `GET_STRUCT_FIELD` a struct register and a field index inside it, and so on;
+- `CALL`, `TAIL_CALL`, `CALL_BUILTIN` and `CALL_EXTERN` pass as many arguments as the callee takes, of its parameter types, into a register of its result type;
+- every register is written on every path before it's read (a forward dataflow over the function's jumps), so a register's starting `none` is never seen;
+- jumps land inside the same function, and no path runs off its end: every path ends in `RETURN`, `RETURN_VOID` or `TAIL_CALL`, with a value of the function's return type;
+- every index is inside its table, and a provable chunk has no float instructions or constants.
+
+A chunk compiled from source passes by construction; the compiler runs the same check in debug builds.
 
 ## Compilation
 
 Two-pass compiler. No full AST. Memory is O(declarations), not O(program size).
 
 1. **Declaration pass.** Scan for `struct`, `enum`, `extend` blocks, `const`, top-level `let`, `func` signatures, and `import` statements, and read the API module's declarations. Build a type table mapping names to types. Record function and method signatures but not bodies.
-2. **Compile pass.** Recursive descent with type checking. Emit bytecode directly during parsing. Register allocation same as current (linear, locals sequential, temporaries bump). Type inference for locals uses forward flow: `let x = 42` -> x is `int`. No backward inference, no constraint solving.
-3. **Register allocation.** Linear. Locals get sequential registers. Temporaries use a stack-like bump above locals. No optimization passes.
+2. **Compile pass.** Recursive descent with type checking. Emit bytecode directly during parsing. Type inference for locals uses forward flow: `let x = 42` -> x is `int`. A closure's parameter types come from the type expected where it's written (an argument, an annotated variable); with no expected type they must be written out. No constraint solving.
+3. **Register allocation.** Linear. Locals get sequential registers, temporaries a stack-like bump above them. A register keeps one type for the whole function, so a temporary of a new type takes a fresh register instead of reusing one. No optimization passes.
 4. **Constant folding.** Compile-time evaluation of constant expressions (`1 + 2` -> `LOAD_INT 3`). Only for arithmetic on literals.
 5. **Output.** Chunk (see [chunk-format.md](chunk-format.md)).
 
-**Tail call constraint.** The compiler only emits `TAIL_CALL` when a call expression is in tail position -- the last expression in a function body, directly before an implicit or explicit `return`. A `TAIL_CALL` in non-tail position would corrupt the caller's frame, so the compiler must never emit one there.
+**Tail calls.** The compiler emits `TAIL_CALL` for a call in tail position: `return f(x)`, or the last expression of a function body.

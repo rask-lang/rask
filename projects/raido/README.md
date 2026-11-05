@@ -62,7 +62,7 @@ vm.register_extern_struct("Enemy", raido.ExternStruct(
         raido.Field.string("name", get_name, null)  // readonly
     ]
 ))
-vm.register_extern_func("move_to", move_to_handler)
+vm.register_extern_func("move_to", [raido.Type.extern("Enemy"), raido.Type.struct("Vec2")], raido.Type.void, move_to_handler)
 
 let chunk = try vm.compile("script.rd", source, api)
 try vm.load(chunk)  // checks bindings, then runs the script's top-level `let`s
@@ -81,10 +81,10 @@ let vm2 = raido.Vm.deserialize(snapshot)
 
 ## Script Example
 
-`Enemy`, `move_to` and `wait` come from the host's published API module; the script declares nothing to use them.
+`Enemy`, `move_to`, `announce` and `wait` come from the host's published API module; the script declares nothing to use them.
 
 ```raido
-const THRESHOLD = 10
+const WAVE_SIZE = 10
 let kills = 0                                // module state: lives between host calls
 
 func chase(attacker: Enemy, target: Enemy) {
@@ -96,9 +96,12 @@ func chase(attacker: Enemy, target: Enemy) {
 
 func on_enemy_died(e: Enemy) {
     kills += 1
-    if kills > THRESHOLD { error("too many") }  // aborts the call; its changes roll back
+    if kills == WAVE_SIZE { announce("Wave cleared") }
+    print("kills:", kills, "of", WAVE_SIZE)
 }
 ```
+
+If a hook fails halfway (`error(...)`, a bad index), everything it changed rolls back, `kills` included, and the host logs the error.
 
 ## Key Decisions
 
@@ -106,7 +109,7 @@ func on_enemy_died(e: Enemy) {
 |----------|--------|-----------|
 | Identity | Verification-first, scripting-capable | Static types serve verification. Pausing hooks serve scripting. |
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
-| Types | Static, inferred locals | Catches errors at compile time. No instruction dispatches on type; values carry a tag only for the collector and serialization. |
+| Types | Static, inferred locals | Catches errors at compile time. Bytecode is verified against register types before it runs, so arithmetic never dispatches on type; values carry a tag for the collector and serialization. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
 | Numbers | `int` (i64) and `float` (f64) | The two every audience already knows. Floats follow a strict profile that gives the same bits on every machine. |
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
