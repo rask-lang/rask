@@ -142,9 +142,6 @@ pub struct Interpreter {
     /// A name the checker resolved to a function → that function's
     /// declaration. What a name calls is this, not how it's spelled.
     named_functions: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
-    /// Whether the checker's tables were adopted. A build script runs
-    /// without them (`BuildContext` is the interpreter's own; #1787).
-    checked: bool,
     /// Enum declarations by name.
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
@@ -475,7 +472,6 @@ impl Interpreter {
             functions: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
-            checked: false,
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -524,7 +520,6 @@ impl Interpreter {
             functions: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
-            checked: false,
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -575,7 +570,6 @@ impl Interpreter {
             functions: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
-            checked: false,
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -732,12 +726,12 @@ impl Interpreter {
         self.file_packages = typed.file_packages.clone();
         self.conformance_disambiguation = typed.conformance_disambiguation.clone();
         self.conformance_interfaces = typed.conformance_interfaces.clone();
-        self.checked = true;
         self.named_functions = typed
             .resolutions
             .iter()
             .filter_map(|(name, sym)| match &typed.symbols.get(*sym)?.kind {
-                rask_resolve::SymbolKind::Function { decl, .. } => Some((*name, *decl)),
+                rask_resolve::SymbolKind::Function { decl, .. }
+                | rask_resolve::SymbolKind::BuiltinFunction { decl: Some(decl), .. } => Some((*name, *decl)),
                 _ => None,
             })
             .collect();
@@ -896,7 +890,6 @@ impl Interpreter {
         child.functions = self.functions.clone();
         child.function_keys = self.function_keys.clone();
         child.named_functions = self.named_functions.clone();
-        child.checked = self.checked;
         child.enums = self.enums.clone();
         child.struct_decls = self.struct_decls.clone();
         child.union_decls = self.union_decls.clone();

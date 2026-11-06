@@ -91,6 +91,8 @@ const LAYERS: &[(&str, Layer)] = &[
     ("async.rk", Layer::Std),
     ("sim.rk", Layer::Std),
     ("claims.rk", Layer::Std),
+    // A build script's API: only the interpreter runs build scripts.
+    ("build.rk", Layer::Std),
     ("std.rk", Layer::Std),
 ];
 
@@ -411,6 +413,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
     ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
     ("claims.rk", include_str!("../../../../stdlib/claims.rk")),
+    ("build.rk", include_str!("../../../../stdlib/build.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),

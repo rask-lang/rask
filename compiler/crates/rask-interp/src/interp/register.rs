@@ -353,27 +353,11 @@ impl Interpreter {
         self.env
             .define("unreachable".to_string(), Value::Builtin(BuiltinKind::Unreachable));
         self.env
-            .define("min".to_string(), Value::Builtin(BuiltinKind::Min));
-        self.env
-            .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
-        self.env
-            .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
-        self.env
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env
             .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
         self.env
             .define("drop".to_string(), Value::Builtin(BuiltinKind::Drop));
-        // Workaround (#1787): a build script runs unchecked, so no name has a
-        // resolution to go by. A program function there is bound over the
-        // builtin of its name, by spelling, until build scripts are checked.
-        if !self.checked {
-            for (key, f) in &self.functions {
-                if *key == f.name && matches!(self.env.get(key), Some(Value::Builtin(_))) {
-                    self.env.define(key.clone(), Value::Function { name: key.clone(), generics: Default::default() });
-                }
-            }
-        }
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env

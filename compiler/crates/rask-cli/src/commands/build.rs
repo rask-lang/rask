@@ -592,12 +592,32 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                 allowed_capabilities: None,
             };
 
+            // Checked on its own, as the separate unit it is (BL1): the
+            // package's code may need what the script generates. The
+            // interpreter runs what the checker resolved each name to.
+            let build_rk = root.join("build.rk");
+            let source = match fs::read_to_string(&build_rk) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}: failed to read {}: {}", output::error_label(), build_rk.display(), e);
+                    process::exit(1);
+                }
+            };
+            let config = crate::compiler_config(rask_compiler::CfgConfig::from_host("debug", vec![]));
+            let checked = rask_compiler::check_build_script(&build_rk, &source, &config);
+            crate::display_pipeline_output(&checked, &checked.source_files, crate::Format::Human);
+            let failed = checked.has_errors();
+            let Some(checked) = checked.result.filter(|_| !failed) else {
+                eprintln!("\n{}", output::banner_fail("Check", 1));
+                process::exit(1);
+            };
+
             let mut interp = rask_interp::Interpreter::new();
+            rask_compiler::prepare_interpreter(&mut interp, &checked);
             // The stdlib's Rask-written half comes along, as it does for
-            // `rask run --interp`: without it `ctx.package_dir.as_string()`
-            // was "no method `as_string` on type `Path`", since Path's
-            // methods live in stdlib/path.rk.
-            let script_decls = rask_compiler::program_decls(&build_decls, None);
+            // `rask run --interp`: `ctx.package_dir.as_string()` is in
+            // stdlib/path.rk.
+            let script_decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
             match interp.run_build(&script_decls, build_state) {
                 Ok(_) => {
                     if opts.verbose {

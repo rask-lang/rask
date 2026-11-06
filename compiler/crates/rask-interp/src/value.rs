@@ -528,9 +528,6 @@ pub enum BuiltinKind {
     /// loop body it runs, and where the body's `break`/`return` go, live on the
     /// interpreter's `yield_stack`.
     SequenceYield,
-    Min,   // generic min(a, b) — prelude
-    Max,   // generic max(a, b) — prelude
-    Clamp, // generic clamp(value, lo, hi) — prelude
     Skip,       // skip("reason") — skip rest of test
     ExpectFail, // expect_fail() — invert pass/fail
     Drop,       // drop(ptr) — consume an Owned<T> (mem.owned/OW3); no-op here,

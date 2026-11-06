@@ -441,7 +441,22 @@ pub fn check_loaded(
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
     let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut out = check_loaded_scoped(files, config, &mut exports);
+    let mut out = check_loaded_scoped(files, config, &mut exports, None);
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
+    out
+}
+
+/// What a build script has in scope without writing it (struct.build/BL4).
+const BUILD_SCRIPT_PRELUDE: &str = "import build.{BuildContext, BuildError}";
+
+/// Check a package's `build.rk` on its own, as the separate unit it is
+/// (struct.build/BL1): the package's code may need what the script
+/// generates, so it can't be part of this check. The build module is in
+/// scope without an import (BL4).
+pub fn check_build_script(path: &Path, source: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let files = [(path.to_path_buf(), source.to_string())];
+    let mut out = check_loaded_scoped(&files, config, &mut exports, Some(BUILD_SCRIPT_PRELUDE));
     package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
     out
 }
@@ -450,6 +465,7 @@ fn check_loaded_scoped(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
     exports: &mut HashMap<String, HashMap<String, String>>,
+    prelude: Option<&str>,
 ) -> PipelineOutput<CheckResult> {
     config.declare_target();
 
@@ -464,6 +480,16 @@ fn check_loaded_scoped(
         let source = source.clone();
         let path = path.clone();
         let file_id = idx as u16;
+
+        // Imports the file gets without writing them, in its own scope.
+        if let Some(prelude) = prelude {
+            let tokens = rask_lexer::Lexer::new_with_file_id(prelude, file_id).tokenize().tokens;
+            let mut parser = rask_parser::Parser::new_with_file_id(tokens, next_id, file_id);
+            let parsed = parser.parse();
+            next_id = parser.next_node_id();
+            debug_assert!(parsed.is_ok(), "the prelude is fixed text");
+            decls.extend(parsed.decls);
+        }
 
         // --- Lex ---
         let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
