@@ -842,3 +842,52 @@ fn dt1_public_nominal_interface_is_fine() {
         output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn w2_warns_on_a_discarded_result_and_nowhere_else() {
+    // type.errors/W2: a call whose `T or E` goes nowhere. An `if` or block
+    // written as a statement throws away what its branches end with; one used
+    // as a value doesn't, and neither do `let _`, `catch` or `ensure`.
+    let path = tmp_rk(r#"
+        struct SaveError {}
+        SaveError implements Error {
+            func message(self) -> string { return "e" }
+        }
+        func save(n: i64) -> void or SaveError {
+            if n < 0 {
+                return SaveError()
+            }
+            return
+        }
+        func kept(c: bool) -> void or SaveError {
+            let r = if c { save(1) } else { save(2) }
+            let _ = save(3)
+            save(4) catch _ => {}
+            ensure save(5)
+            return r
+        }
+        func dropped(c: bool) {
+            save(6)
+            if c {
+                save(7)
+            }
+            for i in 0..2 {
+                save(i)
+            }
+        }
+        func main() {
+            let _ = kept(true)
+            dropped(false)
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    let lines: Vec<usize> = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "W0303"))
+        .filter_map(|d| d.labels.first().map(|l| l.span.start))
+        .collect();
+    assert_eq!(lines.len(), 3, "expected save(6), save(7) and save(i): {:?}", output.diagnostics);
+    assert_eq!(error_count(&output.diagnostics), 0, "{:?}", output.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}

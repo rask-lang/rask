@@ -57,12 +57,39 @@ impl Walk<'_> {
         let n = if last_too { stmts.len() } else { stmts.len().saturating_sub(1) };
         for stmt in &stmts[..n] {
             if let StmtKind::Expr(expr) = &stmt.kind {
-                self.statement(expr);
+                self.discarded(expr);
             }
         }
     }
 
-    fn statement(&mut self, expr: &Expr) {
+    /// An expression whose value goes nowhere. An `if`, `match` or block
+    /// written as a statement throws away what its branches end with, so
+    /// that's a discard too: `if verbose { save() }` drops `save`'s error.
+    /// The other statements of a block are the block's own list's.
+    fn discarded(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::If { then_branch, else_branch, .. }
+            | ExprKind::IfLet { then_branch, else_branch, .. } => {
+                self.discarded(then_branch);
+                if let Some(e) = else_branch {
+                    self.discarded(e);
+                }
+            }
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.discarded(&arm.body);
+                }
+            }
+            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } => {
+                if let Some(Stmt { kind: StmtKind::Expr(last), .. }) = stmts.last() {
+                    self.discarded(last);
+                }
+            }
+            _ => self.call(expr),
+        }
+    }
+
+    fn call(&mut self, expr: &Expr) {
         if !matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
             return;
         }
@@ -79,7 +106,7 @@ impl Walk<'_> {
 
 impl<'a> Visit<'a> for Walk<'_> {
     fn expr(&mut self, expr: &'a Expr) -> bool {
-        if let ExprKind::Block(stmts) = &expr.kind {
+        if let ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } = &expr.kind {
             self.list(stmts, false);
         }
         true
