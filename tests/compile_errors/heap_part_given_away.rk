@@ -107,6 +107,64 @@ func bad_slot_replaced() {
     }
 }
 
+// --- carried off in a closure that outlives the holder ---
+func bad_closure_carries_part() -> Vec<func() -> string> {
+    let l = Heap(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    ensure drop(l)
+    mut out: Vec<func() -> string> = Vec.new()
+    if (*l).next? as n {
+        // ERROR: cannot give away `n` — `(*l).next` still holds it [E0956]
+        out.push(|| (*n).label)
+    }
+    return out
+}
+
+func eat(take s: Step) {
+    drop(s)
+}
+
+// --- a newer `n` hides the part's name, not the part ---
+func bad_owner_given_under_shadow() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        match 1 {
+            // ERROR: cannot give away `s` while `n` reads a box inside it [E0957]
+            n => eat(s),
+        }
+        println(n.label)
+    }
+}
+
+// --- writing a `for mutate` item writes the collection ---
+func bad_item_replaced() {
+    mut xs: Vec<Step> = Vec.new()
+    xs.push(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    if xs[0].next? as n {
+        for mutate x in xs {
+            // ERROR: cannot replace `x` while `n` reads a box inside it [E0957]
+            x = Step(label: "c", next: none)
+        }
+        println(n.label)
+    }
+}
+
+// --- `rest = *next` takes over only the part it reads ---
+struct Pair {
+    public a: Heap<Step>?
+    public b: Heap<Step>?
+}
+
+func bad_walk_drops_sibling() {
+    mut p = Pair(a: Heap(Step(label: "a", next: none)), b: Heap(Step(label: "b", next: none)))
+    if p.b? as y {
+        if p.a? as x {
+            // ERROR: cannot replace `p` while `y` reads a box inside it [E0957]
+            p = Pair(a: Heap(Step(label: "c", next: none)), b: Heap(Step(label: "d", next: none)))
+            println(y.label)
+        }
+    }
+}
+
 // --- what is fine: reading it where it is ---
 func good_read() {
     let second = Heap(Step(label: "b", next: none))
@@ -134,6 +192,19 @@ func good_name_reused() {
         f(Heap(Step(label: "c", next: none)))
         let n = Heap(Step(label: "d", next: none))
         drop(n)
+    }
+}
+
+// --- and the walk itself: the box moves into the new `cur` ---
+func good_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    loop {
+        println(cur.label)
+        if cur.next? as n {
+            cur = *n
+        } else {
+            break
+        }
     }
 }
 

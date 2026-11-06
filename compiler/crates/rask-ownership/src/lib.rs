@@ -160,7 +160,7 @@ pub struct OwnershipChecker<'a> {
     /// (where the pattern or `? as` bound it, what it's part of). Neither owed
     /// nor the binding's to give away. Scoped to the arm or branch that bound
     /// it.
-    parts: HashMap<String, (Span, PartOf)>,
+    parts: Parts,
     /// `let tmp = src.items` on a non-Copy field: `tmp` is a view of
     /// `src.items` under a name of its own (mem.borrowing/S1). Reading it is
     /// fine; handing it to an owner is the same E0909 the field read gets.
@@ -405,6 +405,43 @@ struct InstanceJob<'d> {
     chain: Vec<String>,
 }
 
+/// The live parts (see `Checker::parts`). Looked up by name, and also kept
+/// as a list: a newer binding of the same name hides a part from lookups,
+/// but its holder still mustn't change under it.
+#[derive(Debug, Clone, Default)]
+struct Parts {
+    by_name: HashMap<String, (Span, PartOf)>,
+    /// Every held part bound in the scopes being walked, hidden or not.
+    held: Vec<(String, Span, PartOf)>,
+}
+
+impl Parts {
+    fn get(&self, name: &str) -> Option<&(Span, PartOf)> {
+        self.by_name.get(name)
+    }
+
+    fn contains_key(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    fn insert(&mut self, name: String, part: (Span, PartOf)) {
+        if part.1.held {
+            self.held.push((name.clone(), part.0, part.1.clone()));
+        }
+        self.by_name.insert(name, part);
+    }
+
+    /// A new binding called `name`: lookups stop finding the part.
+    fn remove(&mut self, name: &str) {
+        self.by_name.remove(name);
+    }
+
+    fn clear(&mut self) {
+        self.by_name.clear();
+        self.held.clear();
+    }
+}
+
 /// What a part (see `parts`) belongs to.
 #[derive(Debug, Clone)]
 struct PartOf {
@@ -485,7 +522,7 @@ impl<'a> OwnershipChecker<'a> {
             owned_bindings: HashSet::new(),
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
-            parts: HashMap::new(),
+            parts: Parts::default(),
             field_views: HashMap::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
@@ -2472,18 +2509,23 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(value);
                 self.store_target = None;
                 self.give_away_if_lent(value, "this assignment");
-                // `rest = *next` walks a list: the part moves into the new
-                // value rather than going with the old one.
-                let takes_part_over = match &value.kind {
-                    ExprKind::Unary { op: UnaryOp::Deref, operand } => matches!(
-                        &operand.kind,
-                        ExprKind::Ident(p) if self.parts.get(p).is_some_and(|(_, of)| of.held)
-                    ),
-                    _ => false,
+                // `rest = *next` walks a list: the box `next` reads moves
+                // into the new `rest` rather than going with the old one. Only
+                // when `rest` holds it (`cur = *n` from `cur.next? as n` too);
+                // any other part of the old value still goes with it.
+                let taken_over = match &value.kind {
+                    ExprKind::Unary { op: UnaryOp::Deref, operand } => match &operand.kind {
+                        ExprKind::Ident(p) => self.parts.get(p).and_then(|(at, of)| {
+                            let holder = of.owner.as_ref()?;
+                            let target_path = Self::place_path(target)?;
+                            let inside = holder.0 == target_path.0 && holder.1.starts_with(&target_path.1);
+                            (of.held && inside).then_some(*at)
+                        }),
+                        _ => None,
+                    },
+                    _ => None,
                 };
-                if !takes_part_over {
-                    self.check_part_owner_kept(target, "replace", stmt.span);
-                }
+                self.check_part_owner_kept(target, "replace", stmt.span, taken_over);
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
                 if let Some(place) = self.replaced_place(stmt) {
@@ -3450,6 +3492,13 @@ impl<'a> OwnershipChecker<'a> {
                                 // `Vec.filter(self, pred) -> Sequence<T>`
                                 // answers a closure over a borrowed receiver.
                                 if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
+                                    // A part is its holder's (`parts`): carrying
+                                    // it off is giving it away, and the closure
+                                    // would outlive the box.
+                                    if self.parts.contains_key(name) {
+                                        self.consume_binding(name, expr.span, None);
+                                        continue;
+                                    }
                                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                                 }
                             }
@@ -4909,7 +4958,7 @@ impl<'a> OwnershipChecker<'a> {
                             BindingState::PointerDead { .. } => {}
                         }
                     }
-                    self.report_part_owner_changed(&source_name, &[], source_name.clone(), "move", span);
+                    self.report_part_owner_changed(&source_name, &[], source_name.clone(), "move", span, None);
                     self.bindings.insert(source_name, BindingState::Moved { at: span });
                 }
             }
@@ -5378,7 +5427,9 @@ impl<'a> OwnershipChecker<'a> {
         for (place, via) in self.resized_places(call) {
             let op = if via.is_some() { "resize".to_string() } else { operation.clone() };
             self.report_held_source_change(place, &op, via.clone(), call.span);
-            self.check_part_owner_kept(place, &op, call.span);
+            // Through a `mutate` receiver or argument: the callee may replace
+            // or free anything inside, resize or not.
+            self.check_part_owner_kept(place, "change", call.span, None);
             // PT3: and its buffer may have moved under any pointer into it.
             if let Some(root) = Self::assign_root(place) {
                 self.kill_pointers_into(
@@ -7898,7 +7949,7 @@ impl<'a> OwnershipChecker<'a> {
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
         // Reported, and the consume still goes ahead: the mistake is when it
         // happens, and refusing it would add "never consumed" on top.
-        self.report_part_owner_changed(name, &[], name.to_string(), "give away", span);
+        self.report_part_owner_changed(name, &[], name.to_string(), "give away", span, None);
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
         // which is what happened: the move was tracked per function, so the
@@ -8263,21 +8314,46 @@ impl<'a> OwnershipChecker<'a> {
     /// The live part read out of `place` or out of something inside it, if
     /// any: `n` from `if (*first).next? as n` for `first` or `first.next`,
     /// but not for `first.label`.
-    fn part_inside(&self, root: &str, fields: &[String]) -> Option<(String, Span, String)> {
-        self.parts.iter().find_map(|(name, (at, of))| {
+    ///
+    /// `except` leaves out the part bound at that span. A `for mutate` item
+    /// or a `with` element stands for its collection: writing it writes the
+    /// collection.
+    fn part_inside(&self, root: &str, fields: &[String], except: Option<Span>) -> Option<(String, Span, String)> {
+        let alias = self.element_alias_of(root);
+        let mut places = vec![(root.to_string(), fields)];
+        if let Some(collection) = alias {
+            places.push((collection, &[][..]));
+        }
+        self.parts.held.iter().rev().find_map(|(name, at, of)| {
+            if except == Some(*at) {
+                return None;
+            }
             let (r, f) = of.owner.as_ref()?;
-            (r == root && (f.starts_with(fields) || fields.starts_with(f)))
+            places
+                .iter()
+                .any(|(root, fields)| r == root && (f.starts_with(fields) || fields.starts_with(f)))
                 .then(|| (name.clone(), *at, of.from.clone()))
         })
+    }
+
+    /// The collection a `for mutate` item or a `with` element is a place in.
+    fn element_alias_of(&self, name: &str) -> Option<String> {
+        if let Some(fm) = self.active_for_mutates.iter().rev().find(|f| f.binding_names.iter().any(|b| b == name)) {
+            return Some(fm.root.clone());
+        }
+        if self.borrowed_with.contains_key(name) {
+            return self.ptr_lenders.get(name).cloned();
+        }
+        None
     }
 
     /// `owner` given away or replaced while a part read out of it is live:
     /// the part would go on reading a box that's gone, and native printed
     /// garbage or segfaulted. Returns whether it reported.
-    fn check_part_owner_kept(&mut self, owner: &Expr, operation: &str, span: Span) -> bool {
+    fn check_part_owner_kept(&mut self, owner: &Expr, operation: &str, span: Span, except: Option<Span>) -> bool {
         let Some((root, fields)) = Self::place_path(owner) else { return false };
         let shown = self.held_place(owner).unwrap_or_else(|| root.clone());
-        self.report_part_owner_changed(&root, &fields, shown, operation, span)
+        self.report_part_owner_changed(&root, &fields, shown, operation, span, except)
     }
 
     fn report_part_owner_changed(
@@ -8287,8 +8363,9 @@ impl<'a> OwnershipChecker<'a> {
         shown: String,
         operation: &str,
         span: Span,
+        except: Option<Span>,
     ) -> bool {
-        let Some((part, part_at, from)) = self.part_inside(root, fields) else { return false };
+        let Some((part, part_at, from)) = self.part_inside(root, fields, except) else { return false };
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::PartOwnerChanged {
                 owner: shown,
