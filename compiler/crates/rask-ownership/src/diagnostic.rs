@@ -1137,7 +1137,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     "cannot give away `{}` — `{}` still holds it",
                     name, from
                 ))
-                .with_code("E0880")
+                .with_code("E0956")
                 .with_primary(self.span, label)
                 .with_secondary(*bound_at, format!("`{}` reads the box where `{}` keeps it", name, from))
                 .with_fix(format!(

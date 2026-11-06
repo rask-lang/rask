@@ -28,7 +28,7 @@ func bad_drop_through_deref() {
     let first = Heap(Step(label: "a", next: second))
     ensure drop(first)
     if (*first).next? as n {
-        // ERROR: cannot give away `n` — `(*first).next` still holds it [E0880]
+        // ERROR: cannot give away `n` — `(*first).next` still holds it [E0956]
         drop(n)
     }
 }
@@ -37,7 +37,7 @@ func bad_drop_through_deref() {
 func bad_rebind_field() {
     let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
     if s.next? as n {
-        // ERROR: cannot give away `n` — `s.next` still holds it [E0880]
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0956]
         let m = n
         println(m.label)
     }
@@ -46,7 +46,7 @@ func bad_rebind_field() {
 // --- returned out of an owned parameter's field ---
 func bad_return(take s: Step) -> Heap<Step>? {
     if s.next? as n {
-        // ERROR: cannot give away `n` — `s.next` still holds it [E0880]
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0956]
         return n
     }
     drop(s)
@@ -58,7 +58,7 @@ func bad_drop_matched() {
     let l = Heap(List.Cons(1, Heap(List.Nil)))
     ensure drop(l)
     match *l {
-        // ERROR: cannot give away `rest` — `*l` still holds it [E0880]
+        // ERROR: cannot give away `rest` — `*l` still holds it [E0956]
         List.Cons(_, rest) => drop(rest),
         List.Nil => {},
     }
