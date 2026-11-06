@@ -1154,6 +1154,27 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
+            PartOwnerChanged { owner, operation, part, from, part_at } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` while `{}` reads a box inside it",
+                    operation, owner, part
+                ))
+                .with_code("E0957")
+                .with_primary(self.span, format!("`{}` goes with this, and `{}` still reads it", from, part))
+                .with_secondary(*part_at, format!("`{}` reads `{}` from here to the end of its block", part, from))
+                .with_fix(format!(
+                    "finish with `{}` first: do this after the block that bound it",
+                    part
+                ))
+                .with_why(
+                    "a box read back out of its holder is a borrow, and the holder \
+                     frees it. Giving the holder away or replacing the box while \
+                     the borrow is live would leave it reading freed memory \
+                     [mem.heap/HP3, mem.borrowing/S1]"
+                        .to_string(),
+                )
+            }
+
             ConsumeLoopItem { name, from, loop_at, sink } => {
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),

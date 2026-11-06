@@ -64,6 +64,49 @@ func bad_drop_matched() {
     }
 }
 
+// --- `Heap<T>?` matched out of an enum is the enum's too ---
+enum Chain {
+    Link(string, Heap<Chain>?)
+    End
+}
+
+func bad_drop_nested_optional() {
+    let tail: Heap<Chain>? = Heap(Chain.End)
+    let l = Heap(Chain.Link("a", tail))
+    ensure drop(l)
+    match *l {
+        Chain.Link(_, next) => {
+            if next? as n {
+                // ERROR: cannot give away `n` — `next` still holds it [E0956]
+                drop(n)
+            }
+        },
+        Chain.End => {},
+    }
+}
+
+// --- the holder freed while the part still reads it ---
+func bad_owner_dropped() {
+    let first = Heap(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    if (*first).next? as n {
+        // ERROR: cannot give away `first` while `n` reads a box inside it [E0957]
+        drop(first)
+        println("{(*n).label}")
+    } else {
+        drop(first)
+    }
+}
+
+// --- the box replaced under it ---
+func bad_slot_replaced() {
+    mut s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        // ERROR: cannot replace `s.next` while `n` reads a box inside it [E0957]
+        s.next = Heap(Step(label: "c", next: none))
+        println("{(*n).label}")
+    }
+}
+
 // --- what is fine: reading it where it is ---
 func good_read() {
     let second = Heap(Step(label: "b", next: none))
@@ -79,6 +122,18 @@ func good_local_moves() {
     let o: Heap<Step>? = Heap(Step(label: "c", next: none))
     if o? as h {
         drop(h)
+    }
+}
+
+// --- and a new `n` inside the branch is a new value, not the part ---
+func good_name_reused() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        println(n.label)
+        let f = |take n: Heap<Step>| drop(n)
+        f(Heap(Step(label: "c", next: none)))
+        let n = Heap(Step(label: "d", next: none))
+        drop(n)
     }
 }
 

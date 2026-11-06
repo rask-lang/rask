@@ -417,6 +417,10 @@ struct PartOf {
     /// reads. The aggregate's release frees the block (mem.heap: reading one
     /// back out is a borrow), so giving the binding away would free it twice.
     held: bool,
+    /// For a held part, the place holding it as a path: `(*first).next` is
+    /// `first` and `["next"]`. While the part is live that place can't be
+    /// given away or replaced, since the box would go with it.
+    owner: Option<(String, Vec<String>)>,
 }
 
 /// A non-Copy field read, as the value it views.
@@ -1540,8 +1544,12 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_block(&mut self, stmts: &[Stmt]) {
         let shadowed_on_entry = self.shadowed_holds.clone();
+        // A `let` in the block may reuse a part's name (`parts`); the part is
+        // back once the block's own names are gone.
+        let parts_on_entry = self.parts.clone();
         self.check_block_body(stmts);
         self.shadowed_holds = shadowed_on_entry;
+        self.parts = parts_on_entry;
     }
 
     fn check_block_body(&mut self, stmts: &[Stmt]) {
@@ -2287,6 +2295,7 @@ impl<'a> OwnershipChecker<'a> {
                     let value_ty = self.node_ty(&init.id).cloned();
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
+                self.parts.remove(name);
                 self.track_owned_binding(name, init);
             }
             StmtKind::MutTuple { patterns, init } => {
@@ -2363,6 +2372,7 @@ impl<'a> OwnershipChecker<'a> {
                     let value_ty = self.node_ty(&init.id).cloned();
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
+                self.parts.remove(name);
                 self.track_owned_binding(name, init);
             }
             // `let Point { x, .. } = p` — reading fields out of the source is a
@@ -2462,6 +2472,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(value);
                 self.store_target = None;
                 self.give_away_if_lent(value, "this assignment");
+                self.check_part_owner_kept(target, "replace", stmt.span);
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
                 if let Some(place) = self.replaced_place(stmt) {
@@ -2760,6 +2771,10 @@ impl<'a> OwnershipChecker<'a> {
                     });
                 }
                 let saved_items = self.borrowed_loop_items.clone();
+                let saved_parts = self.parts.clone();
+                for name in &binding_names {
+                    self.parts.remove(name);
+                }
                 let lender = if *mutate { None } else { self.loop_lender(iter) };
                 // PT1: a pointer into an item points into the collection.
                 let lends = *mutate || lender.is_some();
@@ -2776,6 +2791,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
+                self.parts = saved_parts;
                 if pushed {
                     self.active_for_mutates.pop();
                 }
@@ -3520,7 +3536,10 @@ impl<'a> OwnershipChecker<'a> {
                 let saved_borrowed_params = self.borrowed_params.clone();
                 let saved_mutate_params = self.mutate_params.clone();
                 let saved_closure_params = self.closure_params.clone();
+                let saved_parts = self.parts.clone();
                 for p in params {
+                    // A parameter is a new name, whatever an outer `n` was.
+                    self.parts.remove(&p.name);
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
                     self.closure_params.insert(p.name.clone());
                     self.borrowed_params.remove(&p.name);
@@ -3626,6 +3645,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrowed_params = saved_borrowed_params;
                 self.mutate_params = saved_mutate_params;
                 self.closure_params = saved_closure_params;
+                self.parts = saved_parts;
 
                 // A carrying closure took the resource, so the outer scope
                 // stops owing it. A borrowing one still owes what it lent.
@@ -4878,6 +4898,7 @@ impl<'a> OwnershipChecker<'a> {
                             BindingState::PointerDead { .. } => {}
                         }
                     }
+                    self.report_part_owner_changed(&source_name, &[], source_name.clone(), "move", span);
                     self.bindings.insert(source_name, BindingState::Moved { at: span });
                 }
             }
@@ -5286,7 +5307,7 @@ impl<'a> OwnershipChecker<'a> {
     /// never reaches `consume_binding`, so this is where it's caught.
     fn check_held_part_returned(&mut self, expr: &Expr) -> bool {
         let ExprKind::Ident(name) = &expr.kind else { return false };
-        let Some((bound_at, PartOf { from, held: true })) = self.parts.get(name).cloned() else {
+        let Some((bound_at, PartOf { from, held: true, .. })) = self.parts.get(name).cloned() else {
             return false;
         };
         self.errors.push(OwnershipError {
@@ -5346,6 +5367,7 @@ impl<'a> OwnershipChecker<'a> {
         for (place, via) in self.resized_places(call) {
             let op = if via.is_some() { "resize".to_string() } else { operation.clone() };
             self.report_held_source_change(place, &op, via.clone(), call.span);
+            self.check_part_owner_kept(place, &op, call.span);
             // PT3: and its buffer may have moved under any pointer into it.
             if let Some(root) = Self::assign_root(place) {
                 self.kill_pointers_into(
@@ -7863,6 +7885,9 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
+        // Reported, and the consume still goes ahead: the mistake is when it
+        // happens, and refusing it would add "never consumed" on top.
+        self.report_part_owner_changed(name, &[], name.to_string(), "give away", span);
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
         // which is what happened: the move was tracked per function, so the
@@ -7895,7 +7920,7 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
-        if let Some((matched_at, PartOf { from, held: true })) = self.parts.get(name).cloned() {
+        if let Some((matched_at, PartOf { from, held: true, .. })) = self.parts.get(name).cloned() {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::GiveAwayHeldPart {
                     name: name.to_string(),
@@ -8177,12 +8202,13 @@ impl<'a> OwnershipChecker<'a> {
     /// payload is the pattern's (mem.heap).
     fn pattern_part_source(&self, scrutinee: &Expr) -> Option<PartOf> {
         if let Some(from) = self.borrowed_source(scrutinee) {
-            return Some(PartOf { from, held: false });
+            return Some(PartOf { from, held: false, owner: None });
         }
         if matches!(self.node_ty(&scrutinee.id), Some(Type::Result { .. })) {
             return None;
         }
-        self.held_place(scrutinee).map(|from| PartOf { from, held: true })
+        let owner = Self::place_path(scrutinee)?;
+        self.held_place(scrutinee).map(|from| PartOf { from, held: true, owner: Some(owner) })
     }
 
     /// What `scrutinee? as v` makes `v` part of. A bare optional local gives
@@ -8191,16 +8217,78 @@ impl<'a> OwnershipChecker<'a> {
     /// optional stays where it is, so a `Heap` it holds stays the holder's.
     fn present_part_source(&self, scrutinee: &Expr) -> Option<PartOf> {
         if let Some(from) = self.borrowed_source(scrutinee) {
-            return Some(PartOf { from, held: false });
+            return Some(PartOf { from, held: false, owner: None });
         }
-        if matches!(scrutinee.kind, ExprKind::Ident(_)) {
-            return None;
+        if let ExprKind::Ident(name) = &scrutinee.kind {
+            // A part is no wrapper of its own: what it reads, its holder frees.
+            let (_, of) = self.parts.get(name).filter(|(_, of)| of.held)?;
+            return Some(PartOf { from: name.clone(), held: true, owner: of.owner.clone() });
         }
         let payload = self.node_ty(&scrutinee.id)?.as_option()?;
         if !self.pattern_payload_is_borrowed(payload) {
             return None;
         }
-        self.held_place(scrutinee).map(|from| PartOf { from, held: true })
+        let owner = Self::place_path(scrutinee)?;
+        self.held_place(scrutinee).map(|from| PartOf { from, held: true, owner: Some(owner) })
+    }
+
+    /// A place as its root binding and the fields below it. A deref reaches
+    /// through the `Heap` to the value it owns, and an element counts as its
+    /// container, as `report_held_source_change` reads them.
+    fn place_path(expr: &Expr) -> Option<(String, Vec<String>)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some((name.clone(), Vec::new())),
+            ExprKind::Field { object, field } => {
+                let (root, mut fields) = Self::place_path(object)?;
+                fields.push(field.clone());
+                Some((root, fields))
+            }
+            ExprKind::Index { object, .. } => Self::place_path(object),
+            ExprKind::Unary { op: UnaryOp::Deref, operand } => Self::place_path(operand),
+            _ => None,
+        }
+    }
+
+    /// The live part read out of `place` or out of something inside it, if
+    /// any: `n` from `if (*first).next? as n` for `first` or `first.next`,
+    /// but not for `first.label`.
+    fn part_inside(&self, root: &str, fields: &[String]) -> Option<(String, Span, String)> {
+        self.parts.iter().find_map(|(name, (at, of))| {
+            let (r, f) = of.owner.as_ref()?;
+            (r == root && (f.starts_with(fields) || fields.starts_with(f)))
+                .then(|| (name.clone(), *at, of.from.clone()))
+        })
+    }
+
+    /// `owner` given away or replaced while a part read out of it is live:
+    /// the part would go on reading a box that's gone, and native printed
+    /// garbage or segfaulted. Returns whether it reported.
+    fn check_part_owner_kept(&mut self, owner: &Expr, operation: &str, span: Span) -> bool {
+        let Some((root, fields)) = Self::place_path(owner) else { return false };
+        let shown = self.held_place(owner).unwrap_or_else(|| root.clone());
+        self.report_part_owner_changed(&root, &fields, shown, operation, span)
+    }
+
+    fn report_part_owner_changed(
+        &mut self,
+        root: &str,
+        fields: &[String],
+        shown: String,
+        operation: &str,
+        span: Span,
+    ) -> bool {
+        let Some((part, part_at, from)) = self.part_inside(root, fields) else { return false };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::PartOwnerChanged {
+                owner: shown,
+                operation: operation.to_string(),
+                part,
+                from,
+                part_at,
+            },
+            span,
+        });
+        true
     }
 
     /// A place rooted in a value this frame can see, rendered for a message:
@@ -8236,8 +8324,12 @@ impl<'a> OwnershipChecker<'a> {
     /// A `@resource` is not. There are no destructors, so nothing but an
     /// explicit consume ever closes one, and matching it out of an enum is the
     /// last chance to.
+    ///
+    /// So is a `Heap<T>?` slot: the optional is a wrapper only when it's a
+    /// binding of its own, and inside an aggregate the aggregate's release
+    /// still frees what's behind the tag.
     fn pattern_payload_is_borrowed(&self, ty: &Type) -> bool {
-        ty.heap_payload().is_some()
+        ty.heap_payload().is_some() || ty.as_option().is_some_and(|t| t.heap_payload().is_some())
     }
 
     /// Whether an expression's inferred type is transitively linear.

@@ -497,6 +497,21 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// The place a held part reads was given away, moved, replaced or
+    /// resized while the part was still live: `if (*first).next? as n {
+    /// drop(first); use(n) }` read a freed box.
+    #[error("cannot {operation} `{owner}` while `{part}` reads a box inside it")]
+    PartOwnerChanged {
+        /// The place being changed, rendered: `first`, `s.next`.
+        owner: String,
+        /// "give away", "move", "replace", or the resizing method.
+        operation: String,
+        part: String,
+        /// What `part` reads, rendered: `(*first).next`.
+        from: String,
+        part_at: Span,
+    },
+
     /// A part matched out of a borrowed value was given away. `match s {
     /// Full(c) => close(c) }` with `s` only lent: `c` is the caller's too,
     /// so consuming it closes a handle they still hold.
