@@ -36,12 +36,13 @@ Determinism also pays for itself in development: rewind debugging is a checkpoin
 |---|---|---|
 | Kernel | The step loop; the input log and command ordering; stable entity ids; deterministic collections and random streams; the space partition, sleep and wake; parallel scheduling with a fixed merge order; snapshots, saves with migrations, replays; lockstep networking with joining, desync detection and recovery; the state hash. | Every game needs it, it's hard, and getting it wrong breaks determinism. Not replaceable. |
 | Libraries | Pathfinding, crowd avoidance, graph networks, visibility and fog of war, deterministic 2D physics, the renderer, UI and text, the audio mixer, the mod host (Raido). | Optional and replaceable. None uses a door the game can't. |
-| Game | Rules, AI, jobs, items, content, art. | Native Rask, with the kernel's guarantees. Mods are optional. |
+| Game | Rules, AI, jobs, items, content, art. | Native Rask with the kernel's guarantees, a Raido mod over native systems, or a mix. The game's choice. |
 
 ## Decided
 
-- **The game is native Rask.** Hot loops are the game in this genre: Factorio's belts, Oxygen Not Included's gases, Noita's materials. A kernel that owned them would impose one belt model on every game; a game that wrote them outside the kernel's guarantees would desync. So game code is ordinary Rask and gets the same guarantees as the kernel: deterministic collections, kernel-run parallelism, and the build plus the game code hashed into the session's identity, so two clients on different builds can't join each other.
-- **Mods are optional, and they're Raido.** A game that wants modding hosts Raido; one that doesn't, doesn't.
+- **Native game code gets the kernel's guarantees.** Hot loops are the game in this genre: Factorio's belts, Oxygen Not Included's gases, Noita's materials. A kernel that owned them would impose one belt model on every game; game code outside the kernel's guarantees would desync. So a game's own Rask gets the same guarantees as the kernel: deterministic collections, kernel-run parallelism, and the build plus the game code hashed into the session's identity, so two clients on different builds can't join each other.
+- **Where the game's logic lives is the game's choice.** It can be all native Rask. Or it can be Factorio's shape: the game's hot loops are native Rask systems, hooks and integrators, and the core rules and content are a Raido mod on top that drives them, so the base game is a mod like any other. Or any mix. In the mod shape, the base mod reaches native code only through the externs the game registers, the same ones every other mod gets, so whatever the game's designers can do, a modder can do.
+- **Mods are Raido.** A game that hosts mods, or is one, uses Raido; a game that doesn't want modding never loads it.
 - **Lockstep, co-op first.** The state is far too big to send and the inputs are tiny. Every client holds the full state, so map hacks are possible. That's fine for co-op and wrong for competitive play, which isn't the target.
 - **No MMO shape.** Partial world state and sharding is a different business.
 - **Pause and speed are inputs.** In lockstep a speed change is just another entry in the log, so multiplayer pauses and changes speed like single player (Paradox's games and Age of Empires do). Who may pause is the game's call. Multiplayer sessions save and resume.
@@ -97,7 +98,7 @@ Rendering doesn't join the tick. The simulation runs on its own thread at a fixe
 
 ## Mods
 
-When a game hosts mods, they're Raido, which makes several hard problems easy:
+When a game hosts mods, or its core is one, they're Raido, which makes several hard problems easy:
 
 - **Downloading code from a server is safe.** Raido has no I/O; a mod reaches only the externs the game registers. Images and sounds from a mod go through C decoders, so those run sandboxed or validated.
 - **A mod is its hash.** Bytecode is content-addressed, so the mod set is a list of hashes, and together with the build hash it's the session's identity. Mismatched mods, RimWorld multiplayer's main cause of desyncs, can't happen.
@@ -109,7 +110,7 @@ Two stages, as in Factorio. The data stage runs once at load and declares what e
 - **Simulation mods** change the rules. They must match on every machine and are part of the session's identity.
 - **Client mods** change UI, sounds and visuals. They're local, never hashed, and can read the state but never write it.
 
-Raido is an interpreter, so 100,000 units each running a script every tick won't fit. Mods configure native systems with data and handle events; a mod that needs a new hot loop asks the game for a system. Compiling Raido to native code later would move that line, provided the compiled code keeps the interpreter's results and its fuel accounting.
+Raido is an interpreter, so 100,000 units each running a script every tick won't fit. That's the line between the two halves of the mod shape: per-entity work is native (the game's systems, hooks and integrators, registered as externs), and the mod configures them with data and handles events. A mod that needs a new hot loop asks the game for a system. Compiling Raido to native code later would move that line, provided the compiled code keeps the interpreter's results and its fuel accounting.
 
 ## Saves, replays and versions
 
