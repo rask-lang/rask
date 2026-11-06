@@ -40,7 +40,9 @@ impl Interpreter {
             let final_arg = first.and_then(|name| self.env.get(&name));
             self.leave_closure();
             let value = match result {
-                Ok(v) | Err(RuntimeError::Return(v)) => closure_result(v, wraps_ok),
+                // A `try` in the body leaves the closure, as a `return` does,
+                // with the error as its result (#1781).
+                Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => closure_result(v, wraps_ok),
                 Err(e) => return Err(e),
             };
             return Ok((value, final_arg));
@@ -128,7 +130,10 @@ impl Interpreter {
         });
         self.leave_closure();
         match result {
-            Ok(v) | Err(RuntimeError::Return(v)) => Ok(closure_result(v, wraps_ok)),
+            // A `try` in the body leaves the closure, as a `return` does, with
+            // the error as its result. Escaping it left the function that
+            // called the closure instead (#1781).
+            Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => Ok(closure_result(v, wraps_ok)),
             Err(e) => Err(e),
         }
     }
@@ -278,39 +283,6 @@ impl Interpreter {
                     _ => Err(RuntimeError::TypeError(
                         "format() first argument must be a string".into(),
                     )),
-                }
-            }
-            BuiltinKind::Min => {
-                if args.len() != 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                match Self::value_cmp(&args[0], &args[1]) {
-                    Some(std::cmp::Ordering::Greater) => Ok(args.into_iter().nth(1).unwrap()),
-                    _ => Ok(args.into_iter().next().unwrap()),
-                }
-            }
-            BuiltinKind::Max => {
-                if args.len() != 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                match Self::value_cmp(&args[0], &args[1]) {
-                    Some(std::cmp::Ordering::Less) => Ok(args.into_iter().nth(1).unwrap()),
-                    _ => Ok(args.into_iter().next().unwrap()),
-                }
-            }
-            BuiltinKind::Clamp => {
-                if args.len() != 3 {
-                    return Err(RuntimeError::ArityMismatch { expected: 3, got: args.len() });
-                }
-                let value = &args[0];
-                let lo = &args[1];
-                let hi = &args[2];
-                if Self::value_cmp(value, lo) == Some(std::cmp::Ordering::Less) {
-                    Ok(args.into_iter().nth(1).unwrap())
-                } else if Self::value_cmp(value, hi) == Some(std::cmp::Ordering::Greater) {
-                    Ok(args.into_iter().nth(2).unwrap())
-                } else {
-                    Ok(args.into_iter().next().unwrap())
                 }
             }
             BuiltinKind::Skip => {
@@ -884,70 +856,40 @@ impl Interpreter {
         };
 
         let closure = args[2].clone();
+        if !matches!(closure, Value::Closure { .. }) {
+            return Err(RuntimeError::TypeError("step: body must be a closure".into()));
+        }
 
         let state = self.build_state.as_ref().ok_or_else(|| {
             RuntimeError::Generic("step() used outside build script".into())
         })?;
 
-        // Check if step cache exists and inputs haven't changed
-        if let Some(ref cache_dir) = state.step_cache_dir {
-            let current_hash = build_context::hash_inputs(
-                &state.package_dir,
-                &inputs,
-                &state.tool_versions,
-            ).map_err(RuntimeError::Generic)?;
-
-            if let Some(cached_hash) = build_context::load_step_hash(cache_dir, &name) {
-                if cached_hash == current_hash {
-                    // Inputs unchanged — skip this step
-                    return Ok(Value::Unit);
+        // ST1: a step whose inputs hash as they did when it last succeeded
+        // doesn't run again.
+        let cached = match &state.step_cache_dir {
+            Some(cache_dir) => {
+                let current = build_context::hash_inputs(&state.package_dir, &inputs, &state.tool_versions)
+                    .map_err(RuntimeError::Generic)?;
+                if build_context::load_step_hash(cache_dir, &name) == Some(current) {
+                    return Ok(Value::ok(Value::Unit));
                 }
+                Some((cache_dir.clone(), current))
             }
+            None => None,
+        };
 
-            // Run the closure body
-            let result = match closure {
-                Value::Closure { params, body, captured_env, lent, generics, .. } => {
-                    if !params.is_empty() {
-                        return Err(RuntimeError::TypeError(
-                            "step body closure must take no parameters".into(),
-                        ));
-                    }
-                    self.enter_closure(&captured_env, &lent, &generics);
-                    let result = self.eval_expr(&body);
-                    self.leave_closure();
-                    result
-                }
-                _ => return Err(RuntimeError::TypeError("step: body must be a closure".into())),
-            };
-
-            // Save hash on success
-            match &result {
-                Ok(_) => {
-                    if let Some(ref cache_dir) = self.build_state.as_ref().and_then(|s| s.step_cache_dir.as_ref()) {
-                        let _ = build_context::save_step_hash(cache_dir, &name, current_hash);
-                    }
-                }
-                Err(_) => {} // Don't cache failed steps
-            }
-
-            result.map_err(|d| d.error)
-        } else {
-            // No cache dir configured — always run
-            match closure {
-                Value::Closure { params, body, captured_env, lent, generics, .. } => {
-                    if !params.is_empty() {
-                        return Err(RuntimeError::TypeError(
-                            "step body closure must take no parameters".into(),
-                        ));
-                    }
-                    self.enter_closure(&captured_env, &lent, &generics);
-                    let result = self.eval_expr(&body);
-                    self.leave_closure();
-                    result.map_err(|d| d.error)
-                }
-                _ => Err(RuntimeError::TypeError("step: body must be a closure".into())),
-            }
+        // The body's own `void or Error` is the step's.
+        let result = self.call_value(closure, Vec::new())?;
+        let failed = matches!(&result, Value::Enum { name, variant, .. } if name == "Result" && variant == "Err");
+        // A body that ran off its end gave back nothing; that's success.
+        let result = match result {
+            r @ Value::Enum { .. } if matches!(&r, Value::Enum { name, .. } if name == "Result") => r,
+            _ => Value::ok(Value::Unit),
+        };
+        if let (Some((cache_dir, hash)), false) = (cached, failed) {
+            let _ = build_context::save_step_hash(&cache_dir, &name, hash);
         }
+        Ok(result)
     }
 }
 

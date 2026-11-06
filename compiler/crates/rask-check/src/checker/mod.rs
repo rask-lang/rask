@@ -40,7 +40,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name};
+pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name, ErasedError};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -381,6 +381,8 @@ pub struct TypeChecker {
     /// interface's symbol (`TypeTable::interface_symbol`).
     /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
     pub(super) interface_coercions: HashMap<NodeId, String>,
+    /// See `TypedProgram::erased_try_errors`.
+    pub(super) erased_try_errors: HashMap<NodeId, type_defs::ErasedError>,
     /// See `TypedProgram::arm_widenings`.
     pub(super) arm_widenings: HashMap<NodeId, Type>,
     /// CB1/CB2: function values coerced to a C function pointer, and where.
@@ -718,6 +720,7 @@ impl TypeChecker {
             in_assign_target: false,
             in_stmt_expr: false,
             interface_coercions: HashMap::new(),
+            erased_try_errors: HashMap::new(),
             arm_widenings: HashMap::new(),
             c_fn_pointers: HashMap::new(),
             extern_c_fns: std::collections::HashSet::new(),
@@ -1147,12 +1150,12 @@ impl TypeChecker {
                     type_defs::Callee::Free(sym) => type_defs::Callee::Free(*sym),
                     // Left as interned ids, not normalized to names: the
                     // receiver's `TypeId` is what dispatch keys on.
-                    type_defs::Callee::Method { recv, method, package } => {
-                        type_defs::Callee::Method {
-                            recv: self.ctx.apply(recv),
-                            method: method.clone(),
-                            package: package.clone(),
-                        }
+                    type_defs::Callee::Method { recv, method, package, body } => {
+                        let recv = self.ctx.apply(recv);
+                        // A derived method gets its body after the calls to
+                        // it were checked, so those are answered here.
+                        let body = body.or_else(|| self.types.method_body(&recv, method, package.as_deref()));
+                        type_defs::Callee::Method { recv, method: method.clone(), package: package.clone(), body }
                     }
                 };
                 (*id, settled)
@@ -1239,6 +1242,10 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             interface_coercions,
+            erased_try_errors: std::mem::take(&mut self.erased_try_errors)
+                .into_iter()
+                .map(|(id, e)| (id, type_defs::ErasedError { error: self.ctx.apply(&e.error), interface: e.interface }))
+                .collect(),
             arm_widenings,
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),
@@ -1651,7 +1658,8 @@ pub fn typecheck_with_stdlib_lenient(
         .chain(rest.into_iter().filter(|d| matches!(d.kind,
             rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_))))
         .collect();
-    let (mut typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    let (mut typed, mut errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    errors.extend(crate::unused_results::unused_results(decls, &typed));
     typed.attach_derived(decls);
     (typed, errors)
 }

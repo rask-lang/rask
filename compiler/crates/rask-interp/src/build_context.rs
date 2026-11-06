@@ -116,9 +116,43 @@ fn check_build_exec(state: &BuildState, method: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The methods stdlib/build.rk declares `T or BuildError`: a failure is the
+/// script's to handle, not the end of the run.
+const FALLIBLE: &[&str] = &[
+    "write_source", "write_file", "declare_dependency", "exec", "exec_output",
+    "compile_c", "pkg_config", "tool_version",
+];
+
 /// Dispatch a method call on BuildContext.
 /// `state` is the mutable BuildState on the Interpreter.
 pub fn call_method(
+    state: &mut BuildState,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value, String> {
+    // PM9: a sandbox denial is the manifest's to fix, not a failure the
+    // script may catch and carry on from.
+    if matches!(method, "exec" | "exec_output") {
+        check_build_exec(state, method)?;
+    }
+    let result = run_method(state, method, args);
+    if !FALLIBLE.contains(&method) {
+        return result;
+    }
+    Ok(match result {
+        Ok(value) => Value::ok(value),
+        Err(reason) => Value::err(build_error(reason)),
+    })
+}
+
+/// A `BuildError` value carrying `reason`.
+pub fn build_error(reason: String) -> Value {
+    let mut fields = IndexMap::new();
+    fields.insert("reason".into(), Value::String(Arc::new(Mutex::new(reason))));
+    Value::new_struct("BuildError".into(), fields, None)
+}
+
+fn run_method(
     state: &mut BuildState,
     method: &str,
     args: Vec<Value>,
@@ -197,7 +231,6 @@ pub fn call_method(
 
         "exec" => {
             // exec(program: string, args: [string]) -> () or Error
-            check_build_exec(state, "exec")?;
             if args.len() != 2 {
                 return Err(format!("exec expects 2 args, got {}", args.len()));
             }
@@ -219,7 +252,6 @@ pub fn call_method(
 
         "exec_output" => {
             // exec_output(program: string, args: [string]) -> string or Error
-            check_build_exec(state, "exec_output")?;
             if args.len() != 2 {
                 return Err(format!("exec_output expects 2 args, got {}", args.len()));
             }

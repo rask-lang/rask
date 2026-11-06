@@ -526,6 +526,7 @@ impl TypeChecker {
                     recv: recv.clone(),
                     method: found.filed,
                     package: self.conformance_package_for_call(recv, "", span),
+                    body: found.sig.decl,
                 },
             );
         }

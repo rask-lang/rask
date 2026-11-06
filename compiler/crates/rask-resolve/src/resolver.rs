@@ -140,7 +140,7 @@ impl Resolver {
         for entry in crate::symbol::BUILTIN_FUNCTIONS {
             let sym_id = self.symbols.insert(
                 entry.name.to_string(),
-                SymbolKind::BuiltinFunction { builtin: entry.kind },
+                SymbolKind::BuiltinFunction { builtin: entry.kind, decl: None },
                 None,
                 Span::new(0, 0),
                 true,
@@ -206,7 +206,14 @@ impl Resolver {
         // print, format, etc. keep their BuiltinFunction symbol kind.
         let stub_reg = rask_stdlib::StubRegistry::load();
         for f in stub_reg.functions() {
-            if self.scopes.lookup(&f.name).is_some() {
+            if let Some(bound) = self.scopes.lookup(&f.name) {
+                // A builtin the stdlib declares with a body: the symbol the
+                // name already has is that declaration's.
+                if let Some(SymbolKind::BuiltinFunction { decl, .. }) =
+                    self.symbols.get_mut(bound).map(|s| &mut s.kind)
+                {
+                    *decl = Some(f.fn_id);
+                }
                 continue;
             }
             let ret_ty = if f.ret_ty == TypeExpr::Unit { None } else { Some(f.ret_ty.clone()) };
@@ -256,6 +263,7 @@ impl Resolver {
                     params: param_syms,
                     ret_ty,
                     is_unsafe: false,
+                    decl: f.fn_id,
                 },
                 None,
                 Span::new(0, 0),
@@ -340,7 +348,7 @@ impl Resolver {
             }
             let sym_id = self.symbols.insert(
                 name.to_string(),
-                SymbolKind::BuiltinFunction { builtin: *builtin },
+                SymbolKind::BuiltinFunction { builtin: *builtin, decl: None },
                 None,
                 span,
                 false,
@@ -426,7 +434,7 @@ impl Resolver {
 
         // Builtin functions
         match (module, symbol) {
-            ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute },
+            ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute, decl: None },
             _ => {}
         }
 
@@ -806,6 +814,7 @@ impl Resolver {
                             params,
                             ret_ty: f.ret_ty.clone(),
                             is_unsafe: f.is_unsafe,
+                            decl: f.id,
                         },
                         None,
                         Span::new(0, 0),
@@ -1298,7 +1307,7 @@ impl Resolver {
 
         let sym_id = self.symbols.insert(
             base.clone(),
-            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), is_unsafe: fn_decl.is_unsafe },
+            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), is_unsafe: fn_decl.is_unsafe, decl: fn_decl.id },
             None,
             span,
             is_pub,

@@ -750,11 +750,10 @@ impl<'a> MirLowerer<'a> {
     /// message that only says which kind of `!` failed.
     fn lower_forced_error_panic(
         &mut self,
-        outer: &Expr,
         inner: &Expr,
         val: &MirOperand,
     ) -> Result<bool, LoweringError> {
-        let Some(msg_fn) = self.ctx.call_rewrites.get(&outer.id).cloned() else {
+        let Some(messages) = self.ctx.error_messages(inner.id) else {
             return Ok(false);
         };
         let found = self.ctx.lookup_raw_type(inner.id);
@@ -770,7 +769,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: self.payload_field(val.clone(), &result_ty, &err_ty),
         }));
 
-        let Some(text) = self.emit_error_message_text(&msg_fn, payload, &err_ty) else {
+        let Some(text) = self.emit_error_message_text(&messages, payload, &err_ty) else {
             return Ok(false);
         };
 
@@ -784,29 +783,28 @@ impl<'a> MirLowerer<'a> {
 
     /// Call the error's `message()` and hand back the string local.
     ///
-    /// `msg_fn` is the rewrite reachability recorded: every `{Type}_message`
-    /// body it queued for this site, joined by `|`. One name is a concrete
-    /// error type; several is a union, where which member is present isn't
-    /// known until run time, so the calls sit behind a switch on the member
-    /// index. `None` when the set doesn't match the type — a switch missing an
-    /// arm would call a function nothing emits.
+    /// `messages` is one symbol per error the value can be
+    /// (`MirContext::error_messages`): one for a concrete error type, one per
+    /// member for a union, where which member is present isn't known until
+    /// run time, so the calls sit behind a switch on the member index.
     pub(super) fn emit_error_message_text(
         &mut self,
-        msg_fn: &str,
+        messages: &[String],
         payload: crate::LocalId,
         err_ty: &MirType,
     ) -> Option<crate::LocalId> {
-        let queued: Vec<&str> = msg_fn.split('|').collect();
         let err_ty = err_ty.clone();
         let text = self.builder.alloc_temp(MirType::Buffer);
         if let MirType::Union(members) = err_ty.clone() {
-            let arms = self.union_message_arms(&members, &queued)?;
+            if members.len() != messages.len() {
+                return None;
+            }
             // A union discriminates by the member index it carries at offset
             // 0, not by a one-byte tag — the same read `match` does.
             let idx = self.emit_enum_tag(MirOperand::Local(payload));
             let merge = self.builder.create_block();
             let blocks: Vec<crate::BlockId> =
-                arms.iter().map(|_| self.builder.create_block()).collect();
+                members.iter().map(|_| self.builder.create_block()).collect();
             let cases: Vec<(u64, crate::BlockId)> = blocks
                 .iter()
                 .enumerate()
@@ -818,7 +816,7 @@ impl<'a> MirLowerer<'a> {
                 cases,
                 default,
             }));
-            for (i, (member_ty, fn_name)) in arms.into_iter().enumerate() {
+            for (i, (member_ty, fn_name)) in members.into_iter().zip(messages.iter()).enumerate() {
                 self.builder.switch_to_block(blocks[i]);
                 let member_size = member_ty.size();
                 let member = self.builder.alloc_temp(member_ty.clone());
@@ -833,7 +831,7 @@ impl<'a> MirLowerer<'a> {
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(text),
-                    func: FunctionRef::internal(fn_name),
+                    func: FunctionRef::internal(fn_name.clone()),
                     args: vec![MirOperand::Local(member)],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -842,32 +840,14 @@ impl<'a> MirLowerer<'a> {
             }
             self.builder.switch_to_block(merge);
         } else {
-            let [only] = queued[..] else { return None };
+            let [only] = messages else { return None };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(text),
-                func: FunctionRef::internal(only.to_string()),
+                func: FunctionRef::internal(only.clone()),
                 args: vec![MirOperand::Local(payload)],
             }));
         }
         Some(text)
-    }
-
-    /// `(member type, message fn)` per union member, in member-index order.
-    /// `None` when any member's `{Name}_message` isn't among the bodies
-    /// reachability queued — a switch missing an arm would call a function
-    /// nothing emits, which is worse than the generic message it replaces.
-    fn union_message_arms(
-        &self,
-        members: &[MirType],
-        queued: &[&str],
-    ) -> Option<Vec<(MirType, String)>> {
-        members
-            .iter()
-            .map(|m| {
-                let name = format!("{}_message", self.mir_type_name(m)?);
-                queued.contains(&name.as_str()).then(|| (m.clone(), name))
-            })
-            .collect()
     }
 
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
@@ -909,13 +889,22 @@ impl<'a> MirLowerer<'a> {
 
     /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
     /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
+    /// The vtable is the one monomorphization made for this type and interface.
     pub(super) fn emit_interface_box(
         &mut self,
         val: MirOperand,
         concrete_mir_ty: &MirType,
         concrete: Option<&rask_types::Type>,
         interface_name: &str,
-    ) -> (MirOperand, MirType) {
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        let vtable_name = concrete
+            .and_then(|t| self.ctx.vtables.get(&(t.clone(), interface_name.to_string())))
+            .map(|vt| vt.name.clone())
+            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
+                "no vtable was made for boxing `{}` as `any {}`",
+                concrete.map(|t| self.ctx.type_defs.resolve_type_names(t).to_string()).unwrap_or_else(|| "?".into()),
+                interface_name,
+            )))?;
         // A layout names itself; a buffer doesn't say whether it's a string or
         // bytes, so that name comes from the checker.
         let concrete_type = self.mir_type_name(concrete_mir_ty)
@@ -923,7 +912,6 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| "unknown".to_string());
         let concrete_size = (concrete_mir_ty.size() as i64) as u32;
         let concrete_align = concrete_mir_ty.align();
-        let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
         let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
         let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
 
@@ -937,7 +925,7 @@ impl<'a> MirLowerer<'a> {
             vtable_name,
         }));
 
-        (MirOperand::Local(result_local), interface_obj_ty)
+        Ok((MirOperand::Local(result_local), interface_obj_ty))
     }
 
     /// Wrap a lowered closure into the layers its parameter declares.
@@ -1531,7 +1519,7 @@ impl<'a> MirLowerer<'a> {
         if !matches!(ty, MirType::InterfaceObject { .. }) {
             if let Some(interface_name) = self.ctx.interface_coercions.get(&expr.id).cloned() {
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return Ok(self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name));
+                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name);
             }
         }
         Ok((op, ty))
@@ -2081,7 +2069,7 @@ impl<'a> MirLowerer<'a> {
                         text.to_string(),
                     ))],
                 }));
-            } else if !self.lower_forced_error_panic(expr, inner, &val)? {
+            } else if !self.lower_forced_error_panic(inner, &val)? {
                 // No message to reach for: an absent `T?`, or an error
                 // type whose `message()` has no body to instantiate.
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -2144,7 +2132,7 @@ impl<'a> MirLowerer<'a> {
                 let interface_name = interface.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return Ok(self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name));
+                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name);
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
@@ -2340,11 +2328,8 @@ impl<'a> MirLowerer<'a> {
                 self.load_folded(&folded)
             } else if let Some(fnval) = self
                 .ctx
-                .call_rewrites
-                .get(&expr.id)
-                .cloned()
+                .function_value(expr.id)
                 .and_then(|copy| self.lower_fn_as_value(&copy))
-                .or_else(|| self.lower_fn_as_value(name))
             {
                 // Not a variable: a function's name used as a value. A generic
                 // one names the copy monomorphization made for this use.
@@ -2526,8 +2511,7 @@ impl<'a> MirLowerer<'a> {
             // signature: the modes are part of it (type.functions/FT1).
             let callee_sig: Option<super::FuncSig> = self.value_call_sig(func).or_else(|| {
                 func.name().and_then(|name| {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| name.to_string());
+                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string());
                     self.func_sigs.get(&key).cloned()
                 })
             });
@@ -2566,12 +2550,9 @@ impl<'a> MirLowerer<'a> {
             // Lower the callee expression and emit an indirect ClosureCall.
             let func_name = match func.name() {
                 Some(name) => {
-                    // Check for monomorphized generic call rewrite
-                    if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
-                        mangled.clone()
-                    } else {
-                        name.to_string()
-                    }
+                    // What the checker resolved, at this instance; the written
+                    // name only for what has no body in Rask (a builtin).
+                    self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string())
                 }
                 _ => {
                     let (callee_op, _callee_ty) = self.lower_expr(func)?;
@@ -5748,21 +5729,18 @@ impl<'a> MirLowerer<'a> {
                             // `json_encode_i64` printed the enum's own address
                             // (#689).
                             //
-                            // Which body that is, is reachability's call, not
-                            // ours: it recorded the name here and compiled the
-                            // body because of the record. Naming it here instead
-                            // meant codegen looked up a `JsonValue_to_string`
-                            // nobody had queued.
+                            // Monomorphization queued the same body
+                            // (`Symbols::json_value_encoder`).
                             if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
                                 let body = self
                                     .ctx
-                                    .call_rewrites
-                                    .get(&expr.id)
-                                    .cloned()
+                                    .symbols
+                                    .json_value_encoder(pretty, self.ctx.type_defs)
+                                    .map(|c| c.symbol)
                                     .ok_or_else(|| {
                                         LoweringError::InvalidConstruct(
-                                            "json.encode on a JsonValue, but reachability \
-                                             queued no encoder for it"
+                                            "json.encode on a JsonValue, but JsonValue has no \
+                                             encoder in Rask"
                                                 .to_string(),
                                         )
                                     })?;
@@ -5893,9 +5871,8 @@ impl<'a> MirLowerer<'a> {
                             // where the callee read an option's tag (#1348).
                             let callee_sig: Option<super::FuncSig> = self
                                 .ctx
-                                .call_rewrites
-                                .get(&expr.id)
-                                .and_then(|k| self.func_sigs.get(k))
+                                .method_call(expr.id)
+                                .and_then(|c| self.func_sigs.get(&c.symbol))
                                 .or_else(|| self.func_sigs.get(&func_name))
                                 .cloned();
                             let callee_params: Vec<Option<Type>> = callee_sig
@@ -6057,9 +6034,8 @@ impl<'a> MirLowerer<'a> {
                             // to a `Box_new` nobody emits (#820).
                             let func_name = self
                                 .ctx
-                                .call_rewrites
-                                .get(&expr.id)
-                                .cloned()
+                                .method_call(expr.id)
+                                .map(|c| c.symbol)
                                 .unwrap_or(func_name);
                             // `Shared.new/mutex/local` settle the strategy, so
                             // the constructor call resolves to that strategy's
@@ -6215,30 +6191,30 @@ impl<'a> MirLowerer<'a> {
             .map(|p| p.as_str().trim().to_string())
             .unwrap_or_default();
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
-        let callee_sig = {
-            let mut keys: Vec<String> = Vec::new();
-            // A method of a generic type is emitted per instantiation
-            // (`BufferedReader_read$Buffer`), and that is the only name its
-            // signature is filed under. Without it a `mutate` argument to one
-            // went by value into a parameter the body reads through a pointer.
-            if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
-                keys.push(mangled.clone());
+        // A body in Rask is the one `method_call` names, and its signature is
+        // filed under that symbol: per instantiation for a generic type's
+        // method (`BufferedReader_read$Buffer`). Only a native, which has no
+        // body to name, is looked up by the name its receiver spells.
+        let callee_sig = match self.ctx.method_call(expr.id) {
+            Some(call) => self.func_sigs.get(&call.symbol).cloned(),
+            None => {
+                let mut keys: Vec<String> = Vec::new();
+                if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
+                    keys.push(format!("{}_{}", prefix, dispatch_method));
+                }
+                if let Some(prefix) = self
+                    .ctx
+                    .lookup_raw_type(object.id)
+                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+                    .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+                {
+                    keys.push(format!("{}_{}", prefix, dispatch_method));
+                }
+                if let Some(recv) = object.name() {
+                    keys.push(format!("{}_{}", recv, dispatch_method));
+                }
+                keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
             }
-            if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
-                keys.push(format!("{}_{}", prefix, dispatch_method));
-            }
-            if let Some(prefix) = self
-                .ctx
-                .lookup_raw_type(object.id)
-                .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            {
-                keys.push(format!("{}_{}", prefix, dispatch_method));
-            }
-            if let Some(recv) = object.name() {
-                keys.push(format!("{}_{}", recv, dispatch_method));
-            }
-            keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
         let callee_params: Vec<Option<Type>> = callee_sig
             .as_ref()
@@ -6428,9 +6404,8 @@ impl<'a> MirLowerer<'a> {
 
         // A method with its own type parameters was monomorphized per call, so
         // dispatch has to name the copy rather than the generic body.
-        let qualified_name = self.ctx.call_rewrites
-            .get(&expr.id)
-            .cloned()
+        let qualified_name = self.ctx.method_call(expr.id)
+            .map(|c| c.symbol)
             .unwrap_or(qualified_name);
 
         // `Shared<T, S>` is one type over three runtime families (conc.sync/SH2).
@@ -10443,7 +10418,7 @@ impl<'a> MirLowerer<'a> {
                 // that is — `to_string` or a `message` bridged to it — was
                 // settled during reachability; without that name the receiver
                 // would be handed to `string_pad` as if the pointer were text.
-                match self.ctx.call_rewrites.get(&expr.id).cloned() {
+                match self.ctx.method_call(expr.id).map(|c| c.symbol) {
                     Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
                     None => {
                         let (op, _) = self

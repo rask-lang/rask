@@ -493,6 +493,15 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let args = self.place_method_args(call_node, method_sig, args);
+        // The signature applied is the declaration the call runs, unless the
+        // calling package's own block supplies the method (XC5): two
+        // packages' `label`s on one type have the same signature.
+        if let Some(Callee::Method { body, package, .. }) = call_node.and_then(|n| self.call_targets.get_mut(&n)) {
+            *body = package
+                .as_deref()
+                .and_then(|pkg| self.types.method_body(ty, &method_sig.name, Some(pkg)))
+                .or(method_sig.decl);
+        }
         if method_sig.effect.acquires || method_sig.effect.releases {
             if let (Some(call), Some((order_ty, _))) = (call_node, method_sig.params.last()) {
                 self.order_calls.insert(call, (method.to_string(), method_sig.effect, order_ty.clone()));
@@ -800,6 +809,7 @@ impl TypeChecker {
                         recv: ty.clone(),
                         method: method.clone(),
                         package: self.conformance_package_for_call(&ty, &method, span),
+                        body: None,
                     },
                 );
             }
@@ -909,6 +919,7 @@ impl TypeChecker {
                             recv: settled.clone(),
                             method: method.clone(),
                             package: self.conformance_package_for_call(&settled, &method, span),
+                            body: None,
                         },
                     );
                 }
@@ -946,6 +957,9 @@ impl TypeChecker {
             let is_debug = call_node
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
+            if let Some(Callee::Method { body, package, .. }) = call_node.and_then(|n| self.call_targets.get_mut(&n)) {
+                *body = self.types.method_body(&ty, &method, package.as_deref());
+            }
             if !is_debug && !self.is_displayable(&ty) {
                 let debug_only = match &ty {
                     Type::Tuple(_) | Type::Array { .. } | Type::Bytes => true,
@@ -1847,6 +1861,7 @@ impl TypeChecker {
                             recv: receiver.clone(),
                             method: filed.clone(),
                             package: self.conformance_package_for_call(&receiver, "", span),
+                            body: None,
                         },
                     );
                     self.operator_targets.insert(

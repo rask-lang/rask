@@ -267,23 +267,19 @@ pub fn reached_from<'f>(
 fn referred_to(f: &MirFunction, input: &BackEnd) -> Vec<String> {
     use rask_mir::{MirRValue, MirStmtKind};
     let mut out = Vec::new();
-    let mut interface_methods = None;
+    let mut vtables_by_name: Option<HashMap<&str, &rask_mono::VTable>> = None;
     for stmt in f.blocks.iter().flat_map(|b| &b.statements) {
         match &stmt.kind {
             MirStmtKind::Call { func, .. } => out.push(func.name.clone()),
             MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => out.push(n.clone()),
             MirStmtKind::ClosureCreate { func_name, .. } => out.push(func_name.clone()),
             MirStmtKind::EnsureHookRegister { thunk, .. } => out.push(thunk.clone()),
-            MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
-                let methods = interface_methods
-                    .get_or_insert_with(|| rask_check::interface_vtable_methods(&input.typed.types));
-                for method in methods.get(interface_name).into_iter().flatten() {
-                    out.push(
-                        input.mono.vtable_symbols
-                            .get(&(concrete_type.clone(), method.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{concrete_type}_{method}")),
-                    );
+            MirStmtKind::InterfaceBox { vtable_name, .. } => {
+                let vtables = vtables_by_name.get_or_insert_with(|| {
+                    input.mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect::<HashMap<_, _>>()
+                });
+                if let Some(vt) = vtables.get(vtable_name.as_str()) {
+                    out.extend(vt.slots.iter().map(|slot| slot.symbol.clone()));
                 }
             }
             _ => {}
@@ -367,8 +363,7 @@ fn emit_inner(
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types);
 
-    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
-    let vtables = collect_vtables(&functions, &interface_methods, input.mono);
+    let vtables = collect_vtables(&functions, input.mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables).map_err(fail)?;
     }
@@ -576,11 +571,9 @@ fn extern_func_names(decls: &[Decl]) -> HashSet<String> {
 }
 
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
-fn collect_vtables(
-    functions: &[MirFunction],
-    interface_methods: &HashMap<String, Vec<String>>,
-    mono: &MonoProgram,
-) -> Vec<rask_codegen::vtable::VTableInfo> {
+fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_codegen::vtable::VTableInfo> {
+    let by_name: HashMap<&str, &rask_mono::VTable> =
+        mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect();
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
     for mir_fn in functions {
@@ -594,15 +587,11 @@ fn collect_vtables(
                 if !seen.insert(vtable_name.clone()) {
                     continue;
                 }
-                let methods = interface_methods.get(interface_name).cloned().unwrap_or_default();
-                let vt_methods = methods.iter().enumerate()
-                    .map(|(i, method_name)| rask_codegen::vtable::VTableMethod {
-                        name: method_name.clone(),
-                        func_name: mono
-                            .vtable_symbols
-                            .get(&(concrete_type.clone(), method_name.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{}_{}", concrete_type, method_name)),
+                let Some(table) = by_name.get(vtable_name.as_str()) else { continue };
+                let vt_methods = table.slots.iter().enumerate()
+                    .map(|(i, slot)| rask_codegen::vtable::VTableMethod {
+                        name: slot.method.clone(),
+                        func_name: slot.symbol.clone(),
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();

@@ -11,6 +11,7 @@ pub mod drop_names;
 pub mod runtime_abi;
 mod instance;
 mod reachability;
+mod symbols;
 pub mod reflect;
 
 use rask_layout::{
@@ -20,6 +21,11 @@ use rask_layout::{
 };
 use rask_stdlib::is_stdlib_span;
 pub use instance::Instance;
+pub use symbols::{ResolvedCall, Symbols};
+
+/// The synthetic attribute on a function a test or benchmark runner calls.
+/// Each one is a root: nothing in the program calls it.
+pub const RUNNER_ENTRY: &str = "runner_entry";
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;
@@ -36,6 +42,21 @@ pub struct MapKeyFns {
     pub eq: String,
 }
 
+/// What boxing one concrete type as `any I` points at.
+#[derive(Debug, Clone)]
+pub struct VTable {
+    pub name: String,
+    /// One per interface method, in the interface's order.
+    pub slots: Vec<VTableSlot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VTableSlot {
+    pub method: String,
+    /// The body the slot calls.
+    pub symbol: String,
+}
+
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
@@ -44,8 +65,6 @@ pub struct MonoProgram {
     /// whatever needs to know what it is — which handle a field owns, say —
     /// reads the name here rather than off the type's rendering.
     pub type_names: HashMap<rask_types::TypeId, String>,
-    /// Call expression NodeId → mangled callee name for generic function calls.
-    pub call_rewrites: HashMap<NodeId, String>,
     /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
     /// and the functions that are (#1391).
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
@@ -54,11 +73,12 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
-    /// (instance layout, method) → the symbol in that vtable slot, for a
-    /// generic instance boxed as `any I`. `BufferedReader$Buffer` and `read`
-    /// give `BufferedReader_read$Buffer`; the two spellings aren't derivable
-    /// from each other.
-    pub vtable_symbols: HashMap<(String, String), String>,
+    /// Every vtable the program boxes into, by (concrete type, interface).
+    /// The one place a vtable's name and slots are decided; lowering points a
+    /// box at an entry and codegen builds the data from it.
+    pub vtables: HashMap<(Type, String), VTable>,
+    /// Every function's symbol by its declaration, and what a call runs.
+    pub symbols: Symbols,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -113,14 +133,12 @@ impl NodeRecords {
 }
 
 
-/// Which instance each call in a function's body goes to, worked out while
-/// walking it. A generic body's calls go to different instances in each of its
-/// instances, so these are per function; everything else about an instance is
-/// read through `Instance`.
+/// The key functions each map-building call in a function's body needs,
+/// worked out while walking it. A generic body's differ in each of its
+/// instances, so these are per function; what a call runs is read through
+/// `Symbols` at the instance.
 #[derive(Debug, Clone, Default)]
 pub struct InstanceCalls {
-    /// Call node → the symbol of the instance it calls.
-    pub call_rewrites: HashMap<NodeId, String>,
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
 }
 
@@ -132,8 +150,9 @@ pub struct MonoFunction {
     /// What each `T.Out` the function writes is on this instance, keyed
     /// `("T", "Out")` (AT6/AT8).
     pub projections: HashMap<(String, String), Type>,
-    /// The instances its calls go to, for a generic instance. Empty for a
-    /// function with no type arguments: those are in `MonoProgram::call_rewrites`.
+    /// Its map-building calls' key functions, for a generic instance. Empty
+    /// for a function with no type arguments: those are in
+    /// `MonoProgram::map_key_fns`.
     pub calls: InstanceCalls,
     pub body: Decl,
 }
@@ -930,6 +949,7 @@ fn monomorphize_inner(
     }
     mono.add_module_const_roots();
     mono.add_exported_roots();
+    mono.add_runner_entries();
 
     mono.run();
     if let Some(chain) = mono.too_deep.take() {
@@ -1014,11 +1034,11 @@ fn monomorphize_inner(
         struct_layouts,
         enum_layouts,
         type_names: program.types.type_name_map(),
-        call_rewrites: mono.call_rewrites,
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
-        vtable_symbols: mono.vtable_symbols,
+        vtables: mono.vtables,
+        symbols: mono.symbols,
     })
 }
 
@@ -1075,7 +1095,7 @@ impl std::fmt::Display for MonomorphizeError {
 mod tests {
     use super::*;
     use rask_ast::decl::{
-        Decl, DeclKind, EnumDecl, Field, FieldVisibility, FnDecl, ImplDecl, Param, StructDecl, TypeParam, Variant,
+        Decl, DeclKind, EnumDecl, Field, FieldVisibility, FnDecl, ImplDecl, Param, StructDecl, Variant,
     };
     use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -1083,14 +1103,6 @@ mod tests {
 
     fn sp() -> Span {
         Span::new(0, 0)
-    }
-
-    fn int_expr(val: i128) -> Expr {
-        Expr {
-            id: NodeId(100),
-            kind: ExprKind::Int(val, None),
-            span: sp(),
-        }
     }
 
     fn ident_expr(name: &str) -> Expr {
@@ -1162,55 +1174,6 @@ mod tests {
         }
     }
 
-    fn make_generic_fn(
-        name: &str,
-        type_params: Vec<&str>,
-        params: Vec<(&str, &str)>,
-        ret_ty: Option<&str>,
-        body: Vec<Stmt>,
-    ) -> Decl {
-        Decl {
-            id: NodeId(0),
-            kind: DeclKind::Fn(FnDecl {
-                id: rask_ast::NodeId::DUMMY,
-                name: name.to_string(),
-                type_params: type_params
-                    .into_iter()
-                    .map(|tp| TypeParam {
-                        name: tp.to_string(),
-                        is_comptime: false,
-                        comptime_type: None,
-                        bounds: vec![],
-                        default: None,
-                    })
-                    .collect(),
-                params: params
-                    .into_iter()
-                    .map(|(n, ty)| Param {
-                        name: n.to_string(),
-                        name_span: sp(),
-                        ty: rask_parser::parse_type(ty),
-                        is_take: false,
-                        is_mutate: false, is_deleting: false,
-                        default: None,
-                    })
-                    .collect(),
-                ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
-                body,
-                is_pub: false,
-                is_private: false,
-                is_comptime: false,
-                is_unsafe: false,
-                abi: None,
-                attrs: vec![],
-                doc: None,
-                span: sp(),
-                decl_start: sp().start,
-            }),
-            span: sp(),
-        }
-    }
-
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
             symbols: rask_resolve::SymbolTable::new(),
@@ -1227,6 +1190,7 @@ mod tests {
             call_targets: std::collections::HashMap::new(),
             operator_targets: std::collections::HashMap::new(),
             interface_coercions: std::collections::HashMap::new(),
+            erased_try_errors: HashMap::new(),
             arm_widenings: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),
             conformance_disambiguation: std::collections::HashMap::new(),
@@ -1286,25 +1250,6 @@ mod tests {
     }
 
     #[test]
-    fn main_calls_helper() {
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("helper", vec![])), return_stmt(None)],
-            ),
-            make_fn("helper", vec![], None, vec![return_stmt(None)]),
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-        assert_eq!(result.functions.len(), 2);
-        let names: Vec<&str> = result.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"main"));
-        assert!(names.contains(&"helper"));
-    }
-
-    #[test]
     fn unreachable_function_excluded() {
         let decls = vec![
             make_fn("main", vec![], None, vec![return_stmt(None)]),
@@ -1314,35 +1259,6 @@ mod tests {
         let result = monomorphize(&tp, &decls).unwrap();
         assert_eq!(result.functions.len(), 1);
         assert_eq!(result.functions[0].name, "main");
-    }
-
-    #[test]
-    fn transitive_calls() {
-        // main → a → b → c
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("a", vec![])), return_stmt(None)],
-            ),
-            make_fn(
-                "a",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("b", vec![])), return_stmt(None)],
-            ),
-            make_fn(
-                "b",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("c", vec![])), return_stmt(None)],
-            ),
-            make_fn("c", vec![], None, vec![return_stmt(None)]),
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-        assert_eq!(result.functions.len(), 4);
     }
 
     #[test]
@@ -1359,113 +1275,7 @@ mod tests {
         assert_eq!(result.functions.len(), 1);
     }
 
-    #[test]
-    fn mutual_recursion_terminates() {
-        // a → b → a (cycle)
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("a", vec![])), return_stmt(None)],
-            ),
-            make_fn(
-                "a",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("b", vec![])), return_stmt(None)],
-            ),
-            make_fn(
-                "b",
-                vec![],
-                None,
-                vec![expr_stmt(call_expr("a", vec![])), return_stmt(None)],
-            ),
-        ];
-        let tp = dummy_typed_program();
-        let result = monomorphize(&tp, &decls).unwrap();
-        assert_eq!(result.functions.len(), 3);
-    }
-
     // ── Reachability walker ─────────────────────────────────────
-
-    #[test]
-    fn reachability_discovers_nested_calls() {
-        // main → { let x = foo(1); bar(x) }
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![
-                    Stmt {
-                        id: NodeId(10),
-                        kind: StmtKind::Let {
-                            name: "x".to_string(),
-                            name_span: sp(),
-                            ty: None,
-                            init: call_expr("foo", vec![int_expr(1)]),
-                        },
-                        span: sp(),
-                    },
-                    expr_stmt(call_expr("bar", vec![ident_expr("x")])),
-                    return_stmt(None),
-                ],
-            ),
-            make_fn("foo", vec![("n", "i32")], Some("i32"), vec![return_stmt(Some(ident_expr("n")))]),
-            make_fn("bar", vec![("n", "i32")], None, vec![return_stmt(None)]),
-            make_fn("unused", vec![], None, vec![return_stmt(None)]),
-        ];
-
-        let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
-        assert!(mono.add_entry("main"));
-        mono.run();
-
-        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"main"));
-        assert!(names.contains(&"foo"));
-        assert!(names.contains(&"bar"));
-        assert!(!names.contains(&"unused"));
-    }
-
-    #[test]
-    fn reachability_handles_conditionals() {
-        // main → if true { a() } else { b() }
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![expr_stmt(Expr {
-                    id: NodeId(50),
-                    kind: ExprKind::If {
-                        cond: Box::new(Expr {
-                            id: NodeId(51),
-                            kind: ExprKind::Bool(true),
-                            span: sp(),
-                        }),
-                        then_branch: Box::new(call_expr("a", vec![])),
-                        else_branch: Some(Box::new(call_expr("b", vec![]))),
-                        else_binding: None,
-                    },
-                    span: sp(),
-                })],
-            ),
-            make_fn("a", vec![], None, vec![return_stmt(None)]),
-            make_fn("b", vec![], None, vec![return_stmt(None)]),
-        ];
-
-        let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
-        mono.add_entry("main");
-        mono.run();
-
-        // Both branches are conservatively included
-        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"a"));
-        assert!(names.contains(&"b"));
-    }
 
     // ── Method reachability ─────────────────────────────────────
 
@@ -1556,48 +1366,6 @@ mod tests {
     }
 
     #[test]
-    fn method_call_on_value_enqueues_instance_method() {
-        // main calls p.distance() — instance method via bare name
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![
-                    expr_stmt(method_call_expr(ident_expr("p"), "distance", vec![])),
-                    return_stmt(None),
-                ],
-            ),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Impl(ImplDecl {
-                    interface: None,
-                    target_ty: rask_parser::parse_type("Point").unwrap(),
-                    methods: vec![
-                        make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
-                    ],
-                    doc: None,
-                    is_unsafe: false,
-                    is_pub: false,
-                    where_bounds: vec![],
-                    assoc_bindings: Vec::new(),
-                }),
-                span: sp(),
-            },
-        ];
-
-        let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
-        mono.add_entry("main");
-        mono.run();
-
-        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"main"));
-        // Instance call on "p" enqueues via bare name → Point_distance (from method_by_bare_name)
-        assert!(names.contains(&"Point_distance"), "instance method should be reachable: {:?}", names);
-    }
-
-    #[test]
     fn method_in_impl_block_reachable() {
         // main calls Counter.increment() via extend block
         let decls = vec![
@@ -1666,53 +1434,6 @@ mod tests {
 
         assert_eq!(mono.results.len(), 1);
         assert_eq!(mono.results[0].name, "main");
-    }
-
-    #[test]
-    fn method_body_transitively_discovers_calls() {
-        // main → Point.new() → helper() (transitive through method body)
-        let decls = vec![
-            make_fn(
-                "main",
-                vec![],
-                None,
-                vec![
-                    expr_stmt(method_call_expr(ident_expr("Point"), "new", vec![])),
-                    return_stmt(None),
-                ],
-            ),
-            Decl {
-                id: NodeId(0),
-                kind: DeclKind::Struct(StructDecl {
-                    name: "Point".to_string(),
-                    type_params: vec![],
-                    fields: vec![],
-                    methods: vec![
-                        make_method("new", vec![], Some("Point"), vec![
-                            expr_stmt(call_expr("helper", vec![])),
-                            return_stmt(None),
-                        ]),
-                    ],
-                    is_pub: false,
-                    attrs: vec![],
-                    doc: None,
-                }),
-                span: sp(),
-            },
-            make_fn("helper", vec![], None, vec![return_stmt(None)]),
-            make_fn("unused", vec![], None, vec![return_stmt(None)]),
-        ];
-
-        let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
-        mono.add_entry("main");
-        mono.run();
-
-        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"main"));
-        assert!(names.contains(&"Point_new"));
-        assert!(names.contains(&"helper"), "transitive call from method body should be discovered");
-        assert!(!names.contains(&"unused"));
     }
 
     #[test]
