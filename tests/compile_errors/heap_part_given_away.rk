@@ -148,21 +148,54 @@ func bad_item_replaced() {
     }
 }
 
-// --- `rest = *next` takes over only the part it reads ---
-struct Pair {
-    public a: Heap<Step>?
-    public b: Heap<Step>?
+// --- `cur = *next` takes over only the part it reads ---
+struct Twig {
+    public label: string
+    public a: Heap<Twig>?
+    public b: Heap<Twig>?
 }
 
 func bad_walk_drops_sibling() {
-    mut p = Pair(a: Heap(Step(label: "a", next: none)), b: Heap(Step(label: "b", next: none)))
+    mut p = Twig(label: "p", a: Heap(Twig(label: "a", a: none, b: none)), b: Heap(Twig(label: "b", a: none, b: none)))
     if p.b? as y {
         if p.a? as x {
             // ERROR: cannot replace `p` while `y` reads a box inside it [E0957]
-            p = Pair(a: Heap(Step(label: "c", next: none)), b: Heap(Step(label: "d", next: none)))
+            p = *x
             println(y.label)
         }
     }
+}
+
+// --- a walk into one element doesn't excuse replacing another ---
+func bad_walk_other_element() {
+    mut xs: Vec<Step> = Vec.new()
+    xs.push(Step(label: "a", next: none))
+    xs.push(Step(label: "b", next: Heap(Step(label: "c", next: none))))
+    if xs[1].next? as n {
+        // ERROR: cannot replace `xs[…]` while `n` reads a box inside it [E0957]
+        xs[0] = *n
+    }
+}
+
+// --- after the walk, `n` read a box that went with the old value ---
+func bad_part_after_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if cur.next? as n {
+        cur = *n
+        // ERROR: use of moved value: `n` [E0800]
+        println(n.label)
+    }
+}
+
+// --- the holder carried off by a closure ---
+func bad_holder_captured() -> func() -> string {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        println(n.label)
+        // ERROR: cannot move `s` while `n` reads a box inside it [E0957]
+        return || s.label
+    }
+    return || "none"
 }
 
 // --- what is fine: reading it where it is ---
@@ -192,6 +225,16 @@ func good_name_reused() {
         f(Heap(Step(label: "c", next: none)))
         let n = Heap(Step(label: "d", next: none))
         drop(n)
+    }
+}
+
+// --- a new `s` is a new value, not the holder ---
+func good_holder_name_reused() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        let s = Step(label: "c", next: none)
+        eat(s)
+        println(n.label)
     }
 }
 

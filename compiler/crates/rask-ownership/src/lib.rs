@@ -431,9 +431,17 @@ impl Parts {
         self.by_name.insert(name, part);
     }
 
-    /// A new binding called `name`: lookups stop finding the part.
+    /// A new binding called `name`: lookups stop finding a part of that
+    /// name, and a part held by the old `name` is no longer held by anything
+    /// the new name reaches. The old holder can't be named until the scope
+    /// that hides it ends, and then the part is gone too.
     fn remove(&mut self, name: &str) {
         self.by_name.remove(name);
+        for (_, _, of) in &mut self.held {
+            if of.owner.as_ref().is_some_and(|(root, _)| root == name) {
+                of.owner = None;
+            }
+        }
     }
 
     fn clear(&mut self) {
@@ -2333,6 +2341,12 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.parts.remove(name);
+                // Refused above, so `name` reads what the part reads.
+                if let ExprKind::Ident(src) = &init.kind {
+                    if let Some(part) = self.parts.get(src).cloned() {
+                        self.parts.insert(name.clone(), part);
+                    }
+                }
                 self.track_owned_binding(name, init);
             }
             StmtKind::MutTuple { patterns, init } => {
@@ -2410,6 +2424,12 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.parts.remove(name);
+                // Refused above, so `name` reads what the part reads.
+                if let ExprKind::Ident(src) = &init.kind {
+                    if let Some(part) = self.parts.get(src).cloned() {
+                        self.parts.insert(name.clone(), part);
+                    }
+                }
                 self.track_owned_binding(name, init);
             }
             // `let Point { x, .. } = p` — reading fields out of the source is a
@@ -2517,15 +2537,25 @@ impl<'a> OwnershipChecker<'a> {
                     ExprKind::Unary { op: UnaryOp::Deref, operand } => match &operand.kind {
                         ExprKind::Ident(p) => self.parts.get(p).and_then(|(at, of)| {
                             let holder = of.owner.as_ref()?;
+                            // `xs[0] = *n` with `n` out of `xs[1]`: a path
+                            // through an index can't say which element holds it.
+                            if Self::goes_through_index(target) {
+                                return None;
+                            }
                             let target_path = Self::place_path(target)?;
                             let inside = holder.0 == target_path.0 && holder.1.starts_with(&target_path.1);
-                            (of.held && inside).then_some(*at)
+                            (of.held && inside).then(|| (*at, p.clone()))
                         }),
                         _ => None,
                     },
                     _ => None,
                 };
-                self.check_part_owner_kept(target, "replace", stmt.span, taken_over);
+                self.check_part_owner_kept(target, "replace", stmt.span, taken_over.as_ref().map(|(at, _)| *at));
+                // The old value went with the walk, and the box `n` read with
+                // it: `n` reads nothing from here on.
+                if let Some((_, part)) = taken_over {
+                    self.bindings.insert(part, BindingState::Moved { at: stmt.span });
+                }
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
                 if let Some(place) = self.replaced_place(stmt) {
@@ -3458,6 +3488,11 @@ impl<'a> OwnershipChecker<'a> {
                 // as a resource a function body acquires.
                 let mut stranded: Vec<(String, Option<String>)> = Vec::new();
                 if carries {
+                    for name in &captures {
+                        if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
+                            self.report_part_owner_changed(name, &[], name.clone(), "move", expr.span, None);
+                        }
+                    }
                     for name in &resource_captures {
                         if !is_task {
                             let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
@@ -8334,6 +8369,16 @@ impl<'a> OwnershipChecker<'a> {
                 .any(|(root, fields)| r == root && (f.starts_with(fields) || fields.starts_with(f)))
                 .then(|| (name.clone(), *at, of.from.clone()))
         })
+    }
+
+    fn goes_through_index(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Index { .. } => true,
+            ExprKind::Field { object, .. } | ExprKind::Unary { operand: object, .. } => {
+                Self::goes_through_index(object)
+            }
+            _ => false,
+        }
     }
 
     /// The collection a `for mutate` item or a `with` element is a place in.
