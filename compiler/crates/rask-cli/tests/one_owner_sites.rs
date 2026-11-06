@@ -83,7 +83,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "interpreters run without the driver's setup",
-        today: 2,
+        today: 0,
         target: 0,
         why: "a tool built its own interpreter instead of asking the driver for \
               one; the copies skip steps the driver does (rask-lang/rask#1568)",
