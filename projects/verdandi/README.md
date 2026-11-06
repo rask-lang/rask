@@ -56,7 +56,7 @@ Every source of drift is closed in the kernel, so game code can't reopen it by a
 
 - **Floats:** correctly rounded transcendentals, no fused multiply-add, the default FP environment on every thread (`determinism/D12`, done in rask-lang/rask#1752). Raido uses the same f64.
 - **Iteration order:** game state uses collections with a deterministic order. Rask's `Map` seeds its order per process on purpose (`determinism/D7`), so the kernel needs an ordered map; `specs/determinism.md` lists it as an open question.
-- **Randomness:** lives in the state, keyed by (system, entity, draw number). Never by thread or task, so results don't depend on how work is split, and region size can be tuned after release without breaking replays.
+- **Randomness:** lives in the state, keyed by (system, subject, draw number), where the subject is an entity id or a region plus a cell index (a falling-sand cell isn't an entity, and its reaction rolls need keys too). Never by thread or task, so results don't depend on how work is split, and region size can be tuned after release without breaking replays.
 - **Merges:** effects that cross tasks apply after the join, ordered by entity id, never by task or completion order.
 - **Budgets count work, never time.** "Pathfind until 2 ms pass" gives every machine a different answer; "100 path requests per tick" doesn't.
 - **Uninitialised memory:** Rask has none to read.
@@ -72,7 +72,7 @@ Fields always read together (x and y, velocity and position in a movement pass) 
 
 I don't assume a grid. Space is a partition into regions, and a region is whatever the game's space type says: a tile, a cube, a hex, an octree cell, a room, a navmesh polygon. The kernel asks the space type three things: which region a position is in, which regions border a region, and how far writes reach.
 
-A regular lattice gives a lot for free: region lookup is one division, neighbours are implicit, the colouring is fixed, field data packs into dense arrays of one shape. Keeping the interface general costs nothing as long as the space type is a generic parameter and declares what it knows ahead of time (colour count, field shape, implicit neighbours); a grid fills those in at compile time. The kernel ships square, hex and cube lattices, plus several separate spaces in one game (Factorio's planets and platforms). Moving and rotating sub-grids (ships, vehicles), spheres, and graph worlds stay possible through the same interface and get built when a game needs one.
+A regular lattice gives a lot for free: region lookup is one division, neighbours are implicit, the colouring is fixed, field data packs into dense arrays of one shape. Keeping the interface general costs nothing as long as the space type is a generic parameter and declares what it knows ahead of time (colour count, field shape, implicit neighbours); a grid fills those in at compile time. The kernel ships square, hex and cube lattices, graph spaces (Paradox's provinces and star lanes, RimWorld's rooms over its grid), and several separate spaces in one game (Factorio's planets and platforms). Spheres (RimWorld's world map) and moving, rotating sub-grids (ships, vehicles) stay possible through the same interface and get built when a game needs one.
 
 The region is the unit for storage, copy-on-write checkpoints, the state hash, parallel tasks, and streaming. The usual problems and their answers:
 
@@ -85,10 +85,11 @@ The region is the unit for storage, copy-on-write checkpoints, the state hash, p
 
 ## Parallelism
 
-Each tick forks work across cores and joins before the next. Work stealing is fine, because which core runs a task can't change its result. A system picks one of two models:
+Each tick forks work across cores and joins before the next. Work stealing is fine, because which core runs a task can't change its result. A system picks one of three models:
 
 - **Double-buffered (the default):** a task writes only its own slice and reads last tick's values for everything else. Rask's ownership rules make that checkable.
 - **In-place colour passes:** for systems that move matter between cells (falling sand, fluids). The region graph is coloured so no two neighbours share a colour (4 for a square grid, 3 for hex, 8 for cubes); one colour's regions run in parallel, the colours run in a fixed order. This needs writes to reach at most half a region, or two same-colour regions could write the same cell between them. Noita writes at most 32 pixels into 64-pixel chunks for this reason.
+- **Sequential:** for a rule whose writes reach arbitrarily far. Dwarf Fortress's water pressure moves water instantly through a connected body to wherever it can escape. Such a body is better kept as a network over cells (the graph-network library's connectivity, applied to cells) so the system works per body; when nothing fits, the system runs on one core, in a fixed order.
 
 Systems run at their own rates (temperature every 4 ticks, path requests spread across ticks), with the schedule part of the state.
 
@@ -143,12 +144,25 @@ Every game in the genre writes these, and none is the game, so they ship as opti
 
 - **Pathfinding:** flow fields for hordes (one shared field per target, as They Are Billions does); hierarchical paths with invalidation for colonists who each go somewhere different and repath when a wall is mined (Dwarf Fortress's known frame-rate killer).
 - **Crowd avoidance:** units pushing past each other without overlapping.
-- **Graph networks:** power, fluids, belts, logistics, circuits, with connectivity kept up to date as things are built and destroyed, across regions.
+- **Graph networks:** power, fluids, belts, logistics, circuits, and connected bodies of cells (a lake, a gas pocket), with connectivity kept up to date as things are built and destroyed, across regions.
 - **Visibility:** line of sight and fog of war, computed incrementally.
-- **Deterministic 2D physics,** for physics sandboxes.
+- **Deterministic 2D physics,** including bodies built from cell masks and broken apart by explosions, as Noita's are. That's the hard part, well beyond rigid boxes.
 - **Rendering at scale:** instance buffers from component arrays, so the CPU does nothing per entity per frame. Sprites are packed into atlases grouped by layer, streamed into VRAM as 128x128 tiles the way Factorio does (FFF #264), and compressed (BC7, ASTC). Atlas packing, mips and compression happen at build time, in `build.rk`.
 - **UI and text:** layout, text shaping, localization.
 - **Audio:** the mixer, with voice limiting for thousands of sources. Its reverb tails decay into subnormals, so it flushes them itself.
+
+## Could you build these games on it?
+
+The stress test for the design: rewrite each target game on the kernel and see what breaks.
+
+| Game | What it uses | What it needs that isn't plain |
+|---|---|---|
+| Factorio | 2D chunks, several surfaces, graph networks for belts, power, fluids, circuits and rails, per-entity sleep, pollution as a field, budgeted biter pathing, the base game as a mod over native systems. | Nothing new. Speed is the risk: years of hand-tuned C++ in the belts. |
+| They Are Billions | Continuous movement over a spatial hash, flow fields, crowd avoidance, instanced rendering. | Nothing new. |
+| Noita | In-place colour passes over pixel chunks, half-region reach. | Physics bodies built from pixels; random keys per cell; hashing every N ticks. |
+| Dwarf Fortress | 3D voxels, temperature field, per-dwarf pathing with invalidation, seeded world generation, century-long saves. | Water pressure writes arbitrarily far: connected bodies as networks, or a sequential system. |
+| RimWorld | Multi-rate ticks (normal, rare every 250, long every 2000), rooms as a graph over the grid, few pawns with heavy AI under budgets. | A sphere space for the world map. Its mods patch any method at runtime (Harmony), which sandboxed mods can't. |
+| Paradox grand strategy | Graph spaces, daily and monthly ticks, lockstep with pause and speed, hot join and desync recovery, parallel AI per country, script as Raido data and control stages. | Its own 3D map renderer, which the renderer being a library allows. |
 
 ## Out of scope
 
@@ -161,7 +175,8 @@ Every game in the genre writes these, and none is the game, so they ship as opti
 - The ordered map the kernel needs (`determinism` open question), and fork-join that can borrow (#1686).
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
-- The first flagship game. Something with many small things following local rules (falling sand, factory belts), because it hits entity count and determinism on day one.
+- A falling-sand prototype first, as a speed benchmark. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
+- RimWorld-style modding: keep mods sandboxed only, which keeps downloads safe and mod sets matched, or also allow trusted native plugins, hashed into the session the same way but trusted like an installed program. Sandboxed-only is the recommendation.
 - Literal-built number types for simulation units such as `Fixed` and `Meters`: done in rask-lang/rask#1752 (`FromLiteral<T>`).
 - Shared-library output from `rask build`, for running as a plugin in another engine.
 
