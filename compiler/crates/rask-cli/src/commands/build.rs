@@ -606,9 +606,13 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             let config = crate::compiler_config(rask_compiler::CfgConfig::from_host("debug", vec![]));
             let checked = rask_compiler::check_build_script(&build_rk, &source, &config);
             crate::display_pipeline_output(&checked, &checked.source_files, crate::Format::Human);
-            let failed = checked.has_errors();
-            let Some(checked) = checked.result.filter(|_| !failed) else {
-                eprintln!("\n{}", output::banner_fail("Check", 1));
+            let errors = checked
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+                .count();
+            let Some(checked) = checked.result.filter(|_| errors == 0) else {
+                eprintln!("\n{}", output::banner_fail("Check", errors.max(1)));
                 process::exit(1);
             };
 

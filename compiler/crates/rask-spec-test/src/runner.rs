@@ -421,32 +421,39 @@ fn run_run_test(test: SpecTest, expected: &str, config: &RunConfig) -> TestResul
     }
 }
 
+/// Check a block the way `rask check` would, as one file. The message is the
+/// first few errors when it doesn't check.
+fn check(code: &str) -> Result<rask_compiler::CheckResult, String> {
+    let config = rask_compiler::CompilerConfig::new(rask_compiler::CfgConfig::from_host("debug", vec![]));
+    let output = rask_compiler::check_source("spec.rk", code, &config);
+    if output.has_errors() {
+        let errors: Vec<String> = output
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+            .take(3)
+            .map(|d| d.message.clone())
+            .collect();
+        return Err(format!("check failed: {}", errors.join("; ")));
+    }
+    output.result.ok_or_else(|| "check failed".to_string())
+}
+
 /// Run code through the tree-walk interpreter and compare output.
 fn run_interpreter(code: &str, expected: &str) -> (bool, String) {
     let code = wrap_in_main(code);
+    let checked = match check(&code) {
+        Ok(checked) => checked,
+        Err(message) => return (false, message),
+    };
 
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(&code).tokenize();
-    if !lex_result.is_ok() {
-        return (false, format!("lex failed: {:?}", lex_result.errors));
-    }
-
-    // Parse
-    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-    if !parse_result.is_ok() {
-        return (false, format!("parse failed: {:?}", parse_result.errors));
-    }
-
-    // Desugar
-    rask_desugar::desugar_with_stdlib(
-        &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
-    );
-
-    // Run with captured output
+    // Run with captured output, on what the checker resolved, as
+    // `rask run --interp` does.
     let (mut interp, output_buffer) = rask_interp::Interpreter::with_captured_output();
+    rask_compiler::prepare_interpreter(&mut interp, &checked);
+    let decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
 
-    match interp.run(&parse_result.decls) {
+    match interp.run(&decls) {
         Ok(_) => {
             let actual = output_buffer.lock().unwrap();
             let actual_trimmed = actual.trim_end();
@@ -544,26 +551,15 @@ fn run_native(code: &str, expected: &str, rask_binary: &std::path::Path) -> Nati
 ///
 /// Returns (passed, total, failures) where failures is a list of test names.
 fn run_rk_tests_interp(source: &str) -> (usize, usize, Vec<String>) {
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(source).tokenize();
-    if !lex_result.is_ok() {
-        return (0, 1, vec![format!("lex failed: {:?}", lex_result.errors)]);
-    }
-
-    // Parse
-    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-    if !parse_result.is_ok() {
-        return (0, 1, vec![format!("parse failed: {:?}", parse_result.errors)]);
-    }
-
-    // Desugar
-    rask_desugar::desugar_with_stdlib(
-        &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
-    );
+    let checked = match check(source) {
+        Ok(checked) => checked,
+        Err(message) => return (0, 1, vec![message]),
+    };
 
     let mut interp = rask_interp::Interpreter::new();
-    let results = interp.run_tests(&parse_result.decls, None);
+    rask_compiler::prepare_interpreter(&mut interp, &checked);
+    let decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
+    let results = interp.run_tests(&decls, None);
 
     let total = results.len();
     let mut passed = 0;

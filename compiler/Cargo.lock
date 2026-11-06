@@ -1689,7 +1689,9 @@ version = "0.6.0"
 dependencies = [
  "rask-ast",
  "rask-check",
+ "rask-compiler",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-interp",
  "rask-lexer",
  "rask-ownership",

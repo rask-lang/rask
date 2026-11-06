@@ -1647,7 +1647,8 @@ pub fn typecheck_with_stdlib_lenient(
         .chain(rest.into_iter().filter(|d| matches!(d.kind,
             rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_))))
         .collect();
-    let (mut typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    let (mut typed, mut errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    errors.extend(crate::unused_results::unused_results(decls, &typed));
     typed.attach_derived(decls);
     (typed, errors)
 }

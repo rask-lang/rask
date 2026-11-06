@@ -2615,6 +2615,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
+            UnusedResult { ty, span } => {
+                Diagnostic::warning(format!("unused result of type `{}`", ty))
+                    .with_code("W0303")
+                    .with_primary(*span, "if this fails, nothing finds out")
+                    .with_help("propagate it with `try`, handle it with `catch e => …`, or drop it on purpose with `let _ = …`")
+                    .with_why("a call that can fail hands its error back as a value, and a statement that ignores the value ignores the failure [type.errors/W2]")
+            }
+
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {
                 Diagnostic::warning("step direction mismatch — range will be empty".to_string())
                     .with_code("W0302")

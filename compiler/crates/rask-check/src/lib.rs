@@ -7,6 +7,7 @@ mod interfaces;
 mod copy_rule;
 pub mod reflect;
 mod diagnostic;
+mod unused_results;
 
 // The data this crate produces and reads, by the names the checker's modules
 // have always used for it.

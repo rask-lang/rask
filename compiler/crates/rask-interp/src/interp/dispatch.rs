@@ -40,7 +40,9 @@ impl Interpreter {
             let final_arg = first.and_then(|name| self.env.get(&name));
             self.leave_closure();
             let value = match result {
-                Ok(v) | Err(RuntimeError::Return(v)) => closure_result(v, wraps_ok),
+                // A `try` in the body leaves the closure, as a `return` does,
+                // with the error as its result (#1781).
+                Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => closure_result(v, wraps_ok),
                 Err(e) => return Err(e),
             };
             return Ok((value, final_arg));
@@ -128,7 +130,10 @@ impl Interpreter {
         });
         self.leave_closure();
         match result {
-            Ok(v) | Err(RuntimeError::Return(v)) => Ok(closure_result(v, wraps_ok)),
+            // A `try` in the body leaves the closure, as a `return` does, with
+            // the error as its result. Escaping it left the function that
+            // called the closure instead (#1781).
+            Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => Ok(closure_result(v, wraps_ok)),
             Err(e) => Err(e),
         }
     }

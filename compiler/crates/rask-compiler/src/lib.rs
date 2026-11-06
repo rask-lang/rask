@@ -108,6 +108,31 @@ fn misplaced_claims(decls: &[Decl]) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// The build module is a build script's (struct.build/BL4): `BuildContext` only
+/// means something while `rask build` runs `build.rk`. Imported anywhere
+/// else it type-checked, and then native codegen found no body for its
+/// methods and the interpreter said it was used outside a build script.
+fn build_module_outside_build_script(decls: &[Decl]) -> Vec<Diagnostic> {
+    // `import build.{A, B}` is a declaration per name; one error per import.
+    let mut seen = std::collections::HashSet::new();
+    decls
+        .iter()
+        .filter(|d| seen.insert(d.span))
+        .filter_map(|d| match &d.kind {
+            DeclKind::Import(i) if i.path.first().is_some_and(|m| m == "build") => Some(
+                Diagnostic::error("the `build` module is only for build scripts".to_string())
+                    .with_code("E0955")
+                    .with_primary(d.span, "imported outside `build.rk`")
+                    .with_help(
+                        "move the code that needs it into the package's `build.rk`; \
+                         a build script has `BuildContext` in scope without importing it",
+                    ),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A discovered package context for multi-file compilation.
 pub struct PackageContext {
     pub registry: PackageRegistry,
@@ -513,7 +538,10 @@ fn check_loaded_scoped(
         decls.extend(parse_result.decls);
     }
 
-    let misplaced = misplaced_claims(&decls);
+    let mut misplaced = misplaced_claims(&decls);
+    if prelude.is_none() {
+        misplaced.extend(build_module_outside_build_script(&decls));
+    }
     if !misplaced.is_empty() {
         diags.extend(misplaced);
         return PipelineOutput::fail_with_sources(diags, source_files);
@@ -840,9 +868,11 @@ fn check_package_scoped(
     }
     if !config.claims {
         diags.extend(misplaced_claims(&pkg_ctx.all_decls));
+        diags.extend(build_module_outside_build_script(&pkg_ctx.all_decls));
     }
     for (_, decls) in &merged {
         diags.extend(misplaced_claims(decls));
+        diags.extend(build_module_outside_build_script(decls));
     }
     for (_, decls) in merged {
         pkg_ctx.all_decls.extend(decls);

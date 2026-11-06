@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `try` in a closure's body leaves the closure, with the error as the
+// closure's result. On the interpreter it left the function that called the
+// closure instead, so `cc` below handed its caller a raw error where an `i64`
+// was due (#1781).
+
+enum Odd {
+    Value(i64)
+}
+
+Odd implements Error {
+    func message(self) -> string {
+        match self {
+            Odd.Value(n) => return "odd {n}",
+        }
+    }
+}
+
+func half(n: i64) -> i64 or Odd {
+    if n % 2 != 0 {
+        return Odd.Value(n)
+    }
+    return n / 2
+}
+
+func caught(n: i64) -> i64 {
+    let g = |x: i64| -> i64 or Odd { return try half(x) }
+    return g(n) catch _ => -1
+}
+
+func describe(n: i64) -> string {
+    let g = |x: i64| -> i64 or Odd {
+        let h = try half(x)
+        return h + 1
+    }
+    if g(n) is i64 as v {
+        return "ok {v}"
+    } else as e {
+        return "err {e.message()}"
+    }
+}
+
+test "the closure's caller gets the error back as a value" {
+    assert caught(3) == -1
+    assert caught(8) == 4
+}
+
+test "and carries on after it" {
+    assert describe(4) == "ok 3"
+    assert describe(5) == "err odd 5"
+}

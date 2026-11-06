@@ -1119,6 +1119,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.errors/W2: a call's `T or E` result is thrown away (warning).
+    #[error("unused result of type `{ty}`")]
+    UnusedResult {
+        ty: String,
+        span: Span,
+    },
+
     /// SP1/SP2: step direction doesn't match range direction (warning)
     #[error("step direction mismatch — range will be empty")]
     StepDirectionMismatch {
@@ -2008,6 +2015,7 @@ impl TypeError {
             | NoReturnReturns { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
+            | UnusedResult { .. }
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
