@@ -124,8 +124,8 @@ func main() {
     ensure drop(first)
 
     println("{(*first).label}")
-    if (*first).next? as n {
-        println("{(*n).label}")
+    if (*first).next? {
+        println("{(*first).next!.label}")
     }
 }
 ```
