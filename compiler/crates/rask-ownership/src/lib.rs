@@ -448,6 +448,14 @@ impl Parts {
         self.by_name.clear();
         self.held.clear();
     }
+
+    /// The part bound at `at` reads nothing any more: a walk took its box.
+    fn end(&mut self, name: &str, at: Span) {
+        if self.by_name.get(name).is_some_and(|(a, _)| *a == at) {
+            self.by_name.remove(name);
+        }
+        self.held.retain(|(_, a, _)| *a != at);
+    }
 }
 
 /// What a part (see `parts`) belongs to.
@@ -2553,7 +2561,8 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_part_owner_kept(target, "replace", stmt.span, taken_over.as_ref().map(|(at, _)| *at));
                 // The old value went with the walk, and the box `n` read with
                 // it: `n` reads nothing from here on.
-                if let Some((_, part)) = taken_over {
+                if let Some((at, part)) = taken_over {
+                    self.parts.end(&part, at);
                     self.bindings.insert(part, BindingState::Moved { at: stmt.span });
                 }
                 // W2/LP14: replacing what a `with` or `for mutate` holds a

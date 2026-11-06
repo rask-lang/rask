@@ -251,4 +251,16 @@ func good_walk() {
     }
 }
 
+// --- a walk ends its part, so the next step is free to change `cur` ---
+func good_two_step_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: Heap(Step(label: "c", next: none)))))
+    if cur.next? as n {
+        cur = *n
+        if cur.next? as m {
+            cur = *m
+        }
+    }
+    eat(cur)
+}
+
 func main() {}
