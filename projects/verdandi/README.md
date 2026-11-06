@@ -47,8 +47,58 @@ Determinism also pays for itself in development: rewind debugging is a checkpoin
 - **No MMO shape.** Partial world state and sharding is a different business.
 - **Pause and speed are inputs.** In lockstep a speed change is just another entry in the log, so multiplayer pauses and changes speed like single player (Paradox's games and Age of Empires do). Who may pause is the game's call. Multiplayer sessions save and resume.
 - **The loop steps on a clock or on input.** Real-time games step at a fixed rate; turn-based games step when a turn's inputs are in. Asynchronous multiplayer then falls out of the input log.
+- **A slow tick slows the game, it never skips.** In lockstep every machine has to run every tick, so when a tick takes longer than its budget the game runs slower than real time, and the kernel reports where the time went, per system.
 - **Render is a view.** It reads the state between steps, interpolates, and never writes it. The kernel runs headless; the renderer is a library, so a game can bring its own, or run as a plugin in another engine.
 - **Bind the platform, write the opinions.** SDL3 for windows, GPU and audio devices. stb and dr libraries for codecs. The renderer and the mixer are written in Rask.
+
+## Game code
+
+A game writes rules and nothing else. Falling sand, complete:
+
+```rask
+import verdandi
+
+enum Cell { Empty, Sand, Water, Stone }
+
+func fall(mutate cells: verdandi.Cells<Cell>, at: verdandi.At, rng: verdandi.Rng) {
+    if cells[at] != Cell.Sand { return }
+    let side = if rng.bool() { at.left() } else { at.right() }
+    for to in [at.below(), side.below()] {
+        if cells[to] == Cell.Empty {
+            cells.swap(at, to)
+            return
+        }
+    }
+}
+
+func main() {
+    verdandi.run(
+        space: verdandi.Grid2(width: 1024, height: 512, region: 64),
+        cells: Cell.Empty,
+        systems: [fall],
+    )
+}
+```
+
+And units:
+
+```rask
+struct Pos { x: Fixed, y: Fixed }
+struct Vel { x: Fixed, y: Fixed }
+
+func drift(mutate p: Pos, v: Vel) {
+    p.x += v.x
+    p.y += v.y
+}
+```
+
+- **A system is a plain function, and its parameters are its declaration.** `mutate cells: Cells` with a position makes a cell rule, run as in-place colour passes. Component parameters make an entity rule, run for every entity that has them: `mutate` ones are written, the rest are read from last tick. An `Rng` parameter comes keyed by (system, subject, draw number). No registration, no scheduler setup, no network or save code.
+- **Run order is the `systems` list.** Not inferred from data dependencies, so it's in the code and there's no hidden scheduler.
+- **Cells and entities are both first-class.** Dense fields per cell (sand, gas, temperature) and sparse entities with components (units, buildings). The genre needs both, so neither is built on the other.
+- **Reach comes from the space and is enforced on access.** A cell rule reaching past half a region is a deterministic panic, never a race.
+- **Sleep:** a region where a cell rule changed nothing sleeps until a neighbour changes. An entity that waits calls `verdandi.sleep(until: tick)`.
+
+This needs one thing from the language: the kernel has to see a function's parameter types and modes at compile time. `std.reflect` lists a type's fields and methods, not a function's parameters.
 
 ## Determinism
 
@@ -173,7 +223,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 ## Open
 
 - The space interface in detail: what a lattice declares, whether a hierarchy of region sizes belongs in the kernel or in one space type, and how a space type states its write reach.
-- The ordered map the kernel needs (`determinism` open question), and fork-join that can borrow (#1686).
+- Language items, ranked from main: the ordered map the kernel needs (`determinism` open question), fork-join that can borrow (#1686), and compile-time access to a function's parameter types and modes.
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
 - A falling-sand prototype first, as a speed benchmark. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
