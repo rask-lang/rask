@@ -1119,7 +1119,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.errors/W2: a call's `T or E` result is thrown away (warning).
+    /// tool.warnings/W2: a call's `T or E` result is thrown away (warning).
     #[error("unused result of type `{ty}`")]
     UnusedResult {
         ty: String,

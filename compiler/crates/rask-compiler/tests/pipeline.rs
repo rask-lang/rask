@@ -845,7 +845,7 @@ fn dt1_public_nominal_interface_is_fine() {
 
 #[test]
 fn w2_warns_on_a_discarded_result_and_nowhere_else() {
-    // type.errors/W2: a call whose `T or E` goes nowhere. An `if` or block
+    // tool.warnings/W2: a call whose `T or E` goes nowhere. An `if` or block
     // written as a statement throws away what its branches end with; one used
     // as a value doesn't, and neither do `let _`, `catch` or `ensure`.
     let path = tmp_rk(r#"
@@ -884,7 +884,7 @@ fn w2_warns_on_a_discarded_result_and_nowhere_else() {
     let lines: Vec<usize> = output
         .diagnostics
         .iter()
-        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "W0303"))
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "W0301"))
         .filter_map(|d| d.labels.first().map(|l| l.span.start))
         .collect();
     assert_eq!(lines.len(), 3, "expected save(6), save(7) and save(i): {:?}", output.diagnostics);

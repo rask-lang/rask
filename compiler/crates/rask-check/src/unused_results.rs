@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! type.errors/W2: a call whose `T or E` result nobody looks at.
+//! tool.warnings/W2: a call whose `T or E` result nobody looks at.
 //!
 //! Run over the program once types are settled, since a statement's type can
 //! still be open when the statement is checked. A statement list whose last
@@ -33,17 +33,28 @@ pub fn unused_results(decls: &[Decl], typed: &TypedProgram) -> Vec<TypeError> {
 }
 
 /// The statement lists a declaration runs: function, method and test bodies.
+/// A function that writes `@allow(unused_result)` has said its discards are
+/// meant, and is left out.
 fn bodies(decl: &Decl) -> Vec<&[Stmt]> {
+    let checked = |f: &&rask_ast::decl::FnDecl| !allows(&f.attrs);
     match &decl.kind {
-        DeclKind::Fn(f) => vec![&f.body],
-        DeclKind::Struct(s) => s.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Enum(e) => e.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Impl(i) => i.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Interface(t) => t.methods.iter().map(|m| m.body.as_slice()).collect(),
-        DeclKind::Test(t) => vec![&t.body],
-        DeclKind::Benchmark(b) => vec![&b.body],
+        DeclKind::Fn(f) => [f].into_iter().filter(checked).map(|f| f.body.as_slice()).collect(),
+        DeclKind::Struct(s) => s.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
+        DeclKind::Enum(e) => e.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
+        DeclKind::Impl(i) => i.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
+        DeclKind::Interface(t) => t.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
+        DeclKind::Test(t) if !allows(&t.attrs) => vec![&t.body],
+        DeclKind::Benchmark(b) if !allows(&b.attrs) => vec![&b.body],
         _ => Vec::new(),
     }
+}
+
+/// `@allow(unused_result)`.
+fn allows(attrs: &[rask_ast::attr::Attr]) -> bool {
+    attrs
+        .iter()
+        .filter_map(rask_ast::allow_names::allowed_name)
+        .any(|name| name == "unused_result")
 }
 
 struct Walk<'t> {
