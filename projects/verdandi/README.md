@@ -104,6 +104,7 @@ When a game hosts mods, or its core is one, they're Raido, which makes several h
 - **Downloading code from a server is safe.** Raido has no I/O; a mod reaches only the externs the game registers. Images and sounds from a mod go through C decoders, so those run sandboxed or validated.
 - **A mod is its hash.** Bytecode is content-addressed, so the mod set is a list of hashes, and together with the build hash it's the session's identity. Mismatched mods, RimWorld multiplayer's main cause of desyncs, can't happen.
 - **Mod state is game state.** Raido's VM state is serializable, so checkpoints and replays include it.
+- **Patching happens at load time, inside the sandbox.** A mod can wrap or replace any named Raido function of the base game (when the core is a mod) or of another mod: before it, after it, or instead of it, as RimWorld's Harmony patches do. Patches are resolved once, when mods load, in load order, and the composed program is what's hashed into the session, so every machine runs the same one. Native systems can't be patched; mods reach them only through the externs the game registers. Nothing is patched at runtime, and no mod runs outside the sandbox.
 - **Handlers are transactions.** Running out of fuel is deterministic, but it unwinds after side effects. An event handler commits its writes only when it finishes, so an over-budget handler leaves nothing half-done.
 
 Two stages, as in Factorio. The data stage runs once at load and declares what exists: entity types, components, recipes, sprites. The control stage runs during play and reacts to events, in a fixed order relative to the tick's systems and in entity-id order within one.
@@ -161,7 +162,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 | They Are Billions | Continuous movement over a spatial hash, flow fields, crowd avoidance, instanced rendering. | Nothing new. |
 | Noita | In-place colour passes over pixel chunks, half-region reach. | Physics bodies built from pixels; random keys per cell; hashing every N ticks. |
 | Dwarf Fortress | 3D voxels, temperature field, per-dwarf pathing with invalidation, seeded world generation, century-long saves. | Water pressure writes arbitrarily far: connected bodies as networks, or a sequential system. |
-| RimWorld | Multi-rate ticks (normal, rare every 250, long every 2000), rooms as a graph over the grid, few pawns with heavy AI under budgets. | A sphere space for the world map. Its mods patch any method at runtime (Harmony), which sandboxed mods can't. |
+| RimWorld | Multi-rate ticks (normal, rare every 250, long every 2000), rooms as a graph over the grid, few pawns with heavy AI under budgets. | A sphere space for the world map. Its mods patch any method at runtime (Harmony); here they patch any Raido function at load time, so the moddable part keeps that culture and native systems don't. |
 | Paradox grand strategy | Graph spaces, daily and monthly ticks, lockstep with pause and speed, hot join and desync recovery, parallel AI per country, script as Raido data and control stages. | Its own 3D map renderer, which the renderer being a library allows. |
 
 ## Out of scope
@@ -176,7 +177,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
 - A falling-sand prototype first, as a speed benchmark. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
-- RimWorld-style modding: keep mods sandboxed only, which keeps downloads safe and mod sets matched, or also allow trusted native plugins, hashed into the session the same way but trusted like an installed program. Sandboxed-only is the recommendation.
+
 - Literal-built number types for simulation units such as `Fixed` and `Meters`: done in rask-lang/rask#1752 (`FromLiteral<T>`).
 - Shared-library output from `rask build`, for running as a plugin in another engine.
 
