@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: giving away a `Heap` read back out of the aggregate that holds it
+//
+// Spec: mem.heap (reading one back out is a borrow; HP3), mem.linear (L5)
+//
+// `if (*first).next? as n` and `match *l { Cons(_, rest) => … }` read a box
+// the aggregate still holds, and the aggregate's release frees it. Handing
+// `n` or `rest` to `drop`, a `take` parameter or a `return` freed it a second
+// time: each of these compiled and natively aborted with a double free.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import memory.Heap
+
+struct Step {
+    public label: string
+    public next: Heap<Step>?
+}
+
+enum List {
+    Cons(i64, Heap<List>)
+    Nil
+}
+
+// --- `? as` through a `Heap`, then dropped ---
+func bad_drop_through_deref() {
+    let second = Heap(Step(label: "b", next: none))
+    let first = Heap(Step(label: "a", next: second))
+    ensure drop(first)
+    if (*first).next? as n {
+        // ERROR: cannot give away `n` — `(*first).next` still holds it [E0880]
+        drop(n)
+    }
+}
+
+// --- `? as` on a local's field, handed to a binding that would own it ---
+func bad_rebind_field() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0880]
+        let m = n
+        println(m.label)
+    }
+}
+
+// --- returned out of an owned parameter's field ---
+func bad_return(take s: Step) -> Heap<Step>? {
+    if s.next? as n {
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0880]
+        return n
+    }
+    drop(s)
+    return none
+}
+
+// --- a pattern reads the same way ---
+func bad_drop_matched() {
+    let l = Heap(List.Cons(1, Heap(List.Nil)))
+    ensure drop(l)
+    match *l {
+        // ERROR: cannot give away `rest` — `*l` still holds it [E0880]
+        List.Cons(_, rest) => drop(rest),
+        List.Nil => {},
+    }
+}
+
+// --- what is fine: reading it where it is ---
+func good_read() {
+    let second = Heap(Step(label: "b", next: none))
+    let first = Heap(Step(label: "a", next: second))
+    ensure drop(first)
+    if (*first).next? as n {
+        println("{(*n).label}")
+    }
+}
+
+// --- and a bare optional local still gives its payload away ---
+func good_local_moves() {
+    let o: Heap<Step>? = Heap(Step(label: "c", next: none))
+    if o? as h {
+        drop(h)
+    }
+}
+
+func main() {}

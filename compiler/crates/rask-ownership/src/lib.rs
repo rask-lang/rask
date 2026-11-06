@@ -156,11 +156,11 @@ pub struct OwnershipChecker<'a> {
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
     borrowed_params: HashMap<String, (Span, bool)>,
-    /// Pattern bindings that are parts of a borrowed value: name → (where the
-    /// pattern matched, what was borrowed). `match s { Full(c) => … }` with `s`
-    /// only lent gives `c` on the same loan, so `c` is neither owed nor
-    /// the arm's to give away. Scoped to the arm that bound it.
-    borrowed_parts: HashMap<String, (Span, String)>,
+    /// Bindings that name part of something else, which still owns it: name →
+    /// (where the pattern or `? as` bound it, what it's part of). Neither owed
+    /// nor the binding's to give away. Scoped to the arm or branch that bound
+    /// it.
+    parts: HashMap<String, (Span, PartOf)>,
     /// `let tmp = src.items` on a non-Copy field: `tmp` is a view of
     /// `src.items` under a name of its own (mem.borrowing/S1). Reading it is
     /// fine; handing it to an owner is the same E0909 the field read gets.
@@ -405,6 +405,20 @@ struct InstanceJob<'d> {
     chain: Vec<String>,
 }
 
+/// What a part (see `parts`) belongs to.
+#[derive(Debug, Clone)]
+struct PartOf {
+    /// The value, rendered for the message.
+    from: String,
+    /// `false`: a value this frame only borrows. `match s { Full(c) => … }`
+    /// with `s` lent gives `c` on the same loan.
+    ///
+    /// `true`: an aggregate this frame owns, holding a `Heap` the binding
+    /// reads. The aggregate's release frees the block (mem.heap: reading one
+    /// back out is a borrow), so giving the binding away would free it twice.
+    held: bool,
+}
+
 /// A non-Copy field read, as the value it views.
 #[derive(Debug, Clone)]
 struct FieldView {
@@ -467,7 +481,7 @@ impl<'a> OwnershipChecker<'a> {
             owned_bindings: HashSet::new(),
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
-            borrowed_parts: HashMap::new(),
+            parts: HashMap::new(),
             field_views: HashMap::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
@@ -1329,7 +1343,7 @@ impl<'a> OwnershipChecker<'a> {
         self.coarse_resources.clear();
         self.resource_field_debts.clear();
         self.borrowed_params.clear();
-        self.borrowed_parts.clear();
+        self.parts.clear();
         self.field_views.clear();
         self.store_target = None;
         self.borrowed_loop_items.clear();
@@ -1878,6 +1892,7 @@ impl<'a> OwnershipChecker<'a> {
         for value in values {
             hit |= self.check_lent_escape(value, into);
             hit |= match into {
+                Sink::Return if self.check_held_part_returned(value) => true,
                 Sink::Return => {
                     let field = self.check_borrowed_field_escape(value);
                     let capture = self.check_borrowed_capture_escape(value);
@@ -2259,7 +2274,13 @@ impl<'a> OwnershipChecker<'a> {
                 // `= none` holds nothing, so there is nothing to consume yet. A
                 // later assignment registers the binding when it puts a resource
                 // in — see the `Assign` arm.
+                //
+                // `let m = part` was refused (`consume_binding`), so nothing
+                // came over and `m` owes nothing; registering it reported the
+                // same mistake twice more.
+                let from_part = matches!(&init.kind, ExprKind::Ident(src) if self.parts.contains_key(src));
                 if !matches!(init.kind, ExprKind::None)
+                    && !from_part
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
@@ -2329,7 +2350,13 @@ impl<'a> OwnershipChecker<'a> {
                 // `= none` holds nothing, so there is nothing to consume yet. A
                 // later assignment registers the binding when it puts a resource
                 // in — see the `Assign` arm.
+                //
+                // `let m = part` was refused (`consume_binding`), so nothing
+                // came over and `m` owes nothing; registering it reported the
+                // same mistake twice more.
+                let from_part = matches!(&init.kind, ExprKind::Ident(src) if self.parts.contains_key(src));
                 if !matches!(init.kind, ExprKind::None)
+                    && !from_part
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
@@ -2621,7 +2648,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::While { label, cond, body } => {
                 // `while it? as v` binds `v` for the body, as `if` does.
-                let saved_parts = self.borrowed_parts.clone();
+                let saved_parts = self.parts.clone();
                 self.check_expr(cond);
                 // `v` is a new value each time round. Carried like a binding
                 // from before the loop, the first pass's move made every later
@@ -2637,18 +2664,18 @@ impl<'a> OwnershipChecker<'a> {
                     let span = body.last().map_or(stmt.span, |s| s.span);
                     self.check_present_binding_consumed(binding, span);
                 }
-                self.borrowed_parts = saved_parts;
+                self.parts = saved_parts;
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.node_ty(&expr.id).cloned();
-                let saved_parts = self.borrowed_parts.clone();
-                let lender = self.borrowed_source(expr);
+                let saved_parts = self.parts.clone();
+                let part_of = self.pattern_part_source(expr);
                 self.register_pattern_bindings_typed(
                     pattern,
                     scrutinee_ty.as_ref(),
                     expr.span,
-                    lender.as_deref(),
+                    part_of.as_ref(),
                 );
                 // SL1: what the pattern binds takes over any limit the
                 // scrutinee carries.
@@ -2660,7 +2687,7 @@ impl<'a> OwnershipChecker<'a> {
                 let mut bound = Vec::new();
                 Self::collect_pattern_binding_names(pattern, &mut bound);
                 self.check_loop_body(body, &bound, label.as_ref(), false);
-                self.borrowed_parts = saved_parts;
+                self.parts = saved_parts;
             }
             StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
@@ -3610,7 +3637,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::If { cond, then_branch, else_branch, .. } => {
                 // A payload `cond` binds lives in the then-branch only.
-                let saved_parts = self.borrowed_parts.clone();
+                let saved_parts = self.parts.clone();
                 self.check_expr(cond);
                 // OPT19: `if x? as c` reads the payload out of `x`. For a linear
                 // payload "read out" can only mean moved — a resource can't be
@@ -3621,7 +3648,7 @@ impl<'a> OwnershipChecker<'a> {
                 let present_resource = self.optional_payload_resource(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
-                self.borrowed_parts = saved_parts;
+                self.parts = saved_parts;
                 if let Some(ref binding) = present_resource {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -3654,14 +3681,14 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
-                let saved_parts = self.borrowed_parts.clone();
-                let lender = self.borrowed_source(scrutinee);
+                let saved_parts = self.parts.clone();
+                let part_of = self.pattern_part_source(scrutinee);
                 let resources_before = self.resource_bindings.clone();
                 self.register_pattern_bindings_typed(
                     pattern,
                     scrutinee_ty.as_ref(),
                     scrutinee.span,
-                    lender.as_deref(),
+                    part_of.as_ref(),
                 );
                 // SL1: what the pattern binds takes over any limit the
                 // scrutinee carries.
@@ -3680,7 +3707,7 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
                 self.check_expr(then_branch);
-                self.borrowed_parts = saved_parts;
+                self.parts = saved_parts;
                 for binding in &pattern_bound {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -3738,10 +3765,10 @@ impl<'a> OwnershipChecker<'a> {
                 // (returns/breaks) contributes nothing to the join.
                 let pre_arms = self.bindings.clone();
                 let mut merged: Option<HashMap<String, BindingState>> = None;
-                let lender = self.borrowed_source(scrutinee);
-                let saved_parts = self.borrowed_parts.clone();
+                let part_of = self.pattern_part_source(scrutinee);
+                let saved_parts = self.parts.clone();
                 for arm in arms {
-                    self.borrowed_parts = saved_parts.clone();
+                    self.parts = saved_parts.clone();
                     self.bindings = pre_arms.clone();
                     // A pattern's bindings belong to their own arm. Left on the
                     // books they were still owed while the *next* arm was being
@@ -3752,7 +3779,7 @@ impl<'a> OwnershipChecker<'a> {
                         &arm.pattern,
                         scrutinee_ty.as_ref(),
                         scrutinee.span,
-                        lender.as_deref(),
+                        part_of.as_ref(),
                     );
                     // SL1: what the arm binds takes over any limit the
                     // scrutinee carries.
@@ -3780,7 +3807,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     });
                 }
-                self.borrowed_parts = saved_parts;
+                self.parts = saved_parts;
                 // All arms diverge → code after is unreachable; keep pre-match.
                 self.bindings = merged.unwrap_or(pre_arms);
             }
@@ -3809,12 +3836,15 @@ impl<'a> OwnershipChecker<'a> {
                     // Out of a borrowed optional, `v` is a view of the same
                     // loan: handing it back gave the caller its own vector
                     // under a second name, as `is Arr(a)` did (#1425, #1452).
-                    match self.borrowed_source(inner) {
-                        Some(from) => {
-                            self.borrowed_parts.insert(name.clone(), (inner.span, from));
+                    // Out of a place that keeps holding a `Heap`, `v` reads it
+                    // where it is: `if (*first).next? as n { drop(n) }` freed
+                    // the block `first`'s release frees again.
+                    match self.present_part_source(inner) {
+                        Some(of) => {
+                            self.parts.insert(name.clone(), (inner.span, of));
                         }
                         None => {
-                            self.borrowed_parts.remove(name);
+                            self.parts.remove(name);
                         }
                     }
                     if let Some(ty) = self.node_ty(&inner.id).cloned() {
@@ -3827,8 +3857,10 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
-                        if self.type_is_resource(&narrowed) {
+                        if self.type_is_resource(&narrowed) && !self.parts.contains_key(name) {
                             self.resource_bindings.insert(name.clone());
+                        } else {
+                            self.resource_bindings.remove(name);
                         }
                         self.identified_links.remove(name);
                         if let Some(root) = self.link_root_of_expr(inner) {
@@ -4835,7 +4867,7 @@ impl<'a> OwnershipChecker<'a> {
                             // still holds.
                             BindingState::Owned
                                 if self.borrowed_loop_items.contains_key(&source_name)
-                                    || self.borrowed_parts.contains_key(&source_name) =>
+                                    || self.parts.contains_key(&source_name) =>
                             {
                                 self.consume_binding(&source_name, span, None);
                                 return;
@@ -5202,7 +5234,8 @@ impl<'a> OwnershipChecker<'a> {
         // reads a returned parameter as given away (#1452). A `mutate` one is
         // the same alias: nothing can be put back after the return, so the
         // caller is left holding what it handed out.
-        let whole_param = if fields.is_empty() && !self.borrowed_parts.contains_key(&root) {
+        let loaned_part = self.parts.get(&root).filter(|(_, of)| !of.held).map(|(_, of)| of.from.clone());
+        let whole_param = if fields.is_empty() && loaned_part.is_none() {
             match (self.borrowed_params.get(&root), self.mutate_params.get(&root)) {
                 (Some(&found), _) => Some(found),
                 (None, Some(&declared_at)) => Some((declared_at, true)),
@@ -5212,8 +5245,8 @@ impl<'a> OwnershipChecker<'a> {
             None
         };
         let (path, root) = if fields.is_empty() {
-            match self.borrowed_parts.get(&root) {
-                Some((_, from)) => (root.clone(), from.clone()),
+            match loaned_part {
+                Some(from) => (root.clone(), from),
                 None => (root.clone(), root),
             }
         } else {
@@ -5243,6 +5276,25 @@ impl<'a> OwnershipChecker<'a> {
                 is_mutate,
                 of_closure: self.closure_params.contains(&root),
                 root,
+            },
+            span: expr.span,
+        });
+        true
+    }
+
+    /// A `Heap` read out of an aggregate this frame owns, returned. A return
+    /// never reaches `consume_binding`, so this is where it's caught.
+    fn check_held_part_returned(&mut self, expr: &Expr) -> bool {
+        let ExprKind::Ident(name) = &expr.kind else { return false };
+        let Some((bound_at, PartOf { from, held: true })) = self.parts.get(name).cloned() else {
+            return false;
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::GiveAwayHeldPart {
+                name: name.clone(),
+                from,
+                bound_at,
+                sink: None,
             },
             span: expr.span,
         });
@@ -5854,17 +5906,18 @@ impl<'a> OwnershipChecker<'a> {
     /// to `resource_bindings`. The `pattern_span` is the scrutinee/match-arm
     /// span used for diagnostics. `scrutinee_ty: None` skips ER42/ER43 checks
     /// at the top level — callers without a known type pass None.
-    /// `lender` is set when the scrutinee is a borrowed value: its bindings
-    /// are parts on the same loan, owed by nobody here, and a `_` over a
-    /// linear part discards nothing.
+    /// `part_of` is what still owns the scrutinee. A loan's bindings are
+    /// parts on the same loan, owed by nobody here, and a `_` over a linear
+    /// part discards nothing. An aggregate this frame owns keeps only its
+    /// `Heap`s: those bindings are parts too, and the rest come out as usual.
     fn register_pattern_bindings_typed(
         &mut self,
         pattern: &Pattern,
         scrutinee_ty: Option<&Type>,
         pattern_span: Span,
-        lender: Option<&str>,
+        part_of: Option<&PartOf>,
     ) {
-        let owned = lender.is_none();
+        let owned = !part_of.is_some_and(|of| !of.held);
         match pattern {
             Pattern::Wildcard => {
                 if let Some(ty) = scrutinee_ty {
@@ -5889,13 +5942,15 @@ impl<'a> OwnershipChecker<'a> {
                     return;
                 }
                 self.bindings.insert(name.clone(), BindingState::Owned);
-                match lender {
-                    Some(from) => {
-                        self.borrowed_parts
-                            .insert(name.clone(), (pattern_span, from.to_string()));
+                let part = part_of.filter(|of| {
+                    !of.held || scrutinee_ty.is_some_and(|ty| self.pattern_payload_is_borrowed(ty))
+                });
+                match part {
+                    Some(of) => {
+                        self.parts.insert(name.clone(), (pattern_span, of.clone()));
                     }
                     None => {
-                        self.borrowed_parts.remove(name);
+                        self.parts.remove(name);
                     }
                 }
                 if let Some(ty) = scrutinee_ty {
@@ -5916,7 +5971,7 @@ impl<'a> OwnershipChecker<'a> {
                 });
                 for (i, pat) in pats.iter().enumerate() {
                     let pos_ty = elem_tys.as_ref().and_then(|tys| tys.get(i));
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, lender);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
                 }
             }
             Pattern::Struct { name, fields, rest } => {
@@ -5928,7 +5983,7 @@ impl<'a> OwnershipChecker<'a> {
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
                         .map(|(_, t)| t.clone());
-                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span, lender);
+                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span, part_of);
                 }
                 // ER43: `..` rest discards every unmentioned linear field.
                 if *rest {
@@ -5990,26 +6045,25 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         continue;
                     }
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, lender);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
                 }
             }
             Pattern::Or(pats) => {
                 // Each alternative binds the same names; let the typed walk
                 // mark resources on the first, then de-dup with the rest.
                 for pat in pats {
-                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, lender);
+                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, part_of);
                 }
             }
             Pattern::TypePat { ty, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    match lender {
-                        Some(from) => {
-                            self.borrowed_parts
-                                .insert(name.clone(), (pattern_span, from.to_string()));
+                    match part_of.filter(|of| !of.held) {
+                        Some(of) => {
+                            self.parts.insert(name.clone(), (pattern_span, of.clone()));
                         }
                         None => {
-                            self.borrowed_parts.remove(name);
+                            self.parts.remove(name);
                         }
                     }
                     // Resolve the narrowed type to determine linearity, by its
@@ -7841,7 +7895,19 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
-        if let Some((matched_at, from)) = self.borrowed_parts.get(name).cloned() {
+        if let Some((matched_at, PartOf { from, held: true })) = self.parts.get(name).cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::GiveAwayHeldPart {
+                    name: name.to_string(),
+                    from,
+                    bound_at: matched_at,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
+        if let Some((matched_at, PartOf { from, .. })) = self.parts.get(name).cloned() {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ConsumeBorrowedPart {
                     name: name.to_string(),
@@ -8091,13 +8157,69 @@ impl<'a> OwnershipChecker<'a> {
                 if self.borrowed_params.contains_key(name) {
                     Some(name.clone())
                 } else {
-                    self.borrowed_parts.get(name).map(|(_, from)| from.clone())
+                    self.parts
+                        .get(name)
+                        .filter(|(_, of)| !of.held)
+                        .map(|(_, of)| of.from.clone())
                 }
             }
             ExprKind::Field { object, .. } => self.borrowed_source(object),
             // An element still lives in its container (mem.borrowing/E4), so
             // `es[0].v` is as much the caller's as `es` is.
             ExprKind::Index { object, .. } => self.borrowed_source(object),
+            _ => None,
+        }
+    }
+
+    /// What a pattern matched against `scrutinee` binds parts of: the loan
+    /// it's on, or the aggregate holding it. `T?` and `T or E` are wrappers,
+    /// not aggregates: nothing releases what's behind the tag, so their
+    /// payload is the pattern's (mem.heap).
+    fn pattern_part_source(&self, scrutinee: &Expr) -> Option<PartOf> {
+        if let Some(from) = self.borrowed_source(scrutinee) {
+            return Some(PartOf { from, held: false });
+        }
+        if matches!(self.node_ty(&scrutinee.id), Some(Type::Result { .. })) {
+            return None;
+        }
+        self.held_place(scrutinee).map(|from| PartOf { from, held: true })
+    }
+
+    /// What `scrutinee? as v` makes `v` part of. A bare optional local gives
+    /// its payload away: the wrapper carries it linearly, so `v` takes the
+    /// obligation over (#827). Out of a field, an element or a `Heap`, the
+    /// optional stays where it is, so a `Heap` it holds stays the holder's.
+    fn present_part_source(&self, scrutinee: &Expr) -> Option<PartOf> {
+        if let Some(from) = self.borrowed_source(scrutinee) {
+            return Some(PartOf { from, held: false });
+        }
+        if matches!(scrutinee.kind, ExprKind::Ident(_)) {
+            return None;
+        }
+        let payload = self.node_ty(&scrutinee.id)?.as_option()?;
+        if !self.pattern_payload_is_borrowed(payload) {
+            return None;
+        }
+        self.held_place(scrutinee).map(|from| PartOf { from, held: true })
+    }
+
+    /// A place rooted in a value this frame can see, rendered for a message:
+    /// `s`, `s.next`, `(*first).next`, `xs[…]`. `None` for anything else, such
+    /// as a call's result, which nothing goes on holding.
+    fn held_place(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self.names_a_value(name).then(|| name.clone()),
+            ExprKind::Field { object, field } => {
+                let object_place = self.held_place(object)?;
+                Some(match &object.kind {
+                    ExprKind::Unary { op: UnaryOp::Deref, .. } => format!("({object_place}).{field}"),
+                    _ => format!("{object_place}.{field}"),
+                })
+            }
+            ExprKind::Index { object, .. } => Some(format!("{}[…]", self.held_place(object)?)),
+            ExprKind::Unary { op: UnaryOp::Deref, operand } => {
+                Some(format!("*{}", self.held_place(operand)?))
+            }
             _ => None,
         }
     }
@@ -8256,7 +8378,7 @@ impl<'a> OwnershipChecker<'a> {
     fn is_on_loan(&self, name: &str) -> bool {
         self.module_consts.contains(name)
             || self.borrowed_params.contains_key(name)
-            || self.borrowed_parts.contains_key(name)
+            || self.parts.contains_key(name)
             || self.borrowed_loop_items.contains_key(name)
             || self.borrowed_with.contains_key(name)
             || self.borrowed_captures.contains_key(name)
@@ -8479,7 +8601,8 @@ impl<'a> OwnershipChecker<'a> {
     /// that reads as a copy, which is why writing through `c` is rejected. A linear
     /// payload can't be copied, so the only coherent reading there is a move: `c`
     /// holds the resource inside the branch and `x` doesn't hold it afterwards —
-    /// on the absent path there was nothing to hold (#827).
+    /// on the absent path there was nothing to hold (#827). A part (`parts`)
+    /// is the exception: something else still holds it, so `c` owes nothing.
     fn optional_payload_resource(&mut self, cond: &Expr) -> Option<String> {
         let ExprKind::IsPresent { expr: inner, binding: Some(name) } = &cond.kind else {
             return None;
@@ -8488,7 +8611,7 @@ impl<'a> OwnershipChecker<'a> {
             .node_ty(&inner.id)
             .and_then(|ty| ty.as_option())?
             .clone();
-        if !self.type_is_resource(&payload) {
+        if !self.type_is_resource(&payload) || self.parts.contains_key(name) {
             return None;
         }
         // The scrutinee gave the payload away. A call result had no binding to

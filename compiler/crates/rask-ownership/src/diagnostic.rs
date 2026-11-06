@@ -1128,6 +1128,32 @@ impl ToDiagnostic for crate::OwnershipError {
                 ))
             }
 
+            GiveAwayHeldPart { name, from, bound_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` still holds it",
+                    name, from
+                ))
+                .with_code("E0880")
+                .with_primary(self.span, label)
+                .with_secondary(*bound_at, format!("`{}` reads the box where `{}` keeps it", name, from))
+                .with_fix(format!(
+                    "use `{}` where it is and let its owner free it; to move it out, \
+                     empty the slot first: `take {}`",
+                    name, from
+                ))
+                .with_why(
+                    "a box stored in a field belongs to what holds the field, and its \
+                     release frees the box. Reading it back out with `? as` or a \
+                     pattern is a borrow, so giving it away here would free it a \
+                     second time [mem.heap/HP3, mem.linear/L5]"
+                        .to_string(),
+                )
+            }
+
             ConsumeLoopItem { name, from, loop_at, sink } => {
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),

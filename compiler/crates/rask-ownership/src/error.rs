@@ -484,6 +484,19 @@ pub enum OwnershipErrorKind {
         ty: Option<String>,
     },
 
+    /// A `Heap` read out of an aggregate this frame owns was given away. The
+    /// aggregate's release frees it too: `if (*first).next? as n { drop(n) }`
+    /// freed the block twice.
+    #[error("cannot give away `{name}` — `{from}` still holds it")]
+    GiveAwayHeldPart {
+        name: String,
+        /// The place `name` reads, rendered: `(*first).next`.
+        from: String,
+        /// The `? as` or pattern that bound it.
+        bound_at: Span,
+        sink: Option<String>,
+    },
+
     /// A part matched out of a borrowed value was given away. `match s {
     /// Full(c) => close(c) }` with `s` only lent: `c` is the caller's too,
     /// so consuming it closes a handle they still hold.
