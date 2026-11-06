@@ -2472,7 +2472,18 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(value);
                 self.store_target = None;
                 self.give_away_if_lent(value, "this assignment");
-                self.check_part_owner_kept(target, "replace", stmt.span);
+                // `rest = *next` walks a list: the part moves into the new
+                // value rather than going with the old one.
+                let takes_part_over = match &value.kind {
+                    ExprKind::Unary { op: UnaryOp::Deref, operand } => matches!(
+                        &operand.kind,
+                        ExprKind::Ident(p) if self.parts.get(p).is_some_and(|(_, of)| of.held)
+                    ),
+                    _ => false,
+                };
+                if !takes_part_over {
+                    self.check_part_owner_kept(target, "replace", stmt.span);
+                }
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
                 if let Some(place) = self.replaced_place(stmt) {
