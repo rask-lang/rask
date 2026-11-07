@@ -1003,3 +1003,65 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 }
+
+/// What an `import` path names, from a given package (modules/IM1–IM3,
+/// PO1–PO3). One answer for the resolver and for the rewrite that qualifies
+/// package references, so the two can't disagree.
+///
+/// A package inside the root's directory is named by its path from the root
+/// (`pa.sub`); any other, a dependency, by its name. An import may write that
+/// key as is, with the root package's name in front (`import myapp.pa`), or
+/// relative to the importing package (`import sub` inside `pa`).
+#[derive(Debug, Clone, Default)]
+pub struct ImportIndex {
+    by_key: HashMap<String, PackageId>,
+    key_of: HashMap<PackageId, String>,
+    root: Option<PackageId>,
+    root_name: String,
+}
+
+impl ImportIndex {
+    pub fn new(registry: &PackageRegistry, root: PackageId) -> Self {
+        let mut index = ImportIndex { root: Some(root), ..Default::default() };
+        let root_path = registry.get(root).map(|p| p.path.clone()).unwrap_or_default();
+        index.root_name = registry.get(root).map(|p| p.name.clone()).unwrap_or_default();
+        for pkg in registry.packages() {
+            if pkg.id == root {
+                continue;
+            }
+            let key = if !pkg.is_external && pkg.path.len() > root_path.len() && pkg.path.starts_with(&root_path) {
+                pkg.path[root_path.len()..].join(".")
+            } else {
+                pkg.name.clone()
+            };
+            index.by_key.insert(key.clone(), pkg.id);
+            index.key_of.insert(pkg.id, key);
+        }
+        index
+    }
+
+    /// A package's key: its path from the root, or a dependency's name.
+    /// `None` for the root itself.
+    pub fn key(&self, id: PackageId) -> Option<&str> {
+        self.key_of.get(&id).map(String::as_str)
+    }
+
+    /// The package `path` names from `importer`, and how many of its segments
+    /// that takes: the longest prefix that names one. `import pa.sub.f` is
+    /// `pa.sub` and two segments, then the member `f`.
+    pub fn package(&self, path: &[String], importer: Option<PackageId>) -> Option<(PackageId, usize)> {
+        let importer_key = importer.filter(|i| Some(*i) != self.root).and_then(|i| self.key(i));
+        (1..=path.len()).rev().find_map(|n| {
+            let segments = &path[..n];
+            let written = segments.join(".");
+            let mut candidates = vec![written.clone()];
+            if n > 1 && segments[0] == self.root_name {
+                candidates.push(segments[1..].join("."));
+            }
+            if let Some(k) = importer_key {
+                candidates.push(format!("{}.{}", k, written));
+            }
+            candidates.into_iter().find_map(|k| self.by_key.get(&k).map(|id| (*id, n)))
+        })
+    }
+}

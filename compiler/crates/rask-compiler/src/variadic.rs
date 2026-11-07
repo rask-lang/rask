@@ -61,10 +61,10 @@ pub struct Wrapper {
 /// Point each variadic call in `functions` at a fixed-arity wrapper, and
 /// answer the wrappers (one per distinct shape).
 pub fn route_calls(functions: &mut [MirFunction], decls: &[Decl]) -> Result<Vec<Wrapper>, Vec<String>> {
-    let variadic: HashMap<&str, (usize, Option<&TypeExpr>)> = decls
+    let variadic: HashMap<&str, (usize, Option<&TypeExpr>, String)> = decls
         .iter()
         .filter_map(|d| match &d.kind {
-            DeclKind::Extern(e) if e.is_variadic => Some((e.name.as_str(), (e.params.len(), e.ret_ty.as_ref()))),
+            DeclKind::Extern(e) if e.is_variadic => Some((e.name.as_str(), (e.params.len(), e.ret_ty.as_ref(), e.c_symbol()))),
             _ => None,
         })
         .collect();
@@ -78,7 +78,8 @@ pub fn route_calls(functions: &mut [MirFunction], decls: &[Decl]) -> Result<Vec<
         for block in &mut f.blocks {
             for stmt in &mut block.statements {
                 let MirStmtKind::Call { dst, func, args } = &mut stmt.kind else { continue };
-                let Some(&(fixed, ret_te)) = variadic.get(func.name.as_str()).filter(|_| func.is_extern) else { continue };
+                let Some((fixed, ret_te, target)) = variadic.get(func.name.as_str()).filter(|_| func.is_extern) else { continue };
+                let (fixed, ret_te) = (*fixed, *ret_te);
                 let mut parts = Vec::new();
                 for a in args.iter() {
                     match operand_type(&f_ro, a).as_ref().and_then(scalar) {
@@ -112,12 +113,12 @@ pub fn route_calls(functions: &mut [MirFunction], decls: &[Decl]) -> Result<Vec<
                     let params: Vec<String> = parts.iter().enumerate().map(|(i, p)| format!("{} a{}", p.0, i)).collect();
                     let call_args: Vec<String> = (0..parts.len()).map(|i| format!("a{}", i)).collect();
                     let proto = if fixed_c.is_empty() { "...".to_string() } else { format!("{}, ...", fixed_c.join(", ")) };
-                    let call = format!("{}({})", func.name, call_args.join(", "));
+                    let call = format!("{}({})", target, call_args.join(", "));
                     let body = if ret_c == "void" { format!("{};", call) } else { format!("return {};", call) };
                     let source = format!(
                         "{ret} {target}({proto});\n{ret} {name}({params}) {{ {body} }}\n",
                         ret = ret_c,
-                        target = func.name,
+                        target = target,
                         proto = proto,
                         name = name,
                         params = if params.is_empty() { "void".to_string() } else { params.join(", ") },

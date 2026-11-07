@@ -849,7 +849,7 @@ mod tests {
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -871,7 +871,7 @@ mod tests {
             expr_stmt(task_spawn(vec![])),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
@@ -893,7 +893,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -907,7 +907,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

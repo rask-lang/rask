@@ -145,6 +145,9 @@ pub struct PackageContext {
 pub struct CheckResult {
     pub typed: TypedProgram,
     pub decls: Vec<Decl>,
+    /// Packages bound by name on the interpreter: the stdlib modules a single
+    /// file imports, and a project's other packages, whose members are
+    /// reached through references already rewritten to qualified names.
     pub package_names: Vec<String>,
     /// Each dependency's declarations, original name against the qualified one
     /// the rest of the pipeline uses. Kept so a diagnostic raised after the
@@ -307,7 +310,10 @@ fn discover_package(root: &Path) -> Result<Option<PackageContext>, rask_resolve:
     let root_id = registry.discover(root)?;
     let Some(root_pkg) = registry.get(root_id) else { return Ok(None) };
     let all_decls: Vec<Decl> = root_pkg.all_decls().cloned().collect();
-    if all_decls.is_empty() {
+    // A `src/` layout has nothing at the root and the program in a
+    // sub-package; that's still a package. Only one with no code anywhere
+    // isn't.
+    if registry.packages().iter().all(|p| p.all_decls().next().is_none()) {
         return Ok(None);
     }
     Ok(Some(PackageContext { registry, root_id, all_decls }))
@@ -557,7 +563,7 @@ fn check_loaded_scoped(
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
     let c = c_import::expand(
-        &mut decls,
+        &mut [c_import::Unit { decls: &mut decls, package: None }],
         &mut source_files,
         &mut next_id,
         &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
@@ -644,7 +650,7 @@ fn check_loaded_scoped(
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -809,26 +815,56 @@ fn check_package_scoped(
     // anyway, through a separate list merged *after* resolve. A subdirectory is
     // a package (modules/PO1), so this is what made the ordinary `src/` layout
     // fail: `func main()` in `src/main.rk` is a private declaration by this
-    // rule (#1100). Those keep sharing the program's namespace — renaming that
-    // `main` leaves the program without an entry point.
+    // rule (#1100).
+    //
+    // A sub-package is qualified the same way, by its path from the root
+    // (`pa.sub` → `f_pa_sub`): it's a package of its own (modules/PO3), and
+    // its names are reached only through it (IM1, #1744). Its entry point
+    // keeps its name, since that's what the program starts from.
+    let index = rask_resolve::ImportIndex::new(&pkg_ctx.registry, pkg_ctx.root_id);
+    // A sub-package's `main` is the entry point only when the root has none,
+    // as in a `src/` layout. Otherwise it's an ordinary name of its package.
+    let root_has_entry = pkg_ctx.all_decls.iter().any(|d| {
+        matches!(&d.kind, DeclKind::Fn(f) if f.name == "main" || f.attrs.iter().any(|a| a.is("entry")))
+    });
+    // Each package's suffix, unique however its path and name are spelled:
+    // `pa/sub` and `pa_sub/` would both be `_pa_sub` otherwise.
+    let mut suffixes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Every private declaration's qualified name.
+    let mut private: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
             continue;
         }
-        package_names.push(pkg.name.clone());
+        // How the program's imports name it.
+        let import_name = index.key(pkg.id).unwrap_or(&pkg.name).to_string();
+        package_names.push(import_name.clone());
+        let base = import_name.replace('.', "_");
+        let mut suffix = base.clone();
+        let mut n = 1;
+        while !suffixes.insert(suffix.clone()) {
+            n += 1;
+            suffix = format!("{}{}", base, n);
+        }
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
-        for decl in &decls {
-            if !is_public_decl(decl) {
-                if let Some(name) = decl.name().map(str::to_string) {
-                    private_elsewhere.entry(name).or_default().push((pkg.id, pkg.name.clone(), decl.span));
-                }
+        let written: Vec<(String, Span)> = decls
+            .iter()
+            .filter(|d| !is_public_decl(d))
+            .filter_map(|d| Some((d.name()?.to_string(), d.span)))
+            .collect();
+        let map = package_scope::qualify_declarations(&mut decls, &suffix, !pkg.is_external && !root_has_entry);
+        // By the name as written, for a bare use that resolve can't find, and
+        // as qualified, for `pa.hidden()` that it can.
+        for (name, span) in written {
+            let entry = (pkg.id, import_name.clone(), span);
+            if let Some(q) = map.get(&name).filter(|q| **q != name) {
+                private.insert(q.clone());
+                private_elsewhere.entry(q.clone()).or_default().push(entry.clone());
             }
+            private_elsewhere.entry(name).or_default().push(entry);
         }
-        if pkg.is_external {
-            let map = package_scope::qualify_declarations(&mut decls, &pkg.name);
-            exports.insert(pkg.name.clone(), map);
-        }
+        exports.insert(import_name, map);
         merged.push((pkg.id, decls));
     }
 
@@ -842,10 +878,11 @@ fn check_package_scoped(
             .iter()
             .flat_map(|(_, decls)| package_scope::annotation_names(decls))
             .collect();
-        let root_visible = visible_packages(&pkg_ctx.all_decls, exports);
+        let root_scope = package_scope::ImportScope { exports, index: &index, importer: None, private: &private };
+        let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
-            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_visible);
+            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
         diags.extend(
@@ -853,10 +890,11 @@ fn check_package_scoped(
                 .iter()
                 .map(unimported_annotation_diagnostic),
         );
-        for (_, decls) in merged.iter_mut() {
-            let visible = visible_packages(decls, exports);
+        for (id, decls) in merged.iter_mut() {
+            let scope = package_scope::ImportScope { exports, index: &index, importer: Some(*id), private: &private };
+            let visible = visible_packages(decls, &scope);
             package_scope::qualify_references(decls, &visible, &annotations);
-            let (imported, shadowed) = package_scope::unqualified_imports(decls, &visible);
+            let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);
             package_scope::qualify_imported_names(decls, &imported, &annotations);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
             diags.extend(
@@ -874,11 +912,9 @@ fn check_package_scoped(
         diags.extend(misplaced_claims(decls));
         diags.extend(build_module_outside_build_script(decls));
     }
-    for (_, decls) in merged {
-        pkg_ctx.all_decls.extend(decls);
-    }
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
+    // Before the merge: an alias means the header its own package imported.
     {
         let source_dirs: HashMap<u16, PathBuf> = pkg_ctx
             .registry
@@ -887,14 +923,21 @@ fn check_package_scoped(
             .flat_map(|p| p.files.iter())
             .filter_map(|f| Some((f.file_id, f.path.parent()?.to_path_buf())))
             .collect();
+        let names: HashMap<rask_resolve::PackageId, String> =
+            pkg_ctx.registry.packages().iter().map(|p| (p.id, p.name.clone())).collect();
+        let mut units = vec![c_import::Unit { decls: &mut pkg_ctx.all_decls, package: None }];
+        units.extend(merged.iter_mut().map(|(id, decls)| c_import::Unit { decls, package: Some(names[id].as_str()) }));
         let c = c_import::expand(
-            &mut pkg_ctx.all_decls,
+            &mut units,
             &mut source_files,
             pkg_ctx.registry.next_node_id_mut(),
             &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
         );
         exports.extend(c.exports);
         diags.extend(c.diagnostics);
+    }
+    for (_, decls) in merged {
+        pkg_ctx.all_decls.extend(decls);
     }
 
     // --- Build configuration into `comptime` code (CC1) ---
@@ -1040,7 +1083,7 @@ fn check_package_scoped(
     // --- Effects ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1143,14 +1186,9 @@ pub fn compile_package_with(
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
-    // Collect package_modules from the registry before check consumes pkg_ctx.
+    // The stdlib modules the program imports. Another package's members
+    // are reached through names already qualified, never through it.
     let mut package_modules = HashSet::new();
-    for pkg in pkg_ctx.registry.packages() {
-        if pkg.id != pkg_ctx.root_id {
-            package_modules.insert(pkg.name.clone());
-        }
-    }
-    // Also include builtin stdlib modules referenced by imports.
     for decl in &pkg_ctx.all_decls {
         if let DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
@@ -1453,19 +1491,21 @@ fn unimported_annotation_diagnostic(u: &package_scope::UnimportedAnnotation) -> 
 /// declarations by `mylib.Name` works too.
 fn visible_packages(
     decls: &[Decl],
-    exports: &HashMap<String, HashMap<String, String>>,
+    scope: &package_scope::ImportScope,
 ) -> HashMap<String, HashMap<String, String>> {
+    let exports = scope.exports;
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        let Some(pkg) = import.path.first() else { continue };
-        let Some(map) = exports.get(pkg) else { continue };
-        let binding = match (&import.alias, import.path.len()) {
+        let Some((pkg, len)) = scope.package(&import.path) else { continue };
+        // `import pa.sub` binds `sub` (modules/IM2).
+        let last = import.path[len - 1].clone();
+        let binding = match &import.alias {
             // `import pkg.Name as N` renames the member, not the package.
-            (Some(alias), 1) => alias.clone(),
-            _ => pkg.clone(),
+            Some(alias) if len == import.path.len() => alias.clone(),
+            _ => last,
         };
-        out.insert(binding, map.clone());
+        out.insert(binding, exports[&pkg].clone());
     }
     out
 }

@@ -1449,6 +1449,7 @@ name = "rask-comptime"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-c-parse",
  "thiserror",
 ]
 

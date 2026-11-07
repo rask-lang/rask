@@ -1250,6 +1250,17 @@ impl TypeChecker {
             c_fn_pointers: std::mem::take(&mut self.c_fn_pointers).into_keys().collect(),
             c_contexts: std::mem::take(&mut self.c_contexts),
             c_macro_calls: std::mem::take(&mut self.c_macro_calls),
+            c_macro_bodies: self
+                .c_macros
+                .values()
+                .filter_map(|m| {
+                    let (_, body) = m.body.as_ref().ok()?;
+                    Some((m.name.clone(), rask_ast::decl::CMacroBody {
+                        touches_memory: rask_c_parse::cexpr::touches_memory(body),
+                        calls: rask_c_parse::cexpr::calls(body),
+                    }))
+                })
+                .collect(),
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,
