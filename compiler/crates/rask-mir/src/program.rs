@@ -110,6 +110,7 @@ mod tests {
     fn struct_layout_lookup() {
         let mut prog = empty_program();
         prog.struct_layouts.push(StructLayout {
+            key: None,
             name: "Point".to_string(),
             size: 16,
             align: 8,

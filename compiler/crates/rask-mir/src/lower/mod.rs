@@ -8041,6 +8041,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
+            key: None,
             name: "Shape".to_string(),
             size: 16,
             align: 8,
@@ -8175,6 +8176,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
+            key: None,
             name: "Color".to_string(),
             size: 1,
             align: 1,
@@ -8270,6 +8272,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
+            key: None,
             name: "Msg".to_string(),
             size: 12,
             align: 4,

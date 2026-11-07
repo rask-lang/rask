@@ -2041,6 +2041,7 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
+                    key: None,
                     name: "Point".to_string(),
                     size: 8,
                     align: 4,
@@ -2093,6 +2094,7 @@ mod tests {
             struct_layouts: vec![],
             enum_layouts: vec![
                 rask_layout::EnumLayout {
+                    key: None,
                     name: "Result".to_string(),
                     size: 8,
                     align: 4,
