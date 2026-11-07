@@ -330,6 +330,9 @@ static void edge_register(int32_t kind, void *holder, void *target) {
 // keeps `rask_link_set` safe to call on a slot the rack has never seen.
 static void edge_unregister(int32_t kind, void *holder, void *target) {
     RaskRack *r = node_of(target)->rack;
+    // A dead target: `fix_incoming` already released every record on it. A
+    // slot can still name it only if nothing ever recorded that slot.
+    if (!r) return;
     HeapEdge *h = index_find(r, kind, holder, target);
     if (!h) return;
     index_remove(r, h);
@@ -366,7 +369,7 @@ void rask_link_set(void **slot, void *target) {
     *slot = target;
     if (!rask_link_is_none(old) && !rask_link_is_none(target)) {
         RaskRack *r = node_of(old)->rack;
-        HeapEdge *h = r == node_of(target)->rack
+        HeapEdge *h = r && r == node_of(target)->rack
                           ? index_find(r, RACK_EDGE_SLOT, slot, old) : NULL;
         if (h) {
             // Same rack, and the index is keyed on the slot alone, so the
