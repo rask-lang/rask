@@ -48,6 +48,8 @@
 #     identity all answer what native answers. The file grew from 6 tests to 16
 #     while it was open; all 16 pass on both backends.
 
+t_rack_tuple_links.rk            # interp tuple element field write — #1799 (interp run)
+
 # --- shared / both-backend bugs ---
 # (t_parse_float was the previous one, fixed in #610: a float payload sits in a
 #  Result slot as an f64, and the parse adapter was writing it at the declared

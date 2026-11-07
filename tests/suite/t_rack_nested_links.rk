@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link one level down is as much an edge as one on the node itself (#1795).
+//
+// The rack learns where a value holds links from a descriptor the compiler
+// builds, and that descriptor used to list top-level fields only. A link in a
+// struct field of a node, in a tuple, or in an array was never recorded, so
+// `delete` couldn't find it to null, and the program went on reading the freed
+// node through it. Native printed `none=false` where the interpreter printed
+// `none=true`, and writing the slot afterwards crashed. Tuples are covered in
+// t_rack_tuple_links.rk.
+import memory.Link
+import memory.Rack
+
+struct Cursor {
+    at: Link<Node>?
+}
+
+struct Node {
+    id: i32
+    cur: Cursor
+}
+
+struct Hub {
+    id: i32
+    peers: Vec<Link<Hub>>
+}
+
+struct Group {
+    tag: i32
+    inner: Hub2
+}
+
+struct Hub2 {
+    peers: Vec<Link<Leaf>>
+}
+
+struct Leaf {
+    id: i32
+}
+
+func main() {}
+
+test "a link inside a node's struct field is nulled by delete" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let b = rack.insert(Node(id: 2, cur: Cursor(at: none)))
+    let h = rack.insert(Node(id: 3, cur: Cursor(at: a)))
+    rack.delete(a)
+    assert h.cur.at is none
+    h.cur.at = b
+    if h.cur.at? as p {
+        assert p.id == 2
+    } else {
+        assert false
+    }
+    rack.delete(b)
+    assert h.cur.at is none
+}
+
+test "a nested link written after insert is nulled by delete" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let h = rack.insert(Node(id: 3, cur: Cursor(at: none)))
+    h.cur.at = a
+    rack.delete(a)
+    assert h.cur.at is none
+}
+
+test "a link inside a struct local's struct field is nulled by delete" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let holder = Node(id: 9, cur: Cursor(at: a))
+    rack.delete(a)
+    assert holder.cur.at is none
+}
+
+test "a vector of links one level down loses the deleted entry" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let x = leaves.insert(Leaf(id: 1))
+    let y = leaves.insert(Leaf(id: 2))
+    mut ps: Vec<Link<Leaf>> = Vec.new()
+    ps.push(x)
+    ps.push(y)
+    mut groups: Rack<Group> = Rack.new()
+    let g = groups.insert(Group(tag: 1, inner: Hub2(peers: ps)))
+    leaves.delete(x)
+    assert g.inner.peers.len() == 1
+    assert g.inner.peers[0].id == 2
+}
+
+test "snapshot re-points a nested link at the copy" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let h = rack.insert(Node(id: 2, cur: Cursor(at: a)))
+    let snap = rack.snapshot()
+    if snap.corresponding(h)? as h2 {
+        if h2.cur.at? as p {
+            assert p.id == 1
+            assert p != a
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+    rack.delete(a)
+    assert h.cur.at is none
+}
+
+// A whole nested struct written over the field copied its bytes without
+// telling the rack: the slot stayed on the old target's list and the new
+// target never learned of it.
+test "overwriting a node's nested struct moves the edge" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let b = rack.insert(Node(id: 2, cur: Cursor(at: none)))
+    let h = rack.insert(Node(id: 3, cur: Cursor(at: a)))
+    h.cur = Cursor(at: b)
+    rack.delete(a)
+    if h.cur.at? as p {
+        assert p.id == 2
+    } else {
+        assert false
+    }
+    rack.delete(b)
+    assert h.cur.at is none
+}
+
+test "overwriting a nested vector of links records the new one" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let x = leaves.insert(Leaf(id: 1))
+    let y = leaves.insert(Leaf(id: 2))
+    mut groups: Rack<Group> = Rack.new()
+    let g = groups.insert(Group(tag: 1, inner: Hub2(peers: Vec.new())))
+    mut ps: Vec<Link<Leaf>> = Vec.new()
+    ps.push(x)
+    ps.push(y)
+    g.inner = Hub2(peers: ps)
+    leaves.delete(x)
+    assert g.inner.peers.len() == 1
+    assert g.inner.peers[0].id == 2
+}

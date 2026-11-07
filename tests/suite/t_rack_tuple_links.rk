@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link inside a tuple is an edge like any other (#1795): `delete` has to
+// null it, whether the tuple sits in a node or in a local.
+//
+// Split from t_rack_nested_links.rk because the interpreter can't yet write
+// through a tuple element's field (#1799).
+import memory.Link
+import memory.Rack
+
+struct Cursor {
+    at: Link<Node>?
+}
+
+struct Node {
+    id: i32
+    cur: Cursor
+}
+
+struct Pair {
+    id: i32
+    ends: (Cursor, i32)
+}
+
+func main() {}
+
+test "a link inside a tuple in a node is nulled by delete" {
+    mut nodes: Rack<Node> = Rack.new()
+    let a = nodes.insert(Node(id: 1, cur: Cursor(at: none)))
+    mut rack: Rack<Pair> = Rack.new()
+    let h = rack.insert(Pair(id: 2, ends: (Cursor(at: none), 7)))
+    h.ends.0.at = a
+    nodes.delete(a)
+    assert h.ends.0.at is none
+    assert h.ends.1 == 7
+}
+
+test "a link inside a tuple local is nulled by delete" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let b = rack.insert(Node(id: 2, cur: Cursor(at: none)))
+    mut t = (Cursor(at: a), 5)
+    rack.delete(a)
+    assert t.0.at is none
+    t.0.at = b
+    if t.0.at? as p {
+        assert p.id == 2
+    } else {
+        assert false
+    }
+}

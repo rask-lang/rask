@@ -1425,31 +1425,79 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// Does this struct have a field that can hold an edge — a `Link<T>`, or a
-    /// `Vec`/`Map` of them? Same question codegen asks to build the descriptor;
-    /// asked here to decide whether the call is worth emitting at all.
+    /// Is this an aggregate holding an edge anywhere inside it — a `Link<T>` or
+    /// a `Vec`/`Map` of them, at any depth of inline nesting? Asked to decide
+    /// whether registering a freshly stored value is worth emitting.
+    ///
+    /// A bare link is not an aggregate: a local or parameter holding one is a
+    /// root, which the checker keeps from outliving its node (mem.racks/RK5),
+    /// and the rack never records it.
     pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
-        let MirType::Struct(sid) = ty else { return false };
-        let Some(layout) = self.struct_layouts.get(sid.id as usize) else { return false };
-        layout.fields.iter().any(|f| Self::field_holds_links(&f.ty))
+        matches!(ty, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. })
+            && !crate::types::link_slots_by(ty, &|id| self.struct_link_slots(id as usize)).is_empty()
     }
 
-    /// `Link<T>` / `Link<T>?`, or a `Vec`/`Map` whose values are links.
-    pub(crate) fn field_holds_links(ty: &Type) -> bool {
+    /// Where struct layout `id` holds edges, offsets from its start
+    /// (`crate::link_slots`).
+    ///
+    /// Walked over the checker's types rather than the MIR ones: a
+    /// `Vec<Link<T>>` field and a `Vec<i64>` field are the same
+    /// `MirType::Container`, and only the element type says which one the rack
+    /// has to hear about.
+    pub(crate) fn struct_link_slots(&self, id: usize) -> Vec<crate::LinkSlot> {
+        let mut out = Vec::new();
+        if let Some(layout) = self.struct_layouts.get(id) {
+            for f in &layout.fields {
+                self.type_link_slots(&f.ty, f.offset, 0, &mut out);
+            }
+        }
+        out
+    }
+
+    fn type_link_slots(&self, ty: &Type, base: u32, depth: u32, out: &mut Vec<crate::LinkSlot>) {
+        // A type that reaches itself does so through a pointer, which this walk
+        // doesn't follow; the bound only keeps a pathological nesting finite.
+        if depth > 16 {
+            return;
+        }
         let bare = ty.as_option().unwrap_or(ty);
-        let Type::UnresolvedGeneric { name, args } = bare else { return false };
-        if name == "Link" {
-            return true;
+        if self.is_link_type(bare) {
+            out.push(crate::LinkSlot {
+                kind: rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32,
+                offset: base,
+            });
+            return;
         }
-        if name != "Vec" && name != "Map" {
-            return false;
+        if let Some(reg) = self.container_link_registration(bare) {
+            let kind = match reg {
+                "Link_register_vec" => rask_mono::runtime_abi::RASK_RACK_FIELD_VEC,
+                _ => rask_mono::runtime_abi::RASK_RACK_FIELD_MAP,
+            };
+            out.push(crate::LinkSlot { kind: kind as i32, offset: base });
+            return;
         }
-        args.iter().rev().find_map(|a| match a {
-            rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
-        })
-        .is_some_and(|v| matches!(v.as_option().unwrap_or(v),
-            Type::UnresolvedGeneric { name, .. } if name == "Link"))
+        // Only the value itself from here on: a tagged `T?` holding a struct
+        // with a link is variant-dependent, like an enum payload.
+        match (ty, self.type_layout(ty)) {
+            (_, MirType::Struct(id)) => {
+                if let Some(layout) = self.struct_layouts.get(id.id as usize) {
+                    for f in &layout.fields {
+                        self.type_link_slots(&f.ty, base + f.offset, depth + 1, out);
+                    }
+                }
+            }
+            (Type::Tuple(elems), MirType::Tuple(parts)) => {
+                for (elem, at) in elems.iter().zip(crate::tuple_offsets(&parts)) {
+                    self.type_link_slots(elem, base + at, depth + 1, out);
+                }
+            }
+            (Type::Array { elem, .. }, MirType::Array { elem: melem, len }) => {
+                for i in 0..len {
+                    self.type_link_slots(elem, base + i * melem.size(), depth + 1, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Is this the `Link<T>` type, however the checker happens to spell it?
@@ -1545,6 +1593,7 @@ impl<'a> MirContext<'a> {
                 .iter()
                 .map(|l| l.variants.iter().map(|v| v.fields.iter().map(field).collect()).collect())
                 .collect(),
+            struct_links: (0..self.struct_layouts.len()).map(|id| self.struct_link_slots(id)).collect(),
         }
     }
 

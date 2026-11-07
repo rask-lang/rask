@@ -434,7 +434,7 @@ impl<'a> CodegenCtx<'a> {
 
 /// No field types: a builder that wasn't handed lowering's table.
 static NO_FIELD_TYPES: rask_mir::FieldTypes =
-    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new() };
+    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new(), struct_links: Vec::new() };
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -7842,13 +7842,13 @@ impl<'a> FunctionBuilder<'a> {
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
-    /// The node type's link-bearing fields, as (kind, byte offset) pairs.
+    /// Where the argument's value holds edges, as (kind, byte offset) pairs.
     ///
     /// This is the whole descriptor the rack needs: `insert` walks it to record
     /// the edges a node literal already carries, `delete` walks it to drop the
     /// edges the dying node holds, and `snapshot` walks it to re-point them at
-    /// the copy. A link is a leaf — no walk follows one — so nested aggregates
-    /// aren't descended into.
+    /// the copy. Lowering decides what counts (`rask_mir::link_slots`); this
+    /// only reads it off.
     fn link_field_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -7856,12 +7856,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> Vec<(i32, u32)> {
         let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
-        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
-        let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) else { return Vec::new() };
-        layout
-            .fields
-            .iter()
-            .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
+        rask_mir::link_slots(&local.ty, ctx.field_types)
+            .into_iter()
+            .map(|s| (s.kind, s.offset))
             .collect()
     }
 
@@ -7886,38 +7883,6 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or_default()
     }
 
-
-    /// `Link<T>` / `Link<T>?`, `Vec<Link<T>>` or `Map<K, Link<T>>`: the
-    /// `RASK_RACK_FIELD_*` kind.
-    fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
-        use rask_types::{GenericArg, Type};
-        let bare = ty.as_option().unwrap_or(ty);
-        let (name, args) = match bare {
-            Type::UnresolvedGeneric { name, args } => (name.as_str(), args.as_slice()),
-            _ => return None,
-        };
-        if name == "Link" {
-            return Some(rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32);
-        }
-        // The value type is the last type argument: `Vec<T>`'s only one, and
-        // `Map<K, V>`'s second.
-        let value = args.iter().rev().find_map(|a| match a {
-            GenericArg::Type(t) => Some(t),
-            _ => None,
-        })?;
-        let holds_link = matches!(
-            value.as_option().unwrap_or(value),
-            Type::UnresolvedGeneric { name, .. } if name == "Link"
-        );
-        if !holds_link {
-            return None;
-        }
-        match name {
-            "Vec" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_VEC as i32),
-            "Map" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_MAP as i32),
-            _ => None,
-        }
-    }
 
     /// The slot an argument the runtime takes by address fills: its size,
     /// and whether the operand already is an address (an aggregate, a string)

@@ -365,6 +365,64 @@ impl<'a> MirLowerer<'a> {
         }));
     }
 
+    /// `place = value` where the value is an aggregate with edges inside it —
+    /// `h.cur = Cursor(at: b)`. The plain store that follows copies the bytes
+    /// and tells the rack nothing, so the slot kept its record on the old
+    /// target and the new one never heard about it (#1795).
+    ///
+    /// Each link goes through the rack first, which forgets the old target and
+    /// records the new one; the store then writes the same word again. A
+    /// container of links inside the aggregate is about to be replaced
+    /// wholesale, so its records are dropped and the incoming one's are made,
+    /// as a direct container field assignment does.
+    fn emit_aggregate_edge_stores(
+        &mut self,
+        base: crate::LocalId,
+        offset: u32,
+        ty: &MirType,
+        value: &MirOperand,
+    ) {
+        if !self.ctx.struct_carries_links(ty) {
+            return;
+        }
+        use rask_mono::runtime_abi::{RASK_RACK_FIELD_LINK, RASK_RACK_FIELD_MAP, RASK_RACK_FIELD_VEC};
+        let ctx = self.ctx;
+        let slots = crate::types::link_slots_by(ty, &|id| ctx.struct_link_slots(id as usize));
+        for slot in slots {
+            let read = |this: &mut Self, from: MirOperand, at: u32| {
+                let word = this.builder.alloc_temp(MirType::Ptr);
+                this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: word,
+                    rvalue: MirRValue::Field {
+                        base: from,
+                        field_index: 0,
+                        byte_offset: Some(at),
+                        access: FieldAccess::Sized(8),
+                    },
+                }));
+                MirOperand::Local(word)
+            };
+            let incoming = read(self, value.clone(), slot.offset);
+            let (forget, register) = match slot.kind {
+                k if k == RASK_RACK_FIELD_LINK as i32 => {
+                    self.emit_link_store(base, offset + slot.offset, incoming);
+                    continue;
+                }
+                k if k == RASK_RACK_FIELD_VEC as i32 => ("Link_forget_vec", "Link_register_vec"),
+                k if k == RASK_RACK_FIELD_MAP as i32 => ("Link_forget_map", "Link_register_map"),
+                _ => continue,
+            };
+            let old = read(self, MirOperand::Local(base), offset + slot.offset);
+            for (func, arg) in [(forget, old), (register, incoming)] {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal(func.to_string()),
+                    args: vec![arg],
+                }));
+            }
+        }
+    }
+
     /// Write a link into a slot through the rack, so the target learns who
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
@@ -824,6 +882,7 @@ impl<'a> MirLowerer<'a> {
                                 self.emit_link_store(base, offset, val_op);
                                 return Ok(());
                             }
+                            self.emit_aggregate_edge_stores(base, offset, &fty, &val_op);
                             // The value the slot is about to lose. A field
                             // assignment is always a replacement — a struct
                             // literal builds the slot on a different path — so
