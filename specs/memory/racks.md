@@ -126,13 +126,20 @@ in constant time whatever the in-degree. Measured across in-degree 1 → 4096, a
 retarget stays flat at ~5 ns.
 
 Everything else that can hold a link — a field of a struct outside the rack, a
-`Vec` or `Map` element — gets a heap record found by scanning. Those sit on a
-separate list, so a hub with thousands of node-field edges never lengthens the
-list that gets scanned.
+`Vec` or `Map` element — gets a heap record on a separate list, and the rack
+keeps a hash index from holder to record. A slot's record is keyed by the slot,
+since a slot names one target at a time; a container keeps one record per target
+it names, keyed by (container, target). So `c.at = b` and `vec.push(b)` find
+their record with one probe instead of walking the target's list. Measured
+across foreign in-degree 1 → 4096, a retarget stays at ~7–13 ns and a push at
+~5 ns, where both used to reach 4–9 µs.
+
+That leaves `delete` as the only operation that walks a list, and it has to: it
+visits every edge it nulls.
 
 | Rule | Description |
 |------|-------------|
-| **RK10: Retargeting is constant-time** | Overwriting a link declared on a node costs the same at any in-degree. The record is inline, so nothing is searched for. A link held outside a node still pays a scan of the target's much shorter foreign-holder list |
+| **RK10: Retargeting is constant-time** | Overwriting or storing a link costs the same at any in-degree. A link declared on a node reaches its inline record by arithmetic; any other holder reaches its heap record through the rack's index |
 
 ### Measuring it
 
@@ -182,14 +189,6 @@ Named here so the gaps are on the record rather than discovered:
 - **A link escaping inside a collection.** RK6 covers returns, assignments and
   aggregate literals; a link pushed into a `Vec` that then escapes is not yet
   caught (rask-lang/rask#941).
-- **Pushing a link into a container still scans.** One record per (container,
-  target) means `vec.push(link)` checks whether that pair is already recorded,
-  and that check walks the target's foreign-holder list. Node-field edges are on
-  the other list, so they cost it nothing — measured flat at ~3.5 ns whether one
-  node points at the target or 4096 do. What it is still linear in is the number
-  of *foreign* holders: 4096 of those make the same push 9.4 µs. Ordinary graphs
-  have few, but nothing enforces that, and it is the last place in the model
-  where in-degree leaks into a write (rask-lang/rask#981).
 - **Structural mutation under concurrency.** Edges may only connect co-owned
   nodes, and the current answer for sharing a graph is a lock around the
   ownership root. Staged structural mutation is designed and unbuilt.

@@ -31,8 +31,11 @@
 // Record `k` sits at a fixed offset from the header, so writing that field finds
 // its record by arithmetic and unlinks in O(1). Everything else that can hold a
 // link — a field of a struct outside the rack, a `Vec` or `Map` element — gets a
-// heap record found by scanning. Those live on a separate list so a hub with
-// thousands of node-field edges never makes the scanned list longer.
+// heap record. A write to one of those starts from the holder, and the record
+// hangs off the target, so the rack keeps a hash index keyed by (holder, target)
+// to get from one to the other without walking the target's list. Every edge
+// write is then O(1) whatever the in-degree; only `delete` walks a list, because
+// it has to visit every edge it nulls (RK3).
 
 #include "rask_runtime.h"
 #include <stdio.h>
@@ -55,8 +58,7 @@
 #define RACK_EDGE_MAP    2
 #define RACK_EDGE_INLINE 3   // header-resident; holder is a slot in the node payload
 
-// Doubly linked, so a record already in hand unlinks without a search. The old
-// `target` field was written and never read — `prev` costs nothing over it.
+// Doubly linked, so a record already in hand unlinks without a search.
 typedef struct RackEdge {
     int32_t          kind;
     void            *holder;   // void** slot, RaskVec*, or RaskMap*
@@ -66,12 +68,21 @@ typedef struct RackEdge {
 
 _Static_assert(sizeof(struct RackEdge) % 16 == 0, "inline edges must keep the payload 16-byte aligned");
 
+// A foreign holder's record. It carries its target because a container holds
+// one record per target it names, so the container alone doesn't pick one out
+// of the index. The inline records don't need it — they are reached by
+// arithmetic — so they stay 32 bytes.
+typedef struct HeapEdge {
+    RackEdge  e;        // first, so a RackEdge* on the list casts back
+    void     *target;
+} HeapEdge;
+
 // Node header. Lives immediately before the payload; `sizeof` is a multiple of
 // 16 so the payload keeps the alignment the chunk allocation gave it.
 typedef struct RackNode {
     RaskRack *rack;
     RackEdge *inline_in;   // node-field edges, records inline before this header
-    RackEdge *heap_in;     // foreign slots, vec and map elements; found by scanning
+    RackEdge *heap_in;     // foreign slots, vec and map elements; reached via edge_index
     int64_t   slot_index;
 } RackNode;
 
@@ -103,7 +114,14 @@ struct RaskRack {
     int32_t   inline_count;   // LINK-kind fields: one inline edge record each
     int32_t   header_bytes;   // inline records + RackNode, i.e. payload's distance from slot start
     int64_t   elem_align;     // the node type's alignment; past 16 the chunks are aligned to it
-    RackEdge *edge_pool;      // recycled edge records
+    HeapEdge *edge_pool;      // recycled heap records, chained through e.next
+    // Open-addressed index over every heap record whose target is in this rack,
+    // keyed as `index_key` says. Linear probing with backward-shift
+    // deletion, so there are no tombstones to sweep. Capacity is a power of two
+    // and the load stays at or under half.
+    HeapEdge **edge_index;
+    int64_t   edge_index_cap;
+    int64_t   edge_index_len;
     uint32_t  rack_id;
     // Set on a snapshot: which rack it copied, and slot index -> copied payload.
     // `corresponding` is the only reader.
@@ -148,18 +166,99 @@ static inline int64_t round_up(int64_t n, int64_t align) {
 
 // ─── Edge records ──────────────────────────────────────────────────────────
 
-static RackEdge *edge_alloc(RaskRack *r) {
-    RackEdge *e = r->edge_pool;
-    if (e) {
-        r->edge_pool = e->next;
-        return e;
+static HeapEdge *edge_alloc(RaskRack *r) {
+    HeapEdge *h = r->edge_pool;
+    if (h) {
+        r->edge_pool = (HeapEdge *)h->e.next;
+        return h;
     }
-    return (RackEdge *)rask_alloc(sizeof(RackEdge));
+    return (HeapEdge *)rask_alloc(sizeof(HeapEdge));
 }
 
-static void edge_release(RaskRack *r, RackEdge *e) {
-    e->next = r->edge_pool;
-    r->edge_pool = e;
+static void edge_release(RaskRack *r, HeapEdge *h) {
+    h->e.next = (RackEdge *)r->edge_pool;
+    r->edge_pool = h;
+}
+
+// ─── Holder index ──────────────────────────────────────────────────────────
+//
+// The heap records hang off the target, but every write starts from the
+// holder: "this slot used to point at X, forget that", "does this vector
+// already have a record on X". Without an index both are a walk down X's list,
+// which is what made one assignment cost microseconds when X was a hub
+// (rask-lang/rask#981).
+
+// What a record is keyed on besides its holder. A slot holds one target at a
+// time, so the slot alone identifies its record, and retargeting it within a
+// rack leaves the index untouched. A container holds many, so its records are
+// keyed on (container, target).
+static inline const void *index_key(int32_t kind, const void *target) {
+    return kind == RACK_EDGE_SLOT ? NULL : target;
+}
+
+static inline uint64_t edge_hash(int32_t kind, const void *holder, const void *target) {
+    uint64_t h = (uint64_t)(uintptr_t)holder * 0x9E3779B97F4A7C15ull;
+    h ^= (uint64_t)(uintptr_t)index_key(kind, target) * 0xC2B2AE3D27D4EB4Full;
+    h ^= (uint64_t)kind;
+    return h ^ (h >> 29);
+}
+
+static inline int edge_matches(const HeapEdge *h, int32_t kind, const void *holder, const void *target) {
+    return h->e.holder == holder && h->e.kind == kind &&
+           index_key(kind, h->target) == index_key(kind, target);
+}
+
+static HeapEdge *index_find(const RaskRack *r, int32_t kind, void *holder, void *target) {
+    if (r->edge_index_cap == 0) return NULL;
+    uint64_t mask = (uint64_t)r->edge_index_cap - 1;
+    for (uint64_t i = edge_hash(kind, holder, target) & mask;; i = (i + 1) & mask) {
+        HeapEdge *h = r->edge_index[i];
+        if (!h) return NULL;
+        if (edge_matches(h, kind, holder, target)) return h;
+    }
+}
+
+static void index_place(HeapEdge **tab, uint64_t mask, HeapEdge *h) {
+    uint64_t i = edge_hash(h->e.kind, h->e.holder, h->target) & mask;
+    while (tab[i]) i = (i + 1) & mask;
+    tab[i] = h;
+}
+
+static void index_insert(RaskRack *r, HeapEdge *h) {
+    if ((r->edge_index_len + 1) * 2 > r->edge_index_cap) {
+        int64_t cap = r->edge_index_cap ? r->edge_index_cap * 2 : 64;
+        HeapEdge **tab = (HeapEdge **)rask_alloc(cap * (int64_t)sizeof(HeapEdge *));
+        if (!tab) rask_panic("rack: out of memory growing the edge index");
+        memset(tab, 0, (size_t)cap * sizeof(HeapEdge *));
+        for (int64_t i = 0; i < r->edge_index_cap; i++) {
+            if (r->edge_index[i]) index_place(tab, (uint64_t)cap - 1, r->edge_index[i]);
+        }
+        rask_free(r->edge_index);
+        r->edge_index = tab;
+        r->edge_index_cap = cap;
+    }
+    index_place(r->edge_index, (uint64_t)r->edge_index_cap - 1, h);
+    r->edge_index_len++;
+}
+
+// Remove `h`, then pull back any later entry of the same probe run that would
+// otherwise be cut off from its home slot by the hole.
+static void index_remove(RaskRack *r, HeapEdge *h) {
+    uint64_t mask = (uint64_t)r->edge_index_cap - 1;
+    uint64_t i = edge_hash(h->e.kind, h->e.holder, h->target) & mask;
+    while (r->edge_index[i] != h) i = (i + 1) & mask;
+    for (uint64_t j = (i + 1) & mask; r->edge_index[j]; j = (j + 1) & mask) {
+        HeapEdge *m = r->edge_index[j];
+        uint64_t home = edge_hash(m->e.kind, m->e.holder, m->target) & mask;
+        // `m` may move into the hole at `i` only if its home is not in (i, j].
+        int movable = (i <= j) ? (home <= i || home > j) : (home <= i && home > j);
+        if (movable) {
+            r->edge_index[i] = m;
+            i = j;
+        }
+    }
+    r->edge_index[i] = NULL;
+    r->edge_index_len--;
 }
 
 // ─── Doubly linked incoming lists ──────────────────────────────────────────
@@ -201,43 +300,43 @@ static int32_t link_ordinal(const RaskRack *r, int64_t offset) {
     return -1;
 }
 
-static int edge_recorded(void *target, int32_t kind, void *holder) {
-    for (RackEdge *e = node_of(target)->heap_in; e; e = e->next) {
-        if (e->kind == kind && e->holder == holder) return 1;
-    }
-    return 0;
-}
-
 // Record that a *foreign* holder now points at `target`: a slot outside the
-// rack, or a container element. These are found by scanning, so they get their
-// own list — a hub with thousands of node-field edges must not lengthen it.
+// rack, or a container element. A container keeps one record per target
+// however many of its entries name it; a slot keeps one record, full stop.
 static void edge_register(int32_t kind, void *holder, void *target) {
     RackNode *n = node_of(target);
     RaskRack *r = n->rack;
-    if (kind != RACK_EDGE_SLOT && edge_recorded(target, kind, holder)) {
-        return;   // one record per (container, target), however many entries match
+    HeapEdge *found = index_find(r, kind, holder, target);
+    if (found) {
+        if (found->target == target) return;
+        // A slot record found by the slot alone but naming another node: the
+        // storage was reused without its old edge being forgotten. The slot
+        // holds `target` now, so the record moves.
+        list_unlink(&node_of(found->target)->heap_in, &found->e);
+        found->target = target;
+        list_push(&n->heap_in, &found->e);
+        return;
     }
-    RackEdge *e = edge_alloc(r);
+    HeapEdge *h = edge_alloc(r);
+    if (!h) rask_panic("rack: out of memory recording an edge");
     // Whole-struct: `edge_alloc` hands back either a fresh block or one off the
-    // free pool with a stale `prev`/`next` still in it, and `list_push` below
-    // is the only thing that overwrites those today. A field added to RackEdge
-    // would be garbage on one path and stale on the other.
-    *e = (RackEdge){ .kind = kind, .holder = holder };
-    list_push(&n->heap_in, e);
+    // free pool with stale fields still in it.
+    *h = (HeapEdge){ .e = { .kind = kind, .holder = holder }, .target = target };
+    list_push(&n->heap_in, &h->e);
+    index_insert(r, h);
 }
 
 // Forget the edge `holder` -> `target`. A no-op if it was never recorded, which
 // keeps `rask_link_set` safe to call on a slot the rack has never seen.
 static void edge_unregister(int32_t kind, void *holder, void *target) {
-    RackNode *n = node_of(target);
-    RaskRack *r = n->rack;
-    for (RackEdge *e = n->heap_in; e; e = e->next) {
-        if (e->kind == kind && e->holder == holder) {
-            list_unlink(&n->heap_in, e);
-            edge_release(r, e);
-            return;
-        }
-    }
+    RaskRack *r = node_of(target)->rack;
+    HeapEdge *h = index_find(r, kind, holder, target);
+    if (!h) return;
+    index_remove(r, h);
+    // The record's own target, not the argument: a slot record is found by the
+    // slot alone, and a stale one can name a different node of this rack.
+    list_unlink(&node_of(h->target)->heap_in, &h->e);
+    edge_release(r, h);
 }
 
 // `node.field = target` for a link declared directly on a node. The record is
@@ -264,8 +363,21 @@ void rask_link_set(void **slot, void *target) {
         // Self-assignment must not drop the backlink it would re-add.
         return;
     }
-    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
     *slot = target;
+    if (!rask_link_is_none(old) && !rask_link_is_none(target)) {
+        RaskRack *r = node_of(old)->rack;
+        HeapEdge *h = r == node_of(target)->rack
+                          ? index_find(r, RACK_EDGE_SLOT, slot, old) : NULL;
+        if (h) {
+            // Same rack, and the index is keyed on the slot alone, so the
+            // record stays where it is in the index and only changes lists.
+            list_unlink(&node_of(h->target)->heap_in, &h->e);
+            h->target = target;
+            list_push(&node_of(target)->heap_in, &h->e);
+            return;
+        }
+    }
+    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
     if (!rask_link_is_none(target)) edge_register(RACK_EDGE_SLOT, slot, target);
 }
 
@@ -702,7 +814,9 @@ static void fix_incoming(RaskRack *r, char *payload) {
             break;
         }
         if (stats_enabled()) g_edges_fixed += fixed;
-        edge_release(r, e);
+        HeapEdge *h = (HeapEdge *)e;
+        index_remove(r, h);
+        edge_release(r, h);
         e = next;
     }
 }
@@ -783,12 +897,13 @@ void rask_rack_free(RaskRack *r) {
             }
         }
     }
-    RackEdge *pooled = r->edge_pool;
+    HeapEdge *pooled = r->edge_pool;
     while (pooled) {
-        RackEdge *next = pooled->next;
+        HeapEdge *next = (HeapEdge *)pooled->e.next;
         rask_free(pooled);
         pooled = next;
     }
+    rask_free(r->edge_index);
     for (int64_t i = 0; i < r->chunk_count; i++) rask_free(r->chunks[i]);
     rask_free(r->chunks);
     rask_free(r->directory);
