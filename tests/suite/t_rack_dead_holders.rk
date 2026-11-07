@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An edge record must not outlive the storage it names.
+//
+// A `Vec<Link<T>>` keeps one record per target, stored on the target. Removing
+// the entry left the record behind, and when the vector was later freed, the
+// cleanup only looked at the entries it still held, so the stale record
+// survived. Deleting the target then walked it into the freed vector (#1796).
+// A container now keeps a chain of its own records and drops all of them when
+// it is freed.
+//
+// Freeing a rack had the mirror-image gap: records for its nodes' links sat on
+// nodes in another rack and weren't unlinked, so that rack's next delete read
+// freed chunks (#1797). A rack now takes each node apart on the way out, as
+// `delete` would.
+//
+// Nothing here prints a wrong answer when it fails; the memcheck gate is what
+// sees the read through freed storage.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    id: i32
+    peers: Vec<Link<Node>>
+}
+
+struct Leaf {
+    id: i32
+}
+
+struct Holder {
+    id: i32
+    to: Link<Leaf>?
+    many: Vec<Link<Leaf>>
+}
+
+func main() {}
+
+test "a removed entry's record dies with its node's vector" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, peers: Vec.new()))
+    let h = rack.insert(Node(id: 2, peers: Vec.new()))
+    h.peers.push(a)
+    h.peers.remove(0)
+    rack.delete(h)
+    rack.delete(a)
+    assert rack.len() == 0
+}
+
+test "a removed entry's record dies with a local vector" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let x = rack.insert(Leaf(id: 1))
+    let y = rack.insert(Leaf(id: 2))
+    keep_one(x, y)
+    rack.delete(x)
+    rack.delete(y)
+    assert rack.len() == 0
+}
+
+func keep_one(x: Link<Leaf>, y: Link<Leaf>) {
+    mut ps: Vec<Link<Leaf>> = Vec.new()
+    ps.push(x)
+    ps.push(y)
+    ps.remove(0)
+    assert ps.len() == 1
+}
+
+test "a replaced vector's records go with it" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, peers: Vec.new()))
+    let b = rack.insert(Node(id: 2, peers: Vec.new()))
+    let h = rack.insert(Node(id: 3, peers: Vec.new()))
+    h.peers.push(a)
+    h.peers.push(b)
+    h.peers.remove(0)
+    h.peers = Vec.new()
+    rack.delete(a)
+    rack.delete(b)
+    assert h.peers.len() == 0
+}
+
+test "a rack holding links into another is freed first" {
+    mut holders: Rack<Holder> = Rack.new()
+    mut leaves: Rack<Leaf> = Rack.new()
+    let x = leaves.insert(Leaf(id: 1))
+    let h = holders.insert(Holder(id: 2, to: x, many: Vec.new()))
+    h.many.push(x)
+    assert h.many.len() == 1
+}
+
+test "a rack holding links into another is freed last" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut holders: Rack<Holder> = Rack.new()
+    let x = leaves.insert(Leaf(id: 1))
+    let h = holders.insert(Holder(id: 2, to: x, many: Vec.new()))
+    h.many.push(x)
+    assert h.many.len() == 1
+}

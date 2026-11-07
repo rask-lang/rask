@@ -46,6 +46,8 @@ struct RaskMap {
     // once at construction. See `RaskElemStrs` in rask_runtime.h.
     RaskElemStrs key_strs;
     RaskElemStrs val_strs;
+    // The rack's edge records that name this map; see `RaskVec.link_edges`.
+    void *link_edges;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -311,6 +313,10 @@ static RaskMap *map_new(int64_t key_size, int64_t val_size,
     return m;
 }
 
+void **rask_map_link_edges(RaskMap *m) {
+    return &m->link_edges;
+}
+
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
                       const int32_t *key_offs, int64_t n_key_offs, int64_t key_align,
                       const int32_t *val_offs, int64_t n_val_offs, int64_t val_align) {
@@ -379,6 +385,7 @@ RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t 
 void rask_map_free(RaskMap *m) {
     if (!m) return;
     map_check_no_borrows(m, "free");
+    if (m->link_edges) rask_link_holder_died(&m->link_edges);
     int has_key = m->key_strs.offsets && m->key_strs.count > 0;
     int has_val = m->val_strs.offsets && m->val_strs.count > 0;
     if ((has_key || has_val) && m->states) {

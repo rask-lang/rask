@@ -820,6 +820,12 @@ void      rask_link_register_map(RaskMap *m);
 // The edges a struct's own fields carry, against the storage it sits in. Same
 // (kind, byte offset) pairs `rask_rack_insert` takes.
 void      rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields);
+// A container's own edge records, chained from a head the container keeps.
+// `holder_died` drops every record on the chain; a container's free calls it,
+// so no record outlives the storage it names.
+void    **rask_vec_link_edges(RaskVec *v);
+void    **rask_map_link_edges(RaskMap *m);
+void      rask_link_holder_died(void **head);
 
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.

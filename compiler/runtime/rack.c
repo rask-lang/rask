@@ -72,9 +72,16 @@ _Static_assert(sizeof(struct RackEdge) % 16 == 0, "inline edges must keep the pa
 // one record per target it names, so the container alone doesn't pick one out
 // of the index. The inline records don't need it — they are reached by
 // arithmetic — so they stay 32 bytes.
+//
+// A container's records are also chained from the container itself
+// (`hprev`/`hnext`), so a dying container can drop every record naming it —
+// including one for a target whose entries were removed long ago, which the
+// container's current elements can no longer lead to (#1796).
 typedef struct HeapEdge {
-    RackEdge  e;        // first, so a RackEdge* on the list casts back
-    void     *target;
+    RackEdge         e;        // first, so a RackEdge* on the list casts back
+    void            *target;
+    struct HeapEdge *hprev;
+    struct HeapEdge *hnext;
 } HeapEdge;
 
 // Node header. Lives immediately before the payload; `sizeof` is a multiple of
@@ -178,6 +185,37 @@ static HeapEdge *edge_alloc(RaskRack *r) {
 static void edge_release(RaskRack *r, HeapEdge *h) {
     h->e.next = (RackEdge *)r->edge_pool;
     r->edge_pool = h;
+}
+
+// ─── Container chains ──────────────────────────────────────────────────────
+
+// Where a container keeps the head of its own records; NULL for a slot, which
+// has exactly one record and no chain.
+static void **holder_chain(int32_t kind, void *holder) {
+    switch (kind) {
+    case RACK_EDGE_VEC: return rask_vec_link_edges((RaskVec *)holder);
+    case RACK_EDGE_MAP: return rask_map_link_edges((RaskMap *)holder);
+    default:            return NULL;
+    }
+}
+
+static void chain_push(HeapEdge *h) {
+    void **head = holder_chain(h->e.kind, h->e.holder);
+    h->hprev = NULL;
+    h->hnext = NULL;
+    if (!head) return;
+    h->hnext = (HeapEdge *)*head;
+    if (h->hnext) h->hnext->hprev = h;
+    *head = h;
+}
+
+static void chain_unlink(HeapEdge *h) {
+    void **head = holder_chain(h->e.kind, h->e.holder);
+    if (!head) return;
+    if (h->hprev) h->hprev->hnext = h->hnext; else *head = h->hnext;
+    if (h->hnext) h->hnext->hprev = h->hprev;
+    h->hprev = NULL;
+    h->hnext = NULL;
 }
 
 // ─── Holder index ──────────────────────────────────────────────────────────
@@ -324,6 +362,7 @@ static void edge_register(int32_t kind, void *holder, void *target) {
     *h = (HeapEdge){ .e = { .kind = kind, .holder = holder }, .target = target };
     list_push(&n->heap_in, &h->e);
     index_insert(r, h);
+    chain_push(h);
 }
 
 // Forget the edge `holder` -> `target`. A no-op if it was never recorded, which
@@ -339,7 +378,22 @@ static void edge_unregister(int32_t kind, void *holder, void *target) {
     // The record's own target, not the argument: a slot record is found by the
     // slot alone, and a stale one can name a different node of this rack.
     list_unlink(&node_of(h->target)->heap_in, &h->e);
+    chain_unlink(h);
     edge_release(r, h);
+}
+
+// A container is being freed: drop every record that names it. Its targets are
+// all live — `delete` releases the records on a node as it dies — so each
+// still has a rack and a list to leave.
+void rask_link_holder_died(void **head) {
+    while (head && *head) {
+        HeapEdge *h = (HeapEdge *)*head;
+        RackNode *n = node_of(h->target);
+        index_remove(n->rack, h);
+        list_unlink(&n->heap_in, &h->e);
+        chain_unlink(h);
+        edge_release(n->rack, h);
+    }
 }
 
 // `node.field = target` for a link declared directly on a node. The record is
@@ -503,26 +557,14 @@ void rask_link_forget_map(RaskMap *m) {
 // a node literal already carries, and what lets `delete` drop the edges the
 // dying node holds.
 
+// Every record naming the container goes, whatever it still holds: an entry
+// removed earlier left its record behind, and only the chain can find it.
 static void forget_vec_edges(RaskVec *v) {
-    if (!v) return;
-    int64_t n = rask_vec_len(v);
-    for (int64_t i = 0; i < n; i++) {
-        void *elem;
-        memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
-        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_VEC, v, elem);
-    }
+    if (v) rask_link_holder_died(rask_vec_link_edges(v));
 }
 
 static void forget_map_edges(RaskMap *m) {
-    if (!m) return;
-    RaskVec *vals = rask_map_values(m);
-    int64_t n = rask_vec_len(vals);
-    for (int64_t i = 0; i < n; i++) {
-        void *elem;
-        memcpy(&elem, rask_vec_get_unchecked(vals, i), sizeof(elem));
-        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_MAP, m, elem);
-    }
-    rask_vec_free(vals);
+    if (m) rask_link_holder_died(rask_map_link_edges(m));
 }
 
 static inline int32_t field_kind(const RaskRack *r, int32_t i) { return r->fields[i * 2]; }
@@ -819,6 +861,7 @@ static void fix_incoming(RaskRack *r, char *payload) {
         if (stats_enabled()) g_edges_fixed += fixed;
         HeapEdge *h = (HeapEdge *)e;
         index_remove(r, h);
+        chain_unlink(h);
         edge_release(r, h);
         e = next;
     }
@@ -888,16 +931,41 @@ RaskVec *rask_rack_nodes(const RaskRack *r) {
 
 void rask_rack_free(RaskRack *r) {
     if (!r) return;
+    // First every node's own outgoing edges leave whatever lists they are on.
+    // Those records live in this rack's chunks, so leaving one on a node of
+    // another rack let that rack's next delete walk into freed memory (#1797).
+    // A node's containers go with it, and take their records along.
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {
-            rask_owned_release_all((char *)r->directory[i], r->owned, r->owned_count);
-            RackNode *n = node_of(r->directory[i]);
-            RackEdge *e = n->heap_in;   // inline records die with the chunk
-            while (e) {
-                RackEdge *next = e->next;
-                rask_free(e);
-                e = next;
+            char *payload = (char *)r->directory[i];
+            forget_own_edges(r, payload);
+            rask_owned_release_all(payload, r->owned, r->owned_count);
+        }
+    }
+    // What is left pointing in comes from outside. A node of another rack is
+    // nulled, or its own teardown would unlink a record from this rack's
+    // freed headers. A heap record is freed, and leaves its container's chain
+    // so the container doesn't walk it later. This rack's own payloads aren't
+    // touched: nothing may read them after this, and #1587 is a place where
+    // something still does.
+    for (int64_t i = 0; i < r->high_water; i++) {
+        if (i < r->dir_cap && r->directory[i]) {
+            char *payload = (char *)r->directory[i];
+            RackNode *n = node_of(payload);
+            for (RackEdge *e = n->inline_in, *next; e; e = next) {
+                next = e->next;
+                void **slot = (void **)e->holder;
+                if (slot && *slot == payload) *slot = RASK_LINK_NONE;
+                e->prev = NULL;
+                e->next = NULL;
             }
+            n->inline_in = NULL;
+            for (RackEdge *e = n->heap_in, *next; e; e = next) {
+                next = e->next;
+                chain_unlink((HeapEdge *)e);
+                rask_free(e);
+            }
+            n->heap_in = NULL;
         }
     }
     HeapEdge *pooled = r->edge_pool;

@@ -28,6 +28,10 @@ struct RaskVec {
     // construction. See `RaskElemStrs` in rask_runtime.h for why the container
     // carries this rather than every `free` site working it out.
     RaskElemStrs strs;
+    // The rack's edge records that name this vector, chained through the
+    // records themselves (rack.c). Freeing the vector drops them, so a record
+    // can't outlive the storage it names — whichever elements it still holds.
+    void *link_edges;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
@@ -406,6 +410,7 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
 void rask_vec_free_view(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    if (v->link_edges) rask_link_holder_died(&v->link_edges);
     vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
@@ -426,6 +431,7 @@ void rask_vec_copy_back(const RaskVec *v, char *dst) {
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    if (v->link_edges) rask_link_holder_died(&v->link_edges);
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
             rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
@@ -433,6 +439,10 @@ void rask_vec_free(RaskVec *v) {
     }
     vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+void **rask_vec_link_edges(RaskVec *v) {
+    return &v->link_edges;
 }
 
 int64_t rask_vec_len(const RaskVec *v) {
