@@ -180,34 +180,17 @@ impl<'a> MirLowerer<'a> {
             None => self.error_wrap_target(try_id),
         };
         // ER32: the enclosing function's error side is `any Interface`, so the
-        // concrete error acquires a vtable on its way out. Same trigger as
-        // ER31a's enum wrap and mutually exclusive with it — an error is either
-        // named by a boundary enum or type-erased, not both.
+        // concrete error acquires a vtable on its way out. The checker says
+        // which `try`s that is (`erased_try_errors`); one whose error arrived
+        // erased already, or is caught by a handler or wrapped by ER31a, isn't
+        // boxed here.
         //
-        // Without this the checker accepted the propagation and the payload
-        // stored into the caller's slot was the bare concrete value. The caller
-        // then read its first two words as {data, vtable} and called through
-        // whatever the second one happened to be, which is a segfault as soon
-        // as anyone asks for `.message()`.
-        //
-        // Unless it arrived erased already: `try g(n)` inside a
-        // `-> i64 or any Error` whose `g` returns one too. Boxing a box asks
-        // for the concrete type's name and an interface object hasn't got one, so
-        // the vtable came out `.vtable.unknown__Error` and the first
-        // `.message()` on it failed to link (#1106). The value is forwarded
-        // whole instead — it already carries the right vtable.
-        let already_boxed = |err: &MirType| matches!(
-            (&err_ty, err),
-            (MirType::InterfaceObject { interface_name: have }, MirType::InterfaceObject { interface_name: want })
-                if have == want
-        );
-        let box_interface: Option<String> = match (&handler, &wrap, &self.return_ty()) {
-            (None, None, MirType::Result { err, .. }) => match &**err {
-                MirType::InterfaceObject { interface_name } if !already_boxed(err) => {
-                    Some(interface_name.clone())
-                }
-                _ => None,
-            },
+        // Without the box the payload stored into the caller's slot was the
+        // bare concrete value. The caller then read its first two words as
+        // {data, vtable} and called through whatever the second one happened
+        // to be, which is a segfault as soon as anyone asks for `.message()`.
+        let box_interface: Option<(rask_types::Type, String)> = match (&handler, &wrap) {
+            (None, None) => self.ctx.erased_try_error(try_id),
             _ => None,
         };
         let err_val = match &handler {
@@ -263,17 +246,13 @@ impl<'a> MirLowerer<'a> {
         // ER32: box after any ER31a wrap, so the two compose in the one order
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
-            Some(interface_name) => {
-                let concrete = match self.ctx.lookup_raw_type(inner.id).as_deref() {
-                    Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
-                    _ => None,
-                };
+            Some((concrete, interface_name)) => {
                 let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
-                    concrete.as_ref(),
+                    Some(concrete),
                     interface_name,
-                );
+                )?;
                 match boxed {
                     MirOperand::Local(id) => (id, boxed_ty.size()),
                     _ => (err_val, err_store_size),
@@ -308,10 +287,8 @@ impl<'a> MirLowerer<'a> {
             // bisecting the test.
             let text = self
                 .ctx
-                .call_rewrites
-                .get(&try_id)
-                .cloned()
-                .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
+                .error_messages(inner.id)
+                .and_then(|messages| self.emit_error_message_text(&messages, err_val, &err_ty));
             match text {
                 Some(text) => {
                     let joined = self.builder.alloc_temp(MirType::Buffer);

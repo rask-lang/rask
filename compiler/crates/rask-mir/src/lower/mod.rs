@@ -392,6 +392,9 @@ mod empty {
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
+    empty_of!(vtables, HashMap<(rask_types::Type, String), rask_mono::VTable>);
+    empty_of!(symbols, rask_mono::Symbols);
+    empty_of!(erased_try_errors, HashMap<NodeId, rask_check::ErasedError>);
 }
 
 impl<'a> MirContext<'a> {
@@ -440,6 +443,7 @@ impl<'a> MirContext<'a> {
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
+            erased_try_errors: &typed.erased_try_errors,
             arm_widenings: &typed.arm_widenings,
             c_fn_pointers: &typed.c_fn_pointers,
             c_contexts: &typed.c_contexts,
@@ -456,10 +460,11 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
-            call_rewrites: CallMap::of(empty::node_names()),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            vtables: empty::vtables(),
+            symbols: empty::symbols(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -511,7 +516,6 @@ impl<'a> MirContext<'a> {
         self.call_targets.instance = inst.map(|i| (i, (|inst: &rask_mono::Instance<'_>, id: NodeId| inst.call_target(id)) as fn(&rask_mono::Instance<'_>, NodeId) -> Option<rask_check::Callee>));
         self.operator_targets.instance = inst.map(|i| (i, (|inst: &rask_mono::Instance<'_>, id: NodeId| inst.operator_target(id)) as fn(&rask_mono::Instance<'_>, NodeId) -> Option<rask_check::OperatorTarget>));
         self.task_bound_closures.instance = inst;
-        self.call_rewrites.instance = Some(&f.calls.call_rewrites);
         self.map_key_fns.instance = Some(&f.calls.map_key_fns);
     }
 
@@ -522,10 +526,11 @@ impl<'a> MirContext<'a> {
             .filter(|f| !f.type_args.is_empty())
             .map(|f| (f.name.clone(), f))
             .collect();
-        self.call_rewrites = CallMap::of(&mono.call_rewrites);
         self.map_key_fns = CallMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
+        self.vtables = &mono.vtables;
+        self.symbols = &mono.symbols;
         self
     }
 
@@ -642,14 +647,19 @@ pub struct MirContext<'a> {
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
-    /// Call expression NodeId → mangled callee name for generic function calls.
-    pub call_rewrites: CallMap<'a, String>,
     /// A map-building call → the `hash`/`eq` its keys go through (#1391).
     pub map_key_fns: CallMap<'a, rask_mono::MapKeyFns>,
     /// (struct, field) → the method that builds that field's decode default.
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: &'a HashMap<String, String>,
+    /// Every function's symbol, and what a method call runs, from
+    /// monomorphization.
+    pub symbols: &'a rask_mono::Symbols,
+    /// Monomorphization's vtables, by (concrete type, interface).
+    pub vtables: &'a HashMap<(rask_types::Type, String), rask_mono::VTable>,
+    /// See `TypedProgram::erased_try_errors`.
+    pub erased_try_errors: &'a HashMap<NodeId, rask_check::ErasedError>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -818,6 +828,66 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// What a method call runs, at this instance: the body's symbol and the
+    /// type arguments it was made for. `None` when no body in Rask is behind
+    /// the call (a native, a primitive's operation, a builtin).
+    pub fn method_call(&self, call: NodeId) -> Option<rask_mono::ResolvedCall> {
+        let callee = self.call_targets.get(&call)?;
+        let own_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(call).unwrap_or_default(),
+            None => self.typed?.call_type_args.get(&call).cloned().unwrap_or_default(),
+        };
+        self.symbols.method_call(&callee, own_args, self.type_defs)
+    }
+
+    /// What a call written as `f(…)` runs, at this instance: a function by
+    /// its declaration, or a module's function imported bare (`sleep(d)`
+    /// after `import time.sleep`), or a native module function by its runtime
+    /// name. `None` for a builtin or a closure held in a variable.
+    pub fn call_symbol(&self, call: NodeId) -> Option<String> {
+        let callee = self.call_targets.get(&call)?;
+        let type_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(call).unwrap_or_default(),
+            None => self.typed?.call_type_args.get(&call).cloned().unwrap_or_default(),
+        };
+        let typed = self.typed?;
+        self.symbols
+            .free_call(&callee, type_args.clone(), typed)
+            .or_else(|| self.symbols.method_call(&callee, type_args, self.type_defs))
+            .map(|c| c.symbol)
+            .or_else(|| self.symbols.native(&callee, self.type_defs))
+    }
+
+    /// The function a name used as a value refers to, at this instance: the
+    /// copy for the type arguments recorded at the name.
+    pub fn function_value(&self, name_node: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        let type_args = match &self.node_types.instance {
+            Some((inst, _)) => inst.call_type_args(name_node).unwrap_or_default(),
+            None => typed.call_type_args.get(&name_node).cloned().unwrap_or_default(),
+        };
+        self.symbols.function_value(name_node, type_args, typed).map(|f| f.symbol)
+    }
+
+    /// The `message()` symbol of each error the result at `node` can carry,
+    /// one per union member in member order (`Symbols::error_messages`).
+    pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
+        let result = self.lookup_raw_type(node)?;
+        let calls = self.symbols.error_messages(&result, self.type_defs)?;
+        Some(calls.into_iter().map(|c| c.symbol).collect())
+    }
+
+    /// The error a `try` boxes into the function's `any I`, at this instance,
+    /// and the interface's symbol (`TypedProgram::erased_try_errors`).
+    pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {
+        let erased = self.erased_try_errors.get(&try_id)?;
+        let error = match &self.node_types.instance {
+            Some((inst, _)) => inst.ty(&erased.error)?,
+            None => erased.error.clone(),
+        };
+        Some((error, erased.interface.clone()))
+    }
+
     /// The checker's signature for `f`, with the type arguments of the instance
     /// `symbol` names written in. `None` for a function made after checking.
     pub fn instance_sig(&self, f: &rask_ast::decl::FnDecl, symbol: &str) -> Option<rask_types::FnSignature> {
@@ -874,8 +944,6 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
             std::sync::LazyLock::new(HashMap::new);
-        static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
-            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_check::Callee>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_OPERATOR_TARGETS:
@@ -903,6 +971,7 @@ impl<'a> MirContext<'a> {
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &EMPTY_ESCAPING,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -916,10 +985,11 @@ impl<'a> MirContext<'a> {
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
-            call_rewrites: CallMap::of(&EMPTY_REWRITES),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
             instance_args: None,
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
@@ -3065,8 +3135,7 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Call { func, .. } => match &func.kind {
                 ExprKind::Ident(callee) => {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| callee.clone());
+                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| callee.clone());
                     self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
                 }
                 _ => None,
@@ -8083,7 +8152,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8107,6 +8175,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8120,10 +8189,11 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8179,7 +8249,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8203,6 +8272,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8216,10 +8286,11 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),
@@ -8282,7 +8353,6 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
-        let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
@@ -8306,6 +8376,7 @@ mod tests {
             source_file: None,
             interface_methods: HashMap::new(),
             interface_coercions: &empty_coercions,
+            erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
             c_fn_pointers: &crate::lower::EMPTY_C_FN_POINTERS,
             c_contexts: &crate::lower::EMPTY_C_CONTEXTS,
@@ -8319,10 +8390,11 @@ mod tests {
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
-            call_rewrites: CallMap::of(&empty_rewrites),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            vtables: empty::vtables(),
+            symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
             instance_args: None,
             operator_targets: NodeMap::of(&empty_operator_targets),

@@ -168,14 +168,15 @@ extend Compiler {
         return self.advance()
     }
 
-    func skip_newlines(self) {
+    func skip_newlines(self) -> void or CompileError {
         // Skip newlines (they're statement terminators, but sometimes optional)
         loop {
             match self.current {
-                Token.Newline => self.advance()
+                Token.Newline => try self.advance()
                 _ => break
             }
         }
+        return
     }
 
     func alloc_reg(self) -> i64 {

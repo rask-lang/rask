@@ -133,8 +133,15 @@ pub struct BenchmarkResult {
 pub struct Interpreter {
     /// Variable bindings (scoped).
     pub(crate) env: Environment,
-    /// Function declarations by name.
+    /// Function declarations, one entry per declaration. The key is the
+    /// function's name, except that a stdlib function sharing a name with a
+    /// program one goes by `name~std` (#1706).
     functions: HashMap<String, FnDecl>,
+    /// Each function declaration's key in `functions`.
+    function_keys: HashMap<rask_ast::NodeId, String>,
+    /// A name the checker resolved to a function → that function's
+    /// declaration. What a name calls is this, not how it's spelled.
+    named_functions: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
     /// Enum declarations by name.
     pub(crate) enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
@@ -463,6 +470,8 @@ impl Interpreter {
         Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            function_keys: HashMap::new(),
+            named_functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -509,6 +518,8 @@ impl Interpreter {
         Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            function_keys: HashMap::new(),
+            named_functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -557,6 +568,8 @@ impl Interpreter {
         let interp = Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            function_keys: HashMap::new(),
+            named_functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             union_decls: HashMap::new(),
@@ -713,6 +726,24 @@ impl Interpreter {
         self.file_packages = typed.file_packages.clone();
         self.conformance_disambiguation = typed.conformance_disambiguation.clone();
         self.conformance_interfaces = typed.conformance_interfaces.clone();
+        self.named_functions = typed
+            .resolutions
+            .iter()
+            .filter_map(|(name, sym)| match &typed.symbols.get(*sym)?.kind {
+                rask_resolve::SymbolKind::Function { decl, .. }
+                | rask_resolve::SymbolKind::BuiltinFunction { decl: Some(decl), .. } => Some((*name, *decl)),
+                _ => None,
+            })
+            .collect();
+    }
+
+    /// The function a name refers to, when the checker resolved it to one:
+    /// the program's own `clamp` over the builtin, a function over a stdlib
+    /// one of the same name. `None` for a variable, a builtin or a name the
+    /// checker didn't see.
+    fn named_function(&self, name_node: rask_ast::NodeId) -> Option<&str> {
+        let decl = self.named_functions.get(&name_node)?;
+        self.function_keys.get(decl).map(String::as_str)
     }
 
     /// The package whose code is running. `None` outside a package build, and
@@ -857,6 +888,8 @@ impl Interpreter {
         // The body is the closure's, so it runs under the frame it was built in.
         child.generic_frames.push(generics.clone());
         child.functions = self.functions.clone();
+        child.function_keys = self.function_keys.clone();
+        child.named_functions = self.named_functions.clone();
         child.enums = self.enums.clone();
         child.struct_decls = self.struct_decls.clone();
         child.union_decls = self.union_decls.clone();

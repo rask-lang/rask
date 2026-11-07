@@ -2580,7 +2580,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`discard {}` frees nothing — `{}` is a Copy type",
                     name, ty
                 ))
-                .with_code("W0301")
+                .with_code("W0303")
                 .with_primary(*span, "there is no allocation here to release")
                 .with_fix(format!("remove `discard {}`", name))
                 .with_why("`discard` exists to end a value's life before its scope does, which only means something when the value owns memory. A Copy type owns none, so the statement reads as a cost it doesn't pay. It does still put the name out of use, so if that was the point, say so with a comment [mem.ownership/D1, D2]")
@@ -2613,6 +2613,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "step must be non-zero")
                     .with_help("use a positive step for ascending ranges, or a negative step for descending ranges")
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
+            }
+
+            UnusedResult { ty, span } => {
+                Diagnostic::warning(format!("unused result of type `{}`", ty))
+                    .with_code("W0301")
+                    .with_primary(*span, "if this fails, nothing finds out")
+                    .with_help("propagate it with `try`, handle it with `catch e => …`, or drop it on purpose with `let _ = …`")
+                    .with_why("a call that can fail hands its error back as a value, and a statement that ignores the value ignores the failure. `@allow(unused_result)` on the function says so for all of them [tool.warnings/W2]")
             }
 
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {

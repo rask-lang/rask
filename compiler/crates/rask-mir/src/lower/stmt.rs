@@ -2024,8 +2024,7 @@ impl<'a> MirLowerer<'a> {
             let from_callee = || match &init.kind {
                 ExprKind::Call { func, .. } => match &func.kind {
                     ExprKind::Ident(callee) => {
-                        let key = self.ctx.call_rewrites.get(&init.id).cloned()
-                            .unwrap_or_else(|| callee.clone());
+                        let key = self.ctx.call_symbol(init.id).unwrap_or_else(|| callee.clone());
                         self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
                     }
                     _ => None,

@@ -91,6 +91,8 @@ const LAYERS: &[(&str, Layer)] = &[
     ("async.rk", Layer::Std),
     ("sim.rk", Layer::Std),
     ("claims.rk", Layer::Std),
+    // A build script's API: only the interpreter runs build scripts.
+    ("build.rk", Layer::Std),
     ("std.rk", Layer::Std),
 ];
 
@@ -411,6 +413,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
     ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
     ("claims.rk", include_str!("../../../../stdlib/claims.rk")),
+    ("build.rk", include_str!("../../../../stdlib/build.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
@@ -442,6 +445,8 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
+    /// The declaration's id, the same one the compiled stdlib carries.
+    pub decl: rask_ast::NodeId,
     /// Visible to a program: declared `public`, or part of a conformance,
     /// whose methods carry the conformance's visibility (TV1). A stdlib module
     /// is its own package, so a member without it is the module's own and a
@@ -615,6 +620,8 @@ pub struct FunctionStub {
     pub name: String,
     /// The declaration this came from, as every other stdlib accessor numbers it.
     pub decl_id: rask_ast::NodeId,
+    /// The function's own id (`FnDecl::id`), the one its body is compiled under.
+    pub fn_id: rask_ast::NodeId,
     /// Parameters with no written type are left out of a stub's signature:
     /// every stdlib parameter is annotated.
     pub params: Vec<(String, TypeExpr)>,
@@ -944,6 +951,7 @@ impl StubRegistry {
                 self.functions.push(FunctionStub {
                     name: f.name.clone(),
                     decl_id: decl.id,
+                    fn_id: f.id,
                     params: f.params.iter()
                         .filter(|p| p.name != "self")
                         .filter_map(|p| Some((p.name.clone(), p.ty.clone()?)))
@@ -1110,6 +1118,7 @@ fn fn_to_method_stub(
 
     MethodStub {
         name: bare_name,
+        decl: f.id,
         is_pub: f.is_pub || in_conformance,
         takes_self,
         mutate_self,

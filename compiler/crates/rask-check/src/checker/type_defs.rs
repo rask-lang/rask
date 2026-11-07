@@ -35,6 +35,11 @@ pub enum Callee {
         /// more than one declares it. `None` is the ordinary case — one block,
         /// one body, nothing to choose between.
         package: Option<String>,
+        /// The declaration the call runs, when the checker could tell: the
+        /// receiver was concrete and the method has a body of its own. A
+        /// receiver that is a type parameter leaves it to each instance
+        /// (`TypeTable::method_body`).
+        body: Option<NodeId>,
     },
 }
 
@@ -91,6 +96,8 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct ModuleMethodSig {
     pub name: String,
+    /// The declaration a call runs, when it has a body in Rask.
+    pub body: Option<NodeId>,
     pub params: Vec<Type>,
     pub ret: Type,
     /// Interface bounds on the method's own type parameters, as the stub wrote them
@@ -405,6 +412,16 @@ impl TypedProgram {
     }
 }
 
+/// A concrete error boxed into `any I` where it leaves a function.
+#[derive(Debug, Clone)]
+pub struct ErasedError {
+    /// The error being boxed, in the body's own terms: a generic body's
+    /// mentions its parameters.
+    pub error: Type,
+    /// The interface's symbol (`TypeTable::interface_symbol`).
+    pub interface: String,
+}
+
 /// Where an `extend` block's method is filed under a name of its own, and the
 /// calls that reach it: written into the declarations so every backend sees
 /// one name per body.
@@ -543,6 +560,10 @@ pub struct TypedProgram {
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,
+    /// ER32 at a `try`: its error is a concrete type and the function's is
+    /// `any I`, so the error is boxed on the way out. Keyed by the `try`'s
+    /// node.
+    pub erased_try_errors: HashMap<NodeId, ErasedError>,
     /// An `if`/`match` arm that gains a `T?` layer because another arm is a
     /// `T?` (`CoercionSite::Branch`): the arm's node → the whole expression's
     /// type. Lowering wraps the arm's value there.

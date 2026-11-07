@@ -331,6 +331,10 @@ pub struct MethodSig {
     pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// Who wrote it, and whether it has a body.
     pub origin: MethodOrigin,
+    /// The declaration a call to it runs. `None` for an interface's
+    /// requirement and for a signature the checker supplied, which have no
+    /// declaration of their own.
+    pub decl: Option<rask_ast::NodeId>,
     /// What it does to its receiver's size, as declared (`@grows`, `@shrinks`).
     pub effect: rask_ast::decl::DeclaredEffects,
     /// Declared `public`. A checker-supplied signature has no declaration and
