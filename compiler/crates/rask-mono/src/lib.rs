@@ -372,7 +372,7 @@ fn compute_layouts(
         let declared_size = layout_cache.note_declared_size(id, def);
         let size_align = match def {
             TypeDef::Struct { .. } => {
-                let layout = if generic {
+                let mut layout = if generic {
                     // A generic declaration's shared layout: a word stands in
                     // for each type parameter. Instances that need their own
                     // get one above.
@@ -380,22 +380,25 @@ fn compute_layouts(
                 } else {
                     compute_struct_layout(def, &[], &layout_cache)
                 };
+                layout.key = Some(LayoutKey::of(id));
                 let size_align = (layout.size, layout.align);
                 struct_layouts.push(layout);
                 size_align
             }
             TypeDef::Enum { .. } => {
-                let layout = if generic {
+                let mut layout = if generic {
                     rask_layout::compute_shared_enum_layout(def, &layout_cache)
                 } else {
                     compute_enum_layout(def, &[], &layout_cache)
                 };
+                layout.key = Some(LayoutKey::of(id));
                 let size_align = (layout.size, layout.align);
                 enum_layouts.push(layout);
                 size_align
             }
             TypeDef::Union { .. } => {
-                let layout = compute_union_layout(def, &layout_cache);
+                let mut layout = compute_union_layout(def, &layout_cache);
+                layout.key = Some(LayoutKey::of(id));
                 let size_align = (layout.size, layout.align);
                 struct_layouts.push(layout);
                 size_align
@@ -485,7 +488,8 @@ fn lay_out_instance(
                 }
             }
             layout.name = instance_name;
-            layout_cache.insert(key, (layout.size, layout.align));
+            layout_cache.insert(key.clone(), (layout.size, layout.align));
+            layout.key = Some(key);
             struct_layouts.push(layout);
         }
         TypeDef::Enum { .. } => {
@@ -504,7 +508,8 @@ fn lay_out_instance(
                 }
             }
             layout.name = instance_name;
-            layout_cache.insert(key, (layout.size, layout.align));
+            layout_cache.insert(key.clone(), (layout.size, layout.align));
+            layout.key = Some(key);
             enum_layouts.push(layout);
         }
         _ => {}
@@ -623,31 +628,6 @@ fn layout_order(
 
     let mut slots: Vec<Option<LayoutStep>> = nodes.into_iter().map(Some).collect();
     order.into_iter().filter_map(|n| slots[n].take()).collect()
-}
-
-/// The layout a written type is laid out by: `Tagged<string>` is
-/// `Tagged$string` when that instance was made, else the shared `Tagged`.
-/// Codegen describes what a value owns by reading layouts by name — so without
-/// this a generic's nodes matched no layout and a `Heap` holding one freed
-/// nothing inside it.
-pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
-    let written = ty.to_string();
-    if exists(&written) {
-        return written;
-    }
-    if let Type::UnresolvedGeneric { name, args } = ty {
-        let tys: Vec<Type> = type_args_of(args);
-        if let Some(instance) = generic_instance_name(name, &tys, &HashMap::new()) {
-            if exists(&instance) {
-                return instance;
-            }
-        }
-        let base = name.to_string();
-        if exists(&base) {
-            return base;
-        }
-    }
-    written
 }
 
 /// Does storing this type argument in a field make the aggregate responsible

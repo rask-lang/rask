@@ -178,6 +178,51 @@ impl LayoutCache {
     }
 }
 
+/// The struct layout a checked type is laid out by: an instance's own when one
+/// was made, else the declaration's. A type the checker left spelled (a
+/// compiler-provided one, or a layout read from written syntax) is found by
+/// its name, until every reader holds checked types.
+pub fn struct_for<'a>(ty: &Type, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
+    layout_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+}
+
+/// `struct_for` for enums.
+pub fn enum_for<'a>(ty: &Type, layouts: &'a [EnumLayout]) -> Option<&'a EnumLayout> {
+    layout_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+}
+
+fn layout_for<'a, L>(ty: &Type, layouts: &'a [L], parts: impl Fn(&L) -> (Option<&LayoutKey>, &str)) -> Option<&'a L> {
+    let by_key = |key: &LayoutKey| layouts.iter().find(|l| parts(l).0 == Some(key));
+    match ty {
+        Type::Named(id) => by_key(&LayoutKey::of(*id)),
+        Type::Generic { base, args } => {
+            let args: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            by_key(&LayoutKey::instance(*base, args)).or_else(|| by_key(&LayoutKey::of(*base)))
+        }
+        Type::UnresolvedNamed(name) => layouts.iter().find(|l| parts(l).1 == name),
+        Type::UnresolvedGeneric { name, args } => {
+            let args: Vec<Type> = args
+                .iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect();
+            let by_name = |n: &str| layouts.iter().find(|l| parts(l).1 == n);
+            generic_instance_name(name, &args, &HashMap::new())
+                .and_then(|instance| by_name(&instance))
+                .or_else(|| by_name(name))
+        }
+        _ => None,
+    }
+}
+
 /// `@handle(niche)`: a present value is never null, so `T?` is the value.
 pub fn handle_is_niche(attr: &rask_ast::attr::Attr) -> bool {
     attr.args.iter().flatten().any(|a| a.label.is_none() && a.value.ident() == Some("niche"))
@@ -192,6 +237,9 @@ impl Default for LayoutCache {
 /// Struct memory layout
 #[derive(Debug, Clone)]
 pub struct StructLayout {
+    /// Which type and arguments this lays out, when it lays out a declared
+    /// type: what a reader holding a checked type finds it by (`struct_for`).
+    pub key: Option<LayoutKey>,
     pub name: String,
     pub size: u32,
     pub align: u32,
@@ -282,6 +330,8 @@ pub fn bit_width(attrs: &[rask_ast::attr::Attr]) -> Option<u32> {
 /// Enum memory layout
 #[derive(Debug, Clone)]
 pub struct EnumLayout {
+    /// As on `StructLayout`.
+    pub key: Option<LayoutKey>,
     pub name: String,
     pub size: u32,
     pub align: u32,
@@ -939,6 +989,7 @@ fn struct_layout(
     let total_size = align_up(offset, max_align);
 
     StructLayout {
+        key: None,
         name: name.clone(),
         size: total_size,
         align: max_align,
@@ -984,6 +1035,7 @@ pub fn compute_union_layout(def: &TypeDef, cache: &LayoutCache) -> StructLayout 
     let total_size = align_up(max_size, max_align);
 
     StructLayout {
+        key: None,
         name: name.clone(),
         size: total_size,
         align: max_align,
@@ -1009,6 +1061,7 @@ pub fn compute_union_layout(def: &TypeDef, cache: &LayoutCache) -> StructLayout 
 pub fn ordering_layout() -> EnumLayout {
     let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
     EnumLayout {
+        key: None,
         name: "Ordering".to_string(),
         size: tag_size,
         align: tag_align,
@@ -1138,6 +1191,7 @@ fn enum_layout(
     let total_size = align_up(payload_offset + max_payload_size, enum_align);
 
     EnumLayout {
+        key: None,
         name: name.clone(),
         size: total_size,
         align: enum_align,
