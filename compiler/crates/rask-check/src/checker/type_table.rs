@@ -1201,7 +1201,8 @@ impl TypeTable {
         None
     }
 
-    /// XC4/XC5: remember which package's block a method came from.
+    /// XC5: remember that `package`'s block on someone else's type declares
+    /// `method` with the body `decl`.
     pub(super) fn record_impl_method_package(
         &mut self,
         type_id: TypeId,
@@ -1218,17 +1219,36 @@ impl TypeTable {
         }
     }
 
-    /// XC4/XC5: the packages whose blocks declare this method on this type.
-    /// One entry is the ordinary case and needs no disambiguation.
-    pub(super) fn impl_method_packages(
-        &self,
-        type_id: TypeId,
-        method: &str,
-    ) -> &[(String, NodeId)] {
-        self.impl_method_packages
-            .get(&(type_id, method.to_string()))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    /// The declaration a call of `method` on `recv` runs: the receiver's own
+    /// method of that name, the one `package`'s block supplies when the
+    /// call's package wrote one (XC5). `None` when nothing declared has a body
+    /// for it: a primitive's operation, a native, a type parameter.
+    ///
+    /// Rendering (`to_string`, and `__fmt` that `{x}` desugars to) runs
+    /// `to_string`, or `message` for an error type that is displayable
+    /// through it (std.fmt/D5).
+    pub fn method_body(&self, recv: &Type, method: &str, package: Option<&str>) -> Option<NodeId> {
+        let id = self.conformance_target(recv)?;
+        let methods: &[MethodSig] = match self.get(id)? {
+            TypeDef::Struct { methods, .. }
+            | TypeDef::Enum { methods, .. }
+            | TypeDef::NominalAlias { methods, .. }
+            | TypeDef::Primitive { methods, .. } => methods,
+            _ => return None,
+        };
+        let body_of = |name: &str| -> Option<NodeId> {
+            if let Some(pkg) = package {
+                let sites = self.impl_method_packages.get(&(id, name.to_string()));
+                if let Some((_, decl)) = sites.into_iter().flatten().find(|(p, _)| p == pkg) {
+                    return Some(*decl);
+                }
+            }
+            methods.iter().filter(|m| m.name == name).find_map(|m| m.decl)
+        };
+        match method {
+            "to_string" | "__fmt" => body_of("to_string").or_else(|| body_of("message")),
+            _ => body_of(method),
+        }
     }
 
     /// XC3: is any conformance on this type declared more than once?

@@ -108,6 +108,31 @@ fn misplaced_claims(decls: &[Decl]) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// The build module is a build script's (struct.build/BL4): `BuildContext` only
+/// means something while `rask build` runs `build.rk`. Imported anywhere
+/// else it type-checked, and then native codegen found no body for its
+/// methods and the interpreter said it was used outside a build script.
+fn build_module_outside_build_script(decls: &[Decl]) -> Vec<Diagnostic> {
+    // `import build.{A, B}` is a declaration per name; one error per import.
+    let mut seen = std::collections::HashSet::new();
+    decls
+        .iter()
+        .filter(|d| seen.insert(d.span))
+        .filter_map(|d| match &d.kind {
+            DeclKind::Import(i) if i.path.first().is_some_and(|m| m == "build") => Some(
+                Diagnostic::error("the `build` module is only for build scripts".to_string())
+                    .with_code("E0955")
+                    .with_primary(d.span, "imported outside `build.rk`")
+                    .with_help(
+                        "move the code that needs it into the package's `build.rk`; \
+                         a build script has `BuildContext` in scope without importing it",
+                    ),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A discovered package context for multi-file compilation.
 pub struct PackageContext {
     pub registry: PackageRegistry,
@@ -447,7 +472,22 @@ pub fn check_loaded(
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
     let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut out = check_loaded_scoped(files, config, &mut exports);
+    let mut out = check_loaded_scoped(files, config, &mut exports, None);
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
+    out
+}
+
+/// What a build script has in scope without writing it (struct.build/BL4).
+const BUILD_SCRIPT_PRELUDE: &str = "import build.{BuildContext, BuildError}";
+
+/// Check a package's `build.rk` on its own, as the separate unit it is
+/// (struct.build/BL1): the package's code may need what the script
+/// generates, so it can't be part of this check. The build module is in
+/// scope without an import (BL4).
+pub fn check_build_script(path: &Path, source: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let files = [(path.to_path_buf(), source.to_string())];
+    let mut out = check_loaded_scoped(&files, config, &mut exports, Some(BUILD_SCRIPT_PRELUDE));
     package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
     out
 }
@@ -456,6 +496,7 @@ fn check_loaded_scoped(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
     exports: &mut HashMap<String, HashMap<String, String>>,
+    prelude: Option<&str>,
 ) -> PipelineOutput<CheckResult> {
     config.declare_target();
 
@@ -470,6 +511,16 @@ fn check_loaded_scoped(
         let source = source.clone();
         let path = path.clone();
         let file_id = idx as u16;
+
+        // Imports the file gets without writing them, in its own scope.
+        if let Some(prelude) = prelude {
+            let tokens = rask_lexer::Lexer::new_with_file_id(prelude, file_id).tokenize().tokens;
+            let mut parser = rask_parser::Parser::new_with_file_id(tokens, next_id, file_id);
+            let parsed = parser.parse();
+            next_id = parser.next_node_id();
+            debug_assert!(parsed.is_ok(), "the prelude is fixed text");
+            decls.extend(parsed.decls);
+        }
 
         // --- Lex ---
         let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
@@ -493,7 +544,10 @@ fn check_loaded_scoped(
         decls.extend(parse_result.decls);
     }
 
-    let misplaced = misplaced_claims(&decls);
+    let mut misplaced = misplaced_claims(&decls);
+    if prelude.is_none() {
+        misplaced.extend(build_module_outside_build_script(&decls));
+    }
     if !misplaced.is_empty() {
         diags.extend(misplaced);
         return PipelineOutput::fail_with_sources(diags, source_files);
@@ -852,9 +906,11 @@ fn check_package_scoped(
     }
     if !config.claims {
         diags.extend(misplaced_claims(&pkg_ctx.all_decls));
+        diags.extend(build_module_outside_build_script(&pkg_ctx.all_decls));
     }
     for (_, decls) in &merged {
         diags.extend(misplaced_claims(decls));
+        diags.extend(build_module_outside_build_script(decls));
     }
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---

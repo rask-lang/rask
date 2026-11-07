@@ -1370,8 +1370,9 @@ impl TypeChecker {
         if let Some(pkg) = self.foreign_block_owner(type_id, span) {
             self.conformance_disambiguation.insert(decl_id, pkg.clone());
             for m in &new_methods {
-                self.types
-                    .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
+                if let Some(body) = m.decl {
+                    self.types.record_impl_method_package(type_id, &m.name, &pkg, body);
+                }
             }
         }
         let stdlib_mode = self.types.stdlib_mode;
@@ -2309,6 +2310,7 @@ impl TypeChecker {
         MethodSig {
             param_names,
             origin: rask_types::MethodOrigin::Declared,
+            decl: (m.id != rask_ast::NodeId::DUMMY).then_some(m.id),
             effect: m.declared_effects(),
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
@@ -2558,6 +2560,7 @@ impl TypeChecker {
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
                 origin: rask_types::MethodOrigin::Structural,
+                decl: None,
                 effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),

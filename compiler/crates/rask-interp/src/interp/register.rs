@@ -152,8 +152,27 @@ impl Interpreter {
                     if f.attrs.iter().any(|a| a.is("test")) {
                         test_fns.push(f.clone());
                     }
-                    let fn_name = f.name.clone();
-                    self.functions.insert(fn_name, f.clone());
+                    // One entry per declaration, keyed the way monomorphization
+                    // names them: a program function named like a stdlib one
+                    // keeps the name, and the stdlib's goes by `name~std`
+                    // (#1706). A call finds its entry through the declaration
+                    // the checker resolved it to (`named_function`).
+                    let std_key = rask_types::conformance_symbol(&f.name, "std");
+                    let key = match self.functions.get(&f.name) {
+                        Some(other) if other.id != f.id => {
+                            if rask_stdlib::is_stdlib_span(decl.span) {
+                                std_key
+                            } else {
+                                let stdlib_one = self.functions.remove(&f.name).expect("checked above");
+                                self.function_keys.insert(stdlib_one.id, std_key.clone());
+                                self.functions.insert(std_key, stdlib_one);
+                                f.name.clone()
+                            }
+                        }
+                        _ => f.name.clone(),
+                    };
+                    self.function_keys.insert(f.id, key.clone());
+                    self.functions.insert(key, f.clone());
                 }
                 DeclKind::Enum(e) => {
                     let base_name = e.name.clone();
@@ -333,12 +352,6 @@ impl Interpreter {
             .define("todo".to_string(), Value::Builtin(BuiltinKind::Todo));
         self.env
             .define("unreachable".to_string(), Value::Builtin(BuiltinKind::Unreachable));
-        self.env
-            .define("min".to_string(), Value::Builtin(BuiltinKind::Min));
-        self.env
-            .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
-        self.env
-            .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
         self.env
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env

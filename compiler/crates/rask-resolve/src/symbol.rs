@@ -33,6 +33,8 @@ pub enum SymbolKind {
         ret_ty: Option<TypeExpr>,
         /// Whether this is an `unsafe func`.
         is_unsafe: bool,
+        /// The function's declaration (`FnDecl::id`): what a call to it runs.
+        decl: rask_ast::NodeId,
     },
     /// An extern function (C FFI).
     ExternFunction {
@@ -79,6 +81,9 @@ pub enum SymbolKind {
     BuiltinFunction {
         /// The built-in function kind.
         builtin: BuiltinFunctionKind,
+        /// Its declaration in the stdlib (`FnDecl::id`), when it has a body
+        /// in Rask (`max`, `clamp`); `None` for one the compiler lowers.
+        decl: Option<rask_ast::NodeId>,
     },
     /// A built-in module (io, fs, env, etc.).
     BuiltinModule {
