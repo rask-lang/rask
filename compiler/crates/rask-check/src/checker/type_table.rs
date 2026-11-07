@@ -206,16 +206,16 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
-    /// Each struct, enum and union by the name its layout is keyed under
-    /// (`sizes.rs`). Sizes come from the layout, so the copy rule,
-    /// `reflect.size_of` and codegen read one number.
-    pub(crate) layout_types: HashMap<String, TypeId>,
+    /// Each struct, enum and union that has a layout (`sizes.rs`). Sizes come
+    /// from the layout, so the copy rule, `reflect.size_of` and codegen read
+    /// one number.
+    pub(crate) layout_types: std::collections::HashSet<TypeId>,
     /// The type each struct, enum, union and nominal type declaration
     /// registered. What a later pass holding the declaration reads, so it
     /// never has to find the type again by its name.
     declared_types: HashMap<NodeId, TypeId>,
     /// Stdlib generics declared empty because the runtime holds the value.
-    pub(crate) layout_stand_ins: std::collections::HashSet<String>,
+    pub(crate) layout_stand_ins: std::collections::HashSet<TypeId>,
     /// The bounds a generic struct or enum declares on its parameters, in
     /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
     /// Every method of the type may assume them (#1364).
@@ -264,7 +264,7 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
-            layout_types: HashMap::new(),
+            layout_types: std::collections::HashSet::new(),
             declared_types: HashMap::new(),
             layout_stand_ins: std::collections::HashSet::new(),
             declared_param_bounds: HashMap::new(),
@@ -371,7 +371,7 @@ impl TypeTable {
         // matching the resolver and interpreter registrations. Without a real
         // TypeDef entry, a user-written `Ordering` annotation is rejected as an
         // unknown type even though the name resolves.
-        self.register_type(TypeDef::Enum {
+        let ordering = self.register_type(TypeDef::Enum {
             name: "Ordering".to_string(),
             type_params: vec![],
             variants: rask_stdlib::ORDERING_VARIANTS
@@ -386,6 +386,7 @@ impl TypeTable {
             backing: None,
             variant_decls: rask_stdlib::ORDERING_VARIANTS.iter().map(|_| rask_types::VariantDecl::synthesized(0)).collect(),
         });
+        self.layout_types.insert(ordering);
     }
 
     /// Register a user-defined type.

@@ -7,11 +7,32 @@ use rask_ast::ty::TypeExpr;
 use rask_types::{FnParam, GenericArg, Type, TypeDef, TypeId};
 use std::collections::HashMap;
 
-/// The name each `TypeId` goes by. The cache is keyed by name, so a checked
-/// type is respelled by name before layout reads it (`spelled`).
-pub type NameOf<'a> = &'a dyn Fn(TypeId) -> String;
+/// What a layout is keyed by: the type's declaration and, for one instance of
+/// a generic type, its arguments. No arguments is the declaration's own
+/// layout, the shared one for a generic type.
+///
+/// By identity, never by name. Two types can share a name (a program's
+/// `interface Parser` and the stdlib's `cli.Parser` struct), and one type can
+/// be spelled two ways.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LayoutKey {
+    pub id: TypeId,
+    pub args: Vec<Type>,
+}
 
-/// What `spelled` does with a part of a type that has no layout: a type
+impl LayoutKey {
+    /// The declaration's own layout.
+    pub fn of(id: TypeId) -> Self {
+        Self { id, args: Vec::new() }
+    }
+
+    /// One instance of a generic declaration.
+    pub fn instance(id: TypeId, args: Vec<Type>) -> Self {
+        Self { id, args }
+    }
+}
+
+/// What `settle` does with a part of a type that has no layout: a type
 /// parameter, an inference variable nobody solved, a projection, an error.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Unsolved {
@@ -25,10 +46,10 @@ pub enum Unsolved {
     KeepParams,
 }
 
-/// A checked type respelled the way the layout cache is keyed: by name, not by
-/// `TypeId`. `None` only under `Unsolved::Refuse`, for a type with no layout.
-pub fn spelled(ty: &Type, name_of: NameOf, unsolved: Unsolved) -> Option<Type> {
-    let go = |t: &Type| spelled(t, name_of, unsolved);
+/// A checked type with its unsolved parts settled, ready to size. `None` only
+/// under `Unsolved::Refuse`, for a type with no layout.
+pub fn settle(ty: &Type, unsolved: Unsolved) -> Option<Type> {
+    let go = |t: &Type| settle(t, unsolved);
     let each = |tys: &[Type]| tys.iter().map(go).collect::<Option<Vec<_>>>();
     let args_of = |args: &[GenericArg]| {
         args.iter()
@@ -38,19 +59,14 @@ pub fn spelled(ty: &Type, name_of: NameOf, unsolved: Unsolved) -> Option<Type> {
             })
             .collect::<Option<Vec<_>>>()
     };
-    let is_param = |name: &str| rask_ast::type_params::is_type_param_name(name);
+    let word = || match unsolved {
+        Unsolved::Refuse => None,
+        Unsolved::Word | Unsolved::KeepParams => Some(Type::I64),
+    };
     Some(match ty {
-        Type::Var(_) | Type::Assoc { .. } | Type::Error => match unsolved {
-            Unsolved::Refuse => return None,
-            Unsolved::Word | Unsolved::KeepParams => Type::I64,
-        },
-        Type::UnresolvedNamed(name) if is_param(name) => match unsolved {
-            Unsolved::Refuse => return None,
-            Unsolved::Word => Type::I64,
-            Unsolved::KeepParams => ty.clone(),
-        },
-        Type::Named(id) => Type::UnresolvedNamed(name_of(*id)),
-        Type::Generic { base, args } => Type::UnresolvedGeneric { name: name_of(*base), args: args_of(args)? },
+        Type::Var(_) | Type::Assoc { .. } | Type::Error => return word(),
+        Type::UnresolvedNamed(name) if unsolved != Unsolved::KeepParams && names_a_parameter(name) => return word(),
+        Type::Generic { base, args } => Type::Generic { base: *base, args: args_of(args)? },
         Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric { name: name.clone(), args: args_of(args)? },
         Type::Tuple(elems) => Type::Tuple(each(elems)?),
         Type::Union(members) => Type::Union(each(members)?),
@@ -62,12 +78,26 @@ pub fn spelled(ty: &Type, name_of: NameOf, unsolved: Unsolved) -> Option<Type> {
     })
 }
 
-/// A declaration's field type as layout reads it: by name, parameters kept.
-fn declared(ty: &Type, name_of: NameOf) -> Type {
-    spelled(ty, name_of, Unsolved::KeepParams).expect("keeping parameters always answers")
+/// Does a name the checker left spelled stand for a type parameter? The
+/// checker resolves every declared type to its id, so a spelled name is a
+/// builtin's (a scalar, `string`, a C type, a compiler-provided handle) or a
+/// parameter's, whatever the parameter is called (`struct Holder<Output>`).
+fn names_a_parameter(name: &str) -> bool {
+    let builtin = name == "string"
+        || name.starts_with('*')
+        || primitive_or_named(name) != Type::UnresolvedNamed(name.to_string())
+        || rask_ast::primitives::c_type_spelling(name).is_some()
+        || rask_stdlib::is_runtime_handle(name);
+    !builtin
 }
 
-/// Already-computed type layouts, keyed by type name, for one pointer width.
+/// A declaration's field type as layout reads it: parameters kept, anything
+/// else the checker left open a word.
+fn declared(ty: &Type) -> Type {
+    settle(ty, Unsolved::KeepParams).expect("keeping parameters always answers")
+}
+
+/// Already-computed type layouts, by `LayoutKey`, for one pointer width.
 ///
 /// The width is the cache's because every layout in it was computed with it: a
 /// struct holding a `Vec` is 8 bytes bigger on a 64-bit target than on a 32-bit
@@ -77,7 +107,10 @@ fn declared(ty: &Type, name_of: NameOf) -> Type {
 /// (`LayoutCache::for_copy_rule`).
 #[derive(Debug, Clone)]
 pub struct LayoutCache {
-    sizes: HashMap<String, (u32, u32)>,
+    sizes: HashMap<LayoutKey, (u32, u32)>,
+    /// Handles whose `T?` is the address with null for `none`
+    /// (`@handle(niche)`): `Link`.
+    niches: std::collections::HashSet<TypeId>,
     word: u32,
 }
 
@@ -93,31 +126,66 @@ impl LayoutCache {
     }
 
     fn with_word(word: u32) -> Self {
-        Self { sizes: HashMap::new(), word }
+        Self { sizes: HashMap::new(), niches: Default::default(), word }
     }
 
     /// Bytes in a pointer, and its alignment.
     pub fn word(&self) -> u32 {
         self.word
     }
+
+    pub fn get(&self, key: &LayoutKey) -> Option<(u32, u32)> {
+        self.sizes.get(key).copied()
+    }
+
+    pub fn contains(&self, key: &LayoutKey) -> bool {
+        self.sizes.contains_key(key)
+    }
+
+    pub fn insert(&mut self, key: LayoutKey, size_align: (u32, u32)) {
+        self.sizes.insert(key, size_align);
+    }
+
+    /// Record a type whose size its declaration states rather than its fields:
+    /// a runtime handle is a word (`@handle`), a runtime scalar is that scalar
+    /// (`@runtime_scalar(i64)`). Returns whether `def` was one, in which case
+    /// there is nothing to lay out.
+    pub fn note_declared_size(&mut self, id: TypeId, def: &TypeDef) -> bool {
+        let TypeDef::Struct { attrs, .. } = def else { return false };
+        if let Some(handle) = attrs.iter().find(|a| a.is("handle")) {
+            if handle_is_niche(handle) {
+                self.niches.insert(id);
+            }
+            let w = self.word;
+            self.insert(LayoutKey::of(id), (w, w));
+            return true;
+        }
+        let scalar = attrs
+            .iter()
+            .find(|a| a.is("runtime_scalar"))
+            .and_then(|a| a.positional()?.ident().map(primitive_or_named));
+        match scalar.and_then(|t| t.scalar_bytes()) {
+            Some(n) => {
+                self.insert(LayoutKey::of(id), (n, n));
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn is_niche(&self, id: TypeId) -> bool {
+        self.niches.contains(&id)
+    }
+}
+
+/// `@handle(niche)`: a present value is never null, so `T?` is the value.
+pub fn handle_is_niche(attr: &rask_ast::attr::Attr) -> bool {
+    attr.args.iter().flatten().any(|a| a.label.is_none() && a.value.ident() == Some("niche"))
 }
 
 impl Default for LayoutCache {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl std::ops::Deref for LayoutCache {
-    type Target = HashMap<String, (u32, u32)>;
-    fn deref(&self) -> &Self::Target {
-        &self.sizes
-    }
-}
-
-impl std::ops::DerefMut for LayoutCache {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.sizes
     }
 }
 
@@ -252,18 +320,14 @@ fn scalar_by_name(ty: &Type) -> (u32, u32) {
     (n, n)
 }
 
-/// A user generic's size: its instance layout when one was made, else the
-/// shared one. Both are in the cache by the time a type holding one is laid
-/// out, since declarations go in dependency order.
+/// A generic's size: its instance layout when one was made, else the shared
+/// one. Both are in the cache by the time a type holding one is laid out,
+/// since declarations go in dependency order.
 ///
 /// Not a zero. A stdlib generic like `Sequence<T>` is an empty struct standing
 /// in for a runtime value, so the cache says it's nothing at all, and taking
 /// that gave `Holder { inner: Sequence<i64> }` a field with no room in it.
-fn cached_generic_layout(
-    name: &str,
-    args: &[GenericArg],
-    cache: &LayoutCache,
-) -> Option<(u32, u32)> {
+fn cached_generic_layout(base: TypeId, args: &[GenericArg], cache: &LayoutCache) -> Option<(u32, u32)> {
     let arg_tys: Vec<Type> = args
         .iter()
         .filter_map(|a| match a {
@@ -271,16 +335,22 @@ fn cached_generic_layout(
             _ => None,
         })
         .collect();
-    generic_instance_name(name, &arg_tys, &HashMap::new())
-        .and_then(|n| cache.get(&n).copied())
-        .or_else(|| cache.get(name).copied())
+    cache
+        .get(&LayoutKey::instance(base, arg_tys))
+        .or_else(|| cache.get(&LayoutKey::of(base)))
         .filter(|(size, _)| *size > 0)
 }
 
 /// A payload whose `T?` is one word with no tag: a link, or a raw pointer,
 /// each with null for `none`.
-fn is_niche_word(ty: &Type) -> bool {
-    matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Link") || matches!(ty, Type::RawPtr(_))
+fn is_niche_word(ty: &Type, cache: &LayoutCache) -> bool {
+    match ty {
+        Type::RawPtr(_) => true,
+        Type::Named(id) | Type::Generic { base: id, .. } => cache.is_niche(*id),
+        // The compiler-provided spelling, before the name resolves.
+        Type::UnresolvedGeneric { name, .. } => rask_stdlib::runtime_handle(name).is_some_and(|h| h.niche),
+        _ => false,
+    }
 }
 
 /// Where a `T?`, `T or E` or error union keeps its payload, and its size, by
@@ -314,7 +384,7 @@ fn wrapper_layout_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknow
             Some(rask_types::abi::union_layout(size, align))
         }
         _ => {
-            let inner = ty.as_option().filter(|inner| !is_niche_word(inner))?;
+            let inner = ty.as_option().filter(|inner| !is_niche_word(inner, cache))?;
             let (size, align) = size_align_in(inner, cache, on_unknown)?;
             Some(rask_types::abi::option_layout(size, align))
         }
@@ -381,7 +451,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         Type::String | Type::Bytes => (16, 8),
         // Niche optimization: `Link<T>?` is the node's address and `*T?` the
         // pointer, each with null for `none` — one word, no tag.
-        ty if ty.as_option().is_some_and(is_niche_word) => (w, w),
+        ty if ty.as_option().is_some_and(|inner| is_niche_word(inner, cache)) => (w, w),
         Type::Result { .. } => {
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)
@@ -403,16 +473,20 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             (elem_size * (*len as u32), elem_align)
         }
         Type::Fn { .. } => (w, w), // Function pointer
-        Type::Named(_) | Type::Generic { .. } => {
-            // Named types carry a TypeId — can't resolve by name here.
-            // Assume pointer-sized; struct/enum layouts are computed separately.
-            (w, w)
-        }
+        Type::Named(id) => match cache.get(&LayoutKey::of(*id)) {
+            Some(found) => found,
+            None => return on_unknown.unknown(format_args!("no layout for type #{}", id.0), w),
+        },
+        Type::Generic { base, args } => match cached_generic_layout(*base, args, cache) {
+            Some(found) => found,
+            None => {
+                return on_unknown.unknown(format_args!("no layout for type #{}<{} arg(s)>", base.0, args.len()), w)
+            }
+        },
+        // What the checker leaves spelled is compiler-provided (`Heap`,
+        // `Shared`, `Channel`): a handle, one word.
         Type::UnresolvedGeneric { name, .. } if generic_is_one_word(name) => (w, w),
         Type::UnresolvedGeneric { name, args } => {
-            if let Some(found) = cached_generic_layout(name, args, cache) {
-                return Some(found);
-            }
             return on_unknown.unknown(format_args!(
                 "unresolved generic type in layout: {}<{} arg(s)>",
                 name,
@@ -441,7 +515,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                "string" | "Path" => size_align_in(&Type::String, cache, on_unknown)?,
+                "string" => size_align_in(&Type::String, cache, on_unknown)?,
                 // A scalar written as a name is the same scalar. `char` used
                 // to answer 4 here and 8 through the typed arm above; one
                 // source now.
@@ -457,24 +531,11 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                 "u64" => scalar_by_name(&Type::U64),
                 "f64" => scalar_by_name(&Type::F64),
                 "char" => scalar_by_name(&Type::Char),
-                // One word: the address of storage the runtime made. Its
-                // declaration has no fields, so the layout cache says zero.
+                // One word: the address of storage the runtime made, in the
+                // compiler-provided spelling.
                 name if rask_stdlib::is_runtime_handle(name) => (w, w),
-                // A word, but not for the reason the line above is: these two
-                // are an `int64_t` of nanoseconds in the runtime, not a pointer
-                // to anything. Their Rask declarations are empty structs, so
-                // without an entry here the layout cache answered with the
-                // declaration's size — zero — and a struct holding one gave the
-                // field no room at all (#924).
-                "Duration" | "Instant" => (8, 8),
                 _ => {
-                    // A declared type's layout. A handle never gets here: its
-                    // declaration is empty, so the cache would say zero for
-                    // `Vec` (#1081).
-                    let cached_size = cache.get(name.as_str());
-                    if let Some(&cached) = cached_size {
-                        cached
-                    } else if is_typevar_name(name) {
+                    if is_typevar_name(name) {
                         // Unsubstituted type parameter. A shared layout holds it
                         // as an `i64` (`stand_ins`), whatever the pointer width;
                         // silent because mono picks a concrete size at real call sites.
@@ -639,21 +700,14 @@ fn build_subst<'a>(
 /// The flag says the field was declared with one of the type's parameters, so the
 /// returned type is a substitution rather than what the source wrote — see
 /// `FieldLayout::is_type_param`.
-fn resolve_field_type(
-    field_ty: &Type,
-    subst: &std::collections::HashMap<&str, &Type>,
-    name_of: NameOf,
-) -> (Type, bool) {
-    let parsed = declared(field_ty, name_of);
-    match &parsed {
-        Type::UnresolvedNamed(name) => {
-            if let Some(concrete) = subst.get(name.as_str()) {
-                ((*concrete).clone(), true)
-            } else {
-                (parsed, false)
-            }
-        }
-        _ => (parsed, false),
+fn resolve_field_type(field_ty: &Type, subst: &std::collections::HashMap<&str, &Type>) -> (Type, bool) {
+    let field_ty = &declared(field_ty);
+    match field_ty {
+        Type::UnresolvedNamed(name) => match subst.get(name.as_str()) {
+            Some(concrete) => ((*concrete).clone(), true),
+            None => (field_ty.clone(), false),
+        },
+        _ => (field_ty.clone(), false),
     }
 }
 
@@ -680,9 +734,20 @@ pub fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Typ
                 })
                 .collect(),
         },
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(go(t))),
+                    other => other.clone(),
+                })
+                .collect(),
+        },
         t if t.is_option() => Type::option(go(t.as_option().unwrap())),
         Type::Result { ok, err } => Type::Result { ok: Box::new(go(ok)), err: Box::new(go(err)) },
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(go).collect()),
+        Type::Union(members) => Type::Union(members.iter().map(go).collect()),
         Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)), len: *len },
         _ => ty.clone(),
     }
@@ -719,20 +784,20 @@ fn has_c_layout(attrs: &[rask_ast::attr::Attr]) -> bool {
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4, L4)
-pub fn compute_struct_layout(def: &TypeDef, type_args: &[Type], name_of: NameOf, cache: &LayoutCache) -> StructLayout {
-    struct_layout(def, type_args, name_of, cache, true)
+pub fn compute_struct_layout(def: &TypeDef, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
+    struct_layout(def, type_args, cache, true)
 }
 
 /// A generic struct's shared layout: a word standing in for each type
 /// parameter. The stand-in sizes the fields and isn't recorded in them —
 /// `Vec<T>` stays `Vec<T>`, or reflection on `Ring<string>` read `Vec<i64>`.
-pub fn compute_shared_struct_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> StructLayout {
-    struct_layout(def, &stand_ins(def), name_of, cache, false)
+pub fn compute_shared_struct_layout(def: &TypeDef, cache: &LayoutCache) -> StructLayout {
+    struct_layout(def, &stand_ins(def), cache, false)
 }
 
 /// The enum version of `compute_shared_struct_layout`.
-pub fn compute_shared_enum_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> EnumLayout {
-    enum_layout(def, &stand_ins(def), name_of, cache, false)
+pub fn compute_shared_enum_layout(def: &TypeDef, cache: &LayoutCache) -> EnumLayout {
+    enum_layout(def, &stand_ins(def), cache, false)
 }
 
 /// A word per type parameter.
@@ -751,7 +816,6 @@ fn stand_ins(def: &TypeDef) -> Vec<Type> {
 fn struct_layout(
     def: &TypeDef,
     type_args: &[Type],
-    name_of: NameOf,
     cache: &LayoutCache,
     record_arguments: bool,
 ) -> StructLayout {
@@ -769,7 +833,7 @@ fn struct_layout(
         .zip(field_decls)
         .enumerate()
         .map(|(decl_index, ((field_name, field_ty), member))| {
-            let (field_ty, from_param) = resolve_field_type(field_ty, &subst, name_of);
+            let (field_ty, from_param) = resolve_field_type(field_ty, &subst);
             let sized = substitute_inside(&field_ty, &subst);
             let (field_size, field_align) = type_size_align(&sized, cache);
             let field_ty = if record_arguments { sized } else { field_ty };
@@ -885,7 +949,7 @@ fn struct_layout(
 
 /// Compute union layout — all fields at offset 0, size = max field size (spec rules UN1-UN3).
 /// Returns a StructLayout since unions reuse the same representation.
-pub fn compute_union_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache) -> StructLayout {
+pub fn compute_union_layout(def: &TypeDef, cache: &LayoutCache) -> StructLayout {
     let TypeDef::Union { name, fields, field_decls } = def else {
         panic!("union layout of a non-union: {def:?}");
     };
@@ -896,7 +960,7 @@ pub fn compute_union_layout(def: &TypeDef, name_of: NameOf, cache: &LayoutCache)
     let mut max_align = 1u32;
 
     for (decl_index, ((field_name, field_ty), member)) in fields.iter().zip(field_decls).enumerate() {
-        let field_ty = declared(field_ty, name_of);
+        let field_ty = declared(field_ty);
         let (field_size, field_align) = type_size_align(&field_ty, cache);
         max_size = max_size.max(field_size);
         max_align = max_align.max(field_align);
@@ -967,14 +1031,13 @@ pub fn ordering_layout() -> EnumLayout {
 }
 
 /// Compute enum layout with tag and variant payloads (spec rules E1-E6)
-pub fn compute_enum_layout(def: &TypeDef, type_args: &[Type], name_of: NameOf, cache: &LayoutCache) -> EnumLayout {
-    enum_layout(def, type_args, name_of, cache, true)
+pub fn compute_enum_layout(def: &TypeDef, type_args: &[Type], cache: &LayoutCache) -> EnumLayout {
+    enum_layout(def, type_args, cache, true)
 }
 
 fn enum_layout(
     def: &TypeDef,
     type_args: &[Type],
-    name_of: NameOf,
     cache: &LayoutCache,
     record_arguments: bool,
 ) -> EnumLayout {
@@ -1019,7 +1082,7 @@ fn enum_layout(
             for (decl_index, (field_ty, (field_name, member))) in
                 payload.iter().zip(variant.field_names.iter().zip(&variant.fields)).enumerate()
             {
-                let (field_ty, from_param) = resolve_field_type(field_ty, &subst, name_of);
+                let (field_ty, from_param) = resolve_field_type(field_ty, &subst);
                 let sized = substitute_inside(&field_ty, &subst);
                 let (size, align) = type_size_align(&sized, cache);
                 let field_ty = if record_arguments { sized } else { field_ty };
@@ -1205,13 +1268,27 @@ pub fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn written(ty: &str) -> Type {
-        field_type(&rask_parser::parse_type(ty).unwrap())
+    /// The user types these tests declare, each with a fixed id, as the
+    /// checker would hand them over.
+    const USER_TYPES: &[&str] = &["Wide", "Color", "Inner", "Small", "Medium", "Large", "Big"];
+
+    fn id_of(name: &str) -> TypeId {
+        TypeId(USER_TYPES.iter().position(|n| *n == name).expect("a test type") as u32)
     }
 
-    /// Field types here are written by name, so no id ever needs one.
-    fn no_ids(id: TypeId) -> String {
-        panic!("no TypeId expected in a test layout, got {id:?}")
+    /// A written type, with the test's user types as ids.
+    fn written(ty: &str) -> Type {
+        with_ids(field_type(&rask_parser::parse_type(ty).unwrap()))
+    }
+
+    fn with_ids(ty: Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(name) if USER_TYPES.contains(&name.as_str()) => Type::Named(id_of(&name)),
+            Type::Result { ok, err } => Type::Result { ok: Box::new(with_ids(*ok)), err: Box::new(with_ids(*err)) },
+            Type::Tuple(elems) => Type::Tuple(elems.into_iter().map(with_ids).collect()),
+            Type::Array { elem, len } => Type::Array { elem: Box::new(with_ids(*elem)), len },
+            other => other,
+        }
     }
 
     fn make_struct(name: &str, fields: Vec<(&str, &str)>) -> TypeDef {
@@ -1274,11 +1351,11 @@ mod tests {
     fn pointers_follow_the_cache_word() {
         let three = make_struct("Three", vec![("x", "i64"), ("p", "*u8"), ("q", "*u8")]);
         let narrow = LayoutCache::with_word(4);
-        assert_eq!(compute_struct_layout(&three, &[], &no_ids, &narrow).size, 16);
-        assert_eq!(compute_struct_layout(&three, &[], &no_ids, &LayoutCache::for_copy_rule()).size, 24);
+        assert_eq!(compute_struct_layout(&three, &[], &narrow).size, 16);
+        assert_eq!(compute_struct_layout(&three, &[], &LayoutCache::for_copy_rule()).size, 24);
 
         let holder = make_struct("Holder", vec![("v", "Vec<i64>"), ("tag", "u8")]);
-        assert_eq!(compute_struct_layout(&holder, &[], &no_ids, &narrow).size, 8);
+        assert_eq!(compute_struct_layout(&holder, &[], &narrow).size, 8);
         // The runtime's string is 16 bytes on every target.
         assert_eq!(type_size_align(&Type::String, &narrow), (16, 8));
         assert_eq!(type_size_align(&Type::RawPtr(Box::new(Type::U8)), &narrow), (4, 4));
@@ -1298,11 +1375,22 @@ mod tests {
     #[test]
     fn user_type_named_like_a_builtin_container_uses_its_own_cached_size() {
         // A user struct can share a name with a builtin container (e.g. `Wide`,
-        // also the name of the SIMD-vector generic). Its real cached layout
-        // must win over the builtin bare-name guess above.
+        // also the name of the SIMD-vector generic). It's its own id, so its
+        // layout is the one found.
         let mut cache = LayoutCache::new();
-        cache.insert("Wide".to_string(), (24, 8));
-        assert_eq!(type_size_align(&Type::UnresolvedNamed("Wide".to_string()), &cache), (24, 8));
+        cache.insert(LayoutKey::of(id_of("Wide")), (24, 8));
+        assert_eq!(type_size_align(&Type::Named(id_of("Wide")), &cache), (24, 8));
+    }
+
+    #[test]
+    fn an_instance_is_found_by_its_arguments_and_falls_back_to_the_shared_layout() {
+        let pair = id_of("Big");
+        let mut cache = LayoutCache::new();
+        cache.insert(LayoutKey::of(pair), (16, 8));
+        cache.insert(LayoutKey::instance(pair, vec![Type::String]), (32, 8));
+        let at = |arg: Type| Type::Generic { base: pair, args: vec![GenericArg::Type(Box::new(arg))] };
+        assert_eq!(type_size_align(&at(Type::String), &cache), (32, 8));
+        assert_eq!(type_size_align(&at(Type::I32), &cache), (16, 8));
     }
 
     #[test]
@@ -1441,8 +1529,8 @@ mod tests {
     #[test]
     fn cache_resolves_user_defined_type() {
         let mut cache = LayoutCache::new();
-        cache.insert("Color".to_string(), (1, 1));
-        let (size, align) = type_size_align(&Type::UnresolvedNamed("Color".to_string()), &cache);
+        cache.insert(LayoutKey::of(id_of("Color")), (1, 1));
+        let (size, align) = type_size_align(&Type::Named(id_of("Color")), &cache);
         assert_eq!(size, 1);
         assert_eq!(align, 1);
     }
@@ -1452,9 +1540,9 @@ mod tests {
         // Struct Inner { x: i32, y: i32 } → size 16, align 8 (i32 stored as i64)
         // Struct Outer { inner: Inner, z: i32 }
         let mut cache = LayoutCache::new();
-        cache.insert("Inner".to_string(), (16, 8));
+        cache.insert(LayoutKey::of(id_of("Inner")), (16, 8));
         let decl = make_struct("Outer", vec![("inner", "Inner"), ("z", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
+        let layout = compute_struct_layout(&decl, &[], &cache);
         assert_eq!(layout.fields[0].size, 16); // Inner
         assert_eq!(layout.fields[0].align, 8);
         assert_eq!(layout.fields[1].offset, 16); // z at offset 16
@@ -1467,7 +1555,7 @@ mod tests {
     #[test]
     fn empty_struct() {
         let decl = make_struct("Empty", vec![]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Empty");
         assert_eq!(layout.size, 0);
         assert_eq!(layout.align, 1);
@@ -1477,7 +1565,7 @@ mod tests {
     #[test]
     fn single_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Point");
         assert_eq!(layout.size, 4);
         assert_eq!(layout.align, 4);
@@ -1490,7 +1578,7 @@ mod tests {
     #[test]
     fn two_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32"), ("y", "i32")]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.size, 8);
         assert_eq!(layout.align, 4);
         assert_eq!(layout.fields[0].offset, 0);
@@ -1506,7 +1594,7 @@ mod tests {
             "Color",
             vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])],
         );
-        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Color");
         assert_eq!(layout.tag_offset, 0); // E1: tag first
         assert_eq!(layout.variants.len(), 3);
@@ -1524,7 +1612,7 @@ mod tests {
             "Shape",
             vec![("Circle", vec!["i32"]), ("Rect", vec!["i32", "i32"])],
         );
-        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
@@ -1552,7 +1640,7 @@ mod tests {
                 ("Pair", vec!["i32", "i32"]),
             ],
         );
-        let layout = compute_enum_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
         assert_eq!(layout.variants[1].payload_size, 4);
@@ -1593,7 +1681,7 @@ mod tests {
         // used to assert source order, because every scalar had the same
         // alignment and the stable sort never moved anything (#1083).
         let decl = make_struct("Mixed", vec![("a", "u8"), ("b", "u64"), ("c", "u16")]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.fields[0].name, "b");
         assert_eq!(layout.fields[1].name, "c");
         assert_eq!(layout.fields[2].name, "a");
@@ -1610,14 +1698,14 @@ mod tests {
     fn field_reorder_with_different_alignments() {
         // Use cache to give types different alignments
         let mut cache = LayoutCache::new();
-        cache.insert("Small".to_string(), (1, 1));   // 1-byte align
-        cache.insert("Medium".to_string(), (4, 4));   // 4-byte align
-        cache.insert("Large".to_string(), (16, 8));    // 8-byte align
+        cache.insert(LayoutKey::of(id_of("Small")), (1, 1));   // 1-byte align
+        cache.insert(LayoutKey::of(id_of("Medium")), (4, 4));   // 4-byte align
+        cache.insert(LayoutKey::of(id_of("Large")), (16, 8));    // 8-byte align
 
         let decl = make_struct("Ordered", vec![
             ("s", "Small"), ("m", "Medium"), ("l", "Large"),
         ]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
+        let layout = compute_struct_layout(&decl, &[], &cache);
 
         // Reordered: Large (align 8), Medium (align 4), Small (align 1)
         assert_eq!(layout.fields[0].name, "l");
@@ -1628,8 +1716,8 @@ mod tests {
     #[test]
     fn field_reorder_reduces_padding() {
         let mut cache = LayoutCache::new();
-        cache.insert("Small".to_string(), (1, 1));
-        cache.insert("Big".to_string(), (8, 8));
+        cache.insert(LayoutKey::of(id_of("Small")), (1, 1));
+        cache.insert(LayoutKey::of(id_of("Big")), (8, 8));
 
         // Source order: Small, Big, Small → 1 + 7pad + 8 + 1 + 7pad = 24
         // Reordered:   Big, Small, Small → 8 + 1 + 1 + 6pad = 16 (if true sizes)
@@ -1637,7 +1725,7 @@ mod tests {
         let decl = make_struct("Padded", vec![
             ("s1", "Small"), ("b", "Big"), ("s2", "Small"),
         ]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
+        let layout = compute_struct_layout(&decl, &[], &cache);
         assert_eq!(layout.fields[0].name, "b");
         // s1, s2 have equal alignment — stable sort preserves relative order
         assert_eq!(layout.fields[1].name, "s1");
@@ -1647,8 +1735,8 @@ mod tests {
     #[test]
     fn c_layout_preserves_source_order() {
         let mut cache = LayoutCache::new();
-        cache.insert("Small".to_string(), (1, 1));
-        cache.insert("Big".to_string(), (8, 8));
+        cache.insert(LayoutKey::of(id_of("Small")), (1, 1));
+        cache.insert(LayoutKey::of(id_of("Big")), (8, 8));
 
         let decl = make_struct_with_attrs(
             "CStruct",
@@ -1661,7 +1749,7 @@ mod tests {
                 }]),
             )],
         );
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &cache);
+        let layout = compute_struct_layout(&decl, &[], &cache);
 
         // @layout(C): source order preserved
         assert_eq!(layout.fields[0].name, "s");
@@ -1671,7 +1759,7 @@ mod tests {
     #[test]
     fn empty_struct_reorder_noop() {
         let decl = make_struct("Empty", vec![]);
-        let layout = compute_struct_layout(&decl, &[], &no_ids, &empty_cache());
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.size, 0);
         assert_eq!(layout.fields.len(), 0);
     }

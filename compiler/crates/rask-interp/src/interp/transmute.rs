@@ -41,8 +41,10 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 impl Interpreter {
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
-        let spell = |ty: &Type| rask_check::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
-        let (from, to) = (spell(from)?, spell(to)?);
+        let settle = |ty: &Type| {
+            rask_layout::settle(ty, rask_layout::Unsolved::Refuse).ok_or_else(|| unsupported(ty))
+        };
+        let (from, to) = (settle(from)?, settle(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
         if from_size != to_size {
@@ -68,20 +70,20 @@ impl Interpreter {
                     self.byte_layout(e)?;
                 }
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
+            Type::Named(_) | Type::Generic { .. } => {
                 self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
             }
             _ => return Err(unsupported(ty)),
         }
-        Ok(self.types.size_align_spelled(ty))
+        Ok(self.types.size_align_settled(ty))
     }
 
-    /// The struct a layout-spelled type names, its name, and its layout.
+    /// The struct a type names, its name, and its layout.
     fn struct_layout(&self, ty: &Type) -> Option<(String, rask_layout::StructLayout)> {
-        let (name, args) = match ty {
-            Type::UnresolvedNamed(name) => (name, Vec::new()),
-            Type::UnresolvedGeneric { name, args } => (
-                name,
+        let (id, args) = match ty {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (
+                *base,
                 args.iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
@@ -91,7 +93,7 @@ impl Interpreter {
             ),
             _ => return None,
         };
-        Some((name.clone(), self.types.struct_layout_named(name, &args)?))
+        Some((self.types.type_name(id), self.types.struct_layout(id, &args)?))
     }
 
     fn write_bytes(&self, value: &Value, ty: &Type, out: &mut [u8], at: usize) -> Result<(), RuntimeError> {
@@ -123,7 +125,7 @@ impl Interpreter {
                     offset += size;
                 }
             }
-            (Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }, Value::Struct(data)) => {
+            (Type::Named(_) | Type::Generic { .. }, Value::Struct(data)) => {
                 let (_, layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
                 let data = data.lock().unwrap();
                 for field in &layout.fields {
@@ -182,7 +184,7 @@ impl Interpreter {
                 }
                 Value::tuple(items)
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
+            Type::Named(_) | Type::Generic { .. } => {
                 let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
                 layout.fields.sort_by_key(|f| f.decl_index);
                 let mut fields = IndexMap::new();

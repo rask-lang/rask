@@ -1501,25 +1501,25 @@ impl<'a> MirContext<'a> {
     pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
         let MirType::Struct(sid) = ty else { return false };
         let Some(layout) = self.struct_layouts.get(sid.id as usize) else { return false };
-        layout.fields.iter().any(|f| Self::field_holds_links(&f.ty))
+        layout.fields.iter().any(|f| self.field_holds_links(&f.ty))
     }
 
     /// `Link<T>` / `Link<T>?`, or a `Vec`/`Map` whose values are links.
-    pub(crate) fn field_holds_links(ty: &Type) -> bool {
+    pub(crate) fn field_holds_links(&self, ty: &Type) -> bool {
         let bare = ty.as_option().unwrap_or(ty);
-        let Type::UnresolvedGeneric { name, args } = bare else { return false };
-        if name == "Link" {
-            return true;
+        let (Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. }) = bare else { return false };
+        match self.generic_head(bare).as_deref() {
+            Some("Link") => return true,
+            Some("Vec" | "Map") => {}
+            _ => return false,
         }
-        if name != "Vec" && name != "Map" {
-            return false;
-        }
-        args.iter().rev().find_map(|a| match a {
-            rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
-        })
-        .is_some_and(|v| matches!(v.as_option().unwrap_or(v),
-            Type::UnresolvedGeneric { name, .. } if name == "Link"))
+        args.iter()
+            .rev()
+            .find_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some(t),
+                _ => None,
+            })
+            .is_some_and(|v| self.is_link_type(v.as_option().unwrap_or(v)))
     }
 
     /// Is this the `Link<T>` type, however the checker happens to spell it?

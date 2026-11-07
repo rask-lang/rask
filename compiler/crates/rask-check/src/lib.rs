@@ -13,7 +13,7 @@ mod unused_results;
 // have always used for it.
 use rask_types::{GenericArg, Type, TypeId};
 pub use copy_rule::CopyVerdict;
-pub use checker::{typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, CContext, TypeChecker, TypedProgram, WrapperFns, TypeTable, ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy, InferenceContext, TypeConstraint, Callee, ErasedError, receiver_name, BoundFrom, OperatorTarget, operator_interface, primitive_spelling, TaskBound, header_type_params, bind_header_pattern, bind_header_patterns, UnsafeCategory, layout_spelling};
+pub use checker::{typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, CContext, TypeChecker, TypedProgram, WrapperFns, TypeTable, ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy, InferenceContext, TypeConstraint, Callee, ErasedError, receiver_name, BoundFrom, OperatorTarget, operator_interface, primitive_spelling, TaskBound, header_type_params, bind_header_pattern, bind_header_patterns, UnsafeCategory, resolve_type_expr};
 pub use interfaces::{
     InterfaceBound, InterfaceChecker, InterfaceError,
     verify_instantiation, implements_interface, bound_implies_copy, substitute_type,

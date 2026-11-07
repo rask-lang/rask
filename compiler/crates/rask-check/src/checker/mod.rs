@@ -19,7 +19,6 @@ mod parse_type;
 mod borrow;
 mod declarations;
 mod sizes;
-pub use sizes::layout_spelling;
 mod annotations;
 mod check_pattern;
 mod check_fn;

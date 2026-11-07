@@ -135,12 +135,17 @@ impl Interpreter {
         if args.len() != params.len() {
             return None;
         }
-        let type_args: Vec<rask_types::Type> = args.iter().map(rask_layout::field_type).collect();
+        let type_args = self.checked_type_args(args)?;
         let owner = self.type_decls.iter().find(|d| {
             matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
         })?;
-        let def = self.types.get(self.types.declared_type(owner.id)?)?;
-        Some(rask_layout::compute_struct_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache))
+        self.types.struct_layout(self.types.declared_type(owner.id)?, &type_args)
+    }
+
+    /// Written type arguments as the checker's types, which is what layout
+    /// sizes. `None` when one doesn't resolve.
+    fn checked_type_args(&self, args: &[TypeExpr]) -> Option<Vec<rask_types::Type>> {
+        args.iter().map(|a| rask_check::resolve_type_expr(a, &self.types).ok()).collect()
     }
 
     /// reflect.fields<T>() → []FieldInfo
@@ -244,14 +249,9 @@ impl Interpreter {
         // `enums` rather than `type_decls`: it holds the stdlib's enums too,
         // `Ordering` among them.
         let base = ty.name().ok_or_else(not_enum)?;
-        let def = self
-            .types
-            .get_type_id(&base)
-            .and_then(|id| self.types.get(id))
-            .filter(|def| matches!(def, rask_types::TypeDef::Enum { .. }))
-            .ok_or_else(not_enum)?;
-        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let layout = rask_layout::compute_enum_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache);
+        let id = self.types.get_type_id(&base).ok_or_else(not_enum)?;
+        let type_args = self.checked_type_args(ty.args()).ok_or_else(not_enum)?;
+        let layout = self.types.enum_layout(id, &type_args).ok_or_else(not_enum)?;
         let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }

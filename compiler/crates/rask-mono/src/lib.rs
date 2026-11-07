@@ -15,9 +15,8 @@ mod symbols;
 pub mod reflect;
 
 use rask_layout::{
-    NameOf, Unsolved,
     arg_owns_storage, generic_instance_name, compute_enum_layout, compute_struct_layout,
-    compute_union_layout, type_size_align, EnumLayout, FieldLayout, LayoutCache, StructLayout,
+    compute_union_layout, type_size_align, EnumLayout, FieldLayout, LayoutCache, LayoutKey, StructLayout,
 };
 use rask_stdlib::is_stdlib_span;
 pub use instance::Instance;
@@ -30,7 +29,7 @@ pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::Decl;
 use rask_ast::NodeId;
-use rask_types::{Type, TypeBinding, TypeDef};
+use rask_types::{Type, TypeBinding, TypeDef, TypeId};
 use rask_check::TypedProgram;
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -167,61 +166,82 @@ pub struct MonoFunction {
 /// source order, and `Expr` was laid out before `Wrapped` had a size: an
 /// 8-byte guess for a 32-byte payload (#1436).
 ///
-/// A program's generic with its arguments also names its instance layout
-/// (`One$Big`), which has to exist before a type holding a `One<Big>` is sized
-/// against it (#1444).
+/// The layouts that have to exist before one holding `ty` by value is laid
+/// out: a declared type's own, and a program generic's instance at these
+/// arguments (`One<Big>` is sized against its instance, #1444), plus whatever
+/// the arguments it holds inline need.
 fn collect_type_deps(
     ty: &Type,
-    inline_params: &HashMap<String, Vec<bool>>,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    out: &mut HashSet<String>,
+    inline_params: &HashMap<TypeId, Vec<bool>>,
+    handles: &HashSet<TypeId>,
+    out: &mut HashSet<LayoutKey>,
 ) {
-    let go = |t: &Type, out: &mut HashSet<String>| collect_type_deps(t, inline_params, type_names, out);
-    let generic = |name: &str, args: &[rask_types::GenericArg], out: &mut HashSet<String>| {
-        if rask_layout::generic_is_one_word(name) {
-            return;
-        }
-        out.insert(name.to_string());
-        let arg_tys: Vec<Type> = args
-            .iter()
-            .filter_map(|a| match a {
-                rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
-            })
-            .collect();
-        if arg_tys.len() == args.len() {
-            if let Some(instance) = generic_instance_name(name, &arg_tys, type_names) {
-                out.insert(instance);
-            }
-        }
-        let inline = inline_params.get(name);
-        for (i, arg) in args.iter().enumerate() {
-            let held = inline.map_or(true, |flags| flags.get(i).copied().unwrap_or(true));
-            if let (true, rask_types::GenericArg::Type(inner)) = (held, arg) {
-                go(inner, out);
-            }
-        }
-    };
+    let go = |t: &Type, out: &mut HashSet<LayoutKey>| collect_type_deps(t, inline_params, handles, out);
     match ty {
-        Type::UnresolvedNamed(name) => {
-            out.insert(name.clone());
-        }
         Type::Named(id) => {
-            if let Some(name) = type_names.get(id) {
-                out.insert(name.clone());
-            }
+            out.insert(LayoutKey::of(*id));
         }
-        Type::UnresolvedGeneric { name, args } => generic(name, args, out),
+        // A handle's arguments live behind its pointer.
+        Type::Generic { base, .. } if handles.contains(base) => {}
         Type::Generic { base, args } => {
-            if let Some(name) = type_names.get(base) {
-                generic(name, args, out);
+            out.insert(LayoutKey::of(*base));
+            let arg_tys: Vec<Type> = type_args_of(args);
+            if arg_tys.len() == args.len() {
+                out.insert(LayoutKey::instance(*base, arg_tys));
+            }
+            let inline = inline_params.get(base);
+            for (i, arg) in args.iter().enumerate() {
+                let held = inline.map_or(true, |flags| flags.get(i).copied().unwrap_or(true));
+                if let (true, rask_types::GenericArg::Type(inner)) = (held, arg) {
+                    go(inner, out);
+                }
             }
         }
         Type::Result { ok, err } => {
             go(ok, out);
             go(err, out);
         }
-        Type::Tuple(elems) => {
+        Type::Tuple(elems) | Type::Union(elems) => {
+            for e in elems {
+                go(e, out);
+            }
+        }
+        Type::Array { elem, .. } => go(elem, out),
+        _ => {}
+    }
+}
+
+/// The type arguments of a generic, when each is a type.
+fn type_args_of(args: &[rask_types::GenericArg]) -> Vec<Type> {
+    args.iter()
+        .filter_map(|a| match a {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The type parameters `ty` holds by value, not behind a handle's pointer.
+fn held_params(ty: &Type, handles: &HashSet<TypeId>, out: &mut HashSet<String>) {
+    let go = |t: &Type, out: &mut HashSet<String>| held_params(t, handles, out);
+    match ty {
+        Type::UnresolvedNamed(name) => {
+            out.insert(name.clone());
+        }
+        Type::Generic { base, .. } if handles.contains(base) => {}
+        Type::UnresolvedGeneric { name, .. } if rask_layout::generic_is_one_word(name) => {}
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            for arg in args {
+                if let rask_types::GenericArg::Type(inner) = arg {
+                    go(inner, out);
+                }
+            }
+        }
+        Type::Result { ok, err } => {
+            go(ok, out);
+            go(err, out);
+        }
+        Type::Tuple(elems) | Type::Union(elems) => {
             for e in elems {
                 go(e, out);
             }
@@ -236,7 +256,7 @@ fn collect_type_deps(
 /// Vec<T> }` holds none; `One<T> { v: T }` holds its one. A parameter passed
 /// on to another of the program's generics counts as held, since that one
 /// may hold it.
-fn inline_type_params(declared: &[Declared], name_of: NameOf) -> HashMap<String, Vec<bool>> {
+fn inline_type_params(declared: &[Declared], handles: &HashSet<TypeId>) -> HashMap<TypeId, Vec<bool>> {
     let mut out = HashMap::new();
     for d in declared {
         let params = d.def.type_params();
@@ -244,48 +264,26 @@ fn inline_type_params(declared: &[Declared], name_of: NameOf) -> HashMap<String,
             continue;
         }
         let mut held = HashSet::new();
-        for ty in held_types(d.def, name_of) {
-            collect_type_deps(&ty, &HashMap::new(), &HashMap::new(), &mut held);
+        for ty in d.def.held_types() {
+            held_params(ty, handles, &mut held);
         }
-        out.insert(d.def.name().to_string(), params.iter().map(|p| held.contains(p)).collect());
+        out.insert(d.id, params.iter().map(|p| held.contains(p)).collect());
     }
     out
 }
 
-/// Every layout a declaration list defines on its own, plus the size/align
-/// cache they were computed against.
-///
-/// One pass in dependency order, so a type holding another sees its real size
-/// rather than a guess — generic ones included: `Group<T>` holding a
-/// `Tasks<T>` needs the enum's size first. A generic declaration gets one
-/// layout with a word standing in for each type parameter.
-///
-/// Public because the interpreter needs the same answers. `reflect.fields<T>()`
-/// reports each field's offset and size, and the interpreter had no layouts at
-/// all — it answered 0 for both while native answered the truth (#1104).
-/// Computing them a second way there is how two backends drift; this is the
-/// one that already exists.
-///
-/// What it leaves out is the per-*instantiation* layout, which needs the
-/// checker's type table to know which instantiations a program reaches.
-/// `monomorphize` hands those to `compute_layouts`.
-pub fn compute_declared_layouts(
-    decls: &[Decl],
-    types: &rask_check::TypeTable,
-) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
-    compute_layouts(decls, types, None)
-}
-
 /// What laying out a program's generic instantiations needs from the checker.
 struct Instantiations<'a> {
-    /// Each instantiation the program mentions, as base name and arguments.
-    reached: Vec<(String, Vec<Type>)>,
-    type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// Each instantiation the program mentions: the generic declaration and
+    /// its arguments.
+    reached: Vec<(TypeId, Vec<Type>)>,
+    type_names: &'a HashMap<TypeId, String>,
 }
 
 /// A type the declarations define, as the checker registered it: what
 /// layout reads.
 struct Declared<'a> {
+    id: TypeId,
     def: &'a TypeDef,
     /// Declared by the stdlib, whose generics are runtime objects behind an
     /// empty struct.
@@ -299,23 +297,15 @@ fn declared_types<'a>(decls: &[Decl], types: &'a rask_check::TypeTable) -> Vec<D
     decls
         .iter()
         .filter_map(|decl| {
-            let def = types.get(types.declared_type(decl.id)?)?;
+            let id = types.declared_type(decl.id)?;
+            let def = types.get(id)?;
             let laid_out = match def {
                 TypeDef::Struct { .. } | TypeDef::Enum { .. } | TypeDef::Union { .. } => true,
                 TypeDef::NominalAlias { type_params, .. } => type_params.is_empty(),
                 TypeDef::Interface { .. } | TypeDef::Primitive { .. } => false,
             };
-            laid_out.then(|| Declared { def, in_stdlib: is_stdlib_span(decl.span) })
+            laid_out.then(|| Declared { id, def, in_stdlib: is_stdlib_span(decl.span) })
         })
-        .collect()
-}
-
-/// The types `def`'s layout is made of, spelled by name as the layout cache
-/// is keyed, with its parameters kept.
-fn held_types(def: &TypeDef, name_of: NameOf) -> Vec<Type> {
-    def.held_types()
-        .into_iter()
-        .map(|t| rask_layout::spelled(t, name_of, Unsolved::KeepParams).expect("keeping parameters always answers"))
         .collect()
 }
 
@@ -338,28 +328,35 @@ fn compute_layouts(
     types: &rask_check::TypeTable,
     inst: Option<&Instantiations>,
 ) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
-    let name_of = &|id| types.type_name(id);
     let declared = declared_types(decls, types);
     let mut layout_cache = LayoutCache::new();
+    // Every type whose size its declaration states (a handle, a runtime
+    // scalar), whether or not its declaration is among `decls`: a program
+    // holds a `Vec` without the stdlib's declarations being laid out.
+    let mut handles = HashSet::new();
+    for (i, def) in types.iter().enumerate() {
+        let id = TypeId(i as u32);
+        if layout_cache.note_declared_size(id, def)
+            && matches!(def, TypeDef::Struct { attrs, .. } if attrs.iter().any(|a| a.is("handle")))
+        {
+            handles.insert(id);
+        }
+    }
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
 
-    let no_names = HashMap::new();
-    let type_names = inst.map_or(&no_names, |i| i.type_names);
-    let instances = inst.map_or_else(Vec::new, |i| instance_steps(&declared, &i.reached, type_names));
-    let concrete = concrete_type_names(&declared);
-    let inline_params = inline_type_params(&declared, name_of);
-    for step in layout_order(&declared, instances, &inline_params, type_names, name_of) {
+    let instances = inst.map_or_else(Vec::new, |i| instance_steps(&declared, &i.reached, i.type_names));
+    let inline_params = inline_type_params(&declared, &handles);
+    for step in layout_order(&declared, instances, &inline_params, &handles) {
         let idx = match step {
             LayoutStep::Decl(idx) => idx,
             LayoutStep::Instance { decl, args, name } => {
-                let inst = inst.expect("instantiations come with their inputs");
                 lay_out_instance(
                     &declared[decl],
                     &args,
                     name,
-                    inst,
                     types,
+                    &handles,
                     &inline_params,
                     &mut layout_cache,
                     &mut struct_layouts,
@@ -368,51 +365,51 @@ fn compute_layouts(
                 continue;
             }
         };
-        let def = declared[idx].def;
-        let name = def.name().to_string();
+        let Declared { id, def, .. } = declared[idx];
         let generic = !def.type_params().is_empty();
-        match def {
-            TypeDef::Struct { .. } if !generic => {
-                let layout = compute_struct_layout(def, &[], name_of, &layout_cache);
-                layout_cache.insert(name, (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            TypeDef::Enum { .. } if !generic => {
-                let layout = compute_enum_layout(def, &[], name_of, &layout_cache);
-                layout_cache.insert(name, (layout.size, layout.align));
-                enum_layouts.push(layout);
-            }
-            // A generic declaration's shared layout: a word stands in for each
-            // type parameter. Instances that need their own get one above.
+        // A handle or a runtime scalar is the size its declaration says; its
+        // layout (an empty struct) is still recorded for whoever reads fields.
+        let declared_size = layout_cache.note_declared_size(id, def);
+        let size_align = match def {
             TypeDef::Struct { .. } => {
-                let layout = rask_layout::compute_shared_struct_layout(def, name_of, &layout_cache);
-                if !concrete.contains(&name) {
-                    layout_cache.insert(name, (layout.size, layout.align));
-                }
+                let layout = if generic {
+                    // A generic declaration's shared layout: a word stands in
+                    // for each type parameter. Instances that need their own
+                    // get one above.
+                    rask_layout::compute_shared_struct_layout(def, &layout_cache)
+                } else {
+                    compute_struct_layout(def, &[], &layout_cache)
+                };
+                let size_align = (layout.size, layout.align);
                 struct_layouts.push(layout);
+                size_align
             }
             TypeDef::Enum { .. } => {
-                let layout = rask_layout::compute_shared_enum_layout(def, name_of, &layout_cache);
-                if !concrete.contains(&name) {
-                    layout_cache.insert(name, (layout.size, layout.align));
-                }
+                let layout = if generic {
+                    rask_layout::compute_shared_enum_layout(def, &layout_cache)
+                } else {
+                    compute_enum_layout(def, &[], &layout_cache)
+                };
+                let size_align = (layout.size, layout.align);
                 enum_layouts.push(layout);
+                size_align
             }
             TypeDef::Union { .. } => {
-                let layout = compute_union_layout(def, name_of, &layout_cache);
-                layout_cache.insert(name, (layout.size, layout.align));
+                let layout = compute_union_layout(def, &layout_cache);
+                let size_align = (layout.size, layout.align);
                 struct_layouts.push(layout);
+                size_align
             }
             // A nominal newtype has the same layout as what it wraps — it's
             // transparent, so it needs no layout of its own, just an entry so
             // fields typed by it get the right size. Without this a
             // `type Name = string` field was sized 8 instead of 16 and the
             // struct's later fields overlapped it (#445).
-            TypeDef::NominalAlias { .. } => {
-                let (size, align) = type_size_align(&held_types(def, name_of)[0], &layout_cache);
-                layout_cache.insert(name, (size, align));
-            }
-            TypeDef::Interface { .. } | TypeDef::Primitive { .. } => {}
+            TypeDef::NominalAlias { underlying, .. } => type_size_align(underlying, &layout_cache),
+            TypeDef::Interface { .. } | TypeDef::Primitive { .. } => continue,
+        };
+        if !declared_size {
+            layout_cache.insert(LayoutKey::of(id), size_align);
         }
     }
 
@@ -432,20 +429,20 @@ fn compute_layouts(
 /// the shared one, because the error side is the wider, but its `T?` is a
 /// `string?` inside. Reading the field through the shared layout typed the
 /// string as a word and printed its bytes as a number (#1445).
+#[allow(clippy::too_many_arguments)]
 fn lay_out_instance(
     declared: &Declared,
     args: &[Type],
     instance_name: String,
-    inst: &Instantiations,
     types: &rask_check::TypeTable,
-    inline_params: &HashMap<String, Vec<bool>>,
+    handles: &HashSet<TypeId>,
+    inline_params: &HashMap<TypeId, Vec<bool>>,
     layout_cache: &mut LayoutCache,
     struct_layouts: &mut Vec<StructLayout>,
     enum_layouts: &mut Vec<EnumLayout>,
 ) {
     let def = declared.def;
-    let name_of = &|id| types.type_name(id);
-    let held = inline_params.get(def.name());
+    let held = inline_params.get(&declared.id);
     // Only when an argument the type holds by value overflows the shared slot,
     // or is a `T?` / `T or E` / union at any size. The shared slot is an `i64`,
     // and a wrapper there isn't wrapped: `Holder<bool?>(v: true)` stored a bare
@@ -454,8 +451,7 @@ fn lay_out_instance(
     let overflows = args.iter().enumerate().any(|(i, a)| {
         held.map_or(true, |flags| flags.get(i).copied().unwrap_or(true))
             && (matches!(a, Type::Result { .. } | Type::Union(_))
-                || inline_arg_size(a, inst.type_names, types, layout_cache)
-                    .is_some_and(|size| size > 8))
+                || inline_arg_size(a, types, layout_cache).is_some_and(|size| size > 8))
     });
     // ...or when it owns storage. A container argument fits the shared word
     // fine, and that is the problem: the shared layout says `i64`, the release
@@ -468,14 +464,7 @@ fn lay_out_instance(
     // `Map<string, Vec<i32>>` an instance layout renamed the type out from
     // under method dispatch: `Map$string$Vec$i32_index`, a function nobody
     // emitted.
-    let owns = !declared.in_stdlib && args.iter().any(|a| arg_owns_heap(a, inst.type_names));
-    // The type arguments have to be nameable to the layout code too —
-    // `type_size_align` reads the cache by name, and a `Named(id)` isn't one. A
-    // nested instantiation is named by its own instance layout.
-    let named_args: Vec<Type> = args
-        .iter()
-        .map(|a| arg_as_cache_name(a, inst.type_names, layout_cache))
-        .collect();
+    let owns = !declared.in_stdlib && args.iter().any(|a| arg_owns_heap(a, handles));
     // ...or when the instance is laid out differently at all. The language's
     // size is the instance's — `Pair<u8>` is two bytes to the copy rule and to
     // `reflect.size_of` — so memory has to be that too. A word per parameter
@@ -483,25 +472,26 @@ fn lay_out_instance(
     let same_shape = |a: &[FieldLayout], b: &[FieldLayout]| {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.offset == y.offset && x.size == y.size)
     };
+    let key = LayoutKey::instance(declared.id, args.to_vec());
     match def {
         TypeDef::Struct { .. } => {
-            let mut layout = compute_struct_layout(def, &named_args, name_of, layout_cache);
+            let mut layout = compute_struct_layout(def, args, layout_cache);
             if !overflows && !owns {
-                let shared = rask_layout::compute_shared_struct_layout(def, name_of, layout_cache);
+                let shared = rask_layout::compute_shared_struct_layout(def, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && same_shape(&shared.fields, &layout.fields)
                 {
                     return;
                 }
             }
-            layout.name = instance_name.clone();
-            layout_cache.insert(instance_name, (layout.size, layout.align));
+            layout.name = instance_name;
+            layout_cache.insert(key, (layout.size, layout.align));
             struct_layouts.push(layout);
         }
         TypeDef::Enum { .. } => {
-            let mut layout = compute_enum_layout(def, &named_args, name_of, layout_cache);
+            let mut layout = compute_enum_layout(def, args, layout_cache);
             if !overflows && !owns {
-                let shared = rask_layout::compute_shared_enum_layout(def, name_of, layout_cache);
+                let shared = rask_layout::compute_shared_enum_layout(def, layout_cache);
                 if (shared.size, shared.align) == (layout.size, layout.align)
                     && shared.variants.len() == layout.variants.len()
                     && shared
@@ -513,8 +503,8 @@ fn lay_out_instance(
                     return;
                 }
             }
-            layout.name = instance_name.clone();
-            layout_cache.insert(instance_name, (layout.size, layout.align));
+            layout.name = instance_name;
+            layout_cache.insert(key, (layout.size, layout.align));
             enum_layouts.push(layout);
         }
         _ => {}
@@ -522,11 +512,11 @@ fn lay_out_instance(
 }
 
 /// The reached instantiations of the program's generic declarations, one per
-/// layout name.
+/// declaration and arguments.
 fn instance_steps(
     declared: &[Declared],
-    reached: &[(String, Vec<Type>)],
-    type_names: &HashMap<rask_types::TypeId, String>,
+    reached: &[(TypeId, Vec<Type>)],
+    type_names: &HashMap<TypeId, String>,
 ) -> Vec<LayoutStep> {
     // PC1 counts: a single letter in a field or payload type makes the type
     // generic whether or not `<T>` was written, and the checker's parameter
@@ -534,62 +524,54 @@ fn instance_steps(
     // never got an instance layout at all, so a `Pair<i32, string>` kept the
     // shared one — where every parameter is a single word — and its 16-byte
     // string field was written into an 8-byte slot (#913).
-    let generic: HashMap<&str, usize> = declared
+    let generic: HashMap<TypeId, usize> = declared
         .iter()
         .enumerate()
         .filter(|(_, d)| {
             matches!(d.def, TypeDef::Struct { .. } | TypeDef::Enum { .. }) && !d.def.type_params().is_empty()
         })
-        .map(|(i, d)| (d.def.name(), i))
+        .map(|(i, d)| (d.id, i))
         .collect();
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (base, args) in reached {
-        let Some(&decl) = generic.get(base.as_str()) else { continue };
-        let Some(name) = generic_instance_name(base, args, type_names) else { continue };
-        if seen.insert(name.clone()) {
+        let Some(&decl) = generic.get(base) else { continue };
+        // Still naming a parameter (`Holder<Output>` inside `Holder`'s own
+        // body): no instance to lay out.
+        if args.iter().any(|a| rask_layout::settle(a, rask_layout::Unsolved::Refuse).is_none()) {
+            continue;
+        }
+        // The instance's name, for the backends that still find layouts by
+        // it. An argument that can't be named has no settled identity yet.
+        let Some(name) = generic_instance_name(declared[decl].def.name(), args, type_names) else { continue };
+        if seen.insert(LayoutKey::instance(*base, args.clone())) {
             out.push(LayoutStep::Instance { decl, args: args.clone(), name });
         }
     }
     out
 }
 
-fn concrete_type_names(declared: &[Declared]) -> HashSet<String> {
-    declared
-        .iter()
-        .filter(|d| matches!(d.def, TypeDef::Struct { .. } | TypeDef::Enum { .. }) && d.def.type_params().is_empty())
-        .map(|d| d.def.name().to_string())
-        .collect()
-}
-
 /// Every declared type and every instantiation in `instances`, ordered so
 /// each comes after what its fields hold by value (Kahn's algorithm). An
 /// instantiation waits on its fields with the arguments written in:
-/// `One<Big>` waits on `Big`, `Group<string>` on `Tasks$string`. A cycle falls
-/// back to source order, instantiations last.
+/// `One<Big>` waits on `Big`, `Group<string>` on `Tasks<string>`. A cycle
+/// falls back to source order, instantiations last.
 fn layout_order(
     declared: &[Declared],
     instances: Vec<LayoutStep>,
-    inline_params: &HashMap<String, Vec<bool>>,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    name_of: NameOf,
+    inline_params: &HashMap<TypeId, Vec<bool>>,
+    handles: &HashSet<TypeId>,
 ) -> Vec<LayoutStep> {
     let mut nodes: Vec<LayoutStep> = Vec::new();
-    let mut by_key: HashMap<String, usize> = HashMap::new();
+    let mut by_key: HashMap<LayoutKey, usize> = HashMap::new();
 
-    // A concrete declaration owns its name over a generic one spelled the same:
-    // a program's own `struct Wide` beside the stdlib's `Wide<T>`.
-    let concrete = concrete_type_names(declared);
     for (i, d) in declared.iter().enumerate() {
-        let name = d.def.name();
-        if d.def.type_params().is_empty() || !concrete.contains(name) {
-            by_key.insert(name.to_string(), nodes.len());
-        }
+        by_key.insert(LayoutKey::of(d.id), nodes.len());
         nodes.push(LayoutStep::Decl(i));
     }
     for step in instances {
-        if let LayoutStep::Instance { name, .. } = &step {
-            by_key.insert(name.clone(), nodes.len());
+        if let LayoutStep::Instance { decl, args, .. } = &step {
+            by_key.insert(LayoutKey::instance(declared[*decl].id, args.clone()), nodes.len());
         }
         nodes.push(step);
     }
@@ -600,16 +582,16 @@ fn layout_order(
         let mut keys = HashSet::new();
         match node {
             LayoutStep::Decl(idx) => {
-                for ty in held_types(declared[*idx].def, name_of) {
-                    collect_type_deps(&ty, inline_params, type_names, &mut keys);
+                for ty in declared[*idx].def.held_types() {
+                    collect_type_deps(ty, inline_params, handles, &mut keys);
                 }
             }
             LayoutStep::Instance { decl, args, .. } => {
                 let def = declared[*decl].def;
                 let subst: HashMap<&str, &Type> =
                     def.type_params().iter().map(String::as_str).zip(args.iter()).collect();
-                for ty in held_types(def, name_of) {
-                    collect_type_deps(&rask_layout::substitute_inside(&ty, &subst), inline_params, type_names, &mut keys);
+                for ty in def.held_types() {
+                    collect_type_deps(&rask_layout::substitute_inside(ty, &subst), inline_params, handles, &mut keys);
                 }
             }
         }
@@ -654,13 +636,7 @@ pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
         return written;
     }
     if let Type::UnresolvedGeneric { name, args } = ty {
-        let tys: Vec<Type> = args
-            .iter()
-            .filter_map(|a| match a {
-                rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
-            })
-            .collect();
+        let tys: Vec<Type> = type_args_of(args);
         if let Some(instance) = generic_instance_name(name, &tys, &HashMap::new()) {
             if exists(&instance) {
                 return instance;
@@ -674,22 +650,6 @@ pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
     written
 }
 
-/// The head name of a type argument, in whichever spelling it arrives in.
-///
-/// A resolved generic carries its base as a `TypeId` and renders as
-/// `<type#7><i64>`, so `Display` is no use — the name comes from the table.
-fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
-    match ty {
-        Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-            Some(name.to_string())
-        }
-        Type::Named(id) | Type::Generic { base: id, .. } => {
-            type_names.get(id).map(|n| n.to_string())
-        }
-        _ => None,
-    }
-}
-
 /// Does storing this type argument in a field make the aggregate responsible
 /// for heap the shared layout wouldn't know about?
 ///
@@ -698,10 +658,12 @@ fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) ->
 /// the release walk believes it, and nobody gives the storage back. The
 /// instance layout names the real type, which is what `container_free_for`
 /// reads to pick `rask_vec_free` or `rask_closure_free`.
-fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> bool {
+fn arg_owns_heap(ty: &Type, handles: &HashSet<TypeId>) -> bool {
     match ty {
         Type::Fn { .. } => true,
-        _ => arg_head_name(ty, type_names).is_some_and(|h| arg_owns_storage(&h)),
+        Type::Named(id) | Type::Generic { base: id, .. } => handles.contains(id),
+        Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => arg_owns_storage(name),
+        _ => false,
     }
 }
 
@@ -715,58 +677,16 @@ fn arg_owns_heap(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) ->
 /// holds the pointer to them needs a reading convention of its own at every site
 /// that touches it. One of those sites didn't have it, so a `string` payload in a
 /// generic enum variant printed its address.
-fn inline_arg_size(
-    ty: &Type,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    type_defs: &rask_check::TypeTable,
-    cache: &LayoutCache,
-) -> Option<u32> {
+fn inline_arg_size(ty: &Type, types: &rask_check::TypeTable, cache: &LayoutCache) -> Option<u32> {
     match ty {
-        Type::UnresolvedNamed(name) => {
-            let id = type_defs.get_type_id(name)?;
-            inline_arg_size(&Type::Named(id), type_names, type_defs, cache)
-        }
-        Type::UnresolvedGeneric { name, args } => {
-            let base_name = name.to_string();
-            let arg_tys: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
-                .and_then(|n| cache.get(&n).map(|(size, _)| *size));
-            instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
-        }
         Type::Named(id) => {
-            let def = type_defs.get(*id)?;
-            if !matches!(
-                def,
-                rask_types::TypeDef::Struct { .. }
-                    | rask_types::TypeDef::Enum { .. }
-                    | rask_types::TypeDef::Union { .. }
-            ) {
-                return None;
-            }
-            let name = type_names.get(id)?.to_string();
-            cache.get(&name).map(|(size, _)| *size)
+            matches!(types.get(*id), Some(TypeDef::Struct { .. } | TypeDef::Enum { .. } | TypeDef::Union { .. }))
+                .then(|| cache.get(&LayoutKey::of(*id)).map(|(size, _)| size))
+                .flatten()
         }
         // A nested instantiation is as wide as *its* layout — `One<One<Big>>` has
         // to see 24, not the 8 the shared `One` layout reports.
-        Type::Generic { base, args } => {
-            let base_name = type_names.get(base)?.to_string();
-            let arg_tys: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
-                .and_then(|n| cache.get(&n).map(|(size, _)| *size));
-            instance.or_else(|| cache.get(&base_name).map(|(size, _)| *size))
-        }
+        Type::Generic { .. } => rask_layout::known_size_align(ty, cache).map(|(size, _)| size),
         // A `T?` or a `T or E` is its bytes too — 16 for an optional scalar, 24
         // for a result — so a generic slot that only holds a word can't take
         // one. Without this `Wrap { value: opt(3) }` was refused outright:
@@ -779,110 +699,40 @@ fn inline_arg_size(
     }
 }
 
-/// A type argument respelled so `type_size_align` can find it: a name the layout
-/// cache holds. A nested instantiation resolves to its own instance layout when
-/// there is one, and to the shared layout otherwise.
-fn arg_as_cache_name(
-    ty: &Type,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    cache: &LayoutCache,
-) -> Type {
-    match ty {
-        Type::Named(id) => type_names
-            .get(id)
-            .map(|n| Type::UnresolvedNamed(n.to_string()))
-            .unwrap_or_else(|| ty.clone()),
-        Type::Generic { base, args } => {
-            let Some(base_name) = type_names.get(base).map(|n| n.to_string()) else {
-                return ty.clone();
-            };
-            let arg_tys: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            let instance = generic_instance_name(&base_name, &arg_tys, type_names)
-                .filter(|n| cache.contains_key(n));
-            Type::UnresolvedNamed(instance.unwrap_or(base_name))
-        }
-        // A shape that holds other types has to be walked, not just handed over.
-        // `i64 or MyErr` sized its error side as one word, because a `Named`
-        // buried inside it never reached the rename and `type_size_align` can't
-        // resolve an id — so the layout came out 32 bytes where MIR wanted 40
-        // (#872).
-        Type::Result { ok, err } => Type::Result {
-            ok: Box::new(arg_as_cache_name(ok, type_names, cache)),
-            err: Box::new(arg_as_cache_name(err, type_names, cache)),
-        },
-        Type::Tuple(elems) => Type::Tuple(
-            elems.iter().map(|e| arg_as_cache_name(e, type_names, cache)).collect(),
-        ),
-        Type::Array { elem, len } => Type::Array {
-            elem: Box::new(arg_as_cache_name(elem, type_names, cache)),
-            len: *len,
-        },
-        other => other.clone(),
-    }
-}
-
-/// Every generic struct/enum instantiation this type mentions, at any depth.
-fn collect_generic_instances(
-    ty: &Type,
-    type_names: &HashMap<rask_types::TypeId, String>,
-    out: &mut Vec<(String, Vec<Type>)>,
-) {
+/// Every generic declaration's instantiation this type mentions, at any
+/// depth. A compiler-provided generic (`Heap<T>`) has no declaration to lay
+/// out, so only its arguments are walked.
+fn collect_generic_instances(ty: &Type, out: &mut Vec<(TypeId, Vec<Type>)>) {
     use rask_types::GenericArg;
     match ty {
         Type::Generic { base, args } => {
-            if let Some(name) = type_names.get(base) {
-                let arg_tys: Vec<Type> = args
-                    .iter()
-                    .filter_map(|a| match a {
-                        GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if arg_tys.len() == args.len() {
-                    out.push((name.to_string(), arg_tys));
-                }
+            let arg_tys = type_args_of(args);
+            if arg_tys.len() == args.len() {
+                out.push((*base, arg_tys));
             }
             for arg in args {
                 if let GenericArg::Type(inner) = arg {
-                    collect_generic_instances(inner, type_names, out);
+                    collect_generic_instances(inner, out);
                 }
             }
         }
-        Type::UnresolvedGeneric { name, args } => {
-            let arg_tys: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            if arg_tys.len() == args.len() {
-                out.push((name.to_string(), arg_tys));
-            }
+        Type::UnresolvedGeneric { args, .. } => {
             for arg in args {
                 if let GenericArg::Type(inner) = arg {
-                    collect_generic_instances(inner, type_names, out);
+                    collect_generic_instances(inner, out);
                 }
             }
         }
         Type::Tuple(elems) | Type::Union(elems) => {
             for elem in elems {
-                collect_generic_instances(elem, type_names, out);
+                collect_generic_instances(elem, out);
             }
         }
-        Type::RawPtr(inner) => {
-            collect_generic_instances(inner, type_names, out)
-        }
-        Type::Array { elem, .. } => collect_generic_instances(elem, type_names, out),
+        Type::RawPtr(inner) => collect_generic_instances(inner, out),
+        Type::Array { elem, .. } => collect_generic_instances(elem, out),
         Type::Result { ok, err } => {
-            collect_generic_instances(ok, type_names, out);
-            collect_generic_instances(err, type_names, out);
+            collect_generic_instances(ok, out);
+            collect_generic_instances(err, out);
         }
         _ => {}
     }
@@ -985,7 +835,7 @@ fn monomorphize_inner(
             reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
         })
         .collect();
-    let mut reached: Vec<(String, Vec<Type>)> = Vec::new();
+    let mut reached: Vec<(TypeId, Vec<Type>)> = Vec::new();
     for ty in program
         .node_types
         .values()
@@ -998,15 +848,14 @@ fn monomorphize_inner(
         // as an eight-byte `i64` (#968).
         .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
     {
-        collect_generic_instances(ty, &type_names, &mut reached);
+        collect_generic_instances(ty, &mut reached);
     }
-    let name_of = &|id| program.types.type_name(id);
     for d in declared_types(decls, &program.types) {
         if matches!(d.def, TypeDef::Struct { .. } | TypeDef::Enum { .. } | TypeDef::Union { .. })
             && d.def.type_params().is_empty()
         {
-            for ty in held_types(d.def, name_of) {
-                collect_generic_instances(&ty, &type_names, &mut reached);
+            for ty in d.def.held_types() {
+                collect_generic_instances(ty, &mut reached);
             }
         }
     }
