@@ -65,3 +65,37 @@ test "try in a test body unwraps a present link" {
     let a2 = try snap.corresponding(a)
     assert a2.id == 1
 }
+
+// The other side of the same thing: a function that *returns* a `Link<T>?`
+// hands back `none` as the null word. The none path wrote a tag byte into its
+// return value instead, which is a store through a null pointer.
+func peer_link(h: Link<Item>) -> Link<Item>? {
+    let p = try h.peer
+    return p
+}
+
+func pick(h: Link<Item>, n: i32?) -> Link<Item>? {
+    let k = try n
+    if k > 0 {
+        return h
+    }
+    return none
+}
+
+test "try returns none out of a function returning a link" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let h = rack.insert(Item(id: 2, peer: a))
+    assert peer_link(a) is none
+    if peer_link(h)? as p {
+        assert p.id == 1
+    } else {
+        assert false
+    }
+    assert pick(a, none) is none
+    if pick(a, 3)? as p {
+        assert p.id == 1
+    } else {
+        assert false
+    }
+}

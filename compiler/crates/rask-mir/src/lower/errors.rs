@@ -342,6 +342,12 @@ impl<'a> MirLowerer<'a> {
         // `try raw` in a `-> u16?` built a `string?`-shaped Result and the
         // caller's `??` read a payload of 1 where the default belonged (#608).
         if let none_ty @ MirType::Option(_) = self.return_ty() {
+            // A niche return — `-> Link<T>?` — is the sentinel word itself, with
+            // no tag byte to write. Writing one stored through a null pointer.
+            if let Some(sentinel) = super::mir_niche_none(&none_ty) {
+                self.terminate_return(Some(MirOperand::Constant(MirConst::Int(sentinel))));
+                return self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block);
+            }
             let ret_none = self.builder.alloc_temp(none_ty.clone());
             self.store_wrapper_tag(ret_none, &none_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
             self.terminate_return(Some(MirOperand::Local(ret_none)));
