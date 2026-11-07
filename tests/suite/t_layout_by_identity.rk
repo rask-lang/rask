@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Layouts are found by type identity (#1567). Two shapes that broke while the
+// switch was made: an optional program generic small enough for one word, held
+// in a field, segfaulted on the read natively because codegen took every
+// resolved generic for a runtime handle; and the checker stopped giving
+// `Link<T>?` its one-word niche, so a struct holding one grew past the copy
+// threshold and `let f = e` became a move.
+
+import memory.Rack
+import memory.Link
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+enum Opt<T> {
+    Has(v: T)
+    Nope
+}
+
+struct One<T> {
+    v: T
+}
+
+struct Host {
+    tag: i32
+    p: Pair<u8, u8>?
+    o: Opt<u8>?
+    w: One<i32>?
+}
+
+struct Room {
+    name: string
+}
+
+struct Edge {
+    id: i64
+    to: Link<Room>?
+}
+
+test "a small optional generic in a field reads back" {
+    let h = Host(tag: 5, p: Pair<u8, u8>(first: 3, second: 4), o: Opt<u8>.Has(v: 10), w: One<i32>(v: 7))
+    if h.p? as pp {
+        assert pp.first == 3
+        assert pp.second == 4
+    } else {
+        assert false
+    }
+    if h.w? as w {
+        assert w.v == 7
+    } else {
+        assert false
+    }
+    if h.o? as o {
+        match o {
+            Opt.Has(v) => assert v == 10
+            Opt.Nope => assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "a struct holding Link<T>? still copies" {
+    mut rooms: Rack<Room> = Rack.new()
+    let hall = rooms.insert(Room(name: "hall"))
+    let e = Edge(id: 1, to: hall)
+    let f = e
+    assert e.id == f.id
+    if f.to? as r {
+        assert r.name == "hall"
+    } else {
+        assert false
+    }
+}

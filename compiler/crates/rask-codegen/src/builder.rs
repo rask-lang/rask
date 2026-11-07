@@ -2140,11 +2140,18 @@ impl<'a> FunctionBuilder<'a> {
             // `*T?` is the same: the pointer, null for `none` (mem.unsafe/PT6).
             ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::RawPtr(_)) => false,
             // The same option with its payload already resolved to a `TypeId`.
-            // `Generic`/`Named` payloads are the runtime-opaque pointer types
-            // (line above), and an option over one of those is the niche — one
-            // word, no tag — so it loads like a scalar.
-            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::Generic { .. }) => false,
+            // Over a runtime handle (`Vec<T>?`, `Link<T>?`) it's the niche —
+            // one word, no tag — so it loads like a scalar. Over a program
+            // generic with real bytes (`Pair<u8, u8>?`) it's a tagged
+            // aggregate like any other option.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::Generic { .. }) => {
+                let inner = ty.as_option().unwrap();
+                let bytes = rask_layout::struct_for(inner, ctx.struct_layouts)
+                    .map(|l| l.size)
+                    .or_else(|| rask_layout::enum_for(inner, ctx.enum_layouts).map(|l| l.size))
+                    .unwrap_or(0);
+                bytes > 0
+            }
             // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }

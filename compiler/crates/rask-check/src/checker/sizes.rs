@@ -165,12 +165,14 @@ impl crate::TypeTable {
             return;
         }
         let Some(def) = self.get(id) else { return };
+        // Before the stand-in check: `Link` is both an empty stdlib generic and
+        // a niche handle, and only its declaration says the second.
+        if cache.note_declared_size(id, def) {
+            return;
+        }
         if self.layout_stand_ins.contains(&id) {
             let w = cache.word();
             cache.insert(key, (w, w));
-            return;
-        }
-        if cache.note_declared_size(id, def) {
             return;
         }
         if !self.layout_types.contains(&id) {

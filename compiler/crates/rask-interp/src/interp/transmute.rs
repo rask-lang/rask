@@ -12,12 +12,6 @@ use rask_types::Type;
 use super::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, IntKind, Value};
 
-fn unsupported(ty: &Type) -> RuntimeError {
-    RuntimeError::TypeError(format!(
-        "transmute of `{ty}` isn't supported by the interpreter: it reinterprets \
-         scalars, fixed arrays, tuples and structs of those"
-    ))
-}
 
 fn align_up(n: u32, align: u32) -> u32 {
     (n + align - 1) & !(align - 1)
@@ -39,17 +33,27 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 }
 
 impl Interpreter {
+    fn unsupported(&self, ty: &Type) -> RuntimeError {
+        RuntimeError::TypeError(format!(
+            "transmute of `{}` isn't supported by the interpreter: it reinterprets \
+             scalars, fixed arrays, tuples and structs of those",
+            self.types.resolve_type_names(ty)
+        ))
+    }
+
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
         let settle = |ty: &Type| {
-            rask_layout::settle(ty, rask_layout::Unsolved::Refuse).ok_or_else(|| unsupported(ty))
+            rask_layout::settle(ty, rask_layout::Unsolved::Refuse).ok_or_else(|| self.unsupported(ty))
         };
         let (from, to) = (settle(from)?, settle(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
         if from_size != to_size {
             return Err(RuntimeError::TypeError(format!(
-                "transmute from `{from}` ({from_size} bytes) to `{to}` ({to_size} bytes): the sizes differ"
+                "transmute from `{}` ({from_size} bytes) to `{}` ({to_size} bytes): the sizes differ",
+                self.types.resolve_type_names(&from),
+                self.types.resolve_type_names(&to)
             )));
         }
         let mut bytes = vec![0u8; from_size as usize];
@@ -71,9 +75,9 @@ impl Interpreter {
                 }
             }
             Type::Named(_) | Type::Generic { .. } => {
-                self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+                self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         }
         Ok(self.types.size_align_settled(ty))
     }
@@ -97,7 +101,12 @@ impl Interpreter {
     }
 
     fn write_bytes(&self, value: &Value, ty: &Type, out: &mut [u8], at: usize) -> Result<(), RuntimeError> {
-        let mismatch = || RuntimeError::TypeError(format!("transmute: `{ty}` value doesn't match its type"));
+        let mismatch = || {
+            RuntimeError::TypeError(format!(
+                "transmute: `{}` value doesn't match its type",
+                self.types.resolve_type_names(ty)
+            ))
+        };
         let mut put = |bytes: &[u8]| out[at..at + bytes.len()].copy_from_slice(bytes);
         match (ty, value) {
             (Type::Bool, Value::Bool(b)) => put(&[*b as u8]),
@@ -126,7 +135,7 @@ impl Interpreter {
                 }
             }
             (Type::Named(_) | Type::Generic { .. }, Value::Struct(data)) => {
-                let (_, layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+                let (_, layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 let data = data.lock().unwrap();
                 for field in &layout.fields {
                     let v = data.fields.get(&field.name).ok_or_else(mismatch)?;
@@ -185,7 +194,7 @@ impl Interpreter {
                 Value::tuple(items)
             }
             Type::Named(_) | Type::Generic { .. } => {
-                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 layout.fields.sort_by_key(|f| f.decl_index);
                 let mut fields = IndexMap::new();
                 for field in &layout.fields {
@@ -193,7 +202,7 @@ impl Interpreter {
                 }
                 Value::new_struct(name, fields, None)
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         })
     }
 }
