@@ -375,10 +375,13 @@ impl<'a> MirLowerer<'a> {
     /// container of links inside the aggregate is about to be replaced
     /// wholesale, so its records are dropped and the incoming one's are made,
     /// as a direct container field assignment does.
+    ///
+    /// `offset` is where the aggregate starts inside `base`; it is a value
+    /// rather than a constant because an array element's offset can be.
     fn emit_aggregate_edge_stores(
         &mut self,
         base: crate::LocalId,
-        offset: u32,
+        offset: MirOperand,
         ty: &MirType,
         value: &MirOperand,
     ) {
@@ -389,30 +392,18 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.ctx;
         let slots = crate::types::link_slots_by(ty, &|id| ctx.struct_link_slots(id as usize));
         for slot in slots {
-            let read = |this: &mut Self, from: MirOperand, at: u32| {
-                let word = this.builder.alloc_temp(MirType::Ptr);
-                this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: word,
-                    rvalue: MirRValue::Field {
-                        base: from,
-                        field_index: 0,
-                        byte_offset: Some(at),
-                        access: FieldAccess::Sized(8),
-                    },
-                }));
-                MirOperand::Local(word)
-            };
-            let incoming = read(self, value.clone(), slot.offset);
+            let incoming = self.emit_word_at(value.clone(), MirOperand::Constant(MirConst::Int(slot.offset as i64)));
+            let at = self.emit_offset_plus(&offset, slot.offset);
             let (forget, register) = match slot.kind {
                 k if k == RASK_RACK_FIELD_LINK as i32 => {
-                    self.emit_link_store(base, offset + slot.offset, incoming);
+                    self.emit_link_store(base, at, incoming);
                     continue;
                 }
                 k if k == RASK_RACK_FIELD_VEC as i32 => ("Link_forget_vec", "Link_register_vec"),
                 k if k == RASK_RACK_FIELD_MAP as i32 => ("Link_forget_map", "Link_register_map"),
                 _ => continue,
             };
-            let old = read(self, MirOperand::Local(base), offset + slot.offset);
+            let old = self.emit_word_at(MirOperand::Local(base), at);
             for (func, arg) in [(forget, old), (register, incoming)] {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
@@ -423,36 +414,66 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// `offset + k`, folded when `offset` is a constant.
+    fn emit_offset_plus(&mut self, offset: &MirOperand, k: u32) -> MirOperand {
+        if let MirOperand::Constant(MirConst::Int(c)) = offset {
+            return MirOperand::Constant(MirConst::Int(c + k as i64));
+        }
+        if k == 0 {
+            return offset.clone();
+        }
+        let sum = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: sum,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: offset.clone(),
+                right: MirOperand::Constant(MirConst::Int(k as i64)),
+            },
+        }));
+        MirOperand::Local(sum)
+    }
+
+    /// `from + at`, as an address.
+    fn emit_address_at(&mut self, from: MirOperand, at: MirOperand) -> crate::LocalId {
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: from, right: at },
+        }));
+        addr
+    }
+
+    /// The word at `from + at`, by address. A field read names a field, and
+    /// these offsets can land inside a nested one or an array element.
+    fn emit_word_at(&mut self, from: MirOperand, at: MirOperand) -> MirOperand {
+        let addr = self.emit_address_at(from, at);
+        let word = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: word,
+            rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+        }));
+        MirOperand::Local(word)
+    }
+
     /// Write a link into a slot through the rack, so the target learns who
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
-    fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
-        // A node's own link field keeps its edge record inline in the node
-        // header, so the runtime reaches it by arithmetic instead of scanning
-        // the old target's incoming list. Only the base tells them apart: a
-        // link base means the holder is a node, anything else is foreign
-        // storage that still needs the scanned record.
+    fn emit_link_store(&mut self, base: crate::LocalId, offset: MirOperand, value: MirOperand) {
+        // A node's own link slots keep their edge records inline in the node
+        // header, so the runtime reaches the record from the offset instead of
+        // scanning the old target's incoming list. Only the base tells them
+        // apart: a link base means the holder is a node, anything else is
+        // foreign storage that keeps a heap record.
         if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("Link_set_node".to_string()),
-                args: vec![
-                    MirOperand::Local(base),
-                    MirOperand::Constant(MirConst::Int(offset as i64)),
-                    value,
-                ],
+                args: vec![MirOperand::Local(base), offset, value],
             }));
             return;
         }
-        let slot = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: slot,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: MirOperand::Local(base),
-                right: MirOperand::Constant(MirConst::Int(offset as i64)),
-            },
-        }));
+        let slot = self.emit_address_at(MirOperand::Local(base), offset);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Link_set".to_string()),
@@ -674,11 +695,11 @@ impl<'a> MirLowerer<'a> {
                         args: vec![val_op.clone()],
                     }));
                 }
-                // A whole struct written over a name carries whatever edges its
-                // fields hold, and a literal's fields were filled before there
-                // was a slot to record — same gap the binding path closes.
-                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
-                    && matches!(&value.kind, ExprKind::StructLit { .. });
+                // A whole aggregate written over a name carries whatever edges
+                // its fields hold, and nothing recorded them against this slot —
+                // a literal filled its fields before it had one, and a tuple or
+                // a function result was recorded, if at all, somewhere else.
+                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_));
                 // `p.x = v`, `(*p).x = v`, `p[i] = v`: the store lands at the
                 // address the pointer reaches, not in a copy of what it points
                 // at. A copy is what `(*p).y = v` wrote into, and the write
@@ -764,6 +785,11 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 None
                             };
+                            // The caller's slot keeps its address, so its edges
+                            // move with the store, as a field store's do.
+                            if scalar_mutate.is_none() {
+                                self.emit_aggregate_edge_stores(local_id, MirOperand::Constant(MirConst::Int(0)), &dst_ty, &val_op);
+                            }
                             if let Some(ty) = replaced {
                                 self.builder.push_stmt(MirStmt::dummy(
                                     MirStmtKind::ReleaseSlot { addr: local_id, offset: 0, ty },
@@ -803,8 +829,9 @@ impl<'a> MirLowerer<'a> {
                             self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
-                        // links before there is anything to record.
-                        if struct_assigned {
+                        // links before there is anything to record. Through a
+                        // pointer the edge stores above already did it.
+                        if struct_assigned && !store_through_ptr {
                             let dst_ty = dst_ty.clone();
                             self.emit_struct_link_registration(local_id, &dst_ty);
                         }
@@ -879,10 +906,10 @@ impl<'a> MirLowerer<'a> {
                                 let val_op = self.wrap_sum_field_value(
                                     Some(&fty), fty.niche_none(), &val_ty, val_op,
                                 );
-                                self.emit_link_store(base, offset, val_op);
+                                self.emit_link_store(base, MirOperand::Constant(MirConst::Int(offset as i64)), val_op);
                                 return Ok(());
                             }
-                            self.emit_aggregate_edge_stores(base, offset, &fty, &val_op);
+                            self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op);
                             // The value the slot is about to lose. A field
                             // assignment is always a replacement — a struct
                             // literal builds the slot on a different path — so
@@ -1031,6 +1058,46 @@ impl<'a> MirLowerer<'a> {
                         if let MirType::Array { ref elem, .. } = obj_ty {
                             // Fixed-size array: direct store at base + index * elem_size
                             if let MirOperand::Local(base_id) = obj_op {
+                                // An element that is or holds a link is an edge
+                                // write: `h.to[i] = b` must move the slot's
+                                // record like `h.to = …` does, or delete nulls
+                                // the wrong slot and teardown trusts a record
+                                // that isn't where the slot says (#1795).
+                                if elem.is_link_slot() || self.ctx.struct_carries_links(elem) {
+                                    let (root, at) = match self.lower_place_chain(object) {
+                                        Some((root, off, _, _)) => (root, off),
+                                        None => (base_id, 0),
+                                    };
+                                    let scaled = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: scaled,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Mul,
+                                            left: idx_op.clone(),
+                                            right: MirOperand::Constant(MirConst::Int(elem.size() as i64)),
+                                        },
+                                    }));
+                                    let elem_at = if at == 0 {
+                                        MirOperand::Local(scaled)
+                                    } else {
+                                        let sum = self.builder.alloc_temp(MirType::I64);
+                                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                            dst: sum,
+                                            rvalue: MirRValue::BinaryOp {
+                                                op: crate::operand::BinOp::Add,
+                                                left: MirOperand::Local(scaled),
+                                                right: MirOperand::Constant(MirConst::Int(at as i64)),
+                                            },
+                                        }));
+                                        MirOperand::Local(sum)
+                                    };
+                                    if elem.is_link_slot() {
+                                        self.emit_link_store(root, elem_at, val_op);
+                                        return Ok(());
+                                    }
+                                    let elem_ty = (**elem).clone();
+                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op);
+                                }
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
                                     index: idx_op,

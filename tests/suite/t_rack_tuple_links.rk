@@ -20,6 +20,7 @@ struct Node {
 struct Pair {
     id: i32
     ends: (Cursor, i32)
+    back: (i32, Cursor)
 }
 
 func main() {}
@@ -28,7 +29,7 @@ test "a link inside a tuple in a node is nulled by delete" {
     mut nodes: Rack<Node> = Rack.new()
     let a = nodes.insert(Node(id: 1, cur: Cursor(at: none)))
     mut rack: Rack<Pair> = Rack.new()
-    let h = rack.insert(Pair(id: 2, ends: (Cursor(at: none), 7)))
+    let h = rack.insert(Pair(id: 2, ends: (Cursor(at: none), 7), back: (0, Cursor(at: none))))
     h.ends.0.at = a
     nodes.delete(a)
     assert h.ends.0.at is none
@@ -49,3 +50,28 @@ test "a link inside a tuple local is nulled by delete" {
         assert false
     }
 }
+
+test "overwriting a tuple in a node moves its edge" {
+    mut nodes: Rack<Node> = Rack.new()
+    let a = nodes.insert(Node(id: 1, cur: Cursor(at: none)))
+    let b = nodes.insert(Node(id: 2, cur: Cursor(at: none)))
+    mut rack: Rack<Pair> = Rack.new()
+    let h = rack.insert(Pair(id: 2, ends: (Cursor(at: a), 7), back: (0, Cursor(at: a))))
+    h.ends = (Cursor(at: b), 8)
+    h.back = (5, Cursor(at: b))
+    nodes.delete(b)
+    assert h.ends.0.at is none
+    assert h.back.1.at is none
+    assert h.back.0 == 5
+}
+
+test "reassigning a tuple local records its links" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(id: 1, cur: Cursor(at: none)))
+    let b = rack.insert(Node(id: 2, cur: Cursor(at: none)))
+    mut t = (1, Cursor(at: a))
+    t = (2, Cursor(at: b))
+    rack.delete(b)
+    assert t.1.at is none
+}
+

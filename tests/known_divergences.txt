@@ -49,6 +49,7 @@
 #     while it was open; all 16 pass on both backends.
 
 t_rack_tuple_links.rk            # interp tuple element field write — #1799 (interp run)
+t_rack_link_copies.rk            # interp array/copy/clone links unrecorded — #1803 (interp run)
 
 # --- shared / both-backend bugs ---
 # (t_parse_float was the previous one, fixed in #610: a float payload sits in a

@@ -39,6 +39,31 @@ struct Leaf {
     id: i32
 }
 
+struct Two {
+    x: Link<Leaf>?
+    y: Link<Leaf>?
+}
+
+struct Wrap {
+    c: LeafCursor
+}
+
+struct LeafCursor {
+    at: Link<Leaf>?
+}
+
+struct Inner {
+    n: i64
+    v: Vec<Link<Leaf>>
+}
+
+struct Board {
+    id: i64
+    two: Two
+    w: Wrap
+    inner: Inner
+}
+
 func main() {}
 
 test "a link inside a node's struct field is nulled by delete" {
@@ -140,4 +165,93 @@ test "overwriting a nested vector of links records the new one" {
     leaves.delete(x)
     assert g.inner.peers.len() == 1
     assert g.inner.peers[0].id == 2
+}
+
+// The whole-aggregate store reads each link out of the incoming value by byte
+// offset. Reading it as "field 0" passed every test above, where the link is
+// the only field, and read an integer or a stack address everywhere else.
+func fresh_board(leaves: Rack<Leaf>) -> Board {
+    return Board(id: 1, two: Two(x: none, y: none), w: Wrap(c: LeafCursor(at: none)),
+               inner: Inner(n: 0, v: Vec.new()))
+}
+
+test "overwriting a struct with two links moves both edges" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut boards: Rack<Board> = Rack.new()
+    let b = leaves.insert(Leaf(id: 2))
+    let c = leaves.insert(Leaf(id: 3))
+    let h = boards.insert(fresh_board(leaves))
+    h.two = Two(x: b, y: c)
+    leaves.delete(c)
+    assert h.two.y is none
+    if h.two.x? as x {
+        assert x.id == 2
+    } else {
+        assert false
+    }
+    leaves.delete(b)
+    assert h.two.x is none
+}
+
+test "overwriting a struct moves a link two levels down" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut boards: Rack<Board> = Rack.new()
+    let b = leaves.insert(Leaf(id: 2))
+    let h = boards.insert(fresh_board(leaves))
+    h.w = Wrap(c: LeafCursor(at: b))
+    leaves.delete(b)
+    assert h.w.c.at is none
+}
+
+test "overwriting a struct records a vector of links that isn't its first field" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut boards: Rack<Board> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let h = boards.insert(fresh_board(leaves))
+    h.inner.v.push(a)
+    mut nv: Vec<Link<Leaf>> = Vec.new()
+    nv.push(b)
+    h.inner = Inner(n: 7, v: nv)
+    leaves.delete(b)
+    assert h.inner.v.len() == 0
+    assert h.inner.n == 7
+    leaves.delete(a)
+}
+
+test "reassigning a local from a function result records its links" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut two = Two(x: a, y: none)
+    two = pair_of(b)
+    leaves.delete(b)
+    assert two.x is none
+    assert two.y is none
+    leaves.delete(a)
+}
+
+func pair_of(b: Link<Leaf>) -> Two {
+    return Two(x: b, y: b)
+}
+
+test "a mutate parameter overwritten whole moves its edges" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut two = Two(x: a, y: a)
+    reset(mutate two, b)
+    leaves.delete(a)
+    if two.x? as x {
+        assert x.id == 2
+    } else {
+        assert false
+    }
+    leaves.delete(b)
+    assert two.x is none
+    assert two.y is none
+}
+
+func reset(mutate t: Two, b: Link<Leaf>) {
+    t = Two(x: b, y: b)
 }
