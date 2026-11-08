@@ -418,6 +418,13 @@ impl<'a> MirLowerer<'a> {
                 PatternKind::Ident(name) => {
                     if let Some(tag) = self.pattern_variant_tag(&arm.pattern, name, &scrutinee_ty) {
                         cases.push((tag as u64, arm_blocks[i]));
+                    } else if self.pattern_binds(&arm.pattern, name) {
+                        // A plain binding pattern is a catch-all.
+                        catch_all[i] = true;
+                        if !default_claimed {
+                            default_block = arm_blocks[i];
+                            default_claimed = true;
+                        }
                     } else if has_tag && is_result_or_option {
                         // Result match: ok arm = tag 0, err arm = tag 1, decided
                         // by the scrutinee's real ok/err type identities.
@@ -437,6 +444,12 @@ impl<'a> MirLowerer<'a> {
                 PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
                     if let Some(tag) = self.pattern_variant_tag(&arm.pattern, name, &scrutinee_ty) {
                         cases.push((tag as u64, arm_blocks[i]));
+                    } else if self.union_variant_of_result(&arm.pattern, &scrutinee_ty).is_some() {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "a `match` arm naming `{name}`, a variant of one member of a union \
+                             error side, isn't lowered natively yet (#1834); \
+                             `if r is {name}` works"
+                        )));
                     } else if has_tag {
                         return Err(Self::no_such_variant(name, &scrutinee_ty));
                     } else {
@@ -492,6 +505,8 @@ impl<'a> MirLowerer<'a> {
                 }
                 let name = match &arm.pattern.kind {
                     PatternKind::TypePat { ty, .. } => super::type_pat_name(ty),
+                    // A binding catches both sides; it is the default.
+                    PatternKind::Ident(n) if self.pattern_binds(&arm.pattern, n) => continue,
                     PatternKind::Ident(n) => n.clone(),
                     _ => continue,
                 };
@@ -815,8 +830,7 @@ impl<'a> MirLowerer<'a> {
             // bound it; this one hadn't. Before the guard, because the guard is
             // usually what reads it (#875).
             if let PatternKind::Ident(name) = &arm.pattern.kind {
-                let names_a_variant = self.pattern_variant_tag(&arm.pattern, name, &scrutinee_ty).is_some()
-                    || (has_tag && (is_result_or_option || self.pattern_names_variant(&arm.pattern, name)));
+                let names_a_variant = !self.pattern_binds(&arm.pattern, name);
                 if !names_a_variant {
                     let bind_local =
                         self.builder.alloc_local(name.clone(), scrutinee_ty.clone());

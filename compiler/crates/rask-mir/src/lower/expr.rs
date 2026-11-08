@@ -8852,6 +8852,23 @@ impl<'a> MirLowerer<'a> {
             }));
             return Some(result);
         }
+        // A variant of an enum that is one member of a union err side: the
+        // err side, then that member, then that variant.
+        if let Some((union_ty, member_index, member_ty, variant_tag)) = self.union_variant_of_result(pattern, val_ty) {
+            let payload = self.emit_option_payload(val.clone(), union_ty.clone(), is_niche);
+            let member = self.emit_enum_tag(MirOperand::Local(payload));
+            let inner = self.builder.alloc_temp(member_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: inner,
+                rvalue: self.payload_field(MirOperand::Local(payload), &union_ty, &member_ty),
+            }));
+            let inner_tag = self.emit_enum_tag(MirOperand::Local(inner));
+            let is_err = self.emit_eq_const(tag, 1);
+            let is_member = self.emit_eq_const(member, member_index);
+            let is_variant = self.emit_eq_const(inner_tag, variant_tag);
+            let both = self.emit_and(is_err, is_member);
+            return Some(self.emit_and(both, is_variant));
+        }
         // A union err side: "is it the err side" is only half the question. Both
         // members answer yes to that, so the member index decides which (#776).
         if let Some((union_ty, member_index)) = self.union_member_of_result(pattern, val_ty) {
@@ -8978,6 +8995,30 @@ impl<'a> MirLowerer<'a> {
         let bare = name.rsplit('.').next().unwrap_or(&name);
         let index = self.union_member_index_by_name(err.as_ref(), bare)?;
         Some((err.as_ref().clone(), index as i64))
+    }
+
+    /// The variant a pattern names when its enum is one member of a union
+    /// err side: the union, the member's index and type, and the variant's
+    /// tag. Read from the checker's record for the pattern.
+    pub(super) fn union_variant_of_result(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Option<(MirType, i64, MirType, i64)> {
+        let MirType::Result { err, .. } = val_ty else { return None };
+        let MirType::Union(members) = err.as_ref() else { return None };
+        let Some(rask_types::PatternTarget::Variant { enum_id, variant }) = self.pattern_target(pattern) else {
+            return None;
+        };
+        members.iter().enumerate().find_map(|(i, m)| {
+            let MirType::Enum(eid) = m else { return None };
+            let layout = self.ctx.enum_layouts.get(eid.id as usize)?;
+            if layout.key.as_ref()?.id != *enum_id {
+                return None;
+            }
+            let tag = layout.variants.iter().find(|v| v.name == *variant)?.tag as i64;
+            Some((err.as_ref().clone(), i as i64, m.clone(), tag))
+        })
     }
 
     /// `local == k` as a fresh bool temp.

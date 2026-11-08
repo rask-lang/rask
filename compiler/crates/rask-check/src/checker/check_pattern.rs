@@ -1066,6 +1066,23 @@ impl TypeChecker {
         // enum and every field binds to a variable nothing solves (#1026).
         let resolved_scrutinee =
             normalize_type(resolved_scrutinee.peel_heap(), &self.types);
+        // `Other.Boom` against a `T or E`: a variant of the enum that is one
+        // of the scrutinee's branches, a member of a union error side
+        // included. Filed whether or not it binds a payload.
+        if matches!(resolved_scrutinee, Type::Result { .. }) {
+            if let Some((id, _)) = self.enum_id_from_pattern_name(name) {
+                let leaves = two_branch_leaves(&mut self.ctx, &self.types, &resolved_scrutinee);
+                let is_branch = leaves
+                    .iter()
+                    .any(|leaf| matches!(leaf, Type::Named(b) | Type::Generic { base: b, .. } if *b == id));
+                if is_branch {
+                    self.pattern_targets.insert(
+                        pat_id,
+                        rask_types::PatternTarget::Variant { enum_id: id, variant: variant_lookup_name.to_string() },
+                    );
+                }
+            }
+        }
         let (base_id, type_args) = match &resolved_scrutinee {
             Type::Named(id) => (Some(*id), Vec::new()),
             Type::Generic { base, args } => (

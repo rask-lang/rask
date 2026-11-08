@@ -5127,6 +5127,16 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Does `pat`, a bare name, bind the value it matches? A recorded variant
+    /// or type test doesn't; a pattern built after checking goes by spelling.
+    pub(crate) fn pattern_binds(&self, pat: &rask_ast::expr::Pattern, name: &str) -> bool {
+        match self.pattern_target(pat) {
+            Some(rask_types::PatternTarget::Binding) => true,
+            Some(_) => false,
+            None => !is_variant_name(name),
+        }
+    }
+
     /// The tag of the variant `pat` names, read from the enum `val_ty` is.
     /// `None` when `val_ty` isn't that enum: a binding, or a variant of one
     /// branch of a `T or E`.
@@ -5164,7 +5174,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(*err as i64);
         }
         match &pattern.kind {
-            PatternKind::Ident(name) if self.pattern_names_variant(pattern, name) || is_variant_name(name) => {
+            PatternKind::Ident(name) if !self.pattern_binds(pattern, name) => {
                 if let Some(tag) = self.pattern_variant_tag(pattern, name, val_ty) {
                     return Ok(tag);
                 }
