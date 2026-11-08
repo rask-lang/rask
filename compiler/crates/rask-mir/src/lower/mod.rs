@@ -1099,8 +1099,46 @@ impl<'a> MirContext<'a> {
             .map(|(_, ty)| self.type_to_mir(ty))
     }
 
-    /// The type of one payload field of an enum variant, read off the checker's
-    /// declaration with the scrutinee's type arguments substituted in.
+    /// One payload field of an enum variant as declared, and what each of the
+    /// enum's type parameters stands for in `enum_ty`. `None` when `enum_ty`
+    /// isn't a user enum with that variant and field.
+    fn variant_payload_decl(
+        &self,
+        enum_ty: Option<&Type>,
+        variant: &str,
+        field_index: usize,
+    ) -> Option<(&'a Type, HashMap<String, Type>)> {
+        let (id, args): (rask_types::TypeId, &[rask_types::GenericArg]) = match enum_ty? {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args),
+            Type::UnresolvedGeneric { name, args } => (self.type_defs.get_type_id(name.trim())?, args),
+            _ => return None,
+        };
+        let rask_types::TypeDef::Enum { type_params, variants, .. } = self.type_defs.get(id)? else {
+            return None;
+        };
+        let bare_variant = variant.rsplit('.').next().unwrap_or(variant);
+        let declared = variants.iter().find(|(n, _)| n == bare_variant)?.1.get(field_index)?;
+        let params = type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                rask_types::GenericArg::ConstUsize(_) => None,
+            }))
+            .collect();
+        Some((declared, params))
+    }
+
+    /// The checked type of one payload field of an enum variant: the
+    /// declaration's field type with `enum_ty`'s type arguments substituted in.
+    pub fn variant_payload_type(&self, enum_ty: Option<&Type>, variant: &str, field_index: usize) -> Option<Type> {
+        let (declared, params) = self.variant_payload_decl(enum_ty, variant, field_index)?;
+        Some(rask_check::substitute_type(declared, &params))
+    }
+
+    /// The MIR type of one payload field of an enum variant, when the enum's
+    /// shared layout can't say it.
     ///
     /// A generic enum's shared layout gives every type parameter one word and
     /// records a placeholder type in the slot, so the layout can't say what a
@@ -1109,36 +1147,13 @@ impl<'a> MirContext<'a> {
     /// struct's 8 bytes and dereferenced them as a pointer (#871).
     ///
     /// `None` for anything the layout already gets right: a concrete payload, a
-    /// non-generic enum, a scrutinee whose instantiation isn't settled.
-    pub fn variant_payload_mir(
-        &self,
-        scrutinee: Option<&Type>,
-        variant: &str,
-        field_index: usize,
-    ) -> Option<MirType> {
-        let (base, args) = match scrutinee? {
-            Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
-            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
-            _ => return None,
-        };
-        let bare = base.as_str().trim();
-        let id = self.type_defs.get_type_id(bare)?;
-        let rask_types::TypeDef::Enum { type_params, variants, .. } = self.type_defs.get(id)?
-        else {
-            return None;
-        };
-        let bare_variant = variant.rsplit('.').next().unwrap_or(variant);
-        let declared = variants
-            .iter()
-            .find(|(n, _)| n == bare_variant)?
-            .1
-            .get(field_index)?;
+    /// non-generic enum, an enum whose instantiation isn't settled.
+    pub fn variant_payload_mir(&self, enum_ty: Option<&Type>, variant: &str, field_index: usize) -> Option<MirType> {
+        let (declared, params) = self.variant_payload_decl(enum_ty, variant, field_index)?;
         // Only a payload declared *as* one of the type parameters. Anything
         // concrete is already spelled out in the layout.
         let Type::UnresolvedNamed(param) = declared else { return None };
-        let pos = type_params.iter().position(|p| p == param)?;
-        let rask_types::GenericArg::Type(arg) = args.get(pos)? else { return None };
-        Some(self.type_to_mir(arg))
+        Some(self.type_to_mir(params.get(param)?))
     }
 
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
@@ -5399,9 +5414,15 @@ impl<'a> MirLowerer<'a> {
     /// per field, in declaration order. `None` when `scrutinee_ty` isn't a
     /// user enum or the variant/layout can't be found (Option/Result, whose
     /// payload comes from `extract_payload_type` instead).
-    fn variant_field_types(
+    ///
+    /// `checked` is the checker's type of the enum value. A generic enum's
+    /// shared layout holds a one-word placeholder where a payload was declared
+    /// as a type parameter; the field's type comes from `checked` instead, so
+    /// `Maybe<f64>`'s `Has(x)` binds an `f64`, not its bits.
+    pub(super) fn variant_field_types(
         &self,
         scrutinee_ty: &MirType,
+        checked: Option<&Type>,
         variant_name: &str,
     ) -> Option<Vec<(MirType, u32, u32)>> {
         let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = scrutinee_ty else {
@@ -5410,8 +5431,11 @@ impl<'a> MirLowerer<'a> {
         let layout = self.ctx.enum_layouts.get(*idx as usize)?;
         let bare_name = variant_name.rsplit('.').next().unwrap_or(variant_name);
         let variant = layout.variants.iter().find(|v| v.name == bare_name)?;
-        Some(variant.fields.iter().map(|f| {
-            (self.ctx.type_to_mir(&f.ty), variant.payload_offset + f.offset, f.size)
+        Some(variant.fields.iter().enumerate().map(|(i, f)| {
+            let ty = self.ctx
+                .variant_payload_mir(checked, bare_name, i)
+                .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty));
+            (ty, variant.payload_offset + f.offset, f.size)
         }).collect())
     }
 
@@ -5443,7 +5467,8 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
         scrutinee_ty: &MirType,
     ) {
-        self.bind_pattern_fields(pattern, value, payload_ty, is_niche, scrutinee_ty);
+        let checked = self.ctx.lookup_raw_type(scrutinee.id);
+        self.bind_pattern_fields(pattern, value, payload_ty, is_niche, scrutinee_ty, checked.as_deref());
         self.retain_pattern_copies(pattern, scrutinee, scrutinee_ty);
     }
 
@@ -5483,10 +5508,14 @@ impl<'a> MirLowerer<'a> {
     /// the whole test has passed. Before this the inner tag wasn't tested at all,
     /// so `Wrapped(Inner.Good(_))` took the first `Wrapped` arm, and the inner
     /// binding was never made (#1645).
+    ///
+    /// `checked` is the checker's type of `value`, which says what a generic
+    /// enum's payload holds where its layout only has a placeholder.
     pub(super) fn emit_subpattern_test(
         &mut self,
         value: &MirOperand,
         ty: &MirType,
+        checked: Option<&Type>,
         pattern: &rask_ast::expr::Pattern,
         fail: BlockId,
     ) -> Result<(), LoweringError> {
@@ -5518,7 +5547,7 @@ impl<'a> MirLowerer<'a> {
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
                     Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
-                self.emit_subpattern_test(value, ty, &as_constructor, fail)
+                self.emit_subpattern_test(value, ty, checked, &as_constructor, fail)
             }
             PatternKind::Ident(name) | PatternKind::Constructor { name, .. } => {
                 let fields: &[Pattern] = match &pattern.kind {
@@ -5526,7 +5555,7 @@ impl<'a> MirLowerer<'a> {
                     _ => &[],
                 };
                 let (Some(tag), Some(field_types)) =
-                    (self.pattern_variant_tag(pattern, ty), self.variant_field_types(ty, name))
+                    (self.pattern_variant_tag(pattern, ty), self.variant_field_types(ty, checked, name))
                 else {
                     return Err(LoweringError::InvalidConstruct(format!(
                         "`{name}` nested in a variant pattern names no variant of the \
@@ -5563,7 +5592,10 @@ impl<'a> MirLowerer<'a> {
                             access: FieldAccess::for_field(&field_ty, sz),
                         },
                     }));
-                    self.emit_subpattern_test(&MirOperand::Local(inner), &field_ty, field_pat, fail)?;
+                    let field_checked = self.ctx.variant_payload_type(checked, name, j);
+                    self.emit_subpattern_test(
+                        &MirOperand::Local(inner), &field_ty, field_checked.as_ref(), field_pat, fail,
+                    )?;
                 }
                 Ok(())
             }
@@ -5573,13 +5605,17 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn bind_pattern_fields(
+    /// Bind the names `pattern` introduces, reading them out of `value`.
+    /// `checked` is the checker's type of `value`: a generic enum's payload
+    /// takes its type from there, never from the layout's placeholder.
+    pub(super) fn bind_pattern_fields(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,
         payload_ty: Option<MirType>,
         is_niche: bool,
         scrutinee_ty: &MirType,
+        checked: Option<&Type>,
     ) {
         use rask_ast::expr::{Pattern, PatternKind};
         match &pattern.kind {
@@ -5602,7 +5638,7 @@ impl<'a> MirLowerer<'a> {
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
                     Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
-                self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty);
+                self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty, checked);
             }
             PatternKind::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
@@ -5610,7 +5646,7 @@ impl<'a> MirLowerer<'a> {
                 // (from extract_payload_type, which only understands Option/Result),
                 // so look up each field's real type from the enum layout when one
                 // exists. Falls back to `payload_ty` for niche Option/Result values.
-                let variant_fields = self.variant_field_types(scrutinee_ty, name);
+                let variant_fields = self.variant_field_types(scrutinee_ty, checked, name);
                 for (i, field_pat) in fields.iter().enumerate() {
                     if let PatternKind::Ident(name) = &field_pat.kind {
                         let demand = || payload_ty.clone().unwrap_or_else(|| {
@@ -5666,8 +5702,10 @@ impl<'a> MirLowerer<'a> {
                                 access: FieldAccess::for_field(&field_ty, sz),
                             },
                         }));
+                        let field_checked = self.ctx.variant_payload_type(checked, name, i);
                         self.bind_pattern_fields(
                             field_pat, MirOperand::Local(inner), None, false, &field_ty,
+                            field_checked.as_ref(),
                         );
                     }
                     // Wildcard, Literal in field position — skip binding

@@ -186,7 +186,7 @@ impl<'a> MirLowerer<'a> {
                     ));
                 }
                 for alt in alts {
-                    let test = self.emit_is_test(&scrutinee_op, &scrutinee_ty, None, alt)?;
+                    let test = self.emit_is_test(scrutinee, &scrutinee_op, &scrutinee_ty, None, alt)?;
                     let try_next = self.builder.create_block();
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                         cond: MirOperand::Local(test.matches),
@@ -198,7 +198,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: next }));
                 None
             } else {
-                let test = self.emit_is_test(&scrutinee_op, &scrutinee_ty, None, &arm.pattern)?;
+                let test = self.emit_is_test(scrutinee, &scrutinee_op, &scrutinee_ty, None, &arm.pattern)?;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(test.matches),
                     then_block: arm_block,
@@ -496,7 +496,11 @@ impl<'a> MirLowerer<'a> {
             // A literal, range or nested variant inside the arm's variant
             // pattern: the field's value, its type, and what it has to match.
             // The switch only tested the outer tag.
-            let mut field_tests: Vec<(MirOperand, MirType, Pattern)> = Vec::new();
+            let mut field_tests: Vec<(MirOperand, MirType, Option<rask_types::Type>, Pattern)> = Vec::new();
+            // The checker's type of the scrutinee: a generic enum's payload
+            // declared as a type parameter has only a placeholder in the
+            // shared layout, so its type comes from here (#871).
+            let scrutinee_raw = self.ctx.lookup_raw_type(scrutinee.id).map(std::borrow::Cow::into_owned);
 
             if has_tag {
                 if let PatternKind::Constructor { name, fields } = &arm.pattern.kind {
@@ -510,27 +514,8 @@ impl<'a> MirLowerer<'a> {
                     };
                     let payload_base = scrutinee_op.clone();
                     // (mir type, absolute byte offset within the enum, field size)
-                    //
-                    // The layout's own field type is a placeholder when the enum
-                    // is generic and this payload was declared as one of its
-                    // parameters, so the checker's instantiation decides instead
-                    // where it can (#871).
-                    let scrutinee_raw = self.ctx.lookup_raw_type(scrutinee.id).map(std::borrow::Cow::into_owned);
-                    let variant_fields: Option<Vec<(MirType, u32, u32)>> =
-                        enum_layout_id.and_then(|idx| {
-                            self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
-                                layout.variants.iter().find(|v| v.name == variant_name).map(|v| {
-                                    v.fields.iter().enumerate().map(|(fi, f)| {
-                                        let ty = self.ctx
-                                            .variant_payload_mir(
-                                                scrutinee_raw.as_ref(), variant_name, fi,
-                                            )
-                                            .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty));
-                                        (ty, v.payload_offset + f.offset, f.size)
-                                    }).collect()
-                                })
-                            })
-                        });
+                    let variant_fields =
+                        self.variant_field_types(&scrutinee_ty, scrutinee_raw.as_ref(), variant_name);
 
                     for (j, field_pat) in fields.iter().enumerate() {
                         let tested = self.nested_needs_test(field_pat);
@@ -579,7 +564,9 @@ impl<'a> MirLowerer<'a> {
                                 rvalue,
                             }));
                             let Some(binding) = binding else {
-                                field_tests.push((MirOperand::Local(payload_local), field_ty, field_pat.clone()));
+                                let field_checked =
+                                    self.ctx.variant_payload_type(scrutinee_raw.as_ref(), variant_name, j);
+                                field_tests.push((MirOperand::Local(payload_local), field_ty, field_checked, field_pat.clone()));
                                 continue;
                             };
                             let prefix = self.mir_type_name(&field_ty)
@@ -630,7 +617,9 @@ impl<'a> MirLowerer<'a> {
                                             .enumerate()
                                             .find(|(_, f)| f.name == *field_name)
                                         {
-                                            let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+                                            let field_ty = self.ctx
+                                                .variant_payload_mir(scrutinee_raw.as_ref(), variant_name, field_idx)
+                                                .unwrap_or_else(|| self.ctx.type_to_mir(&field_layout.ty));
                                             let payload_local = match binding {
                                                 Some(b) => self.builder.alloc_local(b.clone(), field_ty.clone()),
                                                 None => self.builder.alloc_temp(field_ty.clone()),
@@ -647,7 +636,10 @@ impl<'a> MirLowerer<'a> {
                                                 rvalue,
                                             }));
                                             let Some(binding) = binding else {
-                                                field_tests.push((MirOperand::Local(payload_local), field_ty, field_pat.clone()));
+                                                let field_checked = self.ctx.variant_payload_type(
+                                                    scrutinee_raw.as_ref(), variant_name, field_idx,
+                                                );
+                                                field_tests.push((MirOperand::Local(payload_local), field_ty, field_checked, field_pat.clone()));
                                                 continue;
                                             };
                                             if let Some(p) = self.mir_type_name(&field_ty)
@@ -767,14 +759,14 @@ impl<'a> MirLowerer<'a> {
                 no_match
             };
 
-            for (value, ty, pattern) in &field_tests {
-                self.emit_subpattern_test(value, ty, pattern, fall_through)?;
+            for (value, ty, checked, pattern) in &field_tests {
+                self.emit_subpattern_test(value, ty, checked.as_ref(), pattern, fall_through)?;
             }
             // Every tag on the way down has passed, so a nested variant's
             // fields are that variant's: bind them now.
-            for (value, ty, pattern) in &field_tests {
+            for (value, ty, checked, pattern) in &field_tests {
                 if matches!(&pattern.kind, PatternKind::Constructor { .. } | PatternKind::Struct { .. }) {
-                    self.bind_pattern_fields(pattern, value.clone(), None, false, ty);
+                    self.bind_pattern_fields(pattern, value.clone(), None, false, ty, checked.as_ref());
                 }
             }
             // After the nested bindings, so their copies are retained too.
@@ -957,6 +949,14 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
+        // The checker's type of each element, for a generic enum's payload
+        // (`variant_field_types`).
+        let checked_elems: Vec<rask_types::Type> = match self.ctx.lookup_raw_type(scrutinee.id).as_deref() {
+            Some(rask_types::Type::Tuple(elems)) => elems.clone(),
+            Some(single) if tuple_elems.len() == 1 => vec![single.clone()],
+            _ => Vec::new(),
+        };
+
         let merge_block = self.builder.create_block();
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
@@ -1055,8 +1055,9 @@ impl<'a> MirLowerer<'a> {
             for (j, _, pattern) in &payload_binds {
                 let (elem_op, elem_ty) = tuple_elems[*j].clone();
                 // Its own tag passed above; this tests what's nested inside it.
-                self.emit_subpattern_test(&elem_op, &elem_ty, pattern, next_arm)?;
-                self.bind_pattern_fields(pattern, elem_op, None, false, &elem_ty);
+                let checked = checked_elems.get(*j);
+                self.emit_subpattern_test(&elem_op, &elem_ty, checked, pattern, next_arm)?;
+                self.bind_pattern_fields(pattern, elem_op, None, false, &elem_ty, checked);
             }
 
             if checks.is_empty() && !matches!(&arm.pattern.kind, PatternKind::Wildcard) {

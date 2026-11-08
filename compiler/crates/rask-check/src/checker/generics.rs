@@ -220,6 +220,13 @@ impl TypeChecker {
             Type::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| Self::substitute_type_params(e, subst)).collect())
             }
+            // A union error side kept its `T` too: `pick<T>` returning
+            // `string or (GrowError<T> | Aa)` gave every call site a literal
+            // `GrowError<T>`, and a `Full(x)` arm bound `x` as a placeholder
+            // word instead of the caller's `f64`.
+            Type::Union(members) => {
+                Type::Union(members.iter().map(|m| Self::substitute_type_params(m, subst)).collect())
+            }
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| p.map(|p| Self::substitute_type_params(p, subst))).collect(),
                 ret: Box::new(Self::substitute_type_params(ret, subst)),

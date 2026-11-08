@@ -126,3 +126,88 @@ test "a guarded variant arm falls through to the next arm" {
     }
     assert r == "forty"
 }
+
+// A variant whose payload is declared as the enum's type parameter. The
+// shared layout of a generic enum holds a one-word placeholder there, so the
+// binding takes its type from the enum as instantiated: `Has(x)` on a
+// `Maybe<f64>` is an `f64`, not its bits.
+enum Maybe<T> {
+    Has(T)
+    Nope
+}
+
+extend Maybe<T> {
+    func message(self) -> string {
+        return "m"
+    }
+}
+
+enum Oops {
+    Code(i64)
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "o"
+    }
+}
+
+func maybe_or(a: i64) -> Maybe<f64> or Oops {
+    if a == 0 {
+        return Oops.Code(1)
+    }
+    let m: Maybe<f64> = Maybe.Has(2.5)
+    return m
+}
+
+struct Aa {
+    code: i64
+}
+
+extend Aa {
+    func message(self) -> string {
+        return "a"
+    }
+}
+
+func maybe_union<T>(a: i64, take v: T) -> string or (Maybe<T> | Aa) {
+    if a == 0 {
+        return Maybe.Has(v)
+    }
+    if a == 1 {
+        return Aa(code: 3)
+    }
+    return "ok"
+}
+
+test "a generic enum's payload binds at its instantiated type" {
+    let r = match maybe_or(1) {
+        Maybe.Has(x) => "has {x}",
+        Maybe.Nope => "nope",
+        Oops as o => "oops",
+    }
+    assert r == "has 2.5"
+    let v = maybe_or(1)
+    if v is Maybe.Has(x) {
+        assert x == 2.5
+    } else {
+        assert false
+    }
+    let u = match maybe_union(0, 1.25) {
+        Maybe.Has(x) => "has {x}",
+        Aa as q => "aa {q.code}",
+        _ => "rest",
+    }
+    assert u == "has 1.25"
+    if maybe_union(0, "s") is Maybe.Has(s) {
+        assert s == "s"
+    } else {
+        assert false
+    }
+    let bare: Maybe<f64> = Maybe.Has(0.5)
+    if bare is Maybe.Has(y) {
+        assert y == 0.5
+    } else {
+        assert false
+    }
+}

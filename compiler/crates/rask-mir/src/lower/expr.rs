@@ -1940,7 +1940,7 @@ impl<'a> MirLowerer<'a> {
             let (val, val_ty) = self.lower_expr(expr)?;
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
+            let test = self.emit_is_test(expr, &val, &val_ty, niche, pattern)?;
 
             let ok_block = self.builder.create_block();
             let else_block = self.builder.create_block();
@@ -2009,7 +2009,7 @@ impl<'a> MirLowerer<'a> {
                 return self.lower_struct_is(inner, val, val_ty, pattern);
             }
             let niche = self.option_niche(inner, &val_ty);
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
+            let test = self.emit_is_test(inner, &val, &val_ty, niche, pattern)?;
             Ok((MirOperand::Local(test.matches), MirType::Bool))
         }
 
@@ -3931,7 +3931,7 @@ impl<'a> MirLowerer<'a> {
             // `T or ErrEnum` routes to the err side (tag 1) instead of
             // falling through to 0 like the bare `pattern_tag` does — and a
             // variant of that error enum tests both layers.
-            let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
+            let test = self.emit_is_test(expr, &val, &val_ty, niche, pattern)?;
             let matches = test.matches;
 
             let then_block = self.builder.create_block();
@@ -8597,7 +8597,8 @@ impl<'a> MirLowerer<'a> {
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
-    /// `value is <pattern>`: the bool, and where a match binds from.
+    /// `scrutinee is <pattern>`, `val` being its lowered value: the bool, and
+    /// where a match binds from.
     ///
     /// Two shapes need two tags. A pattern naming a variant of the error enum
     /// is one: the value's own tag says ok vs err, and the variant tag lives
@@ -8614,17 +8615,21 @@ impl<'a> MirLowerer<'a> {
     /// option. A `match` on a flat value runs this same test per arm.
     pub(super) fn emit_is_test(
         &mut self,
+        scrutinee: &Expr,
         val: &MirOperand,
         val_ty: &MirType,
         niche: Option<i64>,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<PatternTest, LoweringError> {
+        // What the value is to the checker: a generic enum's payload takes
+        // its type from here, not from the shared layout's placeholder.
+        let checked = self.ctx.lookup_raw_type(scrutinee.id);
         // A variant nested inside a variant can't be one flat expression: the
         // inner tag means nothing until the outer one has passed, so it's
         // tested with branches and the answer collected in a bool (#1645).
         if matches!(val_ty, MirType::Enum(_)) && self.has_nested_variant(pattern) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_subpattern_test(val, val_ty, pattern, fail)
+                this.emit_subpattern_test(val, val_ty, checked.as_deref(), pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8633,7 +8638,7 @@ impl<'a> MirLowerer<'a> {
         // one above it held.
         if let Some(path) = self.deep_result_path(pattern, val_ty) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_result_path_test(val, val_ty, &path, pattern, fail)
+                this.emit_result_path_test(val, val_ty, checked.as_deref(), &path, pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8653,7 +8658,7 @@ impl<'a> MirLowerer<'a> {
         // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
         // variant the value doesn't hold reads payload bytes nobody uses, and
         // the tag test already says no.
-        for (field, wanted) in self.tested_variant_fields(val, val_ty, pattern) {
+        for (field, wanted) in self.tested_variant_fields(val, val_ty, checked.as_deref(), pattern) {
             if let Some(ok) = self.emit_value_matches(&field, &wanted) {
                 matches = self.emit_and(matches, ok);
             }
@@ -8706,6 +8711,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         val: &MirOperand,
         val_ty: &MirType,
+        checked: Option<&rask_types::Type>,
         pattern: &rask_ast::expr::Pattern,
     ) -> Vec<(MirOperand, rask_ast::expr::Pattern)> {
         use rask_ast::expr::{Pattern, PatternKind};
@@ -8722,7 +8728,7 @@ impl<'a> MirLowerer<'a> {
             }
             _ => return Vec::new(),
         };
-        let Some(layout) = self.variant_field_types(val_ty, name) else { return Vec::new() };
+        let Some(layout) = self.variant_field_types(val_ty, checked, name) else { return Vec::new() };
         let mut out = Vec::new();
         for (i, p) in positional.into_iter().enumerate() {
             if !tested(&p) {
@@ -8834,7 +8840,8 @@ impl<'a> MirLowerer<'a> {
             }
             None => match self.bindable_result_path(pattern, val_ty) {
                 Some(path) => {
-                    self.bind_result_path(&val, val_ty, &path, pattern);
+                    let checked = self.ctx.lookup_raw_type(scrutinee.id);
+                    self.bind_result_path(&val, val_ty, checked.as_deref(), &path, pattern);
                     self.retain_pattern_copies(pattern, scrutinee, val_ty);
                 }
                 None => {
@@ -11156,7 +11163,7 @@ impl<'a> MirLowerer<'a> {
         }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
-        let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
+        let test = self.emit_is_test(scrutinee, &val, &val_ty, niche, pattern)?;
         let matches = test.matches;
 
         let bind_block = self.builder.create_block();

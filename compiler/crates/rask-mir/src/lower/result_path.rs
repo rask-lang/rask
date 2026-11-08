@@ -4,7 +4,9 @@
 //!
 //! A value of `T or (A | B)` can be tested at up to three depths: which side
 //! it holds, which member of a union error side, and which variant of that
-//! member's enum. The checker records what a pattern names (`PatternTarget`);
+//! member's enum. On a flat `T? or E` the success side is an option, so a
+//! variant of `T` sits one step further down: the success side, then present,
+//! then the variant. The checker records what a pattern names (`PatternTarget`);
 //! this turns the record and the scrutinee's MIR type into the path down, so
 //! every `is` test and every `match` arm reads the same tags in the same
 //! order. Enums are found by their layout's type id, never by name.
@@ -19,6 +21,9 @@ use crate::{
 pub(super) struct ResultPath {
     /// The error side (`true`) or the success side.
     pub err: bool,
+    /// The side is an option, and the path goes on into its value: a variant
+    /// of `T` on a flat `T? or E`.
+    pub present: bool,
     /// Within a union error side: the member's index and type.
     pub member: Option<(usize, MirType)>,
     /// A variant of the enum the steps above reach.
@@ -45,7 +50,7 @@ impl<'a> MirLowerer<'a> {
                     (true, Some(i), MirType::Union(members)) => Some((*i, members.get(*i)?.clone())),
                     _ => None,
                 };
-                Some(ResultPath { err: *is_err, member, variant: None })
+                Some(ResultPath { err: *is_err, present: false, member, variant: None })
             }
             rask_types::PatternTarget::Variant { enum_id, variant } => {
                 let find = |t: &MirType| -> Option<PathVariant> {
@@ -57,16 +62,20 @@ impl<'a> MirLowerer<'a> {
                     let index = layout.variants.iter().position(|v| v.name == *variant)?;
                     Some(PathVariant { enum_ty: t.clone(), layout: eid.id as usize, index })
                 };
+                let path = |err, present, member, v| ResultPath { err, present, member, variant: Some(v) };
                 if let MirType::Union(members) = err.as_ref() {
                     for (i, m) in members.iter().enumerate() {
                         if let Some(v) = find(m) {
-                            return Some(ResultPath { err: true, member: Some((i, m.clone())), variant: Some(v) });
+                            return Some(path(true, false, Some((i, m.clone())), v));
                         }
                     }
                 } else if let Some(v) = find(err) {
-                    return Some(ResultPath { err: true, member: None, variant: Some(v) });
+                    return Some(path(true, false, None, v));
                 }
-                find(ok).map(|v| ResultPath { err: false, member: None, variant: Some(v) })
+                match ok.as_ref() {
+                    MirType::Option(inner) => find(inner).map(|v| path(false, true, None, v)),
+                    ok => find(ok).map(|v| path(false, false, None, v)),
+                }
             }
             rask_types::PatternTarget::Binding => None,
         }
@@ -74,14 +83,19 @@ impl<'a> MirLowerer<'a> {
 
     /// `result_path`, only when it goes deeper than a side: a union member
     /// or a variant. Those are what the plain ok/err tag can't answer.
+    /// (`present` only ever leads to a variant, so it needs no check here.)
     pub(super) fn deep_result_path(&self, pat: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<ResultPath> {
         self.result_path(pat, val_ty).filter(|p| p.member.is_some() || p.variant.is_some())
     }
 
-    /// The value at the end of `path`'s side and member steps, read without
-    /// testing anything: the side's payload, or the member inside it.
+    /// The value at the end of `path`'s side, present and member steps, read
+    /// without testing anything: the side's payload, the option's value, or
+    /// the member inside it.
     fn result_path_value(&mut self, val: &MirOperand, val_ty: &MirType, path: &ResultPath) -> (MirOperand, MirType) {
-        let (side, side_ty) = self.result_side_value(val, val_ty, path.err);
+        let (mut side, mut side_ty) = self.result_side_value(val, val_ty, path.err);
+        if path.present {
+            (side, side_ty) = self.option_value(side, &side_ty);
+        }
         match &path.member {
             Some((_, member_ty)) => {
                 let member = self.builder.alloc_temp(member_ty.clone());
@@ -93,6 +107,36 @@ impl<'a> MirLowerer<'a> {
             }
             None => (side, side_ty),
         }
+    }
+
+    /// The value inside `opt`, an option, read without testing its tag.
+    fn option_value(&mut self, opt: MirOperand, opt_ty: &MirType) -> (MirOperand, MirType) {
+        let MirType::Option(inner) = opt_ty else {
+            unreachable!("a present step is only made for an option")
+        };
+        let inner_ty = (**inner).clone();
+        let value = self.builder.alloc_temp(inner_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: value,
+            rvalue: self.payload_field(opt, opt_ty, &inner_ty),
+        }));
+        (MirOperand::Local(value), inner_ty)
+    }
+
+    /// The checker's type of the value `path` ends at, walked down from
+    /// `val`'s the same way `result_path_value` walks the bytes. A generic
+    /// enum's payload types come from here.
+    fn result_path_checked<'t>(path: &ResultPath, val: Option<&'t rask_types::Type>) -> Option<&'t rask_types::Type> {
+        let rask_types::Type::Result { ok, err } = val? else { return None };
+        let mut ty: &rask_types::Type = if path.err { err } else { ok };
+        if path.present {
+            ty = ty.as_option()?;
+        }
+        if let Some((index, _)) = &path.member {
+            let rask_types::Type::Union(members) = ty else { return None };
+            ty = members.get(*index)?;
+        }
+        Some(ty)
     }
 
     fn result_side_value(&mut self, val: &MirOperand, val_ty: &MirType, err: bool) -> (MirOperand, MirType) {
@@ -127,6 +171,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         val: &MirOperand,
         val_ty: &MirType,
+        checked: Option<&rask_types::Type>,
         path: &ResultPath,
         pattern: &rask_ast::expr::Pattern,
         fail: BlockId,
@@ -134,6 +179,13 @@ impl<'a> MirLowerer<'a> {
         let tag = self.emit_option_tag(val, None);
         let on_side = self.emit_eq_const(tag, path.err as i64);
         self.pass_or(on_side, fail);
+        if path.present {
+            // An option's tag is 0 when it holds a value.
+            let (side, _) = self.result_side_value(val, val_ty, path.err);
+            let tag = self.emit_option_tag(&side, None);
+            let present = self.emit_eq_const(tag, 0);
+            self.pass_or(present, fail);
+        }
         if let Some((index, _)) = &path.member {
             let (side, _) = self.result_side_value(val, val_ty, path.err);
             let member_index = self.emit_enum_tag(side);
@@ -153,7 +205,10 @@ impl<'a> MirLowerer<'a> {
             }
             // A variant pattern tests against its own enum like any other:
             // the tag, then any literal or nested variant in its fields.
-            _ => self.emit_subpattern_test(&value, &variant.enum_ty, pattern, fail),
+            _ => {
+                let enum_checked = Self::result_path_checked(path, checked);
+                self.emit_subpattern_test(&value, &variant.enum_ty, enum_checked, pattern, fail)
+            }
         }
     }
 
@@ -165,6 +220,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         val: &MirOperand,
         val_ty: &MirType,
+        checked: Option<&rask_types::Type>,
         path: &ResultPath,
         pattern: &rask_ast::expr::Pattern,
     ) {
@@ -182,17 +238,15 @@ impl<'a> MirLowerer<'a> {
             self.bind_local(name, MirRValue::Use(value), value_ty);
             return;
         };
+        let enum_checked = Self::result_path_checked(path, checked);
         let Some(name) = binding else {
-            self.bind_pattern_fields(pattern, value, None, false, &variant.enum_ty);
+            self.bind_pattern_fields(pattern, value, None, false, &variant.enum_ty, enum_checked);
             return;
         };
-        let layout = &self.ctx.enum_layouts[variant.layout];
-        let v = &layout.variants[variant.index];
-        let fields: Vec<(MirType, u32, u32)> = v
-            .fields
-            .iter()
-            .map(|f| (self.ctx.type_to_mir(&f.ty), v.payload_offset + f.offset, f.size))
-            .collect();
+        let variant_name = self.ctx.enum_layouts[variant.layout].variants[variant.index].name.clone();
+        let fields = self
+            .variant_field_types(&variant.enum_ty, enum_checked, &variant_name)
+            .unwrap_or_default();
         match fields.as_slice() {
             // A fieldless variant's payload is unit: nothing to read.
             [] => {}
