@@ -168,3 +168,37 @@ test "a link struct reassigned once frees both values' vectors" {
     assert link_id(c.at) == 1
     assert c.hist[0] == "second-entry-long-enough-to-heap"
 }
+
+test "a link struct assigned to itself keeps its value" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 4))
+    mut c = Cursor(at: a, label: "self-label-long-enough-to-heap", hist: ["self-entry-long-enough-to-heap"])
+    c = c
+    assert c.label == "self-label-long-enough-to-heap"
+    assert c.hist.len() == 1
+    assert link_id(c.at) == 4
+}
+
+func repinned(take p: Pin, n: i32) -> Pin {
+    p = Pin(at: p.at, name: "repinned-long-enough-to-heap-{n}")
+    return p
+}
+
+func second_of(take first: Cursor, take second: Cursor) -> Cursor {
+    mut x = first
+    x = second
+    return x
+}
+
+test "a take parameter, or a local made from one, reassigned and returned" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 6))
+    let p = repinned(Pin(at: a, name: "first-pin-long-enough-to-heap-{a.id}"), 2)
+    assert p.name == "repinned-long-enough-to-heap-2"
+    let one = Cursor(at: a, label: "one-label-long-enough-to-heap", hist: Vec.new())
+    let two = Cursor(at: none, label: "two-label-long-enough-to-heap", hist: ["two-entry-long-enough-to-heap"])
+    let x = second_of(one, two)
+    assert x.label == "two-label-long-enough-to-heap"
+    leaves.delete(a)
+    assert link_id(p.at) == -1
+}

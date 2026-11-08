@@ -814,9 +814,14 @@ impl<'a> MirLowerer<'a> {
                         // version in a new slot, leaving the old one's bytes
                         // naming a node its record no longer covers, and the
                         // forget at return then read a freed rack through them.
+                        //
+                        // Not a parameter: its name is the caller's storage,
+                        // so a write in place would land in the caller's slot,
+                        // and what the old value was is the caller's to free.
                         let in_place = struct_assigned
                             && scalar_mutate.is_none()
                             && !assigns_through
+                            && !self.builder.is_param(local_id)
                             && !self.addressed_captures.contains(&local_id)
                             && matches!(
                                 dst_ty,
@@ -865,6 +870,12 @@ impl<'a> MirLowerer<'a> {
                             // the new value took from the old one was zeroed by
                             // the take, so releasing the rest is safe too.
                             let renew = in_place;
+                            // `c = c` (or `c = { c }`): the value is the slot.
+                            // Renewing would release it and then copy the
+                            // released bytes back.
+                            if in_place && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
+                                return Ok(());
+                            }
                             let replaced = if in_place {
                                 None
                             } else if assigns_through {

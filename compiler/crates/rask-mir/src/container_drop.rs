@@ -940,32 +940,57 @@ fn param_is_kept_by(
             _ => None,
         })
         .collect();
-    let mut names: HashSet<LocalId> = HashSet::from([param]);
-    loop {
-        let before = names.len();
-        for block in &func.blocks {
-            for stmt in &block.statements {
-                match &stmt.kind {
-                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                        if names.contains(src) && !owns_copy.contains(dst) =>
-                    {
-                        names.insert(*dst);
-                    }
-                    MirStmtKind::Phi { dst, args } => {
-                        if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s))) {
-                            names.insert(*dst);
-                        }
-                    }
-                    _ => {}
-                }
+    // Which names hold the parameter at each point. A name stops holding it
+    // where a whole new value is made in its slot: `mut x = first` then
+    // `x = second`, with `x` reassigned in place because the rack records its
+    // links, is `first` until the write and the frame's own value after it,
+    // so `return x` hands back the new value and `first` is still the
+    // caller's to free.
+    let preds = crate::analysis::cfg::predecessors(func);
+    let step = |names: &mut HashSet<LocalId>, stmt: &MirStmt| match &stmt.kind {
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+            if names.contains(src) && !owns_copy.contains(dst) =>
+        {
+            names.insert(*dst);
+        }
+        MirStmtKind::Phi { dst, args } => {
+            if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s))) {
+                names.insert(*dst);
             }
         }
-        if names.len() == before {
+        MirStmtKind::ZeroAggregate { local } if *local != param => {
+            names.remove(local);
+        }
+        _ => {}
+    };
+    let mut entry: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+    let mut exit: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for (bi, block) in func.blocks.iter().enumerate() {
+            let mut names: HashSet<LocalId> = if bi == 0 { HashSet::from([param]) } else { HashSet::new() };
+            for p in preds.get(&block.id).into_iter().flatten() {
+                if let Some(out) = exit.get(p) {
+                    names.extend(out.iter().copied());
+                }
+            }
+            if entry.get(&block.id) != Some(&names) {
+                entry.insert(block.id, names.clone());
+                changed = true;
+            }
+            for stmt in &block.statements {
+                step(&mut names, stmt);
+            }
+            if exit.get(&block.id) != Some(&names) {
+                exit.insert(block.id, names);
+                changed = true;
+            }
+        }
+        if !changed {
             break;
         }
     }
 
-    let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
     // A closure this frame builds and frees itself holds the parameter only
     // while the frame runs, so capturing it is a borrow. Its glue frees only
     // what the frame made (`env_drop_glue`), never a parameter. Read as a keep,
@@ -980,7 +1005,9 @@ fn param_is_kept_by(
     let frees_last = crate::closures::closures_the_frame_frees_last(func);
 
     for block in &func.blocks {
+        let mut names = entry.get(&block.id).cloned().unwrap_or_default();
         for stmt in &block.statements {
+            let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
             match &stmt.kind {
                 MirStmtKind::Call { func: fref, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
@@ -1027,11 +1054,12 @@ fn param_is_kept_by(
                 }
                 _ => {}
             }
+            step(&mut names, stmt);
         }
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(op) }
             | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => {
-                if holds(op) {
+                if matches!(op, MirOperand::Local(id) if names.contains(id)) {
                     return true;
                 }
             }
