@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Every stored link is an edge, a local vector's included, so a delete takes
+// the node's entry out of every vector that holds it, including the one a
+// loop is walking (mem.racks/RK15, #1805).
+//
+// The loop read the length once and stepped an index, so each removal made it
+// skip the next entry and then read past the end: deleting a subtree of three
+// children through `for c in kids` panicked with "index is 2 but length is 1".
+// A loop over a vector of links now walks it through a cursor the vector moves
+// back on removal, so it visits every entry still present when it gets there,
+// once.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    id: i32
+    children: Vec<Link<Node>>
+}
+
+struct Tree {
+    nodes: Rack<Node>
+    root: Link<Node>?
+}
+
+func tree_with(n: i32) -> Tree {
+    mut t = Tree(nodes: Rack.new(), root: none)
+    let root = t.nodes.insert(Node(id: 0, children: Vec.new()))
+    t.root = root
+    for i in 0..n {
+        let c = t.nodes.insert(Node(id: i + 1, children: Vec.new()))
+        root.children.push(c)
+    }
+    return t
+}
+
+func child_count(t: Tree) -> usize {
+    if t.root? as r {
+        return r.children.len()
+    }
+    return 0
+}
+
+func delete_subtree(deleting t: Tree, take n: Link<Node>) {
+    let kids = n.children.clone()
+    for c in kids {
+        delete_subtree(deleting t, c)
+    }
+    t.nodes.delete(n)
+}
+
+// Deletes the matching children while walking the root's own child list, and
+// returns the ids in the order the loop saw them.
+func walk_deleting(deleting t: Tree, every: i32) -> Vec<i32> {
+    mut seen: Vec<i32> = Vec.new()
+    if t.root? as r {
+        for c in r.children {
+            seen.push(c.id)
+            if c.id % every == 0 {
+                t.nodes.delete(c)
+            }
+        }
+    }
+    return seen
+}
+
+func first_even(deleting t: Tree) -> i32 {
+    if t.root? as r {
+        for c in r.children {
+            if c.id % 2 == 0 {
+                return c.id
+            }
+            t.nodes.delete(c)
+        }
+    }
+    return -1
+}
+
+func delete_one_then_break(deleting t: Tree) {
+    if t.root? as r {
+        for c in r.children {
+            t.nodes.delete(c)
+            break
+        }
+    }
+}
+
+func pairs_with_inner_delete(deleting t: Tree) -> i32 {
+    mut pairs = 0
+    if t.root? as r {
+        for _a in r.children {
+            // Through the field again: a delete in the inner loop makes any
+            // local link into the rack suspect, the root's included.
+            if t.root? as again {
+                for b in again.children {
+                    pairs = pairs + 1
+                    if b.id == 4 {
+                        t.nodes.delete(b)
+                    }
+                }
+            }
+        }
+    }
+    return pairs
+}
+
+func main() {}
+
+test "deleting a subtree through a cloned child list visits every child" {
+    mut t = tree_with(4)
+    if t.root? as r {
+        delete_subtree(deleting t, r)
+    }
+    assert t.nodes.len() == 0
+    assert t.root is none
+}
+
+test "deleting every entry of the vector being walked" {
+    mut t = tree_with(5)
+    let seen = walk_deleting(deleting t, 1)
+    assert seen.len() == 5
+    assert child_count(t) == 0
+    assert t.nodes.len() == 1
+}
+
+test "deleting some entries still visits the rest, in order" {
+    mut t = tree_with(6)
+    let seen = walk_deleting(deleting t, 2)
+    assert seen.len() == 6
+    for i in 0..6 {
+        assert seen[i] == (i + 1).to<i32>()!
+    }
+    assert child_count(t) == 3
+}
+
+test "returning out of the loop takes the cursor off the vector" {
+    mut t = tree_with(4)
+    assert first_even(deleting t) == 2
+    // The vector goes on being edited after that loop is gone. A cursor left
+    // registered would be moved back inside a dead frame.
+    let seen = walk_deleting(deleting t, 1)
+    assert seen.len() == 3
+    assert child_count(t) == 0
+}
+
+test "breaking out of the loop takes the cursor off the vector" {
+    mut t = tree_with(4)
+    delete_one_then_break(deleting t)
+    assert child_count(t) == 3
+    let seen = walk_deleting(deleting t, 1)
+    assert seen.len() == 3
+    assert child_count(t) == 0
+}
+
+test "nested loops over the same vector both keep their place" {
+    mut t = tree_with(4)
+    // a=1 sees 1, 2, 3, 4 and deletes 4; a=2 and a=3 each see 1, 2, 3.
+    assert pairs_with_inner_delete(deleting t) == 10
+    assert child_count(t) == 3
+}
+
+test "a cloned vector of links is an edge holder of its own" {
+    mut t = tree_with(3)
+    mut copy: Vec<Link<Node>> = Vec.new()
+    if t.root? as r {
+        copy = r.children.clone()
+    }
+    let held = copy.clone()
+    let seen = walk_deleting(deleting t, 2)
+    assert seen.len() == 3
+    assert copy.len() == 2
+    assert held.len() == 2
+}

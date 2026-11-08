@@ -1889,6 +1889,23 @@ impl<'a> MirLowerer<'a> {
         // fields before the value has anywhere to live, so there was no slot to
         // register (mem.racks/RK3). Now there is.
         self.emit_struct_link_registration(local_id, &var_ty);
+        // A container of links that arrives whole — `let w = h.v.clone()`, a
+        // `filter` result — carries edges nothing recorded, the same gap an
+        // assignment closes: every stored link is an edge, a local container's
+        // included (mem.racks/RK3). Records dedupe per (container, target), so
+        // a vector whose pushes already recorded them costs a probe per entry.
+        if let Some(func) = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .map(std::borrow::Cow::into_owned)
+            .and_then(|t| self.ctx.container_link_registration(&t))
+        {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(func.to_string()),
+                args: vec![MirOperand::Local(local_id)],
+            }));
+        }
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.
@@ -3466,7 +3483,7 @@ impl<'a> MirLowerer<'a> {
         body: &[Stmt],
         for_binding: &ForBinding,
     ) -> Result<(), LoweringError> {
-        let setup = self.setup_iter_chain_loop(chain)?;
+        let setup = self.setup_iter_chain_loop_tracked(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
@@ -3536,6 +3553,12 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
+        // The loop ran off its end or broke out: either way it reaches here,
+        // and the cursor comes off the vector before anything else touches it.
+        if let Some(depth) = setup.cursor_depth {
+            self.emit_loop_cleanup(depth);
+            self.ensure_stack.truncate(depth);
+        }
         Ok(())
     }
 

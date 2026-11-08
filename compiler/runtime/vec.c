@@ -32,6 +32,11 @@ struct RaskVec {
     // records themselves (rack.c). Freeing the vector drops them, so a record
     // can't outlive the storage it names — whichever elements it still holds.
     void *link_edges;
+    // Loops walking this vector right now, each a `RaskVecCursor` in its
+    // frame. A removal moves back every cursor past the removed entry, so a
+    // loop whose body deletes nodes the vector links to neither skips an entry
+    // nor reads past the end (#1805).
+    RaskVecCursor *cursors;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
@@ -727,6 +732,9 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
         rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
+    for (RaskVecCursor *c = v->cursors; c; c = c->next) {
+        if (index < c->next_index) c->next_index--;
+    }
     if (out) {
         memcpy(out, v->data + index * v->elem_size, (size_t)v->elem_size);
     }
@@ -739,6 +747,36 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     }
     v->len--;
     return 0;
+}
+
+// ─── Loops that tolerate removal ────────────────────────────
+//
+// A loop over a vector of links can delete the nodes it walks, and each delete
+// takes the node's entry out of the vector. An index loop with the length read
+// up front then skips the entry after each removal and reads past the end. The
+// loop registers its cursor instead and asks for each index; a removal moves
+// the cursor back. Every entry still present when the loop gets to it is
+// visited once.
+
+void rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c) {
+    c->next_index = 0;
+    c->next = v->cursors;
+    v->cursors = c;
+}
+
+// The index to visit next, or -1 when the loop is done.
+int64_t rask_vec_iter_next(RaskVec *v, RaskVecCursor *c) {
+    if (c->next_index >= v->len) return -1;
+    return c->next_index++;
+}
+
+void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c) {
+    for (RaskVecCursor **p = &v->cursors; *p; p = &(*p)->next) {
+        if (*p == c) {
+            *p = c->next;
+            return;
+        }
+    }
 }
 
 // clone — deep copy of the Vec (copies element bytes, not deep-cloning elements).

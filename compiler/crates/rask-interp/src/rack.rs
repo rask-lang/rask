@@ -214,6 +214,32 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
     }
 }
 
+/// Record every link a vector already holds, for a vector of links that
+/// arrives whole: `let w = h.v.clone()`, a `filter` result. Every stored link
+/// is an edge, a local vector's included (mem.racks/RK15); records are one per
+/// (vector, target), so a vector whose pushes already did it changes nothing.
+pub fn register_vec_links(value: &Value) {
+    let Value::Vec(v) = value else { return };
+    let items: Vec<Value> = v.lock().unwrap().items.clone();
+    if items.first().and_then(any_link).is_none() {
+        return;
+    }
+    for item in &items {
+        register_element(v, item);
+    }
+}
+
+/// Whether `v` is a link whose node has been deleted. A loop over a vector of
+/// links walks a snapshot, and a delete in its body takes the entry out of the
+/// vector itself; the loop skips what is no longer there (mem.racks/RK15).
+pub fn link_is_dead(v: &Value) -> bool {
+    let Some((rack_id, node)) = any_link(v) else { return false };
+    match crate::value::rack_by_id(rack_id) {
+        Some(rack) => rack.lock().unwrap().index_of(&node).is_none(),
+        None => true,
+    }
+}
+
 /// Record an edge inserted into an index. Same one-per-(map, target) shape as
 /// `register_element`; `old` is the displaced value when a key is overwritten.
 pub fn register_entry(

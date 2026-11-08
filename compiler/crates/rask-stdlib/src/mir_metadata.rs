@@ -440,6 +440,11 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // holding. Same shape — it reads the container and owns nothing.
     ("Link_forget_vec", Internal::FreshFromReceiver),
     ("Link_forget_map", Internal::FreshFromReceiver),
+    // A loop's cursor on the vector it walks: the vector keeps the address
+    // between begin and end and owns nothing through it.
+    ("Vec_iter_begin", Internal::FreshFromReceiver),
+    ("Vec_iter_next", Internal::FreshFromReceiver),
+    ("Vec_iter_end", Internal::FreshFromReceiver),
 
     // ── Consume the receiver ────────────────────────────────────
     // The frees this pipeline emits for itself. They take the container and it

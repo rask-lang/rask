@@ -111,6 +111,13 @@ int64_t rask_resource_is_consumed(int64_t token);
 
 typedef struct RaskVec RaskVec;
 
+// A loop's place in a vector it walks, in the loop's frame. Two words, so
+// lowering can hold it as a `(i64, i64)` tuple local.
+typedef struct RaskVecCursor {
+    int64_t                next_index;
+    struct RaskVecCursor  *next;
+} RaskVecCursor;
+
 // Where the strings sit inside one element.
 //
 // A container is a byte store: it knows how big an element is and nothing
@@ -824,6 +831,11 @@ void      rask_link_register_struct(void *base, int64_t field_count, const int32
 // `holder_died` drops every record on the chain; a container's free calls it,
 // so no record outlives the storage it names.
 void    **rask_vec_link_edges(RaskVec *v);
+// A `for` over a vector of links registers its cursor, so a delete in the body
+// that removes an entry moves the cursor instead of the loop skipping one.
+void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c);
+int64_t   rask_vec_iter_next(RaskVec *v, RaskVecCursor *c);
+void      rask_vec_iter_end(RaskVec *v, RaskVecCursor *c);
 void    **rask_map_link_edges(RaskMap *m);
 void      rask_link_holder_died(void **head);
 

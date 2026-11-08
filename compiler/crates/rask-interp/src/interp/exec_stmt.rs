@@ -33,6 +33,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
+                crate::rack::register_vec_links(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -56,6 +57,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
+                crate::rack::register_vec_links(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -94,6 +96,9 @@ impl Interpreter {
 
             StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_owned(value)?;
+                // Same as a binding: a vector of links that arrives whole is
+                // an edge holder from here on.
+                crate::rack::register_vec_links(&val);
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
@@ -461,6 +466,11 @@ impl Interpreter {
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
                         for item in items {
+                            // A delete earlier in this loop took the entry out
+                            // of the vector; the snapshot still has it.
+                            if crate::rack::link_is_dead(&item) {
+                                continue;
+                            }
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {

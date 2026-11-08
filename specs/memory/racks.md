@@ -46,9 +46,30 @@ silent if you forget it.
 | **RK2: A link is a stored reference** | `Link<T>` may be held in a struct field, which no other Rask reference may be (`mem.borrowing/B1`). That is the whole point of the type. It is a machine word naming a node, so it copies rather than moves — pushing a link into a `Vec` leaves you with the link you started with, and the rack still owns the node. What kills a link is the delete, not the handing over: see RK5. A link reads like its node: `l.field` is the node's field and `l.method()` the node's method, borrowing the node in place. Only identity (`==`, `hash`) and `clone` are the link's own, and a `take self` method can't be called through one, since it would move the node out of the rack (E0910) |
 | **RK3: Delete nulls every incoming edge** | `rack.delete(n)` sets every `Link<T>?` field pointing at `n` to `none` before it returns. A link to a deleted node therefore cannot be observed — there is no stale link to check for, and no cleanup for the program to remember |
 | **RK4: Reads are unchecked** | Following a link is a pointer dereference. RK3 is what earns that: the invalid state doesn't exist, so nothing needs testing for it |
+| **RK15: Every stored link is an edge** | RK3 covers a link wherever it is stored: a field at any depth, a tuple or array element, a `Vec` or `Map` entry, and a container held in a local. A slot is set to `none`; a container entry is removed. A *local link* is a root the compiler guards (RK5); a *local container* of links is storage the rack maintains. A loop over a vector of links keeps its place across those removals: it visits each entry still present when it gets there, once |
 
 RK3 is why the rack exists as an object. Nulling incoming edges requires knowing
 who points at whom, and that index needs one home per graph.
+
+RK15 settles a case the two neighbouring rules leave open. A local link is a
+root because the rack can't reach it, so the compiler stops you using it after
+a delete. A local vector of links can be reached: it registers its entries like
+any other holder. So a cloned child list is a list of live children, and
+deleting while walking one is ordinary code:
+
+<!-- test: skip -->
+```rask
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids {
+        delete_subtree(deleting scene, c)    // removes c from kids, and from n.children
+    }
+    scene.nodes.delete(n)
+}
+```
+
+The loop doesn't skip the child after each removal, and it doesn't run off the
+end. It walks the vector through a cursor that a removal moves back.
 
 ## What the compiler enforces
 
