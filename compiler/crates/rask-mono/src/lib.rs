@@ -1040,6 +1040,7 @@ mod tests {
             conformance_disambiguation: std::collections::HashMap::new(),
             conformance_interfaces: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
+            pattern_targets: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
