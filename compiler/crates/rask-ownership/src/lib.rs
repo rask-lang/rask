@@ -505,11 +505,6 @@ struct FieldView {
     /// The declaration `root` resolves to, so a later binding that reuses the
     /// name isn't taken for it.
     root_sym: Option<u32>,
-    /// The field is a container handle (`Vec`, `Map`, `Set`): the view shares
-    /// it, so a method writing through the field itself grows or clears what
-    /// the view reads and frees nothing. A struct field is a copy, and a
-    /// `mutate self` method on it can replace one of its own fields.
-    handle: bool,
 }
 
 /// A value a container lent out, carried from wherever the walk found it to
@@ -2364,7 +2359,6 @@ impl<'a> OwnershipChecker<'a> {
             bound: None,
             block: self.current_block,
             root_sym: self.root_symbol(expr),
-            handle: self.node_ty(&expr.id).is_some_and(|t| self.is_handle_type(t)),
         })
     }
 
@@ -2392,13 +2386,11 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Writing over `place` frees what it held, so a view still in scope of
     /// it, of a field inside it or of the value around it would read freed
-    /// storage (mem.borrowing/S1, S5): E0958 at the write. `whole_only` is a
-    /// call given `place` to write through, which can replace what's inside
-    /// it but not the place's own handle when a view names exactly that.
+    /// storage (mem.borrowing/S1, S5): E0958 at the write.
     ///
     /// A read the refill pairs with is a move, never a view, so
     /// consume-and-replace stays legal.
-    fn check_views_at_write(&mut self, place: &Expr, at: Span, inside_only: bool) {
+    fn check_views_at_write(&mut self, place: &Expr, at: Span) {
         let (Some(root), fields) = Self::extract_root_and_fields(place) else {
             return;
         };
@@ -2409,9 +2401,6 @@ impl<'a> OwnershipChecker<'a> {
                 return false;
             }
             let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
-            if inside_only && view.handle && viewed.len() <= fields.len() {
-                return false;
-            }
             let n = viewed.len().min(fields.len());
             viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
         };
@@ -2465,16 +2454,6 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// A container whose value is a handle to storage it shares.
-    fn is_handle_type(&self, ty: &Type) -> bool {
-        let name = match ty {
-            Type::Generic { base, .. } => self.program.types.type_name(*base),
-            Type::UnresolvedGeneric { name, .. } => name.clone(),
-            _ => return false,
-        };
-        matches!(name.as_str(), "Vec" | "Map" | "Set")
-    }
-
     /// A read of a place that overlaps a field a paired read moved out and
     /// the refill hasn't put back: the field itself, something inside it, or
     /// the whole value around it. Natively the slot is empty there.
@@ -2503,21 +2482,15 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// A call writing through what it's given: an argument marked `mutate`
-    /// or `deleting` may be replaced whole, and a `mutate self` receiver may
-    /// have a field inside it replaced. Its own handle stays: `log.push(x)`
-    /// with `old` viewing `log` grows the vector `old` reads, and frees
-    /// nothing.
-    fn check_views_at_writing_call(&mut self, receiver: Option<&Expr>, args: &[CallArg], at: Span) {
-        if self.field_views.is_empty() {
+    /// A call given a place to write through: an argument marked `mutate` or
+    /// `deleting` may be replaced whole.
+    fn check_views_at_writing_call(&mut self, args: &[CallArg], at: Span) {
+        if self.field_views.is_empty() && self.shadowed_views.is_empty() {
             return;
-        }
-        if let Some(r) = receiver {
-            self.check_views_at_write(r, at, true);
         }
         for arg in args {
             if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
-                self.check_views_at_write(&arg.expr, at, false);
+                self.check_views_at_write(&arg.expr, at);
             }
         }
     }
@@ -2555,7 +2528,6 @@ impl<'a> OwnershipChecker<'a> {
                     bound: Some((name.to_string(), init.span)),
                     block: self.current_block,
                     root_sym: self.root_symbol(init),
-                    handle: self.node_ty(&init.id).is_some_and(|t| self.is_handle_type(t)),
                 })
             }),
         };
@@ -2864,7 +2836,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let (Some(root), Some(fields)) = Self::extract_root_and_fields(target) {
                     self.taken_fields.retain(|(r, f, ..)| !(*r == root && *f == fields));
                 }
-                self.check_views_at_write(target, stmt.span, false);
+                self.check_views_at_write(target, stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
@@ -3328,7 +3300,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
-                self.check_views_at_writing_call(None, args, expr.span);
+                self.check_views_at_writing_call(args, expr.span);
                 // #296/PM3: a `take` parameter consumes its argument with no
                 // call-site marker. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
@@ -3431,8 +3403,11 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
-                let receiver = self.is_mutate_self_method(object, method).then_some(object.as_ref());
-                self.check_views_at_writing_call(receiver, args, expr.span);
+                // Not the receiver of a `mutate self` method: most of those
+                // write other fields (`self.set_reg(…)` in a loop reading
+                // `self.code`), and telling which needs a per-method summary
+                // of what each one replaces (#1851).
+                self.check_views_at_writing_call(args, expr.span);
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
                 }

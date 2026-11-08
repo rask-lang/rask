@@ -7472,7 +7472,7 @@ fn error_int_float_arithmetic() {
 fn error_field_view_outlives_replace() {
     let (failed, out) = compile_error_output("field_view_outlives_replace.rk");
     assert!(failed, "a view read after its field was replaced must be rejected: {}", out);
-    assert_eq!(out.matches("error[E0958]").count(), 8, "eight sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0958]").count(), 6, "six sites, no more: {}", out);
     assert_eq!(out.matches("error[E0959]").count(), 1, "one read of an emptied field: {}", out);
     assert!(out.contains("written over while"), "should say what happened: {}", out);
 }

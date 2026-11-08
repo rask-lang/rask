@@ -37,10 +37,6 @@ extend Holder {
         self.log = Vec.new()
         return old.len()
     }
-
-    func reset(mutate self) {
-        self.log = Vec.new()
-    }
 }
 
 // Fine: growing the vector a view reads frees nothing.
@@ -48,28 +44,6 @@ func grow(mutate h: Holder) -> usize {
     let f = h.log
     h.log.push("more")
     return f.len()
-}
-
-struct Cfg {
-    list: Vec<string>
-}
-
-extend Cfg {
-    func wipe(mutate self) {
-        self.list = Vec.new()
-    }
-}
-
-struct Outer {
-    cfg: Cfg
-}
-
-// ERROR: a struct field's view is a copy, and a `mutate self` method on the
-// field itself can replace what it holds [E0958]
-func wipe_under_view(mutate p: Outer) -> usize {
-    let old = p.cfg
-    p.cfg.wipe()
-    return old.list.len()
 }
 
 // ERROR: an inner `let` reusing the view's name doesn't hide it from the
@@ -130,17 +104,15 @@ func main() {
         i += 1
     }
 
-    // ERROR: a call writing through `h` or `mutate self` can replace the
-    // field under a view [E0958 twice]
+    // ERROR: a call given `h` to write through can replace the field under
+    // a view [E0958]
     let d = h.log
     reset_log(mutate h)
-    let e = h.log
-    h.reset()
 
     // ERROR: between the move and the refill the field is empty [E0959]
     let g = h.log
     println("{h.log.len()}")
     h.log = Vec.new()
 
-    println("{a.len()} {d.len()} {e.len()} {grow(mutate h)} {g.len()} {h.swap(1)} {h.swap_or_stop(true)}")
+    println("{a.len()} {d.len()} {grow(mutate h)} {g.len()} {h.swap(1)} {h.swap_or_stop(true)}")
 }
