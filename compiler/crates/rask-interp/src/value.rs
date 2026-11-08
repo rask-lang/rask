@@ -1019,15 +1019,19 @@ pub struct VecData {
     /// CP2: the ceiling this vector may not grow past. `None` is unbounded.
     /// `Vec.fixed(0)` is a real bound of zero, so it can't be spelled with 0.
     pub bound: Option<usize>,
+    /// Set when the node that owned this vector is deleted: natively the
+    /// vector is freed with it, so a loop still walking it stops there
+    /// (mem.racks/RK15).
+    pub freed: bool,
 }
 
 impl VecData {
     pub fn new(items: Vec<Value>) -> Self {
-        VecData { items, bound: None }
+        VecData { items, bound: None, freed: false }
     }
 
     pub fn fixed(n: usize) -> Self {
-        VecData { items: Vec::with_capacity(n), bound: Some(n) }
+        VecData { items: Vec::with_capacity(n), bound: Some(n), freed: false }
     }
 
     /// CP2: at the bound, and so refusing further growth.

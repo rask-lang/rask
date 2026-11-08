@@ -218,6 +218,7 @@ impl Interpreter {
                 let cloned = crate::value::VecData {
                     items: guard.items.iter().map(Value::clone_as_element).collect(),
                     bound: guard.bound,
+                    freed: false,
                 };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }

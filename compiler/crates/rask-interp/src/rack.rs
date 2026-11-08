@@ -219,13 +219,29 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
 /// is an edge, a local vector's included (mem.racks/RK15); records are one per
 /// (vector, target), so a vector whose pushes already did it changes nothing.
 pub fn register_vec_links(value: &Value) {
-    let Value::Vec(v) = value else { return };
-    let items: Vec<Value> = v.lock().unwrap().items.clone();
-    if items.first().and_then(any_link).is_none() {
-        return;
+    match value {
+        Value::Vec(v) => {
+            let items: Vec<Value> = v.lock().unwrap().items.clone();
+            for item in &items {
+                register_element(v, item);
+            }
+        }
+        Value::Map(m) => {
+            let values: Vec<Value> = m.lock().unwrap().iter().map(|(_, v)| v.clone()).collect();
+            for value in &values {
+                register_entry(m, None, value);
+            }
+        }
+        _ => {}
     }
-    for item in &items {
-        register_element(v, item);
+}
+
+/// Whether a loop entry names a deleted node: a link, or the link in an
+/// `enumerate` pair.
+pub fn entry_is_dead(v: &Value) -> bool {
+    match v {
+        Value::Tuple(items) => items.last().is_some_and(link_is_dead),
+        _ => link_is_dead(v),
     }
 }
 
@@ -328,6 +344,29 @@ pub fn register_nested(value: &Value, depth: usize) {
 /// `edges_fixed=1 holders_visited=1` on the interpreter and `0/0` natively,
 /// because a removed node's `prev` was still recorded on the node it had
 /// pointed at (#983).
+/// The vectors a dying node holds by value are freed with it natively. Mark
+/// them, so a loop still walking one stops as the native one does.
+fn mark_owned_vecs_freed(value: &Value, depth: usize) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+    match value {
+        Value::Struct(s) => {
+            let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
+            for v in &fields {
+                mark_owned_vecs_freed(v, depth + 1);
+            }
+        }
+        Value::Tuple(items) => {
+            for v in items.iter() {
+                mark_owned_vecs_freed(v, depth + 1);
+            }
+        }
+        Value::Vec(v) => v.lock().unwrap().freed = true,
+        _ => {}
+    }
+}
+
 fn forget_own_edges(value: &Value, depth: usize) {
     if depth >= MAX_DEPTH {
         return;
@@ -508,6 +547,7 @@ pub fn delete_node(
     // targets must stop naming it, or a later delete of one of them walks a
     // record for a node that no longer exists.
     forget_own_edges(&Value::Struct(Arc::clone(node)), 0);
+    mark_owned_vecs_freed(&Value::Struct(Arc::clone(node)), 0);
 
     DELETES.fetch_add(1, Ordering::Relaxed);
     HOLDERS_VISITED.fetch_add(holders.len(), Ordering::Relaxed);

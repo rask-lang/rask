@@ -678,7 +678,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Link_forget_map", "rask_link_forget_map", &[types::I64], None, false),
         // A `for` over a vector of links keeps its place in a cursor the
         // vector can move back when a delete removes an entry (#1805).
-        StdlibEntry::simple("Vec_iter_begin", "rask_vec_iter_begin", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("Vec_iter_begin", "rask_vec_iter_begin", &[types::I64, types::I64, types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_iter_next", "rask_vec_iter_next", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_iter_end", "rask_vec_iter_end", &[types::I64, types::I64], None, false),
 

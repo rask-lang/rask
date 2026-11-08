@@ -111,10 +111,17 @@ int64_t rask_resource_is_consumed(int64_t token);
 
 typedef struct RaskVec RaskVec;
 
-// A loop's place in a vector it walks, in the loop's frame. Two words, so
-// lowering can hold it as a `(i64, i64)` tuple local.
+// A loop's place in a vector it walks, in the loop's frame. Four words, so
+// lowering can hold it as a tuple local.
+//
+// `end` is fixed when the loop starts, as the length read up front was: an
+// entry appended during the loop isn't visited. A removal moves both
+// `next_index` and `end` back. `detached` is set when the vector is freed
+// while the loop is still walking it, so the loop stops instead of reading it.
 typedef struct RaskVecCursor {
     int64_t                next_index;
+    int64_t                end;
+    int64_t                detached;
     struct RaskVecCursor  *next;
 } RaskVecCursor;
 
@@ -833,7 +840,7 @@ void      rask_link_register_struct(void *base, int64_t field_count, const int32
 void    **rask_vec_link_edges(RaskVec *v);
 // A `for` over a vector of links registers its cursor, so a delete in the body
 // that removes an entry moves the cursor instead of the loop skipping one.
-void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c);
+void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end);
 int64_t   rask_vec_iter_next(RaskVec *v, RaskVecCursor *c);
 void      rask_vec_iter_end(RaskVec *v, RaskVecCursor *c);
 void    **rask_map_link_edges(RaskMap *m);

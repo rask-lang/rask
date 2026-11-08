@@ -171,3 +171,169 @@ test "a cloned vector of links is an edge holder of its own" {
     assert copy.len() == 2
     assert held.len() == 2
 }
+
+// An entry pushed during the loop isn't visited: the loop's end is where the
+// vector ended when it started, moved back by removals and nothing else. A
+// cursor that re-read the length ran this forever.
+func add_child(mutate t: Tree, id: i32) {
+    if t.root? as r {
+        let c = t.nodes.insert(Node(id: id, children: Vec.new()))
+        r.children.push(c)
+    }
+}
+
+func grow_while_walking(mutate t: Tree) -> i32 {
+    mut n = 0
+    if t.root? as r {
+        for _c in r.children {
+            n = n + 1
+            add_child(mutate t, 100 + n)
+        }
+    }
+    return n
+}
+
+test "entries pushed during the loop aren't visited" {
+    mut t = tree_with(3)
+    assert grow_while_walking(mutate t) == 3
+    assert child_count(t) == 6
+}
+
+// A temporary is registered before the loop walks it, or a delete in the body
+// leaves it naming a freed node.
+func walk_a_copy(deleting t: Tree) -> Vec<i32> {
+    mut seen: Vec<i32> = Vec.new()
+    if t.root? as r {
+        for c in r.children.clone() {
+            seen.push(c.id)
+            if c.id == 1 {
+                delete_by_id(deleting t, 3)
+            }
+        }
+    }
+    return seen
+}
+
+func delete_by_id(deleting t: Tree, id: i32) {
+    if t.root? as r {
+        for c in r.children {
+            if c.id == id {
+                t.nodes.delete(c)
+                return
+            }
+        }
+    }
+}
+
+test "a temporary copy being walked loses a node deleted ahead of the loop" {
+    mut t = tree_with(5)
+    let seen = walk_a_copy(deleting t)
+    assert seen.len() == 4
+    assert seen[2] == 4
+}
+
+func enumerate_deleting(deleting t: Tree) -> Vec<i64> {
+    mut out: Vec<i64> = Vec.new()
+    if t.root? as r {
+        for (i, c) in r.children.enumerate() {
+            out.push(i.to<i64>()! * 10 + c.id.to<i64>()!)
+            if c.id % 2 == 1 {
+                t.nodes.delete(c)
+            }
+        }
+    }
+    return out
+}
+
+test "enumerate numbers the entries it visits, deletes or not" {
+    mut t = tree_with(4)
+    let out = enumerate_deleting(deleting t)
+    assert out.len() == 4
+    for i in 0..4 {
+        assert out[i] == (i * 10 + i + 1).to<i64>()!
+    }
+    assert child_count(t) == 2
+}
+
+func skip_take_deleting(deleting t: Tree) -> Vec<i32> {
+    mut seen: Vec<i32> = Vec.new()
+    if t.root? as r {
+        for c in r.children.skip(1).take(4) {
+            seen.push(c.id)
+            t.nodes.delete(c)
+        }
+    }
+    return seen
+}
+
+test "skip and take keep their bounds across deletes" {
+    mut t = tree_with(8)
+    let seen = skip_take_deleting(deleting t)
+    assert seen.len() == 4
+    for i in 0..4 {
+        assert seen[i] == (i + 2).to<i32>()!
+    }
+    assert child_count(t) == 4
+}
+
+struct Optionals {
+    o: Vec<Link<Node>?>
+}
+
+test "a cloned vector of optional links is an edge holder too" {
+    mut t = tree_with(3)
+    mut h = Optionals(o: Vec.new())
+    h.o.push(none)
+    if t.root? as r {
+        for c in r.children {
+            h.o.push(c)
+        }
+    }
+    let copy = h.o.clone()
+    walk_deleting(deleting t, 1)
+    assert copy.len() == 1
+    assert h.o.len() == 1
+}
+
+struct Index {
+    by_id: Map<i32, Link<Node>>
+}
+
+test "a cloned map of links is an edge holder too" {
+    mut t = tree_with(3)
+    mut x = Index(by_id: Map.new())
+    if t.root? as r {
+        for c in r.children {
+            x.by_id.insert(c.id, c)
+        }
+    }
+    let copy = x.by_id.clone()
+    walk_deleting(deleting t, 1)
+    assert copy.len() == 0
+    assert x.by_id.len() == 0
+}
+
+func kill_root(deleting t: Tree) {
+    if t.root? as r {
+        t.nodes.delete(r)
+    }
+}
+
+func walk_then_kill_owner(deleting t: Tree) -> i32 {
+    mut n = 0
+    if t.root? as r {
+        for _c in r.children {
+            n = n + 1
+            if n == 2 {
+                kill_root(deleting t)
+            }
+        }
+    }
+    return n
+}
+
+test "deleting the node that owns the vector ends the loop" {
+    mut t = tree_with(4)
+    assert walk_then_kill_owner(deleting t) == 2
+    assert t.nodes.len() == 4
+}

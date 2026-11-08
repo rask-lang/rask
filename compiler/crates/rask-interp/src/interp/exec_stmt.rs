@@ -466,9 +466,14 @@ impl Interpreter {
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
                         for item in items {
+                            // The body deleted the node that owned the vector,
+                            // and the vector went with it.
+                            if v.lock().unwrap().freed {
+                                break;
+                            }
                             // A delete earlier in this loop took the entry out
                             // of the vector; the snapshot still has it.
-                            if crate::rack::link_is_dead(&item) {
+                            if crate::rack::entry_is_dead(&item) {
                                 continue;
                             }
                             self.env.push_scope();
@@ -637,6 +642,13 @@ impl Interpreter {
         }
 
         let item = args.into_iter().next().unwrap_or(Value::Unit);
+        // An adapter chain over a vector of links (`v.filter(…)`,
+        // `v.enumerate()`) yields entries the body may have deleted since the
+        // source read them; the loop doesn't visit those (mem.racks/RK15).
+        if crate::rack::entry_is_dead(&item) {
+            self.yield_stack.push(frame);
+            return Value::Bool(true);
+        }
         // Rebind the loop's own variables on top of the sequence's frame. The
         // body reads and writes the scope the `for` sits in, not the one the
         // yield was called from.

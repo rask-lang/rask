@@ -288,13 +288,15 @@ extend Vec<T> {
     /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
     /// spelling anyone writes, and not a second `.iter()`.
     public func as_sequence(self) -> Sequence<T> {
+        // A `for`, not an index walk: an adapter chain over a vector of links
+        // can delete nodes the vector names, and the `for` keeps its place
+        // across those removals where `i` would skip the next entry
+        // (mem.racks/RK15).
         return |yield| {
-            mut i = 0
-            while i < self.len() {
-                if !yield(self[i]) {
+            for x in self {
+                if !yield(x) {
                     return
                 }
-                i = i + 1
             }
         }
     }

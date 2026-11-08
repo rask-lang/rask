@@ -529,6 +529,33 @@ pub struct LinkSlot {
     pub offset: u32,
 }
 
+/// The struct layouts that hold a `Rack` anywhere inside them, by value: in a
+/// field, a nested struct, a tuple or array, or an optional's payload.
+pub fn rack_holding_structs(fields: &FieldTypes) -> std::collections::HashSet<u32> {
+    fn holds(ty: &MirType, holders: &std::collections::HashSet<u32>) -> bool {
+        match ty {
+            MirType::Container(ContainerKind::Rack) => true,
+            MirType::Struct(id) => holders.contains(&id.id),
+            MirType::Tuple(parts) => parts.iter().any(|p| holds(p, holders)),
+            MirType::Array { elem, .. } | MirType::Option(elem) => holds(elem, holders),
+            MirType::Result { ok, err } => holds(ok, holders) || holds(err, holders),
+            _ => false,
+        }
+    }
+    let mut holders = std::collections::HashSet::new();
+    loop {
+        let before = holders.len();
+        for (id, tys) in fields.structs.iter().enumerate() {
+            if !holders.contains(&(id as u32)) && tys.iter().any(|t| holds(t, &holders)) {
+                holders.insert(id as u32);
+            }
+        }
+        if holders.len() == before {
+            return holders;
+        }
+    }
+}
+
 /// Every place a value of type `ty` holds an edge, offsets from the value's
 /// start.
 ///

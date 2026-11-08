@@ -435,6 +435,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_register_struct", Internal::FreshFromReceiver),
     ("Link_register_element", Internal::FreshFromReceiver),
     ("Link_register_vec", Internal::FreshFromReceiver),
+    ("Link_register_map", Internal::FreshFromReceiver),
     ("Link_register_entry", Internal::FreshFromReceiver),
     // The other half: drop the records of a container a place has stopped
     // holding. Same shape — it reads the container and owns nothing.

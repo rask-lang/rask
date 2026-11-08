@@ -30,6 +30,10 @@ pub(super) struct IterLoopSetup {
     /// `ensure_stack` depth below the cleanup that unregisters it, which the
     /// loop's exit runs (`setup_iter_chain_loop_tracked`).
     pub(super) cursor_depth: Option<usize>,
+    /// What `enumerate` numbers the element with. `idx` for a plain loop; for
+    /// a cursor loop a count of what it visited, since a removal moves the
+    /// index back and the same index would come up twice.
+    pub(super) position: LocalId,
 }
 
 /// Which `skip`/`take` adapters can't be loop bounds.
@@ -985,23 +989,48 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| self.collection_elem_of_expr(chain.source))
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:chain_elem"));
 
-        // A positional `skip`/`take` fixes the bounds up front, which a moving
-        // cursor can't honour; those loops keep the plain index.
-        let cursor = (tolerate_removal
-            && array_len.is_none()
-            && start_val.is_none()
-            && !took
-            && elem_ty.is_link_slot())
+        // A `skip`/`take` that sets the bounds hands them to the cursor, which
+        // moves them back with every removal the same as it moves itself.
+        let start_op = start_val.clone().unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+        let cursor = (tolerate_removal && array_len.is_none() && elem_ty.is_link_slot())
             .then(|| {
+                // The vector may be one nothing has registered: a temporary
+                // (`for c in n.children.clone()`), or a parameter a caller
+                // filled from one. Unregistered, a delete in the body leaves
+                // its entry naming a freed node. A field was registered where
+                // it was stored; anything else is registered here, which for a
+                // vector already registered costs a probe per entry.
+                if !matches!(chain.source.kind, ExprKind::Field { .. }) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("Link_register_vec".to_string()),
+                        args: vec![MirOperand::Local(collection)],
+                    }));
+                }
+                // A temporary is nobody's once the loop is done, though its
+                // free may come later; its records go with the loop.
+                let temporary = !matches!(chain.source.kind, ExprKind::Field { .. } | ExprKind::Ident(_));
                 let depth = self.ensure_stack.len();
-                let cursor = self.builder.alloc_temp(MirType::Tuple(vec![MirType::I64, MirType::Ptr]));
+                let cursor = self.builder.alloc_temp(MirType::Tuple(vec![
+                    MirType::I64, MirType::I64, MirType::I64, MirType::Ptr,
+                ]));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::internal("Vec_iter_begin".to_string()),
-                    args: vec![MirOperand::Local(collection), MirOperand::Local(cursor)],
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(cursor),
+                        start_op.clone(),
+                        end_op.clone(),
+                    ],
                 }));
-                self.push_cursor_cleanup(collection, cursor);
-                (cursor, depth)
+                self.push_cursor_cleanup(collection, cursor, temporary);
+                let visited = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: visited,
+                    rvalue: MirRValue::Use(start_op.clone()),
+                }));
+                (cursor, depth, visited)
             });
 
         let idx = self.builder.alloc_temp(MirType::I64);
@@ -1020,7 +1049,7 @@ impl<'a> MirLowerer<'a> {
         // check: idx < end, or the cursor's next index is a real one
         self.builder.switch_to_block(check_block);
         let cond = self.builder.alloc_temp(MirType::Bool);
-        if let Some((cursor, _)) = cursor {
+        if let Some((cursor, _, _)) = cursor {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(idx),
                 func: FunctionRef::internal("Vec_iter_next".to_string()),
@@ -1070,6 +1099,26 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let position = match cursor {
+            Some((_, _, visited)) => {
+                let position = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: position,
+                    rvalue: MirRValue::Use(MirOperand::Local(visited)),
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: visited,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Add,
+                        left: MirOperand::Local(visited),
+                        right: MirOperand::Constant(MirConst::Int(1)),
+                    },
+                }));
+                position
+            }
+            None => idx,
+        };
+
         Ok(IterLoopSetup {
             collection,
             idx,
@@ -1079,14 +1128,15 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             check_block,
             counted,
-            cursor_depth: cursor.map(|(_, depth)| depth),
+            cursor_depth: cursor.map(|(_, depth, _)| depth),
+            position,
         })
     }
 
     /// Schedule the cursor's unregistration as a scope cleanup, the shape a
     /// `with` guard uses: every exit from the function chains through it, and
     /// the loop's own exit runs it inline.
-    fn push_cursor_cleanup(&mut self, collection: LocalId, cursor: LocalId) {
+    fn push_cursor_cleanup(&mut self, collection: LocalId, cursor: LocalId, temporary: bool) {
         let cleanup_block = self.builder.create_block();
         let continue_block = self.builder.create_block();
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
@@ -1097,6 +1147,13 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_iter_end".to_string()),
             args: vec![MirOperand::Local(collection), MirOperand::Local(cursor)],
         }));
+        if temporary {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Link_forget_vec".to_string()),
+                args: vec![MirOperand::Local(collection)],
+            }));
+        }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
         self.ensure_stack.push(cleanup_block);
         self.builder.switch_to_block(continue_block);
@@ -1142,7 +1199,7 @@ impl<'a> MirLowerer<'a> {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
                         offset: 0,
-                        value: MirOperand::Local(idx),
+                        value: MirOperand::Local(setup.position),
                         store_size: MirType::I64.size(),
                         field: None,
                     }));

@@ -1469,7 +1469,9 @@ impl<'a> MirContext<'a> {
             rask_types::GenericArg::Type(t) => Some(t),
             _ => None,
         })?;
-        if !self.is_link_type(value) {
+        // `Vec<Link<T>?>` holds edges the same as `Vec<Link<T>>`; its `none`
+        // entries are skipped by the registration.
+        if !self.is_link_type(value.as_option().unwrap_or(value)) {
             return None;
         }
         match head.as_str() {

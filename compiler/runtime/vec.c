@@ -40,6 +40,7 @@ struct RaskVec {
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
+static void vec_detach_cursors(RaskVec *v);
 
 // ─── Element buffer ─────────────────────────────────────────
 //
@@ -415,6 +416,7 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
 void rask_vec_free_view(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    vec_detach_cursors(v);
     if (v->link_edges) rask_link_holder_died(&v->link_edges);
     vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
@@ -433,9 +435,17 @@ void rask_vec_copy_back(const RaskVec *v, char *dst) {
 // The map came from the constructor: `Vec<string>` is the one-entry case at
 // offset zero, a `Vec<Holder>` lists each string field, and elements that own
 // nothing have no map at all.
+// A loop is still walking this vector — the body deleted the node that owned
+// it. The loop's next step stops, and its exit leaves the vector alone.
+static void vec_detach_cursors(RaskVec *v) {
+    for (RaskVecCursor *c = v->cursors; c; c = c->next) c->detached = 1;
+    v->cursors = NULL;
+}
+
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    vec_detach_cursors(v);
     if (v->link_edges) rask_link_holder_died(&v->link_edges);
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
@@ -734,6 +744,7 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     }
     for (RaskVecCursor *c = v->cursors; c; c = c->next) {
         if (index < c->next_index) c->next_index--;
+        if (index < c->end) c->end--;
     }
     if (out) {
         memcpy(out, v->data + index * v->elem_size, (size_t)v->elem_size);
@@ -758,19 +769,26 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
 // the cursor back. Every entry still present when the loop gets to it is
 // visited once.
 
-void rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c) {
-    c->next_index = 0;
+// `[start, end)` is what the loop walks — a `skip`/`take` narrows it — and is
+// clamped to the vector as it stands.
+void rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end) {
+    if (start < 0) start = 0;
+    if (end > v->len) end = v->len;
+    c->next_index = start;
+    c->end = end;
+    c->detached = 0;
     c->next = v->cursors;
     v->cursors = c;
 }
 
 // The index to visit next, or -1 when the loop is done.
 int64_t rask_vec_iter_next(RaskVec *v, RaskVecCursor *c) {
-    if (c->next_index >= v->len) return -1;
+    if (c->detached || c->next_index >= c->end || c->next_index >= v->len) return -1;
     return c->next_index++;
 }
 
 void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c) {
+    if (c->detached) return;
     for (RaskVecCursor **p = &v->cursors; *p; p = &(*p)->next) {
         if (*p == c) {
             *p = c->next;
