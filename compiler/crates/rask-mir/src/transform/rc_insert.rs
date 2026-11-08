@@ -37,6 +37,7 @@ pub fn insert_rc_ops(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
     closure_keeps: &ClosureKeeps,
+    rack_holders: &HashSet<u32>,
 ) -> Vec<CarriedSite> {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::Buffer);
 
@@ -91,7 +92,7 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps)
+    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps, rack_holders)
 }
 
 /// One site that builds a heap closure, and the aggregate captures it handed
@@ -475,6 +476,17 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
     }
 }
 
+/// Whether a value of `ty` holds a rack by value (`rack_holding_structs`).
+fn holds_rack(ty: &MirType, rack_holders: &HashSet<u32>) -> bool {
+    match ty {
+        MirType::Struct(id) => rack_holders.contains(&id.id),
+        MirType::Tuple(parts) => parts.iter().any(|p| holds_rack(p, rack_holders)),
+        MirType::Array { elem, .. } | MirType::Option(elem) => holds_rack(elem, rack_holders),
+        MirType::Result { ok, err } => holds_rack(ok, rack_holders) || holds_rack(err, rack_holders),
+        _ => false,
+    }
+}
+
 /// Release the strings an aggregate holds when the aggregate dies.
 ///
 /// `Holder { text: "…" }` retains the string on the way into the field, and
@@ -500,6 +512,7 @@ fn insert_aggregate_release(
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
     closure_keeps: &ClosureKeeps,
+    rack_holders: &HashSet<u32>,
 ) -> Vec<CarriedSite> {
     let mut sites = heap_create_sites(func);
     let func_name = func.name.clone();
@@ -1010,8 +1023,17 @@ fn insert_aggregate_release(
         }
         _ => false,
     };
-    let (plan, carried) =
-        ownership::plan_carrying(func, &facts, ownership::Placement::LastUse, &disjoint);
+    // A value holding a rack has readers this analysis can't see: links
+    // stored elsewhere point into its rack, and none of them is a read of the
+    // name. Released at its last read, a later write of one of those links
+    // walked the freed rack (#1587). Such a frame releases at scope ends, the
+    // placement for values with unseen readers.
+    let placement = if aggregates.iter().any(|a| ty_of.get(a).is_some_and(|t| holds_rack(t, rack_holders))) {
+        ownership::Placement::ScopeEnd
+    } else {
+        ownership::Placement::LastUse
+    };
+    let (plan, carried) = ownership::plan_carrying(func, &facts, placement, &disjoint);
 
     // Before anything is inserted: the carries are indexed into the blocks as
     // they are now.
@@ -1958,7 +1980,7 @@ mod tests {
             inline_hint: false,
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -2006,7 +2028,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2059,7 +2081,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2128,7 +2150,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2198,7 +2220,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2231,7 +2253,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2250,7 +2272,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2270,7 +2292,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2295,7 +2317,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2341,7 +2363,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2362,7 +2384,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false);
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
