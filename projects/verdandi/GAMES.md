@@ -261,6 +261,44 @@ Genius 2), keeps the fortress-in-a-mountain fantasy and the legibility.
 Three to five floors is probably where the fantasy saturates. The kernel's
 cube lattice covers it either way.
 
+Why DF has no tall halls: not representation, DF has the levels. Nothing in
+its sim cares about vertical volume (no light, air, span limit, sound or
+prestige), so a three-level hall is three levels of digging for the room
+value of one. A thing in a sim gets used only if a mechanism rewards or
+punishes it. Real mining has four decisions games skip, and each passes the
+story test: rock takes time, so a hall is a project; spoil has to go
+somewhere, and if dug rock is the stone you build from, the fort is quarried
+out of itself; spans have limits, so a wide hall needs pillars, which is what
+makes volume matter; rock differs, so the hill has a geology you read before
+you cut. Slow digging and the fast start reconcile through depth as the
+ladder: soil in minutes, soft rock in a day, hard rock and ore and caverns
+deeper.
+
+Paths, not exclusive:
+
+- **Dungeon Keeper.** A few floors, cheap digging, cubes. Known fun, nothing
+  new. The fallback.
+- **Volumes with physics.** Rooms are volumes. Light from a shaft diffuses
+  through a hall, warm air rises, a forge needs a chimney, an unsupported
+  span fails. Fields over cells with implicit solves, so the numerics are
+  the game here.
+- **Geology.** The hill is a seeded body: strata, a fault, a water table,
+  veins, caverns. Reading the rock is the skill; prospecting, sounding and
+  cores are the early tools. "Find a good hill" as a mechanic.
+- **Mass conservation.** Every dug cell is material. Spoil is the quarry, the
+  quarry is the wall. The federation docs' conservation idea, applied to
+  rock.
+
+Likely: the last three combined, the first as fallback. Geology gives the
+start, conservation the loop, volumes the mid-game projects. The view then
+borrows from architects: a plan at any height and a section at any vertical
+plane, both crisp 2D drawings, which can show a tall hall where the slice
+view never could. Evil Genius's cutaway is a section already.
+
+Realism is a source, not a goal. Ventilation belongs only if smoke is
+visible and suffocation is a consequence; a water table only if a flood is
+a story.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
