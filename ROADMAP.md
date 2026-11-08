@@ -504,8 +504,9 @@ for a checker type by accident, and no grep test has to say so.
    data apart from the checker, since the checker reads sizes for the copy
    rule and layout reads `Type`. Done: `rask-types` holds `Type` and
    `TypeDef` on the AST alone, the checker is `rask-check`, and layout is
-   `rask-layout`, which the checker reads. Layout still computes from the
-   written declarations, not from `TypeDef`; that's next. The crate takes `Type`, type
+   `rask-layout`, which the checker reads. Layout computes from `TypeDef` and
+   is keyed by type identity (`LayoutKey`); finding layouts by name in MIR,
+   codegen and the interpreter is next. The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
    `compiler/CLAUDE.md` calls `rask_layout` "the one size model"

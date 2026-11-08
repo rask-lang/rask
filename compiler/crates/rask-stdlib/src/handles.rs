@@ -24,14 +24,17 @@ pub struct RuntimeHandle {
     /// count (`Shared`, whose release depends on its strategy), or doesn't
     /// own what it points at (`Link`).
     pub release: Option<&'static str>,
+    /// `@handle(niche)`: a present value is never null, so `T?` is the value
+    /// with null for `none` (`Link`).
+    pub niche: bool,
 }
 
 /// Compiler-provided handles, which no `stdlib/*.rk` declaration describes.
 const COMPILER_PROVIDED: &[(&str, RuntimeHandle)] = &[
-    ("Shared", RuntimeHandle { release: None }),
-    ("Heap", RuntimeHandle { release: None }),
+    ("Shared", RuntimeHandle { release: None, niche: false }),
+    ("Heap", RuntimeHandle { release: None, niche: false }),
     // Only ever named to make a pair of ends; the ends are the values.
-    ("Channel", RuntimeHandle { release: None }),
+    ("Channel", RuntimeHandle { release: None, niche: false }),
 ];
 
 fn declared() -> &'static HashMap<String, RuntimeHandle> {
@@ -51,7 +54,8 @@ fn declared() -> &'static HashMap<String, RuntimeHandle> {
                     rask_ast::expr::ExprKind::String(sym) => Some(sym.as_str()),
                     _ => None,
                 });
-            out.insert(s.name.clone(), RuntimeHandle { release });
+            let niche = attr.args.iter().flatten().any(|a| a.label.is_none() && a.value.ident() == Some("niche"));
+            out.insert(s.name.clone(), RuntimeHandle { release, niche });
         }
         out
     })
@@ -79,6 +83,8 @@ mod tests {
         assert_eq!(runtime_handle("Vec").and_then(|h| h.release), Some("rask_vec_free"));
         assert!(is_runtime_handle("File"));
         assert!(is_runtime_handle("Link"));
+        assert!(runtime_handle("Link").is_some_and(|h| h.niche));
+        assert!(!runtime_handle("Vec").is_some_and(|h| h.niche));
         assert_eq!(runtime_handle("Link").and_then(|h| h.release), None);
         assert!(is_runtime_handle("Shared"));
     }

@@ -109,7 +109,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
             };
             match method {
                 "is_copy" => Bool(types.is_copy(&resolved)),
-                _ => match types.size_align(&resolved) {
+                _ => match types.size_align(&resolved, &rask_layout::no_params) {
                     Some((size, align)) => Int(if method == "size_of" { size } else { align } as u64),
                     None => Unsupported(NEEDS_INSTANTIATION),
                 },

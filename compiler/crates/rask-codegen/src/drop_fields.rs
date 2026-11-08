@@ -76,8 +76,11 @@ pub fn owned_fields(
                 free_fn: "rask_string_free",
                 shape: ReleaseShape::ByAddress,
             }),
-            RaskType::UnresolvedNamed(name) => {
-                out.extend(owned_fields(name, at, struct_layouts, names, visited));
+            RaskType::UnresolvedNamed(_) | RaskType::Named(_) | RaskType::Generic { .. } => {
+                if let Some(inner) = rask_layout::struct_for(&field.ty, struct_layouts) {
+                    let inner = inner.name.clone();
+                    out.extend(owned_fields(&inner, at, struct_layouts, names, visited));
+                }
             }
             _ => {}
         }

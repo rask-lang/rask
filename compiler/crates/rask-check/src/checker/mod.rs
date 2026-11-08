@@ -19,7 +19,6 @@ mod parse_type;
 mod borrow;
 mod declarations;
 mod sizes;
-pub use sizes::layout_spelling;
 mod annotations;
 mod check_pattern;
 mod check_fn;
@@ -475,7 +474,9 @@ pub struct TypeChecker {
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
     /// `transmute` calls, settled once inference has: (source, target, span).
-    pub(super) pending_transmutes: Vec<(Type, Type, rask_ast::Span)>,
+    /// Each `transmute`'s source and target, its span, and the type
+    /// parameters in scope where it was written.
+    pub(super) pending_transmutes: Vec<(Type, Type, rask_ast::Span, Vec<String>)>,
     /// `for mutate` loops: the source's node, type and span. Judged once the
     /// source's type has settled, since a method call's often hasn't (SEQ45).
     pub(super) pending_for_mutate: Vec<(rask_ast::NodeId, Type, rask_ast::Span)>,

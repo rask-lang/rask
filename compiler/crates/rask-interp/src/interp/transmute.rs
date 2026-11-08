@@ -12,11 +12,19 @@ use rask_types::Type;
 use super::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, IntKind, Value};
 
-fn unsupported(ty: &Type) -> RuntimeError {
-    RuntimeError::TypeError(format!(
-        "transmute of `{ty}` isn't supported by the interpreter: it reinterprets \
-         scalars, fixed arrays, tuples and structs of those"
-    ))
+
+/// Does `ty` hold a name the checker left spelled?
+fn names_something_spelled(ty: &Type) -> bool {
+    use rask_types::GenericArg;
+    match ty {
+        Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => true,
+        Type::Generic { args, .. } => {
+            args.iter().any(|a| matches!(a, GenericArg::Type(t) if names_something_spelled(t)))
+        }
+        Type::Array { elem, .. } => names_something_spelled(elem),
+        Type::Tuple(elems) => elems.iter().any(names_something_spelled),
+        _ => false,
+    }
 }
 
 fn align_up(n: u32, align: u32) -> u32 {
@@ -39,15 +47,33 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 }
 
 impl Interpreter {
+    fn unsupported(&self, ty: &Type) -> RuntimeError {
+        RuntimeError::TypeError(format!(
+            "transmute of `{}` isn't supported by the interpreter: it reinterprets \
+             scalars, fixed arrays, tuples and structs of those",
+            self.types.resolve_type_names(ty)
+        ))
+    }
+
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
-        let spell = |ty: &Type| rask_check::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
-        let (from, to) = (spell(from)?, spell(to)?);
+        // What transmute reinterprets is scalars, arrays, tuples and structs of
+        // those, all resolved to ids. A name still spelled is something else:
+        // inside a generic body it's the body's own parameter, which the
+        // interpreter isn't handed the argument for (#1813).
+        let settle = |ty: &Type| {
+            rask_layout::settle(ty, rask_layout::Unsolved::Refuse, &rask_layout::no_params)
+                .filter(|t| !names_something_spelled(t))
+                .ok_or_else(|| self.unsupported(ty))
+        };
+        let (from, to) = (settle(from)?, settle(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
         if from_size != to_size {
             return Err(RuntimeError::TypeError(format!(
-                "transmute from `{from}` ({from_size} bytes) to `{to}` ({to_size} bytes): the sizes differ"
+                "transmute from `{}` ({from_size} bytes) to `{}` ({to_size} bytes): the sizes differ",
+                self.types.resolve_type_names(&from),
+                self.types.resolve_type_names(&to)
             )));
         }
         let mut bytes = vec![0u8; from_size as usize];
@@ -68,20 +94,20 @@ impl Interpreter {
                     self.byte_layout(e)?;
                 }
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
-                self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            Type::Named(_) | Type::Generic { .. } => {
+                self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         }
-        Ok(self.types.size_align_spelled(ty))
+        Ok(self.types.size_align_settled(ty))
     }
 
-    /// The struct a layout-spelled type names, its name, and its layout.
+    /// The struct a type names, its name, and its layout.
     fn struct_layout(&self, ty: &Type) -> Option<(String, rask_layout::StructLayout)> {
-        let (name, args) = match ty {
-            Type::UnresolvedNamed(name) => (name, Vec::new()),
-            Type::UnresolvedGeneric { name, args } => (
-                name,
+        let (id, args) = match ty {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (
+                *base,
                 args.iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
@@ -91,11 +117,16 @@ impl Interpreter {
             ),
             _ => return None,
         };
-        Some((name.clone(), self.types.struct_layout_named(name, &args)?))
+        Some((self.types.type_name(id), self.types.struct_layout(id, &args)?))
     }
 
     fn write_bytes(&self, value: &Value, ty: &Type, out: &mut [u8], at: usize) -> Result<(), RuntimeError> {
-        let mismatch = || RuntimeError::TypeError(format!("transmute: `{ty}` value doesn't match its type"));
+        let mismatch = || {
+            RuntimeError::TypeError(format!(
+                "transmute: `{}` value doesn't match its type",
+                self.types.resolve_type_names(ty)
+            ))
+        };
         let mut put = |bytes: &[u8]| out[at..at + bytes.len()].copy_from_slice(bytes);
         match (ty, value) {
             (Type::Bool, Value::Bool(b)) => put(&[*b as u8]),
@@ -123,8 +154,8 @@ impl Interpreter {
                     offset += size;
                 }
             }
-            (Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }, Value::Struct(data)) => {
-                let (_, layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            (Type::Named(_) | Type::Generic { .. }, Value::Struct(data)) => {
+                let (_, layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 let data = data.lock().unwrap();
                 for field in &layout.fields {
                     let v = data.fields.get(&field.name).ok_or_else(mismatch)?;
@@ -182,8 +213,8 @@ impl Interpreter {
                 }
                 Value::tuple(items)
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
-                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            Type::Named(_) | Type::Generic { .. } => {
+                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 layout.fields.sort_by_key(|f| f.decl_index);
                 let mut fields = IndexMap::new();
                 for field in &layout.fields {
@@ -191,7 +222,7 @@ impl Interpreter {
                 }
                 Value::new_struct(name, fields, None)
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         })
     }
 }

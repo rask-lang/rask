@@ -307,11 +307,14 @@ pub fn heap_field_descriptor(ty: &RaskType, shapes: Shapes<'_>) -> Option<Vec<i3
     Some(out)
 }
 
-/// The layout name a written type goes by — see `rask_mono::layout_name_for`.
+/// The name of the layout `ty` is laid out by: an instance's own when one was
+/// made, else the declaration's. A type with no layout keeps its rendering,
+/// which names none.
 fn layout_name(ty: &RaskType, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
-    rask_mono::layout_name_for(ty, |n| {
-        layouts.iter().any(|l| l.name == n) || enums.iter().any(|l| l.name == n)
-    })
+    rask_layout::struct_for(ty, layouts)
+        .map(|l| l.name.clone())
+        .or_else(|| rask_layout::enum_for(ty, enums).map(|l| l.name.clone()))
+        .unwrap_or_else(|| ty.to_string())
 }
 
 /// What a value of the named type owns, relative to `base`. A name that isn't a

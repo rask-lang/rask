@@ -2129,7 +2129,7 @@ impl<'a> FunctionBuilder<'a> {
             // one with real bytes. Runtime-opaque handles (TcpListener, File,
             // Instant) have empty layouts and stay pointer-sized scalars.
             RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
-            RaskType::Named(_) => false,
+            RaskType::Named(id) => ctx.type_names.get(id).is_some_and(|n| Self::named_layout_size(n, ctx) > 0),
             // The niche option — `Link<T>?` — is one word with null for
             // `none`, so it loads like a scalar. Answering "aggregate" here
             // handed back the field's *address*, and a root edge read as a
@@ -2140,11 +2140,18 @@ impl<'a> FunctionBuilder<'a> {
             // `*T?` is the same: the pointer, null for `none` (mem.unsafe/PT6).
             ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::RawPtr(_)) => false,
             // The same option with its payload already resolved to a `TypeId`.
-            // `Generic`/`Named` payloads are the runtime-opaque pointer types
-            // (line above), and an option over one of those is the niche — one
-            // word, no tag — so it loads like a scalar.
-            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::Generic { .. }) => false,
+            // Over a runtime handle (`Vec<T>?`, `Link<T>?`) it's the niche —
+            // one word, no tag — so it loads like a scalar. Over a program
+            // generic with real bytes (`Pair<u8, u8>?`) it's a tagged
+            // aggregate like any other option.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::Generic { .. }) => {
+                let inner = ty.as_option().unwrap();
+                let bytes = rask_layout::struct_for(inner, ctx.struct_layouts)
+                    .map(|l| l.size)
+                    .or_else(|| rask_layout::enum_for(inner, ctx.enum_layouts).map(|l| l.size))
+                    .unwrap_or(0);
+                bytes > 0
+            }
             // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }
@@ -7861,7 +7868,7 @@ impl<'a> FunctionBuilder<'a> {
         layout
             .fields
             .iter()
-            .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
+            .filter_map(|f| Self::link_field_kind(&f.ty, ctx.type_names).map(|k| (k, f.offset)))
             .collect()
     }
 
@@ -7889,13 +7896,23 @@ impl<'a> FunctionBuilder<'a> {
 
     /// `Link<T>` / `Link<T>?`, `Vec<Link<T>>` or `Map<K, Link<T>>`: the
     /// `RASK_RACK_FIELD_*` kind.
-    fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
+    fn link_field_kind(
+        ty: &rask_types::Type,
+        type_names: &HashMap<rask_types::TypeId, String>,
+    ) -> Option<i32> {
         use rask_types::{GenericArg, Type};
-        let bare = ty.as_option().unwrap_or(ty);
-        let (name, args) = match bare {
-            Type::UnresolvedGeneric { name, args } => (name.as_str(), args.as_slice()),
-            _ => return None,
+        // A generic's head: by id once the checker resolved it, by name for
+        // the compiler-provided spelling.
+        let head = |t: &Type| -> Option<(String, Vec<GenericArg>)> {
+            match t {
+                Type::Generic { base, args } => Some((type_names.get(base)?.clone(), args.clone())),
+                Type::UnresolvedGeneric { name, args } => Some((name.clone(), args.clone())),
+                _ => None,
+            }
         };
+        let bare = ty.as_option().unwrap_or(ty);
+        let (name, args) = head(bare)?;
+        let name = name.as_str();
         if name == "Link" {
             return Some(rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32);
         }
@@ -7905,10 +7922,7 @@ impl<'a> FunctionBuilder<'a> {
             GenericArg::Type(t) => Some(t),
             _ => None,
         })?;
-        let holds_link = matches!(
-            value.as_option().unwrap_or(value),
-            Type::UnresolvedGeneric { name, .. } if name == "Link"
-        );
+        let holds_link = head(value.as_option().unwrap_or(value)).is_some_and(|(n, _)| n == "Link");
         if !holds_link {
             return None;
         }
