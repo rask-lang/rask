@@ -165,6 +165,13 @@ pub struct OwnershipChecker<'a> {
     /// `src.items` under a name of its own (mem.borrowing/S1). Reading it is
     /// fine; handing it to an owner is the same E0909 the field read gets.
     field_views: HashMap<String, FieldView>,
+    /// Views whose field was written over while they were held: name → (the
+    /// field, where). Reading one after that reads freed storage
+    /// (mem.borrowing/S5).
+    replaced_views: HashMap<String, (String, Span)>,
+    /// `let x = p.f` reads a later `p.f = …` in the same list refills
+    /// (`field_reuse::refill_pairs`): moves, not views.
+    refill_takes: HashSet<rask_ast::NodeId>,
     /// The place an assignment is writing while its value is checked.
     /// `self.list = More(h, Heap(self.list))` builds the new value out of the
     /// old one, and the old one is gone afterwards, so a field read of the
@@ -540,6 +547,8 @@ impl<'a> OwnershipChecker<'a> {
             borrowed_params: HashMap::new(),
             parts: Parts::default(),
             field_views: HashMap::new(),
+            replaced_views: HashMap::new(),
+            refill_takes: HashSet::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
             borrowed_with: HashMap::new(),
@@ -1480,6 +1489,7 @@ impl<'a> OwnershipChecker<'a> {
         self.borrowed_params.clear();
         self.parts.clear();
         self.field_views.clear();
+        self.replaced_views.clear();
         self.store_target = None;
         self.borrowed_loop_items.clear();
         self.borrowed_with.clear();
@@ -1693,6 +1703,9 @@ impl<'a> OwnershipChecker<'a> {
         // it is done. Cheaper here than during the walk: the whole list is in
         // hand, and it is one pass.
         let last_mention = Self::last_mentions(stmts);
+        for (take, _) in field_reuse::refill_pairs(self, stmts) {
+            self.refill_takes.insert(take);
+        }
 
         for (index, stmt) in stmts.iter().enumerate() {
             self.check_mutable_capture_access(stmt);
@@ -2339,9 +2352,43 @@ impl<'a> OwnershipChecker<'a> {
         Some((format!("{}.{}", root, fields.join(".")), self.resource_type_display(&ty)))
     }
 
+    /// Writing over `target` frees what it held, so every view of it, of a
+    /// field inside it or of the value around it ends here. Reading one later
+    /// is E0958. A read the refill pairs with was a move and never a view.
+    fn end_views_of(&mut self, target: &Expr, at: Span) {
+        let (Some(root), fields) = Self::extract_root_and_fields(target) else {
+            return;
+        };
+        let fields = fields.unwrap_or_default();
+        let ended: Vec<String> = self
+            .field_views
+            .iter()
+            .filter(|(name, view)| {
+                if view.root != root || **name == root {
+                    return false;
+                }
+                let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
+                let n = viewed.len().min(fields.len());
+                viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in ended {
+            if let Some(view) = self.field_views.remove(&name) {
+                self.replaced_views.insert(name, (view.path, at));
+            }
+        }
+    }
+
     /// `let tmp = src.items`: remember that `tmp` is a view, or forget that a
     /// rebound name was one. `let t2 = tmp` is the same view again.
     fn record_field_view(&mut self, name: &str, init: &Expr) {
+        self.replaced_views.remove(name);
+        // Moved out until the refill puts a value back: owned, not a view.
+        if self.refill_takes.contains(&init.id) {
+            self.field_views.remove(name);
+            return;
+        }
         let view = match &init.kind {
             ExprKind::Ident(src) => self.field_views.get(src).cloned(),
             _ => self.non_copy_field_view(init).and_then(|(path, field_ty)| {
@@ -2659,11 +2706,13 @@ impl<'a> OwnershipChecker<'a> {
                         self.kill_pointers_into(&root, PointerLoss::Replaced, stmt.span, None);
                     }
                 }
+                self.end_views_of(target, stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
                     // a view stored this way is reported below.
                     self.field_views.remove(name);
+                    self.replaced_views.remove(name);
                 }
                 // A whole-variable assignment reinitializes the target — it is
                 // not a use of the old value, so don't flag a moved/maybe-moved
@@ -3021,6 +3070,14 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_expr(&mut self, expr: &Expr) {
         match &expr.kind {
+            ExprKind::Ident(name) if self.replaced_views.contains_key(name) => {
+                if let Some((path, replaced_at)) = self.replaced_views.remove(name) {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ViewOutlivedReplace { name: name.clone(), path, replaced_at },
+                        span: expr.span,
+                    });
+                }
+            }
             ExprKind::Ident(name) => {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {

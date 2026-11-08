@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A field read is a view, and writing over the field frees what it views
+// (mem.borrowing/S1, S5, E0958, #1838).
+//
+// `let old = p.f` followed by `p.f = …` in the same block, with nothing in
+// between that can leave early, is consume-and-replace: the read is a move.
+// Anywhere else the refill might not run, so the read stays a view. Native
+// freed the buffer under it and printed garbage.
+
+struct Holder {
+    log: Vec<string>
+}
+
+extend Holder {
+    // Fine: the refill always runs, so `old` owns the old vector.
+    func swap(mutate self) -> usize {
+        let old = self.log
+        self.log = Vec.new()
+        return old.len()
+    }
+
+    // ERROR: the early return skips the refill [E0958]
+    func swap_or_stop(mutate self, stop: bool) -> usize {
+        let old = self.log
+        if stop {
+            return 99
+        }
+        self.log = Vec.new()
+        return old.len()
+    }
+}
+
+func main() {
+    mut h = Holder(log: Vec.new())
+    h.log.push("entry-long-enough-to-heap")
+    let c = h.log.len() > 0
+    let old = h.log
+    if c {
+        h.log = Vec.new()
+    }
+    // ERROR: the refill ran on one path only [E0958]
+    println("{old.len()} {h.log.len()} {h.swap()} {h.swap_or_stop(true)}")
+}

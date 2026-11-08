@@ -478,6 +478,18 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            ViewOutlivedReplace { name, path, replaced_at } => {
+                Diagnostic::error(format!("`{}` views `{}`, which was written over", name, path))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("`{}` read after `{}` was replaced", name, path))
+                    .with_secondary(*replaced_at, format!("`{}` replaced here, freeing what `{}` views", path, name))
+                    .with_fix(format!(
+                        "use `{}.clone()` to keep a copy, or put the refill straight after `let {} = {}` with no `return`, `break`, `continue` or `try` in between, which makes it a move",
+                        path, name, path
+                    ))
+                    .with_why("a field read is a view of storage the struct still holds, and writing over the field frees that storage. `let old = p.f` followed by `p.f = …` is a move only when the refill always runs, so on every path `old` owns what it read [mem.borrowing/S1, S5]".to_string())
+            }
+
             MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
                 let label = if *maybe {
                     format!("`{}` is given away on some paths here and not replaced", name)

@@ -309,6 +309,16 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// S5: `let old = p.f` is a view of `p.f`, and `p.f = …` freed what it
+    /// held while `old` was still read afterwards.
+    #[error("`{name}` views `{path}`, which was written over")]
+    ViewOutlivedReplace {
+        name: String,
+        path: String,
+        /// The assignment that replaced the field.
+        replaced_at: Span,
+    },
+
     /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
     /// is left holding a value that moved out from under it.
     #[error("`{name}` was consumed and not replaced before returning")]

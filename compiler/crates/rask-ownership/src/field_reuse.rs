@@ -117,31 +117,9 @@ impl Finder<'_, '_> {
     /// at the refill as before; that convention is the callee's, and a
     /// whole-variable `b = …` after `eat(b)` relies on it.
     fn refills_in(&mut self, stmts: &[Stmt]) {
-        // Each field a `let` moved out of, with the read that moved it.
-        let mut emptied: Vec<(Vec<String>, rask_ast::NodeId)> = Vec::new();
-        for stmt in stmts {
-            match &stmt.kind {
-                StmtKind::Assign { target, .. } => {
-                    if let Some(place) = place_path(target) {
-                        if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
-                            self.found.insert(stmt.id);
-                            self.found.insert(emptied[at].1);
-                            emptied.remove(at);
-                        }
-                    }
-                }
-                // A Copy field is copied out, not emptied: `let at =
-                // self.at` before `self.at += n` leaves `self.at` holding
-                // its value.
-                StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                    if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
-                        if self.moves(init, &place) {
-                            emptied.push((place, init.id));
-                        }
-                    }
-                }
-                _ => {}
-            }
+        for (take, refill) in refill_pairs(self.checker, stmts) {
+            self.found.insert(take);
+            self.found.insert(refill);
         }
     }
 
@@ -237,4 +215,74 @@ fn overlaps(e: &Expr, place: &[String]) -> bool {
     let Some(path) = place_path(e) else { return false };
     let n = path.len().min(place.len());
     path[..n] == place[..n]
+}
+
+/// The `let x = p.f` reads in one statement list that a later `p.f = …` in
+/// the same list refills, as (the read, the refill). Such a read is a move:
+/// the slot is empty from the read to the refill, and `x` owns what it held.
+///
+/// Only when nothing between them, the refill included, can leave the list
+/// early: `return`, `break`, `continue` or `try`. On that path the refill never
+/// runs, so the read has to stay a view of a slot that's still full, and the
+/// checker holds it to that (mem.borrowing/S5). A Copy field is copied, never
+/// emptied.
+pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Vec<(NodeId, NodeId)> {
+    let moves = |e: &Expr| !checker.node_ty(&e.id).is_some_and(|t| checker.is_copy(t));
+    let mut pairs = Vec::new();
+    // Each field a `let` moved out of, with the read that moved it.
+    let mut emptied: Vec<(Vec<String>, NodeId)> = Vec::new();
+    for stmt in stmts {
+        if may_leave_early(stmt) {
+            emptied.clear();
+            continue;
+        }
+        match &stmt.kind {
+            StmtKind::Assign { target, .. } => {
+                if let Some(place) = place_path(target) {
+                    if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
+                        pairs.push((emptied[at].1, stmt.id));
+                        emptied.remove(at);
+                    }
+                }
+            }
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
+                if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
+                    if moves(init) {
+                        emptied.push((place, init.id));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    pairs
+}
+
+/// Whether `stmt` can leave the statement list it's in before finishing: a
+/// `return`, `break`, `continue` or `try` anywhere in it outside a closure.
+/// A `break` aimed at a loop inside `stmt` counts too, which only ever keeps
+/// a read a view.
+fn may_leave_early(stmt: &Stmt) -> bool {
+    struct Exits(bool);
+    impl<'e> Visit<'e> for Exits {
+        fn expr(&mut self, e: &'e Expr) -> bool {
+            match &e.kind {
+                ExprKind::Closure { .. } => false,
+                ExprKind::Try { .. } => {
+                    self.0 = true;
+                    false
+                }
+                _ => !self.0,
+            }
+        }
+        fn stmt(&mut self, s: &'e Stmt) -> bool {
+            if matches!(s.kind, StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_)) {
+                self.0 = true;
+            }
+            !self.0
+        }
+    }
+    let mut v = Exits(false);
+    visit::visit_stmt(stmt, &mut v);
+    v.0
 }
