@@ -102,11 +102,18 @@ itself (pops as numbers), which scales and reads well, but nothing underneath
 can misbehave on its own, so the stories thin out. DF is the third corner,
 full sim and no control abstraction, and drowns at a hundred.
 
+The lower tier never goes away, it stops being necessary. You can still probe
+a transistor; the gate hides it by default. Same in play: at 200 pop you still
+click one villager when a raid hits, and you hand-place a turret when the
+biters breach. That's the crisis loop. Steady state lives at the top tier, a
+leak pulls you down a level to fix it by hand, and the fix is often building
+the automation that would have caught it, which is the next tier up.
+
 So tiers of abstraction are a design object from day one. Each tier is built
-from the tier below, has a strictly smaller command surface than the sum of
-its parts, and the sim resolution stays at the bottom. Name the unit of
-command at each stage (a worker, a crew, a district, a settlement) and what
-the player stops touching when the next unit appears.
+from the tier below, is the default command surface but not the only one, and
+the sim resolution stays at the bottom. Name the unit of command at each stage
+(a worker, a crew, a district, a settlement) and what the player stops needing
+to touch when the next unit appears.
 
 ## Mechanisms to build first
 
