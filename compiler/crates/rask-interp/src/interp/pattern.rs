@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rask_ast::ty::TypeExpr;
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
 
 use crate::value::{IntKind, Value};
 
@@ -78,23 +78,23 @@ impl Interpreter {
         if !matches!(value, Value::Enum { name, .. } if name == "Result") {
             return None;
         }
-        let ty = match pattern {
-            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            Pattern::TypePat { ty, binding: None } => ty.clone(),
-            Pattern::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
+        let ty = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            PatternKind::TypePat { ty, binding: None } => ty.clone(),
+            PatternKind::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
                 TypeExpr::named(name.as_str())
             }
             _ => return None,
         };
-        let as_form = Pattern::TypePat { ty, binding: Some(GUARD.to_string()) };
+        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) });
         self.match_pattern(&as_form, value)?.remove(GUARD)
     }
 
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
-        match pattern {
-            Pattern::Wildcard => Some(HashMap::new()),
+        match &pattern.kind {
+            PatternKind::Wildcard => Some(HashMap::new()),
 
-            Pattern::Ident(name) => {
+            PatternKind::Ident(name) => {
                 // Qualified name: "Message.Quit" → match enum "Message" variant "Quit"
                 if let Some(dot) = name.find('.') {
                     let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
@@ -170,7 +170,8 @@ impl Interpreter {
                 // while `r is string as s` matched.
                 if let Value::Enum { name: sc_name, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
-                        let as_type = Pattern::TypePat { ty: TypeExpr::named(name.as_str()), binding: None };
+                        let as_type =
+                            Pattern::new(pattern.id, PatternKind::TypePat { ty: TypeExpr::named(name.as_str()), binding: None });
                         return self.match_pattern(&as_type, value);
                     }
                 }
@@ -180,7 +181,7 @@ impl Interpreter {
                 Some(bindings)
             }
 
-            Pattern::Literal(lit_expr) => {
+            PatternKind::Literal(lit_expr) => {
                 if self.values_equal(value, lit_expr) {
                     Some(HashMap::new())
                 } else {
@@ -188,7 +189,7 @@ impl Interpreter {
                 }
             }
 
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let Value::Enum {
                     name: enum_name,
                     variant,
@@ -228,7 +229,7 @@ impl Interpreter {
                 None
             }
 
-            Pattern::Struct {
+            PatternKind::Struct {
                 name: pat_name,
                 fields: pat_fields,
                 rest: _,
@@ -287,7 +288,7 @@ impl Interpreter {
                 None
             }
 
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 let elems = value.as_tuple_elements()?;
                 if patterns.len() != elems.len() {
                     return None;
@@ -299,7 +300,7 @@ impl Interpreter {
                 Some(bindings)
             }
 
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for pat in patterns {
                     if let Some(bindings) = self.match_pattern(pat, value) {
                         return Some(bindings);
@@ -308,7 +309,7 @@ impl Interpreter {
                 None
             }
 
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 // Bounds are literal chars or ints, checked by the parser.
                 let in_range = match (value, &start.kind, &end.kind) {
                     (Value::Char(c), ExprKind::Char(s), ExprKind::Char(e)) => c >= s && c <= e,
@@ -323,7 +324,7 @@ impl Interpreter {
             // ER23/ER27: `TypeName [as name]` type pattern, and OPT15's
             // `none`. A flat `T? or E` wears two wrappers, so the walk goes
             // down layer by layer — the pattern names one leaf (OPT30).
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 // In a generic body `T as x` names whatever this call bound
                 // `T` to; the value only knows its concrete type (#1439).
                 let resolved = self.resolve_type_param(ty);

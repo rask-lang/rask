@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, Field, Param, TypeParam};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit,
-                     CatchClause, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp,
+                     CatchClause, MatchArm, Pattern, PatternKind, SelectArm, SelectArmKind, UnaryOp,
                      WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::ty::TypeExpr;
@@ -991,17 +991,17 @@ impl Hasher {
     }
 
     fn hash_pattern(&mut self, pat: &Pattern) {
-        match pat {
-            Pattern::Wildcard => self.feed_tag(80),
-            Pattern::Ident(name) => {
+        match &pat.kind {
+            PatternKind::Wildcard => self.feed_tag(80),
+            PatternKind::Ident(name) => {
                 self.feed_tag(81);
                 self.feed_var(name);
             }
-            Pattern::Literal(e) => {
+            PatternKind::Literal(e) => {
                 self.feed_tag(82);
                 self.hash_expr(e);
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 self.feed_tag(83);
                 self.feed_str(name);
                 self.feed_u32(fields.len() as u32);
@@ -1009,7 +1009,7 @@ impl Hasher {
                     self.hash_pattern(f);
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 self.feed_tag(84);
                 self.feed_str(name);
                 self.feed_u32(fields.len() as u32);
@@ -1019,26 +1019,26 @@ impl Hasher {
                 }
                 self.feed_bool(*rest);
             }
-            Pattern::Tuple(pats) => {
+            PatternKind::Tuple(pats) => {
                 self.feed_tag(85);
                 self.feed_u32(pats.len() as u32);
                 for p in pats {
                     self.hash_pattern(p);
                 }
             }
-            Pattern::Or(pats) => {
+            PatternKind::Or(pats) => {
                 self.feed_tag(86);
                 self.feed_u32(pats.len() as u32);
                 for p in pats {
                     self.hash_pattern(p);
                 }
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 self.feed_tag(87);
                 self.hash_expr(start);
                 self.hash_expr(end);
             }
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 self.feed_tag(88);
                 self.feed_type(ty);
                 if let Some(name) = binding {

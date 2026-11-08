@@ -23,7 +23,7 @@ pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 
@@ -528,17 +528,17 @@ impl Desugarer {
                 vec![]
             } else {
                 variant.fields.iter().map(|f| {
-                    Pattern::Ident(f.name.clone())
+                    Pattern::new(self.fresh_id(), PatternKind::Ident(f.name.clone()))
                 }).collect()
             };
 
             let pattern = if variant.fields.is_empty() {
-                Pattern::Ident(variant.name.clone())
+                Pattern::new(self.fresh_id(), PatternKind::Ident(variant.name.clone()))
             } else {
-                Pattern::Constructor {
+                Pattern::new(self.fresh_id(), PatternKind::Constructor {
                     name: variant.name.clone(),
                     fields: field_patterns,
-                }
+                })
             };
 
             let body_expr = match template {

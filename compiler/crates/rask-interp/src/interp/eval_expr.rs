@@ -323,10 +323,10 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
         }
         // is pattern: assert x is Some
         ExprKind::IsPattern { expr, pattern, .. } => {
-            let pat_name = match pattern {
-                rask_ast::expr::Pattern::Constructor { name, .. } => name.as_str(),
-                rask_ast::expr::Pattern::Ident(n) => n.as_str(),
-                rask_ast::expr::Pattern::Wildcard => "_",
+            let pat_name = match &pattern.kind {
+                rask_ast::expr::PatternKind::Constructor { name, .. } => name.as_str(),
+                rask_ast::expr::PatternKind::Ident(n) => n.as_str(),
+                rask_ast::expr::PatternKind::Wildcard => "_",
                 _ => "pattern",
             };
             let val = interp.eval_expr(expr).ok();

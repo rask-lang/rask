@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use rask_ast::ty::TypeExpr;
 
 use rask_ast::decl::{Decl, DeclKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
 use rask_ast::qualify;
 use rask_ast::rewrite::{self, Rewrite};
 
@@ -415,17 +415,17 @@ impl Rewrite for ReferenceQualifier<'_> {
     }
 
     fn pattern(&mut self, p: &mut Pattern) {
-        let name = match p {
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
+        let name = match &mut p.kind {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => name,
             // A fieldless `libpkg.Colour.Red` parses as an identifier pattern.
-            Pattern::Ident(name) if name.contains('.') => name,
-            Pattern::Wildcard
-            | Pattern::Ident(_)
-            | Pattern::Literal(_)
-            | Pattern::Tuple(_)
-            | Pattern::Or(_)
-            | Pattern::Range { .. }
-            | Pattern::TypePat { .. } => return,
+            PatternKind::Ident(name) if name.contains('.') => name,
+            PatternKind::Wildcard
+            | PatternKind::Ident(_)
+            | PatternKind::Literal(_)
+            | PatternKind::Tuple(_)
+            | PatternKind::Or(_)
+            | PatternKind::Range { .. }
+            | PatternKind::TypePat { .. } => return,
         };
         // `libpkg.Colour.Red` — package, enum, variant.
         let parts: Vec<&str> = name.split('.').collect();

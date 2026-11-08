@@ -401,7 +401,7 @@ impl<'a> MirLowerer<'a> {
         // Without this an enum field fell through to the integer encoder
         // and wrote the address of its slot as a number — valid JSON with a
         // stack address in it, and no warning (#854).
-        let enum_layout = self.type_name_of(field_ty).and_then(|name| self.ctx.find_enum(&name).map(|(_, l)| l.clone()));
+        let enum_layout = self.ctx.enum_of(field_ty).map(|(_, l)| l.clone());
         if let Some(layout) = enum_layout {
             let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -781,21 +781,16 @@ impl<'a> MirLowerer<'a> {
         // depending on which side asks, and a name that isn't in the table at
         // all used to fall back to index 0 — whatever type happens to sit
         // there (#1062).
-        let nested_struct: Option<(u32, StructLayout)> = match elem_ref {
-            Some(Type::UnresolvedNamed(name)) => self.ctx.find_struct(name),
-            Some(Type::UnresolvedGeneric { name, .. }) => self.ctx.find_struct(name),
-            Some(Type::Named(type_id)) => {
-                self.ctx.type_names.get(type_id).and_then(|name| self.ctx.find_struct(name))
-            }
-            _ => None,
-        }
-        .map(|(i, l)| (i, l.clone()))
-        .or_else(|| match &elem_mir {
-            Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
-                self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
-            }
-            _ => None,
-        });
+        let nested_struct: Option<(u32, StructLayout)> = elem_ref
+            .as_ref()
+            .and_then(|t| self.ctx.struct_of(t))
+            .map(|(i, l)| (i, l.clone()))
+            .or_else(|| match &elem_mir {
+                Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
+                    self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
+                }
+                _ => None,
+            });
 
         // The element's own type, so a struct element comes back as a pointer to
         // its storage, a string keeps all 16 bytes and a scalar is read at its

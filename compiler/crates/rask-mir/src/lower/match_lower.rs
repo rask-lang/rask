@@ -3,20 +3,20 @@
 //! Match expression lowering: enum/tagged dispatch, string match, tuple match.
 
 use crate::FieldAccess;
-use super::{is_variant_name, LoweringError, MirLowerer, TypedOperand};
+use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::ty::TypeExpr;
 
 /// Walk a pattern to see if it contains a range pattern anywhere.
 fn contains_range_pattern(pattern: &rask_ast::expr::Pattern) -> bool {
-    use rask_ast::expr::Pattern;
-    match pattern {
-        Pattern::Range { .. } => true,
-        Pattern::Or(pats) => pats.iter().any(contains_range_pattern),
+    use rask_ast::expr::PatternKind;
+    match &pattern.kind {
+        PatternKind::Range { .. } => true,
+        PatternKind::Or(pats) => pats.iter().any(contains_range_pattern),
         _ => false,
     }
 }
@@ -31,10 +31,10 @@ fn first_per_tag(cases: impl Iterator<Item = (u64, BlockId)>) -> Vec<(u64, Block
 
 /// Flatten an Or pattern into its alternatives. Non-Or patterns return themselves.
 fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_ast::expr::Pattern> {
-    use rask_ast::expr::Pattern;
-    match pattern {
-        Pattern::Or(pats) => pats.iter().collect(),
-        other => vec![other],
+    use rask_ast::expr::PatternKind;
+    match &pattern.kind {
+        PatternKind::Or(pats) => pats.iter().collect(),
+        _ => vec![pattern],
     }
 }
 
@@ -74,14 +74,14 @@ impl<'a> MirLowerer<'a> {
 
     /// Which leaf of a flat `T? or E` a pattern name picks: 0 the payload,
     /// 1 `none`, 2 the error. Same numbering `emit_flat_leaf` computes.
-    pub(super) fn flat_leaf_of(&self, name: &str, ty: &MirType) -> u64 {
-        if name == "none" {
+    pub(super) fn flat_leaf_of(&self, pat: &Pattern, name: &str, ty: &MirType) -> Result<u64, LoweringError> {
+        Ok(if name == "none" {
             1
-        } else if self.pattern_is_err_side(name, ty) {
+        } else if self.pattern_is_err_side(pat, name, ty)? {
             2
         } else {
             0
-        }
+        })
     }
 
     /// Flatten a `T? or E` into the leaf it holds, as `flat_leaf_of` numbers
@@ -145,7 +145,7 @@ impl<'a> MirLowerer<'a> {
         scrutinee_ty: MirType,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
 
         let err_ty = match &scrutinee_ty {
             MirType::Result { err, .. } => (**err).clone(),
@@ -159,7 +159,7 @@ impl<'a> MirLowerer<'a> {
         for (i, arm) in arms.iter().enumerate() {
             let next = self.builder.create_block();
             let arm_block = self.builder.create_block();
-            let test = if matches!(arm.pattern, Pattern::Wildcard) {
+            let test = if matches!(arm.pattern.kind, PatternKind::Wildcard) {
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: arm_block }));
                 None
             } else {
@@ -227,10 +227,10 @@ impl<'a> MirLowerer<'a> {
         scrutinee: &Expr,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::{Pattern, PatternKind};
 
         // Tuple pattern matching
-        let has_tuple_patterns = arms.iter().any(|a| matches!(&a.pattern, Pattern::Tuple(_)));
+        let has_tuple_patterns = arms.iter().any(|a| matches!(&a.pattern.kind, PatternKind::Tuple(_)));
         if has_tuple_patterns {
             return self.lower_tuple_match(scrutinee, arms);
         }
@@ -272,7 +272,7 @@ impl<'a> MirLowerer<'a> {
         // the parser only accepted the qualified `Enum.Variant { … }` form, so it
         // never reached lowering at all (#307).
         if matches!(scrutinee_ty, MirType::Struct(_))
-            && arms.iter().any(|a| matches!(&a.pattern, Pattern::Struct { .. }))
+            && arms.iter().any(|a| matches!(&a.pattern.kind, PatternKind::Struct { .. }))
         {
             return self.lower_struct_match(scrutinee, scrutinee_op, scrutinee_ty, arms);
         }
@@ -288,13 +288,12 @@ impl<'a> MirLowerer<'a> {
         };
 
         let patterns_imply_enum = if !is_enum && !is_result_or_option {
-            arms.iter().any(|arm| match &arm.pattern {
-                Pattern::Constructor { name, .. } => is_variant_name(name),
-                Pattern::Struct { name, .. } => {
-                    self.resolve_pattern_tag(name).is_some()
+            arms.iter().any(|arm| match &arm.pattern.kind {
+                PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                    self.pattern_names_variant(&arm.pattern)
                 }
-                Pattern::Ident(name) => {
-                    self.resolve_pattern_tag(name).is_some()
+                PatternKind::Ident(name) => {
+                    matches!(self.pattern_target(&arm.pattern), Some(rask_types::PatternTarget::Variant { .. }))
                         || matches!(name.as_str(), "Ok" | "Err" | "Some" | "None")
                 }
                 _ => false,
@@ -408,29 +407,31 @@ impl<'a> MirLowerer<'a> {
             if two_level && err_variant_tags[i].is_some() {
                 continue;
             }
-            match &arm.pattern {
-                Pattern::Wildcard => {
+            match &arm.pattern.kind {
+                PatternKind::Wildcard => {
                     catch_all[i] = true;
                     if !default_claimed {
                         default_block = arm_blocks[i];
                         default_claimed = true;
                     }
                 }
-                Pattern::Ident(name) => {
-                    if let Some(tag) = self.resolve_pattern_tag(name) {
-                        cases.push((tag, arm_blocks[i]));
+                PatternKind::Ident(name) => {
+                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, &scrutinee_ty) {
+                        cases.push((tag as u64, arm_blocks[i]));
+                    } else if self.pattern_binds(&arm.pattern) {
+                        // A plain binding pattern is a catch-all.
+                        catch_all[i] = true;
+                        if !default_claimed {
+                            default_block = arm_blocks[i];
+                            default_claimed = true;
+                        }
                     } else if has_tag && is_result_or_option {
                         // Result match: ok arm = tag 0, err arm = tag 1, decided
                         // by the scrutinee's real ok/err type identities.
-                        let tag = self.pattern_is_err_side(name, &scrutinee_ty) as u64;
+                        let tag = self.pattern_is_err_side(&arm.pattern, name, &scrutinee_ty)? as u64;
                         cases.push((tag, arm_blocks[i]));
-                    } else if has_tag && is_variant_name(name) {
-                        // Unqualified: the scrutinee's own enum decides, not
-                        // whichever layout happens to declare the name first.
-                        let tag = self
-                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
-                            .unwrap_or_else(|| self.variant_tag(name));
-                        cases.push((tag as u64, arm_blocks[i]));
+                    } else if has_tag && self.pattern_names_variant(&arm.pattern) {
+                        return Err(Self::no_such_variant(name, &scrutinee_ty));
                     } else {
                         // A plain binding pattern is a catch-all too.
                         catch_all[i] = true;
@@ -440,19 +441,22 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                 }
-                Pattern::Constructor { name, .. } => {
-                    if let Some(tag) = self.resolve_pattern_tag(name) {
-                        cases.push((tag, arm_blocks[i]));
-                    } else if has_tag {
-                        let tag = self
-                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
-                            .unwrap_or_else(|| self.variant_tag(name));
+                PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
+                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, &scrutinee_ty) {
                         cases.push((tag as u64, arm_blocks[i]));
+                    } else if self.union_variant_of_result(&arm.pattern, &scrutinee_ty).is_some() {
+                        return Err(LoweringError::InvalidConstruct(format!(
+                            "a `match` arm naming `{name}`, a variant of one member of a union \
+                             error side, isn't lowered natively yet (#1834); \
+                             `if r is {name}` works"
+                        )));
+                    } else if has_tag {
+                        return Err(Self::no_such_variant(name, &scrutinee_ty));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
                 }
-                Pattern::Literal(lit_expr) => {
+                PatternKind::Literal(lit_expr) => {
                     if let ExprKind::Int(v, _) = &lit_expr.kind {
                         cases.push((*v as u64, arm_blocks[i]));
                     } else if let ExprKind::Bool(b) = &lit_expr.kind {
@@ -469,34 +473,12 @@ impl<'a> MirLowerer<'a> {
                         cases.push((i as u64, arm_blocks[i]));
                     }
                 }
-                Pattern::Struct { name, .. } => {
-                    // `resolve_pattern_tag` only answers for a *qualified*
-                    // `Enum.Variant`, and a match arm is written unqualified —
-                    // so a `N { v }` arm fell through to "case = arm index" and
-                    // matched only where the arm's position happened to equal
-                    // the variant's tag. Written first for a variant declared
-                    // second, it silently didn't match, or the switch reached an
-                    // arm whose payload wasn't there and the program died
-                    // (#911). Same fallback the positional-payload arm above has
-                    // had all along, which is why `N(i64)` worked and `N { v }`
-                    // did not.
-                    if let Some(tag) = self.resolve_pattern_tag(name) {
-                        cases.push((tag, arm_blocks[i]));
-                    } else if has_tag {
-                        let tag = self
-                            .variant_tag_in_scrutinee(name, &scrutinee_ty)
-                            .unwrap_or_else(|| self.variant_tag(name));
-                        cases.push((tag as u64, arm_blocks[i]));
-                    } else {
-                        cases.push((i as u64, arm_blocks[i]));
-                    }
-                }
-                Pattern::TypePat { ty, .. } => {
+                PatternKind::TypePat { ty, .. } => {
                     let ty_name = &super::type_pat_name(ty);
                     if is_result_or_option {
                         // Result/Option match: ok arm = tag 0, err arm = tag 1,
                         // decided by the real ok/err type identities.
-                        let tag = self.pattern_is_err_side(ty_name, &scrutinee_ty) as u64;
+                        let tag = self.pattern_is_err_side(&arm.pattern, ty_name, &scrutinee_ty)? as u64;
                         cases.push((tag, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
@@ -521,15 +503,17 @@ impl<'a> MirLowerer<'a> {
                 if err_variant_tags[i].is_some() {
                     continue;
                 }
-                let name = match &arm.pattern {
-                    Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
-                    Pattern::Ident(n) => n.clone(),
+                let name = match &arm.pattern.kind {
+                    PatternKind::TypePat { ty, .. } => super::type_pat_name(ty),
+                    // A binding catches both sides; it is the default.
+                    PatternKind::Ident(_) if self.pattern_binds(&arm.pattern) => continue,
+                    PatternKind::Ident(n) => n.clone(),
                     _ => continue,
                 };
                 let name = name.as_str();
                 // An arm naming the error type itself (`MyErr as e`) catches
                 // every variant the inner switch doesn't list.
-                if self.pattern_is_err_side(name, &scrutinee_ty) {
+                if self.pattern_is_err_side(&arm.pattern, name, &scrutinee_ty)? {
                     err_catchall.get_or_insert(arm_blocks[i]);
                 } else {
                     ok_target.get_or_insert(arm_blocks[i]);
@@ -583,10 +567,10 @@ impl<'a> MirLowerer<'a> {
             let mut field_tests: Vec<(MirOperand, MirType, Pattern)> = Vec::new();
 
             if has_tag {
-                if let Pattern::Constructor { name, fields } = &arm.pattern {
+                if let PatternKind::Constructor { name, fields } = &arm.pattern.kind {
                     // Qualified variant names like "Tagged.With" — strip the
                     // enum prefix so the layout lookup matches the variant's
-                    // bare name (same as the Pattern::Struct path below).
+                    // bare name (same as the PatternKind::Struct path below).
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
                     // An error-variant arm reads out of the error enum, whose
                     // address err_dispatch computed; everything else reads out
@@ -629,9 +613,9 @@ impl<'a> MirLowerer<'a> {
                         });
 
                     for (j, field_pat) in fields.iter().enumerate() {
-                        let tested = Self::nested_needs_test(field_pat);
-                        let binding = match field_pat {
-                            Pattern::Ident(b) if !tested => Some(b),
+                        let tested = self.nested_needs_test(field_pat);
+                        let binding = match &field_pat.kind {
+                            PatternKind::Ident(b) if !tested => Some(b),
                             _ => None,
                         };
                         if binding.is_some() || tested {
@@ -705,7 +689,7 @@ impl<'a> MirLowerer<'a> {
                             self.locals.insert(binding.clone(), (payload_local, field_ty));
                         }
                     }
-                } else if let Pattern::Struct { name, fields, .. } = &arm.pattern {
+                } else if let PatternKind::Struct { name, fields, .. } = &arm.pattern.kind {
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
                     // Same split as the tuple-variant arm above: an error
                     // variant's fields live in the error enum, reached through
@@ -728,9 +712,9 @@ impl<'a> MirLowerer<'a> {
                         if let Some(layout) = self.ctx.enum_layouts.get(idx as usize) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == variant_name) {
                                 for (field_name, field_pat) in fields {
-                                    let tested = Self::nested_needs_test(field_pat);
-                                    let binding = match field_pat {
-                                        Pattern::Ident(b) if !tested => Some(b),
+                                    let tested = self.nested_needs_test(field_pat);
+                                    let binding = match &field_pat.kind {
+                                        PatternKind::Ident(b) if !tested => Some(b),
                                         _ => None,
                                     };
                                     if binding.is_some() || tested {
@@ -773,7 +757,7 @@ impl<'a> MirLowerer<'a> {
                 // TypePat { ty, binding } — `T as name` in a Result/Option match.
                 // The switch case routing is already correct (arm index → tag).
                 // Here we emit the payload extraction for the binding.
-                } else if let Pattern::TypePat { ty, binding } = &arm.pattern {
+                } else if let PatternKind::TypePat { ty, binding } = &arm.pattern.kind {
                     let ty_name = &super::type_pat_name(ty);
                     if let Some(binding_name) = binding {
                         // A union-member arm binds the *member*, which sits past
@@ -809,7 +793,7 @@ impl<'a> MirLowerer<'a> {
                         } else if is_result_or_option {
                             // Bind the matching side's payload — the side is
                             // decided by type identity, same as the tag routing.
-                            let payload_ty = if self.pattern_is_err_side(ty_name, &scrutinee_ty) {
+                            let payload_ty = if self.pattern_is_err_side(&arm.pattern, ty_name, &scrutinee_ty)? {
                                 err_payload_ty.clone()
                             } else {
                                 ok_payload_ty.clone()
@@ -845,9 +829,8 @@ impl<'a> MirLowerer<'a> {
             // The if-chain path taken by a match with range patterns has always
             // bound it; this one hadn't. Before the guard, because the guard is
             // usually what reads it (#875).
-            if let Pattern::Ident(name) = &arm.pattern {
-                let names_a_variant = self.resolve_pattern_tag(name).is_some()
-                    || (has_tag && (is_result_or_option || is_variant_name(name)));
+            if let PatternKind::Ident(name) = &arm.pattern.kind {
+                let names_a_variant = !self.pattern_binds(&arm.pattern);
                 if !names_a_variant {
                     let bind_local =
                         self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
@@ -920,7 +903,7 @@ impl<'a> MirLowerer<'a> {
             // Every tag on the way down has passed, so a nested variant's
             // fields are that variant's: bind them now.
             for (value, ty, pattern) in &field_tests {
-                if matches!(pattern, Pattern::Constructor { .. } | Pattern::Struct { .. }) {
+                if matches!(&pattern.kind, PatternKind::Constructor { .. } | PatternKind::Struct { .. }) {
                     self.bind_pattern_fields(pattern, value.clone(), None, false, ty);
                 }
             }
@@ -973,7 +956,7 @@ impl<'a> MirLowerer<'a> {
         scrutinee_op: MirOperand,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
 
         let merge_block = self.builder.create_block();
         let no_match = self.no_arm_matched_block();
@@ -985,12 +968,12 @@ impl<'a> MirLowerer<'a> {
         // so `x if x.len() > 3 => "long"` took every string.
         for (i, arm) in arms.iter().enumerate() {
             let next_arm = if i + 1 < arms.len() { self.builder.create_block() } else { no_match };
-            let catch_all = matches!(&arm.pattern, Pattern::Wildcard | Pattern::Ident(_));
+            let catch_all = matches!(&arm.pattern.kind, PatternKind::Wildcard | PatternKind::Ident(_));
             if !catch_all {
                 let literals: Vec<String> = flatten_pattern_alternatives(&arm.pattern)
                     .into_iter()
-                    .filter_map(|p| match p {
-                        Pattern::Literal(lit) => match &lit.kind {
+                    .filter_map(|p| match &p.kind {
+                        PatternKind::Literal(lit) => match &lit.kind {
                             ExprKind::String(s) => Some(s.clone()),
                             _ => None,
                         },
@@ -1017,7 +1000,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(body);
             }
 
-            if let Pattern::Ident(name) = &arm.pattern {
+            if let PatternKind::Ident(name) = &arm.pattern.kind {
                 let bind_local = self.builder.alloc_local(name.clone(), MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: bind_local,
@@ -1071,7 +1054,7 @@ impl<'a> MirLowerer<'a> {
         scrutinee: &Expr,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::{Pattern, PatternKind};
 
         let tuple_elems: Vec<(MirOperand, MirType)> = if let ExprKind::Tuple(elems) = &scrutinee.kind {
             let mut result = Vec::new();
@@ -1121,9 +1104,9 @@ impl<'a> MirLowerer<'a> {
                 fallthrough
             };
 
-            let sub_patterns = match &arm.pattern {
-                Pattern::Tuple(pats) => pats.clone(),
-                Pattern::Wildcard => {
+            let sub_patterns = match &arm.pattern.kind {
+                PatternKind::Tuple(pats) => pats.clone(),
+                PatternKind::Wildcard => {
                     vec![]
                 }
                 _ => vec![arm.pattern.clone()],
@@ -1144,28 +1127,28 @@ impl<'a> MirLowerer<'a> {
             // below, so no test ran and `x` was never defined: MIR lowering
             // failed with "unresolved variable `x`" while the interpreter
             // answered fine (#793).
-            let mut payload_binds: Vec<(usize, u64, String, Vec<Pattern>)> = Vec::new();
+            let mut payload_binds: Vec<(usize, u64, Pattern)> = Vec::new();
             for (j, pat) in sub_patterns.iter().enumerate() {
-                match pat {
-                    Pattern::Literal(_) => checks.push((j, pat.clone())),
-                    Pattern::Ident(name) => {
+                match &pat.kind {
+                    PatternKind::Literal(_) => checks.push((j, pat.clone())),
+                    PatternKind::Ident(_) => {
                         let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = self.tuple_variant_tag(name, elem_ty) {
-                            variant_checks.push((j, tag));
+                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
+                            variant_checks.push((j, tag as u64));
                         }
                     }
-                    Pattern::Constructor { name, fields } => {
+                    PatternKind::Constructor { .. } => {
                         let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = self.tuple_variant_tag(name, elem_ty) {
-                            payload_binds.push((j, tag, name.clone(), fields.clone()));
+                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
+                            payload_binds.push((j, tag as u64, pat.clone()));
                         }
                     }
-                    Pattern::Wildcard => {}
+                    PatternKind::Wildcard => {}
                     _ => {}
                 }
             }
             // The tag test is the same shape for both, so they share the loop.
-            variant_checks.extend(payload_binds.iter().map(|(j, tag, _, _)| (*j, *tag)));
+            variant_checks.extend(payload_binds.iter().map(|(j, tag, _)| (*j, *tag)));
 
             // Emit the tag tests before anything else in the arm.
             for (j, want_tag) in &variant_checks {
@@ -1199,17 +1182,16 @@ impl<'a> MirLowerer<'a> {
             // variant's. Read each bound field out of the element at its exact
             // offset — mixed variants share field indices, so codegen must not
             // be left to guess which variant a field index belongs to.
-            for (j, _, variant_path, fields) in &payload_binds {
+            for (j, _, pattern) in &payload_binds {
                 let (elem_op, elem_ty) = tuple_elems[*j].clone();
-                let pattern = Pattern::Constructor { name: variant_path.clone(), fields: fields.clone() };
                 // Its own tag passed above; this tests what's nested inside it.
-                self.emit_subpattern_test(&elem_op, &elem_ty, &pattern, next_arm)?;
-                self.bind_pattern_fields(&pattern, elem_op, None, false, &elem_ty);
+                self.emit_subpattern_test(&elem_op, &elem_ty, pattern, next_arm)?;
+                self.bind_pattern_fields(pattern, elem_op, None, false, &elem_ty);
             }
 
-            if checks.is_empty() && !matches!(&arm.pattern, Pattern::Wildcard) {
+            if checks.is_empty() && !matches!(&arm.pattern.kind, PatternKind::Wildcard) {
                 for (j, pat) in sub_patterns.iter().enumerate() {
-                    if let Pattern::Ident(name) = pat {
+                    if let PatternKind::Ident(name) = &pat.kind {
                         if j < tuple_elems.len() && !variant_tested.contains(&j) {
                             let (ref elem_op, ref elem_ty) = tuple_elems[j];
                             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
@@ -1224,12 +1206,12 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                 }
-            } else if matches!(&arm.pattern, Pattern::Wildcard) {
+            } else if matches!(&arm.pattern.kind, PatternKind::Wildcard) {
                 // No checks needed
             } else {
                 let mut first_check = true;
                 for (j, pat) in &checks {
-                    if let Pattern::Literal(lit_expr) = pat {
+                    if let PatternKind::Literal(lit_expr) = &pat.kind {
                         let (ref elem_op, _) = tuple_elems[*j];
                         let (lit_op, _) = self.lower_expr(lit_expr)?;
 
@@ -1267,7 +1249,7 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 for (j, pat) in sub_patterns.iter().enumerate() {
-                    if let Pattern::Ident(name) = pat {
+                    if let PatternKind::Ident(name) = &pat.kind {
                         if j < tuple_elems.len() && !variant_tested.contains(&j) {
                             let (ref elem_op, ref elem_ty) = tuple_elems[j];
                             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
@@ -1286,8 +1268,8 @@ impl<'a> MirLowerer<'a> {
 
             // A literal scrutinee is read element by element, so each element
             // is its own source.
-            match (&scrutinee.kind, &arm.pattern) {
-                (ExprKind::Tuple(elem_exprs), Pattern::Tuple(pats)) => {
+            match (&scrutinee.kind, &arm.pattern.kind) {
+                (ExprKind::Tuple(elem_exprs), PatternKind::Tuple(pats)) => {
                     for ((pat, elem_expr), (_, elem_ty)) in
                         pats.iter().zip(elem_exprs.iter()).zip(tuple_elems.iter())
                     {
@@ -1311,7 +1293,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(guard_pass);
             }
 
-            if !matches!(&arm.pattern, Pattern::Wildcard) && checks.is_empty() {
+            if !matches!(&arm.pattern.kind, PatternKind::Wildcard) && checks.is_empty() {
                 // Already in body block (bindings-only case)
             }
 
@@ -1354,7 +1336,7 @@ impl<'a> MirLowerer<'a> {
         scrutinee_ty: MirType,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::{Pattern, PatternKind};
 
         let merge_block = self.builder.create_block();
         let arm_body_blocks: Vec<BlockId> =
@@ -1373,7 +1355,7 @@ impl<'a> MirLowerer<'a> {
             // Every field the pattern names is read once, whether it's tested or
             // bound — a test needs the value and so does the body.
             let mut reads: Vec<(String, crate::LocalId, MirType, &Pattern)> = Vec::new();
-            if let Pattern::Struct { fields, .. } = &arm.pattern {
+            if let PatternKind::Struct { fields, .. } = &arm.pattern.kind {
                 for (field_name, field_pat) in fields {
                     let Some((field_idx, field_layout)) =
                         self.struct_field(&scrutinee_ty, field_name)
@@ -1383,8 +1365,8 @@ impl<'a> MirLowerer<'a> {
                     let field_ty = self.ctx.type_to_mir(&field_layout.ty);
                     // Named for the binding when there is one, so debug info and
                     // the local's name agree.
-                    let local_name = match field_pat {
-                        Pattern::Ident(binding) => binding.clone(),
+                    let local_name = match &field_pat.kind {
+                        PatternKind::Ident(binding) => binding.clone(),
                         _ => format!("__match_{}", field_name),
                     };
                     let local = self.builder.alloc_local(local_name, field_ty.clone());
@@ -1398,7 +1380,7 @@ impl<'a> MirLowerer<'a> {
             let tests: Vec<(crate::LocalId, &Pattern)> = reads
                 .iter()
                 .filter(|(_, _, _, pat)| {
-                    !matches!(pat, Pattern::Ident(_) | Pattern::Wildcard)
+                    !matches!(&pat.kind, PatternKind::Ident(_) | PatternKind::Wildcard)
                 })
                 .map(|(_, local, _, pat)| (*local, *pat))
                 .collect();
@@ -1429,7 +1411,7 @@ impl<'a> MirLowerer<'a> {
 
             // The bindings the body reads.
             for (_, local, field_ty, pat) in &reads {
-                if let Pattern::Ident(binding) = pat {
+                if let PatternKind::Ident(binding) = &pat.kind {
                     if let Some(p) = self.mir_type_name(field_ty) {
                         self.meta_mut(binding.as_str()).type_prefix = Some(p);
                     }
@@ -1438,7 +1420,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             // A whole-value catch-all (`p => …`) binds the struct itself.
-            if let Pattern::Ident(name) = &arm.pattern {
+            if let PatternKind::Ident(name) = &arm.pattern.kind {
                 let bind_local = self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: bind_local,
@@ -1505,8 +1487,8 @@ impl<'a> MirLowerer<'a> {
         val_ty: MirType,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
-        let Pattern::Struct { fields, .. } = pattern else {
+        use rask_ast::expr::{Pattern, PatternKind};
+        let PatternKind::Struct { fields, .. } = &pattern.kind else {
             unreachable!("lower_struct_is takes a struct pattern");
         };
         let result = self.builder.alloc_temp(MirType::Bool);
@@ -1516,8 +1498,8 @@ impl<'a> MirLowerer<'a> {
                 continue;
             };
             let field_ty = self.ctx.type_to_mir(&field_layout.ty);
-            let local_name = match field_pat {
-                Pattern::Ident(binding) => binding.clone(),
+            let local_name = match &field_pat.kind {
+                PatternKind::Ident(binding) => binding.clone(),
                 _ => format!("__is_{}", field_name),
             };
             let local = self.builder.alloc_local(local_name, field_ty.clone());
@@ -1531,7 +1513,7 @@ impl<'a> MirLowerer<'a> {
         let merge_block = self.builder.create_block();
         let tests: Vec<(crate::LocalId, &Pattern)> = reads
             .iter()
-            .filter(|(_, _, pat)| !matches!(pat, Pattern::Ident(_) | Pattern::Wildcard))
+            .filter(|(_, _, pat)| !matches!(&pat.kind, PatternKind::Ident(_) | PatternKind::Wildcard))
             .map(|(local, _, pat)| (*local, *pat))
             .collect();
         if tests.is_empty() {
@@ -1548,7 +1530,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         for (local, field_ty, pat) in &reads {
-            if let Pattern::Ident(binding) = pat {
+            if let PatternKind::Ident(binding) = &pat.kind {
                 if let Some(p) = self.mir_type_name(field_ty) {
                     self.meta_mut(binding.as_str()).type_prefix = Some(p);
                 }
@@ -1566,7 +1548,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(fail_block);
         for (local, field_ty, pat) in &reads {
-            if matches!(pat, Pattern::Ident(_)) && *field_ty == MirType::Buffer {
+            if matches!(&pat.kind, PatternKind::Ident(_)) && *field_ty == MirType::Buffer {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: *local,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
@@ -1607,7 +1589,7 @@ impl<'a> MirLowerer<'a> {
         scrutinee_ty: MirType,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
 
         let merge_block = self.builder.create_block();
         let arm_body_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
@@ -1624,9 +1606,9 @@ impl<'a> MirLowerer<'a> {
 
             // Catch-all patterns jump straight to the body.
             let is_catch_all = matches!(
-                &arm.pattern,
-                Pattern::Wildcard
-                    | Pattern::Ident(_)
+                &arm.pattern.kind,
+                PatternKind::Wildcard
+                    | PatternKind::Ident(_)
             );
 
             if !is_catch_all {
@@ -1654,7 +1636,7 @@ impl<'a> MirLowerer<'a> {
             self.builder.switch_to_block(arm_body_blocks[i]);
 
             // Bind the scrutinee to a catch-all identifier if present.
-            if let Pattern::Ident(name) = &arm.pattern {
+            if let PatternKind::Ident(name) = &arm.pattern.kind {
                 // Scalar matches don't involve enums — just bind the value.
                 let bind_local = self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1713,11 +1695,11 @@ impl<'a> MirLowerer<'a> {
         pass_block: BlockId,
         fail_block: BlockId,
     ) -> Result<(), LoweringError> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
 
         let cond_local = self.builder.alloc_temp(MirType::Bool);
-        match pattern {
-            Pattern::Literal(lit_expr) => {
+        match &pattern.kind {
+            PatternKind::Literal(lit_expr) => {
                 let (lit_op, _) = self.lower_expr(lit_expr)?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: cond_local,
@@ -1728,7 +1710,7 @@ impl<'a> MirLowerer<'a> {
                     },
                 }));
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 let (start_op, _) = self.lower_expr(start)?;
                 let (end_op, _) = self.lower_expr(end)?;
 
@@ -1762,7 +1744,7 @@ impl<'a> MirLowerer<'a> {
                     },
                 }));
             }
-            Pattern::Wildcard | Pattern::Ident(_) => {
+            PatternKind::Wildcard | PatternKind::Ident(_) => {
                 // Unconditional pass — caller should have handled this.
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                     target: pass_block,
@@ -1786,46 +1768,13 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
-    /// Resolve enum variant name to its tag value from the layout.
-    /// Tag for a tuple-element pattern that names an enum variant, or None when
-    /// it's an ordinary binding.
-    ///
-    /// Accepts both the qualified form (`Method.Get`) and a bare variant name,
-    /// resolved against the element's own enum layout — which is also what proves
-    /// the name is a variant and not a variable.
-    fn tuple_variant_tag(&self, name: &str, elem_ty: Option<&MirType>) -> Option<u64> {
-        if let Some(tag) = self.resolve_pattern_tag(name) {
-            return Some(tag);
-        }
-        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = elem_ty? else {
-            return None;
-        };
-        let layout = self.ctx.enum_layouts.get(*id as usize)?;
-        let bare = name.rsplit('.').next().unwrap_or(name);
-        layout.variants.iter().find(|v| v.name == bare).map(|v| v.tag)
-    }
-
-    pub(super) fn resolve_pattern_tag(&self, name: &str) -> Option<u64> {
-        let parts: Vec<&str> = name.splitn(2, '.').collect();
-        let (enum_name, variant_name) = if parts.len() == 2 {
-            (parts[0], parts[1])
-        } else {
-            return None;
-        };
-        match self.ctx.find_enum(enum_name) {
-            Some((_, layout)) => layout
-                .variants
-                .iter()
-                .find(|v| v.name == variant_name)
-                .map(|v| v.tag),
-            // `Ordering` is compiler-registered and has no layout. Without
-            // this, `match x.compare(y)` built a switch with no cases at all
-            // and every comparison took the last arm (#496).
-            None if enum_name == "Ordering" => {
-                rask_stdlib::ordering_tag(variant_name).map(|t| t as u64)
-            }
-            None => None,
-        }
+    /// A variant pattern the checker resolved that the scrutinee's layout
+    /// doesn't have: a lowering bug, said as one rather than switched on a
+    /// made-up tag.
+    fn no_such_variant(name: &str, scrutinee_ty: &MirType) -> LoweringError {
+        LoweringError::InvalidConstruct(format!(
+            "pattern `{name}` names no variant of the matched value's type `{scrutinee_ty:?}`"
+        ))
     }
 
     /// Give each Copy value a pattern bound out of borrowed storage
@@ -1864,21 +1813,21 @@ impl<'a> MirLowerer<'a> {
         ty: &rask_types::Type,
         out: &mut Vec<(String, rask_types::Type)>,
     ) {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Ident(name) => {
-                if self.resolve_pattern_tag(name).is_none() {
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Ident(name) => {
+                if !self.pattern_names_variant(pattern) {
                     out.push((name.clone(), ty.clone()));
                 }
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 let Some((_, payload)) = self.enum_variant_payload(ty, name) else { return };
                 for (pat, field_ty) in fields.iter().zip(payload.iter()) {
                     let field_mir = self.ctx.type_to_mir(field_ty);
                     self.pattern_binding_types(pat, &field_mir, field_ty, out);
                 }
             }
-            Pattern::Struct { name, fields, .. } => {
+            PatternKind::Struct { name, fields, .. } => {
                 let named: Vec<(String, rask_types::Type)> = match self.enum_variant_payload(ty, name) {
                     Some((Some(names), payload)) => names.into_iter().zip(payload).collect(),
                     Some((None, _)) => return,
@@ -1894,7 +1843,7 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            Pattern::Tuple(pats) => {
+            PatternKind::Tuple(pats) => {
                 let rask_types::Type::Tuple(elems) = ty else { return };
                 let mir_elems = match mir_ty {
                     MirType::Tuple(m) => m.clone(),
@@ -1904,7 +1853,7 @@ impl<'a> MirLowerer<'a> {
                     self.pattern_binding_types(pat, elem_mir, elem, out);
                 }
             }
-            Pattern::TypePat { ty: written, binding: Some(name) } => {
+            PatternKind::TypePat { ty: written, binding: Some(name) } => {
                 let ty_name = super::type_pat_name(written);
                 // An error variant's or a union member's own payload is bound,
                 // not the side it sits in.
@@ -1914,7 +1863,8 @@ impl<'a> MirLowerer<'a> {
                     return;
                 }
                 let rask_types::Type::Result { ok, err } = ty else { return };
-                let side = if self.pattern_is_err_side(&ty_name, mir_ty) { err } else { ok };
+                let Ok(err_side) = self.pattern_is_err_side(pattern, &ty_name, mir_ty) else { return };
+                let side = if err_side { err } else { ok };
                 // On a flat `T? or E`, `T as v` binds the `T` inside the
                 // success side's option. Only a written `T?` takes the option.
                 let side = match side.as_option() {
@@ -1923,7 +1873,7 @@ impl<'a> MirLowerer<'a> {
                 };
                 out.push((name.clone(), side.clone()));
             }
-            Pattern::Or(alts) => {
+            PatternKind::Or(alts) => {
                 if let Some(first) = alts.first() {
                     self.pattern_binding_types(first, mir_ty, ty, out);
                 }
@@ -1983,12 +1933,12 @@ impl<'a> MirLowerer<'a> {
 
 /// The type-or-variant name a pattern matches on, if it names one.
 pub(crate) fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<String> {
-    use rask_ast::expr::Pattern;
-    match pattern {
-        Pattern::Ident(name)
-        | Pattern::Constructor { name, .. }
-        | Pattern::Struct { name, .. } => Some(name.clone()),
-        Pattern::TypePat { ty, .. } => Some(super::type_pat_name(ty)),
+    use rask_ast::expr::PatternKind;
+    match &pattern.kind {
+        PatternKind::Ident(name)
+        | PatternKind::Constructor { name, .. }
+        | PatternKind::Struct { name, .. } => Some(name.clone()),
+        PatternKind::TypePat { ty, .. } => Some(super::type_pat_name(ty)),
         _ => None,
     }
 }
