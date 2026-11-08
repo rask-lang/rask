@@ -130,9 +130,14 @@ impl Finder<'_, '_> {
                         }
                     }
                 }
+                // A Copy field is copied out, not emptied: `let at =
+                // self.at` before `self.at += n` leaves `self.at` holding
+                // its value.
                 StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
                     if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
-                        emptied.push((place, init.id));
+                        if self.moves(init, &place) {
+                            emptied.push((place, init.id));
+                        }
                     }
                 }
                 _ => {}
