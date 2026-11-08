@@ -5089,6 +5089,23 @@ impl<'a> MirLowerer<'a> {
         }
         match self.pattern_target(pat) {
             Some(rask_types::PatternTarget::Side { err }) => Ok(*err),
+            // A variant of one side's enum: the side whose enum it is.
+            Some(rask_types::PatternTarget::Variant { enum_id, .. }) => {
+                let MirType::Result { err, .. } = val_ty else { return Ok(false) };
+                let is_it = |t: &MirType| match t {
+                    MirType::Enum(eid) => self
+                        .ctx
+                        .enum_layouts
+                        .get(eid.id as usize)
+                        .and_then(|l| l.key.as_ref())
+                        .is_some_and(|k| k.id == *enum_id),
+                    _ => false,
+                };
+                Ok(match err.as_ref() {
+                    MirType::Union(members) => members.iter().any(is_it),
+                    other => is_it(other),
+                })
+            }
             _ => Err(LoweringError::InvalidConstruct(format!(
                 "type test `{name}` on `{val_ty:?}` has no side from the checker"
             ))),

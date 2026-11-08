@@ -655,6 +655,8 @@ impl TypeChecker {
                 // wrong: it parses as a constructor pattern and never reached this
                 // check at all (#766).
                 if let Some(payload) = self.err_variant_payload(&resolved, ty) {
+                    // A variant of the error side's enum is on the error side.
+                    self.pattern_targets.insert(pattern.id, rask_types::PatternTarget::Side { err: true });
                     return match binding {
                         Some(name) => vec![(name.clone(), payload)],
                         None => vec![],
