@@ -932,6 +932,13 @@ impl TypeTable {
     /// read before any declaration is registered, so their `any I` carries no
     /// declaration yet; it is the stdlib's `I`, even where a program declares
     /// its own (#1426).
+    /// The type a stub signature's name means: the stdlib's declaration of
+    /// it. A name the stdlib doesn't declare (a stub's single-letter
+    /// wildcard, a compiler-provided `Heap`) stays a name.
+    fn stdlib_reads(&self, name: &str) -> Option<TypeId> {
+        self.shadowed_stdlib_type(name).or_else(|| self.stdlib_type_names.get(name).copied())
+    }
+
     pub fn as_stdlib_reads(&self, ty: &Type) -> Type {
         let each = |args: &[GenericArg]| -> Vec<GenericArg> {
             args.iter()
@@ -957,14 +964,21 @@ impl TypeTable {
             // A name the program has taken for a type of its own still means
             // the stdlib's here: `parse` fails with the stdlib's `ParseError`
             // whatever the program calls its enum (#1333).
-            Type::UnresolvedNamed(name) if self.shadowed_stdlib_type(name).is_some() => {
-                Type::Named(self.shadowed_stdlib_type(name).unwrap())
-            }
+            //
+            // And a stdlib type the program never imported is still the type:
+            // `fs.current_dir()` returns the stdlib's `Path` whether or not the
+            // program can write `Path`. Left a bare name, nothing downstream
+            // could size it.
+            Type::UnresolvedNamed(name) => match self.stdlib_reads(name) {
+                Some(id) => Type::Named(id),
+                None => ty.clone(),
+            },
             Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
-            Type::UnresolvedGeneric { name, args } => match self.shadowed_stdlib_type(name) {
+            Type::UnresolvedGeneric { name, args } => match self.stdlib_reads(name) {
                 Some(base) => Type::Generic { base, args: each(args) },
                 None => Type::UnresolvedGeneric { name: name.clone(), args: each(args) },
             },
+            Type::Union(members) => Type::Union(members.iter().map(|m| self.as_stdlib_reads(m)).collect()),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| p.map(|p| self.as_stdlib_reads(p))).collect(),

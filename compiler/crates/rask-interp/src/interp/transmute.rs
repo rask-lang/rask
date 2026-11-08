@@ -13,6 +13,20 @@ use super::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, IntKind, Value};
 
 
+/// Does `ty` hold a name the checker left spelled?
+fn names_something_spelled(ty: &Type) -> bool {
+    use rask_types::GenericArg;
+    match ty {
+        Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => true,
+        Type::Generic { args, .. } => {
+            args.iter().any(|a| matches!(a, GenericArg::Type(t) if names_something_spelled(t)))
+        }
+        Type::Array { elem, .. } => names_something_spelled(elem),
+        Type::Tuple(elems) => elems.iter().any(names_something_spelled),
+        _ => false,
+    }
+}
+
 fn align_up(n: u32, align: u32) -> u32 {
     (n + align - 1) & !(align - 1)
 }
@@ -43,10 +57,13 @@ impl Interpreter {
 
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
+        // What transmute reinterprets is scalars, arrays, tuples and structs of
+        // those, all resolved to ids. A name still spelled is something else:
+        // inside a generic body it's the body's own parameter, which the
+        // interpreter isn't handed the argument for (#1813).
         let settle = |ty: &Type| {
-            // The interpreter runs a generic body with its arguments bound,
-            // so what reaches here names no parameter.
             rask_layout::settle(ty, rask_layout::Unsolved::Refuse, &rask_layout::no_params)
+                .filter(|t| !names_something_spelled(t))
                 .ok_or_else(|| self.unsupported(ty))
         };
         let (from, to) = (settle(from)?, settle(to)?);
