@@ -209,6 +209,54 @@ usually allow.
   a surrogate for the off-screen world, and a fitted low-order model beats it
   there too.
 
+## The game (a proposal)
+
+The "why didn't we think of that" games are one new mechanic in a small
+frame, never breadth. Into the Breach shows you exactly what the enemy does
+next turn, and that one piece of perfect information made a tactics game into
+pure decision-making. So the question is which mechanic this stack makes
+possible that nobody else could build, and the smallest game it deserves.
+
+**Forecasting.** The sim is deterministic and fast-forwards for free, so a
+fork plus a run-ahead plus a ghost render gives the player the exact future
+of the machine they built: run the colony a year ahead in a second, see the
+famine in month eight, go back and change the plan. No sim game has this
+because no sim is deterministic and fast enough to run ahead and come back,
+which is what the kernel already aims at for joining.
+
+**The boundary is the design.** What keeps it from being solved is what the
+forecast can't see: other players' inputs, the world layer's events, and
+whatever the game rolls from a sealed seed when it happens rather than at
+world creation. Planning is done against the forecast. The crisis is the
+unforecastable arriving, when the forecast turns out to have been the truth
+about the colony and a lie about the world. In co-op the forecast is local
+and free; across colonies it's an information game, since you can see what a
+rival's colony does if they do nothing, and they know you can.
+
+Everything else in these notes is the frame, and none of it is new alone:
+mortal runs of a few hours in a persistent world so a forecast never has to
+stretch past a season; agents as event-driven optimizers with prices as
+explanations, which is what makes a forecast instant and lets the ghost say
+why; tiers so the mid-game is a sequence of starts; lockstep co-op for two to
+six; 90s crispness, because ghosts over a crisp tile world read instantly.
+The numerics are load-bearing: a year in a second needs a colony that's
+mostly asleep, closed-form movement and implicit fields.
+
+Dropped: a polished multiplayer Dwarf Fortress (the megaproject, and "done
+right" never surprised anyone); a govern-not-command game over rational
+agents (Victoria at colony scale, and indirect control makes the start slow);
+asymmetric co-op with a human storyteller on a conservation-law budget (new
+and small, the best runner-up, but a mode rather than a spine, and it can be
+added later without changing anything).
+
+Scope: one biome, a couple hundred agents, a few hours per run. The sentence:
+the colony sim where you can see the future, and the game is everything you
+can't.
+
+Build order: the sand benchmark, the ASCII needs-and-jobs prototype, then
+forecast as a fork plus a fast-forward plus a diff printed in the terminal.
+If a forecast of a famine in ASCII makes you change a plan, the game exists.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
