@@ -309,14 +309,23 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
-    /// S5: `let old = p.f` is a view of `p.f`, and `p.f = …` freed what it
-    /// held while `old` was still read afterwards.
-    #[error("`{name}` views `{path}`, which was written over")]
+    /// S5: `p.f` written over while `name`, a view of it, is still in scope.
+    #[error("`{path}` written over while `{name}` views it")]
     ViewOutlivedReplace {
         name: String,
         path: String,
-        /// The assignment that replaced the field.
-        replaced_at: Span,
+        /// Where the view was bound.
+        viewed_at: Span,
+    },
+
+    /// `let name = p.f` moved the field out, and this reads it (or the value
+    /// around it) before the refill puts one back.
+    #[error("`{path}` read while `{name}` has it")]
+    TakenFieldRead {
+        path: String,
+        name: String,
+        /// The read that moved it out.
+        taken_at: Span,
     },
 
     /// #804: a `mutate` parameter was consumed and nothing put back, so the caller

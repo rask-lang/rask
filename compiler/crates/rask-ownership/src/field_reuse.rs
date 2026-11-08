@@ -36,7 +36,7 @@
 use std::collections::HashSet;
 
 use rask_ast::decl::Decl;
-use rask_ast::expr::{Expr, ExprKind, UnaryOp};
+use rask_ast::expr::{ArgMode, Expr, ExprKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::visit::{self, Visit};
 use rask_ast::NodeId;
@@ -237,52 +237,146 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             continue;
         }
         match &stmt.kind {
-            StmtKind::Assign { target, .. } => {
-                if let Some(place) = place_path(target) {
-                    if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
-                        pairs.push((emptied[at].1, stmt.id));
-                        emptied.remove(at);
-                    }
+            StmtKind::Assign { target, .. } if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _)| *e == p)) => {
+                let place = place_path(target).unwrap_or_default();
+                if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
+                    pairs.push((emptied[at].1, stmt.id));
+                    emptied.remove(at);
                 }
             }
-            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
-                    if moves(init) {
-                        emptied.push((place, init.id));
-                    }
-                }
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
+                if matches!(init.kind, ExprKind::Field { .. }) && place_path(init).is_some() && moves(init) =>
+            {
+                // A second read of the same field reads the emptied slot; the
+                // latest read is the one the refill pairs with.
+                let place = place_path(init).unwrap_or_default();
+                emptied.retain(|(p, _)| *p != place);
+                emptied.push((place, init.id));
             }
-            _ => {}
+            _ => {
+                // Anything else that writes the field, or the value around it,
+                // breaks the pair: what the refill would put back went first.
+                let written = places_written(checker, stmt);
+                emptied.retain(|(p, _)| {
+                    !written.iter().any(|w| {
+                        let n = w.len().min(p.len());
+                        w[..n] == p[..n]
+                    })
+                });
+            }
         }
     }
     pairs
 }
 
+/// The places `stmt` may write over: assignment targets anywhere in it, an
+/// argument marked `mutate` or `deleting`, and a `mutate self` receiver.
+fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String>> {
+    struct Writes<'c, 'a> {
+        checker: &'c OwnershipChecker<'a>,
+        out: Vec<Vec<String>>,
+    }
+    impl<'e> Visit<'e> for Writes<'_, '_> {
+        fn expr(&mut self, e: &'e Expr) -> bool {
+            match &e.kind {
+                ExprKind::Call { args, .. } => {
+                    for a in args {
+                        if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
+                            self.out.extend(place_path(&a.expr));
+                        }
+                    }
+                }
+                ExprKind::MethodCall { object, method, args, .. } => {
+                    if self.checker.is_mutate_self_method(object, method) {
+                        self.out.extend(place_path(object));
+                    }
+                    for a in args {
+                        if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
+                            self.out.extend(place_path(&a.expr));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            true
+        }
+        fn stmt(&mut self, s: &'e Stmt) -> bool {
+            if let StmtKind::Assign { target, .. } = &s.kind {
+                self.out.extend(place_path(target));
+            }
+            true
+        }
+    }
+    let mut w = Writes { checker, out: Vec::new() };
+    visit::visit_stmt(stmt, &mut w);
+    w.out
+}
+
 /// Whether `stmt` can leave the statement list it's in before finishing: a
-/// `return`, `break`, `continue` or `try` anywhere in it outside a closure.
-/// A `break` aimed at a loop inside `stmt` counts too, which only ever keeps
-/// a read a view.
+/// `return` or `try` anywhere in it outside a closure, or a `break` or
+/// `continue` that isn't aimed at a loop inside it. A labeled one inside a
+/// loop counts, since it may name a loop further out.
 fn may_leave_early(stmt: &Stmt) -> bool {
-    struct Exits(bool);
+    struct Exits {
+        hit: bool,
+        in_loop: bool,
+    }
+    impl Exits {
+        fn body(&mut self, body: &[Stmt]) {
+            let mut inner = Exits { hit: false, in_loop: true };
+            visit::visit_body(body, &mut inner);
+            self.hit |= inner.hit;
+        }
+    }
     impl<'e> Visit<'e> for Exits {
         fn expr(&mut self, e: &'e Expr) -> bool {
             match &e.kind {
                 ExprKind::Closure { .. } => false,
                 ExprKind::Try { .. } => {
-                    self.0 = true;
+                    self.hit = true;
                     false
                 }
-                _ => !self.0,
+                ExprKind::Loop { body, .. } => {
+                    self.body(body);
+                    false
+                }
+                _ => !self.hit,
             }
         }
         fn stmt(&mut self, s: &'e Stmt) -> bool {
-            if matches!(s.kind, StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_)) {
-                self.0 = true;
+            match &s.kind {
+                StmtKind::Return(_) => self.hit = true,
+                StmtKind::Break { label, .. } | StmtKind::Continue(label)
+                    if !self.in_loop || label.is_some() =>
+                {
+                    self.hit = true
+                }
+                StmtKind::Break { .. } | StmtKind::Continue(_) => {}
+                StmtKind::While { cond, body, .. } => {
+                    visit::visit_expr(cond, self);
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::WhileLet { expr, body, .. } => {
+                    visit::visit_expr(expr, self);
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::Loop { body, .. } => {
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
+                    visit::visit_expr(iter, self);
+                    self.body(body);
+                    return false;
+                }
+                _ => {}
             }
-            !self.0
+            !self.hit
         }
     }
-    let mut v = Exits(false);
+    let mut v = Exits { hit: false, in_loop: false };
     visit::visit_stmt(stmt, &mut v);
-    v.0
+    v.hit
 }
