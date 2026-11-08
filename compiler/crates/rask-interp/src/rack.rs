@@ -260,18 +260,23 @@ fn forget_container_edges(value: &Value, depth: usize) {
 /// matching element goes away is dropped by `fix_elements` on the visit that
 /// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
+    register_element_at(vec, value, 1);
+}
+
+/// `register_element` for an element `depth` levels inside the value being
+/// registered. This is the element's only walk: `register_nested` doesn't
+/// walk it again, so nested vectors cost one pass, not two per level.
+fn register_element_at(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value, depth: usize) {
     // An element of struct type holds its links in fields of its own: those
     // are edges the element's fields record, and delete nulls them in place
     // (#1804).
     if let s @ Value::Struct(_) = strip_some(value) {
-        register_nested(s, 1);
+        register_nested(s, depth);
         return;
     }
     // A struct an enum carries (`Small or Oops`, `Wrap.Yes(Cursor)`) records
-    // its own fields the same way.
-    if matches!(value, Value::Enum { .. }) {
-        register_nested(value, 1);
-    }
+    // its own fields the same way, and an inner container its own elements.
+    register_nested(value, depth);
     // A tuple or an enum element is a value: its links are recorded against
     // the vector, and delete rebuilds the element in place.
     let mut links = Vec::new();
@@ -443,13 +448,21 @@ pub fn register_entry(
     old: Option<&Value>,
     value: &Value,
 ) {
+    register_entry_at(map, old, value, 1);
+}
+
+/// `register_entry` at a depth, the entry's only walk; see `register_element_at`.
+fn register_entry_at(
+    map: &Arc<Mutex<crate::value::MapData>>,
+    old: Option<&Value>,
+    value: &Value,
+    depth: usize,
+) {
     if let s @ Value::Struct(_) = strip_some(value) {
-        register_nested(s, 1);
+        register_nested(s, depth);
         return;
     }
-    if matches!(value, Value::Enum { .. }) {
-        register_nested(value, 1);
-    }
+    register_nested(value, depth);
     let mut in_value = Vec::new();
     tuple_links(value, &mut in_value);
     for (rack_id, target) in in_value {
@@ -505,15 +518,13 @@ pub fn register_nested(value: &Value, depth: usize) {
         Value::Vec(vec) => {
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
-                register_element(vec, it);
-                register_nested(it, depth + 1);
+                register_element_at(vec, it, depth + 1);
             }
         }
         Value::Map(map) => {
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
-                register_entry(map, None, it);
-                register_nested(it, depth + 1);
+                register_entry_at(map, None, it, depth + 1);
             }
         }
         Value::Enum { fields, .. } => {
