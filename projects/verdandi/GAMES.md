@@ -106,7 +106,13 @@ the reason attached. Factorio works this way (a blueprint is a control
 abstraction, the sim still runs every inserter). Paradox abstracts the sim
 itself (pops as numbers), which scales and reads well, but nothing underneath
 can misbehave on its own, so the stories thin out. DF is the third corner,
-full sim and no control abstraction, and drowns at a hundred.
+full sim and no control abstraction, and drowns at a hundred. Songs of Syx is
+the Paradox corner done as a colony sim: one developer, tens of thousands of
+citizens, needs as service capacity, a city plus a world map of regions. It's
+the proof that scale and stories trade off (reviews: breathtaking, then a
+spreadsheet), the best reference for the world layer, and its races with
+different needs in one city are the nearest reference for what a stone-born
+people might need.
 
 The lower tier never goes away, it stops being necessary. You can still probe
 a transistor; the gate hides it by default. Same in play: at 200 pop you still
