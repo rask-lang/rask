@@ -968,8 +968,9 @@ impl<'a> OwnershipChecker<'a> {
         // settled on. Nested ones count too — `Vec<Pair<string>>` instantiates
         // `Pair<string>` just as much as a bare binding does. One that still
         // names a type parameter of the body it's in (`Duo<Big>` inside
-        // `func first<Big>`) is no instantiation yet; its instances count
-        // where the generic is called.
+        // `func first<Big>`) is no instantiation yet, and its instances at
+        // concrete arguments exist only once the body is instantiated, which
+        // this pass doesn't see (#1815).
         let mut instances: Vec<(rask_types::TypeId, Vec<rask_types::GenericArg>)> = Vec::new();
         for (bodies, params) in self.bodies_with_params(decls) {
             let mut found = Vec::new();
