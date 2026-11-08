@@ -135,6 +135,20 @@ pub fn register_field(
     old: Option<&Value>,
     value: &Value,
 ) {
+    register_field_at(holder, field, old, value, 0);
+}
+
+/// `register_field` for a field `depth` levels inside the value being
+/// registered. The depth carries on into the field's own value, so a deep
+/// tree, or one that reaches a struct it is already inside, stops at
+/// `MAX_DEPTH` instead of starting over at every struct.
+fn register_field_at(
+    holder: &Arc<Mutex<StructData>>,
+    field: &str,
+    old: Option<&Value>,
+    value: &Value,
+    depth: usize,
+) {
     let slot = BacklinkKey { holder: Arc::as_ptr(holder) as usize, field: Some(field.to_string()) };
 
     // Unlink first: `a.target = a.target` must not drop the backlink it re-adds.
@@ -185,7 +199,7 @@ pub fn register_field(
             );
         }
     }
-    register_nested(value, 0);
+    register_nested(value, depth + 1);
 }
 
 /// A loop's temporary vector of links is done with: drop its records.
@@ -485,7 +499,7 @@ pub fn register_nested(value: &Value, depth: usize) {
                 guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
             };
             for (name, v) in &fields {
-                register_field(s, name, None, v);
+                register_field_at(s, name, None, v, depth);
             }
         }
         Value::Vec(vec) => {
