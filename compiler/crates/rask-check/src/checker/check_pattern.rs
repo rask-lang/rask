@@ -238,7 +238,10 @@ impl TypeChecker {
                 return Some(bindings);
             };
             match declared.iter().find(|(f, _)| f == n) {
-                Some((_, ty)) => bindings.push((n.clone(), ty.clone())),
+                Some((_, ty)) => {
+                    self.pattern_targets.insert(field.id, rask_types::PatternTarget::Binding);
+                    bindings.push((n.clone(), ty.clone()));
+                }
                 None => self.errors.push(TypeError::NoSuchField {
                     ty: Type::Named(id),
                     field: n.clone(),

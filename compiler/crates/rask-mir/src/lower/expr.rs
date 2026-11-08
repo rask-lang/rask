@@ -8674,7 +8674,7 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
             PatternKind::Constructor { .. } | PatternKind::Struct { .. } => true,
-            PatternKind::Ident(n) => self.pattern_names_variant(p, n),
+            PatternKind::Ident(_) => self.pattern_names_variant(p),
             _ => false,
         };
         match &pattern.kind {

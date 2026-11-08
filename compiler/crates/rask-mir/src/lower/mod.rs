@@ -5118,22 +5118,28 @@ impl<'a> MirLowerer<'a> {
         self.ctx.typed?.pattern_targets.get(&pat.id)
     }
 
-    /// Does `pat`, written `name`, name a variant rather than bind a value?
-    pub(crate) fn pattern_names_variant(&self, pat: &rask_ast::expr::Pattern, name: &str) -> bool {
+    /// Does `pat` name a variant rather than bind a value?
+    pub(crate) fn pattern_names_variant(&self, pat: &rask_ast::expr::Pattern) -> bool {
         match self.pattern_target(pat) {
             Some(rask_types::PatternTarget::Variant { .. }) => true,
             Some(rask_types::PatternTarget::Binding | rask_types::PatternTarget::Side { .. }) => false,
-            None => is_variant_name(name),
+            None => {
+                crate::fallback::unresolved_pattern("lower/pattern_names_variant");
+                false
+            }
         }
     }
 
     /// Does `pat`, a bare name, bind the value it matches? A recorded variant
-    /// or type test doesn't; a pattern built after checking goes by spelling.
-    pub(crate) fn pattern_binds(&self, pat: &rask_ast::expr::Pattern, name: &str) -> bool {
+    /// or type test doesn't.
+    pub(crate) fn pattern_binds(&self, pat: &rask_ast::expr::Pattern) -> bool {
         match self.pattern_target(pat) {
             Some(rask_types::PatternTarget::Binding) => true,
             Some(_) => false,
-            None => !is_variant_name(name),
+            None => {
+                crate::fallback::unresolved_pattern("lower/pattern_binds");
+                true
+            }
         }
     }
 
@@ -5143,7 +5149,6 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn pattern_variant_tag(
         &self,
         pat: &rask_ast::expr::Pattern,
-        name: &str,
         val_ty: &MirType,
     ) -> Option<i64> {
         let MirType::Enum(eid) = val_ty else { return None };
@@ -5156,7 +5161,10 @@ impl<'a> MirLowerer<'a> {
                 variant.as_str()
             }
             Some(rask_types::PatternTarget::Binding | rask_types::PatternTarget::Side { .. }) => return None,
-            None => name.rsplit('.').next().unwrap_or(name),
+            None => {
+                crate::fallback::unresolved_pattern("lower/pattern_variant_tag");
+                return None;
+            }
         };
         layout.variants.iter().find(|v| v.name == variant).map(|v| v.tag as i64)
     }
@@ -5174,8 +5182,8 @@ impl<'a> MirLowerer<'a> {
             return Ok(*err as i64);
         }
         match &pattern.kind {
-            PatternKind::Ident(name) if !self.pattern_binds(pattern, name) => {
-                if let Some(tag) = self.pattern_variant_tag(pattern, name, val_ty) {
+            PatternKind::Ident(name) if !self.pattern_binds(pattern) => {
+                if let Some(tag) = self.pattern_variant_tag(pattern, val_ty) {
                     return Ok(tag);
                 }
                 // Not a variant of the scrutinee's own enum: on a `T or E` a
@@ -5190,8 +5198,8 @@ impl<'a> MirLowerer<'a> {
             // A named variant is a variant like a positional one: `s is
             // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
             // true of every first variant and of nothing else.
-            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
-                Ok(self.pattern_variant_tag(pattern, name, val_ty).unwrap_or(0))
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                Ok(self.pattern_variant_tag(pattern, val_ty).unwrap_or(0))
             }
             _ => Ok(0),
         }
@@ -5507,10 +5515,10 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Constructor { fields, .. } => fields.iter().any(|f| {
-                matches!(&f.kind, PatternKind::Ident(n) if !self.pattern_names_variant(f, n)) || self.binds_any(f)
+                matches!(&f.kind, PatternKind::Ident(_) if !self.pattern_names_variant(f)) || self.binds_any(f)
             }),
             PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| {
-                matches!(&f.kind, PatternKind::Ident(n) if !self.pattern_names_variant(f, n)) || self.binds_any(f)
+                matches!(&f.kind, PatternKind::Ident(_) if !self.pattern_names_variant(f)) || self.binds_any(f)
             }),
             _ => false,
         }
@@ -5523,7 +5531,7 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Wildcard => false,
-            PatternKind::Ident(n) => self.pattern_names_variant(pattern, n),
+            PatternKind::Ident(_) => self.pattern_names_variant(pattern),
             _ => true,
         }
     }
@@ -5548,7 +5556,7 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::{Pattern, PatternKind};
         match &pattern.kind {
             PatternKind::Wildcard => Ok(()),
-            PatternKind::Ident(name) if !self.pattern_names_variant(pattern, name) => Ok(()),
+            PatternKind::Ident(_) if !self.pattern_names_variant(pattern) => Ok(()),
             PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 let pass = self.builder.create_block();
                 self.emit_pattern_test(value, pattern, pass, fail)?;
@@ -5581,7 +5589,7 @@ impl<'a> MirLowerer<'a> {
                     _ => &[],
                 };
                 let (Some(tag), Some(field_types)) =
-                    (self.pattern_variant_tag(pattern, name, ty), self.variant_field_types(ty, name))
+                    (self.pattern_variant_tag(pattern, ty), self.variant_field_types(ty, name))
                 else {
                     return Err(LoweringError::InvalidConstruct(format!(
                         "`{name}` nested in a variant pattern names no variant of the \
@@ -6257,14 +6265,6 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::Ref | UnaryOp::Deref | UnaryOp::Heap => unreachable!(),
     }
 }
-
-/// Check if a name is a known enum variant (not a variable binding).
-pub(crate) fn is_variant_name(name: &str) -> bool {
-    matches!(name, "Some" | "None" | "Ok" | "Err")
-        || name.contains('.')  // Qualified variant like "Status.Active"
-        || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-}
-
 /// Detect identifiers that name types or stdlib modules rather than values.
 ///
 /// Uppercase-initial names are user-defined types (structs, enums, interfaces).

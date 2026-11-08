@@ -3,7 +3,7 @@
 //! Match expression lowering: enum/tagged dispatch, string match, tuple match.
 
 use crate::FieldAccess;
-use super::{is_variant_name, LoweringError, MirLowerer, TypedOperand};
+use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -289,8 +289,8 @@ impl<'a> MirLowerer<'a> {
 
         let patterns_imply_enum = if !is_enum && !is_result_or_option {
             arms.iter().any(|arm| match &arm.pattern.kind {
-                PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
-                    self.pattern_names_variant(&arm.pattern, name)
+                PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                    self.pattern_names_variant(&arm.pattern)
                 }
                 PatternKind::Ident(name) => {
                     matches!(self.pattern_target(&arm.pattern), Some(rask_types::PatternTarget::Variant { .. }))
@@ -416,9 +416,9 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 PatternKind::Ident(name) => {
-                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, name, &scrutinee_ty) {
+                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, &scrutinee_ty) {
                         cases.push((tag as u64, arm_blocks[i]));
-                    } else if self.pattern_binds(&arm.pattern, name) {
+                    } else if self.pattern_binds(&arm.pattern) {
                         // A plain binding pattern is a catch-all.
                         catch_all[i] = true;
                         if !default_claimed {
@@ -430,7 +430,7 @@ impl<'a> MirLowerer<'a> {
                         // by the scrutinee's real ok/err type identities.
                         let tag = self.pattern_is_err_side(&arm.pattern, name, &scrutinee_ty)? as u64;
                         cases.push((tag, arm_blocks[i]));
-                    } else if has_tag && self.pattern_names_variant(&arm.pattern, name) {
+                    } else if has_tag && self.pattern_names_variant(&arm.pattern) {
                         return Err(Self::no_such_variant(name, &scrutinee_ty));
                     } else {
                         // A plain binding pattern is a catch-all too.
@@ -442,7 +442,7 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
-                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, name, &scrutinee_ty) {
+                    if let Some(tag) = self.pattern_variant_tag(&arm.pattern, &scrutinee_ty) {
                         cases.push((tag as u64, arm_blocks[i]));
                     } else if self.union_variant_of_result(&arm.pattern, &scrutinee_ty).is_some() {
                         return Err(LoweringError::InvalidConstruct(format!(
@@ -506,7 +506,7 @@ impl<'a> MirLowerer<'a> {
                 let name = match &arm.pattern.kind {
                     PatternKind::TypePat { ty, .. } => super::type_pat_name(ty),
                     // A binding catches both sides; it is the default.
-                    PatternKind::Ident(n) if self.pattern_binds(&arm.pattern, n) => continue,
+                    PatternKind::Ident(_) if self.pattern_binds(&arm.pattern) => continue,
                     PatternKind::Ident(n) => n.clone(),
                     _ => continue,
                 };
@@ -830,7 +830,7 @@ impl<'a> MirLowerer<'a> {
             // bound it; this one hadn't. Before the guard, because the guard is
             // usually what reads it (#875).
             if let PatternKind::Ident(name) = &arm.pattern.kind {
-                let names_a_variant = !self.pattern_binds(&arm.pattern, name);
+                let names_a_variant = !self.pattern_binds(&arm.pattern);
                 if !names_a_variant {
                     let bind_local =
                         self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
@@ -1131,15 +1131,15 @@ impl<'a> MirLowerer<'a> {
             for (j, pat) in sub_patterns.iter().enumerate() {
                 match &pat.kind {
                     PatternKind::Literal(_) => checks.push((j, pat.clone())),
-                    PatternKind::Ident(name) => {
+                    PatternKind::Ident(_) => {
                         let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, name, t)) {
+                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
                             variant_checks.push((j, tag as u64));
                         }
                     }
-                    PatternKind::Constructor { name, fields } => {
+                    PatternKind::Constructor { .. } => {
                         let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, name, t)) {
+                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
                             payload_binds.push((j, tag as u64, pat.clone()));
                         }
                     }
@@ -1816,7 +1816,7 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Ident(name) => {
-                if !self.pattern_names_variant(pattern, name) {
+                if !self.pattern_names_variant(pattern) {
                     out.push((name.clone(), ty.clone()));
                 }
             }
