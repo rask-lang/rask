@@ -422,11 +422,17 @@ fifty names), health (the material sim's).
 - **Needs**: what they want now. A vector that depletes with time and is
   restored by acts. Dimensionality is set by the world, not chosen: two
   needs are orthogonal when different classes of act restore them. Body,
-  company, safety, and in this setting receiving. Status is the one honest
-  argument, probably a disposition.
+  company, safety, ambition (restored by comparison), and in this setting
+  receiving. Everyone has every dimension; "some crave it" is a weight
+  distribution with most of its mass near zero.
 - **Dispositions**: who they are. Weights on the needs, a discount rate, a
-  risk tolerance. Personality as the preference ordering over the same
-  needs.
+  risk tolerance, empathy (how much another agent's state enters my
+  utility), conformity (how much others' beliefs enter mine). Personality
+  as the preference ordering over the same needs. Drawn per agent from a
+  distribution with heavier tails than gaussian (log-normal or t), because
+  stories need the one madman in a fort of fifty. Named types are regions
+  of the space and live in the diary as computed labels, never in the sim.
+  A people is a mean vector and a covariance.
 - **Skills**: what they can do. Capacities per task class, growing with use.
 - **Memory**: what happened to them. A decaying log of events with subject,
   valence and salience. Relationships are its sum per agent, beliefs its
@@ -434,8 +440,11 @@ fifty names), health (the material sim's).
 - Body beside them, from the material sim: capacity that decays with harm.
 
 The decision rule is a function, not state: the act that restores the most
-weighted need over the horizon, discounted, within skill and belief. That's
-the optimizer, and the price explanation falls out of it. Coupling without
+weighted need over the horizon, discounted, within skill and belief, with
+urgency convex in the deficit. That's the optimizer, and the price
+explanation falls out of it. The convexity is Maslow's pyramid as an
+emergent property instead of a rule, and soft on purpose: a hard order can't
+produce a martyr, and the setting's endgame is one. Coupling without
 merging: company is restored by agents you have good memories of; acts write
 memory; memory of force sets fear, and the risk disposition turns fear into
 obedience or defection. The tantrum spiral needs nothing more.
