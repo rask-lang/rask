@@ -52,6 +52,8 @@ const KIND_HEAP: i32 = runtime_abi::RASK_OWNED_HEAP as i32;
 /// The value at this offset is described by the list being walked, from its
 /// start — how a type that reaches itself is described at all (#1202).
 const KIND_SELF: i32 = runtime_abi::RASK_OWNED_SELF as i32;
+/// A link inside the element, for the rack rather than for the free.
+const KIND_LINK: i32 = runtime_abi::RASK_OWNED_LINK as i32;
 
 /// One interface-box entry at offset zero: what to hand `rask_owned_release` when
 /// the slot *is* the fat pointer, which is the shape of an interface-object field.
@@ -130,6 +132,13 @@ fn describe(
     }
     match ty {
         MirType::Buffer => out.push(entry(base, KIND_STRING)),
+        // A link inside an element is the rack's business: delete nulls it in
+        // place (#1804). An element that *is* a link is listed nowhere — the
+        // rack removes those entries instead, and frees walk nothing for them.
+        MirType::Link(_) if depth > 0 => out.push(entry(base, KIND_LINK)),
+        MirType::Option(inner) if inner.is_niche_payload() && depth > 0 => {
+            out.push(entry(base, KIND_LINK))
+        }
         // The element is the container. Its own list travels with it, so this
         // level says "a Vec lives here" and stops there. A rack is an arena
         // whose nodes outlive any one element (mem.racks), so it's nobody's

@@ -72,3 +72,21 @@ test "reassigning a tuple local records its links" {
     assert t.1.at is none
 }
 
+
+struct Wrap {
+    pair: (i32, Link<Node>?)
+}
+
+test "a bare link in a tuple local or a tuple field is nulled by delete" {
+    mut rack: Rack<Node> = Rack.new()
+    let c = rack.insert(Node(id: 3, cur: Cursor(at: none)))
+    let d = rack.insert(Node(id: 4, cur: Cursor(at: none)))
+    mut t: (i32, Link<Node>?) = (0, none)
+    t.1 = c
+    mut w = Wrap(pair: (0, none))
+    w.pair.1 = d
+    rack.delete(c)
+    rack.delete(d)
+    assert t.1 is none
+    assert w.pair.1 is none
+}

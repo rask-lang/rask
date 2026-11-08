@@ -37,6 +37,9 @@ struct RaskVec {
     // loop whose body deletes nodes the vector links to neither skips an entry
     // nor reads past the end (#1805).
     RaskVecCursor *cursors;
+    // Whether elements hold links inside them (`Vec<Cursor>`): 0 not asked
+    // yet, 1 no, 2 yes. Asked of the element map once.
+    int32_t links;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
@@ -566,6 +569,7 @@ int64_t rask_vec_push(RaskVec *v, const void *elem) {
     if (vec_grow(v, v->len + 1) != 0) return -1;
     memcpy(v->data + v->len * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
+    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -619,6 +623,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     char *slot = vec_slot(v, index);
     rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
     memcpy(slot, elem, (size_t)v->elem_size);
+    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Put back an element `with`, `for mutate` or a field write took out of this
@@ -627,6 +632,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
 // released here.
 void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
     memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
+    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
@@ -733,6 +739,7 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
     }
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
+    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -758,6 +765,68 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     }
     v->len--;
     return 0;
+}
+
+// ─── Links inside elements ──────────────────────────────────
+//
+// An element of struct type can hold links (`Vec<Cursor>`), and the rack has to
+// find them: delete nulls the ones naming the dying node. The element map says
+// where they are, as `RASK_OWNED_LINK` entries next to the strings and
+// containers, and the same tag guards decide whether an enum payload's link is
+// live.
+
+static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
+                            RaskLinkSlotFn fn, void *ctx) {
+    if (!elem || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
+            int64_t body = RASK_OWNED_TAG_COUNT(e);
+            if (i + body >= count) return;
+            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
+            int64_t tag;
+            switch (RASK_OWNED_TAG_WIDTH(e)) {
+                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+                default: tag = *(const int64_t *)at;           break;
+            }
+            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+                links_walk_from(elem, entries + i + 1, body, fn, ctx);
+            }
+            i += body;
+            continue;
+        }
+        // What a heap block or a recursive value holds is out of reach of a
+        // link slot here: a node never sits behind one.
+        if (kind == RASK_OWNED_HEAP) {
+            i += RASK_OWNED_HEAP_COUNT(e);
+            continue;
+        }
+        if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
+    }
+}
+
+void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx) {
+    if (strs) links_walk_from(elem, strs->offsets, strs->count, fn, ctx);
+}
+
+static int32_t elem_strs_links(const RaskElemStrs *s) {
+    for (int64_t i = 0; s->offsets && i < s->count; i++) {
+        if (((uint32_t)s->offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) return 2;
+    }
+    return 1;
+}
+
+int64_t rask_vec_holds_struct_links(RaskVec *v) {
+    if (!v) return 0;
+    if (!v->links) v->links = elem_strs_links(&v->strs);
+    return v->links == 2;
+}
+
+const RaskElemStrs *rask_vec_elem_strs(const RaskVec *v) {
+    return &v->strs;
 }
 
 // ─── Loops that tolerate removal ────────────────────────────

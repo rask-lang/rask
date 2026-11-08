@@ -111,6 +111,9 @@ int64_t rask_resource_is_consumed(int64_t token);
 
 typedef struct RaskVec RaskVec;
 
+// A link slot inside a container element, handed to a walker by address.
+typedef void (*RaskLinkSlotFn)(void **slot, void *ctx);
+
 // A loop's place in a vector it walks, in the loop's frame. Four words, so
 // lowering can hold it as a tuple local.
 //
@@ -840,6 +843,16 @@ void      rask_link_forget_struct(void *base, int64_t field_count, const int32_t
 // `holder_died` drops every record on the chain; a container's free calls it,
 // so no record outlives the storage it names.
 void    **rask_vec_link_edges(RaskVec *v);
+// Links inside container elements of struct type (`Vec<Cursor>`): the element
+// map's `RASK_OWNED_LINK` entries say where they sit, tag guards included.
+void      rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx);
+int64_t   rask_vec_holds_struct_links(RaskVec *v);
+const RaskElemStrs *rask_vec_elem_strs(const RaskVec *v);
+int64_t   rask_map_holds_struct_links(RaskMap *m);
+const RaskElemStrs *rask_map_val_strs(const RaskMap *m);
+void      rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *ctx);
+void      rask_link_register_element_fields(RaskVec *v, const void *elem);
+void      rask_link_register_entry_fields(RaskMap *m, const void *value);
 // A `for` over a vector of links registers its cursor, so a delete in the body
 // that removes an entry moves the cursor instead of the loop skipping one.
 void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end);

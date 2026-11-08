@@ -375,6 +375,9 @@ pub enum Backlink {
     Element(Weak<Mutex<VecData>>),
     /// A value in an index.
     Entry(Weak<Mutex<MapData>>),
+    /// A local whose value is a tuple holding links: the tuple is a value,
+    /// not a cell, so the local's own storage is what a delete rewrites.
+    Var(Weak<Mutex<Value>>),
 }
 
 impl Backlink {
@@ -386,6 +389,7 @@ impl Backlink {
             },
             Backlink::Element(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
             Backlink::Entry(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
+            Backlink::Var(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
         }
     }
 }

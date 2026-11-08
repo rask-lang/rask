@@ -1470,14 +1470,52 @@ impl<'a> MirContext<'a> {
             _ => None,
         })?;
         // `Vec<Link<T>?>` holds edges the same as `Vec<Link<T>>`; its `none`
-        // entries are skipped by the registration.
-        if !self.is_link_type(value.as_option().unwrap_or(value)) {
+        // entries are skipped by the registration. So does a `Vec<Cursor>`,
+        // whose elements hold links inside them (#1804): the runtime finds
+        // those through the element map.
+        if !self.type_holds_link(value, 0) {
             return None;
         }
         match head.as_str() {
             "Vec" => Some("Link_register_vec"),
             "Map" => Some("Link_register_map"),
             _ => None,
+        }
+    }
+
+    /// Whether a value of `ty` holds a link anywhere inside it: itself, a
+    /// field, a tuple or array element, or a container's elements. Bounded,
+    /// because a value type can reach itself through a container
+    /// (`struct Tree { kids: Vec<Tree> }`).
+    fn type_holds_link(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let bare = ty.as_option().unwrap_or(ty);
+        if self.is_link_type(bare) {
+            return true;
+        }
+        if let Some(head) = self.generic_head(bare) {
+            if head == "Vec" || head == "Map" {
+                let args = match bare {
+                    Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+                    _ => return false,
+                };
+                return args.iter().rev().find_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some(t),
+                    _ => None,
+                })
+                .is_some_and(|v| self.type_holds_link(v, depth + 1));
+            }
+        }
+        match (ty, self.type_layout(ty)) {
+            (_, MirType::Struct(id)) => self
+                .struct_layouts
+                .get(id.id as usize)
+                .is_some_and(|l| l.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1))),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_holds_link(elem, depth + 1),
+            _ => false,
         }
     }
 

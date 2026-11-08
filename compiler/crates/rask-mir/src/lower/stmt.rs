@@ -3644,9 +3644,11 @@ impl<'a> MirLowerer<'a> {
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
 pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
-    // A link is one word, `Link<T>?` too — its `none` is the null address
-    // rather than a tag. Treated as an aggregate, the callee stored through
-    // the link itself and overwrote the node it named (#1808).
+    // `Link<T>?` is one word, its `none` the null address rather than a tag,
+    // and `mutate l: Link<T>?` reassigns it. Treated as an aggregate, the
+    // callee stored through the link itself and overwrote the node it named
+    // (#1808). A bare `mutate h: Link<T>` is different: it writes the node's
+    // fields, and the link it holds is the node's address, as before.
     !matches!(
         ty,
         MirType::Void
@@ -3656,7 +3658,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::F32 | MirType::F64
             | MirType::Char
             | MirType::FuncPtr(_)
-    ) && !ty.is_link_slot()
+    ) && !matches!(ty, MirType::Option(inner) if inner.is_niche_payload())
 }
 
 /// A one-word runtime handle: the local holds the handle, not the address of a

@@ -148,6 +148,18 @@ pub fn register_field(
         }
         return;
     }
+    // A tuple field holds its links in the field itself: the tuple is
+    // rebuilt with `none` in their place when a target dies.
+    let mut in_tuple = Vec::new();
+    tuple_links(value, &mut in_tuple);
+    for (rack_id, target) in in_tuple {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack.lock().unwrap().register_backlink(
+                &target,
+                Backlink::Field(Arc::downgrade(holder), field.to_string()),
+            );
+        }
+    }
     register_nested(value, 0);
 }
 
@@ -204,6 +216,13 @@ fn forget_container_edges(value: &Value, depth: usize) {
 /// matching element goes away is dropped by `fix_elements` on the visit that
 /// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
+    // An element of struct type holds its links in fields of its own: those
+    // are edges the element's fields record, and delete nulls them in place
+    // (#1804).
+    if matches!(value, Value::Struct(_)) {
+        register_nested(value, 1);
+        return;
+    }
     if let Some((rack_id, target)) = any_link(value) {
         if let Some(rack) = crate::value::rack_by_id(rack_id) {
             rack
@@ -220,6 +239,16 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
 /// (vector, target), so a vector whose pushes already did it changes nothing.
 pub fn register_vec_links(value: &Value) {
     match value {
+        // A struct or tuple bound whole — `let c2 = c` is a copy with links
+        // of its own, and natively each is an edge the copy's slot holds.
+        Value::Struct(_) => register_nested(value, 0),
+        Value::Tuple(items) => {
+            for item in items.iter() {
+                if matches!(item, Value::Struct(_)) {
+                    register_nested(item, 1);
+                }
+            }
+        }
         Value::Vec(v) => {
             let items: Vec<Value> = v.lock().unwrap().items.clone();
             for item in &items {
@@ -256,6 +285,72 @@ pub fn link_is_dead(v: &Value) -> bool {
     }
 }
 
+/// The links a tuple holds, at any depth of tuple nesting. A struct inside one
+/// is a cell with fields of its own and records itself.
+fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
+    if let Value::Tuple(items) = v {
+        for item in items.iter() {
+            match item {
+                Value::Tuple(_) => tuple_links(item, out),
+                _ => {
+                    if let Some(l) = any_link(item) {
+                        out.push(l);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `v` with every link to `dead` inside its tuples set to `none`, or `None`
+/// when nothing in it named `dead`.
+fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Option<Value> {
+    let Value::Tuple(items) = v else { return None };
+    let mut changed = false;
+    let rebuilt: Vec<Value> = items
+        .iter()
+        .map(|item| {
+            if is_link_to(item, rack_id, dead) {
+                changed = true;
+                EDGES_FIXED.fetch_add(1, Ordering::Relaxed);
+                return Value::none();
+            }
+            match tuple_nulled(item, rack_id, dead) {
+                Some(inner) => {
+                    changed = true;
+                    inner
+                }
+                None => item.clone(),
+            }
+        })
+        .collect();
+    changed.then(|| Value::tuple(rebuilt))
+}
+
+/// A local's value changed. A tuple holding links records each against the
+/// local's storage, and the one it replaced gives its records up. Nothing else
+/// is recorded here: a bare link in a local is a root, and a struct records
+/// itself.
+pub fn register_var(cell: &Arc<Mutex<Value>>, old: Option<&Value>, value: &Value) {
+    let key = BacklinkKey { holder: Arc::as_ptr(cell) as usize, field: None };
+    let mut before = Vec::new();
+    if let Some(old) = old {
+        tuple_links(old, &mut before);
+    }
+    for (rack_id, target) in before {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack.lock().unwrap().unregister_backlink(&target, &key);
+        }
+    }
+    let mut now = Vec::new();
+    tuple_links(value, &mut now);
+    for (rack_id, target) in now {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack.lock().unwrap().register_backlink(&target, Backlink::Var(Arc::downgrade(cell)));
+        }
+    }
+}
+
 /// Record an edge inserted into an index. Same one-per-(map, target) shape as
 /// `register_element`; `old` is the displaced value when a key is overwritten.
 pub fn register_entry(
@@ -263,6 +358,10 @@ pub fn register_entry(
     old: Option<&Value>,
     value: &Value,
 ) {
+    if matches!(value, Value::Struct(_)) {
+        register_nested(value, 1);
+        return;
+    }
     let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
     if let Some((rack_id, previous)) = old.and_then(any_link) {
         if let Some(rack) = crate::value::rack_by_id(rack_id) {
@@ -439,6 +538,10 @@ fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, rack_id: u32, dead: &
             None => return,
         }
     };
+    if let Some(fixed) = tuple_nulled(&current, rack_id, dead) {
+        holder.lock().unwrap().fields.insert(field.to_string(), fixed);
+        return;
+    }
     if is_link_to(&current, rack_id, dead) {
         EDGES_FIXED.fetch_add(1, Ordering::Relaxed);
         holder.lock().unwrap().fields.insert(field.to_string(), Value::none());
@@ -567,6 +670,14 @@ pub fn delete_node(
             Backlink::Entry(w) => {
                 if let Some(m) = w.upgrade() {
                     fix_entries(&m, rack_id, node);
+                }
+            }
+            Backlink::Var(w) => {
+                if let Some(cell) = w.upgrade() {
+                    let current = cell.lock().unwrap().clone();
+                    if let Some(fixed) = tuple_nulled(&current, rack_id, node) {
+                        *cell.lock().unwrap() = fixed;
+                    }
                 }
             }
         }

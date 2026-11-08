@@ -48,6 +48,8 @@ struct RaskMap {
     RaskElemStrs val_strs;
     // The rack's edge records that name this map; see `RaskVec.link_edges`.
     void *link_edges;
+    // Whether values hold links inside them; see `RaskVec.links`.
+    int32_t links;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -468,7 +470,33 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
 // Returns 0 if inserted new, 1 if updated existing. Used where the caller
 // discards the answer — `m[k] = v`, rehashing, cloning, the runtime's own maps.
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
-    return map_insert_impl(m, key, val, NULL);
+    int64_t r = map_insert_impl(m, key, val, NULL);
+    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
+    return r;
+}
+
+int64_t rask_map_holds_struct_links(RaskMap *m) {
+    if (!m) return 0;
+    if (!m->links) {
+        m->links = 1;
+        for (int64_t i = 0; m->val_strs.offsets && i < m->val_strs.count; i++) {
+            if (((uint32_t)m->val_strs.offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) {
+                m->links = 2;
+            }
+        }
+    }
+    return m->links == 2;
+}
+
+const RaskElemStrs *rask_map_val_strs(const RaskMap *m) {
+    return &m->val_strs;
+}
+
+void rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *ctx) {
+    if (!m) return;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) fn(m->vals + i * m->val_size, ctx);
+    }
 }
 
 // `Map.insert` is declared `-> V?`, so this is what it calls: a pointer to the
@@ -477,6 +505,7 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
 void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     void *old = NULL;
     map_insert_impl(m, key, val, &old);
+    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
     return old;
 }
 
@@ -490,6 +519,7 @@ void rask_map_write_back(RaskMap *m, const void *key, const void *val) {
         rask_panic("key not found in map");
     }
     memcpy(slot, val, (size_t)m->val_size);
+    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {

@@ -32,7 +32,9 @@ pub enum Slot {
 
 /// Wrap a value in fresh storage.
 pub fn slot(value: Value) -> Slot {
-    Slot::Var(Arc::new(Mutex::new(value)))
+    let cell = Arc::new(Mutex::new(value.clone()));
+    crate::rack::register_var(&cell, None, &value);
+    Slot::Var(cell)
 }
 
 impl Slot {
@@ -67,7 +69,8 @@ impl Slot {
     pub fn set(&self, value: Value) -> bool {
         match self {
             Slot::Var(cell) => {
-                *cell.lock().unwrap() = value;
+                let previous = std::mem::replace(&mut *cell.lock().unwrap(), value.clone());
+                crate::rack::register_var(cell, Some(&previous), &value);
                 true
             }
             Slot::Field(s, field) => {

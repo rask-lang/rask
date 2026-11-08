@@ -105,6 +105,9 @@ runtime_constants! {
     RASK_OWNED_HEAP = 6;
     /// The value here is described by the list being walked, from its start.
     RASK_OWNED_SELF = 7;
+    /// A link inside the element: owns nothing, but the rack has to find it
+    /// to null it when its node is deleted (`Vec<Cursor>`, #1804).
+    RASK_OWNED_LINK = 8;
 
     /// Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
     /// value's size and alignment, which size an interface box's block, and

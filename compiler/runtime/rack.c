@@ -485,6 +485,59 @@ void rask_link_set_node(void *payload, int64_t offset, void *target) {
     node_edge_set((char *)payload, k, slot, target);
 }
 
+// The links an element of struct type holds (`Vec<Cursor>`), recorded against
+// the container the same way a bare link element is: one record per
+// (container, target), naming no position.
+typedef struct {
+    int32_t kind;
+    void   *holder;
+} RegisterCtx;
+
+static void register_slot_cb(void **slot, void *ctx) {
+    RegisterCtx *c = (RegisterCtx *)ctx;
+    if (!rask_link_is_none(*slot)) edge_register(c->kind, c->holder, *slot);
+}
+
+void rask_link_register_element_fields(RaskVec *v, const void *elem) {
+    if (!v || !elem) return;
+    RegisterCtx c = { RACK_EDGE_VEC, v };
+    rask_elem_links((char *)elem, rask_vec_elem_strs(v), register_slot_cb, &c);
+}
+
+void rask_link_register_entry_fields(RaskMap *m, const void *value) {
+    if (!m || !value) return;
+    RegisterCtx c = { RACK_EDGE_MAP, m };
+    rask_elem_links((char *)value, rask_map_val_strs(m), register_slot_cb, &c);
+}
+
+static void register_entry_cb(char *value, void *ctx) {
+    rask_link_register_entry_fields((RaskMap *)ctx, value);
+}
+
+// Null each link slot in an element that names the dying node.
+typedef struct {
+    void   *dead;
+    int64_t fixed;
+} NullCtx;
+
+static void null_slot_cb(void **slot, void *ctx) {
+    NullCtx *c = (NullCtx *)ctx;
+    if (*slot == c->dead) {
+        *slot = RASK_LINK_NONE;
+        c->fixed++;
+    }
+}
+
+typedef struct {
+    const RaskElemStrs *strs;
+    NullCtx            *null;
+} NullValuesCtx;
+
+static void null_value_cb(char *value, void *ctx) {
+    NullValuesCtx *c = (NullValuesCtx *)ctx;
+    rask_elem_links(value, c->strs, null_slot_cb, c->null);
+}
+
 // A link stored in a `Vec<Link<T>>`. The record names the vector, not the
 // position: `push`, `remove` and `sort` all move elements around, and a record
 // that named an index would be wrong by the next call.
@@ -544,6 +597,12 @@ void rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fie
 void rask_link_register_vec(RaskVec *v) {
     if (!v) return;
     int64_t n = rask_vec_len(v);
+    if (rask_vec_holds_struct_links(v)) {
+        for (int64_t i = 0; i < n; i++) {
+            rask_link_register_element_fields(v, rask_vec_get_unchecked(v, i));
+        }
+        return;
+    }
     for (int64_t i = 0; i < n; i++) {
         void *elem;
         memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -553,6 +612,10 @@ void rask_link_register_vec(RaskVec *v) {
 
 void rask_link_register_map(RaskMap *m) {
     if (!m) return;
+    if (rask_map_holds_struct_links(m)) {
+        rask_map_each_value(m, register_entry_cb, m);
+        return;
+    }
     RaskVec *vals = rask_map_values(m);
     int64_t n = rask_vec_len(vals);
     for (int64_t i = 0; i < n; i++) {
@@ -644,8 +707,11 @@ static void forget_own_edges(const RaskRack *r, char *payload) {
         void **slot = (void **)(payload + field_offset(r, i));
         switch (field_kind(r, i)) {
         case RASK_RACK_FIELD_LINK: {
-            (void)slot;
             inline_retarget(inline_edge(node_of(payload), k), RASK_LINK_NONE);
+            // A callee writing this slot through a `mutate` parameter can't
+            // know it is inside a node, and records it as foreign storage.
+            // That record names the slot, which dies with the node.
+            if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
             k++;
             break;
         }
@@ -880,6 +946,16 @@ static void fix_incoming(RaskRack *r, char *payload) {
             // `none`. Every match goes, not just the first: one record covers
             // the whole vector however many entries point here.
             RaskVec *v = (RaskVec *)e->holder;
+            // Elements of struct type keep their place and lose the link
+            // inside them, the way a struct field does.
+            if (rask_vec_holds_struct_links(v)) {
+                NullCtx nc = { payload, 0 };
+                for (int64_t i = 0; i < rask_vec_len(v); i++) {
+                    rask_elem_links(rask_vec_get_unchecked(v, i), rask_vec_elem_strs(v), null_slot_cb, &nc);
+                }
+                fixed = nc.fixed;
+                break;
+            }
             for (int64_t i = rask_vec_len(v) - 1; i >= 0; i--) {
                 void *elem;
                 memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -887,9 +963,18 @@ static void fix_incoming(RaskRack *r, char *payload) {
             }
             break;
         }
-        case RACK_EDGE_MAP:
-            fixed = rask_map_drop_value_ptr((RaskMap *)e->holder, payload);
+        case RACK_EDGE_MAP: {
+            RaskMap *m = (RaskMap *)e->holder;
+            if (rask_map_holds_struct_links(m)) {
+                NullCtx nc = { payload, 0 };
+                NullValuesCtx vc = { rask_map_val_strs(m), &nc };
+                rask_map_each_value(m, null_value_cb, &vc);
+                fixed = nc.fixed;
+                break;
+            }
+            fixed = rask_map_drop_value_ptr(m, payload);
             break;
+        }
         }
         if (stats_enabled()) g_edges_fixed += fixed;
         HeapEdge *h = (HeapEdge *)e;
@@ -1059,8 +1144,29 @@ static void *snapshot_remap_cb(void *value, void *ctx) {
     return mapped ? mapped : value;
 }
 
+static void snapshot_remap_slot_cb(void **slot, void *ctx) {
+    void *mapped = snapshot_target(((SnapshotCtx *)ctx)->rack, *slot,
+                                   ((SnapshotCtx *)ctx)->origin, ((SnapshotCtx *)ctx)->n_slots);
+    if (mapped) *slot = mapped;
+}
+
+typedef struct {
+    const RaskElemStrs *strs;
+    SnapshotCtx        *snap;
+} SnapshotValuesCtx;
+
+static void snapshot_remap_value_cb(char *value, void *ctx) {
+    SnapshotValuesCtx *c = (SnapshotValuesCtx *)ctx;
+    rask_elem_links(value, c->strs, snapshot_remap_slot_cb, c->snap);
+}
+
 static void rask_map_remap_link_values(RaskMap *m, const RaskRack *r, void **origin, int64_t n_slots) {
     SnapshotCtx ctx = { r, origin, n_slots };
+    if (rask_map_holds_struct_links(m)) {
+        SnapshotValuesCtx vc = { rask_map_val_strs(m), &ctx };
+        rask_map_each_value(m, snapshot_remap_value_cb, &vc);
+        return;
+    }
     rask_map_map_values_ptr(m, snapshot_remap_cb, &ctx);
 }
 
@@ -1144,10 +1250,18 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 RaskVec *fresh = shares_original ? rask_vec_clone(cur) : cur;
                 *slot = fresh;
                 int64_t n = rask_vec_len(fresh);
-                for (int64_t e = 0; e < n; e++) {
-                    void **cell = (void **)rask_vec_get_unchecked(fresh, e);
-                    void *mapped = snapshot_target(r, *cell, origin, n_slots);
-                    if (mapped) *cell = mapped;
+                if (rask_vec_holds_struct_links(fresh)) {
+                    SnapshotCtx sc = { r, origin, n_slots };
+                    for (int64_t e = 0; e < n; e++) {
+                        rask_elem_links(rask_vec_get_unchecked(fresh, e), rask_vec_elem_strs(fresh),
+                                        snapshot_remap_slot_cb, &sc);
+                    }
+                } else {
+                    for (int64_t e = 0; e < n; e++) {
+                        void **cell = (void **)rask_vec_get_unchecked(fresh, e);
+                        void *mapped = snapshot_target(r, *cell, origin, n_slots);
+                        if (mapped) *cell = mapped;
+                    }
                 }
                 rask_link_register_vec(fresh);
                 break;
