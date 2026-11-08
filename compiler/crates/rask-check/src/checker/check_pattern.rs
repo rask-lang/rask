@@ -139,7 +139,7 @@ impl TypeChecker {
     // ------------------------------------------------------------------------
 
     /// When `ty_name` is `Enum.Variant` and `Enum` is the scrutinee's error side,
-    /// the type that variant's payload binds to.
+    /// the enum, the variant, and the type that variant's payload binds to.
     ///
     /// One field binds that field's type; several bind a tuple; none binds unit,
     /// which is what a binder on a fieldless variant deserves — there's nothing
@@ -148,7 +148,11 @@ impl TypeChecker {
     /// A union error side is handled too: `is ParseError.Syntax` on a
     /// `T or (ParseError | DivError)` finds the variant in whichever member
     /// declares it.
-    pub(super) fn err_variant_payload(&self, resolved: &Type, ty: &TypeExpr) -> Option<Type> {
+    pub(super) fn err_variant_payload(
+        &self,
+        resolved: &Type,
+        ty: &TypeExpr,
+    ) -> Option<(rask_types::TypeId, String, Type)> {
         let Type::Result { err, .. } = resolved else { return None };
         let TypeExpr::Named { path, args } = ty else { return None };
         let ([enum_name, variant_name], true) = (path.as_slice(), args.is_empty()) else {
@@ -169,11 +173,12 @@ impl TypeChecker {
                 .iter()
                 .find(|(v, _)| v == variant_name)
                 .map(|(_, f)| f.clone())?;
-            return Some(match fields.len() {
+            let payload = match fields.len() {
                 0 => Type::Unit,
                 1 => fields[0].clone(),
                 _ => Type::Tuple(fields),
-            });
+            };
+            return Some((id, variant_name.clone(), payload));
         }
         None
     }
@@ -657,9 +662,11 @@ impl TypeChecker {
                 // never be true". The bare `is MyErr.Worse` next to it proved that
                 // wrong: it parses as a constructor pattern and never reached this
                 // check at all (#766).
-                if let Some(payload) = self.err_variant_payload(&resolved, ty) {
-                    // A variant of the error side's enum is on the error side.
-                    self.pattern_targets.insert(pattern.id, rask_types::PatternTarget::Side { err: true });
+                if let Some((enum_id, variant, payload)) = self.err_variant_payload(&resolved, ty) {
+                    // A variant of the error side's enum, or of one member of
+                    // a union error side: lowering finds which from the enum.
+                    self.pattern_targets
+                        .insert(pattern.id, rask_types::PatternTarget::Variant { enum_id, variant });
                     return match binding {
                         Some(name) => vec![(name.clone(), payload)],
                         None => vec![],
@@ -787,28 +794,28 @@ impl TypeChecker {
     }
 
     /// Which side of `scrutinee`, a `T or E`, the type `named` is: the error
-    /// side (`true`) or the success side. `None` when it is neither, which
-    /// the check has already reported.
-    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<bool> {
+    /// side (`true`) or the success side, and the index of the member it
+    /// names when the error side is a union. `None` when it is neither,
+    /// which the check has already reported.
+    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<(bool, Option<usize>)> {
         let resolved = self.ctx.apply(scrutinee);
         let Type::Result { ok, err } = &resolved else { return None };
         let named = normalize_type(&self.ctx.apply(named), &self.types);
         // `none` is the absent side of an optional.
         if named == Type::None {
-            return Some(true);
+            return Some((true, None));
         }
         let ok_leaves = two_branch_leaves(&mut self.ctx, &self.types, ok);
-        let err_leaves = match normalize_type(&self.ctx.apply(err), &self.types) {
-            Type::Union(members) => members,
-            other => vec![other],
-        };
-        let names = |leaves: &[Type]| leaves.iter().any(|l| *l == named || self.same_type_head(l, &named));
-        if names(&ok_leaves) {
-            Some(false)
-        } else if names(&err_leaves) {
-            Some(true)
-        } else {
-            None
+        let names = |this: &Self, l: &Type| *l == named || this.same_type_head(l, &named);
+        if ok_leaves.iter().any(|l| names(self, l)) {
+            return Some((false, None));
+        }
+        match normalize_type(&self.ctx.apply(err), &self.types) {
+            Type::Union(members) => {
+                let member = members.iter().position(|l| names(self, l))?;
+                Some((true, Some(member)))
+            }
+            other => names(self, &other).then_some((true, None)),
         }
     }
 

@@ -10,6 +10,7 @@ mod expr;
 mod iterators;
 mod json_decode;
 mod match_lower;
+mod result_path;
 mod stmt;
 
 use crate::FieldAccess;
@@ -5088,7 +5089,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(true);
         }
         match self.pattern_target(pat) {
-            Some(rask_types::PatternTarget::Side { err }) => Ok(*err),
+            Some(rask_types::PatternTarget::Side { err, .. }) => Ok(*err),
             // A variant of one side's enum: the side whose enum it is.
             Some(rask_types::PatternTarget::Variant { enum_id, .. }) => {
                 let MirType::Result { err, .. } = val_ty else { return Ok(false) };
@@ -5178,7 +5179,7 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
     ) -> Result<i64, LoweringError> {
         use rask_ast::expr::PatternKind;
-        if let Some(rask_types::PatternTarget::Side { err }) = self.pattern_target(pattern) {
+        if let Some(rask_types::PatternTarget::Side { err, .. }) = self.pattern_target(pattern) {
             return Ok(*err as i64);
         }
         match &pattern.kind {
@@ -5247,31 +5248,6 @@ impl<'a> MirLowerer<'a> {
         Some(MirOperand::Local(slot))
     }
 
-    /// Which member of a union a *name* is, by position as written.
-    /// The member type and its byte offset when `ty_name` names one member of
-    /// the error union of `scrutinee_ty`. `None` for anything else — a plain
-    /// error type, or a name that isn't a member.
-    fn union_member_binding(&self, scrutinee_ty: &MirType, ty_name: &str) -> Option<(MirType, u32)> {
-        let MirType::Result { err, .. } = scrutinee_ty else {
-            return None;
-        };
-        let MirType::Union(members) = err.as_ref() else {
-            return None;
-        };
-        let bare = ty_name.rsplit('.').next().unwrap_or(ty_name);
-        let idx = self.union_member_index_by_name(err.as_ref(), bare)?;
-        let member = members.get(idx)?.clone();
-        Some((member, scrutinee_ty.payload_offset() + err.payload_offset()))
-    }
-
-    pub(crate) fn union_member_index_by_name(&self, union_ty: &MirType, name: &str) -> Option<usize> {
-        let MirType::Union(members) = union_ty else {
-            return None;
-        };
-        members
-            .iter()
-            .position(|m| self.mir_type_name(m).as_deref() == Some(name))
-    }
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.
     fn is_niche_option_expr(&self, expr: &Expr) -> bool {
         self.niche_sentinel_of_expr(expr).is_some()
@@ -5439,55 +5415,16 @@ impl<'a> MirLowerer<'a> {
         }).collect())
     }
 
-    /// Field names of a named variant, in declaration order: of the scrutinee's
-    /// own enum, or of the error enum of a `T or E`.
+    /// Field names of a named variant of the enum `scrutinee_ty`, in
+    /// declaration order.
     fn variant_field_names(&self, scrutinee_ty: &MirType, variant_name: &str) -> Option<Vec<String>> {
-        let enum_ty = match scrutinee_ty {
-            MirType::Result { err, .. } => err.as_ref(),
-            other => other,
-        };
-        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = enum_ty else {
+        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = scrutinee_ty else {
             return None;
         };
         let layout = self.ctx.enum_layouts.get(*idx as usize)?;
         let bare_name = variant_name.rsplit('.').next().unwrap_or(variant_name);
         let variant = layout.variants.iter().find(|v| v.name == bare_name)?;
         Some(variant.fields.iter().map(|f| f.name.clone()).collect())
-    }
-
-    /// `Enum.Variant` naming a variant of a Result's error enum: each field's
-    /// type, its offset *within the err payload*, and its size.
-    fn err_variant_fields(
-        &self,
-        scrutinee_ty: &MirType,
-        ty_name: &str,
-    ) -> Option<Vec<(MirType, u32, u32)>> {
-        let MirType::Result { err, .. } = scrutinee_ty else { return None };
-        let (enum_name, variant_name) = ty_name.split_once('.')?;
-        let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = err.as_ref() else {
-            return None;
-        };
-        let layout = self.ctx.enum_layouts.get(*idx as usize)?;
-        if layout.name != enum_name {
-            return None;
-        }
-        let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
-        if variant.fields.is_empty() {
-            return None;
-        }
-        Some(
-            variant
-                .fields
-                .iter()
-                .map(|f| {
-                    (
-                        self.ctx.type_to_mir(&f.ty),
-                        variant.payload_offset + f.offset,
-                        f.size,
-                    )
-                })
-                .collect(),
-        )
     }
 
     /// Bind pattern payload — with niche awareness.
@@ -5667,24 +5604,6 @@ impl<'a> MirLowerer<'a> {
                     Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty);
             }
-            PatternKind::Constructor { name, .. }
-                if matches!(scrutinee_ty, MirType::Result { err, .. }
-                    if matches!(err.as_ref(), MirType::Enum(_))
-                        && self.variant_field_types(err, name).is_some()) =>
-            {
-                // `MyErr.Bad(m)` against a `T or MyErr`: the variant's fields
-                // sit in the error enum, which lives in the result's payload
-                // slot. Read against the result itself, `m` came out of the
-                // wrong bytes and printed empty.
-                let MirType::Result { err, .. } = scrutinee_ty else { unreachable!() };
-                let err_ty = (**err).clone();
-                let err_local = self.builder.alloc_temp(err_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: err_local,
-                    rvalue: self.payload_field(value, scrutinee_ty, &err_ty),
-                }));
-                self.bind_pattern_fields(pattern, MirOperand::Local(err_local), payload_ty, false, &err_ty);
-            }
             PatternKind::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
                 // vs `Rectangle(f64, f64)`); `payload_ty` is only a single type
@@ -5754,100 +5673,10 @@ impl<'a> MirLowerer<'a> {
                     // Wildcard, Literal in field position — skip binding
                 }
             }
-            // ER23/ER27: `Type as name` — bind the payload as a fresh local. The
-            // only caller (WhileLet) already routed control flow via
-            // `pattern_tag_in_type_context` and passes the ok payload type, so
-            // bind that directly — no case guess needed.
-            PatternKind::TypePat { ty, binding: Some(name) } => {
-                let ty_name = &type_pat_name(ty);
-                // ER23 at variant granularity: `r is MyErr.Worse as w` binds the
-                // *variant's* payload, not the whole error. The test is already
-                // two-layer — err tag, then the variant tag — so all that's needed
-                // is reading at the variant's own offset inside the err payload.
-                // Binding `payload_ty` handed over a `MyErr` where a `string` was
-                // named, and `{w}` printed the enum's tag (#766).
-                if let Some(fields) = self.err_variant_fields(scrutinee_ty, ty_name) {
-                    let bound_ty = match fields.as_slice() {
-                        [(ty, _, _)] => ty.clone(),
-                        many => MirType::Tuple(many.iter().map(|(t, _, _)| t.clone()).collect()),
-                    };
-                    let local = self.builder.alloc_local(name.clone(), bound_ty.clone());
-                    match fields.as_slice() {
-                        // One field binds directly.
-                        [(field_ty, offset, size)] => {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local,
-                                rvalue: MirRValue::Field {
-                                    base: value.clone(),
-                                    field_index: 0,
-                                    byte_offset: Some(scrutinee_ty.payload_offset() + *offset),
-                                    access: FieldAccess::for_field(field_ty, *size),
-                                },
-                            }));
-                        }
-                        // Several bind a tuple, which has to be built: the
-                        // variant's fields sit at the enum's offsets, the tuple's
-                        // at its own, and the two don't line up.
-                        many => {
-                            let mut tuple_offset = 0u32;
-                            for (field_ty, src_offset, size) in many {
-                                let align = field_ty.align().max(1);
-                                tuple_offset = (tuple_offset + align - 1) & !(align - 1);
-                                let read = self.builder.alloc_temp(field_ty.clone());
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                    dst: read,
-                                    rvalue: MirRValue::Field {
-                                        base: value.clone(),
-                                        field_index: 0,
-                                        byte_offset: Some(
-                                            scrutinee_ty.payload_offset() + *src_offset,
-                                        ),
-                                        access: FieldAccess::for_field(field_ty, *size),
-                                    },
-                                }));
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: local,
-                                    offset: tuple_offset,
-                                    value: MirOperand::Local(read),
-                                    store_size: field_ty.size(),
-                                    field: None,
-                                }));
-                                tuple_offset += field_ty.size();
-                            }
-                        }
-                    }
-                    self.locals.insert(name.clone(), (local, bound_ty.clone()));
-                    if let Some(prefix) = self.mir_type_name(&bound_ty) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                    }
-                    return;
-                }
-                // `r is AErr as e` on an `i64 or (AErr | BErr)`. The test that
-                // got us here already checked the member index, so `e` is an
-                // `AErr` and nothing else — binding it at the union type made
-                // every call on it a switch over all members, which emitted a
-                // call to `BErr_tag` that doesn't exist (#1002). The member's
-                // bytes sit past the index, inside the Result's payload.
-                if let Some((member_ty, member_off)) =
-                    self.union_member_binding(scrutinee_ty, ty_name)
-                {
-                    let local = self.builder.alloc_local(name.clone(), member_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: local,
-                        rvalue: MirRValue::Field {
-                            base: value.clone(),
-                            field_index: 0,
-                            byte_offset: Some(member_off),
-                            access: FieldAccess::for_field(&member_ty, member_ty.size()),
-                        },
-                    }));
-                    self.locals.insert(name.clone(), (local, member_ty.clone()));
-                    if let Some(prefix) = self.mir_type_name(&member_ty) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                    }
-                    return;
-                }
-
+            // ER23/ER27: `Type as name` on an option or a flat `T? or E`'s
+            // error side binds the payload the caller names. A plain `T or E`
+            // binds along its result path instead (`bind_result_path`).
+            PatternKind::TypePat { binding: Some(name), .. } => {
                 let bound_ty = payload_ty.clone().unwrap_or_else(|| {
                     crate::fallback::unknown_type("lower/mod:typepat_payload")
                 });

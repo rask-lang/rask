@@ -1986,8 +1986,7 @@ impl<'a> MirLowerer<'a> {
                 && matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::TypePat { .. })
                 && !names_none
                 && matches!(val_ty, MirType::Result { .. })
-                && self.err_variant_of_result(pattern, &val_ty).is_none()
-                && self.union_member_of_result(pattern, &val_ty).is_none()
+                && self.deep_result_path(pattern, &val_ty).is_none()
                 && self.pattern_tag_in_type_context(pattern, &val_ty)? == 1;
             let (src, payload_ty, src_niche) = match leaf {
                 Some((inner, inner_payload)) => (MirOperand::Local(*inner), inner_payload.clone(), false),
@@ -4035,10 +4034,10 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<(MirOperand, MirType), LoweringError> {
-        if let (MirType::Result { ok, .. }, Some((union_ty, tested))) =
-            (val_ty, self.union_member_of_result(pattern, val_ty))
-        {
-            return Ok(self.union_rest_after_member(val, ok, &union_ty, tested as usize));
+        if let (MirType::Result { ok, err }, Some(path)) = (val_ty, self.deep_result_path(pattern, val_ty)) {
+            if let (Some((tested, _)), None) = (path.member, &path.variant) {
+                return Ok(self.union_rest_after_member(val, ok, err, tested));
+            }
         }
         if let MirType::Result { ok, err } = val_ty {
             if let MirType::Option(payload) = ok.as_ref() {
@@ -4154,7 +4153,7 @@ impl<'a> MirLowerer<'a> {
         union_ty: &MirType,
         tested: usize,
     ) -> (MirOperand, MirType) {
-        let MirType::Union(members) = union_ty else { unreachable!("union_member_of_result") };
+        let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
         let rest: Vec<(usize, MirType)> =
             members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
         let rest_err = match &rest[..] {
@@ -8624,28 +8623,21 @@ impl<'a> MirLowerer<'a> {
         // inner tag means nothing until the outer one has passed, so it's
         // tested with branches and the answer collected in a bool (#1645).
         if matches!(val_ty, MirType::Enum(_)) && self.has_nested_variant(pattern) {
-            let matches = self.builder.alloc_temp(MirType::Bool);
-            let fail = self.builder.create_block();
-            let done = self.builder.create_block();
-            self.emit_subpattern_test(val, val_ty, pattern, fail)?;
-            for (block, answer) in [(None, true), (Some(fail), false)] {
-                if let Some(b) = block {
-                    self.builder.switch_to_block(b);
-                }
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: matches,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(answer))),
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
-            }
-            self.builder.switch_to_block(done);
+            let matches = self.collect_branch_test(|this, fail| {
+                this.emit_subpattern_test(val, val_ty, pattern, fail)
+            })?;
+            return Ok(PatternTest { matches, flat_payload: None });
+        }
+        // A union member or a variant inside a `T or E`: the side tag, then
+        // the member index, then the variant tag, each read only once the
+        // one above it held.
+        if let Some(path) = self.deep_result_path(pattern, val_ty) {
+            let matches = self.collect_branch_test(|this, fail| {
+                this.emit_result_path_test(val, val_ty, &path, pattern, fail)
+            })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
         let tag = self.emit_option_tag(val, niche);
-        let is_niche = niche.is_some();
-        if let Some(matches) = self.emit_err_layer_test(val, val_ty, tag, is_niche, pattern) {
-            return Ok(PatternTest { matches, flat_payload: None });
-        }
         if let (MirType::Result { ok, .. }, Some(want)) = (val_ty, self.flat_leaf_named(pattern, val_ty)?) {
             let payload_ty = match ok.as_ref() {
                 MirType::Option(inner) => (**inner).clone(),
@@ -8667,6 +8659,30 @@ impl<'a> MirLowerer<'a> {
             }
         }
         Ok(PatternTest { matches, flat_payload: None })
+    }
+
+    /// Run a test that branches to `fail` when it doesn't hold, and collect
+    /// its answer in a bool.
+    fn collect_branch_test(
+        &mut self,
+        test: impl FnOnce(&mut Self, crate::BlockId) -> Result<(), LoweringError>,
+    ) -> Result<crate::LocalId, LoweringError> {
+        let matches = self.builder.alloc_temp(MirType::Bool);
+        let fail = self.builder.create_block();
+        let done = self.builder.create_block();
+        test(self, fail)?;
+        for (block, answer) in [(None, true), (Some(fail), false)] {
+            if let Some(b) = block {
+                self.builder.switch_to_block(b);
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: matches,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(answer))),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+        }
+        self.builder.switch_to_block(done);
+        Ok(matches)
     }
 
     /// Whether a variant pattern has another variant pattern in a field.
@@ -8781,10 +8797,7 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
     ) -> Result<Option<u64>, LoweringError> {
         use rask_ast::expr::PatternKind;
-        if !Self::is_flat_two_layer(val_ty)
-            || self.err_variant_of_result(pattern, val_ty).is_some()
-            || self.union_member_of_result(pattern, val_ty).is_some()
-        {
+        if !Self::is_flat_two_layer(val_ty) || self.deep_result_path(pattern, val_ty).is_some() {
             return Ok(None);
         }
         let name = match &pattern.kind {
@@ -8819,75 +8832,31 @@ impl<'a> MirLowerer<'a> {
                     Some(inner_payload.clone()), false, &opt_ty,
                 );
             }
-            None => {
-                self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, val_ty);
-            }
+            None => match self.bindable_result_path(pattern, val_ty) {
+                Some(path) => {
+                    self.bind_result_path(&val, val_ty, &path, pattern);
+                    self.retain_pattern_copies(pattern, scrutinee, val_ty);
+                }
+                None => {
+                    self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, val_ty);
+                }
+            },
         }
     }
 
-    /// A pattern naming one variant of the error enum, or one member of the
-    /// error union: the err tag and the variant's or member's own tag. `None`
-    /// when the pattern names neither.
-    fn emit_err_layer_test(
-        &mut self,
-        val: &MirOperand,
-        val_ty: &MirType,
-        tag: crate::LocalId,
-        is_niche: bool,
+    /// The path a passed test binds along: any deep one, and on a plain
+    /// `T or E` a side test too. A flat `T? or E` keeps its own leaf
+    /// numbering for its sides, where `none` is recorded as the error side.
+    fn bindable_result_path(
+        &self,
         pattern: &rask_ast::expr::Pattern,
-    ) -> Option<crate::LocalId> {
-        if let Some((err_ty, variant_tag)) = self.err_variant_of_result(pattern, val_ty) {
-            let payload = self.emit_option_payload(val.clone(), err_ty, is_niche);
-            let inner_tag = self.emit_enum_tag(MirOperand::Local(payload));
-            let is_err = self.emit_eq_const(tag, 1);
-            let is_variant = self.emit_eq_const(inner_tag, variant_tag);
-            let result = self.builder.alloc_temp(MirType::Bool);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result,
-                rvalue: MirRValue::BinaryOp {
-                    op: crate::operand::BinOp::And,
-                    left: MirOperand::Local(is_err),
-                    right: MirOperand::Local(is_variant),
-                },
-            }));
-            return Some(result);
+        val_ty: &MirType,
+    ) -> Option<super::result_path::ResultPath> {
+        if Self::is_flat_two_layer(val_ty) {
+            self.deep_result_path(pattern, val_ty)
+        } else {
+            self.result_path(pattern, val_ty)
         }
-        // A variant of an enum that is one member of a union err side: the
-        // err side, then that member, then that variant.
-        if let Some((union_ty, member_index, member_ty, variant_tag)) = self.union_variant_of_result(pattern, val_ty) {
-            let payload = self.emit_option_payload(val.clone(), union_ty.clone(), is_niche);
-            let member = self.emit_enum_tag(MirOperand::Local(payload));
-            let inner = self.builder.alloc_temp(member_ty.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: inner,
-                rvalue: self.payload_field(MirOperand::Local(payload), &union_ty, &member_ty),
-            }));
-            let inner_tag = self.emit_enum_tag(MirOperand::Local(inner));
-            let is_err = self.emit_eq_const(tag, 1);
-            let is_member = self.emit_eq_const(member, member_index);
-            let is_variant = self.emit_eq_const(inner_tag, variant_tag);
-            let both = self.emit_and(is_err, is_member);
-            return Some(self.emit_and(both, is_variant));
-        }
-        // A union err side: "is it the err side" is only half the question. Both
-        // members answer yes to that, so the member index decides which (#776).
-        if let Some((union_ty, member_index)) = self.union_member_of_result(pattern, val_ty) {
-            let payload = self.emit_option_payload(val.clone(), union_ty, is_niche);
-            let member = self.emit_enum_tag(MirOperand::Local(payload));
-            let is_err = self.emit_eq_const(tag, 1);
-            let is_member = self.emit_eq_const(member, member_index);
-            let result = self.builder.alloc_temp(MirType::Bool);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result,
-                rvalue: MirRValue::BinaryOp {
-                    op: crate::operand::BinOp::And,
-                    left: MirOperand::Local(is_err),
-                    right: MirOperand::Local(is_member),
-                },
-            }));
-            return Some(result);
-        }
-        None
     }
 
     /// `e.message()` where `e` is a union — dispatch by member index.
@@ -8978,49 +8947,6 @@ impl<'a> MirLowerer<'a> {
         Ok(Some((MirOperand::Local(result), ret_ty)))
     }
 
-    /// The union type and member index when `pattern` names a member of a
-    /// Result's error union, rather than one of the Result's own two sides.
-    fn union_member_of_result(
-        &self,
-        pattern: &rask_ast::expr::Pattern,
-        val_ty: &MirType,
-    ) -> Option<(MirType, i64)> {
-        let MirType::Result { err, .. } = val_ty else {
-            return None;
-        };
-        if !matches!(err.as_ref(), MirType::Union(_)) {
-            return None;
-        }
-        let name = super::match_lower::pattern_name(pattern)?;
-        let bare = name.rsplit('.').next().unwrap_or(&name);
-        let index = self.union_member_index_by_name(err.as_ref(), bare)?;
-        Some((err.as_ref().clone(), index as i64))
-    }
-
-    /// The variant a pattern names when its enum is one member of a union
-    /// err side: the union, the member's index and type, and the variant's
-    /// tag. Read from the checker's record for the pattern.
-    pub(super) fn union_variant_of_result(
-        &self,
-        pattern: &rask_ast::expr::Pattern,
-        val_ty: &MirType,
-    ) -> Option<(MirType, i64, MirType, i64)> {
-        let MirType::Result { err, .. } = val_ty else { return None };
-        let MirType::Union(members) = err.as_ref() else { return None };
-        let Some(rask_types::PatternTarget::Variant { enum_id, variant }) = self.pattern_target(pattern) else {
-            return None;
-        };
-        members.iter().enumerate().find_map(|(i, m)| {
-            let MirType::Enum(eid) = m else { return None };
-            let layout = self.ctx.enum_layouts.get(eid.id as usize)?;
-            if layout.key.as_ref()?.id != *enum_id {
-                return None;
-            }
-            let tag = layout.variants.iter().find(|v| v.name == *variant)?.tag as i64;
-            Some((err.as_ref().clone(), i as i64, m.clone(), tag))
-        })
-    }
-
     /// `local == k` as a fresh bool temp.
     pub(super) fn emit_eq_const(&mut self, local: crate::LocalId, k: i64) -> crate::LocalId {
         let result = self.builder.alloc_temp(MirType::Bool);
@@ -9033,27 +8959,6 @@ impl<'a> MirLowerer<'a> {
             },
         }));
         result
-    }
-
-    /// The err type and variant tag when `pattern` names a variant of a
-    /// Result's error enum, rather than one of the Result's own two sides.
-    fn err_variant_of_result(
-        &self,
-        pattern: &rask_ast::expr::Pattern,
-        val_ty: &MirType,
-    ) -> Option<(MirType, i64)> {
-        let err_ty = match val_ty {
-            MirType::Result { err, .. } => err.as_ref().clone(),
-            _ => return None,
-        };
-        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &err_ty else {
-            return None;
-        };
-        let name = super::match_lower::pattern_name(pattern)?;
-        let bare = name.rsplit('.').next().unwrap_or(&name);
-        let layout = self.ctx.enum_layouts.get(*id as usize)?;
-        let tag = layout.variants.iter().find(|v| v.name == bare)?.tag as i64;
-        Some((err_ty, tag))
     }
 
     pub(super) fn emit_enum_tag(&mut self, value: MirOperand) -> crate::LocalId {

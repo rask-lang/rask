@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `match` arm on a `T or E` can reach past the ok/err split: into a member
+// of a union error side, into a variant of that member's enum, or into a
+// variant of the success side's enum. Each arm tests the same steps an `is`
+// test does, and `Enum.Variant as x` binds the variant's payload.
+
+enum Zed {
+    Quiet
+    Loud(string)
+}
+
+enum Alpha {
+    First
+}
+
+func both(a: i64) -> i64 or (Zed | Alpha) {
+    if a == 0 {
+        return Alpha.First
+    }
+    if a == 1 {
+        return Zed.Loud("hey")
+    }
+    if a == 2 {
+        return Zed.Quiet
+    }
+    return a
+}
+
+func name_both(a: i64) -> string {
+    return match both(a) {
+        Zed.Loud(s) => "loud {s}",
+        Alpha as x => "alpha",
+        Zed as z => "zed",
+        i64 as v => "v{v}",
+    }
+}
+
+test "a variant of one union member is a match arm" {
+    assert name_both(0) == "alpha"
+    assert name_both(1) == "loud hey"
+    assert name_both(2) == "zed"
+    assert name_both(7) == "v7"
+}
+
+enum Color {
+    Red
+    Green
+}
+
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+func light(x: i64) -> Light or Color {
+    if x == 0 {
+        return Color.Red
+    }
+    if x == 1 {
+        return Light.Red
+    }
+    return Light.Green
+}
+
+func name_light(x: i64) -> string {
+    return match light(x) {
+        Light.Green => "light green",
+        Color.Red => "color red",
+        Color as c => "color other",
+        Light as l => "light other",
+    }
+}
+
+test "a variant of the success side's enum matches" {
+    assert name_light(0) == "color red"
+    assert name_light(1) == "light other"
+    assert name_light(2) == "light green"
+    assert light(1) is Light.Red
+    assert !(light(0) is Light.Red)
+    assert light(2) is Light.Green
+}
+
+enum Bad {
+    Msg(string)
+    Code(i64)
+    Pair(i64, i64)
+}
+
+func bad(a: i64) -> i64 or Bad {
+    if a == 0 {
+        return Bad.Msg("hello")
+    }
+    if a == 1 {
+        return Bad.Code(40)
+    }
+    if a == 2 {
+        return Bad.Pair(3, 4)
+    }
+    return a
+}
+
+func name_bad(a: i64) -> string {
+    return match bad(a) {
+        Bad.Code as c => "code {c + 2}",
+        Bad.Msg as m => "msg {m.len()} {m}",
+        Bad.Pair as p => "pair {p.0 + p.1}",
+        Bad as b => "bad",
+        i64 as v => "v {v}",
+    }
+}
+
+test "Enum.Variant as x in a match arm binds the payload" {
+    assert name_bad(0) == "msg 5 hello"
+    assert name_bad(1) == "code 42"
+    assert name_bad(2) == "pair 7"
+    assert name_bad(3) == "v 3"
+}
+
+test "a guarded variant arm falls through to the next arm" {
+    let r = match bad(1) {
+        Bad.Code(n) if n > 100 => "big",
+        Bad.Code(40) => "forty",
+        _ => "other",
+    }
+    assert r == "forty"
+}
