@@ -307,6 +307,7 @@ enum CallAdapt {
 enum HandAdapt {
     VecContains,
     LinkRegisterStruct,
+    LinkGuarded,
     RackInsert,
     /// A `Shared` strategy's `take`.
     BoxTake,
@@ -329,6 +330,7 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
         "Link_register_struct" | "Link_forget_struct" => HandAdapt::LinkRegisterStruct,
+        "Link_guarded" => HandAdapt::LinkGuarded,
         "Rack_insert" => HandAdapt::RackInsert,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
@@ -8216,6 +8218,39 @@ impl<'a> FunctionBuilder<'a> {
                         let o = builder.ins().iconst(types::I32, *off as i64);
                         ss.store(builder, k, (i * 8) as i32);
                         ss.store(builder, o, (i * 8 + 4) as i32);
+                    }
+                    args.push(ss.addr(builder, 0));
+                }
+                CallAdapt::None
+            }
+
+            // `Link_guarded(addr, value, reg)`: the value's element map, read off
+            // the second operand's type, replaces that operand. The map's
+            // guarded `RASK_OWNED_LINK` entries are links behind a tag (#1801).
+            HandAdapt::LinkGuarded => {
+                let ty = mir_args
+                    .get(1)
+                    .and_then(|op| Self::operand_mir_type(op, ctx.locals))
+                    .map(|t| match t {
+                        MirType::Link(sid) => MirType::Struct(sid),
+                        other => other,
+                    });
+                let owned = ty
+                    .and_then(|t| crate::elem_offsets::owned_offsets(&t, ctx.shapes()))
+                    .unwrap_or_default();
+                if args.len() >= 2 {
+                    args.remove(1);
+                }
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    )));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        ss.store(builder, e, (i * 4) as i32);
                     }
                     args.push(ss.addr(builder, 0));
                 }

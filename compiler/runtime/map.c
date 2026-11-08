@@ -297,6 +297,11 @@ static void map_retain_entry(const RaskMap *m, char *key, char *val) {
 // nothing else, so a map built with one grows exactly like a map built
 // without. Probing is `% cap`, so any positive number works — no rounding to
 // a power of two.
+static inline int map_links_inline(RaskMap *m) {
+    if (__builtin_expect(m->links == 1, 1)) return 0;
+    return m->links == 2 || rask_map_holds_struct_links(m);
+}
+
 static RaskMap *map_new(int64_t key_size, int64_t val_size,
                         RaskHashFn hash, RaskEqFn eq, int64_t cap,
                         RaskElemStrs key_strs, RaskElemStrs val_strs) {
@@ -471,7 +476,7 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
 // discards the answer — `m[k] = v`, rehashing, cloning, the runtime's own maps.
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
     int64_t r = map_insert_impl(m, key, val, NULL);
-    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
     return r;
 }
 
@@ -505,7 +510,7 @@ void rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *c
 void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     void *old = NULL;
     map_insert_impl(m, key, val, &old);
-    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
     return old;
 }
 
@@ -519,7 +524,7 @@ void rask_map_write_back(RaskMap *m, const void *key, const void *val) {
         rask_panic("key not found in map");
     }
     memcpy(slot, val, (size_t)m->val_size);
-    if (rask_map_holds_struct_links(m)) rask_link_register_entry_fields(m, val);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {

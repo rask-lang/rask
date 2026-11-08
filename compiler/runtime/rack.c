@@ -538,6 +538,37 @@ static void null_value_cb(char *value, void *ctx) {
     rask_elem_links(value, c->strs, null_slot_cb, c->null);
 }
 
+// ─── Links behind a tag ────────────────────────────────────────────────────
+//
+// A link in a variant's payload (`cur: Cursor?`, an enum's fields) is a slot
+// only while that variant is live. It has no inline record — a node's inline
+// records are one per unconditional link field — and is recorded as a
+// foreign slot instead, keyed by its address, which the index finds in O(1).
+// Whoever changes the variant forgets the live one's links before the store
+// and records the new one's after it (`Link_guarded` in MIR).
+
+
+static void guarded_register_cb(void **slot, void *ctx) {
+    (void)ctx;
+    if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
+}
+
+static void guarded_forget_cb(void **slot, void *ctx) {
+    (void)ctx;
+    if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
+}
+
+void rask_link_guarded_range(void *base, int64_t lo, int64_t hi, int64_t reg,
+                             int64_t count, const int32_t *owned) {
+    if (!base || count <= 0 || !owned) return;
+    rask_guarded_links((char *)base, owned, count, lo, hi,
+                       reg ? guarded_register_cb : guarded_forget_cb, NULL);
+}
+
+void rask_link_guarded(void *base, int64_t reg, int64_t count, const int32_t *owned) {
+    rask_link_guarded_range(base, 0, INT64_MAX, reg, count, owned);
+}
+
 // A link stored in a `Vec<Link<T>>`. The record names the vector, not the
 // position: `push`, `remove` and `sort` all move elements around, and a record
 // that named an index would be wrong by the next call.
@@ -603,6 +634,9 @@ void rask_link_register_vec(RaskVec *v) {
         }
         return;
     }
+    // An element that owns anything isn't a bare link; reading its first word
+    // as one would follow a string or a handle.
+    if (rask_vec_elem_strs(v)->count > 0) return;
     for (int64_t i = 0; i < n; i++) {
         void *elem;
         memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -616,6 +650,7 @@ void rask_link_register_map(RaskMap *m) {
         rask_map_each_value(m, register_entry_cb, m);
         return;
     }
+    if (rask_map_val_strs(m)->count > 0) return;
     RaskVec *vals = rask_map_values(m);
     int64_t n = rask_vec_len(vals);
     for (int64_t i = 0; i < n; i++) {
@@ -696,6 +731,7 @@ static void register_own_edges(const RaskRack *r, char *payload) {
             break;
         }
     }
+    rask_link_guarded_range(payload, 0, r->elem_size, 1, r->owned_count, r->owned);
 }
 
 // Drop them again. A dying node's containers die with it, so every target they
@@ -723,6 +759,7 @@ static void forget_own_edges(const RaskRack *r, char *payload) {
             break;
         }
     }
+    rask_link_guarded_range(payload, 0, r->elem_size, 0, r->owned_count, r->owned);
 }
 
 // ─── Storage ───────────────────────────────────────────────────────────────
@@ -1205,6 +1242,16 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // source.
         rask_owned_retain_all((char *)dst, r->owned, r->owned_count);
         origin[i] = dst;
+    }
+
+    // Links behind a tag: the copies name the original's nodes until rewritten,
+    // and nothing has recorded them.
+    for (int64_t i = 0; i < n_slots; i++) {
+        char *dst = (char *)origin[i];
+        if (!dst) continue;
+        SnapshotCtx sc = { r, origin, n_slots };
+        rask_guarded_links(dst, r->owned, r->owned_count, 0, r->elem_size, snapshot_remap_slot_cb, &sc);
+        rask_link_guarded_range(dst, 0, r->elem_size, 1, r->owned_count, r->owned);
     }
 
     // Now the edges. A link is rewritten only if it names a node of *this* rack;

@@ -1473,7 +1473,10 @@ impl<'a> MirContext<'a> {
         // entries are skipped by the registration. So does a `Vec<Cursor>`,
         // whose elements hold links inside them (#1804): the runtime finds
         // those through the element map.
-        if !self.type_holds_link(value, 0) {
+        // Links an inner container holds are that container's to record: it
+        // is a holder of its own. Asked of the outer one, the runtime would
+        // read the inner handles as links (#1804 review).
+        if !self.type_holds_link_directly(value, 0) {
             return None;
         }
         match head.as_str() {
@@ -1487,7 +1490,33 @@ impl<'a> MirContext<'a> {
     /// field, a tuple or array element, or a container's elements. Bounded,
     /// because a value type can reach itself through a container
     /// (`struct Tree { kids: Vec<Tree> }`).
-    fn type_holds_link(&self, ty: &Type, depth: u32) -> bool {
+    /// `type_holds_link`, not counting links inside a container the value holds.
+    fn type_holds_link_directly(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let bare = ty.as_option().unwrap_or(ty);
+        if self.is_link_type(bare) {
+            return true;
+        }
+        if self.generic_head(bare).is_some_and(|h| h == "Vec" || h == "Map") {
+            return false;
+        }
+        match (bare, self.type_layout(bare)) {
+            (_, MirType::Struct(id)) => self
+                .struct_layouts
+                .get(id.id as usize)
+                .is_some_and(|l| l.fields.iter().any(|f| self.type_holds_link_directly(&f.ty, depth + 1))),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link_directly(&f.ty, depth + 1)))
+            }),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link_directly(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_holds_link_directly(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn type_holds_link(&self, ty: &Type, depth: u32) -> bool {
         if depth > 8 {
             return false;
         }
@@ -1508,13 +1537,86 @@ impl<'a> MirContext<'a> {
                 .is_some_and(|v| self.type_holds_link(v, depth + 1));
             }
         }
-        match (ty, self.type_layout(ty)) {
+        match (bare, self.type_layout(bare)) {
             (_, MirType::Struct(id)) => self
                 .struct_layouts
                 .get(id.id as usize)
                 .is_some_and(|l| l.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1))),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
             (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link(e, depth + 1)),
             (Type::Array { elem, .. }, _) => self.type_holds_link(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    /// Whether a value of `ty` holds a link behind a tag: in the payload of a
+    /// tagged `T?`, or in an enum variant's fields (#1801). Those are live only
+    /// while their variant is, so they are recorded per store
+    /// (`Link_guarded`) rather than once, by a descriptor of fixed slots.
+    pub(crate) fn mir_has_guarded_link(&self, ty: &MirType) -> bool {
+        self.mir_guarded(ty, 0)
+    }
+
+    fn mir_guarded(&self, ty: &MirType, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            MirType::Struct(id) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_has_guarded_link(&f.ty, depth + 1))
+            }),
+            MirType::Enum(id) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            MirType::Option(inner) if !inner.is_niche_payload() => self.mir_holds_link(inner, depth + 1),
+            MirType::Result { ok, err } => {
+                self.mir_holds_link(ok, depth + 1) || self.mir_holds_link(err, depth + 1)
+            }
+            MirType::Tuple(parts) => parts.iter().any(|p| self.mir_guarded(p, depth + 1)),
+            MirType::Array { elem, .. } => self.mir_guarded(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    fn mir_holds_link(&self, ty: &MirType, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            MirType::Link(_) => true,
+            MirType::Option(inner) => self.mir_holds_link(inner, depth + 1),
+            MirType::Struct(id) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1))
+            }),
+            MirType::Enum(id) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            MirType::Tuple(parts) => parts.iter().any(|p| self.mir_holds_link(p, depth + 1)),
+            MirType::Array { elem, .. } => self.mir_holds_link(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    fn type_has_guarded_link(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        if let Some(inner) = ty.as_option() {
+            // A niche `Link<T>?` is a plain slot; any other optional's payload
+            // is behind its tag.
+            return !self.is_link_type(inner) && self.type_holds_link(inner, depth + 1);
+        }
+        match (ty, self.type_layout(ty)) {
+            (_, MirType::Struct(id)) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_has_guarded_link(&f.ty, depth + 1))
+            }),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_has_guarded_link(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_has_guarded_link(elem, depth + 1),
             _ => false,
         }
     }

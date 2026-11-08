@@ -355,13 +355,57 @@ impl<'a> MirLowerer<'a> {
     /// leave the rack holding the address of a dead frame. `insert` records the
     /// node's own copy from the same descriptor.
     pub(crate) fn emit_struct_link_registration(&mut self, dst: crate::LocalId, ty: &MirType) {
-        if !self.ctx.struct_carries_links(ty) {
-            return;
+        if self.ctx.struct_carries_links(ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Link_register_struct".to_string()),
+                args: vec![MirOperand::Local(dst)],
+            }));
         }
+        // Links behind a tag go by the variant that is live (#1801).
+        if matches!(
+            ty,
+            MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. } | MirType::Enum(_)
+                | MirType::Option(_) | MirType::Result { .. }
+        ) && self.ctx.mir_has_guarded_link(ty)
+        {
+            self.emit_link_guarded(MirOperand::Local(dst), dst, true);
+        }
+    }
+
+    /// If `target`'s place is rooted at a `mutate` parameter holding a link by
+    /// address, load the link into a local typed as the link and bind the name
+    /// to it; hands back the name and its old binding to restore once the
+    /// place is resolved.
+    fn node_through_mutate_link(&mut self, target: &Expr) -> Option<(String, (crate::LocalId, MirType))> {
+        let mut root = target;
+        while let ExprKind::Field { object, .. } = &root.kind {
+            root = object;
+        }
+        let ExprKind::Ident(name) = &root.kind else { return None };
+        let link_ty = self.meta(name).and_then(|m| m.scalar_through_ptr.clone())?;
+        let link_ty = match link_ty {
+            MirType::Link(_) => link_ty,
+            _ => return None,
+        };
+        let saved = self.locals.get(name).cloned()?;
+        let node = self.builder.alloc_temp(link_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: node,
+            rvalue: MirRValue::Deref(MirOperand::Local(saved.0)),
+        }));
+        self.locals.insert(name.clone(), (node, link_ty));
+        Some((name.clone(), saved))
+    }
+
+    /// Record (`reg`) or forget the links behind a tag in the value at `addr`,
+    /// whose type is `value`'s. Forget before a store that may switch the
+    /// variant, record after it.
+    pub(crate) fn emit_link_guarded(&mut self, addr: MirOperand, value: crate::LocalId, reg: bool) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Link_register_struct".to_string()),
-            args: vec![MirOperand::Local(dst)],
+            func: FunctionRef::internal("Link_guarded".to_string()),
+            args: vec![addr, MirOperand::Local(value), MirOperand::Constant(MirConst::Int(reg as i64))],
         }));
     }
 
@@ -793,6 +837,15 @@ impl<'a> MirLowerer<'a> {
                             }
                             // The caller's slot keeps its address, so its edges
                             // move with the store, as a field store's do.
+                            let guarded = match &val_op {
+                                MirOperand::Local(v)
+                                    if scalar_mutate.is_none() && self.ctx.mir_has_guarded_link(&dst_ty) =>
+                                {
+                                    self.emit_link_guarded(MirOperand::Local(local_id), *v, false);
+                                    Some(*v)
+                                }
+                                _ => None,
+                            };
                             if scalar_mutate.is_none() {
                                 self.emit_aggregate_edge_stores(local_id, MirOperand::Constant(MirConst::Int(0)), &dst_ty, &val_op);
                             }
@@ -808,6 +861,9 @@ impl<'a> MirLowerer<'a> {
                                 store_size,
                                 field: None,
                             }));
+                            if let Some(v) = guarded {
+                                self.emit_link_guarded(MirOperand::Local(local_id), v, true);
+                            }
                         } else {
                             // A closure writing over a capture it reaches by
                             // address replaces the value its creating frame (or
@@ -827,6 +883,11 @@ impl<'a> MirLowerer<'a> {
                                     offset: 0,
                                     ty,
                                 }));
+                            }
+                            // The value being replaced may hold links behind a
+                            // tag; they go before the new one is recorded below.
+                            if struct_assigned && self.ctx.mir_has_guarded_link(&dst_ty) {
+                                self.emit_link_guarded(MirOperand::Local(local_id), local_id, false);
                             }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                 dst: local_id,
@@ -891,11 +952,20 @@ impl<'a> MirLowerer<'a> {
                                 }));
                             }
                         }
+                        // A `mutate h: Link<T>` holds the caller's slot. The
+                        // node is what the slot names now, read into a link
+                        // local for the length of this store, so the write is
+                        // an edge write against the node like any other.
+                        let rebound = self.node_through_mutate_link(target);
+                        let chain = self.lower_place_chain(target);
+                        if let Some((name, saved)) = rebound {
+                            self.locals.insert(name, saved);
+                        }
                         // #411: a place rooted at an aggregate local (`p.x`,
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, fty, fsize)) = self.lower_place_chain(target) {
+                        if let Some((base, offset, fty, fsize)) = chain {
                             // An edge write is not a plain store: the rack
                             // records who points at whom, so `delete` can find
                             // this slot later and null it (mem.racks/RK3). The
@@ -916,6 +986,19 @@ impl<'a> MirLowerer<'a> {
                                 return Ok(());
                             }
                             self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op);
+                            // The store may switch a variant whose payload holds
+                            // links: the live one's go before, the new one's after.
+                            let guarded = match &val_op {
+                                MirOperand::Local(v) if self.ctx.mir_has_guarded_link(&fty) => {
+                                    let addr = self.emit_address_at(
+                                        MirOperand::Local(base),
+                                        MirOperand::Constant(MirConst::Int(offset as i64)),
+                                    );
+                                    self.emit_link_guarded(MirOperand::Local(addr), *v, false);
+                                    Some((addr, *v))
+                                }
+                                _ => None,
+                            };
                             // The value the slot is about to lose. A field
                             // assignment is always a replacement — a struct
                             // literal builds the slot on a different path — so
@@ -943,6 +1026,9 @@ impl<'a> MirLowerer<'a> {
                                 store_size: fsize,
                                 field: slot,
                             }));
+                            if let Some((addr, v)) = guarded {
+                                self.emit_link_guarded(MirOperand::Local(addr), v, true);
+                            }
                             return Ok(());
                         }
                         // A place rooted at an index, with any number of fields
@@ -3644,11 +3730,11 @@ impl<'a> MirLowerer<'a> {
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
 pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
-    // `Link<T>?` is one word, its `none` the null address rather than a tag,
-    // and `mutate l: Link<T>?` reassigns it. Treated as an aggregate, the
-    // callee stored through the link itself and overwrote the node it named
-    // (#1808). A bare `mutate h: Link<T>` is different: it writes the node's
-    // fields, and the link it holds is the node's address, as before.
+    // A link is one word, `Link<T>?` too — its `none` is the null address
+    // rather than a tag — and `mutate` on one reassigns it. Treated as an
+    // aggregate, the callee stored through the link itself and overwrote the
+    // node it named (#1808). A field write through it (`h.next = c`) loads the
+    // node's address from the caller's slot first (`node_through_mutate_link`).
     !matches!(
         ty,
         MirType::Void
@@ -3658,7 +3744,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::F32 | MirType::F64
             | MirType::Char
             | MirType::FuncPtr(_)
-    ) && !matches!(ty, MirType::Option(inner) if inner.is_niche_payload())
+    ) && !ty.is_link_slot()
 }
 
 /// A one-word runtime handle: the local holds the handle, not the address of a

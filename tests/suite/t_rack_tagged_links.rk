@@ -1,0 +1,113 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link behind a tag: in the payload of a tagged optional (`cur: Cursor?`)
+// or in an enum variant's fields (#1801).
+//
+// Whether those bytes hold a link depends on which variant is live, and the
+// rack's per-node descriptor lists fixed slots only, so neither kind was
+// recorded: delete left them naming the freed node. They are recorded per
+// store now, by the variant that is live, and a store that switches the
+// variant forgets the old one's first.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Cursor {
+    at: Link<Leaf>?
+}
+
+enum Target {
+    Nothing
+    One(Link<Leaf>?)
+    Weighted(i32, Link<Leaf>?)
+}
+
+struct Item {
+    id: i32
+    cur: Cursor?
+    target: Target
+}
+
+func cur_id(i: Link<Item>) -> i32 {
+    if i.cur? as c {
+        if c.at? as l {
+            return l.id
+        }
+        return -1
+    }
+    return -2
+}
+
+func link_id(l: Link<Leaf>?) -> i32 {
+    if l? as x {
+        return x.id
+    }
+    return -1
+}
+
+func target_id(t: Target) -> i32 {
+    match t {
+        Target.Nothing => return -2,
+        Target.One(l) => return link_id(l),
+        Target.Weighted(_, l) => return link_id(l),
+    }
+}
+
+func main() {}
+
+test "a link in a tagged optional's payload is nulled by delete" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut items: Rack<Item> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let h = items.insert(Item(id: 1, cur: Cursor(at: a), target: Target.Nothing))
+    assert cur_id(h) == 1
+    leaves.delete(a)
+    assert cur_id(h) == -1
+}
+
+test "switching the variant moves the edge" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut items: Rack<Item> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let h = items.insert(Item(id: 1, cur: none, target: Target.Nothing))
+    h.cur = Cursor(at: a)
+    h.cur = none
+    leaves.delete(a)
+    assert cur_id(h) == -2
+    h.cur = Cursor(at: b)
+    leaves.delete(b)
+    assert cur_id(h) == -1
+}
+
+test "a link in an enum variant's fields is nulled by delete" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut items: Rack<Item> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let oa: Link<Leaf>? = a
+    let ob: Link<Leaf>? = b
+    let h = items.insert(Item(id: 1, cur: none, target: Target.One(oa)))
+    h.target = Target.Weighted(3, ob)
+    leaves.delete(a)
+    assert target_id(h.target) == 2
+    leaves.delete(b)
+    assert target_id(h.target) == -1
+    items.delete(h)
+    assert items.len() == 0
+}
+
+test "a local struct's optional link is nulled by delete" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let local: Cursor? = Cursor(at: a)
+    leaves.delete(a)
+    if local? as c {
+        assert c.at is none
+    } else {
+        assert false
+    }
+}

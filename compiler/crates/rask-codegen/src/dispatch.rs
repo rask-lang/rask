@@ -677,6 +677,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
+        StdlibEntry {
+            mir_name: "Link_guarded", c_name: "rask_link_guarded",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
         StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
         StdlibEntry::simple("Link_forget_vec", "rask_link_forget_vec", &[types::I64], None, false),

@@ -44,6 +44,12 @@ struct RaskVec {
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
 static void vec_detach_cursors(RaskVec *v);
+// The element-links check on the push path: a field read once the vector has
+// been asked, so a vector of plain values pays a predictable branch.
+static inline int vec_links_inline(RaskVec *v) {
+    if (__builtin_expect(v->links == 1, 1)) return 0;
+    return v->links == 2 || rask_vec_holds_struct_links(v);
+}
 
 // ─── Element buffer ─────────────────────────────────────────
 //
@@ -569,7 +575,7 @@ int64_t rask_vec_push(RaskVec *v, const void *elem) {
     if (vec_grow(v, v->len + 1) != 0) return -1;
     memcpy(v->data + v->len * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
-    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -623,7 +629,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     char *slot = vec_slot(v, index);
     rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
     memcpy(slot, elem, (size_t)v->elem_size);
-    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Put back an element `with`, `for mutate` or a field write took out of this
@@ -632,7 +638,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
 // released here.
 void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
     memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
-    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
@@ -739,7 +745,7 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
     }
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
-    if (rask_vec_holds_struct_links(v)) rask_link_register_element_fields(v, elem);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -806,6 +812,47 @@ static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
         }
         if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
     }
+}
+
+// Only the entries under a guard, and only the slots in `[lo, hi)`. The links
+// outside any guard a node or a struct records some other way.
+static void guarded_walk_from(char *base, const int32_t *entries, int64_t count, int guarded,
+                              int64_t lo, int64_t hi, RaskLinkSlotFn fn, void *ctx) {
+    if (!base || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
+            int64_t body = RASK_OWNED_TAG_COUNT(e);
+            if (i + body >= count) return;
+            const char *at = base + RASK_OWNED_TAG_OFFSET(e);
+            int64_t tag;
+            switch (RASK_OWNED_TAG_WIDTH(e)) {
+                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+                default: tag = *(const int64_t *)at;           break;
+            }
+            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+                guarded_walk_from(base, entries + i + 1, body, 1, lo, hi, fn, ctx);
+            }
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_HEAP) {
+            i += RASK_OWNED_HEAP_COUNT(e);
+            continue;
+        }
+        if (kind == RASK_OWNED_LINK && guarded) {
+            int64_t off = e & RASK_OWNED_OFFSET_MASK;
+            if (off >= lo && off < hi) fn((void **)(base + off), ctx);
+        }
+    }
+}
+
+void rask_guarded_links(char *base, const int32_t *entries, int64_t count,
+                        int64_t lo, int64_t hi, RaskLinkSlotFn fn, void *ctx) {
+    guarded_walk_from(base, entries, count, 0, lo, hi, fn, ctx);
 }
 
 void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx) {

@@ -223,7 +223,14 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
         register_nested(value, 1);
         return;
     }
-    if let Some((rack_id, target)) = any_link(value) {
+    // A tuple or an enum element is a value: its links are recorded against
+    // the vector, and delete rebuilds the element in place.
+    let mut links = Vec::new();
+    match any_link(value) {
+        Some(l) => links.push(l),
+        None => tuple_links(value, &mut links),
+    }
+    for (rack_id, target) in links {
         if let Some(rack) = crate::value::rack_by_id(rack_id) {
             rack
                 .lock()
@@ -288,14 +295,19 @@ pub fn link_is_dead(v: &Value) -> bool {
 /// The links a tuple holds, at any depth of tuple nesting. A struct inside one
 /// is a cell with fields of its own and records itself.
 fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
-    if let Value::Tuple(items) = v {
-        for item in items.iter() {
-            match item {
-                Value::Tuple(_) => tuple_links(item, out),
-                _ => {
-                    if let Some(l) = any_link(item) {
-                        out.push(l);
-                    }
+    let items: &[Value] = match v {
+        Value::Tuple(items) => items,
+        // An enum's variant fields are values the same way (#1801). An
+        // optional is the link itself, which `any_link` already sees through.
+        Value::Enum { name, fields, .. } if name != "Option" => fields,
+        _ => return,
+    };
+    for item in items {
+        match item {
+            Value::Tuple(_) | Value::Enum { .. } if any_link(item).is_none() => tuple_links(item, out),
+            _ => {
+                if let Some(l) = any_link(item) {
+                    out.push(l);
                 }
             }
         }
@@ -305,7 +317,11 @@ fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
 /// `v` with every link to `dead` inside its tuples set to `none`, or `None`
 /// when nothing in it named `dead`.
 fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Option<Value> {
-    let Value::Tuple(items) = v else { return None };
+    let items: &[Value] = match v {
+        Value::Tuple(items) => items,
+        Value::Enum { name, fields, .. } if name != "Option" => fields,
+        _ => return None,
+    };
     let mut changed = false;
     let rebuilt: Vec<Value> = items
         .iter()
@@ -324,7 +340,29 @@ fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Optio
             }
         })
         .collect();
-    changed.then(|| Value::tuple(rebuilt))
+    if !changed {
+        return None;
+    }
+    Some(match v {
+        Value::Enum { name, variant, variant_index, origin, .. } => Value::Enum {
+            name: name.clone(),
+            variant: variant.clone(),
+            fields: rebuilt,
+            variant_index: *variant_index,
+            origin: origin.clone(),
+        },
+        _ => Value::tuple(rebuilt),
+    })
+}
+
+/// Whether a value is a tuple or an enum (not an optional): the values whose
+/// links a local's own storage has to hold the records for.
+pub fn may_hold_value_links(v: &Value) -> bool {
+    match v {
+        Value::Tuple(_) => true,
+        Value::Enum { name, .. } => name != "Option",
+        _ => false,
+    }
 }
 
 /// A local's value changed. A tuple holding links records each against the
@@ -361,6 +399,13 @@ pub fn register_entry(
     if matches!(value, Value::Struct(_)) {
         register_nested(value, 1);
         return;
+    }
+    let mut in_value = Vec::new();
+    tuple_links(value, &mut in_value);
+    for (rack_id, target) in in_value {
+        if let Some(rack) = crate::value::rack_by_id(rack_id) {
+            rack.lock().unwrap().register_backlink(&target, Backlink::Entry(Arc::downgrade(map)));
+        }
     }
     let slot = BacklinkKey { holder: Arc::as_ptr(map) as usize, field: None };
     if let Some((rack_id, previous)) = old.and_then(any_link) {
@@ -556,6 +601,12 @@ fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, rack_id: u32, dead: &
 /// things loses the entry rather than holding a `none`.
 fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     let mut guard = vec.lock().unwrap();
+    // A tuple or enum element keeps its place and loses the link inside it.
+    for el in guard.items.iter_mut() {
+        if let Some(fixed) = tuple_nulled(el, rack_id, dead) {
+            *el = fixed;
+        }
+    }
     let before = guard.len();
     let kept: Vec<Value> = guard
         .iter()
@@ -574,6 +625,11 @@ fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, rack_id: u32, dead: &Ar
 /// index-maintenance move.
 fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     let mut guard = map.lock().unwrap();
+    for (_, v) in guard.iter_mut() {
+        if let Some(fixed) = tuple_nulled(v, rack_id, dead) {
+            *v = fixed;
+        }
+    }
     let doomed: Vec<MapKey> = guard
         .iter()
         .filter(|(_, v)| is_link_to(v, rack_id, dead))

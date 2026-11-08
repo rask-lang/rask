@@ -98,6 +98,21 @@ fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Op
     Some(entry(packed, KIND_TAG_IF))
 }
 
+/// An arm a guard can't count (`tag_guard` takes at most 63 entries) loses its
+/// link entries before it loses everything: the links then go unrecorded, as
+/// they did before links were listed, rather than the strings beside them
+/// going unfreed. Only a flat arm: a nested guard counts its own entries.
+fn fit_arm(arm: Vec<i32>) -> Vec<i32> {
+    if arm.len() <= 0x3F {
+        return arm;
+    }
+    let kind = |e: &i32| (*e as u32 >> KIND_SHIFT) as i32;
+    if arm.iter().any(|e| kind(e) == KIND_TAG_IF || kind(e) == KIND_HEAP) {
+        return arm;
+    }
+    arm.into_iter().filter(|e| kind(e) != KIND_LINK).collect()
+}
+
 /// The program's layouts as the walks below need them, with each layout's
 /// fields as MIR types (`rask_mir::FieldTypes`).
 #[derive(Clone, Copy)]
@@ -199,6 +214,7 @@ fn wrapper_arms(
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
         describe(side, base + payload_offset as i32, shapes, depth + 1, self_name, &mut arm)?;
+        let arm = fit_arm(arm);
         if arm.is_empty() {
             continue;
         }
@@ -238,6 +254,7 @@ fn enum_arms(
             .collect();
         let tys = shapes.fields.variant_fields(id, i);
         flatten(&fields, tys, base, shapes, depth + 1, self_name, &mut arm)?;
+        let arm = fit_arm(arm);
         if arm.is_empty() {
             continue;
         }

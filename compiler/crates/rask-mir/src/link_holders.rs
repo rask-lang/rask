@@ -21,6 +21,7 @@ use crate::{
 
 const REGISTER: &str = "Link_register_struct";
 const FORGET: &str = "Link_forget_struct";
+const GUARDED: &str = "Link_guarded";
 
 pub fn forget_local_links(functions: &mut [MirFunction]) {
     for func in functions {
@@ -32,18 +33,35 @@ fn forget_in(func: &mut MirFunction) {
     let params: BTreeSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     // A parameter's storage is the caller's (a `mutate` struct) or lives as
     // long as the caller's copy; the caller forgets its own.
-    let holders: BTreeSet<LocalId> = func
+    let registered = |name: &str| -> BTreeSet<LocalId> {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::Call { func: f, args, .. } if f.name == name => match args.first() {
+                    Some(MirOperand::Local(id)) if !params.contains(id) => Some(*id),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    let fixed = registered(REGISTER);
+    // Links behind a tag, recorded by `Link_guarded` on the local's own
+    // address (a field store's address is a temporary, not a holder).
+    let guarded: BTreeSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::Call { func: f, args, .. } if f.name == REGISTER => match args.first() {
-                Some(MirOperand::Local(id)) if !params.contains(id) => Some(*id),
+            MirStmtKind::Call { func: f, args, .. } if f.name == GUARDED => match (args.first(), args.get(1)) {
+                (Some(MirOperand::Local(a)), Some(MirOperand::Local(v))) if a == v && !params.contains(a) => Some(*a),
                 _ => None,
             },
             _ => None,
         })
         .collect();
+    let holders: BTreeSet<LocalId> = fixed.union(&guarded).copied().collect();
     if holders.is_empty() {
         return;
     }
@@ -81,11 +99,22 @@ fn forget_in(func: &mut MirFunction) {
         ) {
             continue;
         }
-        for local in &holders {
+        for local in &fixed {
             block.statements.push(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal(FORGET.to_string()),
                 args: vec![MirOperand::Local(*local)],
+            }));
+        }
+        for local in &guarded {
+            block.statements.push(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal(GUARDED.to_string()),
+                args: vec![
+                    MirOperand::Local(*local),
+                    MirOperand::Local(*local),
+                    MirOperand::Constant(MirConst::Int(0)),
+                ],
             }));
         }
     }
