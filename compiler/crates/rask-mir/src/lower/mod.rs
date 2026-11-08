@@ -5074,89 +5074,25 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Which side of a Result/Option scrutinee a pattern's `Type`/variant name
-    /// refers to: `true` = err/none side (tag 1), `false` = ok/Some side (tag 0).
-    ///
-    /// The single home of the ok/err routing decision. Real type identities
-    /// decide — the name is matched against the scrutinee's actual ok and err
-    /// type names (and union members on the err side). The lowercase-first-char
-    /// guess is the ONE documented last resort in the lowerer (#259), reached
-    /// only when neither side has a discoverable nominal name: generics collapse
-    /// to `Ptr`, primitives and strings carry none.
-    pub(crate) fn pattern_is_err_side(&self, name: &str, val_ty: &MirType) -> bool {
-        let (ok_ty, err_ty) = match val_ty {
-            MirType::Result { ok, err } => (Some(ok.as_ref()), Some(err.as_ref())),
-            MirType::Option(inner) => (Some(inner.as_ref()), None),
-            _ => (None, None),
-        };
-        // OPT15: `none` names the absent branch, which is always the other
-        // side. Without this the lowercase-means-ok fallback below claimed it
-        // for the payload, and `x is none` answered backwards on native.
+    /// Which side of a `T or E` a type test names: `true` the error (or
+    /// absent) side, `false` the success side. The checker settled it once
+    /// inference had (`PatternTarget::Side`).
+    pub(crate) fn pattern_is_err_side(
+        &self,
+        pat: &rask_ast::expr::Pattern,
+        name: &str,
+        val_ty: &MirType,
+    ) -> Result<bool, LoweringError> {
+        // `none` is the absent side, whatever was recorded for it.
         if name == "none" {
-            return true;
+            return Ok(true);
         }
-        // An optional has no *named* absent side — `none` is the only way to
-        // spell it, and that's the line above. Everything else names the
-        // payload, whatever the payload's MIR type looks like. Without this an
-        // opaque stdlib type that lowers to a bare `i64` (Duration, Instant)
-        // reached the uppercase-means-err guess at the bottom, and
-        // `d is Duration` on a `Duration?` tested the absent tag — false for a
-        // value that was right there.
-        if matches!(val_ty, MirType::Option(_)) {
-            return false;
+        match self.pattern_target(pat) {
+            Some(rask_types::PatternTarget::Side { err }) => Ok(*err),
+            _ => Err(LoweringError::InvalidConstruct(format!(
+                "type test `{name}` on `{val_ty:?}` has no side from the checker"
+            ))),
         }
-        // Identity match wins, on the base name. The pattern carries the type
-        // arguments the source wrote and a layout's name doesn't, so
-        // `r is Refused<i64>` on a `void or Refused<i64>` compared
-        // "Refused<i64>" against "Refused", missed, and fell through to the
-        // "err side is nominally named, so this must be the ok side" rule
-        // below — routing the error arm to tag 0. `Vec.try_push` is declared
-        // `void or GrowError<T>`, so both of its answers read backwards
-        // natively while the interpreter had them right.
-        //
-        // Two instantiations of one generic on the two sides would both match;
-        // the ok side is checked first, which is the same precedence an exact
-        // match had.
-        if let Some(ok) = ok_ty {
-            if self.mir_type_name(ok).is_some_and(|n| same_nominal(&n, name)) {
-                return false;
-            }
-        }
-        if let Some(err) = err_ty {
-            if self.mir_type_name(err).is_some_and(|n| same_nominal(&n, name)) {
-                return true;
-            }
-            if let MirType::Union(variants) = err {
-                if variants
-                    .iter()
-                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
-                {
-                    return true;
-                }
-            }
-        }
-        // One side named but unmatched ⇒ the pattern is the other side. Handles
-        // generic ok types (`Vec<i32>` → Ptr) that lose their nominal name.
-        //
-        // Only a *nominal* name counts. An error type that didn't get a layout
-        // lowers to `i64`, and taking that as "the err side is named, so this
-        // pattern must be the ok side" routed `r is SysError` on a
-        // `void or SysError` to tag 0 — the success arm.
-        let is_nominal = |n: &str| n.chars().next().is_some_and(|c| c.is_uppercase());
-        if err_ty
-            .and_then(|t| self.mir_type_name(t))
-            .is_some_and(|n| is_nominal(&n))
-        {
-            return false;
-        }
-        if ok_ty
-            .and_then(|t| self.mir_type_name(t))
-            .is_some_and(|n| is_nominal(&n))
-        {
-            return true;
-        }
-        // Last resort: lowercase ⇒ ok, uppercase ⇒ err.
-        !name.chars().next().map_or(false, |c| c.is_lowercase())
     }
 
     /// What the checker resolved `pat` to. `None` for a pattern built after
@@ -5169,7 +5105,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn pattern_names_variant(&self, pat: &rask_ast::expr::Pattern, name: &str) -> bool {
         match self.pattern_target(pat) {
             Some(rask_types::PatternTarget::Variant { .. }) => true,
-            Some(rask_types::PatternTarget::Binding) => false,
+            Some(rask_types::PatternTarget::Binding | rask_types::PatternTarget::Side { .. }) => false,
             None => is_variant_name(name),
         }
     }
@@ -5192,7 +5128,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 variant.as_str()
             }
-            Some(rask_types::PatternTarget::Binding) => return None,
+            Some(rask_types::PatternTarget::Binding | rask_types::PatternTarget::Side { .. }) => return None,
             None => name.rsplit('.').next().unwrap_or(name),
         };
         layout.variants.iter().find(|v| v.name == variant).map(|v| v.tag as i64)
@@ -5205,56 +5141,33 @@ impl<'a> MirLowerer<'a> {
         &self,
         pattern: &rask_ast::expr::Pattern,
         val_ty: &MirType,
-    ) -> i64 {
+    ) -> Result<i64, LoweringError> {
         use rask_ast::expr::PatternKind;
+        if let Some(rask_types::PatternTarget::Side { err }) = self.pattern_target(pattern) {
+            return Ok(*err as i64);
+        }
         match &pattern.kind {
             PatternKind::Ident(name) if self.pattern_names_variant(pattern, name) || is_variant_name(name) => {
                 if let Some(tag) = self.pattern_variant_tag(pattern, name, val_ty) {
-                    return tag;
+                    return Ok(tag);
                 }
                 // Not a variant of the scrutinee's own enum: on a `T or E` a
                 // name picks a side.
                 if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
-                    return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
+                    return Ok(self.pattern_is_err_side(pattern, name, val_ty)? as i64);
                 }
-                0
+                Ok(0)
             }
-            PatternKind::Ident(_) => 0,
-            PatternKind::TypePat { ty, .. } => {
-                if self.pattern_is_err_side(&type_pat_name(ty), val_ty) { 1 } else { 0 }
-            }
+            PatternKind::Ident(_) => Ok(0),
+            PatternKind::TypePat { ty, .. } => Ok(self.pattern_is_err_side(pattern, &type_pat_name(ty), val_ty)? as i64),
             // A named variant is a variant like a positional one: `s is
             // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
             // true of every first variant and of nothing else.
             PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
-                self.pattern_variant_tag(pattern, name, val_ty).unwrap_or(0)
+                Ok(self.pattern_variant_tag(pattern, name, val_ty).unwrap_or(0))
             }
-            _ => 0,
+            _ => Ok(0),
         }
-    }
-
-    /// True when `name` is the nominal name of the ok side, err side, or an err
-    /// union member of a Result/Option scrutinee.
-    fn mir_side_names_contain(&self, val_ty: &MirType, name: &str) -> bool {
-        let sides: [Option<&MirType>; 2] = match val_ty {
-            MirType::Result { ok, err } => [Some(ok.as_ref()), Some(err.as_ref())],
-            MirType::Option(inner) => [Some(inner.as_ref()), None],
-            _ => [None, None],
-        };
-        for side in sides.into_iter().flatten() {
-            if self.mir_type_name(side).is_some_and(|n| same_nominal(&n, name)) {
-                return true;
-            }
-            if let MirType::Union(variants) = side {
-                if variants
-                    .iter()
-                    .any(|v| self.mir_type_name(v).is_some_and(|n| same_nominal(&n, name)))
-                {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     /// Which member of a union a type is, by position as written.
@@ -6532,19 +6445,6 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
             f.name
         ),
     }
-}
-
-/// Do these two spellings name the same nominal type?
-///
-/// A pattern carries the type arguments the source wrote — `Refused<i64>` — and
-/// a layout's name is the bare one, plus a `$` suffix once monomorphization has
-/// been through it. So the comparison is on what comes before either.
-fn same_nominal(a: &str, b: &str) -> bool {
-    fn base(n: &str) -> &str {
-        let n = n.trim();
-        n.split('$').next().unwrap_or(n).trim()
-    }
-    base(a) == base(b)
 }
 
 /// The method-name prefix for a receiver with no nominal name of its own.

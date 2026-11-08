@@ -386,6 +386,7 @@ impl TypeChecker {
                     if let Some(candidate) = self.pattern_type_name(name) {
                         self.type_test_patterns.insert((span, name.clone()));
                         let candidate = normalize_type(&candidate, &self.types);
+                        self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), candidate.clone()));
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
                         if branches.contains(&candidate) {
@@ -659,6 +660,7 @@ impl TypeChecker {
                         None => vec![],
                     };
                 }
+                self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), narrow_ty.clone()));
                 match &resolved {
                     Type::Result { err, .. } => {
                         // Every branch the scrutinee could hold — a flat
@@ -776,6 +778,32 @@ impl TypeChecker {
                     vec![]
                 }
             }
+        }
+    }
+
+    /// Which side of `scrutinee`, a `T or E`, the type `named` is: the error
+    /// side (`true`) or the success side. `None` when it is neither, which
+    /// the check has already reported.
+    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<bool> {
+        let resolved = self.ctx.apply(scrutinee);
+        let Type::Result { ok, err } = &resolved else { return None };
+        let named = normalize_type(&self.ctx.apply(named), &self.types);
+        // `none` is the absent side of an optional.
+        if named == Type::None {
+            return Some(true);
+        }
+        let ok_leaves = two_branch_leaves(&mut self.ctx, &self.types, ok);
+        let err_leaves = match normalize_type(&self.ctx.apply(err), &self.types) {
+            Type::Union(members) => members,
+            other => vec![other],
+        };
+        let names = |leaves: &[Type]| leaves.iter().any(|l| *l == named || self.same_type_head(l, &named));
+        if names(&ok_leaves) {
+            Some(false)
+        } else if names(&err_leaves) {
+            Some(true)
+        } else {
+            None
         }
     }
 

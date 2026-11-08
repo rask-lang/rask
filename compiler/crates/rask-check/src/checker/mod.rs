@@ -410,6 +410,9 @@ pub struct TypeChecker {
     pub(super) error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// What each pattern resolved to, by the pattern's id.
     pub(super) pattern_targets: HashMap<NodeId, rask_types::PatternTarget>,
+    /// Type tests on a `T or E` whose side is settled once inference is:
+    /// (pattern, scrutinee, the type it names).
+    pub(super) pending_pattern_sides: Vec<(NodeId, Type, Type)>,
     /// ER31a: `try` sites whose source error type wasn't known yet and whose
     /// target error enum could wrap it. Settled after constraint solving.
     /// (`try` node, source error, target error, span).
@@ -736,6 +739,7 @@ impl TypeChecker {
             pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),
             pattern_targets: HashMap::new(),
+            pending_pattern_sides: Vec::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
@@ -1193,6 +1197,11 @@ impl TypeChecker {
             .map(|(n, t)| (*n, self.ctx.apply(t)))
             .collect();
         let error_wraps = self.error_wraps.clone();
+        for (id, scrutinee, named) in std::mem::take(&mut self.pending_pattern_sides) {
+            if let Some(err) = self.pattern_side(&scrutinee, &named) {
+                self.pattern_targets.insert(id, rask_types::PatternTarget::Side { err });
+            }
+        }
         let pattern_targets = std::mem::take(&mut self.pattern_targets);
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let err_returns = self.err_returns.clone();

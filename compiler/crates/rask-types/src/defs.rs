@@ -414,4 +414,7 @@ pub enum PatternTarget {
     Variant { enum_id: crate::TypeId, variant: String },
     /// A bare name that binds the value it matches.
     Binding,
+    /// A type test on a `T or E`: whether the type it names is the error
+    /// side (`true`) or the success side.
+    Side { err: bool },
 }

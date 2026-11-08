@@ -1988,7 +1988,7 @@ impl<'a> MirLowerer<'a> {
                 && matches!(val_ty, MirType::Result { .. })
                 && self.err_variant_of_result(pattern, &val_ty).is_none()
                 && self.union_member_of_result(pattern, &val_ty).is_none()
-                && self.pattern_tag_in_type_context(pattern, &val_ty) == 1;
+                && self.pattern_tag_in_type_context(pattern, &val_ty)? == 1;
             let (src, payload_ty, src_niche) = match leaf {
                 Some((inner, inner_payload)) => (MirOperand::Local(*inner), inner_payload.clone(), false),
                 None if err_side => {
@@ -3951,7 +3951,7 @@ impl<'a> MirLowerer<'a> {
             // is decided by type identity (capitalization only as last resort,
             // inside pattern_is_err_side).
             let bind_ty = if let rask_ast::expr::PatternKind::TypePat { ty, .. } = &pattern.kind {
-                let err_side = self.pattern_is_err_side(&super::type_pat_name(ty), &val_ty);
+                let err_side = self.pattern_is_err_side(pattern, &super::type_pat_name(ty), &val_ty)?;
                 if let MirType::Result { ok, err } = &val_ty {
                     Some(if err_side { *err.clone() } else { *ok.clone() })
                 } else if err_side {
@@ -3981,7 +3981,7 @@ impl<'a> MirLowerer<'a> {
                 // ER22: `else as e` binds what the test ruled out.
                 let mut shadowed = None;
                 if let Some(name) = else_binding {
-                    let (rest, other_ty) = self.else_binding_value(&val, &val_ty, pattern);
+                    let (rest, other_ty) = self.else_binding_value(&val, &val_ty, pattern)?;
                     let local = self.builder.alloc_local(name.to_string(), other_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local,
@@ -4034,17 +4034,17 @@ impl<'a> MirLowerer<'a> {
         val: &MirOperand,
         val_ty: &MirType,
         pattern: &rask_ast::expr::Pattern,
-    ) -> (MirOperand, MirType) {
+    ) -> Result<(MirOperand, MirType), LoweringError> {
         if let (MirType::Result { ok, .. }, Some((union_ty, tested))) =
             (val_ty, self.union_member_of_result(pattern, val_ty))
         {
-            return self.union_rest_after_member(val, ok, &union_ty, tested as usize);
+            return Ok(self.union_rest_after_member(val, ok, &union_ty, tested as usize));
         }
         if let MirType::Result { ok, err } = val_ty {
             if let MirType::Option(payload) = ok.as_ref() {
-                match self.flat_leaf_named(pattern, val_ty) {
-                    Some(0) => return self.flat_rest_after_payload(val, err),
-                    Some(1) => return self.flat_rest_after_none(val, ok, payload, err),
+                match self.flat_leaf_named(pattern, val_ty)? {
+                    Some(0) => return Ok(self.flat_rest_after_payload(val, err)),
+                    Some(1) => return Ok(self.flat_rest_after_none(val, ok, payload, err)),
                     _ => {}
                 }
             }
@@ -4054,8 +4054,10 @@ impl<'a> MirLowerer<'a> {
                 // The test may be bare, `is MyErr` with no `as` (#1516).
                 let err_side = match &pattern.kind {
                     rask_ast::expr::PatternKind::TypePat { .. } | rask_ast::expr::PatternKind::Ident(_) => {
-                        super::match_lower::pattern_name(pattern)
-                            .is_some_and(|name| self.pattern_is_err_side(&name, val_ty))
+                        match super::match_lower::pattern_name(pattern) {
+                            Some(name) => self.pattern_is_err_side(pattern, &name, val_ty)?,
+                            None => false,
+                        }
                     }
                     _ => false,
                 };
@@ -4068,7 +4070,7 @@ impl<'a> MirLowerer<'a> {
             dst: local,
             rvalue: self.payload_field(val.clone(), val_ty, &other_ty),
         }));
-        (MirOperand::Local(local), other_ty)
+        Ok((MirOperand::Local(local), other_ty))
     }
 
     /// `E?` out of a flat `T? or E` that isn't a `T`: the error as `Some`,
@@ -8644,7 +8646,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(matches) = self.emit_err_layer_test(val, val_ty, tag, is_niche, pattern) {
             return Ok(PatternTest { matches, flat_payload: None });
         }
-        if let (MirType::Result { ok, .. }, Some(want)) = (val_ty, self.flat_leaf_named(pattern, val_ty)) {
+        if let (MirType::Result { ok, .. }, Some(want)) = (val_ty, self.flat_leaf_named(pattern, val_ty)?) {
             let payload_ty = match ok.as_ref() {
                 MirType::Option(inner) => (**inner).clone(),
                 _ => unreachable!("checked by is_flat_two_layer"),
@@ -8653,7 +8655,7 @@ impl<'a> MirLowerer<'a> {
             let matches = self.emit_eq_const(leaf, want as i64);
             return Ok(PatternTest { matches, flat_payload: Some((inner, payload_ty)) });
         }
-        let expected = self.pattern_tag_in_type_context(pattern, val_ty);
+        let expected = self.pattern_tag_in_type_context(pattern, val_ty)?;
         let mut matches = self.emit_eq_const(tag, expected);
         // A literal or range inside the variant's pattern has to match too:
         // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
@@ -8773,24 +8775,28 @@ impl<'a> MirLowerer<'a> {
     /// The payload or `none` leaf of a flat `T? or E` that `pattern` names.
     /// `None` for anything else, including a written `T?`, which names the
     /// whole success side rather than a leaf inside it.
-    fn flat_leaf_named(&self, pattern: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<u64> {
+    fn flat_leaf_named(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        val_ty: &MirType,
+    ) -> Result<Option<u64>, LoweringError> {
         use rask_ast::expr::PatternKind;
         if !Self::is_flat_two_layer(val_ty)
             || self.err_variant_of_result(pattern, val_ty).is_some()
             || self.union_member_of_result(pattern, val_ty).is_some()
         {
-            return None;
+            return Ok(None);
         }
         let name = match &pattern.kind {
-            PatternKind::TypePat { ty: TypeExpr::Optional(_), .. } => return None,
+            PatternKind::TypePat { ty: TypeExpr::Optional(_), .. } => return Ok(None),
             PatternKind::TypePat { ty, .. } => super::type_pat_name(ty),
             PatternKind::Ident(name) => name.clone(),
-            _ => return None,
+            _ => return Ok(None),
         };
-        match self.flat_leaf_of(&name, val_ty) {
+        Ok(match self.flat_leaf_of(pattern, &name, val_ty)? {
             2 => None,
             leaf => Some(leaf),
-        }
+        })
     }
 
     /// Bind what `test` matched. A flat leaf binds out of the inner option;

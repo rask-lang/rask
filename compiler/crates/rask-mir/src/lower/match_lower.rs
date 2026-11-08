@@ -8,7 +8,7 @@ use crate::{
     operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::ty::TypeExpr;
 
 /// Walk a pattern to see if it contains a range pattern anywhere.
@@ -74,14 +74,14 @@ impl<'a> MirLowerer<'a> {
 
     /// Which leaf of a flat `T? or E` a pattern name picks: 0 the payload,
     /// 1 `none`, 2 the error. Same numbering `emit_flat_leaf` computes.
-    pub(super) fn flat_leaf_of(&self, name: &str, ty: &MirType) -> u64 {
-        if name == "none" {
+    pub(super) fn flat_leaf_of(&self, pat: &Pattern, name: &str, ty: &MirType) -> Result<u64, LoweringError> {
+        Ok(if name == "none" {
             1
-        } else if self.pattern_is_err_side(name, ty) {
+        } else if self.pattern_is_err_side(pat, name, ty)? {
             2
         } else {
             0
-        }
+        })
     }
 
     /// Flatten a `T? or E` into the leaf it holds, as `flat_leaf_of` numbers
@@ -421,7 +421,7 @@ impl<'a> MirLowerer<'a> {
                     } else if has_tag && is_result_or_option {
                         // Result match: ok arm = tag 0, err arm = tag 1, decided
                         // by the scrutinee's real ok/err type identities.
-                        let tag = self.pattern_is_err_side(name, &scrutinee_ty) as u64;
+                        let tag = self.pattern_is_err_side(&arm.pattern, name, &scrutinee_ty)? as u64;
                         cases.push((tag, arm_blocks[i]));
                     } else if has_tag && self.pattern_names_variant(&arm.pattern, name) {
                         return Err(Self::no_such_variant(name, &scrutinee_ty));
@@ -465,7 +465,7 @@ impl<'a> MirLowerer<'a> {
                     if is_result_or_option {
                         // Result/Option match: ok arm = tag 0, err arm = tag 1,
                         // decided by the real ok/err type identities.
-                        let tag = self.pattern_is_err_side(ty_name, &scrutinee_ty) as u64;
+                        let tag = self.pattern_is_err_side(&arm.pattern, ty_name, &scrutinee_ty)? as u64;
                         cases.push((tag, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
@@ -498,7 +498,7 @@ impl<'a> MirLowerer<'a> {
                 let name = name.as_str();
                 // An arm naming the error type itself (`MyErr as e`) catches
                 // every variant the inner switch doesn't list.
-                if self.pattern_is_err_side(name, &scrutinee_ty) {
+                if self.pattern_is_err_side(&arm.pattern, name, &scrutinee_ty)? {
                     err_catchall.get_or_insert(arm_blocks[i]);
                 } else {
                     ok_target.get_or_insert(arm_blocks[i]);
@@ -778,7 +778,7 @@ impl<'a> MirLowerer<'a> {
                         } else if is_result_or_option {
                             // Bind the matching side's payload — the side is
                             // decided by type identity, same as the tag routing.
-                            let payload_ty = if self.pattern_is_err_side(ty_name, &scrutinee_ty) {
+                            let payload_ty = if self.pattern_is_err_side(&arm.pattern, ty_name, &scrutinee_ty)? {
                                 err_payload_ty.clone()
                             } else {
                                 ok_payload_ty.clone()
@@ -1849,7 +1849,8 @@ impl<'a> MirLowerer<'a> {
                     return;
                 }
                 let rask_types::Type::Result { ok, err } = ty else { return };
-                let side = if self.pattern_is_err_side(&ty_name, mir_ty) { err } else { ok };
+                let Ok(err_side) = self.pattern_is_err_side(pattern, &ty_name, mir_ty) else { return };
+                let side = if err_side { err } else { ok };
                 // On a flat `T? or E`, `T as v` binds the `T` inside the
                 // success side's option. Only a written `T?` takes the option.
                 let side = match side.as_option() {
