@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A generic alias stands for its target with the arguments written in:
+// `GH<i64>` under `type alias GH<T> = Holder<T>` is `Holder<i64>`. The alias
+// table dropped the parameters, so `GH<i64>` resolved to nothing: a `let`
+// annotated with it read the payload as 0 natively, a field holding one was
+// refused at lowering, and `GB<i64>.v` was "no field `v` on type `i64`".
+
+enum Holder<T> {
+    Full(T)
+    Empty
+}
+
+struct Box2<T> {
+    v: T
+}
+
+type alias GH<T> = Holder<T>
+type alias GB<T> = Box2<T>
+
+struct Rec {
+    h: GH<string>
+    n: i64
+}
+
+func show(h: GH<i64>) -> string {
+    match h {
+        Full(x) => return "full {x}",
+        Empty => return "empty",
+    }
+}
+
+func make() -> GH<i64> {
+    return GH<i64>.Full(11)
+}
+
+test "an annotation through a generic alias" {
+    let g: GH<i64> = Holder<i64>.Full(4)
+    assert show(g) == "full 4"
+    let e: GH<string> = GH<string>.Empty
+    assert e is Empty
+}
+
+test "parameters, returns and fields through a generic alias" {
+    assert show(make()) == "full 11"
+    let r = Rec(h: Holder<string>.Full("str"), n: 3)
+    let got = match r.h {
+        Full(x) => x,
+        Empty => "",
+    }
+    assert got == "str"
+    assert r.n == 3
+}
+
+test "a generic struct alias has the struct's fields" {
+    let b: GB<i64> = Box2<i64>(v: 9)
+    assert b.v == 9
+}

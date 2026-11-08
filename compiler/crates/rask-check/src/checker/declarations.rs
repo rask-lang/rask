@@ -51,7 +51,7 @@ impl TypeChecker {
             .collect();
         for (name, target) in aliases {
             if self.types.check_alias_cycle(&name, &target).is_none() {
-                self.types.register_alias(name, target);
+                self.types.register_alias(name, Vec::new(), target);
             }
         }
         // `import time as tm`, so `tm.Duration` in a signature finds the
@@ -1894,7 +1894,8 @@ impl TypeChecker {
             });
             return;
         }
-        self.types.register_alias(a.name.clone(), a.target.clone());
+        let params = a.type_params.iter().map(|p| p.name.clone()).collect();
+        self.types.register_alias(a.name.clone(), params, a.target.clone());
     }
 
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {

@@ -76,6 +76,14 @@ pub(super) enum TypeOwner {
     Program,
 }
 
+/// A transparent alias: what it stands for, and the type parameters that is
+/// written in when it is generic.
+#[derive(Debug, Clone)]
+pub struct Alias {
+    pub params: Vec<String>,
+    pub target: TypeExpr,
+}
+
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
@@ -121,10 +129,10 @@ pub struct TypeTable {
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target, as program code reads them: the program's
     /// own aliases and imports, then the stdlib's.
-    type_aliases: HashMap<String, TypeExpr>,
+    type_aliases: HashMap<String, Alias>,
     /// The stdlib's aliases alone, which is all stdlib code sees. A program's
     /// `import time.Duration as Span` is not the prelude's `Span` (#1479).
-    stdlib_aliases: HashMap<String, TypeExpr>,
+    stdlib_aliases: HashMap<String, Alias>,
     /// Type parameters in scope right now, outermost first: the enclosing
     /// type's or `extend` block's, then the function's own.
     ///
@@ -646,23 +654,37 @@ impl TypeTable {
         self.type_method_decls.iter().map(|(id, decls)| (*id, decls.as_slice()))
     }
 
-    /// Register a transparent type alias.
+    /// Register a transparent type alias. `params` are a generic alias's
+    /// type parameters, which its target is written in.
     ///
     /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
     /// the program takes the name, the program's too; a program alias is the
     /// program's only.
-    pub fn register_alias(&mut self, name: String, target: TypeExpr) {
+    pub fn register_alias(&mut self, name: String, params: Vec<String>, target: TypeExpr) {
+        let alias = Alias { params, target };
         if self.stdlib_mode {
-            self.stdlib_aliases.insert(name.clone(), target.clone());
-            self.type_aliases.entry(name).or_insert(target);
+            self.stdlib_aliases.insert(name.clone(), alias.clone());
+            self.type_aliases.entry(name).or_insert(alias);
         } else {
-            self.type_aliases.insert(name, target);
+            self.type_aliases.insert(name, alias);
         }
     }
 
-    /// The aliases the code being checked can see.
-    pub(super) fn aliases(&self) -> &HashMap<String, TypeExpr> {
+    pub(super) fn aliases(&self) -> &HashMap<String, Alias> {
         if self.stdlib_mode { &self.stdlib_aliases } else { &self.type_aliases }
+    }
+
+    /// A generic alias written with arguments, `GH<i64>` under
+    /// `type alias GH<T> = Holder<T>`: its target with the arguments in.
+    /// `None` when `name` isn't a generic alias or the count is wrong.
+    pub fn alias_at(&self, name: &str, args: &[TypeExpr]) -> Option<TypeExpr> {
+        let alias = self.aliases().get(name)?;
+        if alias.params.is_empty() || alias.params.len() != args.len() {
+            return None;
+        }
+        Some(alias.target.substitute(&|p| {
+            alias.params.iter().position(|q| q == p).map(|i| args[i].clone())
+        }))
     }
 
     /// The type `name` is an alias for, following a chain of aliases that name
@@ -673,11 +695,11 @@ impl TypeTable {
     /// there under its own name.
     pub fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
         let aliases = self.aliases();
-        let mut target = aliases.get(name)?;
+        let mut target = &aliases.get(name)?.target;
         let mut seen = vec![name];
         // A cycle was rejected at registration; `seen` only keeps a bad table
         // from looping.
-        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)) {
+        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)).map(|a| &a.target) {
             let n = target.bare_name().unwrap_or_default();
             if seen.contains(&n) {
                 return None;
@@ -715,7 +737,7 @@ impl TypeTable {
             if current_name == name {
                 return Some(path);
             }
-            let next = self.aliases().get(current_name)?;
+            let next = &self.aliases().get(current_name)?.target;
             path.push(next.to_string());
             current = next;
         }
