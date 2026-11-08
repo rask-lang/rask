@@ -1640,6 +1640,7 @@ dependencies = [
  "rask-ast",
  "rask-check",
  "rask-diagnostics",
+ "rask-resolve",
  "rask-stdlib",
  "rask-types",
  "thiserror",

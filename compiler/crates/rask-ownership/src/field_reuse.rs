@@ -254,6 +254,12 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                 emptied.push((place, init.id));
             }
             _ => {
+                // A closure called here may read the field while it's empty,
+                // and which fields it reads isn't known here.
+                if calls_a_closure(checker, stmt) {
+                    emptied.clear();
+                    continue;
+                }
                 // Anything else that writes the field, or the value around it,
                 // breaks the pair: what the refill would put back went first.
                 let written = places_written(checker, stmt);
@@ -267,6 +273,30 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
         }
     }
     pairs
+}
+
+/// Whether `stmt` calls through a local or a parameter: a closure value.
+fn calls_a_closure(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> bool {
+    let mut hit = false;
+    visit::walk_stmt(stmt, &mut |e| {
+        if let ExprKind::Call { func, .. } = &e.kind {
+            if let ExprKind::Ident(_) = &func.kind {
+                let local = checker
+                    .program
+                    .resolutions
+                    .get(&func.id)
+                    .and_then(|s| checker.program.symbols.get(*s))
+                    .is_some_and(|sym| {
+                        matches!(
+                            sym.kind,
+                            rask_resolve::SymbolKind::Variable { .. } | rask_resolve::SymbolKind::Parameter { .. }
+                        )
+                    });
+                hit |= local;
+            }
+        }
+    });
+    hit
 }
 
 /// The places `stmt` may write over: assignment targets anywhere in it, an

@@ -50,6 +50,62 @@ func grow(mutate h: Holder) -> usize {
     return f.len()
 }
 
+struct Cfg {
+    list: Vec<string>
+}
+
+extend Cfg {
+    func wipe(mutate self) {
+        self.list = Vec.new()
+    }
+}
+
+struct Outer {
+    cfg: Cfg
+}
+
+// ERROR: a struct field's view is a copy, and a `mutate self` method on the
+// field itself can replace what it holds [E0958]
+func wipe_under_view(mutate p: Outer) -> usize {
+    let old = p.cfg
+    p.cfg.wipe()
+    return old.list.len()
+}
+
+// ERROR: an inner `let` reusing the view's name doesn't hide it from the
+// write [E0958]
+func shadowed(mutate h: Holder) -> usize {
+    let old = h.log
+    if h.log.len() > 0 {
+        let old = 5
+        h.log = Vec.new()
+        println("{old}")
+    }
+    return old.len()
+}
+
+// ERROR: a closure called between the move and the refill could read the
+// empty field, so the read stays a view [E0958]
+func closure_between(mutate h: Holder) -> usize {
+    let n = || h.log.len()
+    let old = h.log
+    println("{n()}")
+    h.log = Vec.new()
+    return old.len()
+}
+
+// Fine: a new `h` in an inner block is a different value.
+func inner_rebind(h: Holder) -> usize {
+    let old = h.log
+    mut total = 0
+    for i in 0..2 {
+        mut h = Holder(log: Vec.new())
+        h.log = Vec.new()
+        total += h.log.len()
+    }
+    return total + old.len()
+}
+
 func reset_log(mutate h: Holder) {
     h.log = Vec.new()
 }

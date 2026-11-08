@@ -171,7 +171,7 @@ pub struct OwnershipChecker<'a> {
     /// Fields a paired read moved out and the refill hasn't put back yet:
     /// (root, field path, the binding that has it, where). The slot is empty
     /// until the refill, so reading it, or the value around it, is E0959.
-    taken_fields: Vec<(String, Vec<String>, String, Span)>,
+    taken_fields: Vec<(String, Vec<String>, String, Span, Option<u32>)>,
     /// Set while the operand of a field read is checked: the outermost read
     /// already asked about taken fields for the whole path.
     field_path_checked: bool,
@@ -502,6 +502,14 @@ struct FieldView {
     /// The block depth the view was bound at; it lasts until that block ends
     /// (mem.borrowing/S1).
     block: u32,
+    /// The declaration `root` resolves to, so a later binding that reuses the
+    /// name isn't taken for it.
+    root_sym: Option<u32>,
+    /// The field is a container handle (`Vec`, `Map`, `Set`): the view shares
+    /// it, so a method writing through the field itself grows or clears what
+    /// the view reads and frees nothing. A struct field is a copy, and a
+    /// `mutate self` method on it can replace one of its own fields.
+    handle: bool,
 }
 
 /// A value a container lent out, carried from wherever the walk found it to
@@ -2349,7 +2357,15 @@ impl<'a> OwnershipChecker<'a> {
                 return None;
             }
         }
-        Some(FieldView { path, root, field_ty, bound: None, block: self.current_block })
+        Some(FieldView {
+            path,
+            root,
+            field_ty,
+            bound: None,
+            block: self.current_block,
+            root_sym: self.root_symbol(expr),
+            handle: self.node_ty(&expr.id).is_some_and(|t| self.is_handle_type(t)),
+        })
     }
 
     /// `value.field` when it reads a field whose value a second owner would
@@ -2387,34 +2403,76 @@ impl<'a> OwnershipChecker<'a> {
             return;
         };
         let fields = fields.unwrap_or_default();
-        let hit: Vec<String> = self
-            .field_views
-            .iter()
-            .filter(|(name, view)| {
-                if view.root != root || **name == root {
-                    return false;
-                }
-                let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
-                if inside_only && viewed.len() <= fields.len() {
-                    return false;
-                }
-                let n = viewed.len().min(fields.len());
-                viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
-            })
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in hit {
+        let sym = self.root_symbol(place);
+        let hits = |name: &str, view: &FieldView| {
+            if view.root != root || name == root || !Self::same_root(view.root_sym, sym) {
+                return false;
+            }
+            let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
+            if inside_only && view.handle && viewed.len() <= fields.len() {
+                return false;
+            }
+            let n = viewed.len().min(fields.len());
+            viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
+        };
+        // A view an inner `let` hid by name still reads the field.
+        let mut ended: Vec<(String, FieldView)> = Vec::new();
+        let names: Vec<String> =
+            self.field_views.iter().filter(|(n, v)| hits(n, v)).map(|(n, _)| n.clone()).collect();
+        for name in names {
             if let Some(view) = self.field_views.remove(&name) {
-                self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ViewOutlivedReplace {
-                        name,
-                        path: view.path,
-                        viewed_at: view.bound.map(|(_, s)| s).unwrap_or(at),
-                    },
-                    span: at,
-                });
+                ended.push((name, view));
             }
         }
+        let mut kept = Vec::new();
+        for (depth, name, view) in std::mem::take(&mut self.shadowed_views) {
+            if hits(&name, &view) {
+                ended.push((name, view));
+            } else {
+                kept.push((depth, name, view));
+            }
+        }
+        self.shadowed_views = kept;
+        for (name, view) in ended {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ViewOutlivedReplace {
+                    name,
+                    path: view.path,
+                    viewed_at: view.bound.map(|(_, s)| s).unwrap_or(at),
+                },
+                span: at,
+            });
+        }
+    }
+
+    /// Two roots are the same binding when they resolve to the same
+    /// declaration. Without a resolution either way, the name decides.
+    fn same_root(a: Option<u32>, b: Option<u32>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
+    }
+
+    /// The declaration the name at the root of a place resolves to.
+    fn root_symbol(&self, e: &Expr) -> Option<u32> {
+        match &e.kind {
+            ExprKind::Ident(_) => self.program.resolutions.get(&e.id).map(|s| s.0),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. } => self.root_symbol(object),
+            _ => None,
+        }
+    }
+
+    /// A container whose value is a handle to storage it shares.
+    fn is_handle_type(&self, ty: &Type) -> bool {
+        let name = match ty {
+            Type::Generic { base, .. } => self.program.types.type_name(*base),
+            Type::UnresolvedGeneric { name, .. } => name.clone(),
+            _ => return false,
+        };
+        matches!(name.as_str(), "Vec" | "Map" | "Set")
     }
 
     /// A read of a place that overlaps a field a paired read moved out and
@@ -2428,11 +2486,12 @@ impl<'a> OwnershipChecker<'a> {
             return;
         };
         let fields = fields.unwrap_or_default();
-        let hit = self.taken_fields.iter().find(|(r, f, _, _)| {
+        let sym = self.root_symbol(expr);
+        let hit = self.taken_fields.iter().find(|(r, f, _, _, s)| {
             let n = f.len().min(fields.len());
-            *r == root && f[..n] == fields[..n]
+            *r == root && Self::same_root(*s, sym) && f[..n] == fields[..n]
         });
-        if let Some((r, f, name, at)) = hit.cloned() {
+        if let Some((r, f, name, at, _)) = hit.cloned() {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::TakenFieldRead {
                     path: format!("{}.{}", r, f.join(".")),
@@ -2476,7 +2535,8 @@ impl<'a> OwnershipChecker<'a> {
         // Moved out until the refill puts a value back: owned, not a view.
         if self.refill_takes.contains(&init.id) {
             if let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) {
-                self.taken_fields.push((root, fields, name.to_string(), init.span));
+                let sym = self.root_symbol(init);
+                self.taken_fields.push((root, fields, name.to_string(), init.span, sym));
             }
             return;
         }
@@ -2494,6 +2554,8 @@ impl<'a> OwnershipChecker<'a> {
                     field_ty,
                     bound: Some((name.to_string(), init.span)),
                     block: self.current_block,
+                    root_sym: self.root_symbol(init),
+                    handle: self.node_ty(&init.id).is_some_and(|t| self.is_handle_type(t)),
                 })
             }),
         };
@@ -2800,7 +2862,7 @@ impl<'a> OwnershipChecker<'a> {
                 // The refill a paired read was waiting for: the slot is full
                 // again. After the value, which may not read it.
                 if let (Some(root), Some(fields)) = Self::extract_root_and_fields(target) {
-                    self.taken_fields.retain(|(r, f, _, _)| !(*r == root && *f == fields));
+                    self.taken_fields.retain(|(r, f, ..)| !(*r == root && *f == fields));
                 }
                 self.check_views_at_write(target, stmt.span, false);
                 if let ExprKind::Ident(name) = &target.kind {
