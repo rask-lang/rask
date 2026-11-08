@@ -26,8 +26,14 @@ nobody. RimWorld computes far less and keeps nearly all of it visible ("Bob is
 sad because he slept on the floor, and that's why he punched Alice"), and it
 tells better stories to more people.
 
-Rule: a sim variable earns its place only if it changes something the player
-can see or act on.
+Rule: a sim variable earns its place only if it can produce a consequence
+the player can see or act on. The test is whether it can produce a story a
+player would tell. DF's cats dying from licking spilled beer passes: a hidden
+mechanism leaked into a visible mystery. DF's combat log fails: constantly
+shown, no consequence beyond whether the unit dies. Two hundred body parts
+pass only where they change what happens next (no hand, no shield; a scar
+the giver remembers). Detail is pulled, not pushed. Legends mode is the right
+model and the combat log the wrong one, in the same game.
 
 ## The 90s feel
 
@@ -237,11 +243,23 @@ which removes most of DF. Mortal runs cut time: a fortress lasts hours, so
 the late game doesn't exist in version one. World layer, legends and
 adventure mode are later versions, and the structure makes them additive.
 
-Open: DF is three games stuck together, and version one carries one as its
-heart with the other two sketched. The digging game (Z-levels, the magma
-sea, a fortress carved into a mountain). The people game (personalities,
-memories, the tantrum spiral). The history game (a world that existed before
-you and remembers you after).
+DF is three games stuck together, and version one carries one as its heart
+with the other two sketched. The digging game (a fortress carved into a
+mountain). The people game (personalities, memories, the tantrum spiral).
+The history game (a world that existed before you and remembers you after).
+Digging is in, as the setting at least.
+
+**Digging.** Finding a good hill and digging in is reading the terrain,
+picking the entrance and carving rooms out of rock, and all of that is two
+dimensional with the hill as the thing you're inside. Dungeon Keeper, the
+most satisfying digging game made, is one flat level; Evil Genius is its
+descendant. DF's hundred Z-levels multiply the complexity (3D pathing with
+invalidation is its frame killer) and the slice view can't show the result,
+so you pay for depth you can't see. A few discrete floors, each a crisp tile
+map, the floor above cut away and the one below shaded (Going Medieval, Evil
+Genius 2), keeps the fortress-in-a-mountain fantasy and the legibility.
+Three to five floors is probably where the fantasy saturates. The kernel's
+cube lattice covers it either way.
 
 ## Two prototypes, kept apart
 
