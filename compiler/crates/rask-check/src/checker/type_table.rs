@@ -149,6 +149,8 @@ pub struct TypeTable {
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
     pub(super) result_type_id: Option<TypeId>,
+    /// The compiler-registered `Ordering` enum.
+    ordering_type_id: Option<TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
@@ -255,6 +257,7 @@ impl TypeTable {
             const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
+            ordering_type_id: None,
             builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
             type_method_decls: HashMap::new(),
@@ -387,6 +390,7 @@ impl TypeTable {
             variant_decls: rask_stdlib::ORDERING_VARIANTS.iter().map(|_| rask_types::VariantDecl::synthesized(0)).collect(),
         });
         self.layout_types.insert(ordering);
+        self.ordering_type_id = Some(ordering);
     }
 
     /// Register a user-defined type.
@@ -2341,6 +2345,11 @@ impl TypeTable {
     }
 
     /// Get TypeId for the builtin Result<T, E> enum.
+    /// The compiler-registered `Ordering` enum's id.
+    pub fn ordering_type_id(&self) -> Option<TypeId> {
+        self.ordering_type_id
+    }
+
     pub fn get_result_type_id(&self) -> Option<TypeId> {
         self.result_type_id
     }

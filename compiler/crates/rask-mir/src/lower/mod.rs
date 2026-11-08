@@ -1060,6 +1060,15 @@ impl<'a> MirContext<'a> {
     /// identity: its instance's layout when mono made one, else its
     /// declaration's.
     fn declared_layout_mir(&self, ty: &Type) -> Option<MirType> {
+        // A runtime handle (`Vec`, `File`, `Shared`) is a pointer whatever its
+        // stub declares: the declaration says so, and this is its name.
+        let declared = match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self.type_names.get(id),
+            _ => None,
+        };
+        if declared.is_some_and(|name| lowers_to_ptr(name)) {
+            return None;
+        }
         if let Some(i) = rask_layout::struct_index_for(ty, self.struct_layouts) {
             let sl = &self.struct_layouts[i];
             return Some(self.struct_or_handle(&sl.name, i as u32, sl));

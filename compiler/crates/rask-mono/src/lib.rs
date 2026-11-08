@@ -866,8 +866,11 @@ fn monomorphize_inner(
     // enum downstream: `compare` can hand back a real Ordering value rather
     // than a bare tag, and `{}` on one reaches whatever Displayable was
     // written for it (#729).
-    if !enum_layouts.iter().any(|l| l.name == "Ordering") {
-        enum_layouts.push(rask_layout::ordering_layout());
+    let ordering = program.types.ordering_type_id().map(rask_layout::LayoutKey::of);
+    if !enum_layouts.iter().any(|l| l.key.is_some() && l.key == ordering) {
+        let mut layout = rask_layout::ordering_layout();
+        layout.key = ordering;
+        enum_layouts.push(layout);
     }
 
     Ok(MonoProgram {

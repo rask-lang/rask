@@ -5551,11 +5551,16 @@ impl<'a> MirLowerer<'a> {
                         // the one the checker typed the call as, which carries a
                         // generic's instantiation the written name can't
                         // (`Holder.Full(Big { … })` says only "Holder", #781).
-                        // A call the checker resolved to a function is not one.
+                        // The checker records one as a method with no body; a
+                        // call it resolved to a function body is not one.
                         let call_ty = self.ctx.lookup_raw_type(expr.id);
+                        let runs_a_body = matches!(
+                            self.ctx.call_targets.get(&expr.id).as_deref(),
+                            Some(rask_check::Callee::Free(_)) | Some(rask_check::Callee::Method { body: Some(_), .. })
+                        );
                         let enum_variant = call_ty
                             .as_deref()
-                            .filter(|_| self.ctx.call_targets.get(&expr.id).is_none())
+                            .filter(|_| !runs_a_body)
                             .and_then(|t| self.ctx.enum_of(t))
                             .and_then(|(idx, layout)| {
                             let variant = layout.variants.iter().find(|v| v.name == *method)?;
