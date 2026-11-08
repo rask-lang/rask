@@ -644,6 +644,25 @@ fn insert_aggregate_release(
         }
     }
 
+    // Locals holding the address of a place inside other storage: `base + k`
+    // where the base is a link or an aggregate. Copied into an aggregate
+    // name, that name borrows the place; it doesn't own it.
+    let place_addresses: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
+            } if matches!(ty_of.get(base), Some(MirType::Link(_)))
+                || aggregates.contains(base) =>
+            {
+                Some(*dst)
+            }
+            _ => None,
+        })
+        .collect();
     let params: Vec<LocalId> = func.params.iter().map(|p| p.id).collect();
     let mut facts = ownership::Facts {
         names: tracked.iter().copied().collect(),
@@ -707,7 +726,14 @@ fn insert_aggregate_release(
                 {
                     if is_tracked(src) {
                         ev.push(ownership::Event::Alias { dst: *dst, src: *src });
-                    } else if matches!(ty_of.get(src), Some(MirType::Link(_))) {
+                    } else if matches!(ty_of.get(src), Some(MirType::Link(_)))
+                        || place_addresses.contains(src)
+                    {
+                        // Or an address into storage something else owns: a
+                        // field of a node or of a struct, handed to an
+                        // inlined `mutate` parameter (`set(mutate h.inner)`
+                        // binds `i = h + 24`). Taken over, the frame released
+                        // the node's own vector (#1809).
                         // The node a link points at (`mem.racks/RK2`): the rack
                         // owns it, and a name reaching it through the link
                         // borrows. Inlining `a.sum()` on a `Link<Task>` binds
