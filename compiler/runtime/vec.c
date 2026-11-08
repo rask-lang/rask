@@ -929,10 +929,14 @@ RaskVec *rask_vec_take_all(RaskVec *v) {
 }
 
 // `let old = self.f` ahead of `self.f = …`: the field's bytes, for a binding
-// that owns them from here. The refill writes over the slot without releasing
-// it, so nothing is zeroed.
-int64_t rask_field_take(const void *field, int64_t size, void *out) {
-    if (out && field) memcpy(out, field, (size_t)size);
+// that owns them from here. The field is zeroed, so it owns nothing either way
+// the old value goes next: written over in place, or released whole when a
+// local is rebuilt from its own fields (`c = Cursor(label: c.label, …)`).
+int64_t rask_field_take(void *field, int64_t size, void *out) {
+    if (out && field) {
+        memcpy(out, field, (size_t)size);
+        memset(field, 0, (size_t)size);
+    }
     return 0;
 }
 

@@ -349,7 +349,7 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
-int64_t  rask_field_take(const void *field, int64_t size, void *out);
+int64_t  rask_field_take(void *field, int64_t size, void *out);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
 // key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
 // (rask_abi.h).

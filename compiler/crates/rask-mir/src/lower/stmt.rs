@@ -422,12 +422,17 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `offset` is where the aggregate starts inside `base`; it is a value
     /// rather than a constant because an array element's offset can be.
+    ///
+    /// `old_held` is false when the release pass decides the old value's
+    /// fate: freeing its containers drops their records, and a container
+    /// handed on keeps them.
     fn emit_aggregate_edge_stores(
         &mut self,
         base: crate::LocalId,
         offset: MirOperand,
         ty: &MirType,
         value: &MirOperand,
+        old_held: bool,
     ) {
         if !self.ctx.struct_carries_links(ty) {
             return;
@@ -447,8 +452,12 @@ impl<'a> MirLowerer<'a> {
                 k if k == RASK_RACK_FIELD_MAP as i32 => ("rask_link_forget_map", "rask_link_register_map"),
                 _ => continue,
             };
-            let old = self.emit_word_at(MirOperand::Local(base), at);
-            for (func, arg) in [(forget, old), (register, incoming)] {
+            let mut calls = Vec::with_capacity(2);
+            if old_held {
+                calls.push((forget, self.emit_word_at(MirOperand::Local(base), at)));
+            }
+            calls.push((register, incoming));
+            for (func, arg) in calls {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::runtime(func.to_string()),
@@ -842,10 +851,22 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            // An in-place local's old value is whatever it was:
-                            // codegen releases a slot of any type.
+                            //
+                            // An in-place local's old value may have been
+                            // handed on first (`v.push(t)` then `t = …`), and
+                            // then the bytes still in the slot are the new
+                            // owner's. Whether the frame still owns it is the
+                            // release pass's to say: a `ZeroAggregate` before
+                            // the store makes a new value in the slot, and that
+                            // pass releases the old one there exactly when it
+                            // is still ours — under a drop flag when that holds
+                            // on some paths only. Its vectors take their link
+                            // records with them when they're freed. A field
+                            // the new value took from the old one was zeroed by
+                            // the take, so releasing the rest is safe too.
+                            let renew = in_place;
                             let replaced = if in_place {
-                                (!reuses_old).then(|| dst_ty.clone())
+                                None
                             } else if assigns_through {
                                 self.released_on_overwrite(target, reuses_old, &dst_ty)
                             } else {
@@ -869,12 +890,21 @@ impl<'a> MirLowerer<'a> {
                                 _ => None,
                             };
                             if scalar_mutate.is_none() {
-                                self.emit_aggregate_edge_stores(local_id, MirOperand::Constant(MirConst::Int(0)), &dst_ty, &val_op);
+                                self.emit_aggregate_edge_stores(
+                                    local_id,
+                                    MirOperand::Constant(MirConst::Int(0)),
+                                    &dst_ty,
+                                    &val_op,
+                                    !in_place,
+                                );
                             }
                             if let Some(ty) = replaced {
                                 self.builder.push_stmt(MirStmt::dummy(
                                     MirStmtKind::ReleaseSlot { addr: local_id, offset: 0, ty },
                                 ));
+                            }
+                            if renew {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
                             }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: local_id,
@@ -1007,7 +1037,7 @@ impl<'a> MirLowerer<'a> {
                                 self.emit_link_store(base, MirOperand::Constant(MirConst::Int(offset as i64)), val_op);
                                 return Ok(());
                             }
-                            self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op);
+                            self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op, true);
                             // The store may switch a variant whose payload holds
                             // links: the live one's go before, the new one's after.
                             let guarded = match &val_op {
@@ -1210,7 +1240,7 @@ impl<'a> MirLowerer<'a> {
                                         return Ok(());
                                     }
                                     let elem_ty = (**elem).clone();
-                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op);
+                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true);
                                 }
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,

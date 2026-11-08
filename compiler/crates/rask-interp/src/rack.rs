@@ -264,8 +264,8 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
 }
 
 /// `register_element` for an element `depth` levels inside the value being
-/// registered. This is the element's only walk: `register_nested` doesn't
-/// walk it again, so nested vectors cost one pass, not two per level.
+/// registered. A struct or enum element is walked here and only here, so
+/// nested vectors of structs cost one pass, not two per level.
 fn register_element_at(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value, depth: usize) {
     // An element of struct type holds its links in fields of its own: those
     // are edges the element's fields record, and delete nulls them in place
@@ -275,8 +275,10 @@ fn register_element_at(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value, d
         return;
     }
     // A struct an enum carries (`Small or Oops`, `Wrap.Yes(Cursor)`) records
-    // its own fields the same way, and an inner container its own elements.
-    register_nested(value, depth);
+    // its own fields the same way.
+    if matches!(value, Value::Enum { .. }) {
+        register_nested(value, depth);
+    }
     // A tuple or an enum element is a value: its links are recorded against
     // the vector, and delete rebuilds the element in place.
     let mut links = Vec::new();
@@ -462,7 +464,9 @@ fn register_entry_at(
         register_nested(s, depth);
         return;
     }
-    register_nested(value, depth);
+    if matches!(value, Value::Enum { .. }) {
+        register_nested(value, depth);
+    }
     let mut in_value = Vec::new();
     tuple_links(value, &mut in_value);
     for (rack_id, target) in in_value {
@@ -519,12 +523,21 @@ pub fn register_nested(value: &Value, depth: usize) {
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
                 register_element_at(vec, it, depth + 1);
+                // An inner container records its own elements; a vector
+                // arriving through `register_element` alone doesn't, so a
+                // loop over a grid stays one pass over its rows.
+                if matches!(it, Value::Vec(_) | Value::Map(_)) {
+                    register_nested(it, depth + 1);
+                }
             }
         }
         Value::Map(map) => {
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
                 register_entry_at(map, None, it, depth + 1);
+                if matches!(it, Value::Vec(_) | Value::Map(_)) {
+                    register_nested(it, depth + 1);
+                }
             }
         }
         Value::Enum { fields, .. } => {

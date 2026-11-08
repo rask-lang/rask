@@ -105,3 +105,66 @@ test "a guard past byte 4095 frees its arm and records its link" {
     assert note_text(copy[1].note) == "far-note-2-long-enough"
     assert v[1].tail == "tail-2-long-enough"
 }
+
+struct Tree {
+    at: Link<Leaf>?
+    kids: Vec<Tree>
+}
+
+test "a local moved away and then reassigned leaves the moved value alone" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 7))
+    mut t = Tree(at: a, kids: Vec.new())
+    for i in 0..3 {
+        mut v: Vec<Tree> = Vec.new()
+        v.push(t)
+        t = Tree(at: none, kids: v)
+    }
+    assert link_id(t.kids[0].kids[0].kids[0].at) == 7
+    leaves.delete(a)
+    assert link_id(t.kids[0].kids[0].kids[0].at) == -1
+}
+
+test "a local moved into a call's result and reassigned from it" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 3))
+    mut c = Cursor(at: a, label: "first-label-long-enough-to-heap", hist: Vec.new())
+    for i in 0..2 {
+        c = renamed(c, i)
+    }
+    assert c.label == "first-label-long-enough-to-heap-0-1"
+    leaves.delete(a)
+    assert link_id(c.at) == -1
+}
+
+func renamed(take c: Cursor, i: i32) -> Cursor {
+    return Cursor(at: c.at, label: "{c.label}-{i}", hist: c.hist.clone())
+}
+
+test "a local moved away on some turns and reassigned on every one" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 5))
+    mut kept: Vec<Cursor> = Vec.new()
+    mut c = Cursor(at: a, label: "label-0-long-enough-to-heap", hist: Vec.new())
+    for i in 0..4 {
+        if i % 2 == 0 {
+            kept.push(c)
+        }
+        c = Cursor(at: a, label: "label-{i + 1}-long-enough-to-heap", hist: Vec.new())
+    }
+    assert kept.len() == 2
+    assert kept[1].label == "label-2-long-enough-to-heap"
+    leaves.delete(a)
+    assert link_id(kept[0].at) == -1
+    assert link_id(c.at) == -1
+}
+
+// #1825: both vectors leaked.
+test "a link struct reassigned once frees both values' vectors" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut c = Cursor(at: a, label: "x", hist: ["first-entry-long-enough-to-heap"])
+    c = Cursor(at: a, label: "y", hist: ["second-entry-long-enough-to-heap"])
+    assert link_id(c.at) == 1
+    assert c.hist[0] == "second-entry-long-enough-to-heap"
+}
