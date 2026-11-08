@@ -224,8 +224,19 @@ impl TypeChecker {
             // `string or (GrowError<T> | Aa)` gave every call site a literal
             // `GrowError<T>`, and a `Full(x)` arm bound `x` as a placeholder
             // word instead of the caller's `f64`.
+            //
+            // Substituting can make two members one: `Mm | T` at `T = Mm` is
+            // `Mm`, and a match covering `Mm` covers it. The order is left
+            // alone; MIR lays every union out in canonical order.
             Type::Union(members) => {
-                Type::Union(members.iter().map(|m| Self::substitute_type_params(m, subst)).collect())
+                let mut out: Vec<Type> = Vec::with_capacity(members.len());
+                for m in members {
+                    let m = Self::substitute_type_params(m, subst);
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+                if out.len() == 1 { out.pop().unwrap() } else { Type::Union(out) }
             }
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| p.map(|p| Self::substitute_type_params(p, subst))).collect(),

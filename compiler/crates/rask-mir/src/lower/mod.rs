@@ -1535,10 +1535,15 @@ impl<'a> MirContext<'a> {
                 ok: Box::new(self.type_to_mir(ok)),
                 err: Box::new(self.type_to_mir(err)),
             },
-            // Union → tracks variant sizes
-            Type::Union(variants) => {
-                MirType::Union(variants.iter().map(|t| self.type_to_mir(t)).collect())
-            }
+            // A union's members in canonical order: MIR names the member that
+            // is present by its position, so every frame has to agree on the
+            // order however the checker's type was built. A substitution
+            // (`Mm | T` at `T = Aa`) keeps the written order, which isn't
+            // the order `Aa | Mm` has elsewhere.
+            Type::Union(_) => match self.canonical_union(ty) {
+                Type::Union(members) => MirType::Union(members.iter().map(|t| self.type_to_mir(t)).collect()),
+                one => self.type_to_mir(&one),
+            },
             // SIMD vector → MirType::SimdVector
             Type::SimdVector { elem, lanes } => MirType::SimdVector {
                 elem: Box::new(self.type_to_mir(elem)),
@@ -1551,6 +1556,13 @@ impl<'a> MirContext<'a> {
             // reported.
             Type::Assoc { .. } => MirType::Ptr,
         }
+    }
+
+    /// `ty`, a union, with its members sorted and deduplicated the way the
+    /// checker builds one (`Type::union_named`, by declared name).
+    pub(crate) fn canonical_union(&self, ty: &Type) -> Type {
+        let Type::Union(members) = ty else { return ty.clone() };
+        Type::union_named(members.clone(), |id| self.type_names.get(&id).cloned())
     }
 
     /// The MIR type for an expression node — `None` when the checker's answer

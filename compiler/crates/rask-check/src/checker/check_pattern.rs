@@ -810,7 +810,13 @@ impl TypeChecker {
         if ok_leaves.iter().any(|l| names(self, l)) {
             return Some((false, None));
         }
-        match normalize_type(&self.ctx.apply(err), &self.types) {
+        // The member index counts in canonical order, which is how MIR lays
+        // a union out whatever order a substitution left this one in.
+        let err = match normalize_type(&self.ctx.apply(err), &self.types) {
+            Type::Union(members) => Type::union_named(members, |id| Some(self.types.type_name(id))),
+            other => other,
+        };
+        match err {
             Type::Union(members) => {
                 let member = members.iter().position(|l| names(self, l))?;
                 Some((true, Some(member)))

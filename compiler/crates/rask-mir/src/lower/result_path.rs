@@ -126,15 +126,17 @@ impl<'a> MirLowerer<'a> {
     /// The checker's type of the value `path` ends at, walked down from
     /// `val`'s the same way `result_path_value` walks the bytes. A generic
     /// enum's payload types come from here.
-    fn result_path_checked<'t>(path: &ResultPath, val: Option<&'t rask_types::Type>) -> Option<&'t rask_types::Type> {
+    fn result_path_checked(&self, path: &ResultPath, val: Option<&rask_types::Type>) -> Option<rask_types::Type> {
         let rask_types::Type::Result { ok, err } = val? else { return None };
-        let mut ty: &rask_types::Type = if path.err { err } else { ok };
+        let mut ty: rask_types::Type = if path.err { (**err).clone() } else { (**ok).clone() };
         if path.present {
-            ty = ty.as_option()?;
+            ty = ty.as_option()?.clone();
         }
         if let Some((index, _)) = &path.member {
-            let rask_types::Type::Union(members) = ty else { return None };
-            ty = members.get(*index)?;
+            // The member index counts in canonical order, as `type_to_mir`
+            // lays the union out.
+            let rask_types::Type::Union(members) = self.ctx.canonical_union(&ty) else { return None };
+            ty = members.get(*index)?.clone();
         }
         Some(ty)
     }
@@ -206,8 +208,8 @@ impl<'a> MirLowerer<'a> {
             // A variant pattern tests against its own enum like any other:
             // the tag, then any literal or nested variant in its fields.
             _ => {
-                let enum_checked = Self::result_path_checked(path, checked);
-                self.emit_subpattern_test(&value, &variant.enum_ty, enum_checked, pattern, fail)
+                let enum_checked = self.result_path_checked(path, checked);
+                self.emit_subpattern_test(&value, &variant.enum_ty, enum_checked.as_ref(), pattern, fail)
             }
         }
     }
@@ -238,14 +240,14 @@ impl<'a> MirLowerer<'a> {
             self.bind_local(name, MirRValue::Use(value), value_ty);
             return;
         };
-        let enum_checked = Self::result_path_checked(path, checked);
+        let enum_checked = self.result_path_checked(path, checked);
         let Some(name) = binding else {
-            self.bind_pattern_fields(pattern, value, None, false, &variant.enum_ty, enum_checked);
+            self.bind_pattern_fields(pattern, value, None, false, &variant.enum_ty, enum_checked.as_ref());
             return;
         };
         let variant_name = self.ctx.enum_layouts[variant.layout].variants[variant.index].name.clone();
         let fields = self
-            .variant_field_types(&variant.enum_ty, enum_checked, &variant_name)
+            .variant_field_types(&variant.enum_ty, enum_checked.as_ref(), &variant_name)
             .unwrap_or_default();
         match fields.as_slice() {
             // A fieldless variant's payload is unit: nothing to read.
