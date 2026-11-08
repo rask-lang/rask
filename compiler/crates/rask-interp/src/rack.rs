@@ -248,6 +248,11 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
         register_nested(s, 1);
         return;
     }
+    // A struct an enum carries (`Small or Oops`, `Wrap.Yes(Cursor)`) records
+    // its own fields the same way.
+    if matches!(value, Value::Enum { .. }) {
+        register_nested(value, 1);
+    }
     // A tuple or an enum element is a value: its links are recorded against
     // the vector, and delete rebuilds the element in place.
     let mut links = Vec::new();
@@ -273,7 +278,8 @@ pub fn register_vec_links(value: &Value) {
     match value {
         // A struct or tuple bound whole — `let c2 = c` is a copy with links
         // of its own, and natively each is an edge the copy's slot holds.
-        Value::Struct(_) => register_nested(value, 0),
+        // An enum bound whole carries its structs' copies the same way.
+        Value::Struct(_) | Value::Enum { .. } => register_nested(value, 0),
         Value::Tuple(items) => {
             for item in items.iter() {
                 if matches!(item, Value::Struct(_)) {
@@ -421,6 +427,9 @@ pub fn register_entry(
     if let s @ Value::Struct(_) = strip_some(value) {
         register_nested(s, 1);
         return;
+    }
+    if matches!(value, Value::Enum { .. }) {
+        register_nested(value, 1);
     }
     let mut in_value = Vec::new();
     tuple_links(value, &mut in_value);

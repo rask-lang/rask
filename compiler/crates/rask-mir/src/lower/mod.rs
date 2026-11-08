@@ -1512,6 +1512,10 @@ impl<'a> MirContext<'a> {
             }),
             (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link_directly(e, depth + 1)),
             (Type::Array { elem, .. }, _) => self.type_holds_link_directly(elem, depth + 1),
+            // `T or E`: whichever side is live holds its links where it would alone.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link_directly(ok, depth + 1) || self.type_holds_link_directly(err, depth + 1)
+            }
             _ => false,
         }
     }
@@ -1547,6 +1551,10 @@ impl<'a> MirContext<'a> {
             }),
             (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link(e, depth + 1)),
             (Type::Array { elem, .. }, _) => self.type_holds_link(elem, depth + 1),
+            // `T or E`: whichever side is live holds its links where it would alone.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link(ok, depth + 1) || self.type_holds_link(err, depth + 1)
+            }
             _ => false,
         }
     }
@@ -1617,6 +1625,10 @@ impl<'a> MirContext<'a> {
             }),
             (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_has_guarded_link(e, depth + 1)),
             (Type::Array { elem, .. }, _) => self.type_has_guarded_link(elem, depth + 1),
+            // A `T or E` payload is behind its tag, like an optional's.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link(ok, depth + 1) || self.type_holds_link(err, depth + 1)
+            }
             _ => false,
         }
     }

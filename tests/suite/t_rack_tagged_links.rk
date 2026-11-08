@@ -118,6 +118,39 @@ func topt_id(t: Target?) -> i32 {
     return -3
 }
 
+struct Oops {
+    why: string
+}
+
+extend Oops {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+enum Wrap {
+    Nope
+    Yes(Cursor)
+}
+
+func ok_id(r: Cursor or Oops) -> i32 {
+    return match r {
+        Cursor as c => link_id(c.at)
+        Oops => -9
+    }
+}
+
+func found(l: Link<Leaf>) -> Cursor or Oops {
+    return Cursor(at: l)
+}
+
+func wrap_id(w: Wrap) -> i32 {
+    match w {
+        Wrap.Nope => return -2,
+        Wrap.Yes(c) => return link_id(c.at),
+    }
+}
+
 func cur_id(i: Link<Item>) -> i32 {
     if i.cur? as c {
         if c.at? as l {
@@ -251,4 +284,28 @@ test "a link in a payload with more than 63 entries" {
     } else {
         assert false
     }
+}
+
+test "a struct carried by `T or E` or by an enum, and its copies" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut rs: Vec<Cursor or Oops> = Vec.new()
+    rs.push(found(a))
+    let rc = rs.clone()
+    mut ws: Vec<Wrap> = Vec.new()
+    ws.push(Wrap.Yes(Cursor(at: a)))
+    mut wm: Map<i32, Wrap> = Map.new()
+    wm.insert(1, Wrap.Yes(Cursor(at: a)))
+    let src: Cursor? = Cursor(at: a)
+    let copy: Cursor? = src
+    leaves.delete(a)
+    assert ok_id(rs[0]) == -1
+    assert ok_id(rc[0]) == -1
+    assert wrap_id(ws[0]) == -1
+    if wm.get(1)? as w {
+        assert wrap_id(w) == -1
+    } else {
+        assert false
+    }
+    assert opt_id(copy) == -1
 }
