@@ -5163,10 +5163,10 @@ impl<'a> MirLowerer<'a> {
     /// nominal-variant cases are meaningful here — Ident/TypePat routing that
     /// needs the scrutinee type goes through `pattern_tag_in_type_context`.
     fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.variant_tag(name),
-            Pattern::Ident(name) if is_variant_name(name) => self.variant_tag(name),
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self.variant_tag(name),
+            PatternKind::Ident(name) if is_variant_name(name) => self.variant_tag(name),
             _ => 0,
         }
     }
@@ -5179,9 +5179,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
         val_ty: &MirType,
     ) -> i64 {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Ident(name) if is_variant_name(name) => {
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Ident(name) if is_variant_name(name) => {
                 // A nominal name on a Result/Option side → that side's tag;
                 // otherwise a nested enum variant → its own tag.
                 if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
@@ -5198,14 +5198,14 @@ impl<'a> MirLowerer<'a> {
                 self.variant_tag_in_scrutinee(name, val_ty)
                     .unwrap_or_else(|| self.variant_tag(name))
             }
-            Pattern::Ident(_) => 0,
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::Ident(_) => 0,
+            PatternKind::TypePat { ty, .. } => {
                 if self.pattern_is_err_side(&type_pat_name(ty), val_ty) { 1 } else { 0 }
             }
             // A named variant is a variant like a positional one: `s is
             // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
             // true of every first variant and of nothing else.
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self
                 .variant_tag_in_scrutinee(name, val_ty)
                 .unwrap_or_else(|| self.variant_tag(name)),
             _ => self.pattern_tag(pattern),
@@ -5628,13 +5628,13 @@ impl<'a> MirLowerer<'a> {
 
     /// Whether `pattern` binds a name anywhere inside a variant's fields.
     fn binds_any(pattern: &rask_ast::expr::Pattern) -> bool {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Constructor { fields, .. } => fields.iter().any(|f| {
-                matches!(f, Pattern::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Constructor { fields, .. } => fields.iter().any(|f| {
+                matches!(&f.kind, PatternKind::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
             }),
-            Pattern::Struct { fields, .. } => fields.iter().any(|(_, f)| {
-                matches!(f, Pattern::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+            PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| {
+                matches!(&f.kind, PatternKind::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
             }),
             _ => false,
         }
@@ -5644,10 +5644,10 @@ impl<'a> MirLowerer<'a> {
     /// variant, or a literal or range somewhere inside one. A bare name or
     /// `_` takes any value.
     pub(super) fn nested_needs_test(pattern: &rask_ast::expr::Pattern) -> bool {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Wildcard => false,
-            Pattern::Ident(n) => is_variant_name(n),
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Wildcard => false,
+            PatternKind::Ident(n) => is_variant_name(n),
             _ => true,
         }
     }
@@ -5669,18 +5669,18 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
         fail: BlockId,
     ) -> Result<(), LoweringError> {
-        use rask_ast::expr::Pattern;
-        match pattern {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Ident(name) if !is_variant_name(name) => Ok(()),
-            Pattern::Literal(_) | Pattern::Range { .. } => {
+        use rask_ast::expr::{Pattern, PatternKind};
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(()),
+            PatternKind::Ident(name) if !is_variant_name(name) => Ok(()),
+            PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 let pass = self.builder.create_block();
                 self.emit_pattern_test(value, pattern, pass, fail)?;
                 self.builder.switch_to_block(pass);
                 Ok(())
             }
             // A named variant tests like its positional spelling.
-            Pattern::Struct { name, fields, .. } => {
+            PatternKind::Struct { name, fields, .. } => {
                 let Some(names) = self.variant_field_names(ty, name) else {
                     return Err(LoweringError::InvalidConstruct(format!(
                         "`{name} {{ … }}` nested in a variant pattern needs an enum field, \
@@ -5690,15 +5690,18 @@ impl<'a> MirLowerer<'a> {
                 let positional = names
                     .iter()
                     .map(|n| {
-                        fields.iter().find(|(f, _)| f == n).map_or(Pattern::Wildcard, |(_, p)| p.clone())
+                        fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
                     })
                     .collect();
-                let as_constructor = Pattern::Constructor { name: name.clone(), fields: positional };
+                // The same pattern, its fields in declaration order; a field it
+                // doesn't name is a `_` nothing looks up.
+                let as_constructor =
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
                 self.emit_subpattern_test(value, ty, &as_constructor, fail)
             }
-            Pattern::Ident(name) | Pattern::Constructor { name, .. } => {
-                let fields: &[Pattern] = match pattern {
-                    Pattern::Constructor { fields, .. } => fields,
+            PatternKind::Ident(name) | PatternKind::Constructor { name, .. } => {
+                let fields: &[Pattern] = match &pattern.kind {
+                    PatternKind::Constructor { fields, .. } => fields,
                     _ => &[],
                 };
                 let (Some(tag), Some(field_types)) =
@@ -5757,11 +5760,11 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
         scrutinee_ty: &MirType,
     ) {
-        use rask_ast::expr::Pattern;
-        match pattern {
+        use rask_ast::expr::{Pattern, PatternKind};
+        match &pattern.kind {
             // A named variant binds like its positional spelling: each field's
             // pattern at that field's index, `_` for the ones it leaves out.
-            Pattern::Struct { name, fields, .. }
+            PatternKind::Struct { name, fields, .. }
                 if self.variant_field_names(scrutinee_ty, name).is_some() =>
             {
                 let names = self.variant_field_names(scrutinee_ty, name).unwrap_or_default();
@@ -5771,13 +5774,16 @@ impl<'a> MirLowerer<'a> {
                         fields
                             .iter()
                             .find(|(f, _)| f == n)
-                            .map_or(Pattern::Wildcard, |(_, p)| p.clone())
+                            .map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
                     })
                     .collect();
-                let as_constructor = Pattern::Constructor { name: name.clone(), fields: positional };
+                // The same pattern, its fields in declaration order; a field it
+                // doesn't name is a `_` nothing looks up.
+                let as_constructor =
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty);
             }
-            Pattern::Constructor { name, .. }
+            PatternKind::Constructor { name, .. }
                 if matches!(scrutinee_ty, MirType::Result { err, .. }
                     if matches!(err.as_ref(), MirType::Enum(_))
                         && self.variant_field_types(err, name).is_some()) =>
@@ -5795,7 +5801,7 @@ impl<'a> MirLowerer<'a> {
                 }));
                 self.bind_pattern_fields(pattern, MirOperand::Local(err_local), payload_ty, false, &err_ty);
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
                 // vs `Rectangle(f64, f64)`); `payload_ty` is only a single type
                 // (from extract_payload_type, which only understands Option/Result),
@@ -5803,7 +5809,7 @@ impl<'a> MirLowerer<'a> {
                 // exists. Falls back to `payload_ty` for niche Option/Result values.
                 let variant_fields = self.variant_field_types(scrutinee_ty, name);
                 for (i, field_pat) in fields.iter().enumerate() {
-                    if let Pattern::Ident(name) = field_pat {
+                    if let PatternKind::Ident(name) = &field_pat.kind {
                         let demand = || payload_ty.clone().unwrap_or_else(|| {
                             crate::fallback::unknown_type("lower/mod:constructor_payload")
                         });
@@ -5868,7 +5874,7 @@ impl<'a> MirLowerer<'a> {
             // only caller (WhileLet) already routed control flow via
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
-            Pattern::TypePat { ty, binding: Some(name) } => {
+            PatternKind::TypePat { ty, binding: Some(name) } => {
                 let ty_name = &type_pat_name(ty);
                 // ER23 at variant granularity: `r is MyErr.Worse as w` binds the
                 // *variant's* payload, not the whole error. The test is already
@@ -6279,24 +6285,24 @@ fn collect_pattern_names(
     pattern: &rask_ast::expr::Pattern,
     names: &mut std::collections::HashSet<String>,
 ) {
-    use rask_ast::expr::Pattern;
-    match pattern {
-        Pattern::Ident(name) => { names.insert(name.clone()); }
-        Pattern::Constructor { fields, .. } => {
+    use rask_ast::expr::PatternKind;
+    match &pattern.kind {
+        PatternKind::Ident(name) => { names.insert(name.clone()); }
+        PatternKind::Constructor { fields, .. } => {
             for p in fields { collect_pattern_names(p, names); }
         }
-        Pattern::Struct { fields, .. } => {
+        PatternKind::Struct { fields, .. } => {
             for (_, p) in fields { collect_pattern_names(p, names); }
         }
-        Pattern::Tuple(elems) => {
+        PatternKind::Tuple(elems) => {
             for p in elems { collect_pattern_names(p, names); }
         }
-        Pattern::Or(alts) => {
+        PatternKind::Or(alts) => {
             // All alternatives bind the same names; just collect from the first
             if let Some(first) = alts.first() { collect_pattern_names(first, names); }
         }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
-        Pattern::TypePat { binding, .. } => {
+        PatternKind::Wildcard | PatternKind::Literal(_) | PatternKind::Range { .. } => {}
+        PatternKind::TypePat { binding, .. } => {
             if let Some(name) = binding {
                 names.insert(name.clone());
             }
@@ -6867,7 +6873,7 @@ mod tests {
     use super::*;
     use crate::{operand::MirConst, MirRValue, MirStmt};
     use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
-    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, MatchArm, Pattern};
+    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, MatchArm, Pattern, PatternKind};
     use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
@@ -7529,8 +7535,8 @@ mod tests {
             return_stmt(Some(match_expr(
                 ident_expr("x"),
                 vec![
-                    MatchArm { pattern: Pattern::Literal(Box::new(int_expr(1))), guard: None, body: Box::new(int_expr(10)) },
-                    MatchArm { pattern: Pattern::Literal(Box::new(int_expr(2))), guard: None, body: Box::new(int_expr(20)) },
+                    MatchArm { pattern: Pattern::new(NodeId(1), PatternKind::Literal(Box::new(int_expr(1)))), guard: None, body: Box::new(int_expr(10)) },
+                    MatchArm { pattern: Pattern::new(NodeId(2), PatternKind::Literal(Box::new(int_expr(2)))), guard: None, body: Box::new(int_expr(20)) },
                 ],
             ))),
         ]);

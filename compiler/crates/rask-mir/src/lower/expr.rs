@@ -15,7 +15,7 @@ use crate::{
 use rask_ast::ty::TypeExpr;
 use rask_types::Type;
 use rask_ast::{
-    expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, FieldInit, Pattern, UnaryOp, WithBinding},
+    expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, FieldInit, Pattern, PatternKind, UnaryOp, WithBinding},
     stmt::{Stmt, StmtKind},
     token::{FloatSuffix, IntSuffix},
     Span,
@@ -221,12 +221,12 @@ fn rebuild_assert_condition(condition: &Expr, left: Expr, right: Expr) -> Expr {
 /// Extract pattern name from an `is` pattern in an assert condition.
 /// Returns the pattern name as a string for the failure message.
 fn extract_assert_is_pattern(condition: &Expr) -> Option<String> {
-    use rask_ast::expr::Pattern;
+    use rask_ast::expr::PatternKind;
     match &condition.kind {
         ExprKind::IsPattern { pattern, .. } => {
-            let name = match pattern {
-                Pattern::Constructor { name, .. } => name.clone(),
-                Pattern::Ident(n) => n.clone(),
+            let name = match &pattern.kind {
+                PatternKind::Constructor { name, .. } => name.clone(),
+                PatternKind::Ident(n) => n.clone(),
                 _ => return None,
             };
             Some(name)
@@ -1975,7 +1975,7 @@ impl<'a> MirLowerer<'a> {
             // option: a bare `is Point` used to yield the `Point?` around it
             // (#1455). `none` names a leaf with nothing in it, so it keeps the
             // outer payload.
-            let names_none = matches!(pattern, Pattern::TypePat { ty: TypeExpr::NoneType, .. });
+            let names_none = matches!(&pattern.kind, PatternKind::TypePat { ty: TypeExpr::NoneType, .. });
             let leaf = test.flat_payload.as_ref().filter(|_| !names_none);
             // A type test on the err side reads the err payload, the branch
             // the test just checked. It used to read the success payload's
@@ -1983,7 +1983,7 @@ impl<'a> MirLowerer<'a> {
             // A variant of the error enum or a member of an error union
             // narrows further than the err side, so those stay as they were.
             let err_side = leaf.is_none()
-                && matches!(pattern, Pattern::Ident(_) | Pattern::TypePat { .. })
+                && matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::TypePat { .. })
                 && !names_none
                 && matches!(val_ty, MirType::Result { .. })
                 && self.err_variant_of_result(pattern, &val_ty).is_none()
@@ -2006,7 +2006,7 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(inner)?;
-            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+            if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
                 return self.lower_struct_is(inner, val, val_ty, pattern);
             }
             let niche = self.option_niche(inner, &val_ty);
@@ -3919,7 +3919,7 @@ impl<'a> MirLowerer<'a> {
             // `if p is Point(x: 0, y) { … }` on a plain struct tests fields,
             // not a tag: it's the two-arm struct match `Point(…) => then,
             // _ => else`, which has the per-field tests already.
-            if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, Pattern::Struct { .. }) {
+            if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
                 let otherwise = else_branch.cloned().unwrap_or_else(|| Expr {
                     id: then_branch.id,
                     kind: ExprKind::Block(Vec::new()),
@@ -3927,7 +3927,7 @@ impl<'a> MirLowerer<'a> {
                 });
                 let arms = [
                     rask_ast::expr::MatchArm { pattern: pattern.clone(), guard: None, body: Box::new(then_branch.clone()) },
-                    rask_ast::expr::MatchArm { pattern: Pattern::Wildcard, guard: None, body: Box::new(otherwise) },
+                    rask_ast::expr::MatchArm { pattern: Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), guard: None, body: Box::new(otherwise) },
                 ];
                 return self.lower_struct_match(expr, val, val_ty, &arms);
             }
@@ -3956,7 +3956,7 @@ impl<'a> MirLowerer<'a> {
             // ER23: `Type as v` binds the matching side's payload. Which side
             // is decided by type identity (capitalization only as last resort,
             // inside pattern_is_err_side).
-            let bind_ty = if let rask_ast::expr::Pattern::TypePat { ty, .. } = pattern {
+            let bind_ty = if let rask_ast::expr::PatternKind::TypePat { ty, .. } = &pattern.kind {
                 let err_side = self.pattern_is_err_side(&super::type_pat_name(ty), &val_ty);
                 if let MirType::Result { ok, err } = &val_ty {
                     Some(if err_side { *err.clone() } else { *ok.clone() })
@@ -4058,8 +4058,8 @@ impl<'a> MirLowerer<'a> {
         let other_ty = match val_ty {
             MirType::Result { ok, err } => {
                 // The test may be bare, `is MyErr` with no `as` (#1516).
-                let err_side = match pattern {
-                    rask_ast::expr::Pattern::TypePat { .. } | rask_ast::expr::Pattern::Ident(_) => {
+                let err_side = match &pattern.kind {
+                    rask_ast::expr::PatternKind::TypePat { .. } | rask_ast::expr::PatternKind::Ident(_) => {
                         super::match_lower::pattern_name(pattern)
                             .is_some_and(|name| self.pattern_is_err_side(&name, val_ty))
                     }
@@ -8675,15 +8675,15 @@ impl<'a> MirLowerer<'a> {
 
     /// Whether a variant pattern has another variant pattern in a field.
     fn has_nested_variant(pattern: &rask_ast::expr::Pattern) -> bool {
-        use rask_ast::expr::Pattern;
-        let nested = |p: &Pattern| match p {
-            Pattern::Constructor { .. } | Pattern::Struct { .. } => true,
-            Pattern::Ident(n) => super::is_variant_name(n),
+        use rask_ast::expr::{Pattern, PatternKind};
+        let nested = |p: &Pattern| match &p.kind {
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } => true,
+            PatternKind::Ident(n) => super::is_variant_name(n),
             _ => false,
         };
-        match pattern {
-            Pattern::Constructor { fields, .. } => fields.iter().any(nested),
-            Pattern::Struct { fields, .. } => fields.iter().any(|(_, p)| nested(p)),
+        match &pattern.kind {
+            PatternKind::Constructor { fields, .. } => fields.iter().any(nested),
+            PatternKind::Struct { fields, .. } => fields.iter().any(|(_, p)| nested(p)),
             _ => false,
         }
     }
@@ -8696,15 +8696,15 @@ impl<'a> MirLowerer<'a> {
         val_ty: &MirType,
         pattern: &rask_ast::expr::Pattern,
     ) -> Vec<(MirOperand, rask_ast::expr::Pattern)> {
-        use rask_ast::expr::Pattern;
-        let tested = |p: &Pattern| matches!(p, Pattern::Literal(_) | Pattern::Range { .. });
-        let (name, positional): (&str, Vec<Pattern>) = match pattern {
-            Pattern::Constructor { name, fields } if fields.iter().any(tested) => (name, fields.clone()),
-            Pattern::Struct { name, fields, .. } if fields.iter().any(|(_, p)| tested(p)) => {
+        use rask_ast::expr::{Pattern, PatternKind};
+        let tested = |p: &Pattern| matches!(&p.kind, PatternKind::Literal(_) | PatternKind::Range { .. });
+        let (name, positional): (&str, Vec<Pattern>) = match &pattern.kind {
+            PatternKind::Constructor { name, fields } if fields.iter().any(tested) => (name, fields.clone()),
+            PatternKind::Struct { name, fields, .. } if fields.iter().any(|(_, p)| tested(p)) => {
                 let Some(names) = self.variant_field_names(val_ty, name) else { return Vec::new() };
                 let positional = names
                     .iter()
-                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or(Pattern::Wildcard, |(_, p)| p.clone()))
+                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone()))
                     .collect();
                 (name, positional)
             }
@@ -8738,7 +8738,7 @@ impl<'a> MirLowerer<'a> {
         value: &MirOperand,
         pattern: &rask_ast::expr::Pattern,
     ) -> Option<crate::LocalId> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
         let compare = |this: &mut Self, op: crate::operand::BinOp, right: MirOperand| {
             let out = this.builder.alloc_temp(MirType::Bool);
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -8747,12 +8747,12 @@ impl<'a> MirLowerer<'a> {
             }));
             out
         };
-        match pattern {
-            Pattern::Literal(lit) => {
+        match &pattern.kind {
+            PatternKind::Literal(lit) => {
                 let (lit_op, _) = self.lower_expr(lit).ok()?;
                 Some(compare(self, crate::operand::BinOp::Eq, lit_op))
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 let (lo, _) = self.lower_expr(start).ok()?;
                 let (hi, _) = self.lower_expr(end).ok()?;
                 let above = compare(self, crate::operand::BinOp::Ge, lo);
@@ -8780,17 +8780,17 @@ impl<'a> MirLowerer<'a> {
     /// `None` for anything else, including a written `T?`, which names the
     /// whole success side rather than a leaf inside it.
     fn flat_leaf_named(&self, pattern: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<u64> {
-        use rask_ast::expr::Pattern;
+        use rask_ast::expr::PatternKind;
         if !Self::is_flat_two_layer(val_ty)
             || self.err_variant_of_result(pattern, val_ty).is_some()
             || self.union_member_of_result(pattern, val_ty).is_some()
         {
             return None;
         }
-        let name = match pattern {
-            Pattern::TypePat { ty: TypeExpr::Optional(_), .. } => return None,
-            Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
-            Pattern::Ident(name) => name.clone(),
+        let name = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::Optional(_), .. } => return None,
+            PatternKind::TypePat { ty, .. } => super::type_pat_name(ty),
+            PatternKind::Ident(name) => name.clone(),
             _ => return None,
         };
         match self.flat_leaf_of(&name, val_ty) {
@@ -11205,7 +11205,7 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<TypedOperand, LoweringError> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
-        if matches!(val_ty, MirType::Struct(_)) && matches!(pattern, rask_ast::expr::Pattern::Struct { .. }) {
+        if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, rask_ast::expr::PatternKind::Struct { .. }) {
             return self.lower_struct_is(scrutinee, val, val_ty, pattern);
         }
         let niche = self.option_niche(scrutinee, &val_ty);

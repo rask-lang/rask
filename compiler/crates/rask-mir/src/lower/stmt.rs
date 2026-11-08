@@ -12,7 +12,7 @@ use crate::{
 };
 use rask_ast::ty::TypeExpr;
 use rask_ast::{
-    expr::{Expr, ExprKind, Pattern, UnaryOp},
+    expr::{Expr, ExprKind, Pattern, PatternKind, UnaryOp},
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
@@ -2091,7 +2091,7 @@ impl<'a> MirLowerer<'a> {
         pattern: &Pattern,
         init: &Expr,
     ) -> Result<(), LoweringError> {
-        let Pattern::Struct { fields, .. } = pattern else {
+        let PatternKind::Struct { fields, .. } = &pattern.kind else {
             return Err(LoweringError::InvalidConstruct(
                 "destructuring binding needs a struct pattern".into(),
             ));
@@ -2106,7 +2106,7 @@ impl<'a> MirLowerer<'a> {
             None
         };
         for (field_name, field_pat) in fields {
-            let Pattern::Ident(binding) = field_pat else {
+            let PatternKind::Ident(binding) = &field_pat.kind else {
                 return Err(LoweringError::InvalidConstruct(format!(
                     "field `{}` in a destructuring binding must bind a name",
                     field_name

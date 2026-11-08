@@ -1531,7 +1531,7 @@ fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl])
 /// `TypedProgram::attach_derived` drops the module once the bare name means
 /// the stdlib's type again.
 fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
-    use rask_ast::expr::Pattern;
+    use rask_ast::expr::{Pattern, PatternKind};
     use rask_ast::rewrite::{self, Rewrite};
     use rask_ast::ty::TypeExpr;
 
@@ -1571,12 +1571,12 @@ fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
     }
     impl Rewrite for Strip<'_> {
         fn pattern(&mut self, p: &mut Pattern) {
-            match p {
-                Pattern::Ident(name) => match self.module_type(name) {
-                    Some(ty) => *p = Pattern::TypePat { ty, binding: None },
+            match &mut p.kind {
+                PatternKind::Ident(name) => match self.module_type(name) {
+                    Some(ty) => p.kind = PatternKind::TypePat { ty, binding: None },
                     None => self.strip(name),
                 },
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.strip(name),
+                PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self.strip(name),
                 _ => {}
             }
         }

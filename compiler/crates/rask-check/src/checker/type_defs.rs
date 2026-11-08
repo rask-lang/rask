@@ -346,9 +346,9 @@ impl TypedProgram {
         struct ModuleTypePatterns<'a>(&'a super::type_table::TypeTable);
         impl rask_ast::rewrite::Rewrite for ModuleTypePatterns<'_> {
             fn pattern(&mut self, p: &mut rask_ast::expr::Pattern) {
-                let rask_ast::expr::Pattern::TypePat {
+                let rask_ast::expr::PatternKind::TypePat {
                     ty: rask_ast::ty::TypeExpr::Named { path, .. }, ..
-                } = p
+                } = &mut p.kind
                 else {
                     return;
                 };
@@ -743,33 +743,34 @@ fn struct_shorthands(
     decls: &mut [rask_ast::decl::Decl],
     found: &std::collections::HashSet<(rask_ast::Span, String)>,
 ) {
-    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
     use rask_ast::stmt::{Stmt, StmtKind};
 
     struct Shorthands<'a>(&'a std::collections::HashSet<(rask_ast::Span, String)>);
 
     impl Shorthands<'_> {
         fn convert(&self, p: &mut Pattern, span: rask_ast::Span) {
-            match p {
-                Pattern::Constructor { name, fields } if self.0.contains(&(span, name.clone())) => {
+            match &mut p.kind {
+                PatternKind::Constructor { name, fields } if self.0.contains(&(span, name.clone())) => {
                     let fields = fields
                         .iter()
-                        .filter_map(|f| match f {
-                            Pattern::Ident(n) => Some((n.clone(), Pattern::Ident(n.clone()))),
+                        .filter_map(|f| match &f.kind {
+                            PatternKind::Ident(n) => Some((n.clone(), f.clone())),
                             _ => None,
                         })
                         .collect();
-                    *p = Pattern::Struct { name: name.clone(), fields, rest: false };
+                    let name = name.clone();
+                    p.kind = PatternKind::Struct { name, fields, rest: false };
                 }
-                Pattern::Constructor { fields, .. } | Pattern::Tuple(fields) | Pattern::Or(fields) => {
+                PatternKind::Constructor { fields, .. } | PatternKind::Tuple(fields) | PatternKind::Or(fields) => {
                     fields.iter_mut().for_each(|f| self.convert(f, span))
                 }
-                Pattern::Struct { fields, .. } => fields.iter_mut().for_each(|(_, f)| self.convert(f, span)),
-                Pattern::Wildcard
-                | Pattern::Ident(_)
-                | Pattern::Literal(_)
-                | Pattern::Range { .. }
-                | Pattern::TypePat { .. } => {}
+                PatternKind::Struct { fields, .. } => fields.iter_mut().for_each(|(_, f)| self.convert(f, span)),
+                PatternKind::Wildcard
+                | PatternKind::Ident(_)
+                | PatternKind::Literal(_)
+                | PatternKind::Range { .. }
+                | PatternKind::TypePat { .. } => {}
             }
         }
     }
@@ -804,7 +805,7 @@ fn rename_types(
     map: &HashMap<String, String>,
     type_tests: &std::collections::HashSet<(rask_ast::Span, String)>,
 ) {
-    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
     use rask_ast::stmt::{Stmt, StmtKind};
 
     if map.is_empty() {
@@ -820,27 +821,27 @@ fn rename_types(
     impl Types<'_> {
         /// The bare type tests in one pattern, checked under `span`.
         fn type_tests_in(&self, p: &mut Pattern, span: rask_ast::Span) {
-            match p {
-                Pattern::Ident(name) => {
+            match &mut p.kind {
+                PatternKind::Ident(name) => {
                     if self.type_tests.contains(&(span, name.clone())) {
                         if let Some(to) = self.map.get(name.as_str()) {
                             *name = to.clone();
                         }
                     }
                 }
-                Pattern::Constructor { fields, .. } => {
+                PatternKind::Constructor { fields, .. } => {
                     fields.iter_mut().for_each(|f| self.type_tests_in(f, span))
                 }
-                Pattern::Struct { fields, .. } => {
+                PatternKind::Struct { fields, .. } => {
                     fields.iter_mut().for_each(|(_, f)| self.type_tests_in(f, span))
                 }
-                Pattern::Tuple(parts) | Pattern::Or(parts) => {
+                PatternKind::Tuple(parts) | PatternKind::Or(parts) => {
                     parts.iter_mut().for_each(|f| self.type_tests_in(f, span))
                 }
-                Pattern::Wildcard
-                | Pattern::Literal(_)
-                | Pattern::Range { .. }
-                | Pattern::TypePat { .. } => {}
+                PatternKind::Wildcard
+                | PatternKind::Literal(_)
+                | PatternKind::Range { .. }
+                | PatternKind::TypePat { .. } => {}
             }
         }
     }
@@ -892,9 +893,9 @@ fn rename_types(
         fn pattern(&mut self, p: &mut Pattern) {
             // `ParseError.Plain` and `ParseError { .. }` name the type; a bare
             // name is handled with its span above.
-            let name = match p {
-                Pattern::Ident(name) | Pattern::Constructor { name, .. } if name.contains('.') => name,
-                Pattern::Struct { name, .. } => name,
+            let name = match &mut p.kind {
+                PatternKind::Ident(name) | PatternKind::Constructor { name, .. } if name.contains('.') => name,
+                PatternKind::Struct { name, .. } => name,
                 _ => return,
             };
             rask_ast::qualify::rename_path_head(name, |n| self.map.get(n).cloned());

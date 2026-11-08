@@ -2,7 +2,7 @@
 //! Expression type inference and specific type checks.
 
 use rask_ast::coercion::CoercionSite;
-use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
+use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
@@ -16,6 +16,11 @@ use super::TypeChecker;
 
 use rask_types::{FnParam, GenericArg, Type};
 use rask_ast::ty::ParamMode;
+
+
+/// A `_` standing in for a whole column of a tuple's coverage rows. Only ever
+/// compared, never stored or looked up, so it needs no id of its own.
+static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard };
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
@@ -5906,14 +5911,14 @@ impl TypeChecker {
         if let Type::Tuple(parts) = &resolved {
             let rows: Vec<Vec<&Pattern>> = arms
                 .iter()
-                .flat_map(|a| match &a.pattern {
-                    Pattern::Or(alts) => alts.iter().collect::<Vec<_>>(),
-                    p => vec![p],
+                .flat_map(|a| match &a.pattern.kind {
+                    PatternKind::Or(alts) => alts.iter().collect::<Vec<_>>(),
+                    _ => vec![&a.pattern],
                 })
-                .filter_map(|p| match p {
-                    Pattern::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
-                    Pattern::Wildcard | Pattern::Ident(_) if !matches!(p, Pattern::Ident(n) if n.contains('.')) => {
-                        Some(vec![&Pattern::Wildcard; parts.len()])
+                .filter_map(|p| match &p.kind {
+                    PatternKind::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
+                    PatternKind::Wildcard | PatternKind::Ident(_) if !matches!(&p.kind, PatternKind::Ident(n) if n.contains('.')) => {
+                        Some(vec![&WILDCARD; parts.len()])
                     }
                     _ => None,
                 })
@@ -6049,9 +6054,9 @@ impl TypeChecker {
     /// `_`. A literal, a range and a constructor all test, so none of them
     /// closes the match on their own.
     fn collect_open_pattern(pattern: &Pattern, has_wildcard: &mut bool) {
-        match pattern {
-            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
-            Pattern::Or(alts) => {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Ident(_) => *has_wildcard = true,
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     Self::collect_open_pattern(alt, has_wildcard);
                 }
@@ -6084,9 +6089,9 @@ impl TypeChecker {
         value_ty: &Type,
         span: Span,
     ) {
-        let name = match pattern {
-            Pattern::Wildcard => "_".to_string(),
-            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
+        let name = match &pattern.kind {
+            PatternKind::Wildcard => "_".to_string(),
+            PatternKind::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
             _ => return,
         };
         let ty = self.ctx.apply(value_ty);
@@ -6121,12 +6126,12 @@ impl TypeChecker {
         if arm.guard.is_some() {
             return;
         }
-        match &arm.pattern {
-            Pattern::Wildcard => reach.closed_by = Some("_".to_string()),
-            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
+        match &arm.pattern.kind {
+            PatternKind::Wildcard => reach.closed_by = Some("_".to_string()),
+            PatternKind::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
                 reach.closed_by = Some(n.clone());
             }
-            Pattern::Ident(n) => {
+            PatternKind::Ident(n) => {
                 let tag = n.rsplit('.').next().unwrap_or(n).to_string();
                 if !reach.tags.insert(tag) {
                     self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
@@ -6149,13 +6154,13 @@ impl TypeChecker {
         // part the same as `_` does: `(Pt(x, y), true)`.
         let is_struct = matches!(first, Type::Named(id) | Type::Generic { base: id, .. }
             if matches!(self.types.get(*id), Some(TypeDef::Struct { .. })));
-        let binds_only = |p: &Pattern| matches!(p, Pattern::Wildcard)
-            || matches!(p, Pattern::Ident(n) if !n.contains('.'));
-        let wild = |p: &Pattern| match p {
-            Pattern::Wildcard => true,
-            Pattern::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
-            Pattern::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
-            Pattern::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
+        let binds_only = |p: &Pattern| matches!(&p.kind, PatternKind::Wildcard)
+            || matches!(&p.kind, PatternKind::Ident(n) if !n.contains('.'));
+        let wild = |p: &Pattern| match &p.kind {
+            PatternKind::Wildcard => true,
+            PatternKind::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
+            PatternKind::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
+            PatternKind::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
             _ => false,
         };
         // A nested tuple's parts are columns of their own, so `((true, _), _)`
@@ -6164,10 +6169,10 @@ impl TypeChecker {
             let n = inner.len();
             let expanded: Vec<Vec<&Pattern>> = rows
                 .iter()
-                .filter_map(|r| match r[0] {
-                    Pattern::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
-                    p if wild(p) => Some(
-                        std::iter::repeat(&Pattern::Wildcard).take(n).chain(r[1..].iter().copied()).collect(),
+                .filter_map(|r| match &r[0].kind {
+                    PatternKind::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
+                    _ if wild(r[0]) => Some(
+                        std::iter::repeat(&WILDCARD).take(n).chain(r[1..].iter().copied()).collect(),
                     ),
                     _ => None,
                 })
@@ -6192,12 +6197,12 @@ impl TypeChecker {
             _ => None,
         };
         let tests = |p: &Pattern, value: &str| -> bool {
-            match p {
-                Pattern::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
-                Pattern::Ident(n) => n.rsplit('.').next() == Some(value),
-                Pattern::Constructor { name, fields } => {
+            match &p.kind {
+                PatternKind::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
+                PatternKind::Ident(n) => n.rsplit('.').next() == Some(value),
+                PatternKind::Constructor { name, fields } => {
                     name.rsplit('.').next() == Some(value)
-                        && fields.iter().all(|f| matches!(f, Pattern::Wildcard) || matches!(f, Pattern::Ident(n) if !n.contains('.')))
+                        && fields.iter().all(|f| matches!(&f.kind, PatternKind::Wildcard) || matches!(&f.kind, PatternKind::Ident(n) if !n.contains('.')))
                 }
                 _ => false,
             }
@@ -6240,14 +6245,14 @@ impl TypeChecker {
     }
 
     fn collect_bool_pattern(pattern: &Pattern, seen: &mut [bool; 2], has_wildcard: &mut bool) {
-        match pattern {
-            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
-            Pattern::Literal(expr) => {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Ident(_) => *has_wildcard = true,
+            PatternKind::Literal(expr) => {
                 if let ExprKind::Bool(b) = expr.kind {
                     seen[b as usize] = true;
                 }
             }
-            Pattern::Or(alts) => {
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     Self::collect_bool_pattern(alt, seen, has_wildcard);
                 }
@@ -6271,9 +6276,9 @@ impl TypeChecker {
                 }
             }
         };
-        match pattern {
-            Pattern::Wildcard => *has_wildcard = true,
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => *has_wildcard = true,
+            PatternKind::Ident(name) => {
                 if name.contains('.') {
                     // `Fault.Timeout`: a fieldless variant, not a binding. It
                     // used to read as a catch-all, so one such arm made any
@@ -6286,13 +6291,13 @@ impl TypeChecker {
                     *has_wildcard = true;
                 }
             }
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::TypePat { ty, .. } => {
                 if let Some(i) = self.branch_named(ty, leaves) {
                     covered[i] = true;
                 }
             }
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
-            Pattern::Or(alts) => {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => hit(name),
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     self.collect_result_covered(alt, leaves, covered, variants_hit, has_wildcard);
                 }
@@ -6308,9 +6313,9 @@ impl TypeChecker {
         has_wildcard: &mut bool,
         enum_variants: &[String],
     ) {
-        match pattern {
-            Pattern::Wildcard => *has_wildcard = true,
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => *has_wildcard = true,
+            PatternKind::Ident(name) => {
                 // Bare identifier matching an enum variant name is a variant match,
                 // not a catch-all binding
                 if enum_variants.contains(name) {
@@ -6323,18 +6328,18 @@ impl TypeChecker {
                     *has_wildcard = true;
                 }
             }
-            Pattern::Constructor { name, .. } => {
+            PatternKind::Constructor { name, .. } => {
                 // Qualified names like "Enum.Variant" — extract the variant part
                 let variant = name.rsplit('.').next().unwrap_or(name);
                 covered.insert(variant.to_string());
             }
             // Struct-style variant pattern `Enum.Variant { field, .. }` —
             // same coverage semantics as Constructor.
-            Pattern::Struct { name, .. } => {
+            PatternKind::Struct { name, .. } => {
                 let variant = name.rsplit('.').next().unwrap_or(name);
                 covered.insert(variant.to_string());
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     self.collect_covered_variants(p, covered, has_wildcard, enum_variants);
                 }

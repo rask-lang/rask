@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::expr::Pattern;
+use rask_ast::expr::{Pattern, PatternKind};
 use rask_ast::Span;
 
 use super::errors::TypeError;
@@ -229,7 +229,7 @@ impl TypeChecker {
         let declared = declared.clone();
         let mut bindings = Vec::new();
         for field in fields {
-            let Pattern::Ident(n) = field else {
+            let PatternKind::Ident(n) = &field.kind else {
                 self.errors.push(TypeError::StructPatternByPosition {
                     name: name.to_string(),
                     fields: declared.iter().map(|(f, _)| f.clone()).collect(),
@@ -301,21 +301,21 @@ impl TypeChecker {
         if !matches!(self.ctx.apply(scrutinee_ty), Type::Result { .. }) {
             return None;
         }
-        let ty = match pattern {
-            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            Pattern::TypePat { binding: Some(_), .. } => return None,
+        let ty = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            PatternKind::TypePat { binding: Some(_), .. } => return None,
             _ => self.tested_type(pattern, scrutinee_ty)?,
         };
-        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
+        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }))
     }
 
     /// The type an `is` pattern tests for, written with or without `as`:
     /// `x is Point as p`, `x is Point`, `x is none`. `None` for a variant, a
     /// destructure, or a name that isn't a type.
     pub(super) fn tested_type(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<TypeExpr> {
-        match pattern {
-            Pattern::TypePat { ty, .. } => Some(ty.clone()),
-            Pattern::Ident(name) if !name.contains('.') => {
+        match &pattern.kind {
+            PatternKind::TypePat { ty, .. } => Some(ty.clone()),
+            PatternKind::Ident(name) if !name.contains('.') => {
                 if self.variant_of_scrutinee(name, scrutinee_ty).is_some() {
                     return None;
                 }
@@ -334,15 +334,15 @@ impl TypeChecker {
         // against the open type, a bare `Arr(entries)` names no enum, so
         // `entries` got a fresh variable nothing ever tied back, and native
         // couldn't lower a `for` over it (#1427). Settle what's pending first.
-        if matches!(pattern, Pattern::Ident(_) | Pattern::Constructor { .. } | Pattern::Struct { .. })
+        if matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::Constructor { .. } | PatternKind::Struct { .. })
             && matches!(self.ctx.apply(scrutinee_ty), Type::Var(_))
         {
             self.solve_constraints();
         }
-        match pattern {
-            Pattern::Wildcard => vec![],
+        match &pattern.kind {
+            PatternKind::Wildcard => vec![],
 
-            Pattern::Ident(name) => {
+            PatternKind::Ident(name) => {
                 // A variant of the scrutinee's own enum, written bare or
                 // qualified, is a tag test whatever the variant carries:
                 // `c is Del`, `c is Cmd.Del`. It binds nothing; a payload is
@@ -352,7 +352,9 @@ impl TypeChecker {
                 // the bare one bound a variable named after the variant
                 // (#1401).
                 if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
-                    let fields = vec![Pattern::Wildcard; arity];
+                    // Stand-ins for the payload a tag test doesn't name; never
+                    // stored, so they need no id of their own.
+                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard); arity];
                     return self.check_constructor_pattern(&qualified, &fields, scrutinee_ty, span);
                 }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
@@ -441,7 +443,7 @@ impl TypeChecker {
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
-            Pattern::Literal(expr) => {
+            PatternKind::Literal(expr) => {
                 let lit_ty = self.infer_expr(expr);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     scrutinee_ty.clone(),
@@ -451,7 +453,7 @@ impl TypeChecker {
                 vec![]
             }
 
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 // OPT2/ER2: reject `Ok(v)` / `Err(e)` / `Some(v)` / `None(..)`
                 // when the scrutinee is Result/Option. User enums with these
                 // variant names (e.g. simple_grep.rk's `GrepResult`) are fine.
@@ -472,7 +474,7 @@ impl TypeChecker {
                 self.check_constructor_pattern(name, fields, scrutinee_ty, span)
             }
 
-            Pattern::Struct { name, fields, .. } => {
+            PatternKind::Struct { name, fields, .. } => {
                 // A struct-shaped *enum variant* — `Outer.Named { code, kind }`.
                 // The name isn't a type, so the struct lookup below missed it and
                 // every field got a fresh variable: `kind` had no type at all,
@@ -577,7 +579,7 @@ impl TypeChecker {
                 }
             }
 
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 // Use the scrutinee's own element types when it already has
                 // them. Fresh variables plus an `Equal` constraint says the same
                 // thing, but the constraint isn't solved until later, so the
@@ -602,7 +604,7 @@ impl TypeChecker {
                 bindings
             }
 
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 // Both bounds must match the scrutinee type. The parser guarantees
                 // they're char or int literals of matching kind, so we just unify.
                 let start_ty = self.infer_expr(start);
@@ -624,7 +626,7 @@ impl TypeChecker {
             // In match arms, matches either the T (ok) or E (err) branch of a
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 if self.resolve_written(ty, span).is_none() {
                     return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
                 }
@@ -732,7 +734,7 @@ impl TypeChecker {
                 }
             }
 
-            Pattern::Or(alternatives) => {
+            PatternKind::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);
                     let expected_names: Vec<&str> = bindings.iter()
