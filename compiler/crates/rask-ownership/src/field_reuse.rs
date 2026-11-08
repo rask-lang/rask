@@ -142,16 +142,24 @@ impl Finder<'_, '_> {
 
     /// Whether `value`, or anything in it, takes ownership of `place`.
     fn takes(&self, value: &Expr, place: &[String]) -> bool {
-        if overlaps(value, place) {
+        if self.moves(value, place) {
             return true;
         }
         let mut hit = false;
         visit::walk_expr(value, &mut |e| {
-            if !hit && self.owned_children(e).iter().any(|c| overlaps(c, place)) {
+            if !hit && self.owned_children(e).iter().any(|c| self.moves(c, place)) {
                 hit = true;
             }
         });
         hit
+    }
+
+    /// `e` names `place` (or a part of it, or something holding it) and
+    /// moves it. A Copy part is copied: `Cursor(at: c.at, …)` takes nothing
+    /// from `c`, and the old `c` still has everything to release.
+    fn moves(&self, e: &Expr, place: &[String]) -> bool {
+        overlaps(e, place)
+            && !self.checker.node_ty(&e.id).is_some_and(|t| self.checker.is_copy(t))
     }
 
     /// The direct parts of `e` it takes ownership of.

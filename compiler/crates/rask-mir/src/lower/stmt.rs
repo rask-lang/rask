@@ -842,7 +842,11 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            let replaced = if assigns_through || in_place {
+                            // An in-place local's old value is whatever it was:
+                            // codegen releases a slot of any type.
+                            let replaced = if in_place {
+                                (!reuses_old).then(|| dst_ty.clone())
+                            } else if assigns_through {
                                 self.released_on_overwrite(target, reuses_old, &dst_ty)
                             } else {
                                 None
