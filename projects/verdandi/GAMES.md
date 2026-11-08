@@ -64,6 +64,29 @@ Decisions that follow:
 - In co-op a new run is a new scenario for the group. Nobody babysits a
   200-hour colony.
 
+## The mid-game is a sequence of starts
+
+Automation alone doesn't fix it. Satisfactory automates as well as Factorio
+and plateaus harder; RimWorld barely automates and holds people for hundreds
+of hours. What works is that each tier removes one kind of attention demand
+and replaces it with a different kind at a larger unit of decision. Factorio's
+ladder (hand-feeding, belts, trains, bots, megabase ratios) makes each rung's
+problem vanish and hands you one you've never seen, and the unit you reason
+about changes with it: machines, lines, stations, the network. The feeling of
+potential comes back every time the decision unit changes altitude.
+
+Two conditions:
+
+- Automation is built by the player out of sim parts (an inserter, a
+  stockpile, a manager's workshop), never switched on in a menu. Then it's
+  itself a machine you watch run, and it can break.
+- It leaks. Bots run out of power, outposts get raided, routes jam. Surprises
+  survive the tier change, so the system never reads as solved.
+
+So tiers of abstraction are a design object from day one: name the unit of
+command at each stage (a worker, a crew, a district, a settlement) and what
+the player stops touching when the next unit appears.
+
 ## Mechanisms to build first
 
 Four, and the rest is layers on top:
