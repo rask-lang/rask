@@ -340,6 +340,29 @@ being imposed. Its endgame, letting go instead of completing the grasp, is a
 release mechanic at the top tier. A disc world also removes the sphere space
 from the kernel's open list.
 
+Its roster passes the test that matters: every faction is a different way of
+bending the one conservation law, with a different by-product, so factions
+are rule sets for the same engine rather than skins, which is what HoMM3's
+factions are mechanically. Its ages of creation give generated history a
+floor beneath it that wasn't generated, which is what "feels old" is.
+
+Mystery in a sim is a hidden mechanism with visible consequences, the
+surfacing rule again. A wiki can't be stopped, but it can be made useless:
+keep the mechanism small and the interactions deep, and roll the field's
+constants per world, so a wiki can state the law but never a recipe (Noita,
+DF). In-game the law stays unnamed; the by-product is seen, never explained.
+
+Risks: breadth (version one is one playable people, what climbs from below,
+and the surface power as pressure at the world layer, never a second colony
+on the map); legibility (original lore, familiar silhouette, one frame says
+what a creature does); preaching (no meter with a sermon on it).
+
+The question that decides whether the people game works with these people:
+what does a stone-born Delver need? If the answer is to receive, then the
+needs engine and the magic are one system, scarcity is a thin field, and
+grasping is what a hungry agent does when receiving is too slow. Temptation
+as hunger.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
