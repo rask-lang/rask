@@ -127,6 +127,55 @@ Four, and the rest is layers on top:
 - Scheduled perturbation (raids, winters). A steady-state machine is
   interesting for ten minutes.
 
+## Multiplayer
+
+No colony sim has done it, so there's no template. The [kernel](README.md)
+fixes the base (lockstep, every machine holds the full state, pause and speed
+as inputs, a headless peer, join as checkpoint plus fast-forward), and that
+splits the question into two levels with different machinery.
+
+**A session** is one map, one lockstep sim, two to six players, hours long.
+Everyone simulates everything, by construction. So player count doesn't cap
+the game, map size does: the slowest machine runs the whole map whether two
+or six people are on it, the same cap as single player, shared. N colonies on
+a map are N hot regions, the easy case for the kernel's parallelism, and a
+colony in steady state is mostly asleep.
+
+- One colony or several is the session's choice, because the mechanism is the
+  same: the sim doesn't know who owns what. Ownership is which entities accept
+  whose commands. Co-op on one colony hands each player a district or a crew
+  (the tiers above). Several colonies on one map is the AoE2 shape, and where
+  trade, raids and rivalry live.
+- PvP inside a session is fine with the full state on every machine, as AoE2
+  on a LAN was fine. The real problem is loss, not information: losing a
+  ten-hour colony to a friend ends friendships. Mortal, short runs are the
+  fix.
+- An offline player's colony keeps running, driven by the automation they
+  built. The abstraction tiers are also the offline AI, which is one more
+  reason to make them good. If everyone leaves, the headless peer keeps
+  ticking or the session pauses; sessions save and resume either way.
+
+**A world** is where twenty colonies live, and Dwarf Fortress already found
+the structure: one site at full resolution, the rest simulated abstractly,
+travel as a transition. This is the one place to break "never abstract the
+sim", which was a rule about control tiers inside one colony. A world is a
+graph of sites. A site is a session while someone is in it and a summary when
+nobody is. Interaction between sites is a transaction (a caravan, a raid
+resolved as a timed event, a migrant), never a shared tick. That's what
+Allgard and Apeiron spec for ships and stars, so the federated half of the
+stack is the world layer and the lockstep half is the site layer. One server
+or a federation is then a hosting choice.
+
+Offline at the world level is the hard one, and no game has a good answer.
+Clash of Clans and Rust let you raid absent players and everyone hates it;
+Eve's vulnerability windows work but need a whole social layer. For now: an
+absent player's site drops to abstract resolution and can't be entered at
+full resolution, so what can happen to it is what the abstract sim allows,
+and that sim is deliberately gentle to absent owners. That's a knob, not a
+mechanism, and it stays open.
+
+Twenty colonies in one tick never happens. That's the answer to performance.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
