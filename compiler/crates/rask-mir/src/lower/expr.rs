@@ -5737,7 +5737,7 @@ impl<'a> MirLowerer<'a> {
                             //
                             // Monomorphization queued the same body
                             // (`Symbols::json_value_encoder`).
-                            if self.mir_type_name(&arg_ty).as_deref() == Some("JsonValue") {
+                            if self.ctx.lookup_raw_type(args[0].expr.id).is_some_and(|t| self.ctx.type_defs.is_lang(&t, rask_types::LangItem::JsonValue)) {
                                 let body = self
                                     .ctx
                                     .symbols
@@ -8544,10 +8544,11 @@ impl<'a> MirLowerer<'a> {
     /// True when this MIR type is the `Ordering` enum.
     pub(super) fn is_ordering_ty(&self, ty: &MirType) -> bool {
         let MirType::Enum(EnumLayoutId { id, .. }) = ty else { return false };
+        let ordering = self.ctx.type_defs.lang(rask_types::LangItem::Ordering).map(rask_layout::LayoutKey::of);
         self.ctx
             .enum_layouts
             .get(*id as usize)
-            .is_some_and(|l| l.name == "Ordering")
+            .is_some_and(|l| l.key.is_some() && l.key == ordering)
     }
 
     /// An `Ordering`'s tag, widened to `i64`.
@@ -8577,7 +8578,7 @@ impl<'a> MirLowerer<'a> {
     /// (#729). Storing the tag into a properly laid out slot makes it the same
     /// shape as any other fieldless enum value.
     fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
-        let ordering = self.ctx.type_defs.lookup("Ordering");
+        let ordering = self.ctx.type_defs.lang(rask_types::LangItem::Ordering).map(rask_types::Type::Named);
         let Some((id, layout)) = ordering.as_ref().and_then(|t| self.ctx.enum_of(t)) else {
             // No layout registered — a bare context in a unit test. The raw tag
             // is what this used to produce, so fall back rather than fail.
@@ -10552,7 +10553,7 @@ impl<'a> MirLowerer<'a> {
                 .collect()
             })
             .collect();
-        self.lower_info_vec("FieldInfo", rows)
+        self.lower_info_vec(rask_types::LangItem::FieldInfo, rows)
     }
 
     /// A `Vec<S>` of reflect info structs, element `i` built from `rows[i]`
@@ -10560,13 +10561,13 @@ impl<'a> MirLowerer<'a> {
     /// used as a value.
     fn lower_info_vec(
         &mut self,
-        struct_name: &str,
+        info: rask_types::LangItem,
         rows: Vec<Vec<(&'static str, MirOperand)>>,
     ) -> Result<TypedOperand, LoweringError> {
-        let declared = self.ctx.type_defs.lookup(struct_name);
+        let declared = self.ctx.type_defs.lang(info).map(rask_types::Type::Named);
         let Some((idx, layout)) = declared.as_ref().and_then(|t| self.ctx.struct_of(t)) else {
             return Err(LoweringError::InvalidConstruct(format!(
-                "reflect needs `{struct_name}`, which this program never names — add \
+                "reflect needs `{info:?}`, which this program never names — add \
                  `import std.reflect`"
             )));
         };
@@ -10684,7 +10685,7 @@ impl<'a> MirLowerer<'a> {
                         ]
                     })
                     .collect();
-                self.lower_info_vec("MethodInfo", rows)?
+                self.lower_info_vec(rask_types::LangItem::MethodInfo, rows)?
             }
             "has_method" => {
                 let names: Vec<String> =
@@ -10807,7 +10808,7 @@ impl<'a> MirLowerer<'a> {
                     .collect()
                 })
                 .collect();
-            let (fields_vec, _) = self.lower_info_vec("FieldInfo", field_rows)?;
+            let (fields_vec, _) = self.lower_info_vec(rask_types::LangItem::FieldInfo, field_rows)?;
             rows.push(vec![
                 ("name", MirOperand::Constant(MirConst::String(v.name))),
                 ("has_fields", MirOperand::Constant(MirConst::Bool(!v.fields.is_empty()))),
@@ -10816,7 +10817,7 @@ impl<'a> MirLowerer<'a> {
                 ("serial_name", MirOperand::Constant(MirConst::String(v.serial_name))),
             ]);
         }
-        self.lower_info_vec("VariantInfo", rows)
+        self.lower_info_vec(rask_types::LangItem::VariantInfo, rows)
     }
 
     /// Which `string_parse_*` runtime writes into this result slot, by the

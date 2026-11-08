@@ -7,7 +7,10 @@
 
 mod types;
 mod defs;
+mod lang;
 pub mod abi;
+
+pub use lang::LangItem;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use defs::{

@@ -8,6 +8,7 @@
 
 // ─── Types ───────────────────────────────────────────────────────
 
+@lang(json_value)
 public enum JsonValue {
     Null
     Bool(bool)

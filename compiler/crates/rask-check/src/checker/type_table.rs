@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Central type registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
@@ -108,6 +108,8 @@ pub struct TypeTable {
     /// where. `type_method_decls` already binds methods by TypeId for the same
     /// reason.
     pub(super) stdlib_type_names: HashMap<String, TypeId>,
+    /// Every type the stdlib declares, by identity.
+    stdlib_decls: HashSet<TypeId>,
     /// A program type sharing a stdlib type's name, by its symbol: the name as
     /// the program wrote it.
     ///
@@ -157,8 +159,8 @@ pub struct TypeTable {
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
     pub(super) result_type_id: Option<TypeId>,
-    /// The compiler-registered `Ordering` enum.
-    ordering_type_id: Option<TypeId>,
+    /// The declarations the compiler needs by identity, filed as they register.
+    lang: HashMap<rask_types::LangItem, TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
@@ -255,6 +257,7 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
+            stdlib_decls: HashSet::new(),
             written_names: HashMap::new(),
             declared_names: HashMap::new(),
             stdlib_mode: false,
@@ -265,7 +268,7 @@ impl TypeTable {
             const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
-            ordering_type_id: None,
+            lang: HashMap::new(),
             builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
             type_method_decls: HashMap::new(),
@@ -398,7 +401,7 @@ impl TypeTable {
             variant_decls: rask_stdlib::ORDERING_VARIANTS.iter().map(|_| rask_types::VariantDecl::synthesized(0)).collect(),
         });
         self.layout_types.insert(ordering);
-        self.ordering_type_id = Some(ordering);
+        self.lang.insert(rask_types::LangItem::Ordering, ordering);
     }
 
     /// Register a user-defined type.
@@ -442,8 +445,21 @@ impl TypeTable {
         let id = TypeId(self.types.len() as u32);
         let mut def = def;
         if self.stdlib_mode {
+            // `@lang(…)`: one of the declarations the compiler relies on.
+            for attr in def.attrs().iter().filter(|a| a.is("lang")) {
+                let item = attr
+                    .args
+                    .iter()
+                    .flatten()
+                    .find_map(|a| a.value.ident())
+                    .and_then(rask_types::LangItem::from_attr)
+                    .unwrap_or_else(|| panic!("`@lang` on `{name}` names no lang item"));
+                let previous = self.lang.insert(item, id);
+                assert!(previous.is_none(), "two stdlib declarations claim {item:?}");
+            }
             // Stdlib code always means this one.
             self.stdlib_type_names.insert(name.clone(), id);
+            self.stdlib_decls.insert(id);
             // Program code means it too, unless the program declares its
             // own. Registering stdlib first and not overwriting later is
             // what makes a program type shadow rather than collide.
@@ -2367,9 +2383,26 @@ impl TypeTable {
     }
 
     /// Get TypeId for the builtin Result<T, E> enum.
-    /// The compiler-registered `Ordering` enum's id.
-    pub fn ordering_type_id(&self) -> Option<TypeId> {
-        self.ordering_type_id
+    /// The declaration a lang item names. `None` only when the program never
+    /// pulled in the stdlib module that declares it.
+    pub fn lang(&self, item: rask_types::LangItem) -> Option<TypeId> {
+        self.lang.get(&item).copied()
+    }
+
+    /// Is `ty` the lang item `item` (or an instance of it)?
+    pub fn is_lang(&self, ty: &Type, item: rask_types::LangItem) -> bool {
+        matches!(ty, Type::Named(id) | Type::Generic { base: id, .. } if self.lang(item) == Some(*id))
+    }
+
+    /// Did the stdlib declare this type?
+    pub fn declared_by_stdlib(&self, id: TypeId) -> bool {
+        self.stdlib_decls.contains(&id)
+    }
+
+    /// Does the declaration say the runtime owns its storage and the value is
+    /// a pointer to it (`@handle`)?
+    pub fn is_handle(&self, id: TypeId) -> bool {
+        self.get(id).is_some_and(|def| def.attrs().iter().any(|a| a.is("handle")))
     }
 
     pub fn get_result_type_id(&self) -> Option<TypeId> {

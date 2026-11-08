@@ -1125,10 +1125,11 @@ impl<'a> Monomorphizer<'a> {
         // `claims.input<T>`, and `Choices.make<T>()` in a generator, which
         // builds a `T` the same way.
         let is_input = match self.call_target(id) {
-            Some(Callee::Method { recv, method, .. }) => matches!(
-                (rask_check::receiver_name(&recv, &typed.types).as_deref(), method.as_str()),
-                (Some("claims"), "input") | (Some("Choices"), "make")
-            ),
+            Some(Callee::Method { recv, method, .. }) => {
+                (method == "make" && typed.types.is_lang(&recv, rask_types::LangItem::Choices))
+                    || (method == "input"
+                        && rask_check::receiver_name(&recv, &typed.types).as_deref() == Some("claims"))
+            }
             _ => false,
         };
         if !is_input {
@@ -1145,18 +1146,15 @@ impl<'a> Monomorphizer<'a> {
         let Some(typed) = self.typed else { return false };
         let ty = self.node_type(id);
         match &ty {
-            Some(rask_types::Type::Result { ok, .. }) => {
-                rask_check::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
-            }
+            Some(rask_types::Type::Result { ok, .. }) => typed.types.is_lang(ok, rask_types::LangItem::JsonValue),
             _ => false,
         }
     }
 
-    fn arg_type_name(&self, id: NodeId) -> Option<String> {
-        let typed = self.typed?;
-        let ty = self.node_type(id)?;
-        let ty = &ty;
-        rask_check::receiver_name(ty, &typed.types)
+    /// Is the checker's type for `id` the lang item `item`?
+    fn node_is_lang(&self, id: NodeId, item: rask_types::LangItem) -> bool {
+        let Some(typed) = self.typed else { return false };
+        self.node_type(id).is_some_and(|ty| typed.types.is_lang(&ty, item))
     }
 
     /// Add a (name, type_args) pair to queue if not already seen
@@ -1353,7 +1351,7 @@ impl<'a> Monomorphizer<'a> {
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "json")
                     && matches!(method.as_str(), "encode" | "encode_pretty")
                     && args.len() == 1
-                    && self.arg_type_name(args[0].expr.id).as_deref() == Some("JsonValue")
+                    && self.node_is_lang(args[0].expr.id, rask_types::LangItem::JsonValue)
                 {
                     let pretty = method == "encode_pretty";
                     if let Some(call) = self.typed.and_then(|t| self.symbols.json_value_encoder(pretty, &t.types)) {

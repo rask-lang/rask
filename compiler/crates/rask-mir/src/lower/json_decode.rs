@@ -56,7 +56,7 @@ impl<'a> MirLowerer<'a> {
         // `decode<JsonValue>` is the untyped path — that's exactly what
         // `json.parse` already does, in Rask, so call it instead of teaching the
         // shape decoder how to build the enum a second time.
-        if self.type_name_of(target).as_deref() == Some("JsonValue") {
+        if self.ctx.type_defs.is_lang(target, rask_types::LangItem::JsonValue) {
             let err_ty = json_error
                 .as_ref()
                 .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(*idx, l.size, l.align)))
@@ -514,7 +514,7 @@ impl<'a> MirLowerer<'a> {
         let Type::Named(id) = ty else { return None };
         let method = self.ctx.claim_generators.get(self.ctx.type_names.get(id)?)?.clone();
         let ty_mir = self.ctx.type_to_mir(ty);
-        let choices = *self.ctx.type_names.iter().find(|(_, n)| n.as_str() == "Choices")?.0;
+        let choices = self.ctx.type_defs.lang(rask_types::LangItem::Choices)?;
         let choices_mir = self.ctx.type_to_mir(&Type::Named(choices));
         let name = format!("{}__claim_generate_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
@@ -671,26 +671,15 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    pub(super) fn type_name_of(&self, ty: &Type) -> Option<String> {
-        match ty {
-            Type::UnresolvedNamed(n) => Some(n.clone()),
-            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
-            Type::Named(id) => self.ctx.type_names.get(id).cloned(),
-            Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),
-            _ => None,
-        }
-    }
-
     pub(super) fn struct_layout_of(&self, ty: &Type) -> Option<StructLayout> {
         self.ctx.struct_of(ty).map(|(_, l)| l.clone())
     }
 
     /// Is `object` a generator's `claims.Choices`?
     pub(super) fn is_claim_choices(&self, object: &rask_ast::expr::Expr) -> bool {
-        matches!(
-            self.ctx.lookup_raw_type(object.id).as_deref(),
-            Some(Type::Named(id)) if self.ctx.type_names.get(&id).map(String::as_str) == Some("Choices")
-        )
+        self.ctx
+            .lookup_raw_type(object.id)
+            .is_some_and(|t| self.ctx.type_defs.is_lang(&t, rask_types::LangItem::Choices))
     }
 
     pub(super) fn is_map_type(&self, ty: &Type) -> bool {

@@ -215,6 +215,15 @@ pub fn conformance_symbol(base: &str, package: &str) -> String {
 }
 
 impl TypeDef {
+    /// The attributes written on the declaration. Interfaces, primitives and
+    /// newtypes carry none here.
+    pub fn attrs(&self) -> &[Attr] {
+        match self {
+            TypeDef::Struct { attrs, .. } | TypeDef::Enum { attrs, .. } => attrs,
+            _ => &[],
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             TypeDef::Struct { name, .. }

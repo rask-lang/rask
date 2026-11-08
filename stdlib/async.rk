@@ -24,6 +24,7 @@ public func cancelled() -> bool {}
 /// compile error.
 @resource
 @handle
+@lang(task_handle)
 public struct Handle<T> {
 }
 

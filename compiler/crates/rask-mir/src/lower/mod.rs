@@ -1015,15 +1015,12 @@ impl<'a> MirContext<'a> {
     /// how the native HTTP server accepted connections and then read from a
     /// made-up fd (#673).
     ///
-    /// Stdlib only, and the name set is derived from the stub sources rather
-    /// than listed here. A user's field-less struct is a real value with its
-    /// own identity: `struct Bad { }` used as the error side of `i64 or Bad`
-    /// is told apart from the ok side by its MIR type, and collapsing it to
-    /// i64 makes both branches identical.
-    fn struct_or_handle(&self, name: &str, idx: u32, sl: &StructLayout) -> MirType {
-        if sl.fields.is_empty()
-            && rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
-        {
+    /// Stdlib only: a user's field-less struct is a real value with its own
+    /// identity. `struct Bad { }` used as the error side of `i64 or Bad` is
+    /// told apart from the ok side by its MIR type, and collapsing it to i64
+    /// makes both branches identical.
+    fn struct_or_handle(&self, idx: u32, sl: &StructLayout) -> MirType {
+        if sl.fields.is_empty() && sl.key.as_ref().is_some_and(|k| self.type_defs.declared_by_stdlib(k.id)) {
             return MirType::I64;
         }
         MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
@@ -1060,18 +1057,21 @@ impl<'a> MirContext<'a> {
     /// identity: its instance's layout when mono made one, else its
     /// declaration's.
     fn declared_layout_mir(&self, ty: &Type) -> Option<MirType> {
-        // A runtime handle (`Vec`, `File`, `Shared`) is a pointer whatever its
-        // stub declares: the declaration says so, and this is its name.
-        let declared = match ty {
-            Type::Named(id) | Type::Generic { base: id, .. } => self.type_names.get(id),
-            _ => None,
-        };
-        if declared.is_some_and(|name| lowers_to_ptr(name)) {
-            return None;
+        // A runtime handle (`Vec`, `File`) is a pointer to storage the runtime
+        // owns, whatever fields its stub declares: `@handle` says so.
+        //
+        // Workaround: a task `Handle` stays an `i64`. As a pointer, a `Handles`
+        // that `detach(take self)` has taken is no longer released again by
+        // its caller, and that stray release is all that frees the nodes
+        // `Handles` drains with `rest = *next` (#1585).
+        if let Type::Named(id) | Type::Generic { base: id, .. } = ty {
+            if self.type_defs.is_handle(*id) && self.type_defs.lang(rask_types::LangItem::TaskHandle) != Some(*id) {
+                return None;
+            }
         }
         if let Some(i) = rask_layout::struct_index_for(ty, self.struct_layouts) {
             let sl = &self.struct_layouts[i];
-            return Some(self.struct_or_handle(&sl.name, i as u32, sl));
+            return Some(self.struct_or_handle(i as u32, sl));
         }
         let i = rask_layout::enum_index_for(ty, self.enum_layouts)?;
         let el = &self.enum_layouts[i];
@@ -1184,9 +1184,6 @@ impl<'a> MirContext<'a> {
     /// `Channel<i64>`. The name resolves to its declaration, and the type
     /// lowers as that declaration at these arguments.
     fn resolve_unresolved_generic(&self, name: &str, args: &[rask_types::GenericArg]) -> MirType {
-        if lowers_to_ptr(name) {
-            return MirType::Ptr;
-        }
         match self.type_defs.lookup(name) {
             Some(Type::Named(base)) => self.type_to_mir(&Type::Generic { base, args: args.to_vec() }),
             _ => MirType::Ptr,
@@ -1219,9 +1216,9 @@ impl<'a> MirContext<'a> {
             // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
-            name if lowers_to_ptr(name) => MirType::Ptr,
             // A transparent alias resolves to its target (IM3), a module
-            // prefix to the type it reaches (#1097).
+            // prefix to the type it reaches (#1097). A compiler-provided
+            // handle has no declaration and is a pointer.
             _ => match self.type_defs.lookup(name) {
                 Some(found) if !matches!(found, Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }) => {
                     self.type_to_mir(&found)
@@ -8261,12 +8258,3 @@ mod tests {
     }
 }
 
-/// A runtime handle is one word, a pointer.
-///
-/// Workaround: `Handle` stays an `i64`. As a pointer, a `Handles` that
-/// `detach(take self)` has taken is no longer released again by its caller,
-/// and that stray release is all that frees the nodes `Handles` drains with
-/// `rest = *next` (#1585).
-fn lowers_to_ptr(name: &str) -> bool {
-    name != "Handle" && rask_stdlib::is_runtime_handle(name)
-}
