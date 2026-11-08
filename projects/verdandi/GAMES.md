@@ -320,11 +320,25 @@ setting could be the better fit. The one decision to make now: is there a
 conserved field in the rock. Everything else about the setting waits until
 after the ASCII prototype, which doesn't care what the agents are called.
 
-The Norse source is the obvious candidate given what the stack is named
-after: dwarves are the underground smiths of the Eddas, the mountain is
-inhabited, and the hill looks back at you. The same silhouette everyone
-loves, from where the cliché was copied, with a conserved-field slot already
-in the mythology.
+The Norse source is one candidate given what the stack is named after:
+dwarves are the underground smiths of the Eddas, the mountain is inhabited,
+and the hill looks back at you.
+
+The stronger candidate is an existing universe from another project, kept
+out of these notes. Its fit comes from three things. Its cosmology is a
+generation template (a flat disc with a central mountain and rings outward,
+with up and centre as light and down and outward as the deep), its history
+is a roll, and only its plot is one roll authored to the end, so the plot is
+what's dropped, the same split DF makes. Its one law is a sim rule: energy
+can be received but not taken, so it's conserved fields with a vertical
+gradient, and extraction yields the energy plus a corrupt by-product that
+scales with what was taken. The physics enforces the moral law; nothing is
+narrated. And its dwarf-shaped people mine their own ancestors, so the
+player's daily activity is the setting's temptation, deeper is richer and
+deeper is worse, and the mortal run falls out of the theology instead of
+being imposed. Its endgame, letting go instead of completing the grasp, is a
+release mechanic at the top tier. A disc world also removes the sphere space
+from the kernel's open list.
 
 ## Two prototypes, kept apart
 
