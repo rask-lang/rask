@@ -299,6 +299,33 @@ Realism is a source, not a goal. Ventilation belongs only if smoke is
 visible and suffocation is a consequence; a water table only if a flood is
 a story.
 
+## Setting
+
+Low fantasy works for structural reasons. Zero-cost legibility: everyone
+knows what a dwarf, a forge and a barrel are, the surfacing rule applied to
+fiction. A reason to dig and a hand-scale economy where every item is made by
+a person, which is the scale an agent sim works at. Visible technology, no
+panel hiding the mechanism. Sci-fi fails on all three: a replicator is a
+menu. So a setting has to supply those, plus perturbation and a reason for
+the mining decisions and the fields, and whatever supplies them will feel
+dwarf-shaped whatever it's called.
+
+Magic is the replicator problem in another coat. As a spell list it's a menu
+that bypasses the sim and breaks conservation. As a field in the rock that
+diffuses, pools, depletes, has to be dug towards and channelled, it's one
+more field over cells with an implicit solve, it obeys the same conservation
+loop as stone, and it gives volume and geology a second reason to matter. No
+colony sim has fields worth the name, so this is where a dark fantasy
+setting could be the better fit. The one decision to make now: is there a
+conserved field in the rock. Everything else about the setting waits until
+after the ASCII prototype, which doesn't care what the agents are called.
+
+The Norse source is the obvious candidate given what the stack is named
+after: dwarves are the underground smiths of the Eddas, the mountain is
+inhabited, and the hill looks back at you. The same silhouette everyone
+loves, from where the cliché was copied, with a conserved-field slot already
+in the mythology.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
