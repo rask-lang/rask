@@ -541,9 +541,12 @@ fn instance_steps(
     let mut out = Vec::new();
     for (base, args) in reached {
         let Some(&decl) = generic.get(base) else { continue };
-        // Still naming a parameter (`Holder<Output>` inside `Holder`'s own
-        // body): no instance to lay out.
-        if args.iter().any(|a| rask_layout::settle(a, rask_layout::Unsolved::Refuse).is_none()) {
+        // An argument the checker never settled (an open variable) has no
+        // instance to lay out.
+        if args
+            .iter()
+            .any(|a| rask_layout::settle(a, rask_layout::Unsolved::Refuse, &rask_layout::no_params).is_none())
+        {
             continue;
         }
         // The instance's name, for the backends that still find layouts by
@@ -815,10 +818,19 @@ fn monomorphize_inner(
             reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
         })
         .collect();
+    // A concrete function's expression types as the checker recorded them.
+    // A generic body's raw types name its own parameters (`Holder<Output>`
+    // inside `Holder`), so it counts only at its instances, above.
+    let concrete_node_types: Vec<&Type> = mono
+        .results
+        .iter()
+        .filter(|f| f.type_args.is_empty())
+        .flat_map(|f| reachability::body_nodes(&f.body))
+        .filter_map(|id| program.node_types.get(&id))
+        .collect();
     let mut reached: Vec<(TypeId, Vec<Type>)> = Vec::new();
-    for ty in program
-        .node_types
-        .values()
+    for ty in concrete_node_types
+        .into_iter()
         .chain(instance_node_types.iter())
         // A type argument is an instantiation even when nothing builds one.
         // `reflect.fields<Box2<string>>()` names the type and never constructs

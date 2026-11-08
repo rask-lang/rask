@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use rask_layout::{
     compute_enum_layout, compute_shared_enum_layout, compute_shared_struct_layout, compute_struct_layout,
-    compute_union_layout, generic_is_one_word, known_size_align, settle, substitute_inside, type_size_align,
-    EnumLayout, FieldLayout, LayoutCache, LayoutKey, StructLayout, Unsolved,
+    compute_union_layout, generic_is_one_word, known_size_align, no_params, settle, substitute_inside, type_size_align,
+    EnumLayout, FieldLayout, IsParam, LayoutCache, LayoutKey, StructLayout, Unsolved,
 };
 use rask_types::{GenericArg, Type, TypeDef, TypeId};
 
@@ -31,9 +31,10 @@ impl crate::TypeTable {
     }
 
     /// Size and alignment of `ty`, or `None` for a type with no layout yet: one
-    /// naming a type parameter or an inference variable nobody solved.
-    pub fn size_align(&self, ty: &Type) -> Option<(u32, u32)> {
-        let ty = settle(ty, Unsolved::Refuse)?;
+    /// naming a type parameter (`is_param` says which names are) or an
+    /// inference variable nobody solved.
+    pub fn size_align(&self, ty: &Type, is_param: IsParam) -> Option<(u32, u32)> {
+        let ty = settle(ty, Unsolved::Refuse, is_param)?;
         let mut cache = LayoutCache::new();
         self.fill_layouts(&ty, &mut cache, &mut Vec::new());
         known_size_align(&ty, &cache)
@@ -43,8 +44,8 @@ impl crate::TypeTable {
     /// body too: a type parameter counts as a word there.
     ///
     /// Measured with 64-bit pointers on every target (`mem.value/VS7a`).
-    pub fn copy_size(&self, ty: &Type) -> usize {
-        let ty = settle(ty, Unsolved::Word).expect("a lenient settling always answers");
+    pub fn copy_size(&self, ty: &Type, is_param: IsParam) -> usize {
+        let ty = settle(ty, Unsolved::Word, is_param).expect("a lenient settling always answers");
         let mut cache = LayoutCache::for_copy_rule();
         self.fill_layouts(&ty, &mut cache, &mut Vec::new());
         type_size_align(&ty, &cache).0 as usize
@@ -99,8 +100,8 @@ impl crate::TypeTable {
 
     /// The field of struct `ty` that runs past byte `limit` first, in memory
     /// order: its name, its size, and its type. What a `@small` error names.
-    pub fn first_field_past(&self, ty: &Type, limit: u32) -> Option<FieldLayout> {
-        let (id, args) = match settle(ty, Unsolved::Refuse)? {
+    pub fn first_field_past(&self, ty: &Type, limit: u32, is_param: IsParam) -> Option<FieldLayout> {
+        let (id, args) = match settle(ty, Unsolved::Refuse, is_param)? {
             Type::Named(id) => (id, Vec::new()),
             Type::Generic { base, args } => (base, type_args_of(&args)),
             _ => return None,
@@ -178,7 +179,9 @@ impl crate::TypeTable {
         if !self.layout_types.contains(&id) {
             // A nominal newtype is laid out as what it wraps.
             if let TypeDef::NominalAlias { underlying, .. } = def {
-                let wrapped = settle(underlying, Unsolved::Word).expect("a lenient settling always answers");
+                let params = def.type_params();
+                let wrapped = settle(underlying, Unsolved::Word, &|n| params.iter().any(|p| p == n))
+                    .expect("a lenient settling always answers");
                 visiting.push(key.clone());
                 self.fill_layouts(&wrapped, cache, visiting);
                 visiting.pop();

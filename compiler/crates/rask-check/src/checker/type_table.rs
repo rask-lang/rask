@@ -2592,6 +2592,12 @@ impl TypeTable {
         mark
     }
 
+    /// The type parameters in scope now, for a check that runs after the
+    /// scope has closed.
+    pub fn type_params_in_scope(&self) -> Vec<String> {
+        self.type_param_scope.iter().map(|p| p.name.clone()).collect()
+    }
+
     /// Drop everything pushed since `mark`.
     pub fn pop_type_params(&mut self, mark: TypeParamMark) {
         self.type_param_scope.truncate(mark.0);

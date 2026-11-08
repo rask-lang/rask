@@ -44,7 +44,10 @@ impl Interpreter {
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
         let settle = |ty: &Type| {
-            rask_layout::settle(ty, rask_layout::Unsolved::Refuse).ok_or_else(|| self.unsupported(ty))
+            // The interpreter runs a generic body with its arguments bound,
+            // so what reaches here names no parameter.
+            rask_layout::settle(ty, rask_layout::Unsolved::Refuse, &rask_layout::no_params)
+                .ok_or_else(|| self.unsupported(ty))
         };
         let (from, to) = (settle(from)?, settle(to)?);
         let (from_size, _) = self.byte_layout(&from)?;

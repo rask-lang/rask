@@ -41,15 +41,26 @@ pub enum Unsolved {
     /// A word, the size the shared layout gives a parameter. For a question
     /// that has to be answered inside a generic body (the copy rule).
     Word,
-    /// Keep a parameter's name, so a declaration's field types can have the
-    /// arguments written in. Anything else unsolved is a word.
+    /// Keep parameter names, so a declaration's field types can have the
+    /// arguments written in (pass `no_params`). Anything else unsolved is a
+    /// word.
     KeepParams,
+}
+
+/// Which spelled names are type parameters where a type is being asked about.
+/// The caller knows its scope: the checker tracks it, the ownership pass knows
+/// the function it walks, and a concrete type has none.
+pub type IsParam<'a> = &'a dyn Fn(&str) -> bool;
+
+/// No type parameters in scope: a concrete type.
+pub fn no_params(_: &str) -> bool {
+    false
 }
 
 /// A checked type with its unsolved parts settled, ready to size. `None` only
 /// under `Unsolved::Refuse`, for a type with no layout.
-pub fn settle(ty: &Type, unsolved: Unsolved) -> Option<Type> {
-    let go = |t: &Type| settle(t, unsolved);
+pub fn settle(ty: &Type, unsolved: Unsolved, is_param: IsParam) -> Option<Type> {
+    let go = |t: &Type| settle(t, unsolved, is_param);
     let each = |tys: &[Type]| tys.iter().map(go).collect::<Option<Vec<_>>>();
     let args_of = |args: &[GenericArg]| {
         args.iter()
@@ -65,7 +76,7 @@ pub fn settle(ty: &Type, unsolved: Unsolved) -> Option<Type> {
     };
     Some(match ty {
         Type::Var(_) | Type::Assoc { .. } | Type::Error => return word(),
-        Type::UnresolvedNamed(name) if unsolved != Unsolved::KeepParams && names_a_parameter(name) => return word(),
+        Type::UnresolvedNamed(name) if is_param(name) => return word(),
         Type::Generic { base, args } => Type::Generic { base: *base, args: args_of(args)? },
         Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric { name: name.clone(), args: args_of(args)? },
         Type::Tuple(elems) => Type::Tuple(each(elems)?),
@@ -78,23 +89,10 @@ pub fn settle(ty: &Type, unsolved: Unsolved) -> Option<Type> {
     })
 }
 
-/// Does a name the checker left spelled stand for a type parameter? The
-/// checker resolves every declared type to its id, so a spelled name is a
-/// builtin's (a scalar, `string`, a C type, a compiler-provided handle) or a
-/// parameter's, whatever the parameter is called (`struct Holder<Output>`).
-fn names_a_parameter(name: &str) -> bool {
-    let builtin = name == "string"
-        || name.starts_with('*')
-        || primitive_or_named(name) != Type::UnresolvedNamed(name.to_string())
-        || rask_ast::primitives::c_type_spelling(name).is_some()
-        || rask_stdlib::is_runtime_handle(name);
-    !builtin
-}
-
 /// A declaration's field type as layout reads it: parameters kept, anything
 /// else the checker left open a word.
 fn declared(ty: &Type) -> Type {
-    settle(ty, Unsolved::KeepParams).expect("keeping parameters always answers")
+    settle(ty, Unsolved::KeepParams, &no_params).expect("keeping parameters always answers")
 }
 
 /// Already-computed type layouts, by `LayoutKey`, for one pointer width.

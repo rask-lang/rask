@@ -872,7 +872,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
             let ty = rask_types::Type::Named(type_id);
-            let size = self.program.types.copy_size(&ty);
+            // A declaration, outside any function: no parameters in scope.
+            let size = self.program.types.copy_size(&ty, &rask_check::no_params);
             if size <= 16 {
                 continue;
             }
@@ -883,7 +884,7 @@ impl<'a> OwnershipChecker<'a> {
             let offending_field = self
                 .program
                 .types
-                .first_field_past(&ty, 16)
+                .first_field_past(&ty, 16, &rask_check::no_params)
                 .map(|f| (f.name, f.size as usize));
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallTypeTooBig {
@@ -961,11 +962,11 @@ impl<'a> OwnershipChecker<'a> {
                 })
                 .collect();
 
-            let total = self.program.types.copy_size(&full);
+            let total = self.program.types.copy_size(&full, &rask_check::no_params);
             if total <= 16 {
                 continue;
             }
-            let offender = self.program.types.first_field_past(&full, 16).map(|f| {
+            let offender = self.program.types.first_field_past(&full, 16, &rask_check::no_params).map(|f| {
                 let concrete = fields
                     .iter()
                     .find(|(n, _)| *n == f.name)
@@ -5718,8 +5719,13 @@ impl<'a> OwnershipChecker<'a> {
     /// A check that rejects a program asks for `Move`, not `!is_copy`:
     /// `is_copy` counts a type it can't place as a move, and rejecting on
     /// "couldn't tell" would reject on a guess.
+    /// Is `name` a type parameter of the function being walked?
+    fn names_type_param(&self, name: &str) -> bool {
+        self.type_params_in_scope.iter().any(|p| p == name)
+    }
+
     fn copy_verdict(&self, ty: &Type) -> CopyVerdict {
-        self.program.types.copy_verdict_with(ty, &|name| self.copy_params.contains(name))
+        self.program.types.copy_verdict_with(ty, &|name| self.names_type_param(name), &|name| self.copy_params.contains(name))
     }
 
     /// Determine why a type is move-only (not Copy).
@@ -5776,7 +5782,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_fields_copy = fields.iter()
                                 .all(|(_, t)| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst)));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5786,7 +5792,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_copy = variants.iter().all(|(_, data)| data.iter()
                                 .all(|t| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst))));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5807,7 +5813,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                             let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5815,7 +5821,7 @@ impl<'a> OwnershipChecker<'a> {
                         rask_types::TypeDef::Enum { variants, .. } => {
                             let all_copy = variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5828,7 +5834,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             Type::Result { .. } | Type::Union(_) => MoveReason::OwnsHeapMemory { type_name },
             _ => {
-                let size = self.program.types.copy_size(ty);
+                let size = self.program.types.copy_size(ty, &|n| self.names_type_param(n));
                 if size > 16 {
                     MoveReason::SizeExceedsThreshold { type_name, size }
                 } else {

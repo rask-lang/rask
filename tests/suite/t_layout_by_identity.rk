@@ -75,3 +75,21 @@ test "a struct holding Link<T>? still copies" {
         assert false
     }
 }
+
+// A parameter with a long name is still a parameter: inside a generic body the
+// copy rule sizes `Duo<Item>` with a word per parameter, which the ownership
+// pass knows from the function it walks rather than by guessing from the name.
+struct Duo<Output> {
+    a: Output
+    b: Output
+}
+
+func copy_twice<Item: Copy>(d: Duo<Item>) -> i64 {
+    let x = d
+    let y = d
+    return 2
+}
+
+test "a two-word generic copies inside a generic body" {
+    assert copy_twice(Duo<i64>(a: 1, b: 2)) == 2
+}
