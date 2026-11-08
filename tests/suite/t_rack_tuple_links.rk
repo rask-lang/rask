@@ -2,9 +2,6 @@
 //
 // A link inside a tuple is an edge like any other (#1795): `delete` has to
 // null it, whether the tuple sits in a node or in a local.
-//
-// Split from t_rack_nested_links.rk because the interpreter can't yet write
-// through a tuple element's field (#1799).
 import memory.Link
 import memory.Rack
 

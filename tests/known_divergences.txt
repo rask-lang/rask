@@ -48,7 +48,6 @@
 #     identity all answer what native answers. The file grew from 6 tests to 16
 #     while it was open; all 16 pass on both backends.
 
-t_rack_tuple_links.rk            # interp tuple element field write — #1799 (interp run)
 t_rack_link_copies.rk            # interp array/copy/clone links unrecorded — #1803 (interp run)
 
 # --- shared / both-backend bugs ---
