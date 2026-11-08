@@ -466,11 +466,19 @@ impl Interpreter {
                     Value::Vec(v) => {
                         // A loop source nothing registered — a temporary, a
                         // parameter — is an edge holder while the loop walks
-                        // it, as natively (mem.racks/RK15).
+                        // it, as natively (mem.racks/RK15). A temporary gives
+                        // its records back when the loop ends, the way the
+                        // native loop's cleanup does; a named vector keeps
+                        // them for as long as it lives.
+                        let temporary = !matches!(
+                            iter.kind,
+                            rask_ast::expr::ExprKind::Field { .. } | rask_ast::expr::ExprKind::Ident(_)
+                        );
                         if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
                             crate::rack::register_vec_links(&Value::Vec(v.clone()));
                         }
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
+                        let mut outcome = Ok(Value::Unit);
                         for item in items {
                             // The body deleted the node that owned the vector,
                             // and the vector went with it.
@@ -484,24 +492,22 @@ impl Interpreter {
                             }
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
+                            let ran = self.exec_stmts(body);
+                            self.env.pop_scope();
+                            match ran {
                                 Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
+                                Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                                Err(diag) if continues_here(&diag.error, loop_label) => continue,
+                                Err(e) => {
+                                    outcome = Err(e);
                                     break;
                                 }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
                             }
-                            self.env.pop_scope();
                         }
-                        Ok(Value::Unit)
+                        if temporary {
+                            crate::rack::forget_vec_links(&Value::Vec(v.clone()));
+                        }
+                        outcome
                     }
                     // type.sequence/SEQ6: a Sequence is a function taking a
                     // yield. Iterating one is calling it — the loop hands over a

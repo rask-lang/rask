@@ -188,6 +188,11 @@ pub fn register_field(
     register_nested(value, 0);
 }
 
+/// A loop's temporary vector of links is done with: drop its records.
+pub fn forget_vec_links(value: &Value) {
+    forget_container_edges(value, 0);
+}
+
 /// Drop the records a container held, when the container itself is being
 /// replaced. Descends through options and nested containers; stops at a struct,
 /// whose data may still be reachable through another name.
