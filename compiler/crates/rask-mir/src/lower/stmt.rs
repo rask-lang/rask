@@ -785,6 +785,12 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 None
                             };
+                            // A link is an edge write: through the rack, into
+                            // the caller's slot.
+                            if scalar_mutate.as_ref().is_some_and(MirType::is_link_slot) {
+                                self.emit_link_store(local_id, MirOperand::Constant(MirConst::Int(0)), val_op);
+                                return Ok(());
+                            }
                             // The caller's slot keeps its address, so its edges
                             // move with the store, as a field store's do.
                             if scalar_mutate.is_none() {
@@ -3638,6 +3644,9 @@ impl<'a> MirLowerer<'a> {
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
 pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
+    // A link is one word, `Link<T>?` too — its `none` is the null address
+    // rather than a tag. Treated as an aggregate, the callee stored through
+    // the link itself and overwrote the node it named (#1808).
     !matches!(
         ty,
         MirType::Void
@@ -3647,7 +3656,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::F32 | MirType::F64
             | MirType::Char
             | MirType::FuncPtr(_)
-    )
+    ) && !ty.is_link_slot()
 }
 
 /// A one-word runtime handle: the local holds the handle, not the address of a

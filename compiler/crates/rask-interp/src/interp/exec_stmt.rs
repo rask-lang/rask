@@ -464,6 +464,12 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Vec(v) => {
+                        // A loop source nothing registered — a temporary, a
+                        // parameter — is an edge holder while the loop walks
+                        // it, as natively (mem.racks/RK15).
+                        if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
+                            crate::rack::register_vec_links(&Value::Vec(v.clone()));
+                        }
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
                         for item in items {
                             // The body deleted the node that owned the vector,

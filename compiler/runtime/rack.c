@@ -56,12 +56,23 @@
 #define RACK_EDGE_SLOT   0
 #define RACK_EDGE_VEC    1
 #define RACK_EDGE_MAP    2
-#define RACK_EDGE_INLINE 3   // header-resident; holder is a slot in the node payload
+#define RACK_EDGE_INLINE 3   // header-resident; its slot is link field `ordinal` of its node
 
 // Doubly linked, so a record already in hand unlinks without a search.
+//
+// An inline record names its *target* rather than its slot. The slot follows
+// from where the record sits (`inline_slot`), and the target is what every
+// unlink needs: which list the record is on. Read off the slot instead, a
+// write that reached the slot some other way — through a `mutate` parameter,
+// say (#1807) — left the record on one list while the slot named another
+// node, and the next unlink took a different node's list apart.
 typedef struct RackEdge {
     int32_t          kind;
-    void            *holder;   // void** slot, RaskVec*, or RaskMap*
+    int32_t          ordinal;  // inline: which link field of the node
+    union {
+        void        *holder;   // heap: void** slot, RaskVec*, or RaskMap*
+        void        *target;   // inline: the node whose list it is on, or NULL
+    };
     struct RackEdge *prev;
     struct RackEdge *next;
 } RackEdge;
@@ -325,6 +336,21 @@ static inline RackEdge *inline_edge(RackNode *n, int32_t k) {
     return (RackEdge *)((char *)n - (size_t)(k + 1) * sizeof(RackEdge));
 }
 
+// The node an inline record sits in front of, and the slot it stands for: link
+// field `ordinal` of that node's type.
+static void **inline_slot(RackEdge *e) {
+    RackNode *n = (RackNode *)((char *)e + (size_t)(e->ordinal + 1) * sizeof(RackEdge));
+    const RaskRack *r = n->rack;
+    if (!r) return NULL;
+    int32_t k = 0;
+    for (int32_t i = 0; i < r->field_count; i++) {
+        if (r->fields[i * 2] != RASK_RACK_FIELD_LINK) continue;
+        if (k == e->ordinal) return (void **)((char *)n + sizeof(RackNode) + r->fields[i * 2 + 1]);
+        k++;
+    }
+    return NULL;
+}
+
 // Which LINK field of the node type starts at `offset`, as an ordinal among
 // LINK fields only. -1 when the offset names something else — a nested
 // aggregate's link, say, which keeps the scanned home.
@@ -400,13 +426,16 @@ void rask_link_holder_died(void **head) {
 // inline, so both the unlink and the splice are O(1) however many other things
 // point at either node — this is the write the old design charged O(in-degree)
 // for.
+static void inline_retarget(RackEdge *e, void *target) {
+    if (e->target == target) return;
+    if (e->target) list_unlink(&node_of(e->target)->inline_in, e);
+    e->target = rask_link_is_none(target) ? NULL : target;
+    if (e->target) list_push(&node_of(e->target)->inline_in, e);
+}
+
 static void node_edge_set(char *payload, int32_t k, void **slot, void *target) {
-    RackEdge *e = inline_edge(node_of(payload), k);
-    void *old = *slot;
-    if (old == target) return;
-    if (!rask_link_is_none(old)) list_unlink(&node_of(old)->inline_in, e);
     *slot = target;
-    if (!rask_link_is_none(target)) list_push(&node_of(target)->inline_in, e);
+    inline_retarget(inline_edge(node_of(payload), k), target);
 }
 
 // ─── Link stores ───────────────────────────────────────────────────────────
@@ -591,11 +620,8 @@ static void register_own_edges(const RaskRack *r, char *payload) {
         switch (field_kind(r, i)) {
         case RASK_RACK_FIELD_LINK: {
             RackEdge *e = inline_edge(node_of(payload), k);
-            e->kind = RACK_EDGE_INLINE;
-            e->holder = slot;
-            e->prev = NULL;
-            e->next = NULL;
-            if (!rask_link_is_none(*slot)) list_push(&node_of(*slot)->inline_in, e);
+            *e = (RackEdge){ .kind = RACK_EDGE_INLINE, .ordinal = k };
+            inline_retarget(e, *slot);
             k++;
             break;
         }
@@ -618,9 +644,8 @@ static void forget_own_edges(const RaskRack *r, char *payload) {
         void **slot = (void **)(payload + field_offset(r, i));
         switch (field_kind(r, i)) {
         case RASK_RACK_FIELD_LINK: {
-            if (!rask_link_is_none(*slot)) {
-                list_unlink(&node_of(*slot)->inline_in, inline_edge(node_of(payload), k));
-            }
+            (void)slot;
+            inline_retarget(inline_edge(node_of(payload), k), RASK_LINK_NONE);
             k++;
             break;
         }
@@ -791,11 +816,7 @@ void *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
     // unlinked from wherever they pointed; clear them so the fresh node starts
     // with records that describe it.
     for (int32_t k = 0; k < r->inline_count; k++) {
-        RackEdge *e = inline_edge(n, k);
-        e->kind = RACK_EDGE_INLINE;
-        e->holder = NULL;
-        e->prev = NULL;
-        e->next = NULL;
+        *inline_edge(n, k) = (RackEdge){ .kind = RACK_EDGE_INLINE, .ordinal = k };
     }
 
     if (value) {
@@ -827,11 +848,12 @@ static void fix_incoming(RaskRack *r, char *payload) {
     while (ie) {
         RackEdge *next = ie->next;
         if (stats_enabled()) g_holders_visited++;
-        void **slot = (void **)ie->holder;
+        void **slot = inline_slot(ie);
         if (slot && *slot == payload) {
             *slot = RASK_LINK_NONE;
             if (stats_enabled()) g_edges_fixed++;
         }
+        ie->target = NULL;
         ie->prev = NULL;
         ie->next = NULL;
         ie = next;
@@ -966,8 +988,9 @@ void rask_rack_free(RaskRack *r) {
             RackNode *n = node_of(payload);
             for (RackEdge *e = n->inline_in, *next; e; e = next) {
                 next = e->next;
-                void **slot = (void **)e->holder;
+                void **slot = inline_slot(e);
                 if (slot && *slot == payload) *slot = RASK_LINK_NONE;
+                e->target = NULL;
                 e->prev = NULL;
                 e->next = NULL;
             }
