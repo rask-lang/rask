@@ -369,6 +369,42 @@ needs engine and the magic are one system, scarcity is a thin field, and
 grasping is what a hungry agent does when receiving is too slow. Temptation
 as hunger.
 
+## Politics, emergent
+
+Games hardcode democracy, monarchy and slavery because they're outcomes;
+simulating the inputs is the unsolved part (Crusader Kings is nearest, and
+its laws are still a menu). Institutions are made of who holds force, who
+holds surplus, who is obeyed without force, and what people owe each other.
+With those as primitives, structures are patterns recognised and named after
+the fact in the legends view, never modes selected.
+
+The primitives exist: Allgard's. A capability is authority as data, a grant
+is delegation, attenuation is "this but not that", revocation is rebellion;
+ownership, transfer and escrow are the surplus half. Co-op already makes
+ownership the command filter, so the filter is an authority graph. Make it a
+sim object agents can hold. An agent holding the grant over a crew is a
+foreman; over the fort, a king; two players under a joint rule, a council; a
+grant the faith issues, a priesthood. The tiers stop being engine-given and
+become institutions built from agents. Emergence comes from agents having
+needs about the grants they sit under (autonomy, belonging, faith) and being
+able to defect. Legibility is the ledger: who holds what over whom is data,
+in the same currency as the prices.
+
+The setting's law gives legitimacy a mechanism: authority received is clean,
+authority grasped corrupts, which is what a manufactured god is. So a
+communal state is a grant held jointly, with the coordination cost; a
+god-king is concentrated force plus fabricated faith, and the setting says
+what that costs; enslaving a people is persons as objects with needs unmet
+and the by-product accumulating; and whether an automat can be ridden is a
+question the sim asks, since it has needs or it doesn't, and you find out by
+whether it defects.
+
+Version three. But it decides one thing in version one: the player is not
+the engine's god. DF hardwires you as the spirit of the fortress. Here the
+player holds a grant over the founding expedition, and every further
+authority is built, delegated, and can be lost. Cheap from the start,
+impossible to retrofit, and the same object co-op needs anyway.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
