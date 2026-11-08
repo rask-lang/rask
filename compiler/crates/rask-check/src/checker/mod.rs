@@ -1198,8 +1198,8 @@ impl TypeChecker {
             .collect();
         let error_wraps = self.error_wraps.clone();
         for (id, scrutinee, named) in std::mem::take(&mut self.pending_pattern_sides) {
-            if let Some(err) = self.pattern_side(&scrutinee, &named) {
-                self.pattern_targets.insert(id, rask_types::PatternTarget::Side { err });
+            if let Some((err, member)) = self.pattern_side(&scrutinee, &named) {
+                self.pattern_targets.insert(id, rask_types::PatternTarget::Side { err, member });
             }
         }
         let pattern_targets = std::mem::take(&mut self.pattern_targets);

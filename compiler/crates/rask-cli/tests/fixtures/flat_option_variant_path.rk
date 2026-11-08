@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A variant of `T` on a flat `T? or E`: the pattern goes to the success side,
+// then into the option's value, then to the variant. Native only, because the
+// interpreter answers every one of these with "no match".
+
+enum Light {
+    Red
+    Green
+}
+
+enum Color {
+    Blue
+}
+
+extend Color {
+    func message(self) -> string {
+        return "c"
+    }
+}
+
+func get(a: i64) -> Light? or Color {
+    if a == 0 {
+        return Light.Red
+    }
+    if a == 1 {
+        return Light.Green
+    }
+    if a == 2 {
+        return none
+    }
+    return Color.Blue
+}
+
+enum Shape {
+    Circle(f64)
+    Label(string)
+}
+
+enum Oops {
+    Worse
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "e"
+    }
+}
+
+func opt(a: i64) -> Shape? or Oops {
+    if a == 0 {
+        return Shape.Circle(1.5)
+    }
+    if a == 1 {
+        return none
+    }
+    if a == 2 {
+        return Shape.Label("q{a}")
+    }
+    return Oops.Worse
+}
+
+func main() {
+    for i in 0..4 {
+        let r = get(i)
+        println("{i}: Red={r is Light.Red} Green={r is Light.Green}")
+    }
+    for i in 0..4 {
+        let r = opt(i)
+        if r is Shape.Label(s) {
+            println("is label {s}")
+        }
+        println(match opt(i) {
+            Shape.Circle(x) => "circle {x}",
+            Shape.Label(s) => "label {s}",
+            none => "none",
+            Oops as e => "err",
+        })
+    }
+}

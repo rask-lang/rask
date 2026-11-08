@@ -412,7 +412,19 @@ impl InferenceContext {
             // came back "type is still open here" (#970) — the element had
             // settled, the `*T` around it just never heard.
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.apply(inner))),
-            Type::Union(members) => Type::Union(members.iter().map(|t| self.apply(t)).collect()),
+            // A solved variable can make two members one (`Mm | ?T` with
+            // `?T = Mm`); the duplicate goes, and a union left with one
+            // member is that member.
+            Type::Union(members) => {
+                let mut out: Vec<Type> = Vec::with_capacity(members.len());
+                for m in members {
+                    let m = self.apply(m);
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+                if out.len() == 1 { out.pop().unwrap() } else { Type::Union(out) }
+            }
             Type::SimdVector { elem, lanes } => Type::SimdVector {
                 elem: Box::new(self.apply(elem)),
                 lanes: *lanes,

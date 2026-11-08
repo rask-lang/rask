@@ -415,6 +415,8 @@ pub enum PatternTarget {
     /// A bare name that binds the value it matches.
     Binding,
     /// A type test on a `T or E`: whether the type it names is the error
-    /// side (`true`) or the success side.
-    Side { err: bool },
+    /// side (`true`) or the success side, and, when the error side is a
+    /// union, which member it names. `member` indexes the union's members in
+    /// their canonical order, the order the union type itself keeps.
+    Side { err: bool, member: Option<usize> },
 }

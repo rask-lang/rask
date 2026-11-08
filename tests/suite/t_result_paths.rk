@@ -1,0 +1,256 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `match` arm on a `T or E` can reach past the ok/err split: into a member
+// of a union error side, into a variant of that member's enum, or into a
+// variant of the success side's enum. Each arm tests the same steps an `is`
+// test does, and `Enum.Variant as x` binds the variant's payload.
+
+enum Zed {
+    Quiet
+    Loud(string)
+}
+
+enum Alpha {
+    First
+}
+
+func both(a: i64) -> i64 or (Zed | Alpha) {
+    if a == 0 {
+        return Alpha.First
+    }
+    if a == 1 {
+        return Zed.Loud("hey")
+    }
+    if a == 2 {
+        return Zed.Quiet
+    }
+    return a
+}
+
+func name_both(a: i64) -> string {
+    return match both(a) {
+        Zed.Loud(s) => "loud {s}",
+        Alpha as x => "alpha",
+        Zed as z => "zed",
+        i64 as v => "v{v}",
+    }
+}
+
+test "a variant of one union member is a match arm" {
+    assert name_both(0) == "alpha"
+    assert name_both(1) == "loud hey"
+    assert name_both(2) == "zed"
+    assert name_both(7) == "v7"
+}
+
+enum Color {
+    Red
+    Green
+}
+
+enum Light {
+    Red
+    Amber
+    Green
+}
+
+func light(x: i64) -> Light or Color {
+    if x == 0 {
+        return Color.Red
+    }
+    if x == 1 {
+        return Light.Red
+    }
+    return Light.Green
+}
+
+func name_light(x: i64) -> string {
+    return match light(x) {
+        Light.Green => "light green",
+        Color.Red => "color red",
+        Color as c => "color other",
+        Light as l => "light other",
+    }
+}
+
+test "a variant of the success side's enum matches" {
+    assert name_light(0) == "color red"
+    assert name_light(1) == "light other"
+    assert name_light(2) == "light green"
+    assert light(1) is Light.Red
+    assert !(light(0) is Light.Red)
+    assert light(2) is Light.Green
+}
+
+enum Bad {
+    Msg(string)
+    Code(i64)
+    Pair(i64, i64)
+}
+
+func bad(a: i64) -> i64 or Bad {
+    if a == 0 {
+        return Bad.Msg("hello")
+    }
+    if a == 1 {
+        return Bad.Code(40)
+    }
+    if a == 2 {
+        return Bad.Pair(3, 4)
+    }
+    return a
+}
+
+func name_bad(a: i64) -> string {
+    return match bad(a) {
+        Bad.Code as c => "code {c + 2}",
+        Bad.Msg as m => "msg {m.len()} {m}",
+        Bad.Pair as p => "pair {p.0 + p.1}",
+        Bad as b => "bad",
+        i64 as v => "v {v}",
+    }
+}
+
+test "Enum.Variant as x in a match arm binds the payload" {
+    assert name_bad(0) == "msg 5 hello"
+    assert name_bad(1) == "code 42"
+    assert name_bad(2) == "pair 7"
+    assert name_bad(3) == "v 3"
+}
+
+test "a guarded variant arm falls through to the next arm" {
+    let r = match bad(1) {
+        Bad.Code(n) if n > 100 => "big",
+        Bad.Code(40) => "forty",
+        _ => "other",
+    }
+    assert r == "forty"
+}
+
+// A variant whose payload is declared as the enum's type parameter. The
+// shared layout of a generic enum holds a one-word placeholder there, so the
+// binding takes its type from the enum as instantiated: `Has(x)` on a
+// `Maybe<f64>` is an `f64`, not its bits.
+enum Maybe<T> {
+    Has(T)
+    Nope
+}
+
+extend Maybe<T> {
+    func message(self) -> string {
+        return "m"
+    }
+}
+
+enum Oops {
+    Code(i64)
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "o"
+    }
+}
+
+func maybe_or(a: i64) -> Maybe<f64> or Oops {
+    if a == 0 {
+        return Oops.Code(1)
+    }
+    let m: Maybe<f64> = Maybe.Has(2.5)
+    return m
+}
+
+struct Aa {
+    code: i64
+}
+
+extend Aa {
+    func message(self) -> string {
+        return "a"
+    }
+}
+
+func maybe_union<T>(a: i64, take v: T) -> string or (Maybe<T> | Aa) {
+    if a == 0 {
+        return Maybe.Has(v)
+    }
+    if a == 1 {
+        return Aa(code: 3)
+    }
+    return "ok"
+}
+
+test "a generic enum's payload binds at its instantiated type" {
+    let r = match maybe_or(1) {
+        Maybe.Has(x) => "has {x}",
+        Maybe.Nope => "nope",
+        Oops as o => "oops",
+    }
+    assert r == "has 2.5"
+    let v = maybe_or(1)
+    if v is Maybe.Has(x) {
+        assert x == 2.5
+    } else {
+        assert false
+    }
+    let u = match maybe_union(0, 1.25) {
+        Maybe.Has(x) => "has {x}",
+        Aa as q => "aa {q.code}",
+        _ => "rest",
+    }
+    assert u == "has 1.25"
+    if maybe_union(0, "s") is Maybe.Has(s) {
+        assert s == "s"
+    } else {
+        assert false
+    }
+    let bare: Maybe<f64> = Maybe.Has(0.5)
+    if bare is Maybe.Has(y) {
+        assert y == 0.5
+    } else {
+        assert false
+    }
+}
+
+// A union written with a type parameter keeps its written order when the
+// parameter is filled in: `Mmm | T` at `T = Aa` is the same union as
+// `Aa | Mmm`, and the member a value holds is read the same way through
+// either spelling. Filling `T` with a member already there leaves one.
+struct Mmm {
+    code: i64
+}
+
+extend Mmm {
+    func message(self) -> string {
+        return "m"
+    }
+}
+
+func pick_member<T>(a: i64, take v: T) -> string or (Mmm | T) {
+    if a == 0 {
+        return v
+    }
+    if a == 1 {
+        return Mmm(code: 5)
+    }
+    return "ok"
+}
+
+func which(r: string or (Aa | Mmm)) -> string {
+    return match r {
+        Aa as q => "aa {q.code}",
+        Mmm as m => "mm {m.code}",
+        string as s => "s {s}",
+    }
+}
+
+test "a filled-in union parameter reads the right member" {
+    assert which(pick_member(0, Aa(code: 9))) == "aa 9"
+    assert which(pick_member(1, Aa(code: 9))) == "mm 5"
+    assert which(pick_member(2, Aa(code: 9))) == "s ok"
+    let same = match pick_member(0, Mmm(code: 7)) {
+        Mmm as m => "mm {m.code}",
+        string as s => "s {s}",
+    }
+    assert same == "mm 7"
+}
