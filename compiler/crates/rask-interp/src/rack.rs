@@ -89,6 +89,31 @@ fn any_link(v: &Value) -> Option<(u32, Arc<Mutex<StructData>>)> {
     }
 }
 
+/// `v` without the optionals around a payload that isn't a link: `Cursor?`
+/// holds its links where `Cursor` does, `Target?` where `Target` does.
+fn strip_some(mut v: &Value) -> &Value {
+    while let Value::Enum { name, variant, fields, .. } = v {
+        if name != "Option" || variant != "Some" || any_link(v).is_some() {
+            break;
+        }
+        match fields.first() {
+            Some(inner) => v = inner,
+            None => break,
+        }
+    }
+    v
+}
+
+/// Whether `v`'s own fields can hold links behind it: a tuple, an enum, or an
+/// optional around either. An optional around a link is the link.
+fn has_value_fields(v: &Value) -> bool {
+    match v {
+        Value::Tuple(_) => true,
+        Value::Enum { name, .. } => name != "Option" || any_link(v).is_none(),
+        _ => false,
+    }
+}
+
 fn is_link_to(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> bool {
     link_target(v, rack_id).is_some_and(|n| Arc::ptr_eq(&n, dead))
 }
@@ -219,8 +244,8 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
     // An element of struct type holds its links in fields of its own: those
     // are edges the element's fields record, and delete nulls them in place
     // (#1804).
-    if matches!(value, Value::Struct(_)) {
-        register_nested(value, 1);
+    if let s @ Value::Struct(_) = strip_some(value) {
+        register_nested(s, 1);
         return;
     }
     // A tuple or an enum element is a value: its links are recorded against
@@ -297,9 +322,10 @@ pub fn link_is_dead(v: &Value) -> bool {
 fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
     let items: &[Value] = match v {
         Value::Tuple(items) => items,
-        // An enum's variant fields are values the same way (#1801). An
-        // optional is the link itself, which `any_link` already sees through.
-        Value::Enum { name, fields, .. } if name != "Option" => fields,
+        // An enum's variant fields are values the same way (#1801), and so
+        // is an optional's payload unless it is the link itself, which
+        // `any_link` already sees through.
+        Value::Enum { fields, .. } if has_value_fields(v) => fields,
         _ => return,
     };
     for item in items {
@@ -319,7 +345,7 @@ fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
 fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Option<Value> {
     let items: &[Value] = match v {
         Value::Tuple(items) => items,
-        Value::Enum { name, fields, .. } if name != "Option" => fields,
+        Value::Enum { fields, .. } if has_value_fields(v) => fields,
         _ => return None,
     };
     let mut changed = false;
@@ -358,11 +384,7 @@ fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Optio
 /// Whether a value is a tuple or an enum (not an optional): the values whose
 /// links a local's own storage has to hold the records for.
 pub fn may_hold_value_links(v: &Value) -> bool {
-    match v {
-        Value::Tuple(_) => true,
-        Value::Enum { name, .. } => name != "Option",
-        _ => false,
-    }
+    has_value_fields(strip_some(v))
 }
 
 /// A local's value changed. A tuple holding links records each against the
@@ -396,8 +418,8 @@ pub fn register_entry(
     old: Option<&Value>,
     value: &Value,
 ) {
-    if matches!(value, Value::Struct(_)) {
-        register_nested(value, 1);
+    if let s @ Value::Struct(_) = strip_some(value) {
+        register_nested(s, 1);
         return;
     }
     let mut in_value = Vec::new();

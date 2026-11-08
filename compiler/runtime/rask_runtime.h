@@ -241,6 +241,32 @@ typedef struct {
 #define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
 #define RASK_OWNED_TAG_WIDTH(e)  (1 << (((e) >> 26) & 0x3))
 
+// Decode the guard at `entries[*i]` against the value at `elem`. Sets `*body`
+// to its arm's length and moves `*i` onto the guard's last word, so the arm
+// starts at `*i + 1`. Returns 1 when the tag holds the guard's value, 0 when it
+// doesn't, -1 when the list claims more entries than it has.
+static inline int rask_owned_guard(const char *elem, const int32_t *entries, int64_t count,
+                                   int64_t *i, int64_t *body) {
+    int32_t e = entries[*i];
+    int64_t n = RASK_OWNED_TAG_COUNT(e);
+    if (n == RASK_OWNED_TAG_COUNT_EXT) {
+        if (*i + 1 >= count) return -1;
+        *i += 1;
+        n = entries[*i];
+    }
+    if (n < 0 || *i + n >= count) return -1;
+    *body = n;
+    const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
+    int64_t tag;
+    switch (RASK_OWNED_TAG_WIDTH(e)) {
+        case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+        case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+        case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+        default: tag = *(const int64_t *)at;           break;
+    }
+    return tag == (int64_t)RASK_OWNED_TAG_VALUE(e);
+}
+
 // Release, or take a reference to, whatever one entry points at inside `elem`.
 //
 // `retain` is what makes a derived container an owner: a clone, a slice or a

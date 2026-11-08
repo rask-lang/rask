@@ -93,6 +93,10 @@
 
 // A guard: the entries after it apply when a tag holds one value.
 #define RASK_OWNED_TAG_IF 3
+
+// A guard's count field holding this keeps the arm's length in the word
+// after the guard instead: an arm longer than the six-bit field.
+#define RASK_OWNED_TAG_COUNT_EXT 63
 #define RASK_OWNED_CLOSURE 4
 #define RASK_OWNED_TRAITBOX 5
 #define RASK_OWNED_HEAP 6

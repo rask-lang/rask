@@ -799,8 +799,25 @@ impl<'a> MirLowerer<'a> {
                         // A cell is an address whether or not it came from a
                         // parameter, so the scalar case doesn't need the
                         // `mutate` half of the test any more (#1011).
+                        // A local whose links behind a tag are recorded by its
+                        // address is written in place. An `Assign` would make
+                        // a new SSA version at a new address, leaving the old
+                        // one's bytes naming a node its record no longer
+                        // covers, and the forget at return then read a freed
+                        // rack through them.
+                        let in_place = struct_assigned
+                            && scalar_mutate.is_none()
+                            && !assigns_through
+                            && !self.addressed_captures.contains(&local_id)
+                            && matches!(
+                                dst_ty,
+                                MirType::Struct(_) | MirType::Tuple(_) | MirType::Enum(_)
+                                    | MirType::Option(_) | MirType::Result { .. }
+                            )
+                            && self.ctx.mir_has_guarded_link(&dst_ty);
                         let store_through_ptr = scalar_mutate.is_some()
-                            || (assigns_through && mutate_param_by_pointer(&dst_ty));
+                            || (assigns_through && mutate_param_by_pointer(&dst_ty))
+                            || in_place;
                         if store_through_ptr {
                             let store_size = match &scalar_mutate {
                                 Some(sty) => sty.size(),
@@ -824,7 +841,7 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            let replaced = if assigns_through {
+                            let replaced = if assigns_through || in_place {
                                 self.released_on_overwrite(target, reuses_old, &dst_ty)
                             } else {
                                 None

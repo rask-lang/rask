@@ -77,13 +77,13 @@ fn entry(offset: i32, kind: i32) -> i32 {
 }
 
 /// A guard: the next `count` entries apply only when the tag at `tag_offset`
-/// holds `tag_value`.
+/// holds `tag_value`. An arm of 63 entries or more keeps its count in a second
+/// word, which the walk skips along with the guard.
 ///
 /// `None` when any field won't fit its share of the 28 bits — an offset over
-/// 4095, more than 255 variants, more than 63 entries in one arm, or a tag
-/// wider than eight bytes. The caller then emits nothing for that element,
+/// 4095, more than 255 variants, or a tag wider than eight bytes. The caller then emits nothing for that element,
 /// which leaks rather than describing it wrongly.
-fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<i32> {
+fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<Vec<i32>> {
     let width = match tag_size {
         1 => 0,
         2 => 1,
@@ -91,26 +91,17 @@ fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Op
         8 => 3,
         _ => return None,
     };
-    if !(0..=0xFFF).contains(&tag_offset) || tag_value > 0xFF || count > 0x3F {
+    if !(0..=0xFFF).contains(&tag_offset) || tag_value > 0xFF || count > i32::MAX as usize {
         return None;
     }
-    let packed = tag_offset | ((tag_value as i32) << 12) | ((count as i32) << 20) | (width << 26);
-    Some(entry(packed, KIND_TAG_IF))
-}
-
-/// An arm a guard can't count (`tag_guard` takes at most 63 entries) loses its
-/// link entries before it loses everything: the links then go unrecorded, as
-/// they did before links were listed, rather than the strings beside them
-/// going unfreed. Only a flat arm: a nested guard counts its own entries.
-fn fit_arm(arm: Vec<i32>) -> Vec<i32> {
-    if arm.len() <= 0x3F {
-        return arm;
+    let ext = runtime_abi::RASK_OWNED_TAG_COUNT_EXT as usize;
+    let field = if count < ext { count } else { ext };
+    let packed = tag_offset | ((tag_value as i32) << 12) | ((field as i32) << 20) | (width << 26);
+    let mut words = vec![entry(packed, KIND_TAG_IF)];
+    if count >= ext {
+        words.push(count as i32);
     }
-    let kind = |e: &i32| (*e as u32 >> KIND_SHIFT) as i32;
-    if arm.iter().any(|e| kind(e) == KIND_TAG_IF || kind(e) == KIND_HEAP) {
-        return arm;
-    }
-    arm.into_iter().filter(|e| kind(e) != KIND_LINK).collect()
+    Some(words)
 }
 
 /// The program's layouts as the walks below need them, with each layout's
@@ -214,12 +205,11 @@ fn wrapper_arms(
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
         describe(side, base + payload_offset as i32, shapes, depth + 1, self_name, &mut arm)?;
-        let arm = fit_arm(arm);
         if arm.is_empty() {
             continue;
         }
         let tag_offset = base + rask_types::abi::TAG_OFFSET as i32;
-        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
+        out.extend(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
         out.extend(arm);
     }
     Some(())
@@ -254,11 +244,10 @@ fn enum_arms(
             .collect();
         let tys = shapes.fields.variant_fields(id, i);
         flatten(&fields, tys, base, shapes, depth + 1, self_name, &mut arm)?;
-        let arm = fit_arm(arm);
         if arm.is_empty() {
             continue;
         }
-        out.push(tag_guard(tag_offset, variant.tag, arm.len(), tag_size)?);
+        out.extend(tag_guard(tag_offset, variant.tag, arm.len(), tag_size)?);
         out.extend(arm);
     }
     Some(())

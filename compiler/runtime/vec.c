@@ -197,19 +197,10 @@ static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
         int32_t e = entries[i];
         uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
         if (kind == RASK_OWNED_TAG_IF) {
-            int64_t body = RASK_OWNED_TAG_COUNT(e);
-            // A list that claims more entries than it has is malformed; stop
-            // rather than read past it.
-            if (i + body >= count) return;
-            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
-            int64_t tag;
-            switch (RASK_OWNED_TAG_WIDTH(e)) {
-                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
-                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
-                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
-                default: tag = *(const int64_t *)at;           break;
-            }
-            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+            int64_t body;
+            int live = rask_owned_guard(elem, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
                 owned_walk_from(elem, entries + i + 1, body, root, root_count, op);
             }
             i += body;
@@ -788,17 +779,10 @@ static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
         int32_t e = entries[i];
         uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
         if (kind == RASK_OWNED_TAG_IF) {
-            int64_t body = RASK_OWNED_TAG_COUNT(e);
-            if (i + body >= count) return;
-            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
-            int64_t tag;
-            switch (RASK_OWNED_TAG_WIDTH(e)) {
-                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
-                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
-                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
-                default: tag = *(const int64_t *)at;           break;
-            }
-            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+            int64_t body;
+            int live = rask_owned_guard(elem, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
                 links_walk_from(elem, entries + i + 1, body, fn, ctx);
             }
             i += body;
@@ -823,17 +807,10 @@ static void guarded_walk_from(char *base, const int32_t *entries, int64_t count,
         int32_t e = entries[i];
         uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
         if (kind == RASK_OWNED_TAG_IF) {
-            int64_t body = RASK_OWNED_TAG_COUNT(e);
-            if (i + body >= count) return;
-            const char *at = base + RASK_OWNED_TAG_OFFSET(e);
-            int64_t tag;
-            switch (RASK_OWNED_TAG_WIDTH(e)) {
-                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
-                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
-                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
-                default: tag = *(const int64_t *)at;           break;
-            }
-            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+            int64_t body;
+            int live = rask_owned_guard(base, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
                 guarded_walk_from(base, entries + i + 1, body, 1, lo, hi, fn, ctx);
             }
             i += body;
