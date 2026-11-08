@@ -429,25 +429,14 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_release", Internal::FreshFromReceiver),
     ("Mutex_staged_commit", Internal::FreshFromReceiver),
 
-    // Rack bookkeeping: write through a link, or tell the rack about a field.
+    // A write through a link.
     ("Link_set", Internal::FreshFromReceiver),
     ("Link_set_node", Internal::FreshFromReceiver),
-    ("Link_register_struct", Internal::FreshFromReceiver),
-    ("Link_forget_struct", Internal::FreshFromReceiver),
-    ("Link_guarded", Internal::FreshFromReceiver),
-    ("Link_register_element", Internal::FreshFromReceiver),
-    ("Link_register_vec", Internal::FreshFromReceiver),
-    ("Link_register_map", Internal::FreshFromReceiver),
-    ("Link_register_entry", Internal::FreshFromReceiver),
-    // The other half: drop the records of a container a place has stopped
-    // holding. Same shape — it reads the container and owns nothing.
-    ("Link_forget_vec", Internal::FreshFromReceiver),
-    ("Link_forget_map", Internal::FreshFromReceiver),
-    // A loop's cursor on the vector it walks: the vector keeps the address
-    // between begin and end and owns nothing through it.
-    ("Vec_iter_begin", Internal::FreshFromReceiver),
-    ("Vec_iter_next", Internal::FreshFromReceiver),
-    ("Vec_iter_end", Internal::FreshFromReceiver),
+    // The rack's own bookkeeping — recording and forgetting the edges a
+    // value holds, a loop's cursor on a vector of links — is called by its
+    // runtime name (`rask_link_register_vec`, `rask_vec_iter_begin`): those
+    // are runtime calls MIR makes for itself, with no declaration to answer
+    // for, and an ordinary call already borrows what it's handed.
 
     // ── Consume the receiver ────────────────────────────────────
     // The frees this pipeline emits for itself. They take the container and it

@@ -9,7 +9,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
-use rask_mir::{MirConst, MirFunction, MirOperand};
+use rask_mir::{MirConst, MirFunction, MirOperand, MirStmtKind};
 use rask_layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
@@ -1223,6 +1223,56 @@ impl CodeGenerator {
     ///
     /// Call this after `declare_runtime_functions()` and before `declare_functions()`.
     /// User-defined functions declared later will shadow any matching stdlib names.
+    /// The runtime functions lowering calls by symbol (`FunctionRef::runtime`):
+    /// each argument a word, a word back when the call has a destination. The
+    /// call states the shape, so there is no dispatch row to keep in step.
+    fn declare_runtime_calls(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        let mut arity: HashMap<String, (usize, bool)> = HashMap::new();
+        for mir_fn in mir_functions {
+            for block in &mir_fn.blocks {
+                for stmt in &block.statements {
+                    let MirStmtKind::Call { dst, func, args } = &stmt.kind else { continue };
+                    if !func.runtime {
+                        continue;
+                    }
+                    let shape = (args.len(), dst.is_some());
+                    match arity.get(&func.name) {
+                        // Two calls disagreeing on the argument count is a
+                        // lowering bug; a call that drops the result is fine.
+                        Some((n, _)) if *n != shape.0 => {
+                            return Err(CodegenError::UnsupportedFeature(format!(
+                                "runtime call `{}` made with {} and {} arguments",
+                                func.name, n, shape.0
+                            )));
+                        }
+                        Some((_, ret)) if *ret || !shape.1 => {}
+                        _ => {
+                            arity.insert(func.name.clone(), shape);
+                        }
+                    }
+                }
+            }
+        }
+        for (name, (params, ret)) in arity {
+            if self.func_ids.contains_key(&name) {
+                continue;
+            }
+            let mut sig = self.module.make_signature();
+            for _ in 0..params {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            if ret {
+                sig.returns.push(AbiParam::new(types::I64));
+            }
+            let id = self
+                .module
+                .declare_function(&name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name, id);
+        }
+        Ok(())
+    }
+
     pub fn declare_stdlib_functions(&mut self) -> CodegenResult<()> {
         crate::dispatch::declare_stdlib(&mut self.module, &mut self.func_ids)
     }
@@ -1354,6 +1404,7 @@ impl CodeGenerator {
         self.struct_layouts = mono.struct_layouts.clone();
         self.type_names = mono.type_names.clone();
         self.enum_layouts = mono.enum_layouts.clone();
+        self.declare_runtime_calls(mir_functions)?;
 
         for mir_fn in mir_functions {
             // Skip empty-body stubs that shadow stdlib entries (e.g.

@@ -358,7 +358,7 @@ impl<'a> MirLowerer<'a> {
         if self.ctx.struct_carries_links(ty) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Link_register_struct".to_string()),
+                func: FunctionRef::runtime("rask_link_register_struct".to_string()),
                 args: vec![MirOperand::Local(dst)],
             }));
         }
@@ -404,7 +404,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn emit_link_guarded(&mut self, addr: MirOperand, value: crate::LocalId, reg: bool) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Link_guarded".to_string()),
+            func: FunctionRef::runtime("rask_link_guarded".to_string()),
             args: vec![addr, MirOperand::Local(value), MirOperand::Constant(MirConst::Int(reg as i64))],
         }));
     }
@@ -443,15 +443,15 @@ impl<'a> MirLowerer<'a> {
                     self.emit_link_store(base, at, incoming);
                     continue;
                 }
-                k if k == RASK_RACK_FIELD_VEC as i32 => ("Link_forget_vec", "Link_register_vec"),
-                k if k == RASK_RACK_FIELD_MAP as i32 => ("Link_forget_map", "Link_register_map"),
+                k if k == RASK_RACK_FIELD_VEC as i32 => ("rask_link_forget_vec", "rask_link_register_vec"),
+                k if k == RASK_RACK_FIELD_MAP as i32 => ("rask_link_forget_map", "rask_link_register_map"),
                 _ => continue,
             };
             let old = self.emit_word_at(MirOperand::Local(base), at);
             for (func, arg) in [(forget, old), (register, incoming)] {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(func.to_string()),
+                    func: FunctionRef::runtime(func.to_string()),
                     args: vec![arg],
                 }));
             }
@@ -718,7 +718,7 @@ impl<'a> MirLowerer<'a> {
                         let (old_op, _) = self.lower_expr(target)?;
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
-                            func: FunctionRef::internal(func.to_string()),
+                            func: FunctionRef::runtime(func.to_string()),
                             args: vec![old_op],
                         }));
                     }
@@ -735,7 +735,7 @@ impl<'a> MirLowerer<'a> {
                 {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal(func.to_string()),
+                        func: FunctionRef::runtime(func.to_string()),
                         args: vec![val_op.clone()],
                     }));
                 }
@@ -2016,7 +2016,7 @@ impl<'a> MirLowerer<'a> {
         {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(func.to_string()),
+                func: FunctionRef::runtime(func.to_string()),
                 args: vec![MirOperand::Local(local_id)],
             }));
         }

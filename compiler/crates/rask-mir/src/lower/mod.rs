@@ -1480,8 +1480,8 @@ impl<'a> MirContext<'a> {
             return None;
         }
         match head.as_str() {
-            "Vec" => Some("Link_register_vec"),
-            "Map" => Some("Link_register_map"),
+            "Vec" => Some("rask_link_register_vec"),
+            "Map" => Some("rask_link_register_map"),
             _ => None,
         }
     }
@@ -1562,7 +1562,7 @@ impl<'a> MirContext<'a> {
     /// Whether a value of `ty` holds a link behind a tag: in the payload of a
     /// tagged `T?`, or in an enum variant's fields (#1801). Those are live only
     /// while their variant is, so they are recorded per store
-    /// (`Link_guarded`) rather than once, by a descriptor of fixed slots.
+    /// (`rask_link_guarded`) rather than once, by a descriptor of fixed slots.
     pub(crate) fn mir_has_guarded_link(&self, ty: &MirType) -> bool {
         self.mir_guarded(ty, 0)
     }
@@ -1643,8 +1643,8 @@ impl<'a> MirContext<'a> {
     /// storage the program had finished with (#983).
     pub(crate) fn container_link_forget(&self, ty: &Type) -> Option<&'static str> {
         match self.container_link_registration(ty)? {
-            "Link_register_vec" => Some("Link_forget_vec"),
-            "Link_register_map" => Some("Link_forget_map"),
+            "rask_link_register_vec" => Some("rask_link_forget_vec"),
+            "rask_link_register_map" => Some("rask_link_forget_map"),
             _ => None,
         }
     }
@@ -1694,7 +1694,7 @@ impl<'a> MirContext<'a> {
         }
         if let Some(reg) = self.container_link_registration(bare) {
             let kind = match reg {
-                "Link_register_vec" => rask_mono::runtime_abi::RASK_RACK_FIELD_VEC,
+                "rask_link_register_vec" => rask_mono::runtime_abi::RASK_RACK_FIELD_VEC,
                 _ => rask_mono::runtime_abi::RASK_RACK_FIELD_MAP,
             };
             out.push(crate::LinkSlot { kind: kind as i32, offset: base });

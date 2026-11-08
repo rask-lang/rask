@@ -6954,7 +6954,7 @@ impl<'a> MirLowerer<'a> {
         if let Some((func, args)) = container_edge {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(func.to_string()),
+                func: FunctionRef::runtime(func.to_string()),
                 args,
             }));
         }
@@ -7041,9 +7041,9 @@ impl<'a> MirLowerer<'a> {
         args: &[MirOperand],
     ) -> Option<(&'static str, Vec<MirOperand>)> {
         let (value_index, func) = match name {
-            "Vec_push" => (1, "Link_register_element"),
-            "Vec_set" | "Vec_insert_at" => (2, "Link_register_element"),
-            "Map_insert" => (2, "Link_register_entry"),
+            "Vec_push" => (1, "rask_link_register_element"),
+            "Vec_set" | "Vec_insert_at" => (2, "rask_link_register_element"),
+            "Map_insert" => (2, "rask_link_register_entry"),
             _ => return None,
         };
         let value = args.get(value_index)?;

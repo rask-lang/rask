@@ -329,8 +329,8 @@ enum HandAdapt {
 fn hand_adaptation(name: &str) -> Option<HandAdapt> {
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
-        "Link_register_struct" | "Link_forget_struct" => HandAdapt::LinkRegisterStruct,
-        "Link_guarded" => HandAdapt::LinkGuarded,
+        "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
+        "rask_link_guarded" => HandAdapt::LinkGuarded,
         "Rack_insert" => HandAdapt::RackInsert,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
@@ -8231,7 +8231,7 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // `Link_guarded(addr, value, reg)`: the value's element map, read off
+            // `rask_link_guarded(addr, value, reg)`: the value's element map, read off
             // the second operand's type, replaces that operand. The map's
             // guarded `RASK_OWNED_LINK` entries are links behind a tag (#1801).
             HandAdapt::LinkGuarded => {

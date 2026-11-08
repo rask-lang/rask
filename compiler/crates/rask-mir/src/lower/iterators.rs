@@ -1003,7 +1003,7 @@ impl<'a> MirLowerer<'a> {
                 if !matches!(chain.source.kind, ExprKind::Field { .. }) {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("Link_register_vec".to_string()),
+                        func: FunctionRef::runtime("rask_link_register_vec".to_string()),
                         args: vec![MirOperand::Local(collection)],
                     }));
                 }
@@ -1016,7 +1016,7 @@ impl<'a> MirLowerer<'a> {
                 ]));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal("Vec_iter_begin".to_string()),
+                    func: FunctionRef::runtime("rask_vec_iter_begin".to_string()),
                     args: vec![
                         MirOperand::Local(collection),
                         MirOperand::Local(cursor),
@@ -1052,7 +1052,7 @@ impl<'a> MirLowerer<'a> {
         if let Some((cursor, _, _)) = cursor {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(idx),
-                func: FunctionRef::internal("Vec_iter_next".to_string()),
+                func: FunctionRef::runtime("rask_vec_iter_next".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(cursor)],
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1144,7 +1144,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(cleanup_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Vec_iter_end".to_string()),
+            func: FunctionRef::runtime("rask_vec_iter_end".to_string()),
             args: vec![
                 MirOperand::Local(collection),
                 MirOperand::Local(cursor),

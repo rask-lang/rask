@@ -3,7 +3,7 @@
 //! A local struct holding links forgets its edges when its frame ends.
 //!
 //! A struct bound in a function (`let c = Cursor(at: b)`) registers each link
-//! slot with the target's rack (`Link_register_struct`), keyed by the slot's
+//! slot with the target's rack (`rask_link_register_struct`), keyed by the slot's
 //! address on the stack. The frame then returns and the address is reused by
 //! whatever runs next, but the record stayed on the target: a later `delete`
 //! read a dead frame to ask whether the slot still named the node, and would
@@ -19,9 +19,9 @@ use crate::{
     FunctionRef, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminatorKind,
 };
 
-const REGISTER: &str = "Link_register_struct";
-const FORGET: &str = "Link_forget_struct";
-const GUARDED: &str = "Link_guarded";
+const REGISTER: &str = "rask_link_register_struct";
+const FORGET: &str = "rask_link_forget_struct";
+const GUARDED: &str = "rask_link_guarded";
 
 pub fn forget_local_links(functions: &mut [MirFunction]) {
     for func in functions {
@@ -47,7 +47,7 @@ fn forget_in(func: &mut MirFunction) {
             .collect()
     };
     let fixed = registered(REGISTER);
-    // Links behind a tag, recorded by `Link_guarded` on the local's own
+    // Links behind a tag, recorded by `rask_link_guarded` on the local's own
     // address (a field store's address is a temporary, not a holder).
     let guarded: BTreeSet<LocalId> = func
         .blocks
@@ -102,14 +102,14 @@ fn forget_in(func: &mut MirFunction) {
         for local in &fixed {
             block.statements.push(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(FORGET.to_string()),
+                func: FunctionRef::runtime(FORGET.to_string()),
                 args: vec![MirOperand::Local(*local)],
             }));
         }
         for local in &guarded {
             block.statements.push(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(GUARDED.to_string()),
+                func: FunctionRef::runtime(GUARDED.to_string()),
                 args: vec![
                     MirOperand::Local(*local),
                     MirOperand::Local(*local),

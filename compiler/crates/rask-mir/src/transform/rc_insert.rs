@@ -174,9 +174,15 @@ fn retain_copy_captures(func: &mut MirFunction) {
 /// Does the call keep its argument at `i`, rather than only read it?
 ///
 /// From the body when this pass can read one (`kept`), from the declaration
-/// when it can't. Unknown is "keeps": the caller then releases nothing it
-/// passed, which leaks rather than double-frees.
-fn call_keeps_arg(fname: &str, i: usize, kept: &HashMap<String, Vec<bool>>) -> bool {
+/// when it can't. A runtime call lowering makes for itself
+/// (`FunctionRef::runtime`) reads what it's handed. Unknown is "keeps": the
+/// caller then releases nothing it passed, which leaks rather than
+/// double-frees.
+fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Vec<bool>>) -> bool {
+    if fref.runtime {
+        return false;
+    }
+    let fname = fref.name.as_str();
     match kept.get(fname) {
         Some(v) => v.get(i).copied().unwrap_or(true),
         None => rask_stdlib::mir_metadata::argument_mode(fname, i)
@@ -285,7 +291,7 @@ fn retain_views_handed_over(
                 MirStmtKind::Call { func: fref, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if views.contains(&id) && call_keeps_arg(&fref.name, i, kept) {
+                        if views.contains(&id) && call_keeps_arg(fref, i, kept) {
                             insertions.push((si, id));
                         }
                     }
@@ -792,7 +798,7 @@ fn insert_aggregate_release(
                         // struct's `Vec` came to be freed by nobody
                         // (`os.Command.spawn`), and a struct handed to `m.get`
                         // left its strings to nobody (#1394).
-                        if !call_keeps_arg(&fref.name, i, kept) {
+                        if !call_keeps_arg(fref, i, kept) {
                             // It may still write into it: a `mutate`
                             // parameter is the caller's slot, by address.
                             if aggregates.contains(&id) {
