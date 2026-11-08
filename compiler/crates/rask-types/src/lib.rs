@@ -15,5 +15,5 @@ pub use lang::LangItem;
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use defs::{
     conformance_symbol, ErrorWrap, FnSignature, InterfaceAssocType, InterfaceTypeParam, MemberDecl, MethodOrigin,
-    MethodSig, SelfParam, TypeBinding, TypeDef, VariantDecl,
+    MethodSig, PatternTarget, SelfParam, TypeBinding, TypeDef, VariantDecl,
 };

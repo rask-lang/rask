@@ -2755,7 +2755,7 @@ impl<'a> MirLowerer<'a> {
                     return Ok((val, ty));
                 }
                 "Ok" | "Some" | "Err" => {
-                    let tag = self.variant_tag(&func_name);
+                    let tag = rask_stdlib::wrappers::wrapper_tag(&func_name).unwrap_or(0) as i64;
                     // Derive the result MirType from type checker info if available.
                     // Fallback uses the payload's actual type so aggregate payloads
                     // get a correctly-sized stack slot.
@@ -3026,12 +3026,6 @@ impl<'a> MirLowerer<'a> {
                 if !self.name_holds_a_value(name) {
                     if let Some(op) = self.enum_type_of_node(expr.id).and_then(|t| self.lower_enum_variant(&t, field)) {
                         return Ok(op);
-                    }
-                    // Unknown enum type (built-in Error, etc.) — produce a
-                    // tag-only stub so codegen can proceed.
-                    if is_type_constructor_name(name) {
-                        let tag = self.variant_tag(field);
-                        return Ok((MirOperand::Constant(MirConst::Int(tag)), MirType::Ptr));
                     }
                 }
             }
@@ -8627,7 +8621,7 @@ impl<'a> MirLowerer<'a> {
         // A variant nested inside a variant can't be one flat expression: the
         // inner tag means nothing until the outer one has passed, so it's
         // tested with branches and the answer collected in a bool (#1645).
-        if matches!(val_ty, MirType::Enum(_)) && Self::has_nested_variant(pattern) {
+        if matches!(val_ty, MirType::Enum(_)) && self.has_nested_variant(pattern) {
             let matches = self.builder.alloc_temp(MirType::Bool);
             let fail = self.builder.create_block();
             let done = self.builder.create_block();
@@ -8674,11 +8668,11 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Whether a variant pattern has another variant pattern in a field.
-    fn has_nested_variant(pattern: &rask_ast::expr::Pattern) -> bool {
+    fn has_nested_variant(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
             PatternKind::Constructor { .. } | PatternKind::Struct { .. } => true,
-            PatternKind::Ident(n) => super::is_variant_name(n),
+            PatternKind::Ident(n) => self.pattern_names_variant(p, n),
             _ => false,
         };
         match &pattern.kind {

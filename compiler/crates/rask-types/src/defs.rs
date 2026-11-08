@@ -404,3 +404,14 @@ impl TypeBinding {
         Self { param: param.into(), ty }
     }
 }
+
+/// What the checker resolved a pattern to, filed under the pattern's id.
+/// Later passes read this instead of resolving the pattern's spelling again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternTarget {
+    /// A variant of the enum `enum_id`, by its declared name. The scrutinee is
+    /// that enum, or a `T or E` with that enum as one branch.
+    Variant { enum_id: crate::TypeId, variant: String },
+    /// A bare name that binds the value it matches.
+    Binding,
+}

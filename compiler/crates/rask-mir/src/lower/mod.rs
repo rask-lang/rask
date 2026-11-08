@@ -5159,16 +5159,43 @@ impl<'a> MirLowerer<'a> {
         !name.chars().next().map_or(false, |c| c.is_lowercase())
     }
 
-    /// Resolve a pattern to its discriminant tag with no type context. Only the
-    /// nominal-variant cases are meaningful here — Ident/TypePat routing that
-    /// needs the scrutinee type goes through `pattern_tag_in_type_context`.
-    fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
-        use rask_ast::expr::PatternKind;
-        match &pattern.kind {
-            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self.variant_tag(name),
-            PatternKind::Ident(name) if is_variant_name(name) => self.variant_tag(name),
-            _ => 0,
+    /// What the checker resolved `pat` to. `None` for a pattern built after
+    /// checking, which never names a variant the checker didn't.
+    pub(crate) fn pattern_target(&self, pat: &rask_ast::expr::Pattern) -> Option<&rask_types::PatternTarget> {
+        self.ctx.typed?.pattern_targets.get(&pat.id)
+    }
+
+    /// Does `pat`, written `name`, name a variant rather than bind a value?
+    pub(crate) fn pattern_names_variant(&self, pat: &rask_ast::expr::Pattern, name: &str) -> bool {
+        match self.pattern_target(pat) {
+            Some(rask_types::PatternTarget::Variant { .. }) => true,
+            Some(rask_types::PatternTarget::Binding) => false,
+            None => is_variant_name(name),
         }
+    }
+
+    /// The tag of the variant `pat` names, read from the enum `val_ty` is.
+    /// `None` when `val_ty` isn't that enum: a binding, or a variant of one
+    /// branch of a `T or E`.
+    pub(crate) fn pattern_variant_tag(
+        &self,
+        pat: &rask_ast::expr::Pattern,
+        name: &str,
+        val_ty: &MirType,
+    ) -> Option<i64> {
+        let MirType::Enum(eid) = val_ty else { return None };
+        let layout = self.ctx.enum_layouts.get(eid.id as usize)?;
+        let variant = match self.pattern_target(pat) {
+            Some(rask_types::PatternTarget::Variant { enum_id, variant }) => {
+                if layout.key.as_ref().is_some_and(|k| k.id != *enum_id) {
+                    return None;
+                }
+                variant.as_str()
+            }
+            Some(rask_types::PatternTarget::Binding) => return None,
+            None => name.rsplit('.').next().unwrap_or(name),
+        };
+        layout.variants.iter().find(|v| v.name == variant).map(|v| v.tag as i64)
     }
 
     /// Resolve a pattern to its expected discriminant tag using the scrutinee's
@@ -5181,22 +5208,16 @@ impl<'a> MirLowerer<'a> {
     ) -> i64 {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
-            PatternKind::Ident(name) if is_variant_name(name) => {
-                // A nominal name on a Result/Option side → that side's tag;
-                // otherwise a nested enum variant → its own tag.
-                if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
-                    let matches_side = self.mir_side_names_contain(val_ty, name);
-                    // A side whose type never got a layout lowers to `i64`, so
-                    // the name comparison can't find it. Falling through to the
-                    // variant lookup then answered 0 for every such name, and
-                    // `r is SysError` on a `void or SysError` routed to the
-                    // success arm.
-                    if matches_side || !self.names_a_known_variant(name) {
-                        return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
-                    }
+            PatternKind::Ident(name) if self.pattern_names_variant(pattern, name) || is_variant_name(name) => {
+                if let Some(tag) = self.pattern_variant_tag(pattern, name, val_ty) {
+                    return tag;
                 }
-                self.variant_tag_in_scrutinee(name, val_ty)
-                    .unwrap_or_else(|| self.variant_tag(name))
+                // Not a variant of the scrutinee's own enum: on a `T or E` a
+                // name picks a side.
+                if matches!(val_ty, MirType::Result { .. } | MirType::Option(_)) {
+                    return if self.pattern_is_err_side(name, val_ty) { 1 } else { 0 };
+                }
+                0
             }
             PatternKind::Ident(_) => 0,
             PatternKind::TypePat { ty, .. } => {
@@ -5205,21 +5226,11 @@ impl<'a> MirLowerer<'a> {
             // A named variant is a variant like a positional one: `s is
             // Rect(w, h)` tested against tag 0 whatever `Rect` was, so it was
             // true of every first variant and of nothing else.
-            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self
-                .variant_tag_in_scrutinee(name, val_ty)
-                .unwrap_or_else(|| self.variant_tag(name)),
-            _ => self.pattern_tag(pattern),
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
+                self.pattern_variant_tag(pattern, name, val_ty).unwrap_or(0)
+            }
+            _ => 0,
         }
-    }
-
-    /// True when some declared enum has a variant by this name.
-    fn names_a_known_variant(&self, name: &str) -> bool {
-        let bare = name.rsplit('.').next().unwrap_or(name);
-        self.ctx
-            .enum_layouts
-            .iter()
-            .any(|l| l.variants.iter().any(|v| v.name == bare))
-            || rask_stdlib::ordering_tag(bare).is_some()
     }
 
     /// True when `name` is the nominal name of the ok side, err side, or an err
@@ -5313,81 +5324,6 @@ impl<'a> MirLowerer<'a> {
             .iter()
             .position(|m| self.mir_type_name(m).as_deref() == Some(name))
     }
-
-    /// Look up the tag value for a variant name.
-    ///
-    /// Accepts both the bare and the qualified spelling. A pattern written
-    /// `Kind.B` arrives here as one string, and searching the layouts for a
-    /// variant literally named "Kind.B" never matched — so every `x is
-    /// Enum.Variant` compared the tag against 0 and only ever answered true for
-    /// the first variant (#476). `match` already stripped the qualifier.
-    ///
-    /// When the qualifier is there it also pins down which enum to look in,
-    /// which matters as soon as two enums share a variant name.
-    fn variant_tag(&self, name: &str) -> i64 {
-        self.variant_tag_impl(name)
-    }
-
-    /// The tag `name` carries inside the scrutinee's own enum, when the
-    /// scrutinee is an enum that has such a variant.
-    ///
-    /// Without a qualifier `variant_tag` scans every layout and takes the first
-    /// hit, so an unqualified arm loses the name to whichever enum was
-    /// registered first — the stdlib included. `enum Top { Io(Inner) }` matched
-    /// with `Io(e) => …` compared against `HttpError.Io`'s tag from
-    /// `stdlib/http.rk`, no arm matched, and the match trapped (SIGILL). The
-    /// value being matched knows its own enum; ask it first.
-    pub(crate) fn variant_tag_in_scrutinee(&self, name: &str, val_ty: &MirType) -> Option<i64> {
-        let MirType::Enum(crate::types::EnumLayoutId { id, .. }) = val_ty else {
-            return None;
-        };
-        let layout = self.ctx.enum_layouts.get(*id as usize)?;
-        let bare = name.rsplit('.').next().unwrap_or(name);
-        layout.variants.iter().find(|v| v.name == bare).map(|v| v.tag as i64)
-    }
-
-    fn variant_tag_impl(&self, name: &str) -> i64 {
-        if let Some(tag) = rask_stdlib::wrappers::wrapper_tag(name) {
-            return tag as i64;
-        }
-        let (enum_name, bare) = match name.rsplit_once('.') {
-            Some((qualifier, variant)) => (
-                Some(qualifier.rsplit('.').next().unwrap_or(qualifier)),
-                variant,
-            ),
-            None => (None, name),
-        };
-        if let Some(enum_name) = enum_name {
-            for layout in self.ctx.enum_layouts.iter().filter(|l| l.name == enum_name) {
-                for variant in &layout.variants {
-                    if variant.name == bare {
-                        return variant.tag as i64;
-                    }
-                }
-            }
-            // `Ordering` is registered by the compiler, not declared,
-            // so it has no layout to read tags from.
-            if enum_name == "Ordering" {
-                if let Some(tag) = rask_stdlib::ordering_tag(bare) {
-                    return tag;
-                }
-            }
-        }
-        // Unqualified, or the qualifier named no known enum: first
-        // layout that declares the variant.
-        for layout in self.ctx.enum_layouts {
-            for variant in &layout.variants {
-                if variant.name == bare {
-                    return variant.tag as i64;
-                }
-            }
-        }
-        // A declared enum wins the bare name; `Ordering` picks up what's
-        // left, which is what `Ordering.Less` arrives as — the qualifier
-        // is dropped before it gets here.
-        rask_stdlib::ordering_tag(bare).unwrap_or(0)
-    }
-
     /// Check if an expression's type is niche-optimized Option<Handle<T>>.
     fn is_niche_option_expr(&self, expr: &Expr) -> bool {
         self.niche_sentinel_of_expr(expr).is_some()
@@ -5627,14 +5563,14 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Whether `pattern` binds a name anywhere inside a variant's fields.
-    fn binds_any(pattern: &rask_ast::expr::Pattern) -> bool {
+    fn binds_any(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Constructor { fields, .. } => fields.iter().any(|f| {
-                matches!(&f.kind, PatternKind::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+                matches!(&f.kind, PatternKind::Ident(n) if !self.pattern_names_variant(f, n)) || self.binds_any(f)
             }),
             PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| {
-                matches!(&f.kind, PatternKind::Ident(n) if !is_variant_name(n)) || Self::binds_any(f)
+                matches!(&f.kind, PatternKind::Ident(n) if !self.pattern_names_variant(f, n)) || self.binds_any(f)
             }),
             _ => false,
         }
@@ -5643,11 +5579,11 @@ impl<'a> MirLowerer<'a> {
     /// Whether a variant field's pattern needs testing at runtime: a nested
     /// variant, or a literal or range somewhere inside one. A bare name or
     /// `_` takes any value.
-    pub(super) fn nested_needs_test(pattern: &rask_ast::expr::Pattern) -> bool {
+    pub(super) fn nested_needs_test(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Wildcard => false,
-            PatternKind::Ident(n) => is_variant_name(n),
+            PatternKind::Ident(n) => self.pattern_names_variant(pattern, n),
             _ => true,
         }
     }
@@ -5672,7 +5608,7 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::{Pattern, PatternKind};
         match &pattern.kind {
             PatternKind::Wildcard => Ok(()),
-            PatternKind::Ident(name) if !is_variant_name(name) => Ok(()),
+            PatternKind::Ident(name) if !self.pattern_names_variant(pattern, name) => Ok(()),
             PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 let pass = self.builder.create_block();
                 self.emit_pattern_test(value, pattern, pass, fail)?;
@@ -5705,7 +5641,7 @@ impl<'a> MirLowerer<'a> {
                     _ => &[],
                 };
                 let (Some(tag), Some(field_types)) =
-                    (self.variant_tag_in_scrutinee(name, ty), self.variant_field_types(ty, name))
+                    (self.pattern_variant_tag(pattern, name, ty), self.variant_field_types(ty, name))
                 else {
                     return Err(LoweringError::InvalidConstruct(format!(
                         "`{name}` nested in a variant pattern names no variant of the \
@@ -5722,7 +5658,7 @@ impl<'a> MirLowerer<'a> {
                 }));
                 self.builder.switch_to_block(pass);
                 for (j, field_pat) in fields.iter().enumerate() {
-                    if !Self::nested_needs_test(field_pat) {
+                    if !self.nested_needs_test(field_pat) {
                         continue;
                     }
                     let Some((field_ty, off, sz)) = field_types.get(j).cloned() else {
@@ -5844,7 +5780,7 @@ impl<'a> MirLowerer<'a> {
                         if let Some(prefix) = self.mir_type_name(&field_ty) {
                             self.meta_mut(&name).type_prefix = Some(prefix);
                         }
-                    } else if Self::binds_any(field_pat) && !is_niche {
+                    } else if self.binds_any(field_pat) && !is_niche {
                         // A nested variant pattern: its tags were tested before
                         // binding, so the field holds that variant. Read it out
                         // and bind inside it the same way (#1645).

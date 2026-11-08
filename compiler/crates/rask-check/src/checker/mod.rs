@@ -408,6 +408,8 @@ pub struct TypeChecker {
     /// of the enclosing function's error enum. NodeId of the `try` expression →
     /// the wrapping variant. Both backends read this to build the enum value.
     pub(super) error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
+    /// What each pattern resolved to, by the pattern's id.
+    pub(super) pattern_targets: HashMap<NodeId, rask_types::PatternTarget>,
     /// ER31a: `try` sites whose source error type wasn't known yet and whose
     /// target error enum could wrap it. Settled after constraint solving.
     /// (`try` node, source error, target error, span).
@@ -733,6 +735,7 @@ impl TypeChecker {
             variadic_externs: std::collections::HashSet::new(),
             pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),
+            pattern_targets: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
@@ -1190,6 +1193,7 @@ impl TypeChecker {
             .map(|(n, t)| (*n, self.ctx.apply(t)))
             .collect();
         let error_wraps = self.error_wraps.clone();
+        let pattern_targets = std::mem::take(&mut self.pattern_targets);
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let err_returns = self.err_returns.clone();
         let try_chain_placement = self.try_chain_placement.clone();
@@ -1266,6 +1270,7 @@ impl TypeChecker {
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,
             error_wraps,
+            pattern_targets,
             fallback_keeps_shape,
             err_returns,
             // Ownership fills this in; the checker has no say in it.

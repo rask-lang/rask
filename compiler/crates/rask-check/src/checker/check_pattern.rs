@@ -355,11 +355,11 @@ impl TypeChecker {
                     // Stand-ins for the payload a tag test doesn't name; never
                     // stored, so they need no id of their own.
                     let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard); arity];
-                    return self.check_constructor_pattern(&qualified, &fields, scrutinee_ty, span);
+                    return self.check_constructor_pattern(pattern.id, &qualified, &fields, scrutinee_ty, span);
                 }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
                 if name.contains('.') {
-                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                    return self.check_constructor_pattern(pattern.id, name, &[], scrutinee_ty, span);
                 }
                 // OPT2/ER2: reject `Ok`/`Err`/`Some`/`None` when the scrutinee
                 // is Result/Option. Allow them as user-enum variant names
@@ -440,6 +440,7 @@ impl TypeChecker {
                         return vec![];
                     }
                 }
+                self.pattern_targets.insert(pattern.id, rask_types::PatternTarget::Binding);
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
@@ -471,7 +472,7 @@ impl TypeChecker {
                 if let Some(bindings) = self.check_struct_shorthand(name, fields, scrutinee_ty, span) {
                     return bindings;
                 }
-                self.check_constructor_pattern(name, fields, scrutinee_ty, span)
+                self.check_constructor_pattern(pattern.id, name, fields, scrutinee_ty, span)
             }
 
             PatternKind::Struct { name, fields, .. } => {
@@ -486,6 +487,11 @@ impl TypeChecker {
                 // (#1026). The scrutinee says which enum it is; ask it.
                 let name = &self.qualify_variant_name(name, scrutinee_ty);
                 if let Some(variant_fields) = self.types.struct_variant_fields(name) {
+                    if let Some((enum_id, _)) = self.enum_id_from_pattern_name(name) {
+                        let variant = name.rsplit('.').next().unwrap_or(name).to_string();
+                        self.pattern_targets
+                            .insert(pattern.id, rask_types::PatternTarget::Variant { enum_id, variant });
+                    }
                     // A generic enum's fields are written in its parameters;
                     // `Slot.Pair { left, right }` on a `Slot<i64>` binds `i64`s,
                     // not `T`s (#1473).
@@ -892,6 +898,7 @@ impl TypeChecker {
 
     pub(super) fn check_constructor_pattern(
         &mut self,
+        pat_id: rask_ast::NodeId,
         name: &str,
         fields: &[Pattern],
         scrutinee_ty: &Type,
@@ -1099,6 +1106,10 @@ impl TypeChecker {
             });
 
             if let Some((variant_field_types, type_params)) = found {
+                self.pattern_targets.insert(
+                    pat_id,
+                    rask_types::PatternTarget::Variant { enum_id: type_id, variant: variant_lookup_name.to_string() },
+                );
                 if fields.len() != variant_field_types.len() {
                     self.errors.push(TypeError::ArityMismatch {
                         expected: variant_field_types.len(),
