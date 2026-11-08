@@ -3044,7 +3044,8 @@ impl TypeChecker {
                 let target = self.ctx.fresh_var();
                 let mut sources = args.iter().map(|arg| self.infer_expr(&arg.expr)).collect::<Vec<_>>();
                 if sources.len() == 1 {
-                    self.pending_transmutes.push((sources.remove(0), target.clone(), span));
+                    let params = self.types.type_params_in_scope();
+                    self.pending_transmutes.push((sources.remove(0), target.clone(), span, params));
                 }
                 return target;
             }
@@ -4391,7 +4392,7 @@ impl TypeChecker {
             .name()
             .and_then(|n| self.lookup_local(n))
             .map(|t| self.resolve_named(&self.ctx.apply(&t)))
-            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy(&t));
+            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy_in_scope(&t));
         if let Some(var_name) = object.name().filter(|_| !recv_copy) {
             if self.method_mutates_self(var_name, method) {
                 if let Some(recv_path) = Self::access_path(object) {
@@ -6899,7 +6900,8 @@ impl TypeChecker {
     /// value out with, so padding counts. A side naming a type parameter has
     /// no size until it's instantiated; MIR lowering judges that one.
     pub(super) fn settle_transmutes(&mut self) {
-        for (from, to, span) in std::mem::take(&mut self.pending_transmutes) {
+        for (from, to, span, params) in std::mem::take(&mut self.pending_transmutes) {
+            let is_param = |n: &str| params.iter().any(|p| p == n);
             let from = self.ctx.apply(&from);
             let to = self.ctx.apply(&to);
             if matches!(from, Type::Error) || matches!(to, Type::Error) {
@@ -6909,7 +6911,7 @@ impl TypeChecker {
                 self.errors.push(TypeError::TransmuteNeedsTarget { from, span });
                 continue;
             }
-            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from), self.types.size_align(&to)) else {
+            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from, &is_param), self.types.size_align(&to, &is_param)) else {
                 continue;
             };
             if from_size != to_size {

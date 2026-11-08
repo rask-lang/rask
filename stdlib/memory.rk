@@ -11,7 +11,7 @@ public struct Rack<T> { }
 /// A link is a reference, not a ticket: `l.field` reads the node with no
 /// generation check and no `using` context. An edge that can die is declared
 /// `Link<T>?` and becomes `none` at the moment its target is deleted.
-@handle
+@handle(niche)
 public struct Link<T> { }
 
 extend Rack<T> {

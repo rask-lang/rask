@@ -329,22 +329,7 @@ impl<'a> MirLowerer<'a> {
         // A `Vec<T>` field is an array, not a number. Without this the field
         // went through json_buf_add_i64 and `{"items": [...]}` came out as
         // `{"items":{}}`.
-        //
-        // `field_ty` comes from the struct's own declaration (via
-        // `StructLayout`), not from the checker's inferred node types — it
-        // stays in the pre-resolve `UnresolvedGeneric` spelling, so there's no
-        // resolved `Generic { base, .. }` form to match here.
-        let vec_args = match field_ty {
-            Type::UnresolvedGeneric { name, args } if name == "Vec" => Some(args),
-            _ => None,
-        };
-        let vec_elem = vec_args.and_then(|args| {
-            args.first().and_then(|a| match a {
-                rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                _ => None,
-            })
-        });
-        if let Some(elem) = vec_elem {
+        if let Some(elem) = self.collection_arg(field_ty, "Vec", 0) {
             let elem_mir = self.ctx.type_to_mir(&elem);
             let (arr_json, _) = self.lower_json_encode_vec(
                 MirOperand::Local(field_val),
@@ -395,13 +380,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let nested_struct = match field_ty {
-            Type::UnresolvedNamed(name) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-            Type::UnresolvedGeneric { name, .. } => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-            _ => None,
-        };
-
-        if let Some(nested_layout) = nested_struct {
+        if let Some(nested_layout) = self.struct_layout_of(field_ty) {
             let (nested_json, _) = self.lower_json_encode_struct(
                 MirOperand::Local(field_val),
                 nested_layout,
@@ -422,12 +401,7 @@ impl<'a> MirLowerer<'a> {
         // Without this an enum field fell through to the integer encoder
         // and wrote the address of its slot as a number — valid JSON with a
         // stack address in it, and no warning (#854).
-        let enum_layout = match field_ty {
-            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                self.ctx.find_enum(name).map(|(_, l)| l.clone())
-            }
-            _ => None,
-        };
+        let enum_layout = self.type_name_of(field_ty).and_then(|name| self.ctx.find_enum(&name).map(|(_, l)| l.clone()));
         if let Some(layout) = enum_layout {
             let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

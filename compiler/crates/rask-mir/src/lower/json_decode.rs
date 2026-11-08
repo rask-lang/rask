@@ -651,7 +651,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The Nth generic argument of `Vec<…>` / `Map<…>`, whichever spelling the
     /// checker left behind.
-    fn collection_arg(&self, ty: &Type, wanted: &str, index: usize) -> Option<Type> {
+    pub(super) fn collection_arg(&self, ty: &Type, wanted: &str, index: usize) -> Option<Type> {
         let args = match ty {
             Type::UnresolvedGeneric { name, args } if name == wanted => args,
             Type::Generic { base, args }
@@ -667,7 +667,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn type_name_of(&self, ty: &Type) -> Option<String> {
+    pub(super) fn type_name_of(&self, ty: &Type) -> Option<String> {
         match ty {
             Type::UnresolvedNamed(n) => Some(n.clone()),
             Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
@@ -677,7 +677,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    fn struct_layout_of(&self, ty: &Type) -> Option<StructLayout> {
+    pub(super) fn struct_layout_of(&self, ty: &Type) -> Option<StructLayout> {
         let name = match ty {
             Type::UnresolvedNamed(n) => n.clone(),
             Type::UnresolvedGeneric { name, .. } => name.clone(),

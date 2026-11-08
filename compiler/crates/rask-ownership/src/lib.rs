@@ -872,7 +872,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
             let ty = rask_types::Type::Named(type_id);
-            let size = self.program.types.copy_size(&ty);
+            // A declaration, outside any function: no parameters in scope.
+            let size = self.program.types.copy_size(&ty, &rask_check::no_params);
             if size <= 16 {
                 continue;
             }
@@ -883,7 +884,7 @@ impl<'a> OwnershipChecker<'a> {
             let offending_field = self
                 .program
                 .types
-                .first_field_past(&ty, 16)
+                .first_field_past(&ty, 16, &rask_check::no_params)
                 .map(|f| (f.name, f.size as usize));
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallTypeTooBig {
@@ -909,6 +910,45 @@ impl<'a> OwnershipChecker<'a> {
     /// its type arguments substituted in. The error lands on the declaration
     /// rather than the use site, because that's where the promise was made and
     /// where either fix goes — narrow what the type holds, or drop `@small`.
+    /// Each body the declarations run, with the type parameters in scope in
+    /// it: the rules `check_fn` uses.
+    fn bodies_with_params<'d>(&self, decls: &'d [Decl]) -> Vec<(Vec<&'d [Stmt]>, Vec<String>)> {
+        let method = |f: &'d FnDecl, owner: Vec<String>| {
+            let mut params = owner;
+            params.extend(rask_ast::type_params::signature_type_param_names(f));
+            (vec![f.body.as_slice()], params)
+        };
+        let mut out = Vec::new();
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Fn(f) => out.push(method(f, Vec::new())),
+                DeclKind::Struct(s) => {
+                    let owner: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+                    out.extend(s.methods.iter().map(|m| method(m, owner.clone())));
+                }
+                DeclKind::Enum(e) => {
+                    let owner: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+                    out.extend(e.methods.iter().map(|m| method(m, owner.clone())));
+                }
+                DeclKind::Impl(i) => {
+                    let mut owner = rask_check::header_type_params(i, &self.program.types);
+                    owner.extend(i.where_bounds.iter().map(|p| p.name.clone()));
+                    out.extend(i.methods.iter().map(|m| method(m, owner.clone())));
+                }
+                // A default method: the interface's parameters and `Self`.
+                DeclKind::Interface(t) => {
+                    let mut owner: Vec<String> = t.type_params.iter().map(|p| p.name.clone()).collect();
+                    owner.push("Self".to_string());
+                    out.extend(t.methods.iter().map(|m| method(m, owner.clone())));
+                }
+                DeclKind::Test(t) => out.push((vec![t.body.as_slice()], Vec::new())),
+                DeclKind::Benchmark(b) => out.push((vec![b.body.as_slice()], Vec::new())),
+                _ => {}
+            }
+        }
+        out
+    }
+
     fn check_generic_size_fences(&mut self, decls: &[Decl]) {
         // Only generic structs carrying the fence. Concrete ones already went
         // through check_size_fences.
@@ -926,10 +966,48 @@ impl<'a> OwnershipChecker<'a> {
 
         // Every generic type the program mentions, from the types the checker
         // settled on. Nested ones count too — `Vec<Pair<string>>` instantiates
-        // `Pair<string>` just as much as a bare binding does.
+        // `Pair<string>` just as much as a bare binding does. One that still
+        // names a type parameter of the body it's in (`Duo<Big>` inside
+        // `func first<Big>`) is no instantiation yet, and its instances at
+        // concrete arguments exist only once the body is instantiated, which
+        // this pass doesn't see (#1815).
         let mut instances: Vec<(rask_types::TypeId, Vec<rask_types::GenericArg>)> = Vec::new();
-        for ty in self.program.node_types.values() {
-            collect_generic_instances(ty, &mut instances);
+        for (bodies, params) in self.bodies_with_params(decls) {
+            let mut found = Vec::new();
+            // A called function's own type (`func(Duo<Big>) -> Big` for a
+            // generic `first<Big>`) names the callee's parameters, not an
+            // instantiation; the call's arguments and result say what it was
+            // called with.
+            let mut callees = HashSet::new();
+            for stmt in bodies.iter().copied().flatten() {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let ExprKind::Call { func, .. } = &e.kind {
+                        callees.insert(func.id);
+                    }
+                });
+            }
+            for stmt in bodies.into_iter().flatten() {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if callees.contains(&e.id) {
+                        return;
+                    }
+                    if let Some(ty) = self.program.node_types.get(&e.id) {
+                        collect_generic_instances(ty, &mut found);
+                    }
+                });
+            }
+            instances.extend(found.into_iter().filter(|(_, args)| {
+                !args.iter().any(|a| matches!(a, rask_types::GenericArg::Type(t) if mentions_param(t, &params)))
+            }));
+        }
+        for decl in decls {
+            if let DeclKind::Const(c) = &decl.kind {
+                rask_ast::visit::walk_expr(&c.init, &mut |e| {
+                    if let Some(ty) = self.program.node_types.get(&e.id) {
+                        collect_generic_instances(ty, &mut instances);
+                    }
+                });
+            }
         }
 
         let mut reported: HashSet<String> = HashSet::new();
@@ -961,11 +1039,11 @@ impl<'a> OwnershipChecker<'a> {
                 })
                 .collect();
 
-            let total = self.program.types.copy_size(&full);
+            let total = self.program.types.copy_size(&full, &rask_check::no_params);
             if total <= 16 {
                 continue;
             }
-            let offender = self.program.types.first_field_past(&full, 16).map(|f| {
+            let offender = self.program.types.first_field_past(&full, 16, &rask_check::no_params).map(|f| {
                 let concrete = fields
                     .iter()
                     .find(|(n, _)| *n == f.name)
@@ -5718,8 +5796,13 @@ impl<'a> OwnershipChecker<'a> {
     /// A check that rejects a program asks for `Move`, not `!is_copy`:
     /// `is_copy` counts a type it can't place as a move, and rejecting on
     /// "couldn't tell" would reject on a guess.
+    /// Is `name` a type parameter of the function being walked?
+    fn names_type_param(&self, name: &str) -> bool {
+        self.type_params_in_scope.iter().any(|p| p == name)
+    }
+
     fn copy_verdict(&self, ty: &Type) -> CopyVerdict {
-        self.program.types.copy_verdict_with(ty, &|name| self.copy_params.contains(name))
+        self.program.types.copy_verdict_with(ty, &|name| self.names_type_param(name), &|name| self.copy_params.contains(name))
     }
 
     /// Determine why a type is move-only (not Copy).
@@ -5776,7 +5859,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_fields_copy = fields.iter()
                                 .all(|(_, t)| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst)));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5786,7 +5869,7 @@ impl<'a> OwnershipChecker<'a> {
                             let all_copy = variants.iter().all(|(_, data)| data.iter()
                                 .all(|t| self.is_copy(&rask_check::TypeTable::substitute_generic_field(t, &subst))));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5807,7 +5890,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                             let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5815,7 +5898,7 @@ impl<'a> OwnershipChecker<'a> {
                         rask_types::TypeDef::Enum { variants, .. } => {
                             let all_copy = variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.copy_size(ty, &|n| self.names_type_param(n)) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -5828,7 +5911,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             Type::Result { .. } | Type::Union(_) => MoveReason::OwnsHeapMemory { type_name },
             _ => {
-                let size = self.program.types.copy_size(ty);
+                let size = self.program.types.copy_size(ty, &|n| self.names_type_param(n));
                 if size > 16 {
                     MoveReason::SizeExceedsThreshold { type_name, size }
                 } else {
@@ -9242,6 +9325,22 @@ fn render_subst(subst: &HashMap<String, Type>, program: &TypedProgram) -> String
 }
 
 /// Every `Name<Args…>` reachable inside a type, including nested ones.
+/// Does `ty` name one of `params`?
+fn mentions_param(ty: &Type, params: &[String]) -> bool {
+    use rask_types::GenericArg;
+    let go = |t: &Type| mentions_param(t, params);
+    let args = |args: &[GenericArg]| args.iter().any(|a| matches!(a, GenericArg::Type(t) if go(t)));
+    match ty {
+        Type::UnresolvedNamed(name) => params.iter().any(|p| p == name),
+        Type::Generic { args: a, .. } | Type::UnresolvedGeneric { args: a, .. } => args(a),
+        Type::Result { ok, err } => go(ok) || go(err),
+        Type::Array { elem, .. } | Type::RawPtr(elem) | Type::SimdVector { elem, .. } => go(elem),
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(go),
+        Type::Fn { params: ps, ret } => ps.iter().any(|p| go(&p.ty)) || go(ret),
+        _ => false,
+    }
+}
+
 fn collect_generic_instances(
     ty: &Type,
     out: &mut Vec<(rask_types::TypeId, Vec<rask_types::GenericArg>)>,

@@ -156,7 +156,7 @@ fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[Struc
                 flatten_field(elem, offset + i * stride, stride, layouts, out);
             }
         }
-        T::UnresolvedNamed(name) => match struct_named(name, layouts) {
+        T::Named(_) | T::UnresolvedNamed(_) => match rask_layout::struct_for(ty, layouts) {
             Some(inner) => flatten_struct(inner, offset, layouts, out),
             None => out.push(AbiField { offset, size, is_float: is_float(ty) }),
         },
@@ -388,6 +388,7 @@ mod tests {
     fn layout(name: &str, size: u32, fields: &[(&str, rask_types::Type, u32, u32)]) -> StructLayout {
         use rask_layout::FieldLayout;
         StructLayout {
+            key: None,
             name: name.to_string(),
             size,
             align: 4,

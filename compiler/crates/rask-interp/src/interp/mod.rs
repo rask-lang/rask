@@ -166,9 +166,6 @@ pub struct Interpreter {
     /// while native answered the truth (#1104). `rask_layout::compute_struct_layout`
     /// wants a `Decl`, and `struct_decls` holds the `StructDecl` inside one.
     pub(crate) type_decls: Vec<Decl>,
-    /// Size and alignment of every declared type, so a struct holding another
-    /// sees its real size. Computed once, when the declarations are registered.
-    pub(crate) layout_cache: rask_layout::LayoutCache,
     /// Nominal newtype name → what it wraps, as written.
     ///
     /// `type NodeId = u64` is transparent to everything except the type checker,
@@ -478,7 +475,6 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -526,7 +522,6 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
@@ -576,7 +571,6 @@ impl Interpreter {
             failed_call_span: None,
             runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
-            layout_cache: rask_layout::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
