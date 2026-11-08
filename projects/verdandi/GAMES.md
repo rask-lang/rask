@@ -83,7 +83,28 @@ Two conditions:
 - It leaks. Bots run out of power, outposts get raided, routes jam. Surprises
   survive the tier change, so the system never reads as solved.
 
-So tiers of abstraction are a design object from day one: name the unit of
+Digital circuits are the sharper model. A gate is built from transistors and
+exposes a smaller interface than they do, and once you have gates you never
+address a transistor again. That's composition, and it's what Dwarf Fortress
+lacks: it has tier-shaped things (stockpiles, the manager, squads, burrows)
+but none is built from the others and none hides the one below, so a hundred
+dwarves is seven dwarves times fourteen with the same menus.
+
+Where the analogy breaks is the sealed interface. A circuit wants no leaks; a
+game wants some. The way to get both is to abstract the controls and the view
+and never the sim. The player commands crews, districts and settlements and
+the screen summarises at that altitude, but every worker underneath keeps
+their own needs and the sim never changes resolution. A leak is then a tier-0
+event showing up at tier 2: one worker snaps, the crew's output drops, with
+the reason attached. Factorio works this way (a blueprint is a control
+abstraction, the sim still runs every inserter). Paradox abstracts the sim
+itself (pops as numbers), which scales and reads well, but nothing underneath
+can misbehave on its own, so the stories thin out. DF is the third corner,
+full sim and no control abstraction, and drowns at a hundred.
+
+So tiers of abstraction are a design object from day one. Each tier is built
+from the tier below, has a strictly smaller command surface than the sum of
+its parts, and the sim resolution stays at the bottom. Name the unit of
 command at each stage (a worker, a crew, a district, a settlement) and what
 the player stops touching when the next unit appears.
 
