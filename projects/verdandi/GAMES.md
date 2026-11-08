@@ -176,6 +176,39 @@ mechanism, and it stays open.
 
 Twenty colonies in one tick never happens. That's the answer to performance.
 
+## Numerics
+
+Games step everything with explicit Euler every tick out of habit, and because
+a fixed tick is trivially deterministic and lockstep. The kernel keeps the tick
+as the clock. Inside it, far more can move to the event side than games
+usually allow.
+
+- **Discrete events.** State is a function of time between events. A walk is a
+  closed-form trajectory plus an arrival event; hunger has a computable
+  threshold-crossing tick. A needs-and-jobs colony is almost entirely
+  event-driven if designed that way from the start, so the ASCII prototype
+  should be. Events run inside ticks in the wake queue's fixed order.
+- **Implicit methods for fields.** Explicit diffusion has a step-size limit
+  and rings (Oxygen Not Included's gases). Backward Euler is stable at any
+  step, so temperature can step rarely and large, and its damping makes
+  things settle, which lets regions sleep. The cost is a sparse solve per
+  region with a halo, with a fixed iteration count and reduction order for
+  determinism. Dwarf Fortress's far-reaching water pressure is a Poisson
+  solve per connected body, so this turns the doc's sequential case into the
+  normal one.
+- **Optimization for planning.** Job assignment is the assignment problem;
+  greedy nearest-job is why dwarves cross the map for one sock. Hauling is a
+  transportation problem, production ratios are a linear program, a district
+  controller is min-cost flow. This gives the tiers a mechanism: the player
+  sets an objective and constraints, the solver plans. The duals are prices,
+  which is how the plan stays legible ("this haul cost 3, this job paid 5")
+  and an economy display for free. The abstract off-screen site sim is the
+  other natural home.
+- **Not neural nets.** Only integer-quantised inference is deterministic, and
+  it's opaque and unmoddable, the two things this genre can't afford. At most
+  a surrogate for the off-screen world, and a fitted low-order model beats it
+  there too.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
