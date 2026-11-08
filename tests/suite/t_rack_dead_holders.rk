@@ -96,3 +96,40 @@ test "a rack holding links into another is freed last" {
     h.many.push(x)
     assert h.many.len() == 1
 }
+
+// A local struct holding a link records its slot, on the stack, with the
+// target's rack. When its frame returned the record stayed, and a later
+// delete read the dead frame to check the slot (#1811). The frame forgets its
+// structs' edges on the way out now.
+struct Cursor {
+    at: Link<Leaf>?
+}
+
+func peek(x: Link<Leaf>) -> i32 {
+    let c = Cursor(at: x)
+    if c.at? as l {
+        return l.id
+    }
+    return 0
+}
+
+func deeper(x: Link<Leaf>, n: i32) -> i32 {
+    if n == 0 {
+        return peek(x)
+    }
+    let c = Cursor(at: x)
+    mut sum = deeper(x, n - 1)
+    if c.at? as l {
+        sum = sum + l.id
+    }
+    return sum
+}
+
+test "a returned frame's structs don't leave records behind" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let x = rack.insert(Leaf(id: 3))
+    assert peek(x) == 3
+    assert deeper(x, 4) == 15
+    rack.delete(x)
+    assert rack.len() == 0
+}

@@ -496,6 +496,17 @@ void rask_link_register_struct(void *base, int64_t field_count, const int32_t *f
     }
 }
 
+// A struct's storage is going away — its frame is returning. The records its
+// link slots made name addresses the next frame will reuse. Containers in it
+// drop their own records when they are freed.
+void rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fields) {
+    if (!base || field_count <= 0 || !fields) return;
+    char *p = (char *)base;
+    for (int64_t i = 0; i < field_count; i++) {
+        if (fields[i * 2] == RASK_RACK_FIELD_LINK) rask_link_forget((void **)(p + fields[i * 2 + 1]));
+    }
+}
+
 // Record every link already sitting in a container.
 //
 // For a container that arrives whole rather than element by element — the
@@ -945,7 +956,8 @@ void rask_rack_free(RaskRack *r) {
     // What is left pointing in comes from outside. A node of another rack is
     // nulled, or its own teardown would unlink a record from this rack's
     // freed headers. A heap record is freed, and leaves its container's chain
-    // so the container doesn't walk it later. This rack's own payloads aren't
+    // so the container doesn't walk it later; a struct slot it names is
+    // nulled too. This rack's own payloads aren't
     // touched: nothing may read them after this, and #1587 is a place where
     // something still does.
     for (int64_t i = 0; i < r->high_water; i++) {
@@ -962,6 +974,13 @@ void rask_rack_free(RaskRack *r) {
             n->inline_in = NULL;
             for (RackEdge *e = n->heap_in, *next; e; e = next) {
                 next = e->next;
+                // A struct field outside the rack — a local's, say, whose
+                // frame forgets it on the way out. Nulled like any other link
+                // into the rack, so that forget finds nothing to follow.
+                if (e->kind == RACK_EDGE_SLOT) {
+                    void **slot = (void **)e->holder;
+                    if (*slot == payload) *slot = RASK_LINK_NONE;
+                }
                 chain_unlink((HeapEdge *)e);
                 rask_free(e);
             }

@@ -1145,15 +1145,12 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_iter_end".to_string()),
-            args: vec![MirOperand::Local(collection), MirOperand::Local(cursor)],
+            args: vec![
+                MirOperand::Local(collection),
+                MirOperand::Local(cursor),
+                MirOperand::Constant(MirConst::Int(temporary as i64)),
+            ],
         }));
-        if temporary {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Link_forget_vec".to_string()),
-                args: vec![MirOperand::Local(collection)],
-            }));
-        }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
         self.ensure_stack.push(cleanup_block);
         self.builder.switch_to_block(continue_block);

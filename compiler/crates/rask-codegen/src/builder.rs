@@ -328,7 +328,7 @@ enum HandAdapt {
 fn hand_adaptation(name: &str) -> Option<HandAdapt> {
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
-        "Link_register_struct" => HandAdapt::LinkRegisterStruct,
+        "Link_register_struct" | "Link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "Rack_insert" => HandAdapt::RackInsert,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"

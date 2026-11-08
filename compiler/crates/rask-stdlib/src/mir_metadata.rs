@@ -433,6 +433,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_set", Internal::FreshFromReceiver),
     ("Link_set_node", Internal::FreshFromReceiver),
     ("Link_register_struct", Internal::FreshFromReceiver),
+    ("Link_forget_struct", Internal::FreshFromReceiver),
     ("Link_register_element", Internal::FreshFromReceiver),
     ("Link_register_vec", Internal::FreshFromReceiver),
     ("Link_register_map", Internal::FreshFromReceiver),

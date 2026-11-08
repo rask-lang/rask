@@ -787,8 +787,12 @@ int64_t rask_vec_iter_next(RaskVec *v, RaskVecCursor *c) {
     return c->next_index++;
 }
 
-void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c) {
+// `forget` is set for a temporary the loop registered: nothing can reach it
+// once the loop is done, so its edge records go too. A detached cursor means
+// the vector was freed during the loop, and its records went with it.
+void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c, int64_t forget) {
     if (c->detached) return;
+    if (forget) rask_link_forget_vec(v);
     for (RaskVecCursor **p = &v->cursors; *p; p = &(*p)->next) {
         if (*p == c) {
             *p = c->next;

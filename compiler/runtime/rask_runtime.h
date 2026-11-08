@@ -834,6 +834,8 @@ void      rask_link_register_map(RaskMap *m);
 // The edges a struct's own fields carry, against the storage it sits in. Same
 // (kind, byte offset) pairs `rask_rack_insert` takes.
 void      rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields);
+// The other half, where that storage dies: its link slots' records go.
+void      rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fields);
 // A container's own edge records, chained from a head the container keeps.
 // `holder_died` drops every record on the chain; a container's free calls it,
 // so no record outlives the storage it names.
@@ -842,7 +844,7 @@ void    **rask_vec_link_edges(RaskVec *v);
 // that removes an entry moves the cursor instead of the loop skipping one.
 void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end);
 int64_t   rask_vec_iter_next(RaskVec *v, RaskVecCursor *c);
-void      rask_vec_iter_end(RaskVec *v, RaskVecCursor *c);
+void      rask_vec_iter_end(RaskVec *v, RaskVecCursor *c, int64_t forget);
 void    **rask_map_link_edges(RaskMap *m);
 void      rask_link_holder_died(void **head);
 

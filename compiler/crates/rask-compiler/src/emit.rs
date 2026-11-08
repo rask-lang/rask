@@ -164,6 +164,9 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
     }
+    // Local structs holding links forget their edges when their frame ends.
+    // After SSA is gone, so the locals named are the ones that hold the bytes.
+    rask_mir::link_holders::forget_local_links(&mut functions);
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }
