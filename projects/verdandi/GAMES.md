@@ -412,6 +412,48 @@ player holds a grant over the founding expedition, and every further
 authority is built, delegated, and can be lost. Cheap from the start,
 impossible to retrofit, and the same object co-op needs anyway.
 
+## A person
+
+The smallest set of state the others can't produce. Anything derivable is an
+output: mood (from needs and recent memory), traits (a weight plus an act),
+values (weights plus beliefs), DF's fifty facets (a preference ordering with
+fifty names), health (the material sim's).
+
+- **Needs**: what they want now. A vector that depletes with time and is
+  restored by acts. Dimensionality is set by the world, not chosen: two
+  needs are orthogonal when different classes of act restore them. Body,
+  company, safety, and in this setting receiving. Status is the one honest
+  argument, probably a disposition.
+- **Dispositions**: who they are. Weights on the needs, a discount rate, a
+  risk tolerance. Personality as the preference ordering over the same
+  needs.
+- **Skills**: what they can do. Capacities per task class, growing with use.
+- **Memory**: what happened to them. A decaying log of events with subject,
+  valence and salience. Relationships are its sum per agent, beliefs its
+  entries about the world, grief and grudges its high-salience entries.
+- Body beside them, from the material sim: capacity that decays with harm.
+
+The decision rule is a function, not state: the act that restores the most
+weighted need over the horizon, discounted, within skill and belief. That's
+the optimizer, and the price explanation falls out of it. Coupling without
+merging: company is restored by agents you have good memories of; acts write
+memory; memory of force sets fear, and the risk disposition turns fear into
+obedience or defection. The tantrum spiral needs nothing more.
+
+For the setting: receiving is a need with two restorers, one slow and clean,
+one fast with a by-product, and the choice is the discount rate. Temptation
+is impatience; patience is a virtue in the sim; no meter. A people is a
+needs list plus a disposition prior, which is what the stone-born question
+asks as data.
+
+Display per axis: bars, a few words, levels, and a diary pulled on demand,
+which is legends mode for one person and the opposite of the combat log.
+
+Against the field: the Sims and Syx are needs only, so nobody has a history.
+RimWorld is this set with mood redundant, traits as scripts, thoughts as a
+special case of memory. DF is this set with dispositions overfit. The gain
+is in what's removed.
+
 ## Two prototypes, kept apart
 
 The [kernel doc](README.md) names falling sand first, as a throughput benchmark:
