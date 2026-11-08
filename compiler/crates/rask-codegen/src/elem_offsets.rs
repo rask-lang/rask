@@ -8,8 +8,9 @@
 //! adapter that points a constructor at one — so the walk lives here rather
 //! than once in each.
 //!
-//! Each entry is one `int32`: the byte offset in the low 28 bits, and what
-//! lives there in the top 4. A `Vec<Order>` whose `Order` holds a `Vec<Item>`
+//! An entry starts with one `int32`: the byte offset in the low 28 bits, and
+//! what lives there in the top 4. A guard and a `Heap` slot carry plain words
+//! after that one. A `Vec<Order>` whose `Order` holds a `Vec<Item>`
 //! is the reason the kind exists — freeing the outer vector has to free each
 //! element's inner one, and the old list of bare offsets could only say
 //! "string". A plain offset still reads as a string at that offset, so every
@@ -19,7 +20,7 @@
 //! variant it is. `RASK_OWNED_TAG_IF` is a guard rather than a thing to free:
 //! it says the entries after it apply only when the tag at some offset holds a
 //! particular value, and one enum contributes a guard per variant that owns
-//! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
+//! anything. The header describes the words; `owned_walk` in `vec.c` reads it.
 
 use rask_mono::runtime_abi;
 use rask_mir::{ContainerKind, MirType};
@@ -59,49 +60,42 @@ const KIND_LINK: i32 = runtime_abi::RASK_OWNED_LINK as i32;
 /// the slot *is* the fat pointer, which is the shape of an interface-object field.
 pub const TRAITBOX_AT_ZERO: i32 = KIND_TRAITBOX << KIND_SHIFT;
 
-/// A `Heap<T>` slot: the pointer at `offset`, and `count` entries after this one
-/// describing the block.
-///
-/// `None` when either won't fit — an offset over 65535 or more than 4095 entries
-/// in the block's description. The caller then describes nothing, which leaks
-/// rather than freeing the wrong bytes.
-fn heap_entry(offset: i32, count: usize) -> Option<i32> {
-    if !(0..=0xFFFF).contains(&offset) || count > 0xFFF {
-        return None;
-    }
-    Some(entry(offset | ((count as i32) << 16), KIND_HEAP))
+/// A `Heap<T>` slot: the pointer at `offset`, then a word counting the entries
+/// after it that describe the block.
+fn heap_entry(offset: i32, count: usize) -> Option<[i32; 2]> {
+    Some([entry(fit_offset(offset)?, KIND_HEAP), fit_word(count as u64)?])
 }
 
 fn entry(offset: i32, kind: i32) -> i32 {
     offset | (kind << KIND_SHIFT)
 }
 
-/// A guard: the next `count` entries apply only when the tag at `tag_offset`
-/// holds `tag_value`. An arm of 63 entries or more keeps its count in a second
-/// word, which the walk skips along with the guard.
+/// A guard: the next `count` entries apply only when the tag at `tag_offset`,
+/// `tag_size` bytes wide, holds `tag_value`. Four words: the kind with the
+/// offset, then the width, the value and the count as plain numbers.
 ///
-/// `None` when any field won't fit its share of the 28 bits — an offset over
-/// 4095, more than 255 variants, or a tag wider than eight bytes. The caller then emits nothing for that element,
-/// which leaks rather than describing it wrongly.
-fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<Vec<i32>> {
-    let width = match tag_size {
-        1 => 0,
-        2 => 1,
-        4 => 2,
-        8 => 3,
-        _ => return None,
-    };
-    if !(0..=0xFFF).contains(&tag_offset) || tag_value > 0xFF || count > i32::MAX as usize {
+/// `None` only for a tag of a width the walk can't read. The caller then emits
+/// nothing for that element, which leaks rather than describing it wrongly.
+fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<[i32; 4]> {
+    if !matches!(tag_size, 1 | 2 | 4 | 8) {
         return None;
     }
-    let ext = runtime_abi::RASK_OWNED_TAG_COUNT_EXT as usize;
-    let field = if count < ext { count } else { ext };
-    let packed = tag_offset | ((tag_value as i32) << 12) | ((field as i32) << 20) | (width << 26);
-    let mut words = vec![entry(packed, KIND_TAG_IF)];
-    if count >= ext {
-        words.push(count as i32);
-    }
-    Some(words)
+    Some([
+        entry(fit_offset(tag_offset)?, KIND_TAG_IF),
+        tag_size as i32,
+        fit_word(tag_value)?,
+        fit_word(count as u64)?,
+    ])
+}
+
+fn fit_offset(offset: i32) -> Option<i32> {
+    (0..=runtime_abi::RASK_OWNED_OFFSET_MASK as i32).contains(&offset).then_some(offset)
+}
+
+/// A word after an entry's first. Kept below 2^31, so its kind bits never read
+/// as a link and a flat scan for links can't mistake one.
+fn fit_word(v: u64) -> Option<i32> {
+    i32::try_from(v).ok()
 }
 
 /// The program's layouts as the walks below need them, with each layout's
@@ -284,7 +278,7 @@ fn flatten(
             } else {
                 describe_named(&payload, 0, shapes, depth + 1, Some(&payload), &mut body)?;
             }
-            out.push(heap_entry(at, body.len())?);
+            out.extend(heap_entry(at, body.len())?);
             out.extend(body);
             continue;
         }

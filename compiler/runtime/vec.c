@@ -207,9 +207,9 @@ static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
             continue;
         }
         if (kind == RASK_OWNED_HEAP) {
-            int64_t body = RASK_OWNED_HEAP_COUNT(e);
-            if (i + body >= count) return;
-            char **slot = (char **)(elem + RASK_OWNED_HEAP_OFFSET(e));
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            char **slot = (char **)(elem + (e & RASK_OWNED_OFFSET_MASK));
             char *block = *slot;
             if (block) {
                 // What the block holds goes first: after the free there is
@@ -791,7 +791,9 @@ static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
         // What a heap block or a recursive value holds is out of reach of a
         // link slot here: a node never sits behind one.
         if (kind == RASK_OWNED_HEAP) {
-            i += RASK_OWNED_HEAP_COUNT(e);
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            i += body;
             continue;
         }
         if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
@@ -817,7 +819,9 @@ static void guarded_walk_from(char *base, const int32_t *entries, int64_t count,
             continue;
         }
         if (kind == RASK_OWNED_HEAP) {
-            i += RASK_OWNED_HEAP_COUNT(e);
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            i += body;
             continue;
         }
         if (kind == RASK_OWNED_LINK && guarded) {

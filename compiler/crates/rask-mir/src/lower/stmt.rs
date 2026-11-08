@@ -799,22 +799,23 @@ impl<'a> MirLowerer<'a> {
                         // A cell is an address whether or not it came from a
                         // parameter, so the scalar case doesn't need the
                         // `mutate` half of the test any more (#1011).
-                        // A local whose links behind a tag are recorded by its
-                        // address is written in place. An `Assign` would make
-                        // a new SSA version at a new address, leaving the old
-                        // one's bytes naming a node its record no longer
-                        // covers, and the forget at return then read a freed
-                        // rack through them.
+                        // A local whose links the rack records by its address
+                        // is written in place, so it keeps that address for
+                        // its whole life. An `Assign` would make a new SSA
+                        // version in a new slot, leaving the old one's bytes
+                        // naming a node its record no longer covers, and the
+                        // forget at return then read a freed rack through them.
                         let in_place = struct_assigned
                             && scalar_mutate.is_none()
                             && !assigns_through
                             && !self.addressed_captures.contains(&local_id)
                             && matches!(
                                 dst_ty,
-                                MirType::Struct(_) | MirType::Tuple(_) | MirType::Enum(_)
-                                    | MirType::Option(_) | MirType::Result { .. }
+                                MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. }
+                                    | MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. }
                             )
-                            && self.ctx.mir_has_guarded_link(&dst_ty);
+                            && (self.ctx.mir_has_guarded_link(&dst_ty)
+                                || self.ctx.struct_carries_links(&dst_ty));
                         let store_through_ptr = scalar_mutate.is_some()
                             || (assigns_through && mutate_param_by_pointer(&dst_ty))
                             || in_place;

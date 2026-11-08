@@ -176,15 +176,10 @@ typedef struct {
 // inside a decoded document is a variant payload, and the elements walk left
 // all of it behind.
 //
-// The 28 bits an offset would use carry the guard instead:
-//
-//   bits  0..11   the tag's byte offset inside the element
-//   bits 12..19   the tag value this arm is for
-//   bits 20..25   how many entries after this one belong to the arm
-//   bits 26..27   the tag's width: 0 → 1 byte, 1 → 2, 2 → 4, 3 → 8
-//
-// Codegen emits nothing at all for a layout that doesn't fit those fields,
-// which leaks rather than guessing.
+// Four words: the kind with the tag's byte offset inside the element, then the
+// tag's width in bytes, the tag value this arm is for, and how many entries
+// after the guard belong to the arm. The words after the first are plain
+// numbers below 2^31, so a flat scan for link entries never mistakes one.
 
 // The element *is* a pointer to a closure block, so there is no offset list
 // inside it: one entry at offset zero. The block describes itself —
@@ -211,16 +206,27 @@ typedef struct {
 // what is inside the block, the way a tag guard's do — so the walk releases the
 // contents first and then gives the block back.
 //
-//   bits  0..15   the pointer's byte offset inside the value
-//   bits 16..27   how many entries after this one describe the block
+// Two words: the kind with the pointer's byte offset inside the value, then how
+// many entries after these describe the block.
 //
 // Only a *field* or a frame local gets these. A `Heap` inside a container
 // element would need `retain` to deep-copy the block on a clone, and a block
 // carries no size for that — so the constructors never see this kind, and a
 // `Heap` in a container element is still nobody's, the way a boxed value's
 // contents are. `RASK_OWNED_HEAP`.
-#define RASK_OWNED_HEAP_OFFSET(e) ((e) & 0xFFFF)
-#define RASK_OWNED_HEAP_COUNT(e)  (((e) >> 16) & 0xFFF)
+
+// Read the heap entry at `entries[*i]`: sets `*body` to how many entries
+// describe the block and moves `*i` onto the entry's last word. -1 when the
+// list claims more entries than it has.
+static inline int rask_owned_heap(const int32_t *entries, int64_t count,
+                                  int64_t *i, int64_t *body) {
+    if (*i + 1 >= count) return -1;
+    *i += 1;
+    int64_t n = entries[*i];
+    if (n < 0 || *i + n >= count) return -1;
+    *body = n;
+    return 0;
+}
 
 // The value at this offset is described by the list currently being walked,
 // from its start.
@@ -236,46 +242,31 @@ typedef struct {
 // for that shape and it leaks — the same answer this file gives everywhere else
 // it can't describe something exactly. `RASK_OWNED_SELF`.
 
-#define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
-#define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
-#define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
-#define RASK_OWNED_TAG_WIDTH(e)  (1 << (((e) >> 26) & 0x3))
-
 // Decode the guard at `entries[*i]` against the value at `elem`. Sets `*body`
 // to its arm's length and moves `*i` onto the guard's last word, so the arm
 // starts at `*i + 1`. Returns 1 when the tag holds the guard's value, 0 when it
 // doesn't, -1 when the list claims more entries than it has.
 static inline int rask_owned_guard(const char *elem, const int32_t *entries, int64_t count,
                                    int64_t *i, int64_t *body) {
-    int32_t e = entries[*i];
-    int64_t n = RASK_OWNED_TAG_COUNT(e);
-    if (n == RASK_OWNED_TAG_COUNT_EXT) {
-        if (*i + 1 >= count) return -1;
-        *i += 1;
-        n = entries[*i];
-    }
+    int64_t g = *i;
+    if (g + 3 >= count) return -1;
+    const char *at = elem + (entries[g] & RASK_OWNED_OFFSET_MASK);
+    int64_t width = entries[g + 1];
+    int64_t value = entries[g + 2];
+    int64_t n = entries[g + 3];
+    *i = g + 3;
     if (n < 0 || *i + n >= count) return -1;
     *body = n;
-    const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
     int64_t tag;
-    switch (RASK_OWNED_TAG_WIDTH(e)) {
+    switch (width) {
         case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
         case 2:  tag = (int64_t)*(const uint16_t *)at; break;
         case 4:  tag = (int64_t)*(const uint32_t *)at; break;
-        default: tag = *(const int64_t *)at;           break;
+        case 8:  tag = *(const int64_t *)at;           break;
+        default: return -1;
     }
-    return tag == (int64_t)RASK_OWNED_TAG_VALUE(e);
+    return tag == value;
 }
-
-// Release, or take a reference to, whatever one entry points at inside `elem`.
-//
-// `retain` is what makes a derived container an owner: a clone, a slice or a
-// chunk copies element bytes, so two containers name one string buffer or one
-// nested vector, and whichever is freed second reads memory that is gone. For a
-// string that's a refcount; for a nested container it's a real copy, written
-// back into the element — which is the deep clone `.clone()` is supposed to be.
-void rask_owned_release(char *elem, int32_t entry);
-void rask_owned_retain(char *elem, int32_t entry);
 
 // The whole list, which is what every caller actually wants: a `RASK_OWNED_TAG_IF`
 // entry decides whether the entries after it apply, so the walk has to be able
