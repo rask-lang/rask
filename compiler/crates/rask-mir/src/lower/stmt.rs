@@ -1398,11 +1398,8 @@ impl<'a> MirLowerer<'a> {
     /// worse than reporting the declared types throughout.
     fn generic_type_subst(&self, ty: &TypeExpr) -> Vec<(String, TypeExpr)> {
         use rask_types::TypeDef;
-        let (Some(base), args) = (ty.name(), ty.args()) else { return Vec::new() };
-        if args.is_empty() {
-            return Vec::new();
-        }
-        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(&base) else {
+        let args = ty.args();
+        let Ok(rask_types::Type::Generic { base: id, .. }) = rask_check::resolve_type_expr(ty, self.ctx.type_defs) else {
             return Vec::new();
         };
         let Some(TypeDef::Struct { type_params, .. }) = self.ctx.type_defs.get(id) else {
@@ -1422,27 +1419,13 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
         use rask_ast::decl::field_attrs;
 
-        // A generic instantiation is written `Ring<i64>` and its layout, when
-        // there is one, is keyed `Ring$i64` — mono's own spelling. Reflection
-        // was only ever asking under the written name, so every generic struct
-        // answered "not a struct type" (#968).
-        let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let instance = (!arg_tys.is_empty())
-            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
-            .flatten();
-        let found = instance.as_deref().and_then(|k| self.ctx.find_struct(k));
-
-        // No instance layout means mono decided the shared one is exact for
-        // this instantiation — it emits one exactly when an argument overflows
-        // the shared slot. `Ring<i64>` and `Ring<string>` really do have the
-        // same layout, because what varies sits behind the `Vec`'s pointer.
-        //
-        // The shared layout is still wrong about one thing: it records the
-        // field's *declared* type, so `slots` reads as `Vec<T>` where the
-        // instantiation says `Vec<i64>`. The type arguments are substituted
-        // back in below rather than reported as the placeholder.
-        let found = found.or_else(|| self.ctx.find_struct(&base));
+        // The written type resolves to a checked one, and the layout is the
+        // one that type is laid out by: an instantiation's own when mono made
+        // one, else the declaration's (#968). The shared layout records a
+        // field's declared type, `Vec<T>` where the instantiation says
+        // `Vec<i64>`, so the arguments are substituted back in below.
+        let checked = rask_check::resolve_type_expr(ty, self.ctx.type_defs).ok();
+        let found = checked.as_ref().and_then(|t| self.ctx.struct_of(t));
         let type_subst = self.generic_type_subst(ty);
 
         let Some((_, layout)) = found else {

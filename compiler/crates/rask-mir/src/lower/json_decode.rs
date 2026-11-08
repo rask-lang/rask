@@ -13,7 +13,7 @@
 //! matching variant and the runtime's message.
 
 use rask_ast::decl::field_attrs;
-use rask_layout::StructLayout;
+use rask_layout::{EnumLayout, StructLayout};
 use rask_types::{GenericArg, Type};
 
 use super::{LoweringError, MirLowerer, TypedOperand};
@@ -41,8 +41,14 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         input: MirOperand,
         target: &Type,
+        call_ty: Option<&Type>,
     ) -> Result<TypedOperand, LoweringError> {
         let target_mir = self.ctx.type_to_mir(target);
+        // `T or JsonError`, as the checker typed the call.
+        let json_error = match call_ty {
+            Some(Type::Result { err, .. }) => self.ctx.enum_of(err).map(|(idx, l)| (idx, l.clone())),
+            _ => None,
+        };
         // The same type as a wrapper's payload: a `Vec<T>` target keeps what it
         // is there, so releasing the result frees the vector the decoder built.
         let payload_mir = self.ctx.type_to_mir(target);
@@ -51,10 +57,9 @@ impl<'a> MirLowerer<'a> {
         // `json.parse` already does, in Rask, so call it instead of teaching the
         // shape decoder how to build the enum a second time.
         if self.type_name_of(target).as_deref() == Some("JsonValue") {
-            let err_ty = self
-                .ctx
-                .find_enum("JsonError")
-                .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
+            let err_ty = json_error
+                .as_ref()
+                .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(*idx, l.size, l.align)))
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/json_decode:68"));
             let result_ty = MirType::Result {
                 ok: Box::new(payload_mir),
@@ -111,10 +116,9 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(shape)],
         }));
 
-        let err_ty = self
-            .ctx
-            .find_enum("JsonError")
-            .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
+        let err_ty = json_error
+            .as_ref()
+            .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(*idx, l.size, l.align)))
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/json_decode:136"));
         let result_ty = MirType::Result {
             ok: Box::new(payload_mir),
@@ -159,7 +163,7 @@ impl<'a> MirLowerer<'a> {
             }));
 
         self.builder.switch_to_block(err_block);
-        let err_val = self.emit_json_error(status, &err_ty);
+        let err_val = self.emit_json_error(status, &err_ty, json_error.as_ref().map(|(_, l)| l));
         self.store_wrapper_tag(result, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
         self.store_wrapper_payload(result, &result_ty, MirOperand::Local(err_val), &err_ty);
         self.builder
@@ -172,7 +176,12 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Turn the runtime's status code into a `JsonError` carrying its message.
-    fn emit_json_error(&mut self, status: crate::LocalId, err_ty: &MirType) -> crate::LocalId {
+    fn emit_json_error(
+        &mut self,
+        status: crate::LocalId,
+        err_ty: &MirType,
+        json_error: Option<&EnumLayout>,
+    ) -> crate::LocalId {
         let msg = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
@@ -188,8 +197,7 @@ impl<'a> MirLowerer<'a> {
         ]
         .iter()
         .filter_map(|(code, name)| {
-            let (_, layout) = self.ctx.find_enum("JsonError")?;
-            let v = layout.variants.iter().find(|v| v.name == *name)?;
+            let v = json_error?.variants.iter().find(|v| v.name == *name)?;
             Some((*code, v.tag as u32, v.payload_offset))
         })
         .collect();
@@ -207,11 +215,7 @@ impl<'a> MirLowerer<'a> {
             return err_val;
         }
 
-        let (tag_offset, tag_bytes) = self
-            .ctx
-            .find_enum("JsonError")
-            .map(|(_, l)| (l.tag_offset, l.tag_bytes()))
-            .unwrap_or((0, 1));
+        let (tag_offset, tag_bytes) = json_error.map(|l| (l.tag_offset, l.tag_bytes())).unwrap_or((0, 1));
 
         // The switch belongs on the block we're standing in now — filling the
         // case blocks moves the builder, and terminating afterwards would
@@ -678,19 +682,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn struct_layout_of(&self, ty: &Type) -> Option<StructLayout> {
-        let name = match ty {
-            Type::UnresolvedNamed(n) => n.clone(),
-            Type::UnresolvedGeneric { name, .. } => name.clone(),
-            Type::Named(id) => self.ctx.type_names.get(id)?.clone(),
-            Type::Generic { base, .. } => self.ctx.type_names.get(base)?.clone(),
-            _ => return None,
-        };
-        // Vec/Map have stdlib layouts too, and matching them here would decode a
-        // list as if it were a two-field struct.
-        if name == "Vec" || name == "Map" || name == "string" {
-            return None;
-        }
-        self.ctx.find_struct(&name).map(|(_, l)| l.clone())
+        self.ctx.struct_of(ty).map(|(_, l)| l.clone())
     }
 
     /// Is `object` a generator's `claims.Choices`?

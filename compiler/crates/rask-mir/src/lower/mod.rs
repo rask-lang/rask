@@ -1039,6 +1039,36 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// The struct layout a checked type lowers to, or `None` when it lowers to
+    /// anything else (a container, a handle, a scalar, an optional).
+    pub fn struct_of(&self, ty: &Type) -> Option<(u32, &StructLayout)> {
+        match self.type_to_mir(ty) {
+            MirType::Struct(sid) => Some((sid.id, self.struct_layouts.get(sid.id as usize)?)),
+            _ => None,
+        }
+    }
+
+    /// `struct_of` for enums.
+    pub fn enum_of(&self, ty: &Type) -> Option<(u32, &EnumLayout)> {
+        match self.type_to_mir(ty) {
+            MirType::Enum(eid) => Some((eid.id, self.enum_layouts.get(eid.id as usize)?)),
+            _ => None,
+        }
+    }
+
+    /// The MIR type of a declared struct or enum, found by the checked type's
+    /// identity: its instance's layout when mono made one, else its
+    /// declaration's.
+    fn declared_layout_mir(&self, ty: &Type) -> Option<MirType> {
+        if let Some(i) = rask_layout::struct_index_for(ty, self.struct_layouts) {
+            let sl = &self.struct_layouts[i];
+            return Some(self.struct_or_handle(&sl.name, i as u32, sl));
+        }
+        let i = rask_layout::enum_index_for(ty, self.enum_layouts)?;
+        let el = &self.enum_layouts[i];
+        Some(MirType::Enum(EnumLayoutId::new(i as u32, el.size, el.align)))
+    }
+
     /// AN1: the declared type of one field of a user annotation.
     ///
     /// Annotations register as nominal structs in the checker's table but never
@@ -1101,112 +1131,10 @@ impl<'a> MirContext<'a> {
         Some(self.type_to_mir(arg))
     }
 
-    /// The layout of one *instantiation* of a generic type, when mono emitted a
-    /// separate one.
-    ///
-    /// Generic types share a single layout with a word-sized placeholder per type
-    /// parameter, which is right until a type argument is an inline aggregate
-    /// wider than a word. Mono emits `One$Big` for those; `One<i64>` has no
-    /// instance layout and falls through to the shared one. The name comes from
-    /// `rask_layout::generic_instance_name`, so both sides spell it the same way by
-    /// construction (#781).
-    pub fn generic_instance_mir_type(
-        &self,
-        base: &rask_types::TypeId,
-        args: &[rask_types::GenericArg],
-    ) -> Option<MirType> {
-        let name = self.generic_instance_layout_name(base, args)?;
-        if let Some((idx, sl)) = self.find_struct(&name) {
-            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
-        }
-        let (idx, el) = self.find_enum(&name)?;
-        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
-    }
-
-    /// `Base$Arg$Arg` for a resolved generic type, or `None` when an argument
-    /// can't be named.
-    fn generic_instance_layout_name(
-        &self,
-        base: &rask_types::TypeId,
-        args: &[rask_types::GenericArg],
-    ) -> Option<String> {
-        let base_name = self.type_names.get(base)?;
-        let bare = base_name.trim();
-        let mut arg_tys = Vec::with_capacity(args.len());
-        for arg in args {
-            let rask_types::GenericArg::Type(t) = arg else { return None };
-            arg_tys.push((**t).clone());
-        }
-        rask_layout::generic_instance_name(bare, &arg_tys, self.type_names)
-    }
-
-    /// The instance layout name for a checker type, in either spelling.
-    ///
-    /// An instantiated copy's types were built by rewriting type strings, so its
-    /// `One<Big>` is an `UnresolvedGeneric` carrying a plain name rather than a
-    /// `Generic` carrying an interned id. Both name the same layout (#814).
-    fn instance_layout_name_of(&self, ty: Option<&Type>) -> Option<String> {
-        match ty? {
-            Type::Generic { base, args } => self.generic_instance_layout_name(base, args),
-            Type::UnresolvedGeneric { name, args } => {
-                let bare = name.trim();
-                let mut arg_tys = Vec::with_capacity(args.len());
-                for arg in args {
-                    let rask_types::GenericArg::Type(t) = arg else { return None };
-                    arg_tys.push((**t).clone());
-                }
-                rask_layout::generic_instance_name(bare, &arg_tys, self.type_names)
-            }
-            _ => None,
-        }
-    }
-
-    /// The instance struct layout for a checker type, if it has one.
-    pub fn generic_instance_struct(&self, ty: Option<&Type>) -> Option<(u32, &StructLayout)> {
-        let name = self.instance_layout_name_of(ty)?;
-        self.find_struct(&name)
-    }
-
-    /// The instance enum layout for a checker type, if it has one.
-    pub fn generic_instance_enum(&self, ty: Option<&Type>) -> Option<(u32, &EnumLayout)> {
-        let name = self.instance_layout_name_of(ty)?;
-        self.find_enum(&name)
-    }
-
     /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
     /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
         ty.size()
-    }
-
-    /// `find_enum`, accepting a name with written type arguments.
-    ///
-    /// `Holder<i64>.Full(4)` reaches lowering as the name `Holder<i64>`; the
-    /// layouts are keyed by the bare name. `find_struct_written` has done this for
-    /// structs since the beginning, which is why the struct form worked and the
-    /// enum form didn't (#782).
-    pub fn find_enum_written(&self, name: &str) -> Option<(u32, &EnumLayout)> {
-        if let Some(found) = self.find_enum(name) {
-            return Some(found);
-        }
-        // IM3, the same reason `resolve_type_name` follows aliases: a transparent
-        // alias is its target, so a variant reached through it is the target's
-        // variant. Without this `Shade.Red` under `type alias Shade = Colour`
-        // found no enum, fell through to a bare constant, and the comparison
-        // that followed read that integer as an address — a segfault, not a
-        // wrong answer (#998).
-        if let Some(target) = self.type_defs.alias_target_name(name) {
-            if target != name {
-                if let Some(found) = self.find_enum(&target) {
-                    return Some(found);
-                }
-            }
-        }
-        let base = name.trim();
-        if base == name {
-            return None;
-        }
-        self.find_enum(base)
     }
 
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
@@ -1216,109 +1144,13 @@ impl<'a> MirContext<'a> {
             .find(|(_, e)| e.name == name)
             .map(|(i, e)| (i as u32, e))
     }
-    /// The MIR type of a written type. A container is `Container(kind)`, as
-    /// in `type_to_mir`.
+    /// The MIR type of a written type: the checker's resolver turns it into
+    /// a checked type, and that lowers like any other. A written type with no
+    /// resolution (a stub's bare type parameter) is a word.
     pub fn resolve_type_expr(&self, ty: &TypeExpr) -> MirType {
-        let mir = self.written_layout(ty);
-        if mir != MirType::Ptr {
-            return mir;
-        }
-        match ty.name().as_deref().and_then(crate::ContainerKind::from_head) {
-            Some(kind) => MirType::Container(kind),
-            None => mir,
-        }
-    }
-
-    fn written_layout(&self, ty: &TypeExpr) -> MirType {
-        match ty {
-            TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => MirType::Void,
-            TypeExpr::Optional(inner) => option_of(self.resolve_type_expr(inner)),
-            TypeExpr::Result { ok, err } => MirType::Result {
-                ok: Box::new(self.resolve_type_expr(ok)),
-                err: Box::new(self.resolve_type_expr(err)),
-            },
-            // Same order the checker canonicalizes to — by member name. A
-            // union's member index is what says which member is present, so the
-            // frame that writes one and the frame that reads it have to agree
-            // (#1103).
-            TypeExpr::Union(members) => {
-                let mut members: Vec<&TypeExpr> = members.iter().collect();
-                members.sort_by_key(|m| m.to_string());
-                MirType::Union(members.into_iter().map(|m| self.resolve_type_expr(m)).collect())
-            }
-            TypeExpr::Tuple(elems) => {
-                MirType::Tuple(elems.iter().map(|e| self.resolve_type_expr(e)).collect())
-            }
-            // A literal length, then a module-level `const` naming one — read
-            // from the checker's table so the two can't disagree (#906). Anything
-            // still symbolic keeps 0, which preserves the element type.
-            TypeExpr::Array { elem, len } => MirType::Array {
-                elem: Box::new(self.resolve_type_expr(elem)),
-                len: len
-                    .parse::<u32>()
-                    .ok()
-                    .or_else(|| self.type_defs.const_length(len).and_then(|n| u32::try_from(n).ok()))
-                    .unwrap_or(0),
-            },
-            // A closure is a pointer to its block, and saying so in the type is
-            // what lets a carrier holding one give it back (#1253).
-            TypeExpr::Func { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
-            // `any io.Writer` is the stdlib's `Writer`, whose symbol is its bare
-            // name. Spelled from the written text it was an interface called
-            // "io.Writer" that no vtable is filed under, and a call through it
-            // couldn't be lowered (#1309). The table knows import aliases, so
-            // `any i.Writer` under `import io as i` is the same one.
-            TypeExpr::Any(interface) => MirType::InterfaceObject {
-                interface_name: match self.type_defs.module_interface(interface) {
-                    Some(id) => self.type_defs.type_name(id),
-                    None => interface.to_string(),
-                },
-            },
-            TypeExpr::RawPtr(_) => MirType::RawPtr,
-            TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
-            TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
-            TypeExpr::Named { path, args } => self.resolve_generic_expr(&path.join("."), args),
-        }
-    }
-
-    /// `Name<args>` as written.
-    fn resolve_generic_expr(&self, head: &str, args: &[TypeExpr]) -> MirType {
-        match (head, args) {
-            ("Result", [ok, err]) => MirType::Result {
-                ok: Box::new(self.resolve_type_expr(ok)),
-                err: Box::new(self.resolve_type_expr(err)),
-            },
-            ("Option", [inner]) => option_of(self.resolve_type_expr(inner)),
-            ("Link", [node]) => match self.resolve_type_expr(node) {
-                MirType::Struct(sid) => MirType::Link(sid),
-                _ => MirType::Ptr,
-            },
-            // `Heap<T>` is a block address, always — that is what makes it a
-            // type rather than a fact about a binding. The payload keeps its
-            // container kind, since `drop` has to free what it points at.
-            ("Heap", [inner]) => MirType::Heap(Box::new(self.resolve_type_expr(inner))),
-            (head, _) if lowers_to_ptr(head) => MirType::Ptr,
-            _ => {
-                // A generic instantiation whose type argument is an inline
-                // aggregate has a layout of its own, not found under the base
-                // name: `first$Big(o: One<Big>)` was given the shared 8-byte
-                // layout while its caller passed 24 bytes (#781).
-                let arg_tys: Vec<Type> = args.iter().map(rask_layout::field_type).collect();
-                if self.nominal_underlying.contains_key(head) {
-                    let generic: Vec<rask_types::GenericArg> =
-                        arg_tys.iter().cloned().map(|t| rask_types::GenericArg::Type(Box::new(t))).collect();
-                    return self.resolve_unresolved_generic(head, &generic);
-                }
-                if let Some(name) = rask_layout::generic_instance_name(head, &arg_tys, self.type_names) {
-                    if let Some((idx, sl)) = self.find_struct(&name) {
-                        return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
-                    }
-                    if let Some((idx, el)) = self.find_enum(&name) {
-                        return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
-                    }
-                }
-                self.resolve_type_name(head)
-            }
+        match rask_check::resolve_type_expr(ty, self.type_defs) {
+            Ok(checked) => self.type_to_mir(&checked),
+            Err(_) => MirType::Ptr,
         }
     }
 
@@ -1339,50 +1171,22 @@ impl<'a> MirContext<'a> {
         Some(self.type_to_mir(&rask_check::substitute_type(underlying, &map)))
     }
 
-    /// A generic the checker left as a name with arguments: `One<Big>` in an
-    /// instantiated copy, `Channel<i64>` before its name resolved.
+    /// A generic the checker left as a name with arguments: a stub's
+    /// `Channel<i64>`. The name resolves to its declaration, and the type
+    /// lowers as that declaration at these arguments.
     fn resolve_unresolved_generic(&self, name: &str, args: &[rask_types::GenericArg]) -> MirType {
-        if self.nominal_underlying.contains_key(name) {
-            let def = self.type_defs.get_type_id(name).and_then(|id| self.type_defs.get(id));
-            if let Some(wrapped) = self.newtype_at(def, args) {
-                return wrapped;
-            }
+        if lowers_to_ptr(name) {
+            return MirType::Ptr;
         }
-        match name {
-            name if lowers_to_ptr(name) => MirType::Ptr,
-            _ => {
-                // An instantiation whose argument is an inline aggregate has a
-                // layout of its own, not found under the base name (#781).
-                let arg_tys: Option<Vec<Type>> = args
-                    .iter()
-                    .map(|a| match a {
-                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        rask_types::GenericArg::ConstUsize(_) => None,
-                    })
-                    .collect();
-                if let Some(instance) = arg_tys
-                    .and_then(|tys| rask_layout::generic_instance_name(name, &tys, self.type_names))
-                {
-                    if let Some((idx, sl)) = self.find_struct(&instance) {
-                        return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
-                    }
-                    if let Some((idx, el)) = self.find_enum(&instance) {
-                        return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
-                    }
-                }
-                self.resolve_type_name(name)
-            }
+        match self.type_defs.lookup(name) {
+            Some(Type::Named(base)) => self.type_to_mir(&Type::Generic { base, args: args.to_vec() }),
+            _ => MirType::Ptr,
         }
     }
 
-    /// The MIR type a single type name stands for.
+    /// The MIR type a single type name stands for: a scalar's spelling, or
+    /// the declaration the checker's table resolves it to.
     pub fn resolve_type_name(&self, name: &str) -> MirType {
-        // IM3: a transparent alias is its target, so the layout to find is the
-        // target's: `let d: Span = …` under `import time.Duration as Span` was
-        // matching `stdlib/builtins.rk`'s own `Span` layout by name (#923, #975).
-        if let Some(target) = self.type_defs.alias_target(name) {
-            return self.resolve_type_expr(target);
-        }
         match name {
             "i8" => MirType::I8,
             "i16" => MirType::I16,
@@ -1407,48 +1211,15 @@ impl<'a> MirContext<'a> {
             // name, so nothing else reaches here under it.
             "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
             name if lowers_to_ptr(name) => MirType::Ptr,
-            _ => {
-                // A nominal newtype has no layout — it is whatever it wraps.
-                if let Some(underlying) = self.nominal_underlying.get(name) {
-                    return self.type_to_mir(underlying);
+            // A transparent alias resolves to its target (IM3), a module
+            // prefix to the type it reaches (#1097).
+            _ => match self.type_defs.lookup(name) {
+                Some(found) if !matches!(found, Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }) => {
+                    self.type_to_mir(&found)
                 }
-                if let Some((idx, sl)) = self.find_struct(name) {
-                    self.struct_or_handle(name, idx, sl)
-                } else if let Some((idx, el)) = self.find_enum(name) {
-                    MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
-                } else {
-                    self.module_qualified_mir_type(name)
-                }
-            }
+                _ => MirType::Ptr,
+            },
         }
-    }
-
-
-    /// A type reached through its module — `http.Response`, or `h.Response`
-    /// under `import http as h`.
-    ///
-    /// Layouts are filed under the bare name, and the checker's own
-    /// `resolve_named` has stripped the prefix like this since #915. MIR's
-    /// separate type-string parser never did, so an annotation written the
-    /// aliased way left the local a bare pointer and every field read off it
-    /// fell back to a machine word: `h.Response.status` is a `u16` and printed
-    /// through `i64_to_string`. Right only because the field sat in an 8-byte
-    /// slot that zero-extends it — and wrong the moment fields hold their real
-    /// widths (#1097, which is what blocks #1083).
-    fn module_qualified_mir_type(&self, name: &str) -> MirType {
-        let Some((_, bare)) = name.rsplit_once('.') else {
-            return MirType::Ptr;
-        };
-        if bare.is_empty() {
-            return MirType::Ptr;
-        }
-        if let Some((idx, sl)) = self.find_struct(bare) {
-            return self.struct_or_handle(bare, idx, sl);
-        }
-        if let Some((idx, el)) = self.find_enum(bare) {
-            return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
-        }
-        MirType::Ptr
     }
 
     /// The registration a whole container of links needs, or `None`.
@@ -1686,13 +1457,13 @@ impl<'a> MirContext<'a> {
             Type::Generic { .. } if self.generic_head(ty).as_deref() == Some("Rack") => {
                 MirType::Ptr
             }
-            // Resolved named types — look up via type_names, then struct/enum layouts
+            // A declared type is found by its identity. A newtype has no
+            // layout of its own: it is what it wraps.
             Type::Named(id) => {
-                if let Some(name) = self.type_names.get(id) {
-                    self.resolve_type_name(name)
-                } else {
-                    MirType::Ptr
+                if let Some(rask_types::TypeDef::NominalAlias { underlying, .. }) = self.type_defs.get(*id) {
+                    return self.type_to_mir(underlying);
                 }
+                self.declared_layout_mir(ty).unwrap_or(MirType::Ptr)
             }
             Type::Generic { base, args } => {
                 // A generic newtype is whatever it wraps at these arguments:
@@ -1701,14 +1472,7 @@ impl<'a> MirContext<'a> {
                 if let Some(wrapped) = self.newtype_at(self.type_defs.get(*base), args) {
                     return wrapped;
                 }
-                if let Some(instance) = self.generic_instance_mir_type(base, args) {
-                    return instance;
-                }
-                if let Some(name) = self.type_names.get(base) {
-                    self.resolve_type_name(name)
-                } else {
-                    MirType::Ptr
-                }
+                self.declared_layout_mir(ty).unwrap_or(MirType::Ptr)
             }
             Type::UnresolvedGeneric { name, args } => self.resolve_unresolved_generic(name, args),
             Type::RawPtr(_) => MirType::RawPtr,
@@ -2660,15 +2424,10 @@ impl<'a> MirLowerer<'a> {
     /// struct. Walks field chains (`a.b.c`) so a nested field's declared type
     /// stays reachable.
     pub(crate) fn struct_layout_of_expr(&self, expr: &Expr) -> Option<rask_layout::StructLayout> {
-        let from_checker = self.ctx.lookup_raw_type(expr.id).and_then(|ty| match &*ty {
-            Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
-            Type::Named(id) => self
-                .ctx
-                .type_names
-                .get(id)
-                .and_then(|n| self.ctx.find_struct(n).map(|(_, l)| l.clone())),
-            _ => None,
-        });
+        let from_checker = self
+            .ctx
+            .lookup_raw_type(expr.id)
+            .and_then(|ty| self.ctx.struct_of(&ty).map(|(_, l)| l.clone()));
         if from_checker.is_some() {
             return from_checker;
         }
@@ -2682,15 +2441,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Field { object, field } => {
                 let base = self.struct_layout_of_expr(object)?;
                 let f = base.fields.iter().find(|f| f.name == *field)?;
-                match &f.ty {
-                    Type::UnresolvedNamed(n) => self.ctx.find_struct(n).map(|(_, l)| l.clone()),
-                    Type::Named(id) => self
-                        .ctx
-                        .type_names
-                        .get(id)
-                        .and_then(|n| self.ctx.find_struct(n).map(|(_, l)| l.clone())),
-                    _ => None,
-                }
+                self.ctx.struct_of(&f.ty).map(|(_, l)| l.clone())
             }
             _ => None,
         }
@@ -3186,35 +2937,31 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Is `name` a nominal newtype with no layout of its own?
-    pub(crate) fn is_transparent_newtype(&self, name: &str) -> bool {
-        self.ctx.nominal_underlying.contains_key(name)
-            && self.ctx.find_struct(name).is_none()
-            && self.ctx.find_enum(name).is_none()
+    /// Is `ty` a nominal newtype? It has no layout of its own: it is what it
+    /// wraps.
+    pub(crate) fn is_newtype(&self, ty: &Type) -> bool {
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return false };
+        matches!(self.ctx.type_defs.get(*id), Some(rask_types::TypeDef::NominalAlias { .. }))
     }
 
     /// Does this expression have the type of a nominal newtype?
     pub(crate) fn expr_is_transparent_newtype(&self, expr: &Expr) -> bool {
-        self.ctx
-            .lookup_raw_type(expr.id)
-            .and_then(|ty| MirContext::type_prefix(&ty, self.ctx.type_names))
-            .map(|name| self.is_transparent_newtype(&name))
-            .unwrap_or(false)
+        self.ctx.lookup_raw_type(expr.id).is_some_and(|ty| self.is_newtype(&ty))
     }
 
-    /// Lower a nominal newtype construction — `Id(5)` — to
-    /// the wrapped value itself. Returns `None` when `name` isn't one.
+    /// Lower a nominal newtype construction, `Id(5)`, to the wrapped value
+    /// itself. `None` when `node` doesn't build one.
     pub(crate) fn lower_newtype_wrap(
         &mut self,
-        name: &str,
+        node: &Expr,
         inner: Option<&Expr>,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        if !self.is_transparent_newtype(name) {
+        let Some(ty) = self.ctx.lookup_raw_type(node.id).filter(|t| self.is_newtype(t)) else {
             return Ok(None);
-        }
+        };
         let Some(inner) = inner else { return Ok(None) };
         let (op, _) = self.lower_expr(inner)?;
-        Ok(Some((op, self.ctx.resolve_type_name(name))))
+        Ok(Some((op, self.ctx.type_to_mir(&ty))))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
@@ -8041,7 +7788,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let shape_enum = EnumLayout {
-            key: None,
+            key: Some(rask_layout::LayoutKey::of(rask_types::TypeId(0))),
             name: "Shape".to_string(),
             size: 16,
             align: 8,
@@ -8093,7 +7840,9 @@ mod tests {
         };
 
         let enum_layouts = vec![shape_enum];
-        let node_types = HashMap::new();
+        // The checker types a variant constructor as its enum.
+        let call = method_call_expr(ident_expr("Shape"), "Circle", vec![float_expr(5.0)]);
+        let node_types = HashMap::from([(call.id, rask_types::Type::Named(rask_types::TypeId(0)))]);
         let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
@@ -8159,7 +7908,7 @@ mod tests {
         };
 
         let decl = make_fn("f", vec![], None, vec![
-            expr_stmt(method_call_expr(ident_expr("Shape"), "Circle", vec![float_expr(5.0)])),
+            expr_stmt(call),
             return_stmt(None),
         ]);
         let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
@@ -8176,7 +7925,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout};
 
         let color_enum = EnumLayout {
-            key: None,
+            key: Some(rask_layout::LayoutKey::of(rask_types::TypeId(0))),
             name: "Color".to_string(),
             size: 1,
             align: 1,
@@ -8191,7 +7940,9 @@ mod tests {
         };
 
         let enum_layouts = vec![color_enum];
-        let node_types = HashMap::new();
+        // The checker types a variant constructor as its enum.
+        let call = method_call_expr(ident_expr("Color"), "Red", vec![]);
+        let node_types = HashMap::from([(call.id, rask_types::Type::Named(rask_types::TypeId(0)))]);
         let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
@@ -8257,7 +8008,7 @@ mod tests {
         };
 
         let decl = make_fn("f", vec![], None, vec![
-            expr_stmt(method_call_expr(ident_expr("Color"), "Red", vec![])),
+            expr_stmt(call),
             return_stmt(None),
         ]);
         let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
@@ -8272,7 +8023,7 @@ mod tests {
         use rask_layout::{EnumLayout, VariantLayout, FieldLayout};
 
         let msg_enum = EnumLayout {
-            key: None,
+            key: Some(rask_layout::LayoutKey::of(rask_types::TypeId(0))),
             name: "Msg".to_string(),
             size: 12,
             align: 4,
@@ -8296,7 +8047,9 @@ mod tests {
         };
 
         let enum_layouts = vec![msg_enum];
-        let node_types = HashMap::new();
+        // The checker types a variant constructor as its enum.
+        let call = method_call_expr(ident_expr("Msg"), "Pair", vec![int_expr(1), int_expr(2)]);
+        let node_types = HashMap::from([(call.id, rask_types::Type::Named(rask_types::TypeId(0)))]);
         let folded = Folded::default();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
@@ -8362,7 +8115,7 @@ mod tests {
         };
 
         let decl = make_fn("f", vec![], None, vec![
-            expr_stmt(method_call_expr(ident_expr("Msg"), "Pair", vec![int_expr(1), int_expr(2)])),
+            expr_stmt(call),
             return_stmt(None),
         ]);
         let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);

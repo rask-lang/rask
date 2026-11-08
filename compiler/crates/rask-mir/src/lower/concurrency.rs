@@ -899,15 +899,15 @@ impl<'a> MirLowerer<'a> {
         sel_ty: &MirType,
         variant: &str,
     ) -> Result<(), LoweringError> {
-        let (err, err_ty) = self.lower_enum_variant_path("SelectError", variant).ok_or_else(|| {
+        let declared = match sel_ty {
+            MirType::Result { err, .. } => Some((**err).clone()),
+            _ => None,
+        };
+        let (err, err_ty) = declared.and_then(|t| self.lower_enum_variant(&t, variant)).ok_or_else(|| {
             LoweringError::InvalidConstruct(format!(
                 "SelectError.{variant} missing — stdlib/builtins.rk declares it"
             ))
         })?;
-        let err_ty = match sel_ty {
-            MirType::Result { err, .. } => (**err).clone(),
-            _ => err_ty,
-        };
         self.store_result_arm(result, 1, err, &err_ty);
         Ok(())
     }

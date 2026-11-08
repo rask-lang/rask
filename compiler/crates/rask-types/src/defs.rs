@@ -279,6 +279,8 @@ impl TypeDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorWrap {
     /// The boundary enum the enclosing function returns as its error.
+    pub enum_ty: Type,
+    /// Its name, which the interpreter files enum values under.
     pub enum_name: String,
     /// The variant that carries the source error as its only payload.
     pub variant: String,

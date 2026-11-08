@@ -5316,7 +5316,7 @@ impl TypeChecker {
                 let enum_name = self.fmt_ty(&target);
                 self.error_wraps.insert(
                     node,
-                    rask_types::ErrorWrap { enum_name, variant: variants[0].clone() },
+                    rask_types::ErrorWrap { enum_ty: target.clone(), enum_name, variant: variants[0].clone() },
                 );
                 true
             }

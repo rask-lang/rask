@@ -865,26 +865,30 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// A fieldless variant named through its enum: `Color.Red`, and the same
-    /// through a module — `io.IoError.BrokenPipe`.
-    ///
-    /// `find_enum_written` rather than `find_enum` so `Holder<i64>.Empty`
-    /// resolves too: the parser folds the written type arguments into the name
-    /// (#782).
-    pub(super) fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
-        let (idx, layout) = self.ctx.find_enum_written(enum_name)?;
+    /// A fieldless variant of the enum `enum_ty` lowers to: `Color.Red`, and
+    /// the same through a module, `io.IoError.BrokenPipe`. The enum comes from
+    /// the checked type, never from the spelling, so `Holder<i64>.Empty` and a
+    /// variant reached through an alias land on the right layout.
+    pub(super) fn lower_enum_variant(&mut self, enum_ty: &MirType, variant: &str) -> Option<TypedOperand> {
+        let MirType::Enum(eid) = enum_ty else { return None };
+        let layout = self.ctx.enum_layouts.get(eid.id as usize)?;
         let v = layout.variants.iter().find(|v| v.name == variant)?;
-        let (tag, tag_offset) = (v.tag as i64, layout.tag_offset);
-        let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
+        let (tag, tag_offset, tag_bytes) = (v.tag as i64, layout.tag_offset, layout.tag_bytes());
         let result_local = self.builder.alloc_temp(enum_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result_local,
             offset: tag_offset,
             value: MirOperand::Constant(MirConst::Int(tag)),
-            store_size: layout.tag_bytes(),
+            store_size: tag_bytes,
             field: None,
         }));
-        Some((MirOperand::Local(result_local), enum_ty))
+        Some((MirOperand::Local(result_local), enum_ty.clone()))
+    }
+
+    /// The MIR type the checker gave a node, when it is an enum.
+    pub(super) fn enum_type_of_node(&self, id: rask_ast::NodeId) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(id)?;
+        self.ctx.enum_of(&ty).map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
     }
 
     /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
@@ -2495,11 +2499,16 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_call(&mut self, expr: &Expr, func: &Expr, args: &[CallArg]) -> Result<TypedOperand, LoweringError> {
             // `Id(5)` on a nominal newtype is the value, not a call — there
-            // is no `Id` function to dispatch to (#445).
+            // is no `Id` function to dispatch to (#445). A function or closure
+            // that returns an `Id` is a call: the checker resolved it to one,
+            // or it names a local.
             if let Some(name) = func.name() {
-                if args.len() == 1 {
+                if args.len() == 1
+                    && self.ctx.call_targets.get(&expr.id).is_none()
+                    && !self.locals.contains_key(name)
+                {
                     if let Some((op, ty)) =
-                        self.lower_newtype_wrap(name, Some(&args[0].expr))?
+                        self.lower_newtype_wrap(expr, Some(&args[0].expr))?
                     {
                         return Ok((op, ty));
                     }
@@ -2962,25 +2971,26 @@ impl<'a> MirLowerer<'a> {
                             return Ok((MirOperand::Local(local_id), ty));
                         }
                     }
-                    // Look up the field as an enum type
-                    if let Some((idx, layout)) = self.ctx.find_enum(field) {
-                        let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
+                    // A type reached through the package: what the checker
+                    // typed the path as.
+                    let named = self.ctx.lookup_raw_type(expr.id).map(|t| self.ctx.type_to_mir(&t));
+                    if let Some(enum_ty @ MirType::Enum(eid)) = &named {
+                        let layout = &self.ctx.enum_layouts[eid.id as usize];
+                        let (tag_offset, tag_bytes) = (layout.tag_offset, layout.tag_bytes());
                         let result_local = self.builder.alloc_temp(enum_ty.clone());
                         // Default-initialize (tag 0) — caller will likely access a variant
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: result_local,
-                            offset: layout.tag_offset,
+                            offset: tag_offset,
                             value: MirOperand::Constant(MirConst::Int(0)),
-                            store_size: layout.tag_bytes(),
+                            store_size: tag_bytes,
                             field: None,
                         }));
-                        return Ok((MirOperand::Local(result_local), enum_ty));
+                        return Ok((MirOperand::Local(result_local), enum_ty.clone()));
                     }
-                    // Look up as a struct type
-                    if let Some((idx, sl)) = self.ctx.find_struct(field) {
-                        let struct_ty = MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
+                    if let Some(struct_ty @ MirType::Struct(_)) = &named {
                         let result_local = self.builder.alloc_temp(struct_ty.clone());
-                        return Ok((MirOperand::Local(result_local), struct_ty));
+                        return Ok((MirOperand::Local(result_local), struct_ty.clone()));
                     }
                     // Fallback: treat as an opaque type reference
                     let result_local = self.builder.alloc_temp(MirType::I64);
@@ -2999,24 +3009,22 @@ impl<'a> MirLowerer<'a> {
             // h` gives a name no list knows. What makes this a variant path
             // is the middle segment naming an enum that has this variant,
             // with the head naming no local.
-            if let ExprKind::Field { object: head, field: type_name } = &object.kind {
+            if let ExprKind::Field { object: head, .. } = &object.kind {
                 if matches!(&head.kind, ExprKind::Ident(n) if !self.name_holds_a_value(n)) {
-                    if let Some(op) = self.lower_enum_variant_path(type_name, field) {
+                    if let Some(op) = self.enum_type_of_node(expr.id).and_then(|t| self.lower_enum_variant(&t, field)) {
                         return Ok(op);
                     }
                 }
             }
 
             // Enum variant access: Color.Red (no parens, fieldless variant).
-            // `find_enum_written` so `Holder<i64>.Empty` resolves too — the
-            // parser folds the written type arguments into the name (#782).
             //
             // A module const isn't a local either, and it holds a value:
             // `ORIGIN.y` on `const ORIGIN: Point` read as a variant of a type
             // named `ORIGIN`, came back as the tag stub, and printed 0.
             if let Some(name) = object.name() {
                 if !self.name_holds_a_value(name) {
-                    if let Some(op) = self.lower_enum_variant_path(name, field) {
+                    if let Some(op) = self.enum_type_of_node(expr.id).and_then(|t| self.lower_enum_variant(&t, field)) {
                         return Ok(op);
                     }
                     // Unknown enum type (built-in Error, etc.) — produce a
@@ -3642,7 +3650,7 @@ impl<'a> MirLowerer<'a> {
             // A nominal newtype is transparent: `Id(5)` IS 5.
             // There's no layout to store into — treating it as an aggregate
             // stored through an uninitialised pointer (#445).
-            if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
+            if let Some((op, ty)) = self.lower_newtype_wrap(expr, fields.first().map(|f| &f.value))? {
                 return Ok((op, ty));
             }
             // The checker's type for this node is what the literal builds. The
@@ -3656,16 +3664,8 @@ impl<'a> MirLowerer<'a> {
             // `Pair` holds two 16-byte strings where the bare `Slot` has
             // word-sized placeholders (#781, #1473).
             let ty = self.ctx.lookup_raw_type(expr.id);
-            let declared = match ty.as_deref() {
-                Some(rask_types::Type::Named(id)) | Some(rask_types::Type::Generic { base: id, .. }) => {
-                    self.ctx.type_names.get(id).cloned()
-                }
-                _ => None,
-            };
-            let (result_ty, layout, enum_variant_info) = if let Some((idx, el)) = self
-                .ctx
-                .generic_instance_enum(ty.as_deref())
-                .or_else(|| declared.as_deref().and_then(|n| self.ctx.find_enum(n)))
+            let (result_ty, layout, enum_variant_info) = if let Some((idx, el)) =
+                ty.as_deref().and_then(|t| self.ctx.enum_of(t))
             {
                 let variant_name = name.rsplit_once('.').map_or(name, |(_, v)| v);
                 let Some(v) = el.variants.iter().find(|v| v.name == variant_name) else {
@@ -3676,11 +3676,7 @@ impl<'a> MirLowerer<'a> {
                 };
                 let info = ((el.tag_offset, el.tag_bytes()), v.tag, v.payload_offset, v.fields.clone());
                 (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, Some(info))
-            } else if let Some((idx, sl)) = self
-                .ctx
-                .generic_instance_struct(ty.as_deref())
-                .or_else(|| declared.as_deref().and_then(|n| self.ctx.find_struct(n)))
-            {
+            } else if let Some((idx, sl)) = ty.as_deref().and_then(|t| self.ctx.struct_of(t)) {
                 (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
             } else {
                 // Without a layout every field store goes through an address
@@ -4449,11 +4445,8 @@ impl<'a> MirLowerer<'a> {
             // own — a `Range<T>`'s fields are all `T` or `bool`, so its
             // layout doesn't vary with the element and mono keeps one
             // (`struct#N` for every instantiation of the methods too).
-            let Some((idx, sl)) = self
-                .ctx
-                .generic_instance_struct(self.ctx.lookup_raw_type(expr.id).as_deref())
-                .or_else(|| self.ctx.find_struct("Range"))
-            else {
+            let range_ty = self.ctx.lookup_raw_type(expr.id);
+            let Some((idx, sl)) = range_ty.as_deref().and_then(|t| self.ctx.struct_of(t)) else {
                 return Err(LoweringError::InvalidConstruct(
                     "no layout for `Range` — the stdlib declaration is missing".into()
                 ));
@@ -5241,7 +5234,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_enum_from_value(object, method, args)? {
+        if let Some(r) = self.try_lower_enum_from_value(expr, object, method, args)? {
             return Ok(r);
         }
 
@@ -5554,17 +5547,16 @@ impl<'a> MirLowerer<'a> {
                         // the rest of the method chain then treats it like any
                         // other value of its type.
 
-                        // Enum variant constructor: Shape.Circle(r)
-                        // Extract layout data before mutable borrows in lower_expr.
-                        // A generic enum whose type argument is an inline aggregate
-                        // has its own layout, and the written name doesn't identify
-                        // it — `Holder.Full(Big { … })` says only "Holder". The
-                        // checker's type for the call carries the instantiation
-                        // (#781).
-                        let enum_variant = self
-                            .ctx
-                            .generic_instance_enum(self.ctx.lookup_raw_type(expr.id).as_deref())
-                            .or_else(|| self.ctx.find_enum_written(name))
+                        // Enum variant constructor: Shape.Circle(r). The enum is
+                        // the one the checker typed the call as, which carries a
+                        // generic's instantiation the written name can't
+                        // (`Holder.Full(Big { … })` says only "Holder", #781).
+                        // A call the checker resolved to a function is not one.
+                        let call_ty = self.ctx.lookup_raw_type(expr.id);
+                        let enum_variant = call_ty
+                            .as_deref()
+                            .filter(|_| self.ctx.call_targets.get(&expr.id).is_none())
+                            .and_then(|t| self.ctx.enum_of(t))
                             .and_then(|(idx, layout)| {
                             let variant = layout.variants.iter().find(|v| v.name == *method)?;
                             Some((
@@ -5605,7 +5597,16 @@ impl<'a> MirLowerer<'a> {
 
                         // .variants() on enum types: build a Vec of tag values
                         if method == "variants" && args.is_empty() {
-                            if let Some((idx, layout)) = self.ctx.find_enum(name) {
+                            // `Vec<E>`, as the checker typed the call.
+                            let elem = match call_ty.as_deref() {
+                                Some(rask_types::Type::Generic { args, .. })
+                                | Some(rask_types::Type::UnresolvedGeneric { args, .. }) => match args.first() {
+                                    Some(rask_types::GenericArg::Type(t)) => Some((**t).clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            };
+                            if let Some((idx, layout)) = elem.as_ref().and_then(|t| self.ctx.enum_of(t)) {
                                 // A `Vec` of the enum itself: each element is a
                                 // value with only its tag written.
                                 let enum_ty = MirType::Enum(crate::types::EnumLayoutId::new(
@@ -5798,7 +5799,8 @@ impl<'a> MirLowerer<'a> {
                         if name == "json" && method == "decode" && args.len() == 1 {
                             let (str_op, _) = self.lower_expr(&args[0].expr)?;
                             let target = self.json_decode_target(expr, type_args)?;
-                            return self.lower_json_decode(str_op, &target).map(Some);
+                            let call_ty = self.ctx.lookup_raw_type(expr.id);
+                            return self.lower_json_decode(str_op, &target, call_ty.as_deref()).map(Some);
                         }
 
                         // Vec.from([...]) → stack array + rask_vec_from_static(ptr, count)
@@ -7178,6 +7180,7 @@ impl<'a> MirLowerer<'a> {
     /// option's payload. No per-variant construction needed.
     fn try_lower_enum_from_value(
         &mut self,
+        call: &Expr,
         object: &Expr,
         method: &str,
         args: &[CallArg],
@@ -7191,7 +7194,12 @@ impl<'a> MirLowerer<'a> {
         if self.name_holds_a_value(enum_name) {
             return Ok(None);
         }
-        let Some((layout_id, layout)) = self.ctx.find_enum(enum_name) else {
+        // `E?`, as the checker typed the call.
+        let call_ty = self.ctx.lookup_raw_type(call.id);
+        let Some(rask_types::Type::Result { ok: enum_ty, .. }) = call_ty.as_deref() else {
+            return Ok(None);
+        };
+        let Some((layout_id, layout)) = self.ctx.enum_of(enum_ty) else {
             return Ok(None);
         };
         if !layout.variants.iter().all(|v| v.fields.is_empty()) {
@@ -8564,7 +8572,8 @@ impl<'a> MirLowerer<'a> {
     /// (#729). Storing the tag into a properly laid out slot makes it the same
     /// shape as any other fieldless enum value.
     fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
-        let Some((id, layout)) = self.ctx.find_enum("Ordering") else {
+        let ordering = self.ctx.type_defs.lookup("Ordering");
+        let Some((id, layout)) = ordering.as_ref().and_then(|t| self.ctx.enum_of(t)) else {
             // No layout registered — a bare context in a unit test. The raw tag
             // is what this used to produce, so fall back rather than fail.
             return (tag, MirType::I64);
@@ -10549,7 +10558,8 @@ impl<'a> MirLowerer<'a> {
         struct_name: &str,
         rows: Vec<Vec<(&'static str, MirOperand)>>,
     ) -> Result<TypedOperand, LoweringError> {
-        let Some((idx, layout)) = self.ctx.find_struct(struct_name) else {
+        let declared = self.ctx.type_defs.lookup(struct_name);
+        let Some((idx, layout)) = declared.as_ref().and_then(|t| self.ctx.struct_of(t)) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "reflect needs `{struct_name}`, which this program never names — add \
                  `import std.reflect`"
@@ -10746,15 +10756,10 @@ impl<'a> MirLowerer<'a> {
     /// instantiation when there is one, else the shared layout with the
     /// arguments substituted back into the payload types (#968).
     fn lower_reflect_variants_value(&mut self, ty: &TypeExpr) -> Result<TypedOperand, LoweringError> {
-        let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let instance = (!arg_tys.is_empty())
-            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
-            .flatten();
-        let layout = instance
-            .as_deref()
-            .and_then(|k| self.ctx.find_enum(k))
-            .or_else(|| self.ctx.find_enum(&base))
+        let checked = rask_check::resolve_type_expr(ty, self.ctx.type_defs).ok();
+        let layout = checked
+            .as_ref()
+            .and_then(|t| self.ctx.enum_of(t))
             .map(|(_, l)| l.clone())
             .ok_or_else(|| {
                 LoweringError::InvalidConstruct(format!(
@@ -10762,8 +10767,8 @@ impl<'a> MirLowerer<'a> {
                     ty.source()
                 ))
             })?;
-        let subst: Vec<(String, TypeExpr)> = match self.ctx.type_defs.lookup(&base) {
-            Some(rask_types::Type::Named(id)) => match self.ctx.type_defs.get(id) {
+        let subst: Vec<(String, TypeExpr)> = match checked {
+            Some(rask_types::Type::Generic { base: id, .. }) => match self.ctx.type_defs.get(id) {
                 Some(rask_types::TypeDef::Enum { type_params, .. })
                     if type_params.len() == ty.args().len() =>
                 {
