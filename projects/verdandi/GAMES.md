@@ -378,17 +378,24 @@ holds surplus, who is obeyed without force, and what people owe each other.
 With those as primitives, structures are patterns recognised and named after
 the fact in the legends view, never modes selected.
 
-The primitives exist: Allgard's. A capability is authority as data, a grant
-is delegation, attenuation is "this but not that", revocation is rebellion;
-ownership, transfer and escrow are the surplus half. Co-op already makes
-ownership the command filter, so the filter is an authority graph. Make it a
-sim object agents can hold. An agent holding the grant over a crew is a
-foreman; over the fort, a king; two players under a joint rule, a council; a
-grant the faith issues, a priesthood. The tiers stop being engine-given and
-become institutions built from agents. Emergence comes from agents having
-needs about the grants they sit under (autonomy, belonging, faith) and being
-able to defect. Legibility is the ledger: who holds what over whom is data,
-in the same currency as the prices.
+The primitives are smaller than they look and mostly already there. Force
+is the combat sim. Surplus is ownership, which conservation tracks. Obedience
+is an agent decision with a reason (belief, fear, habit), which is the needs
+engine. The command relation, who issues jobs to whom, is one table, and it's
+the same table the co-op command filter is. Authority emerges from the first
+three and is recorded in the fourth. An agent at the head of a crew's rows is
+a foreman; at the head of the fort's, a king; two players under a joint rule,
+a council; rows the faith writes, a priesthood. The tiers stop being
+engine-given and become institutions built from agents. Emergence comes from
+agents having needs about who commands them (autonomy, belonging, faith) and
+being able to defect. Legibility is the ledger: who commands whom is data, in
+the same currency as the prices.
+
+Not Allgard. It solves trust between parties who don't trust each other over
+a network, and inside a lockstep sim that problem doesn't exist: the sim is
+the authority and a grant is a row, not a signed token. The delegable,
+attenuable authority idea is older than Allgard and the game borrows the
+idea. Allgard stays at the world layer, where sites have different hosts.
 
 The setting's law gives legitimacy a mechanism: authority received is clean,
 authority grasped corrupts, which is what a manufactured god is. So a
