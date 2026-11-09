@@ -34,22 +34,28 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 798 green, 9 registered red | `tests/differential.sh` |
-| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 7 of 801, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 93 | `tests/tsan_gate.sh` |
+| Suite programs agreeing on both backends | 843 green, 9 registered red (4 fail on both backends) | `tests/differential.sh` |
+| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred; 7 not measured (build fails) | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 293 of 293, 0 red, 13 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 6 known-bad, 0 new, 6 not measured (build fails), each filed | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 97 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
+| Concurrency files clean under sim, 100 seeds in CI | 97 of 97 at 20 seeds locally (CI runs 100), 44 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 855 of 855 | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 54 of 99 open issues | issue search |
-| Open design questions | 19 | issue search |
+| Stdlib items a spec promises that exist and run on both backends | 856 of 856 | `tests/stdlib_coverage_gate.sh` |
+| Open bugs | 110 labelled `bug`, of 226 open issues | issue search |
+| Open design questions | 20 | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+Prototypes (9 agree), projects (22 ok), formatter round-trips, the HTTP server,
+the agent benchmark and `cargo test --release` (1637 passed, 0 failed) were
+re-run too. All green. The tutorials, book and internal-spelling gates were not
+re-run this pass.
+
+The 6–7 "not measured" programs in the leak and memcheck gates are the ones that
+fail to build; one registered-red file is among them
+(`t_stdlib_interface_default_inherited.rk`). The gates can't see them until they
+build.
 
 This table was a month stale when it was last checked — it claimed 31 leaking
 programs holding 86 allocations while the gate printed 0, and 500 of 505 while
@@ -244,10 +250,8 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   returns. A name collision in the ownership metadata, not a position.
 
 Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
+milestone — #1245, #1233 and #1248 all came in with #1298. #1244 was the one
+left, and it is closed now; the matrix has 0 red cells.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -422,7 +426,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 424 sites restate a fact, 417 to go.**
+ratchet at its target. Today: 416 sites restate a fact, 409 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -444,10 +448,10 @@ each pinned at today's count, each with the count it has to reach.
 | `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
 | Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
 | Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
-| Public entry points into the passes | 14 | 7 | #1568 |
-| Interpreters run without the driver's setup (`prepare_interpreter`) | 4 | 0 | #1568 |
+| Public entry points into the passes | 13 | 7 | #1568 |
+| Interpreters run without the driver's setup (`prepare_interpreter`) | 0 (at target) | 0 | #1568 |
 | Size or alignment computed outside the layout model | 5 | 0 | #1567 |
-| Readers of the pointer-width process global | 15 | 0 | #1568 |
+| Readers of the pointer-width process global | 12 | 0 | #1568 |
 
 A ratchet at its target gets deleted, and the thing that made the sites
 impossible stays: a Cargo dependency that can't reach the old answer, or a type
@@ -506,7 +510,8 @@ for a checker type by accident, and no grep test has to say so.
    `TypeDef` on the AST alone, the checker is `rask-check`, and layout is
    `rask-layout`, which the checker reads. Layout computes from `TypeDef` and
    is keyed by type identity (`LayoutKey`); finding layouts by name in MIR,
-   codegen and the interpreter is next. The crate takes `Type`, type
+   codegen and the interpreter is half done: MIR now asks by type (d5f73c1a); codegen and the
+   interpreter's `reflect` weren't re-checked this pass. The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
    `compiler/CLAUDE.md` calls `rask_layout` "the one size model"
@@ -540,8 +545,21 @@ owns the checker as source of truth (step 2 and the checker half of 4). Lane C
 owns layout (the mono half of 4). Step 5 waits for B.
 
 Bugs found inside the theme join it. Already filed and the same shape: #1553
-(the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
-#1621.
+(the stdlib collected twice), #1592 and #1610 (a hand list of typed modules).
+
+## What came off this list since the last pass
+
+- **Interpreter setup** (v0.7 step 3): the ratchet reads 0. Every interpreter
+  is readied through `prepare_interpreter`.
+- **#1621** closed, so it is no longer a "filed and same shape" bug.
+- **#1244 and #985** closed; the matrix is 293 of 293 with nothing registered
+  red.
+- **MIR layout lookup by name** (v0.7 step 4): moved to lookup by type.
+
+Ordering holds: #1561, #1564 and #1565 are all still open, and the three big
+ratchets (238 dispatch entries, 89 spelling rows, 29 name sniffs) haven't
+moved. The 8 sites that fell this week came from structure work, which is what
+the order front-loads.
 
 ## Cadence
 
