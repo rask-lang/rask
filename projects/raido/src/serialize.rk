@@ -1,0 +1,295 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Canonical serialization (vm/architecture.md, Serialization).
+//
+// Objects are numbered by a depth-first walk from the roots: module
+// variables in order, then live host roots in creation order, then each
+// object's slots and keys in order. A `ref` is written as that number, never
+// as a slot, so two heaps in the same state write the same bytes whatever
+// their allocation and collection history. Unreachable objects aren't written.
+//
+// Layout, little-endian:
+//   "RDSV" | version u16 | fuel i64 | prng 4 x u32 | since_checkpoint i64
+//   | modules u32, values | roots u32, (live u8, value) each | objects u32, objects
+// value:  tag word i64 | payload i64 (a ref's payload is its object number)
+// object: kind u8 | type_id i64 | disc i64 | tagged u8 | text u32 + bytes
+//         | slots u32, values | keys u32, values
+
+const SNAPSHOT_VERSION: i64 = 1
+
+struct MachineState {
+    fuel: i64
+    prng: Prng
+}
+
+func put_u8(mutate out: Vec<u8>, v: i64) {
+    out.push((v & 0xFF).wrap<u8>())
+}
+
+func put_u16(mutate out: Vec<u8>, v: i64) {
+    put_u8(mutate out, v)
+    put_u8(mutate out, v >> 8)
+}
+
+func put_u32(mutate out: Vec<u8>, v: i64) {
+    put_u16(mutate out, v)
+    put_u16(mutate out, v >> 16)
+}
+
+func put_i64(mutate out: Vec<u8>, v: i64) {
+    put_u32(mutate out, v)
+    put_u32(mutate out, v >> 32)
+}
+
+// Number every reachable object in walk order. `order[n]` is the slot of
+// object n; `number[slot]` is its number, or -1.
+struct Numbering {
+    order: Vec<i64>
+    number: Vec<i64>
+}
+
+func roots_in_order(heap: GcHeap) -> Vec<Value> {
+    mut out: Vec<Value> = heap.module_vars.clone()
+    for r in heap.roots {
+        if r.live {
+            out.push(r.value)
+        }
+    }
+    return out
+}
+
+func number_objects(heap: GcHeap) -> Numbering {
+    mut number: Vec<i64> = Vec.new()
+    for _ in heap.objs {
+        number.push(-1)
+    }
+    mut order: Vec<i64> = Vec.new()
+    // Pre-order walk with an explicit stack; children pushed in reverse so
+    // they're visited first to last, the same order recursion would give.
+    mut stack: Vec<Value> = Vec.new()
+    let roots = roots_in_order(heap)
+    mut i = roots.len().wrap<i64>() - 1
+    while i >= 0 {
+        stack.push(roots[i])
+        i = i - 1
+    }
+    loop {
+        let v = stack.pop() ?? break
+        if !v.is_ref() || number[v.bits] >= 0 {
+            continue
+        }
+        let slot = v.bits
+        number[slot] = order.len().wrap<i64>()
+        order.push(slot)
+        let k = heap.objs[slot].keys.len().wrap<i64>()
+        let n = heap.objs[slot].slots.len().wrap<i64>()
+        // Visit order per object: keys then slots, entry by entry for maps.
+        mut j = n - 1
+        while j >= 0 {
+            stack.push(heap.objs[slot].slots[j])
+            if j < k {
+                stack.push(heap.objs[slot].keys[j])
+            }
+            j = j - 1
+        }
+    }
+    return Numbering(order: order, number: number)
+}
+
+func put_value(mutate out: Vec<u8>, v: Value, nums: Numbering) {
+    put_i64(mutate out, v.tag)
+    if v.is_ref() {
+        put_i64(mutate out, nums.number[v.bits])
+    } else {
+        put_i64(mutate out, v.bits)
+    }
+}
+
+func put_values(mutate out: Vec<u8>, vs: Vec<Value>, nums: Numbering) {
+    put_u32(mutate out, vs.len().wrap<i64>())
+    for v in vs {
+        put_value(mutate out, v, nums)
+    }
+}
+
+func serialize(heap: GcHeap, m: MachineState) -> Vec<u8> {
+    let nums = number_objects(heap)
+    mut out: Vec<u8> = Vec.new()
+    put_u8(mutate out, 0x52)
+    put_u8(mutate out, 0x44)
+    put_u8(mutate out, 0x53)
+    put_u8(mutate out, 0x56)
+    put_u16(mutate out, SNAPSHOT_VERSION)
+    put_i64(mutate out, m.fuel)
+    put_u32(mutate out, m.prng.s0)
+    put_u32(mutate out, m.prng.s1)
+    put_u32(mutate out, m.prng.s2)
+    put_u32(mutate out, m.prng.s3)
+    put_i64(mutate out, heap.since_checkpoint)
+    put_values(mutate out, heap.module_vars, nums)
+    // Dead roots too, so a root index means the same root after a load.
+    put_u32(mutate out, heap.roots.len().wrap<i64>())
+    for r in heap.roots {
+        put_u8(mutate out, if r.live { 1 } else { 0 })
+        put_value(mutate out, r.value, nums)
+    }
+    put_u32(mutate out, nums.order.len().wrap<i64>())
+    for slot in nums.order {
+        put_u8(mutate out, heap.objs[slot].kind)
+        put_i64(mutate out, heap.objs[slot].type_id)
+        put_i64(mutate out, heap.objs[slot].disc)
+        put_u8(mutate out, if heap.objs[slot].tagged { 1 } else { 0 })
+        let text: Vec<u8> = heap.objs[slot].text.bytes().to_vec()
+        put_u32(mutate out, text.len().wrap<i64>())
+        for b in text {
+            out.push(b)
+        }
+        put_values(mutate out, heap.objs[slot].slots, nums)
+        put_values(mutate out, heap.objs[slot].keys, nums)
+    }
+    return out
+}
+
+// --- Reading ---
+
+struct SnapshotError {
+    text: string
+}
+
+extend SnapshotError {
+    func message(self) -> string {
+        return self.text
+    }
+}
+
+func bad(text: string) -> SnapshotError {
+    return SnapshotError(text: text)
+}
+
+struct Reader {
+    buf: Vec<u8>
+    pos: i64
+}
+
+extend Reader {
+    func u8(mutate self) -> i64 or SnapshotError {
+        if self.pos >= self.buf.len().wrap<i64>() {
+            return bad("snapshot truncated")
+        }
+        let b = self.buf[self.pos] as i64 & 0xFF
+        self.pos = self.pos + 1
+        return b
+    }
+
+    func u16(mutate self) -> i64 or SnapshotError {
+        let lo = try self.u8()
+        let hi = try self.u8()
+        return lo | hi << 8
+    }
+
+    func u32(mutate self) -> i64 or SnapshotError {
+        let lo = try self.u16()
+        let hi = try self.u16()
+        return lo | hi << 16
+    }
+
+    func i64(mutate self) -> i64 or SnapshotError {
+        let lo = try self.u32()
+        let hi = try self.u32()
+        return lo | hi << 32
+    }
+
+    // Refs come back as object numbers, which are also the new slots.
+    func value(mutate self, count: i64) -> Value or SnapshotError {
+        let tag = try self.i64()
+        let bits = try self.i64()
+        let v = Value(tag: tag, bits: bits)
+        if v.is_ref() && (bits < 0 || bits >= count) {
+            return bad("snapshot refers to object {bits} of {count}")
+        }
+        return v
+    }
+
+    func values(mutate self, count: i64) -> Vec<Value> or SnapshotError {
+        let n = try self.u32()
+        mut out: Vec<Value> = Vec.new()
+        mut i: i64 = 0
+        while i < n {
+            out.push(try self.value(count))
+            i = i + 1
+        }
+        return out
+    }
+}
+
+// Fill an empty heap from a snapshot and return the rest of the machine.
+func read_snapshot(take saved: Vec<u8>, mutate heap: GcHeap) -> MachineState or SnapshotError {
+    mut r = Reader(buf: saved, pos: 0)
+    let magic = try r.u32()
+    if magic != 0x56534452 {
+        return bad("not a Raido snapshot")
+    }
+    let version = try r.u16()
+    if version != SNAPSHOT_VERSION {
+        return bad("VersionMismatch: snapshot version {version}")
+    }
+    let fuel = try r.i64()
+    let s0 = try r.u32()
+    let s1 = try r.u32()
+    let s2 = try r.u32()
+    let s3 = try r.u32()
+    let prng = Prng(s0: s0, s1: s1, s2: s2, s3: s3)
+    heap.since_checkpoint = try r.i64()
+
+    // Values may name objects that come later, so read the object count
+    // first by reading the roots into place once it's known.
+    let mod_start = r.pos
+    let nmods = try r.u32()
+    r.pos = r.pos + nmods * 16
+    let nroots = try r.u32()
+    r.pos = r.pos + nroots * 17
+    let count = try r.u32()
+    let objs_start = r.pos
+    r.pos = mod_start
+    heap.module_vars = try r.values(count)
+    let nr = try r.u32()
+    mut i: i64 = 0
+    while i < nr {
+        let live = (try r.u8()) == 1
+        let v = try r.value(count)
+        heap.roots.push(HostRoot(value: v, live: live))
+        i = i + 1
+    }
+    r.pos = objs_start
+
+    mut live: i64 = 0
+    i = 0
+    while i < count {
+        mut o = blank_obj(try r.u8())
+        o.type_id = try r.i64()
+        o.disc = try r.i64()
+        o.tagged = (try r.u8()) == 1
+        let tlen = try r.u32()
+        mut text: Vec<u8> = Vec.new()
+        mut j: i64 = 0
+        while j < tlen {
+            text.push((try r.u8()).wrap<u8>())
+            j = j + 1
+        }
+        o.text = string.from_utf8(text.freeze()) catch _ => return bad("snapshot string isn't UTF-8")
+        o.slots = try r.values(count)
+        o.keys = try r.values(count)
+        live = live + logical_size(o)
+        heap.objs.push(o)
+        i = i + 1
+    }
+    // Map indexes aren't saved; they're rebuilt from the keys.
+    i = 0
+    while i < count {
+        if heap.objs[i].kind == OBJ_MAP {
+            heap.reindex(i, 0)
+        }
+        i = i + 1
+    }
+    heap.live_bytes = live
+    return MachineState(fuel: fuel, prng: prng)
+}

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Raido instruction set — 42 opcodes, 32-bit instructions
+// Raido instruction set — 32-bit instructions
 //
 // Three instruction formats (all packed into a single u32):
 //
@@ -51,10 +51,16 @@ enum Opcode: u8 {
     IS_SOME = 35,
     UNWRAP = 36,
     WRAP_SOME = 37,
-    COROUTINE = 38,
-    YIELD = 39,
-    RESUME = 40,
-    TRY = 41
+    CALL_EXTERN = 38,
+    IDIV = 39,
+    CLOSURE = 40,
+    GET_CAPTURE = 41,
+    GET_MODULE = 42,
+    SET_MODULE = 43,
+    SPAWN = 44,
+    NEW_CELL = 45,
+    GET_CELL = 46,
+    SET_CELL = 47
 }
 
 extend Opcode {
@@ -98,10 +104,16 @@ extend Opcode {
             Opcode.IS_SOME => return "IS_SOME"
             Opcode.UNWRAP => return "UNWRAP"
             Opcode.WRAP_SOME => return "WRAP_SOME"
-            Opcode.COROUTINE => return "COROUTINE"
-            Opcode.YIELD => return "YIELD"
-            Opcode.RESUME => return "RESUME"
-            Opcode.TRY => return "TRY"
+            Opcode.CALL_EXTERN => return "CALL_EXTERN"
+            Opcode.IDIV => return "IDIV"
+            Opcode.CLOSURE => return "CLOSURE"
+            Opcode.GET_CAPTURE => return "GET_CAPTURE"
+            Opcode.GET_MODULE => return "GET_MODULE"
+            Opcode.SET_MODULE => return "SET_MODULE"
+            Opcode.SPAWN => return "SPAWN"
+            Opcode.NEW_CELL => return "NEW_CELL"
+            Opcode.GET_CELL => return "GET_CELL"
+            Opcode.SET_CELL => return "SET_CELL"
         }
     }
 }
@@ -163,31 +175,22 @@ func disassemble_instr(instr: u32, offset: i64) -> string {
     let a = decode_a(instr)
     let name = op.name()
 
-    match op {
-        Opcode.LOAD_TRUE | Opcode.LOAD_FALSE | Opcode.LOAD_NONE | Opcode.RETURN => {
-            return "{offset}: {name} r{a}"
-        }
-        Opcode.LOAD_INT => {
-            let bx = decode_bx(instr)
-            let val = if bx >= 32768 {
-                bx - 65536
-            } else {
-                bx
-            }
-            return "{offset}: {name} r{a} {val}"
-        }
-        Opcode.LOAD_CONST | Opcode.FUNC_REF => {
-            let bx = decode_bx(instr)
-            return "{offset}: {name} r{a} #{bx}"
-        }
-        Opcode.JMP | Opcode.JMP_IF | Opcode.JMP_IF_NOT | Opcode.YIELD | Opcode.TRY => {
-            let sbx = decode_sbx(instr)
-            return "{offset}: {name} r{a} {sbx}"
-        }
-        _ => {
-            let b = decode_b(instr)
-            let c = decode_c(instr)
-            return "{offset}: {name} r{a} r{b} r{c}"
-        }
+    // `if` rather than `A | B` patterns: native matches only the first
+    // alternative (workaround for rask-lang/rask#1732).
+    let k = op as i64
+    if k == Opcode.LOAD_TRUE as i64 || k == Opcode.LOAD_FALSE as i64 || k == Opcode.LOAD_NONE as i64 || k == Opcode.RETURN as i64 {
+        return "{offset}: {name} r{a}"
     }
+    if k == Opcode.LOAD_INT as i64 {
+        let bx = decode_bx(instr)
+        let val = if bx >= 32768 { bx - 65536 } else { bx }
+        return "{offset}: {name} r{a} {val}"
+    }
+    if k == Opcode.LOAD_CONST as i64 || k == Opcode.FUNC_REF as i64 || k == Opcode.CLOSURE as i64 || k == Opcode.GET_MODULE as i64 || k == Opcode.SET_MODULE as i64 || k == Opcode.NEW_STRUCT as i64 || k == Opcode.CALL_EXTERN as i64 {
+        return "{offset}: {name} r{a} #{decode_bx(instr)}"
+    }
+    if k == Opcode.JMP as i64 || k == Opcode.JMP_IF as i64 || k == Opcode.JMP_IF_NOT as i64 {
+        return "{offset}: {name} r{a} {decode_sbx(instr)}"
+    }
+    return "{offset}: {name} r{a} r{decode_b(instr)} r{decode_c(instr)}"
 }

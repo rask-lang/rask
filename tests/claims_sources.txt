@@ -1,0 +1,9 @@
+# Shared claims sources (type.claims/W2): directories of claims that packages
+# apply through [claims] in their rask.toml. A claim is checked through the
+# package that applies it, never on its own, so tests/projects_gate.sh skips
+# the files in these directories. Each line says what checks it instead.
+
+# Checked by any `raido` implementation that applies it; type-checks against
+# the host API contract in projects/raido/vm/interop.md. No implementation in
+# this repo exposes that contract yet (#1736).
+projects/raido/conformance

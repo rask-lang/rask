@@ -1,0 +1,786 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The garbage-collected heap (vm/architecture.md, Heap).
+//
+// Non-moving mark-and-sweep over a table of objects. A `ref` value's payload
+// is a slot in that table. Nothing a script can see depends on slot numbers,
+// on when collection runs, or on how big the real buffers are:
+//
+//   - the memory limit counts logical sizes, with capacity computed from
+//     length, and is checked only at checkpoints fixed by the allocation count;
+//   - serialization numbers objects by a walk from the roots (serialize.rk).
+//
+// The heap also owns everything the collector treats as a root: module
+// variables, host roots, the register stack, the undo log and the last call's
+// result. Keeping them here means a collection can't miss one.
+
+const OBJ_STRING: i64 = 1
+const OBJ_ARRAY: i64 = 2
+const OBJ_MAP: i64 = 3
+const OBJ_STRUCT: i64 = 4
+const OBJ_TUPLE: i64 = 5
+const OBJ_ENUM: i64 = 6
+const OBJ_CLOSURE: i64 = 7
+const OBJ_CELL: i64 = 8
+
+enum HeapError {
+    MemoryExhausted
+    IndexOutOfBounds(i64, i64)
+    KeyNotFound
+    StaleHandle
+}
+
+extend HeapError {
+    func message(self) -> string {
+        match self {
+            HeapError.MemoryExhausted => return "MemoryExhausted"
+            HeapError.IndexOutOfBounds(i, n) => return "IndexOutOfBounds: index {i}, length {n}"
+            HeapError.KeyNotFound => return "KeyNotFound"
+            HeapError.StaleHandle => return "HostError: handle to a collected object"
+        }
+    }
+}
+
+// One heap object. Fields a kind doesn't use stay empty.
+//   string:  text
+//   array:   slots (items)
+//   map:     keys, slots (values), index (key text -> position)
+//   struct, tuple: type_id, slots (fields)
+//   enum:    type_id, disc, slots (payload)
+//   closure: type_id (prototype), slots (captures)
+//   cell:    slots (one value: a captured variable that gets reassigned)
+struct Obj {
+    kind: i64
+    gen: i64
+    live: bool
+    mark: bool
+    birth: i64
+    type_id: i64
+    disc: i64
+    tagged: bool
+    text: string
+    slots: Vec<Value>
+    keys: Vec<Value>
+    index: Map<string, i64>
+}
+
+func blank_obj(kind: i64) -> Obj {
+    return Obj(
+        kind: kind
+        gen: 0
+        live: true
+        mark: false
+        birth: 0
+        type_id: 0
+        disc: 0
+        tagged: false
+        text: ""
+        slots: Vec.new()
+        keys: Vec.new()
+        index: Map.new()
+    )
+}
+
+// Logical capacity: the smallest power of two that's at least 4 and at
+// least `n`. Derived from the length so that a remove, a rolled-back push or a
+// save and load can't change it.
+func logical_cap(n: i64) -> i64 {
+    mut c = 4
+    while c < n {
+        c = c * 2
+    }
+    return c
+}
+
+func logical_size(o: Obj) -> i64 {
+    let n = o.slots.len().wrap<i64>()
+    if o.kind == OBJ_STRING {
+        return 16 + o.text.len().wrap<i64>()
+    }
+    if o.kind == OBJ_ARRAY {
+        let per = if o.tagged { 16 } else { 8 }
+        return 16 + per * logical_cap(n)
+    }
+    if o.kind == OBJ_MAP {
+        let per = if o.tagged { 32 } else { 24 }
+        return 16 + per * logical_cap(n)
+    }
+    return 16 + 16 * n
+}
+
+// --- Undo log ---
+// Bounded by what a run touches, not by how often: a slot is logged once per
+// run, and a container's first structural change (push, remove, a new map
+// key, sort) saves the whole of it once, after which nothing else in it is
+// logged. Replayed newest first.
+
+enum UndoOp {
+    Slot
+    Whole
+    Module
+}
+// Slot: slots[idx] = old. Whole: slots and keys = saved ones. Module:
+// module_vars[idx] = old.
+
+struct UndoEntry {
+    op: UndoOp
+    obj: i64
+    idx: i64
+    old: Value
+    saved: Vec<Value>
+    saved_keys: Vec<Value>
+}
+
+func undo_entry(op: UndoOp, obj: i64, idx: i64, old: Value) -> UndoEntry {
+    return UndoEntry(op: op, obj: obj, idx: idx, old: old, saved: Vec.new(), saved_keys: Vec.new())
+}
+
+// A root the host holds. Root indices are never reused, and dead ones are
+// saved in snapshots, so an index means the same root after a load.
+struct HostRoot {
+    value: Value
+    live: bool
+}
+
+struct GcHeap {
+    objs: Vec<Obj>
+    free: Vec<i64>
+    limit: i64
+    live_bytes: i64
+    since_gc: i64
+    since_checkpoint: i64
+    stress: bool
+    collections: i64
+    run: i64
+    next_run: i64
+    undo: Vec<UndoEntry>
+    logged_slots: Map<string, bool>
+    whole_saved: Map<i64, bool>
+    host_made: Vec<Value>
+    module_vars: Vec<Value>
+    roots: Vec<HostRoot>
+    stack: Vec<Value>
+    stack_top: i64
+    last_result: Value
+}
+
+extend GcHeap {
+    func new(limit: i64) -> GcHeap {
+        return GcHeap(
+            objs: Vec.new()
+            free: Vec.new()
+            limit: limit
+            live_bytes: 0
+            since_gc: 0
+            since_checkpoint: 0
+            stress: false
+            collections: 0
+            run: 0
+            next_run: 0
+            undo: Vec.new()
+            logged_slots: Map.new()
+            whole_saved: Map.new()
+            host_made: Vec.new()
+            module_vars: Vec.new()
+            roots: Vec.new()
+            stack: Vec.new()
+            stack_top: 0
+            last_result: Value.none()
+        )
+    }
+
+    // --- Allocation and the memory limit ---
+
+    func alloc(mutate self, take o: Obj) -> Value or HeapError {
+        let size = logical_size(o)
+        mut obj = o
+        obj.birth = self.run
+        obj.live = true
+        mut slot: i64 = 0
+        if self.free.pop()? as s {
+            slot = s
+            obj.gen = self.objs[s].gen
+            self.objs[s] = obj
+        } else {
+            slot = self.objs.len().wrap<i64>()
+            self.objs.push(obj)
+        }
+        let v = Value.ref_to(slot)
+        try self.charge(size, v)
+        return v
+    }
+
+    // Count `bytes` of allocation, and run a checkpoint if one falls due.
+    // `fresh` is the object just made or grown: it counts as reachable.
+    func charge(mutate self, bytes: i64, fresh: Value) -> void or HeapError {
+        self.since_gc = self.since_gc + bytes
+        self.since_checkpoint = self.since_checkpoint + bytes
+        if self.stress {
+            self.collect(fresh)
+        }
+        mut step = self.limit / 8
+        if step < 1 {
+            step = 1
+        }
+        if self.since_checkpoint < step {
+            return
+        }
+        self.since_checkpoint = 0
+        // live_bytes + since_gc bounds what's reachable, so collect only
+        // when that bound could be over the limit.
+        if self.live_bytes + self.since_gc > self.limit {
+            self.collect(fresh)
+        }
+        if self.live_bytes + self.since_gc > self.limit {
+            return HeapError.MemoryExhausted
+        }
+    }
+
+    // --- Collection ---
+
+    func collect(mutate self, extra: Value) {
+        self.collections = self.collections + 1
+        mut work: Vec<i64> = Vec.new()
+        mut found: Vec<Value> = self.module_vars.clone()
+        for r in self.roots {
+            if r.live {
+                found.push(r.value)
+            }
+        }
+        for v in self.host_made {
+            found.push(v)
+        }
+        mut i: i64 = 0
+        while i < self.stack_top {
+            let v = self.stack[i]
+            self.mark_value(v, mutate work)
+            i = i + 1
+        }
+        // The object an entry writes back into is a root too: rollback
+        // needs it even if the call made it unreachable.
+        for e in self.undo {
+            if e.op != UndoOp.Module {
+                found.push(Value.ref_to(e.obj))
+            }
+            found.push(e.old)
+            for s in e.saved {
+                found.push(s)
+            }
+            for s in e.saved_keys {
+                found.push(s)
+            }
+        }
+        for v in found {
+            self.mark_value(v, mutate work)
+        }
+        let last = self.last_result
+        self.mark_value(last, mutate work)
+        self.mark_value(extra, mutate work)
+
+        loop {
+            let slot = work.pop() ?? break
+            let n = self.objs[slot].slots.len().wrap<i64>()
+            mut j: i64 = 0
+            while j < n {
+                let v = self.objs[slot].slots[j]
+                self.mark_value(v, mutate work)
+                j = j + 1
+            }
+            let k = self.objs[slot].keys.len().wrap<i64>()
+            j = 0
+            while j < k {
+                let v = self.objs[slot].keys[j]
+                self.mark_value(v, mutate work)
+                j = j + 1
+            }
+        }
+
+        mut live: i64 = 0
+        let count = self.objs.len().wrap<i64>()
+        mut s: i64 = 0
+        while s < count {
+            if self.objs[s].live {
+                if self.objs[s].mark {
+                    self.objs[s].mark = false
+                    live = live + logical_size(self.objs[s])
+                } else {
+                    let gen = self.objs[s].gen + 1
+                    mut dead = blank_obj(0)
+                    dead.live = false
+                    dead.gen = gen
+                    self.objs[s] = dead
+                    self.free.push(s)
+                }
+            }
+            s = s + 1
+        }
+        self.live_bytes = live
+        self.since_gc = 0
+    }
+
+    func mark_value(mutate self, v: Value, mutate work: Vec<i64>) {
+        if !v.is_ref() {
+            return
+        }
+        let slot = v.bits
+        if self.objs[slot].mark {
+            return
+        }
+        self.objs[slot].mark = true
+        work.push(slot)
+    }
+
+    // --- Reading objects ---
+
+    func kind_of(self, v: Value) -> i64 {
+        return self.objs[v.bits].kind
+    }
+
+    func len_of(self, v: Value) -> i64 {
+        let o = v.bits
+        if self.objs[o].kind == OBJ_STRING {
+            return self.objs[o].text.len().wrap<i64>()
+        }
+        return self.objs[o].slots.len().wrap<i64>()
+    }
+
+    func text_of(self, v: Value) -> string {
+        return self.objs[v.bits].text
+    }
+
+    func slot_of(self, v: Value, i: i64) -> Value {
+        return self.objs[v.bits].slots[i]
+    }
+
+    func array_get(self, v: Value, i: i64) -> Value or HeapError {
+        let n = self.len_of(v)
+        if i < 0 || i >= n {
+            return HeapError.IndexOutOfBounds(i, n)
+        }
+        return self.objs[v.bits].slots[i]
+    }
+
+    // --- Making objects ---
+
+    func new_string(mutate self, s: string) -> Value or HeapError {
+        mut o = blank_obj(OBJ_STRING)
+        o.text = s
+        return try self.alloc(o)
+    }
+
+    func new_array(mutate self, tagged: bool, take items: Vec<Value>) -> Value or HeapError {
+        mut o = blank_obj(OBJ_ARRAY)
+        o.tagged = tagged
+        o.slots = items
+        return try self.alloc(o)
+    }
+
+    func new_map(mutate self, tagged: bool) -> Value or HeapError {
+        mut o = blank_obj(OBJ_MAP)
+        o.tagged = tagged
+        return try self.alloc(o)
+    }
+
+    // Struct, tuple, enum with payload, or closure: a type plus its slots.
+    func new_record(mutate self, kind: i64, type_id: i64, disc: i64, take fields: Vec<Value>) -> Value or HeapError {
+        mut o = blank_obj(kind)
+        o.type_id = type_id
+        o.disc = disc
+        o.slots = fields
+        return try self.alloc(o)
+    }
+
+    // --- Transactions ---
+    // A run is one call or resume. Writes to objects born before it go into
+    // the undo log; objects born in it need no logging, since they're
+    // unreachable if it fails.
+
+    func begin_run(mutate self) {
+        self.next_run = self.next_run + 1
+        self.run = self.next_run
+        self.clear_log()
+    }
+
+    func commit(mutate self) {
+        self.clear_log()
+        self.run = 0
+    }
+
+    func rollback(mutate self) {
+        loop {
+            let e = self.undo.pop() ?? break
+            self.apply_undo(e)
+        }
+        self.clear_log()
+        self.run = 0
+    }
+
+    func clear_log(mutate self) {
+        self.undo.clear()
+        self.logged_slots.clear()
+        self.whole_saved.clear()
+    }
+
+    // Borrows `e` and clones what it restores. Workaround: taking it moves the
+    // entry out of `pop()`'s Option, and native then frees it twice
+    // (rask-lang/rask#1748).
+    func apply_undo(mutate self, e: UndoEntry) {
+        let o = e.obj
+        match e.op {
+            UndoOp.Slot => {
+                self.objs[o].slots[e.idx] = e.old
+            }
+            UndoOp.Module => {
+                self.module_vars[e.idx] = e.old
+            }
+            UndoOp.Whole => {
+                let before = logical_size(self.objs[o])
+                self.objs[o].slots = e.saved.clone()
+                self.objs[o].keys = e.saved_keys.clone()
+                if self.objs[o].kind == OBJ_MAP {
+                    self.objs[o].index.clear()
+                    self.reindex(o, 0)
+                }
+                // Growing back isn't an allocation, but the bound that lets
+                // a checkpoint skip collecting has to cover it.
+                let after = logical_size(self.objs[o])
+                if after > before {
+                    self.since_gc = self.since_gc + after - before
+                }
+            }
+        }
+    }
+
+    func logged(self, slot: i64) -> bool {
+        return self.run != 0 && self.objs[slot].birth != self.run
+    }
+
+    func log_slot(mutate self, o: i64, i: i64) {
+        if !self.logged(o) || self.whole_saved.contains(o) {
+            return
+        }
+        let k = "{o}:{i}"
+        if self.logged_slots.contains(k) {
+            return
+        }
+        self.logged_slots.insert(k, true)
+        let old = self.objs[o].slots[i]
+        self.undo.push(undo_entry(UndoOp.Slot, o, i, old))
+    }
+
+    // Before a change to a container's shape: push, pop, insert, remove, a
+    // new or removed map key, sort, reverse.
+    func log_whole(mutate self, o: i64) {
+        if !self.logged(o) || self.whole_saved.contains(o) {
+            return
+        }
+        self.whole_saved.insert(o, true)
+        mut e = undo_entry(UndoOp.Whole, o, 0, Value.none())
+        e.saved = self.objs[o].slots.clone()
+        e.saved_keys = self.objs[o].keys.clone()
+        self.undo.push(e)
+    }
+
+    // --- Writing objects ---
+
+    // A struct field, closure capture or array element, bounds-checked.
+    func set_slot(mutate self, v: Value, i: i64, x: Value) -> void or HeapError {
+        let o = v.bits
+        let n = self.objs[o].slots.len().wrap<i64>()
+        if i < 0 || i >= n {
+            return HeapError.IndexOutOfBounds(i, n)
+        }
+        self.log_slot(o, i)
+        self.objs[o].slots[i] = x
+    }
+
+    func set_module(mutate self, i: i64, x: Value) {
+        let k = "m{i}"
+        if self.run != 0 && !self.logged_slots.contains(k) {
+            self.logged_slots.insert(k, true)
+            let old = self.module_vars[i]
+            self.undo.push(undo_entry(UndoOp.Module, 0, i, old))
+        }
+        self.module_vars[i] = x
+    }
+
+    func array_push(mutate self, v: Value, x: Value) -> void or HeapError {
+        let o = v.bits
+        let before = logical_size(self.objs[o])
+        self.log_whole(o)
+        self.objs[o].slots.push(x)
+        try self.charge_growth(v, before)
+    }
+
+    func array_pop(mutate self, v: Value) -> Value? {
+        let o = v.bits
+        if self.objs[o].slots.len() == 0 {
+            return none
+        }
+        self.log_whole(o)
+        return self.objs[o].slots.pop()
+    }
+
+    func array_insert(mutate self, v: Value, i: i64, x: Value) -> void or HeapError {
+        let o = v.bits
+        let n = self.objs[o].slots.len().wrap<i64>()
+        if i < 0 || i > n {
+            return HeapError.IndexOutOfBounds(i, n)
+        }
+        let before = logical_size(self.objs[o])
+        self.log_whole(o)
+        self.objs[o].slots.insert(i, x)
+        try self.charge_growth(v, before)
+    }
+
+    func array_remove(mutate self, v: Value, i: i64) -> Value or HeapError {
+        let o = v.bits
+        let n = self.objs[o].slots.len().wrap<i64>()
+        if i < 0 || i >= n {
+            return HeapError.IndexOutOfBounds(i, n)
+        }
+        self.log_whole(o)
+        return self.objs[o].slots.remove(i)
+    }
+
+    func charge_growth(mutate self, v: Value, before: i64) -> void or HeapError {
+        let after = logical_size(self.objs[v.bits])
+        if after > before {
+            try self.charge(after - before, v)
+        }
+    }
+
+    // --- Maps ---
+    // Keys are `int` or `string`; both hash by content, never by slot.
+
+    func key_text(self, k: Value) -> string {
+        if k.is_ref() {
+            return "s{self.objs[k.bits].text}"
+        }
+        return "i{k.bits}"
+    }
+
+    func map_get(self, m: Value, k: Value) -> Value? {
+        let pos = self.objs[m.bits].index.get(self.key_text(k)) ?? return none
+        return self.objs[m.bits].slots[pos]
+    }
+
+    func map_set(mutate self, m: Value, k: Value, x: Value) -> void or HeapError {
+        let o = m.bits
+        let text = self.key_text(k)
+        if self.objs[o].index.get(text)? as pos {
+            self.log_slot(o, pos)
+            self.objs[o].slots[pos] = x
+            return
+        }
+        let before = logical_size(self.objs[o])
+        let pos = self.objs[o].keys.len().wrap<i64>()
+        self.log_whole(o)
+        self.objs[o].keys.push(k)
+        self.objs[o].slots.push(x)
+        self.objs[o].index.insert(text, pos)
+        try self.charge_growth(m, before)
+    }
+
+    func map_remove(mutate self, m: Value, k: Value) -> Value? {
+        let o = m.bits
+        let text = self.key_text(k)
+        let pos = self.objs[o].index.get(text) ?? return none
+        self.log_whole(o)
+        let _ = self.objs[o].index.remove(text)
+        let _ = self.objs[o].keys.remove(pos)
+        let old = self.objs[o].slots.remove(pos)
+        self.reindex(o, pos)
+        return old
+    }
+
+    // Positions from `from` on moved; point the index at them again.
+    func reindex(mutate self, o: i64, from: i64) {
+        let n = self.objs[o].keys.len().wrap<i64>()
+        mut i = from
+        while i < n {
+            let t = self.key_text(self.objs[o].keys[i])
+            self.objs[o].index.insert(t, i)
+            i = i + 1
+        }
+    }
+
+    // --- Equality (language/types.md, Equality) ---
+    // Content for strings, tuples, enums and optionals; identity for things
+    // changed in place. Never depends on where an object lives.
+
+    func equal(self, a: Value, b: Value) -> bool {
+        if a.tag != b.tag {
+            return false
+        }
+        if a.kind() == TAG_FLOAT {
+            return a.as_float() == b.as_float()
+        }
+        if !a.is_ref() || a.bits == b.bits {
+            return a.bits == b.bits
+        }
+        let x = a.bits
+        let y = b.bits
+        let kind = self.objs[x].kind
+        if kind != self.objs[y].kind {
+            return false
+        }
+        if kind == OBJ_STRING {
+            return self.objs[x].text == self.objs[y].text
+        }
+        if kind != OBJ_TUPLE && kind != OBJ_ENUM {
+            return false
+        }
+        if self.objs[x].type_id != self.objs[y].type_id || self.objs[x].disc != self.objs[y].disc {
+            return false
+        }
+        let n = self.objs[x].slots.len().wrap<i64>()
+        if n != self.objs[y].slots.len().wrap<i64>() {
+            return false
+        }
+        mut i: i64 = 0
+        while i < n {
+            if !self.equal(self.objs[x].slots[i], self.objs[y].slots[i]) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+
+    // --- Host roots and handles (vm/interop.md, Host References) ---
+
+    // Takes a value the host holds; see `import`.
+    func add_root(mutate self, v: Value) -> i64 or HeapError {
+        let inside = try self.import(v)
+        self.roots.push(HostRoot(value: inside, live: true))
+        return self.roots.len().wrap<i64>() - 1
+    }
+
+    func get_root(self, r: i64) -> Value or HeapError {
+        if r < 0 || r >= self.roots.len().wrap<i64>() || !self.roots[r].live {
+            return HeapError.StaleHandle
+        }
+        return self.export(self.roots[r].value)
+    }
+
+    func unroot(mutate self, r: i64) {
+        if r >= 0 && r < self.roots.len().wrap<i64>() {
+            self.roots[r].live = false
+            self.roots[r].value = Value.none()
+        }
+    }
+
+    // --- Values crossing to and from the host ---
+    // Inside the VM a ref is just a slot. A ref handed to the host also
+    // carries the slot's generation, so a slot reused by a newer object is
+    // never mistaken for the old one.
+    //
+    // What the host may pass back in is decided by reachability, not by
+    // whether the collector got there: a ref must be reachable from a root,
+    // the last call's result or something the host made since. Reachability
+    // is the same on every machine; collection timing isn't.
+
+    func export(self, v: Value) -> Value {
+        if !v.is_ref() {
+            return v
+        }
+        return Value(tag: TAG_REF | self.objs[v.bits].gen << 8, bits: v.bits)
+    }
+
+    func import(self, v: Value) -> Value or HeapError {
+        if !v.is_ref() {
+            return v
+        }
+        let slot = v.bits
+        if slot < 0 || slot >= self.objs.len().wrap<i64>() {
+            return HeapError.StaleHandle
+        }
+        if !self.objs[slot].live || self.objs[slot].gen != v.tag >> 8 {
+            return HeapError.StaleHandle
+        }
+        if !self.host_reachable(slot) {
+            return HeapError.StaleHandle
+        }
+        return Value.ref_to(slot)
+    }
+
+    // A string the host makes, for an argument. It stays alive until the
+    // host's next call finishes.
+    func host_string(mutate self, s: string) -> Value or HeapError {
+        let v = try self.new_string(s)
+        self.host_made.push(v)
+        return self.export(v)
+    }
+
+    func host_reachable(self, slot: i64) -> bool {
+        mut start: Vec<Value> = self.module_vars.clone()
+        for r in self.roots {
+            if r.live {
+                start.push(r.value)
+            }
+        }
+        for v in self.host_made {
+            start.push(v)
+        }
+        start.push(self.last_result)
+        // Most arguments are a root or the last result themselves.
+        for v in start {
+            if v.is_ref() && v.bits == slot {
+                return true
+            }
+        }
+        mut seen: Vec<bool> = Vec.new()
+        for _ in self.objs {
+            seen.push(false)
+        }
+        mut work: Vec<i64> = Vec.new()
+        for v in start {
+            if v.is_ref() && !seen[v.bits] {
+                seen[v.bits] = true
+                work.push(v.bits)
+            }
+        }
+        loop {
+            let o = work.pop() ?? break
+            if o == slot {
+                return true
+            }
+            for v in self.objs[o].slots {
+                if v.is_ref() && !seen[v.bits] {
+                    seen[v.bits] = true
+                    work.push(v.bits)
+                }
+            }
+            for v in self.objs[o].keys {
+                if v.is_ref() && !seen[v.bits] {
+                    seen[v.bits] = true
+                    work.push(v.bits)
+                }
+            }
+        }
+        return false
+    }
+
+    // --- The register stack ---
+    // A new frame's registers start as `none`, so stale values left by an
+    // earlier frame never become roots.
+
+    func push_frame(mutate self, size: i64) -> i64 {
+        let base = self.stack_top
+        let top = base + size
+        while self.stack.len().wrap<i64>() < top {
+            self.stack.push(Value.none())
+        }
+        mut i = base
+        while i < top {
+            self.stack[i] = Value.none()
+            i = i + 1
+        }
+        self.stack_top = top
+        return base
+    }
+
+    func pop_frame(mutate self, base: i64) {
+        self.stack_top = base
+    }
+}

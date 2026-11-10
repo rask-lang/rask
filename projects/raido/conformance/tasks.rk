@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Pausing, spawn and the PRNG, against language/pausing.md and
+// vm/architecture.md (PRNG).
+
+import raido
+
+const TASKS: string = """
+func total(n: int) -> int {{
+    let s = 0
+    for i in 0..n {{ s += ask() }}
+    return s
+}}
+
+func start(n: int) {{
+    for i in 0..n {{ spawn(worker, i) }}
+}}
+
+func worker(i: int) {{ note(i) }}
+"""
+
+// A hook paused in `ask` gets back exactly what the host resumes it with, as
+// many times as it asks.
+claim a_paused_hook_gets_what_the_host_resumes_with(answers: Vec<i32>) {
+    mut vm = vm_with(TASKS)
+    let n = answers.len().wrap<i64>()
+    mut sum: i64 = 0
+    for a in answers {
+        sum = sum + (a as i64)
+    }
+    mut step = vm.call("total", one_int(n)) catch e => panic("call: {e.message()}")
+    mut k: i64 = 0
+    loop {
+        match step {
+            raido.Outcome.Done(v) => {
+                assert k == n
+                assert (vm.show(v) catch _ => "unreadable") == "{sum}"
+                return
+            }
+            raido.Outcome.Paused(task, call) => {
+                assert call.name == "ask"
+                assert k < n
+                let answer = raido.Value.from_int(answers[k] as i64)
+                step = vm.resume(task, answer) catch e => panic("resume: {e.message()}")
+                k = k + 1
+            }
+        }
+    }
+}
+
+// Spawned tasks reach the host in spawn order, not started, and each runs
+// once it's resumed.
+claim spawned_tasks_arrive_in_order(n: u8) {
+    mut vm = vm_with(TASKS)
+    let count = n as i64
+    assert call_text(mutate vm, "start", one_int(count)) == "None"
+    let tasks = vm.spawned()
+    assert tasks.len().wrap<i64>() == count
+    assert vm.deferred().len() == 0
+    for t in tasks {
+        let _ = vm.resume(t, raido.Value.none()) catch e => panic("resume: {e.message()}")
+    }
+    let notes = vm.deferred()
+    assert notes.len().wrap<i64>() == count
+    mut i: i64 = 0
+    for c in notes {
+        let got = c.args[0].as_int() ?? panic("note's argument isn't an int")
+        assert got == i
+        i = i + 1
+    }
+}
+
+const RANDOM: string = """
+func draws(n: int) -> array<int> {{
+    let out: array<int> = []
+    for i in 0..8 {{ out.push(random(n)) }}
+    return out
+}}
+"""
+
+// random(n) draws from xoshiro128++ seeded by SplitMix64, reduced without
+// bias, exactly as specified.
+claim random_follows_the_specified_generator(seed: i64, n: u32) {
+    if n == 0 {
+        return
+    }
+    mut vm = vm_with(RANDOM)
+    vm.seed(seed)
+    mut gen = seeded(seed)
+    mut want: Vec<i64> = Vec.new()
+    for _ in 0..8 {
+        want.push(gen.below(n as u64).wrap<i64>())
+    }
+    assert call_text(mutate vm, "draws", one_int(n as i64)) == shown(want)
+}
