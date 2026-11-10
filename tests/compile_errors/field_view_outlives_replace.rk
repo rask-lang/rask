@@ -39,6 +39,63 @@ extend Holder {
     }
 }
 
+struct Regs {
+    log: Vec<string>
+    regs: Vec<i64>
+}
+
+extend Regs {
+    func set_reg(mutate self, v: i64) {
+        self.regs = Vec.new()
+        self.regs.push(v)
+    }
+
+    func reset(mutate self) {
+        self.log = Vec.new()
+    }
+
+    func reset_twice_removed(mutate self) {
+        self.reset()
+    }
+}
+
+// Fine: `set_reg` replaces `regs`, never `log`, which is what a VM loop
+// holding `let code = self.code` across `self.set_reg(…)` relies on.
+func set_under_view(mutate r: Regs) -> usize {
+    let code = r.log
+    r.set_reg(1)
+    return code.len()
+}
+
+// ERROR: `reset` replaces `log`, here through a second method [E0958]
+func reset_under_view(mutate r: Regs) -> usize {
+    let code = r.log
+    r.reset_twice_removed()
+    return code.len()
+}
+
+struct Cfg {
+    list: Vec<string>
+}
+
+extend Cfg {
+    func wipe(mutate self) {
+        self.list = Vec.new()
+    }
+}
+
+struct Outer {
+    cfg: Cfg
+}
+
+// ERROR: a struct field's view is a copy of it, and `wipe` replaces what
+// that copy holds [E0958]
+func wipe_under_view(mutate p: Outer) -> usize {
+    let old = p.cfg
+    p.cfg.wipe()
+    return old.list.len()
+}
+
 // Fine: growing the vector a view reads frees nothing.
 func grow(mutate h: Holder) -> usize {
     let f = h.log

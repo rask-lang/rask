@@ -9,6 +9,7 @@
 mod state;
 mod error;
 mod field_reuse;
+mod replaces;
 mod diagnostic;
 mod resize;
 mod pointers;
@@ -24,7 +25,7 @@ pub use error::{
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
@@ -350,6 +351,9 @@ pub struct OwnershipChecker<'a> {
     escaping_closures: HashSet<rask_ast::NodeId>,
     /// Which parameters each function and method can resize (`resize.rs`).
     fn_resizes: resize::FnResizes,
+    /// What each function and method may write over under its `mutate`
+    /// parameters (`replaces`).
+    replaces: replaces::Replaces,
     method_resizes: resize::MethodResizes,
     /// See `OwnershipResult::task_bound_closures`.
     task_bound_closures: HashSet<rask_ast::NodeId>,
@@ -612,6 +616,7 @@ impl<'a> OwnershipChecker<'a> {
             lent_captures: HashMap::new(),
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
+            replaces: HashMap::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
             header_type_params: Vec::new(),
@@ -801,6 +806,7 @@ impl<'a> OwnershipChecker<'a> {
         self.collect_signatures(extra);
         self.collect_signatures(decls);
         self.infer_resizes(&[extra, decls]);
+        self.infer_replaces(&[extra, decls]);
         self.infer_pointer_returns(&[extra, decls]);
         self.run(decls)
     }
@@ -2390,11 +2396,12 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// A read the refill pairs with is a move, never a view, so
     /// consume-and-replace stays legal.
-    fn check_views_at_write(&mut self, place: &Expr, at: Span) {
+    fn check_views_at_write(&mut self, place: &Expr, under: &[String], at: Span) {
         let (Some(root), fields) = Self::extract_root_and_fields(place) else {
             return;
         };
-        let fields = fields.unwrap_or_default();
+        let mut fields = fields.unwrap_or_default();
+        fields.extend(under.iter().cloned());
         let sym = self.root_symbol(place);
         let hits = |name: &str, view: &FieldView| {
             if view.root != root || name == root || !Self::same_root(view.root_sym, sym) {
@@ -2482,16 +2489,16 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// A call given a place to write through: an argument marked `mutate` or
-    /// `deleting` may be replaced whole.
-    fn check_views_at_writing_call(&mut self, args: &[CallArg], at: Span) {
+    /// A call writing through what it's given: each path under a `mutate`
+    /// argument or a `mutate self` receiver the callee may replace
+    /// (`replaces`). `self.set_reg(…)` writes registers, so it leaves a view of
+    /// `self.code` alone.
+    fn check_views_at_writing_call(&mut self, call: &Expr) {
         if self.field_views.is_empty() && self.shadowed_views.is_empty() {
             return;
         }
-        for arg in args {
-            if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
-                self.check_views_at_write(&arg.expr, at);
-            }
+        for (place, path) in self.call_writes(call) {
+            self.check_views_at_write(place, &path, call.span);
         }
     }
 
@@ -2836,7 +2843,7 @@ impl<'a> OwnershipChecker<'a> {
                 if let (Some(root), Some(fields)) = Self::extract_root_and_fields(target) {
                     self.taken_fields.retain(|(r, f, ..)| !(*r == root && *f == fields));
                 }
-                self.check_views_at_write(target, stmt.span);
+                self.check_views_at_write(target, &[], stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
@@ -3300,7 +3307,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
-                self.check_views_at_writing_call(args, expr.span);
+                self.check_views_at_writing_call(expr);
                 // #296/PM3: a `take` parameter consumes its argument with no
                 // call-site marker. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
@@ -3403,11 +3410,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
-                // Not the receiver of a `mutate self` method: most of those
-                // write other fields (`self.set_reg(…)` in a loop reading
-                // `self.code`), and telling which needs a per-method summary
-                // of what each one replaces (#1851).
-                self.check_views_at_writing_call(args, expr.span);
+                self.check_views_at_writing_call(expr);
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
@@ -9420,6 +9423,7 @@ pub fn check_ownership_with_stdlib(
     let mut stdlib = OwnershipChecker::new(program);
     stdlib.collect_signatures(decls);
     stdlib.collect_signatures(stdlib_decls);
+    stdlib.infer_replaces(&[decls, stdlib_decls]);
     for decl in stdlib_decls {
         stdlib.check_decl(decl);
     }

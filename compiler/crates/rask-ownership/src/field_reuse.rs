@@ -36,7 +36,7 @@
 use std::collections::HashSet;
 
 use rask_ast::decl::Decl;
-use rask_ast::expr::{ArgMode, Expr, ExprKind, UnaryOp};
+use rask_ast::expr::{Expr, ExprKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::visit::{self, Visit};
 use rask_ast::NodeId;
@@ -53,6 +53,7 @@ pub fn field_reuses(program: &TypedProgram, bodies: &[&[Decl]], signatures: &[&[
     for decls in signatures {
         checker.collect_signatures(decls);
     }
+    checker.infer_replaces(signatures);
     let mut finder = Finder { checker: &checker, found: HashSet::new() };
     for decls in bodies {
         for decl in decls.iter() {
@@ -299,8 +300,9 @@ fn calls_a_closure(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> bool {
     hit
 }
 
-/// The places `stmt` may write over: assignment targets anywhere in it, an
-/// argument marked `mutate` or `deleting`, and a `mutate self` receiver.
+/// The places `stmt` may write over: assignment targets anywhere in it, and
+/// each path a call in it may replace under a place it writes through
+/// (`OwnershipChecker::call_writes`).
 fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String>> {
     struct Writes<'c, 'a> {
         checker: &'c OwnershipChecker<'a>,
@@ -308,25 +310,11 @@ fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String
     }
     impl<'e> Visit<'e> for Writes<'_, '_> {
         fn expr(&mut self, e: &'e Expr) -> bool {
-            match &e.kind {
-                ExprKind::Call { args, .. } => {
-                    for a in args {
-                        if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
-                            self.out.extend(place_path(&a.expr));
-                        }
-                    }
+            for (place, under) in self.checker.call_writes(e) {
+                if let Some(mut p) = place_path(place) {
+                    p.extend(under);
+                    self.out.push(p);
                 }
-                ExprKind::MethodCall { object, method, args, .. } => {
-                    if self.checker.is_mutate_self_method(object, method) {
-                        self.out.extend(place_path(object));
-                    }
-                    for a in args {
-                        if matches!(a.mode, ArgMode::Mutate | ArgMode::Deleting) {
-                            self.out.extend(place_path(&a.expr));
-                        }
-                    }
-                }
-                _ => {}
             }
             true
         }
