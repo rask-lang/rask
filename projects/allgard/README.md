@@ -243,11 +243,11 @@ Both direct transfers and intermediary chains use the bilateral escrow protocol 
 3. The Raido config it ran under: fuel, memory limit, call depth
 4. The outputs (the claimed result)
 
-The receiving domain fetches the script (Leden content store), verifies the bytecode, and re-executes with the same inputs and config in a fresh VM. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
+The receiving domain fetches the script (Leden content store), verifies the bytecode, checks that it's pure or provable, and re-executes with the same inputs and config. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
 
 ### What a Transform Script May Use
 
-A script that someone else re-executes follows Raido's [verification-run rules](../raido/README.md#verification-modes): one call in a fresh VM, no pausing, no `spawn`, no deferred calls. Allgard adds the API rule. A transform script is compiled against no host API at all: its inputs are its arguments and its result is its return value. A script that reads the world through a host function couldn't be checked by a domain without that host, so it isn't a transform script. A domain that needs world data in a mint passes it in as an input, where the Proof records it.
+A transform script is compiled in Raido's [pure or provable profile](../raido/vm/architecture.md#profiles), and a verifying domain refuses any other: no state between calls, no pausing, spawning or deferred effects, no hidden randomness, enforced by the compiler and by the bytecode verifier. Allgard adds the API rule. A transform script is compiled against no host API at all: its inputs are its arguments and its result is its return value. A script that reads the world through a host function couldn't be checked by a domain without that host, so it isn't a transform script. A domain that needs world data in a mint passes it in as an input, where the Proof records it.
 
 ### Required: Verifiable Minting
 

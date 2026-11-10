@@ -101,7 +101,7 @@ time.wall	All scripts	Wall-clock time from domain (float seconds since epoch)
 
 Scripts cannot read other entities, call affordances, access the network, or mutate authoritative state. They read properties the server sends and produce derived visual/audio/physics state.
 
-A client script follows Raido's [verification-run rules](../raido/README.md#verification-modes), since the domain may re-run it: no pausing, no `spawn`, no deferred calls. It declares no module variables either, which the client checks at load. That's what keeps a frame's output a function of that frame's inputs, so the client can run every frame through one VM without a reset.
+A client script is compiled in Raido's [pure profile](../raido/vm/architecture.md#profiles), since the domain may re-run it, and the client refuses one that isn't: no state between frames, no pausing, spawning or deferred effects, no hidden randomness. That's what keeps a frame's output a function of that frame's inputs, so the client can run every frame through one VM without a reset.
 
 Outputs (per category):
 
@@ -178,7 +178,7 @@ This is the same progressive enhancement pattern as everything else in GDL. Scri
 
 Scripts are content-addressed. When the domain deploys new logic, the entity's `scripts` field changes through a normal `entity_update` delta — the hash changes, the client fetches the new bytecode from Leden's content store. Same mechanism as any property change. No special update protocol.
 
-Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. Nothing carries over from the old script: client scripts are stateless between frames (pure functions of properties and time), since they declare no module variables.
+Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. Nothing carries over from the old script: client scripts are stateless between frames (pure functions of properties and time), which the pure profile guarantees.
 
 Script updates are rare — they represent logic changes (a domain patch, a new ability), not data changes. Data flows through entity properties. Logic flows through script bytecode. Different cadences, same delivery mechanism.
 

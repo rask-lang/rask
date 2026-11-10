@@ -52,7 +52,7 @@ public func compile_api(name: string, source: string) -> Api or CompileError {}
 // names each by hash.
 public func compile(name: string, source: string, api: Api, library: Vec<Chunk>, opts: CompileOpts) -> Chunk or CompileError {}
 
-public enum Profile { Normal, Provable }
+public enum Profile { Normal, Pure, Provable }
 
 public struct CompileOpts {
     public debug_info: bool

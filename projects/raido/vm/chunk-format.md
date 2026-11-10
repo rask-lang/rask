@@ -87,7 +87,7 @@ try vm.load(chunk, library)  // fails if the bindings leave out anything the API
 - the format version is recognized;
 - the type table is consistent: no undefined type references;
 - every table index is in range;
-- a provable chunk contains no float constants or float instructions.
+- a pure or provable chunk keeps its profile's rules, and a provable one contains no float constants or float instructions ([architecture.md](architecture.md#profiles)).
 
 Extern declarations are checked against the host's bindings at `vm.load()`. If any check fails, nothing runs.
 
@@ -113,7 +113,7 @@ The chunk header carries:
 |-------|------|---------|
 | `magic` | `[u8; 4]` | Format identifier (`RADO`) |
 | `version` | `u16` | Chunk format version |
-| `profile` | `u8` | 0 = normal, 1 = provable |
+| `profile` | `u8` | 0 = normal, 1 = pure, 2 = provable |
 | `content_hash` | `[u8; 32]` | SHA-256 over the sections listed in [Content Identity](#content-identity) |
 
 The version field is checked first during `vm.load()`. If the VM doesn't support that version, it rejects immediately -- before reading any other section.

@@ -99,7 +99,7 @@ If a hook fails halfway (`error(...)`, a bad index), everything it changed rolls
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Identity | Verification-first, scripting-capable | Static types serve verification. Pausing hooks serve scripting. |
+| Identity | Verification-first, scripting-capable | Static types serve verification. Pausing hooks, module state and shared closures serve scripting, and the pure profile shuts them all off, enforced by the compiler, for a script someone else will re-execute. |
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
 | Types | Static, inferred locals | Catches errors at compile time. Bytecode is verified against register types before it runs, so arithmetic never dispatches on type; values carry a tag for the collector and serialization. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
@@ -167,12 +167,13 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 
 **Primary: bilateral re-execution.** Both parties run the same script with the same inputs, compare outputs. Simple, fast — typical Raido scripts (combat, crafting, minting) are thousands of instructions, sub-millisecond to re-execute. This is the default verification mode.
 
-**What a verification run is.** Re-execution only proves something if both sides run the same thing the same way, so a run that someone else will check follows four rules:
+**What a verification run is.** Re-execution only proves something if both sides run the same thing the same way, so a run that someone else will check follows three rules:
 
-- **A fresh VM.** The checker loads the chunk into a new VM and makes one `vm.call`. Module variables hold only what their initializers made, so the result can't depend on history the checker never saw.
+- **The chunk is pure or provable.** The checker refuses any other profile. The [pure profile](vm/architecture.md#profiles) is enforced by the compiler and by the verifier, so a pure chunk has no state between calls, no pausing, spawning or deferred effects, and no hidden randomness: its result depends only on its arguments, the config and its host functions.
 - **The config is an input.** Fuel, memory limit and call depth change results (enough fuel or not, `MemoryExhausted` or not), so the claim carries them alongside the arguments.
-- **Only host functions the checker has.** The chunk's hash already names the API module it was compiled against. A script meant for checking is compiled against an API both sides implement identically, usually one the protocol above publishes, or none at all. Every function in it is immediate and pure.
-- **Nothing that only means something live.** No pausing, no `spawn`, no deferred calls. A run that tries one fails, so the claim fails.
+- **Only host functions the checker has.** The chunk's hash already names the API module it was compiled against. A script meant for checking is compiled against an API both sides implement identically, usually one the protocol above publishes, or none at all.
+
+I first wrote these as rules a verifier was trusted to follow, with module state and the rest still compiled in. That made verification safe by convention where the original Raido was safe by construction, so the pure profile puts it back in the compiler.
 
 **Future: ZK proofs.** For two cases where re-execution doesn't work:
 

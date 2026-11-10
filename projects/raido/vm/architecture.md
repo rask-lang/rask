@@ -57,7 +57,27 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 - **Integer overflow** panics by default. Wrapping ops wrap. Both deterministic, part of the contract.
 - **Sort** is one algorithm, so the comparator sees the same calls in the same order everywhere, even when it's inconsistent: top-down merge sort. A run of 0 or 1 items is sorted. Otherwise split at `n // 2` (the left half gets the smaller part), sort the left then the right, and merge by calling `cmp(right_item, left_item)`: take the right item if it returns `true`, the left one otherwise. When either half runs out, the rest is copied without calls.
 
-### Provable Profile
+### Profiles
+
+Raido is verification-first, but most of what makes it pleasant for mods (state that lives between calls, closures that share a counter, pausing, spawning, writing to the world) is exactly what makes a result depend on more than its inputs. So every chunk is compiled in one of three profiles, recorded in its header and in its hash, and the strict ones are enforced by the compiler and again by the verifier on bytecode, so a chunk can't claim a profile it doesn't keep.
+
+| Profile | For | Rules |
+|---------|-----|-------|
+| **Normal** | mods, game logic | the whole language |
+| **Pure** | scripts someone else re-executes: Allgard transforms, GDL client scripts | a call's result depends only on its arguments, the config and immediate host functions, and nothing it does outlasts the call |
+| **Provable** | scripts that may be proved with zero knowledge | pure, plus no `float`, plus the no-collection memory rule below |
+
+A **pure** chunk may not have:
+
+- module variables (a top-level `let`; `const` is fine), its own or an import's;
+- a captured variable that's reassigned, so no cells: a closure only sees values;
+- calls to pausing or deferred externs, `spawn`, or writes to extern struct fields;
+- `random()` or `random(n)`, since the PRNG is state a checker would have to reproduce. A script that needs randomness takes a seed as an argument;
+- imports of chunks that aren't pure or provable.
+
+It may call immediate externs and read extern struct fields; the checker has to have the same host API, and a protocol can narrow that further (Allgard allows none). `print` is allowed, since it's a log. The verifier checks the same rules on bytecode: no `GET_MODULE` or `SET_MODULE` on a variable, no `NEW_CELL`, `SPAWN` or `SET_FIELD`, no `CALL_EXTERN` to a deferred or pausing extern, no `CALL_BUILTIN` to `random`.
+
+A normal VM loads normal and pure chunks, and runs both under the same rules, so a mod can import a pure library. A provable VM loads only provable chunks, because its memory rule differs.
 
 The primary verification mode is bilateral re-execution: both parties run the same script and compare outputs. Deterministic floats replay exactly, so this covers every script.
 
@@ -68,9 +88,9 @@ Zero-knowledge proofs are a future option for two cases re-execution can't handl
 
 A ZK proof works over arithmetic in a prime field: additions and multiplications of large integers. Integer operations map onto that cheaply, with range checks to enforce 64-bit wrapping. A float operation doesn't: unpacking sign, exponent and mantissa, aligning exponents by a variable shift, normalising, rounding to nearest-even and repacking are each cheap in hardware and expensive in a circuit. General-purpose zkVMs emulate floats in software for this reason, at a cost of about a hundred times an integer operation.
 
-So proving is a profile, not the whole language. A chunk compiled as **provable** may not use `float`, so `/` is out and integer division is `//`; the compiler rejects the rest, and the chunk's header records the profile so a prover accepts only provable chunks. Minting, crafting, trades and anything conserved already count in `int`, so the scripts worth proving are the ones the profile allows.
+So proving is a profile, not the whole language. A chunk compiled as **provable** keeps every pure rule and may not use `float`, so `/` is out and integer division is `//`; the compiler rejects the rest, and the chunk's header records the profile so a prover accepts only provable chunks. Minting, crafting, trades and anything conserved already count in `int`, so the scripts worth proving are the ones the profile allows.
 
-The profile changes one other rule. A provable VM never collects, so at each checkpoint its limit counts everything allocated since the last `reset()`, reachable or not. That's a different point of running out than a normal VM's, which is why the profile is in the chunk header and in the content hash, and why a VM runs in one profile: it loads only chunks of that profile, imports included. One hash never runs under two rules. A provable chunk can't use `float` from the API module either.
+The profile changes one other rule. A provable VM never collects, so at each checkpoint its limit counts everything allocated since the last `reset()`, reachable or not. That's a different point of running out than a normal VM's, which is why the profile is in the chunk header and in the content hash, and why a provable VM loads only provable chunks, imports included. One hash never runs under two rules. A provable chunk can't use `float` from the API module either.
 
 **What the provable profile relies on:**
 
@@ -413,7 +433,8 @@ Bytecode can come from someone else: a trading partner's chunk, a mod downloaded
 - `CALL`, `TAIL_CALL`, `CALL_BUILTIN` and `CALL_EXTERN` pass as many arguments as the callee takes, of its parameter types, into a register of its result type;
 - every register is written on every path before it's read (a forward dataflow over the function's jumps), so a register's starting `none` is never seen;
 - jumps land inside the same function, and no path runs off its end: every path ends in `RETURN`, `RETURN_VOID` or `TAIL_CALL`, with a value of the function's return type;
-- every index is inside its table, and a provable chunk has no float instructions or constants.
+- every index is inside its table;
+- a pure or provable chunk keeps its profile's rules ([Profiles](#profiles)), and a provable one has no float instructions or constants.
 
 A chunk compiled from source passes by construction; the compiler runs the same check in debug builds.
 
