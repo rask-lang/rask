@@ -176,6 +176,10 @@ pub struct OwnershipChecker<'a> {
     /// Set while the operand of a field read is checked: the outermost read
     /// already asked about taken fields for the whole path.
     field_path_checked: bool,
+    /// Receivers and arguments a call already answered for, from what its
+    /// callee reads (`replaces`): `self.bump()` with `self.log` taken reads
+    /// `self.n` only.
+    taken_judged: HashSet<rask_ast::NodeId>,
     /// `let x = p.f` reads a later `p.f = …` in the same list refills
     /// (`field_reuse::refill_pairs`): moves, not views.
     refill_takes: HashSet<rask_ast::NodeId>,
@@ -566,6 +570,7 @@ impl<'a> OwnershipChecker<'a> {
             shadowed_views: Vec::new(),
             taken_fields: Vec::new(),
             field_path_checked: false,
+            taken_judged: HashSet::new(),
             refill_takes: HashSet::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
@@ -2465,13 +2470,41 @@ impl<'a> OwnershipChecker<'a> {
     /// the refill hasn't put back: the field itself, something inside it, or
     /// the whole value around it. Natively the slot is empty there.
     fn check_taken_read(&mut self, expr: &Expr) {
+        if self.taken_fields.is_empty() || self.taken_judged.contains(&expr.id) {
+            return;
+        }
+        self.check_taken_path(expr, &[]);
+    }
+
+    /// A call reads, under each place it's handed, what its callee reads
+    /// there. Those places are then judged, so the plain read check skips them.
+    fn check_taken_call(&mut self, call: &Expr) {
         if self.taken_fields.is_empty() {
             return;
         }
+        // Every operand the call answers for is judged, the ones it reads
+        // nothing of included: `self.bump()` reads `self.n` and not the rest
+        // of `self`.
+        let operands: Vec<rask_ast::NodeId> = match &call.kind {
+            ExprKind::MethodCall { object, args, .. } => std::iter::once(object.as_ref())
+                .chain(args.iter().map(|a| &a.expr))
+                .map(|e| e.id)
+                .collect(),
+            ExprKind::Call { args, .. } => args.iter().map(|a| a.expr.id).collect(),
+            _ => Vec::new(),
+        };
+        self.taken_judged.extend(operands);
+        for (place, under) in self.call_reads(call) {
+            self.check_taken_path(place, &under);
+        }
+    }
+
+    fn check_taken_path(&mut self, expr: &Expr, under: &[String]) {
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
             return;
         };
-        let fields = fields.unwrap_or_default();
+        let mut fields = fields.unwrap_or_default();
+        fields.extend(under.iter().cloned());
         let sym = self.root_symbol(expr);
         let hit = self.taken_fields.iter().find(|(r, f, _, _, s)| {
             let n = f.len().min(fields.len());
@@ -3308,6 +3341,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
                 self.check_views_at_writing_call(expr);
+                self.check_taken_call(expr);
                 // #296/PM3: a `take` parameter consumes its argument with no
                 // call-site marker. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
@@ -3409,6 +3443,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
+                self.check_taken_call(expr);
                 self.check_expr(object);
                 self.check_views_at_writing_call(expr);
                 if method == "to_vec" && args.is_empty() {

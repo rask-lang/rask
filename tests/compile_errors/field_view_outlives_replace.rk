@@ -50,10 +50,6 @@ extend Regs {
         self.regs.push(v)
     }
 
-    func reset(mutate self) {
-        self.log = Vec.new()
-    }
-
     func reset_twice_removed(mutate self) {
         self.reset()
     }
@@ -94,6 +90,78 @@ func wipe_under_view(mutate p: Outer) -> usize {
     let old = p.cfg
     p.cfg.wipe()
     return old.list.len()
+}
+
+interface Reset {
+    func reset(mutate self)
+}
+
+Regs implements Reset {
+    func reset(mutate self) {
+        self.log = Vec.new()
+    }
+}
+
+struct Bag<T: Reset> {
+    item: T
+}
+
+extend Bag<T> {
+    func wipe(mutate self) {
+        self.item.reset()
+    }
+}
+
+// ERROR: a method on a type-parameter receiver has no body to read, so it
+// replaces its receiver [E0958]
+func generic_under_view(mutate b: Bag<Regs>) -> usize {
+    let old = b.item
+    b.wipe()
+    return old.log.len()
+}
+
+func touch(mutate r: Regs) {
+    r.regs = Vec.new()
+}
+
+// ERROR: the local closure `touch` isn't the top-level `touch`, and it
+// replaces `log` [E0958]
+func closure_named_like_a_function(mutate r: Regs) -> usize {
+    let touch = |mutate x: Regs| {
+        x.log = Vec.new()
+    }
+    let old = r.log
+    touch(mutate r)
+    return old.len()
+}
+
+extend Regs {
+    func bump(mutate self) {
+        self.regs.push(1)
+    }
+
+    func reset_in_closure(mutate self) {
+        let wipe = || {
+            self.log = Vec.new()
+        }
+        wipe()
+    }
+}
+
+// ERROR: a write inside a closure the method calls is the method's [E0958]
+func closure_in_callee(mutate r: Regs) -> usize {
+    let old = r.log
+    r.reset_in_closure()
+    return old.len()
+}
+
+// Fine: between the move and the refill, `bump` reads and writes `regs`
+// only, so it never sees the empty `log`.
+func helper_between(mutate r: Regs) -> usize {
+    let old = r.log
+    r.bump()
+    r.log = Vec.new()
+    return old.len()
 }
 
 // Fine: growing the vector a view reads frees nothing.
