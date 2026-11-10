@@ -310,6 +310,9 @@ fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String
     }
     impl<'e> Visit<'e> for Writes<'_, '_> {
         fn expr(&mut self, e: &'e Expr) -> bool {
+            if let ExprKind::Take { place } = &e.kind {
+                self.out.extend(place_path(place));
+            }
             for (place, under) in self.checker.call_writes(e) {
                 if let Some(mut p) = place_path(place) {
                     p.extend(under);

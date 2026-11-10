@@ -164,6 +164,90 @@ func helper_between(mutate r: Regs) -> usize {
     return old.len()
 }
 
+struct Conn {
+    pending: Vec<string>?
+}
+
+extend Conn {
+    func drain(mutate self) -> usize {
+        let r = take self.pending
+        if r? as v {
+            return v.len()
+        }
+        return 0
+    }
+}
+
+// ERROR: `drain` empties the field a view reads with `take` [E0958]
+func drain_under_view(mutate c: Conn) -> usize {
+    let view = c.pending
+    let n = c.drain()
+    if view? as v {
+        return n + v.len()
+    }
+    return n
+}
+
+// ERROR: so does a `take` written out here [E0958]
+func take_under_view(mutate c: Conn) -> usize {
+    let view = c.pending
+    let m = take c.pending
+    if view? as v {
+        return v.len()
+    }
+    if m? as w {
+        return w.len()
+    }
+    return 0
+}
+
+struct Slots {
+    names: Vec<string>
+    slots: Vec<Regs>
+}
+
+extend Slots {
+    func put(mutate self) {
+        self.slots[self.names.len() - 1].regs = Vec.new()
+    }
+}
+
+// ERROR: `put` reads `names` in an index while it's empty [E0959]
+func index_read_between(mutate p: Slots) -> usize {
+    let old = p.names
+    p.put()
+    p.names = Vec.new()
+    return old.len()
+}
+
+interface Sized {
+    func size(self) -> usize
+}
+
+Regs implements Sized {
+    func size(self) -> usize {
+        return self.log.len()
+    }
+}
+
+struct Sack<T: Sized> {
+    item: T
+}
+
+extend Sack<T> {
+    func count_mut(mutate self) -> usize {
+        return self.item.size()
+    }
+}
+
+// Fine: no interface declares `size` as `mutate self`, so `count_mut`
+// can't replace `item`.
+func size_under_view(mutate b: Sack<Regs>) -> usize {
+    let v = b.item
+    let k = b.count_mut()
+    return v.log.len() + k
+}
+
 // Fine: growing the vector a view reads frees nothing.
 func grow(mutate h: Holder) -> usize {
     let f = h.log

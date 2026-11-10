@@ -358,6 +358,9 @@ pub struct OwnershipChecker<'a> {
     /// What each function and method may write over under its `mutate`
     /// parameters (`replaces`).
     replaces: replaces::Replaces,
+    /// Method names some declaration gives no Rask body (`@native`,
+    /// `@builtin`): a call that could reach one of them can't be summarised.
+    bodyless_methods: HashSet<String>,
     method_resizes: resize::MethodResizes,
     /// See `OwnershipResult::task_bound_closures`.
     task_bound_closures: HashSet<rask_ast::NodeId>,
@@ -622,6 +625,7 @@ impl<'a> OwnershipChecker<'a> {
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
+            bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
             header_type_params: Vec::new(),
@@ -4249,6 +4253,10 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.check_expr(inner);
+                // `take p.f` empties the field: a write, for any view of it.
+                if matches!(expr.kind, ExprKind::Take { .. }) {
+                    self.check_views_at_write(inner, &[], expr.span);
+                }
                 if matches!(expr.kind, ExprKind::Try { .. }) {
                     self.check_try_leaks_a_resource(expr.span);
                 }

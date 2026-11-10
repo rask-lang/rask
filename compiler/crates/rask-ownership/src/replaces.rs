@@ -18,7 +18,7 @@
 //! a vector and replaces no handle. Being wrong that way can only refuse a
 //! program, never let one through.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
@@ -56,9 +56,6 @@ const MAX_PATH: usize = 8;
 impl<'a> OwnershipChecker<'a> {
     /// Fill `replaces` for every function and method in `groups`.
     ///
-    /// A worklist: a body is worked out again only when a function it calls
-    /// changed its answer, so a long chain of calls costs one pass per body,
-    /// not one per link.
     pub(crate) fn infer_replaces(&mut self, groups: &[&[Decl]]) {
         let mut bodies: Vec<(Key, &FnDecl)> = Vec::new();
         for decls in groups {
@@ -70,6 +67,9 @@ impl<'a> OwnershipChecker<'a> {
                     DeclKind::Fn(f) if !f.body_lives_elsewhere() => bodies.push((Key::Fn(f.name.clone()), f)),
                     DeclKind::Impl(i) => {
                         let ty = i.target_ty.name().unwrap_or_default();
+                        for m in i.methods.iter().filter(|m| m.body_lives_elsewhere()) {
+                            self.bodyless_methods.insert(m.name.clone());
+                        }
                         for m in i.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
                             bodies.push((Key::Method(ty.clone(), m.name.clone()), m));
                         }
@@ -92,42 +92,54 @@ impl<'a> OwnershipChecker<'a> {
         for (i, (key, _)) in bodies.iter().enumerate() {
             by_key.entry(key.clone()).or_default().push(i);
         }
-        // Who calls whom, once: the keys a body's calls can reach.
-        let mut callers: HashMap<Key, Vec<usize>> = HashMap::new();
-        for (i, (_, f)) in bodies.iter().enumerate() {
-            for callee in self.callees(&f.body) {
-                callers.entry(callee).or_default().push(i);
-            }
-        }
+        // Who calls whom: body `i` calls the bodies in `edges[i]`.
+        let edges: Vec<Vec<usize>> = bodies
+            .iter()
+            .map(|(_, f)| {
+                let mut to: Vec<usize> =
+                    self.callees(&f.body).iter().flat_map(|k| by_key.get(k).into_iter().flatten().copied()).collect();
+                to.sort_unstable();
+                to.dedup();
+                to
+            })
+            .collect();
         // Every declared function starts out touching nothing, so recursion
         // climbs from there: `ping` and `pong` calling each other end with
-        // what they really write, not with "everything" for want of an answer.
+        // what they really do, not with "everything" for want of an answer.
         for (key, f) in &bodies {
             self.replaces
                 .entry(key.clone())
                 .or_insert_with(|| f.params.iter().map(|p| (p.name.clone(), Effects::default())).collect());
         }
+        // Callees before callers, a strongly connected group at a time, so a
+        // body is worked out once its callees are settled. Only a group of
+        // functions calling each other needs more than one pass. Working all
+        // bodies at once instead pushed a chain's fields up it one round at a
+        // time, cubic in its length.
         let mut results: Vec<Option<Vec<(String, Effects)>>> = vec![None; bodies.len()];
-        let mut queued = vec![true; bodies.len()];
-        let mut work: VecDeque<usize> = (0..bodies.len()).collect();
-        while let Some(i) = work.pop_front() {
-            queued[i] = false;
-            let (key, f) = &bodies[i];
-            let found: Vec<(String, Effects)> =
-                f.params.iter().map(|p| (p.name.clone(), self.body_effects(&p.name, &f.body))).collect();
-            if results[i].as_ref() == Some(&found) {
-                continue;
-            }
-            results[i] = Some(found);
-            let merged = merge(by_key[key].iter().filter_map(|j| results[*j].as_ref()));
-            if self.replaces.get(key) == Some(&merged) {
-                continue;
-            }
-            self.replaces.insert(key.clone(), merged);
-            for &c in callers.get(key).into_iter().flatten() {
-                if !queued[c] {
-                    queued[c] = true;
-                    work.push_back(c);
+        for group in strongly_connected(&edges) {
+            let recursive = group.len() > 1 || edges[group[0]].contains(&group[0]);
+            loop {
+                let mut changed = false;
+                for &i in &group {
+                    let (key, f) = &bodies[i];
+                    let found: Vec<(String, Effects)> = f
+                        .params
+                        .iter()
+                        .map(|p| (p.name.clone(), self.body_effects(&p.name, p.is_mutate || p.is_deleting, &f.body)))
+                        .collect();
+                    if results[i].as_ref() == Some(&found) {
+                        continue;
+                    }
+                    results[i] = Some(found);
+                    let merged = merge(by_key[key].iter().filter_map(|j| results[*j].as_ref()));
+                    if self.replaces.get(key) != Some(&merged) {
+                        self.replaces.insert(key.clone(), merged);
+                        changed = true;
+                    }
+                }
+                if !changed || !recursive {
+                    break;
                 }
             }
         }
@@ -167,7 +179,7 @@ impl<'a> OwnershipChecker<'a> {
     /// here, which can only refuse a call that could have been allowed. A
     /// closure in the body counts as the body: what it writes or reads, the
     /// function does when it calls it.
-    fn body_effects(&self, param: &str, body: &[Stmt]) -> Effects {
+    fn body_effects(&self, param: &str, may_write: bool, body: &[Stmt]) -> Effects {
         struct Walk<'c, 'a> {
             checker: &'c OwnershipChecker<'a>,
             param: &'c str,
@@ -226,6 +238,15 @@ impl<'a> OwnershipChecker<'a> {
                         self.args(args);
                         false
                     }
+                    // `take p.f` reads the field out and leaves it empty.
+                    ExprKind::Take { place } => {
+                        if let Some(p) = self.path(place, &[]) {
+                            self.fx.writes.push(p.clone());
+                            self.fx.reads.push(p);
+                            return false;
+                        }
+                        true
+                    }
                     ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::OptionalField { .. } => {
                         if let Some(p) = self.path(e, &[]) {
                             self.fx.reads.push(p);
@@ -241,19 +262,21 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(p) = self.path(target, &[]) {
                     self.fx.writes.push(p);
                 }
-                // Writing a field doesn't read it; an index or a computed
-                // part of the target still reads what it goes through.
+                // Writing a field doesn't read it; a target that isn't a plain
+                // path (`self.slots[i].x`) reads what it goes through, the
+                // index included.
                 visit::visit_expr(value, self);
-                if let ExprKind::Index { object, index } = &target.kind {
-                    visit::visit_expr(object, self);
-                    visit::visit_expr(index, self);
+                if !is_place(target) {
+                    visit::visit_expr(target, self);
                 }
                 false
             }
         }
         let mut w = Walk { checker: self, param, fx: Effects::default() };
         visit::visit_body(body, &mut w);
-        Effects { writes: minimal(w.fx.writes), reads: minimal(w.fx.reads) }
+        // A parameter the function only borrows can't be written through it.
+        let writes = if may_write { minimal(w.fx.writes) } else { Vec::new() };
+        Effects { writes, reads: minimal(w.fx.reads) }
     }
 
     /// What a call may write over: each place it's handed to write through,
@@ -301,21 +324,45 @@ impl<'a> OwnershipChecker<'a> {
                             each(&a.expr, pick(fx));
                         }
                     }
-                    None => {
-                        // No body here. A stdlib container's own method grows
-                        // or empties it and replaces no handle; anything else
-                        // (a type parameter, an interface, a stdlib handle) is
-                        // taken to replace its receiver when it may write it.
-                        let replaces_receiver = !self.is_container_receiver(object)
-                            && !matches!(
-                                self.self_param_of(object, method),
-                                Some(rask_types::SelfParam::Value | rask_types::SelfParam::Take)
-                            );
-                        if !writes || replaces_receiver {
+                    None if self.is_container_receiver(object) => {
+                        // A stdlib container's own method grows or empties it
+                        // and replaces no handle, but reads all of it.
+                        if !writes {
                             each(object, vec![Vec::new()]);
                         }
                         for a in args.iter().filter(|a| unknown(a)) {
                             each(&a.expr, vec![Vec::new()]);
+                        }
+                    }
+                    // A type parameter's or an interface's method comes from
+                    // an interface, so when none declares `method` as
+                    // `mutate self`, the call can't write its receiver.
+                    None if writes && !self.some_interface_mutates(method) => {
+                        for a in args.iter().filter(|a| unknown(a)) {
+                            each(&a.expr, vec![Vec::new()]);
+                        }
+                    }
+                    None => {
+                        // Not one body: a type parameter or an interface, where
+                        // any implementation of `method` could run. What all
+                        // the ones with a body here do, together, unless one of
+                        // that name has no body here, which counts as whole.
+                        match self.any_method_named(method) {
+                            Some(params) => {
+                                let mut rest = params.iter().peekable();
+                                if let Some((_, fx)) = rest.next_if(|(name, _)| name == "self") {
+                                    each(object, pick(fx));
+                                }
+                                for (a, (_, fx)) in args.iter().zip(rest) {
+                                    each(&a.expr, pick(fx));
+                                }
+                            }
+                            None => {
+                                each(object, vec![Vec::new()]);
+                                for a in args.iter().filter(|a| unknown(a)) {
+                                    each(&a.expr, vec![Vec::new()]);
+                                }
+                            }
                         }
                     }
                 }
@@ -323,6 +370,34 @@ impl<'a> OwnershipChecker<'a> {
             _ => {}
         }
         out
+    }
+
+    /// Whether any interface declares `method` with `mutate self`.
+    fn some_interface_mutates(&self, method: &str) -> bool {
+        self.program.types.iter().any(|def| match def {
+            rask_types::TypeDef::Interface { methods, .. } => methods
+                .iter()
+                .any(|m| m.name == method && matches!(m.self_param, rask_types::SelfParam::Mutate)),
+            _ => false,
+        })
+    }
+
+    /// Every summarised method called `method`, merged, when each one of that
+    /// name has a body here.
+    fn any_method_named(&self, method: &str) -> Option<Vec<(String, Effects)>> {
+        if self.bodyless_methods.contains(method) {
+            return None;
+        }
+        let all: Vec<&Vec<(String, Effects)>> = self
+            .replaces
+            .iter()
+            .filter(|(k, _)| matches!(k, Key::Method(_, m) if m == method))
+            .map(|(_, v)| v)
+            .collect();
+        if all.is_empty() {
+            return None;
+        }
+        Some(merge(all.into_iter()))
     }
 
     /// A stdlib container, whose own methods change what it holds without
@@ -376,5 +451,66 @@ fn minimal(mut paths: Vec<Path>) -> Vec<Path> {
         }
     }
     out.sort();
+    out
+}
+
+/// Tarjan's strongly connected components of a call graph, callees' groups
+/// before their callers'. Iterative, so a long call chain can't run the
+/// compiler's own stack out.
+fn strongly_connected(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let n = edges.len();
+    let mut index: Vec<Option<usize>> = vec![None; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for root in 0..n {
+        if index[root].is_some() {
+            continue;
+        }
+        // (node, how many of its edges have been followed)
+        let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = Some(next);
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&(v, at)) = frames.last() {
+            if let Some(&w) = edges[v].get(at) {
+                if let Some(top) = frames.last_mut() {
+                    top.1 += 1;
+                }
+                match index[w] {
+                    None => {
+                        index[w] = Some(next);
+                        low[w] = next;
+                        next += 1;
+                        stack.push(w);
+                        on_stack[w] = true;
+                        frames.push((w, 0));
+                    }
+                    Some(iw) if on_stack[w] => low[v] = low[v].min(iw),
+                    Some(_) => {}
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if Some(low[v]) == index[v] {
+                let mut group = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    group.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                out.push(group);
+            }
+        }
+    }
     out
 }
