@@ -188,13 +188,10 @@ impl<'a> OwnershipChecker<'a> {
         impl Walk<'_, '_> {
             /// `place` and `under` as a path under the parameter, if it's one.
             fn path(&self, place: &Expr, under: &[String]) -> Option<Path> {
-                let (Some(root), fields) = OwnershipChecker::extract_root_and_fields(place) else {
-                    return None;
-                };
+                let (root, mut path) = self.checker.written_place(place)?;
                 if root != self.param {
                     return None;
                 }
-                let mut path = fields.unwrap_or_default();
                 path.extend(under.iter().cloned());
                 path.truncate(MAX_PATH);
                 Some(path)
@@ -400,6 +397,29 @@ impl<'a> OwnershipChecker<'a> {
         Some(merge(all.into_iter()))
     }
 
+    /// The place a write through `e` lands in, as a root and a field path.
+    /// It sees through `!` (`self.opt!.wipe()` writes `opt`) and into a
+    /// fixed-size array, whose elements are its own storage: `self.slots[0]
+    /// = …` writes `slots`. An element of a `Vec` isn't: a view of the vector
+    /// shares its handle and sees the new element.
+    pub(crate) fn written_place(&self, e: &Expr) -> Option<(String, Path)> {
+        match &e.kind {
+            ExprKind::Ident(name) => Some((name.clone(), Vec::new())),
+            ExprKind::Field { object, field } | ExprKind::OptionalField { object, field } => {
+                let (root, mut path) = self.written_place(object)?;
+                path.push(field.clone());
+                Some((root, path))
+            }
+            ExprKind::Unwrap { expr, .. } => self.written_place(expr),
+            ExprKind::Index { object, .. }
+                if matches!(self.node_ty(&object.id), Some(rask_types::Type::Array { .. })) =>
+            {
+                self.written_place(object)
+            }
+            _ => None,
+        }
+    }
+
     /// A stdlib container, whose own methods change what it holds without
     /// replacing its handle.
     fn is_container_receiver(&self, object: &Expr) -> bool {
@@ -417,6 +437,7 @@ fn is_place(e: &Expr) -> bool {
     match &e.kind {
         ExprKind::Ident(_) => true,
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => is_place(object),
+        ExprKind::Unwrap { expr, .. } => is_place(expr),
         _ => false,
     }
 }

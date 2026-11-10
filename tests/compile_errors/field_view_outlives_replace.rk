@@ -248,6 +248,45 @@ func size_under_view(mutate b: Sack<Regs>) -> usize {
     return v.log.len() + k
 }
 
+struct Maybe {
+    opt: Cfg?
+}
+
+// ERROR: a call through `!` writes the optional's payload [E0958]
+func unwrap_under_view(mutate m: Maybe) -> usize {
+    let old = m.opt
+    m.opt!.wipe()
+    if old? as c {
+        return c.list.len()
+    }
+    return 0
+}
+
+func call_it(f: func() -> usize) -> usize {
+    return f()
+}
+
+// ERROR: a closure handed to a call between the move and the refill could
+// read the empty field, so the read stays a view [E0958]
+func closure_passed_between(mutate h: Holder) -> usize {
+    let n = || h.log.len()
+    let old = h.log
+    let k = call_it(n)
+    h.log = Vec.new()
+    return k + old.len()
+}
+
+struct Fixed {
+    slots: [Vec<string>; 2]
+}
+
+// ERROR: a fixed-size array's element is the array's own storage [E0958]
+func array_element_under_view(mutate a: Fixed) -> usize {
+    let old = a.slots
+    a.slots[0] = Vec.new()
+    return old[0].len()
+}
+
 // Fine: growing the vector a view reads frees nothing.
 func grow(mutate h: Holder) -> usize {
     let f = h.log

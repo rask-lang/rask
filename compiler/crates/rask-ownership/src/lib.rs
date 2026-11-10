@@ -2406,10 +2406,9 @@ impl<'a> OwnershipChecker<'a> {
     /// A read the refill pairs with is a move, never a view, so
     /// consume-and-replace stays legal.
     fn check_views_at_write(&mut self, place: &Expr, under: &[String], at: Span) {
-        let (Some(root), fields) = Self::extract_root_and_fields(place) else {
+        let Some((root, mut fields)) = self.written_place(place) else {
             return;
         };
-        let mut fields = fields.unwrap_or_default();
         fields.extend(under.iter().cloned());
         let sym = self.root_symbol(place);
         let hits = |name: &str, view: &FieldView| {
@@ -2466,6 +2465,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Field { object, .. }
             | ExprKind::OptionalField { object, .. }
             | ExprKind::Index { object, .. } => self.root_symbol(object),
+            ExprKind::Unwrap { expr, .. } => self.root_symbol(expr),
             _ => None,
         }
     }

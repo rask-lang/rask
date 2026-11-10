@@ -276,10 +276,22 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
     pairs
 }
 
-/// Whether `stmt` calls through a local or a parameter: a closure value.
+/// Whether `stmt` calls through a local or a parameter, a closure value, or
+/// hands one to a call that can.
 fn calls_a_closure(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> bool {
     let mut hit = false;
     visit::walk_stmt(stmt, &mut |e| {
+        // A closure value handed to a call can be called by it.
+        let args = match &e.kind {
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => &args[..],
+            _ => &[],
+        };
+        if args
+            .iter()
+            .any(|a| matches!(checker.node_ty(&a.expr.id), Some(rask_types::Type::Fn { .. })))
+        {
+            hit = true;
+        }
         if let ExprKind::Call { func, .. } = &e.kind {
             if let ExprKind::Ident(_) = &func.kind {
                 let local = checker
@@ -311,21 +323,27 @@ fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String
     impl<'e> Visit<'e> for Writes<'_, '_> {
         fn expr(&mut self, e: &'e Expr) -> bool {
             if let ExprKind::Take { place } = &e.kind {
-                self.out.extend(place_path(place));
+                self.out.extend(self.written(place, Vec::new()));
             }
             for (place, under) in self.checker.call_writes(e) {
-                if let Some(mut p) = place_path(place) {
-                    p.extend(under);
-                    self.out.push(p);
-                }
+                self.out.extend(self.written(place, under));
             }
             true
         }
         fn stmt(&mut self, s: &'e Stmt) -> bool {
             if let StmtKind::Assign { target, .. } = &s.kind {
-                self.out.extend(place_path(target));
+                self.out.extend(self.written(target, Vec::new()));
             }
             true
+        }
+    }
+    impl Writes<'_, '_> {
+        /// As a path `place_path` spells, so it compares with a `let`'s.
+        fn written(&self, place: &Expr, under: Vec<String>) -> Option<Vec<String>> {
+            let (root, mut p) = self.checker.written_place(place)?;
+            p.insert(0, root);
+            p.extend(under);
+            Some(p)
         }
     }
     let mut w = Writes { checker, out: Vec::new() };
