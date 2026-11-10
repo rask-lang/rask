@@ -462,17 +462,44 @@ fn merge<'r>(mut results: impl Iterator<Item = &'r Vec<(String, Effects)>>) -> V
     out
 }
 
+/// The most paths kept for one parameter. Derived methods touch every field,
+/// and a caller's summary takes its callee's paths with a prefix, so a struct
+/// seven levels deep and four fields wide would list 4^7 of them. Past this
+/// many, paths collapse to their first field, then to the whole parameter;
+/// a shorter path covers more, so that only refuses more.
+const MAX_PATHS: usize = 32;
+
 /// Keep only the shortest paths: replacing `log` covers `log.inner`.
 fn minimal(mut paths: Vec<Path>) -> Vec<Path> {
     paths.sort_by_key(|p| p.len());
+    let mut kept: std::collections::HashSet<Path> = std::collections::HashSet::new();
     let mut out: Vec<Path> = Vec::new();
     for p in paths {
-        if !out.iter().any(|q| p.starts_with(q)) {
-            out.push(p);
+        if (0..=p.len()).any(|n| kept.contains(&p[..n])) {
+            continue;
+        }
+        kept.insert(p.clone());
+        out.push(p);
+    }
+    if out.len() > MAX_PATHS {
+        let firsts: Vec<Path> = out.iter().map(|p| p.iter().take(1).cloned().collect()).collect();
+        out = minimal_unbounded(firsts);
+        if out.len() > MAX_PATHS {
+            out = vec![Vec::new()];
         }
     }
     out.sort();
     out
+}
+
+/// `minimal` without the cap, for paths already one field long.
+fn minimal_unbounded(mut paths: Vec<Path>) -> Vec<Path> {
+    paths.sort();
+    paths.dedup();
+    if paths.iter().any(|p| p.is_empty()) {
+        return vec![Vec::new()];
+    }
+    paths
 }
 
 /// Tarjan's strongly connected components of a call graph, callees' groups
