@@ -611,7 +611,7 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                 // holder for either.
                 let mut visited = HashSet::new();
                 let owned = rask_codegen::drop_fields::owned_fields(
-                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mut visited,
+                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mono.handle_releases, &mut visited,
                 );
                 vtables.push(rask_codegen::vtable::VTableInfo {
                     data_name: vtable_name.clone(),

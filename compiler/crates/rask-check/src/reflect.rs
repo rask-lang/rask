@@ -186,7 +186,7 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
     // FL3: a reference into a container is never flat — a `Link` is an
     // address. Answering here also terminates the walk: it is generic, and the
     // generic arm below would return Unknown.
-    if base == "Link" || is_heap_backed(base) || decls.is_resource(base) {
+    if base == "Link" || is_heap_backed(base, decls) || decls.is_resource(base) {
         return Flatness::NotFlat;
     }
 
@@ -242,8 +242,19 @@ fn is_flat_primitive(name: &str) -> bool {
 
 /// FL1: the types that own or point at heap memory. A runtime handle's
 /// storage is the runtime's; a struct holding one is found through its fields.
-fn is_heap_backed(name: &str) -> bool {
-    name == "string" || rask_stdlib::is_runtime_handle(name)
+///
+/// The walk reads written types, so the name is resolved through the
+/// checker's table and the declaration it names is asked. A name with no
+/// declaration can still be a compiler-provided handle (`Shared`).
+fn is_heap_backed(name: &str, decls: &dyn ReflectDecls) -> bool {
+    if name == "string" {
+        return true;
+    }
+    let table = decls.type_table();
+    match table.get_type_id(name) {
+        Some(id) => table.is_handle(id),
+        None => rask_stdlib::spelled_handle(name).is_some(),
+    }
 }
 
 // ─── Questions the checker's type table answers ─────────────────────

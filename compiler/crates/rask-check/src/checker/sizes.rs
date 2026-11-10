@@ -157,7 +157,7 @@ impl crate::TypeTable {
     /// standing in for one.
     fn is_one_word(&self, id: TypeId) -> bool {
         self.layout_stand_ins.contains(&id)
-            || matches!(self.get(id), Some(TypeDef::Struct { attrs, .. }) if attrs.iter().any(|a| a.is("handle")))
+            || self.is_handle(id)
     }
 
     fn fill_def(&self, id: TypeId, args: &[Type], cache: &mut LayoutCache, visiting: &mut Vec<LayoutKey>) {

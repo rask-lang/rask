@@ -202,6 +202,8 @@ struct CodegenCtx<'a> {
     /// The checker's name for each type id, so a resolved type's head can be
     /// read off it rather than off its rendering.
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id (`rask_mono::drop_names`).
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -367,6 +369,7 @@ pub struct FunctionBuilder<'a> {
     /// Enum layouts from monomorphization
     enum_layouts: &'a [EnumLayout],
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
@@ -444,6 +447,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
+        handle_releases: &'a rask_mono::drop_names::HandleReleases,
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -462,6 +466,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts,
             enum_layouts,
             type_names,
+            handle_releases,
             string_globals,
             string_header_globals,
             element_offset_globals,
@@ -751,6 +756,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
             type_names: self.type_names,
+            handle_releases: self.handle_releases,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
             element_offset_globals: self.element_offset_globals,
@@ -7446,7 +7452,7 @@ impl<'a> FunctionBuilder<'a> {
     /// anything? A runtime handle — a `Shared`, an `Atomic`, a `File` — is a
     /// bare pointer to MIR, and only its declared type says it has a free.
     fn field_owns(declared: &RaskType, ty: &MirType, ctx: &CodegenCtx, depth: u32) -> bool {
-        crate::drop_fields::container_free_for(declared, ctx.type_names).is_some()
+        crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases).is_some()
             || Self::holds_string_mir(ty, ctx, depth)
     }
 
@@ -7471,7 +7477,7 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(ty, MirType::Heap(_)) {
             return Self::emit_heap_field_release(builder, base, offset, declared, ctx);
         }
-        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names) {
+        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
         Self::release_strings_mir(builder, base, offset, ty, ctx, depth)
