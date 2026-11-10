@@ -5,7 +5,7 @@ use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
 use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
@@ -2939,9 +2939,9 @@ impl Resolver {
     // =========================================================================
 
     fn resolve_pattern(&mut self, pattern: &Pattern) {
-        match pattern {
-            Pattern::Wildcard => {}
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => {}
+            PatternKind::Ident(name) => {
                 // A bare name that already means a variant or a type isn't a
                 // new binding. `r is Fault` tests the branch (type.errors/ER27)
                 // and binds nothing, which is how the checker reads it, but
@@ -2980,10 +2980,10 @@ impl Resolver {
                     self.errors.push(e);
                 }
             }
-            Pattern::Literal(expr) => {
+            PatternKind::Literal(expr) => {
                 self.resolve_expr(expr);
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     let _ = sym_id;
                 }
@@ -2991,24 +2991,24 @@ impl Resolver {
                     self.resolve_pattern(field_pattern);
                 }
             }
-            Pattern::Struct { name, fields, .. } => {
+            PatternKind::Struct { name, fields, .. } => {
                 if let Some(_sym_id) = self.scopes.lookup(name) {}
                 for (_, field_pattern) in fields {
                     self.resolve_pattern(field_pattern);
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 for p in patterns {
                     self.resolve_pattern(p);
                 }
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     self.resolve_pattern(p);
                 }
             }
-            Pattern::Range { .. } => {}
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::Range { .. } => {}
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     let sym_id = self.symbols.insert(
                         name.clone(),

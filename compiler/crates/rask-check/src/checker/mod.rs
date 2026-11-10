@@ -408,6 +408,11 @@ pub struct TypeChecker {
     /// of the enclosing function's error enum. NodeId of the `try` expression →
     /// the wrapping variant. Both backends read this to build the enum value.
     pub(super) error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
+    /// What each pattern resolved to, by the pattern's id.
+    pub(super) pattern_targets: HashMap<NodeId, rask_types::PatternTarget>,
+    /// Type tests on a `T or E` whose side is settled once inference is:
+    /// (pattern, scrutinee, the type it names).
+    pub(super) pending_pattern_sides: Vec<(NodeId, Type, Type)>,
     /// ER31a: `try` sites whose source error type wasn't known yet and whose
     /// target error enum could wrap it. Settled after constraint solving.
     /// (`try` node, source error, target error, span).
@@ -733,6 +738,8 @@ impl TypeChecker {
             variadic_externs: std::collections::HashSet::new(),
             pending_variadic: Vec::new(),
             error_wraps: HashMap::new(),
+            pattern_targets: HashMap::new(),
+            pending_pattern_sides: Vec::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
@@ -1190,6 +1197,12 @@ impl TypeChecker {
             .map(|(n, t)| (*n, self.ctx.apply(t)))
             .collect();
         let error_wraps = self.error_wraps.clone();
+        for (id, scrutinee, named) in std::mem::take(&mut self.pending_pattern_sides) {
+            if let Some((err, member)) = self.pattern_side(&scrutinee, &named) {
+                self.pattern_targets.insert(id, rask_types::PatternTarget::Side { err, member });
+            }
+        }
+        let pattern_targets = std::mem::take(&mut self.pattern_targets);
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let err_returns = self.err_returns.clone();
         let try_chain_placement = self.try_chain_placement.clone();
@@ -1266,6 +1279,7 @@ impl TypeChecker {
             conformance_disambiguation: self.conformance_disambiguation,
             conformance_interfaces: self.conformance_interfaces,
             error_wraps,
+            pattern_targets,
             fallback_keeps_shape,
             err_returns,
             // Ownership fills this in; the checker has no say in it.
@@ -1531,7 +1545,7 @@ fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl])
 /// `TypedProgram::attach_derived` drops the module once the bare name means
 /// the stdlib's type again.
 fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
-    use rask_ast::expr::Pattern;
+    use rask_ast::expr::{Pattern, PatternKind};
     use rask_ast::rewrite::{self, Rewrite};
     use rask_ast::ty::TypeExpr;
 
@@ -1571,12 +1585,12 @@ fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
     }
     impl Rewrite for Strip<'_> {
         fn pattern(&mut self, p: &mut Pattern) {
-            match p {
-                Pattern::Ident(name) => match self.module_type(name) {
-                    Some(ty) => *p = Pattern::TypePat { ty, binding: None },
+            match &mut p.kind {
+                PatternKind::Ident(name) => match self.module_type(name) {
+                    Some(ty) => p.kind = PatternKind::TypePat { ty, binding: None },
                     None => self.strip(name),
                 },
-                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.strip(name),
+                PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self.strip(name),
                 _ => {}
             }
         }

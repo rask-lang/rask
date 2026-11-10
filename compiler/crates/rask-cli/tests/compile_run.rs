@@ -10117,3 +10117,18 @@ fn a_sub_packages_extern_is_its_own() {
     assert!(!ok && out.contains("E0213"), "one C function, two signatures:\n{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A variant of `T` on a flat `T? or E` is three steps down: the success side,
+/// the option holding a value, then the variant. Testing only the first read
+/// the option's tag word as `Light`'s, so `Light.Green` answered true to `is
+/// Light.Red`, and `Shape.Circle(x)` bound `x` out of the wrong bytes. Native
+/// only: the interpreter matches none of these yet.
+#[test]
+fn a_variant_inside_a_flat_option_result_tests_every_step() {
+    let expected = "0: Red=true Green=false\n1: Red=false Green=true\n\
+                    2: Red=false Green=false\n3: Red=false Green=false\n\
+                    circle 1.5\nnone\nis label q2\nlabel q2\nerr\n";
+    let (native, code) = run_native("flat_option_variant_path.rk");
+    assert_eq!(code, 0, "native: {native}");
+    assert_eq!(native, expected, "native");
+}

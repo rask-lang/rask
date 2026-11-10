@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, PatternKind, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -5651,13 +5651,18 @@ impl Parser {
             while self.match_token(&TokenKind::Pipe) {
                 patterns.push(self.parse_single_pattern()?);
             }
-            Ok(Pattern::Or(patterns))
+            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns)))
         } else {
             Ok(first)
         }
     }
 
     fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let kind = self.parse_pattern_kind()?;
+        Ok(Pattern::new(self.next_id(), kind))
+    }
+
+    fn parse_pattern_kind(&mut self) -> Result<PatternKind, ParseError> {
         match self.current_kind().clone() {
             TokenKind::LParen => {
                 self.advance();
@@ -5669,18 +5674,18 @@ impl Parser {
                 }
                 self.skip_newlines();
                 self.expect(&TokenKind::RParen)?;
-                Ok(Pattern::Tuple(patterns))
+                Ok(PatternKind::Tuple(patterns))
             }
             TokenKind::Ident(name) if name == "_" => {
                 self.advance();
-                Ok(Pattern::Wildcard)
+                Ok(PatternKind::Wildcard)
             }
             // OPT15: `x is none` — the absent branch named as a type. `none`
             // is a keyword, so it never reaches the identifier arm. No `as`
             // form: there's no payload to bind.
             TokenKind::None => {
                 self.advance();
-                Ok(Pattern::TypePat { ty: TypeExpr::NoneType, binding: None })
+                Ok(PatternKind::TypePat { ty: TypeExpr::NoneType, binding: None })
             }
             TokenKind::Ident(name) => {
                 self.advance();
@@ -5712,7 +5717,7 @@ impl Parser {
                     } else {
                         None
                     };
-                    return Ok(Pattern::TypePat { ty: written, binding });
+                    return Ok(PatternKind::TypePat { ty: written, binding });
                 }
                 let name = written.to_string();
 
@@ -5738,14 +5743,17 @@ impl Parser {
                     self.expect(&TokenKind::RParen)?;
                     if !rest && items.iter().all(|(l, _)| l.is_none()) {
                         let fields = items.into_iter().map(|(_, p)| p).collect();
-                        return Ok(Pattern::Constructor { name, fields });
+                        return Ok(PatternKind::Constructor { name, fields });
                     }
                     let mut fields = Vec::new();
                     for (label, pattern) in items {
                         match (label, pattern) {
                             (Some(l), p) => fields.push((l, p)),
                             // Shorthand: `x` is `x: x`.
-                            (None, Pattern::Ident(n)) => fields.push((n.clone(), Pattern::Ident(n))),
+                            (None, p @ Pattern { kind: PatternKind::Ident(_), .. }) => {
+                                let PatternKind::Ident(n) = &p.kind else { unreachable!() };
+                                fields.push((n.clone(), p));
+                            }
                             (None, _) => {
                                 return Err(ParseError {
                                     span: self.tokens[self.pos - 1].span,
@@ -5756,7 +5764,7 @@ impl Parser {
                             }
                         }
                     }
-                    Ok(Pattern::Struct { name, fields, rest })
+                    Ok(PatternKind::Struct { name, fields, rest })
                 } else if self.check(&TokenKind::As)
                     && matches!(self.peek(1), TokenKind::Ident(_))
                 {
@@ -5764,9 +5772,9 @@ impl Parser {
                     // without a constructor — interpret as a type match.
                     self.advance();
                     let binding = self.expect_ident()?;
-                    Ok(Pattern::TypePat { ty: written, binding: Some(binding) })
+                    Ok(PatternKind::TypePat { ty: written, binding: Some(binding) })
                 } else {
-                    Ok(Pattern::Ident(name))
+                    Ok(PatternKind::Ident(name))
                 }
             }
             TokenKind::Int(n, suffix) => {
@@ -5775,22 +5783,22 @@ impl Parser {
                 let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span });
                 if self.match_token(&TokenKind::DotDotEq) {
                     let end = self.parse_single_pattern()?;
-                    if let Pattern::Literal(end_expr) = end {
-                        return Ok(Pattern::Range { start, end: end_expr });
+                    if let PatternKind::Literal(end_expr) = end.kind {
+                        return Ok(PatternKind::Range { start, end: end_expr });
                     }
                     return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
                 }
-                Ok(Pattern::Literal(start))
+                Ok(PatternKind::Literal(start))
             }
             TokenKind::String(s, _) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
+                Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
             }
             TokenKind::Bool(b) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span })))
+                Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span })))
             }
             TokenKind::Char(c) => {
                 self.advance();
@@ -5798,12 +5806,12 @@ impl Parser {
                 let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Char(c), span });
                 if self.match_token(&TokenKind::DotDotEq) {
                     let end = self.parse_single_pattern()?;
-                    if let Pattern::Literal(end_expr) = end {
-                        return Ok(Pattern::Range { start, end: end_expr });
+                    if let PatternKind::Literal(end_expr) = end.kind {
+                        return Ok(PatternKind::Range { start, end: end_expr });
                     }
                     return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
                 }
-                Ok(Pattern::Literal(start))
+                Ok(PatternKind::Literal(start))
             }
             _ => Err(ParseError::expected(
                 "pattern",

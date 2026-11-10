@@ -112,6 +112,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // Stdlib declarations: a value the runtime holds as this scalar, with no
     // fields for the compiler to lay out (`Duration` is an `i64` of nanoseconds)
     ("runtime_scalar", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: one the compiler needs by identity (`LangItem`)
+    ("lang", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs, Writer::Anyone),
     ("claim", ArgForm::Exprs, Writer::Anyone), // type.claims/CL1

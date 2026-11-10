@@ -157,7 +157,7 @@ impl Symbols {
     /// `to_string` (`to_string_pretty` for `encode_pretty`), the encoder in
     /// stdlib/json.rk.
     pub fn json_value_encoder(&self, pretty: bool, types: &rask_check::TypeTable) -> Option<ResolvedCall> {
-        let json_value = types.lookup("JsonValue")?;
+        let json_value = rask_types::Type::Named(types.lang(rask_types::LangItem::JsonValue)?);
         let method = if pretty { "to_string_pretty" } else { "to_string" };
         let callee = rask_check::Callee::Method {
             body: types.method_body(&json_value, method, None),

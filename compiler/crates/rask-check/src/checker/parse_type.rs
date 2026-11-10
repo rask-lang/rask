@@ -148,6 +148,9 @@ fn resolve_named_expr(
     let name = path.join(".");
 
     if !args.is_empty() {
+        if let Some(expanded) = types.alias_at(&name, args) {
+            return resolve_type_expr(&expanded, types);
+        }
         let args = resolve_type_args(args, types)?;
         return resolve_generic(&name, None, args, types);
     }

@@ -24,7 +24,7 @@ pub use error::{
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
@@ -1816,24 +1816,24 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Collect the names a pattern binds (for loop per-iteration exclusion).
     fn collect_pattern_binding_names(pattern: &Pattern, out: &mut Vec<String>) {
-        match pattern {
-            Pattern::Ident(name) if !name.contains('.') => out.push(name.clone()),
-            Pattern::Tuple(pats) | Pattern::Constructor { fields: pats, .. } => {
+        match &pattern.kind {
+            PatternKind::Ident(name) if !name.contains('.') => out.push(name.clone()),
+            PatternKind::Tuple(pats) | PatternKind::Constructor { fields: pats, .. } => {
                 for p in pats {
                     Self::collect_pattern_binding_names(p, out);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 for (_, p) in fields {
                     Self::collect_pattern_binding_names(p, out);
                 }
             }
-            Pattern::Or(pats) => {
+            PatternKind::Or(pats) => {
                 for p in pats {
                     Self::collect_pattern_binding_names(p, out);
                 }
             }
-            Pattern::TypePat { binding: Some(name), .. } => out.push(name.clone()),
+            PatternKind::TypePat { binding: Some(name), .. } => out.push(name.clone()),
             _ => {}
         }
     }
@@ -2697,8 +2697,8 @@ impl<'a> OwnershipChecker<'a> {
             // reading two of its fields means.
             StmtKind::LetStruct { pattern, init, is_mut } => {
                 self.check_expr(init);
-                if let (ExprKind::Ident(source), Pattern::Struct { fields, .. }) =
-                    (&init.kind, pattern)
+                if let (ExprKind::Ident(source), PatternKind::Struct { fields, .. }) =
+                    (&init.kind, &pattern.kind)
                 {
                     let mode = if *is_mut {
                         BorrowMode::Exclusive
@@ -2722,11 +2722,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // SL1: a field bound by name takes the type the struct gives
                 // it, and with it any limit the struct carries.
-                if let Pattern::Struct { fields, .. } = pattern {
+                if let PatternKind::Struct { fields, .. } = &pattern.kind {
                     let declared = self.node_ty(&init.id).and_then(|t| self.struct_fields_for_type(t));
                     let mut names = Vec::new();
                     for (field_name, pat) in fields {
-                        if let Pattern::Ident(n) = pat {
+                        if let PatternKind::Ident(n) = &pat.kind {
                             if let Some((_, t)) = declared
                                 .as_ref()
                                 .and_then(|fs| fs.iter().find(|(f, _)| f == field_name))
@@ -6325,8 +6325,8 @@ impl<'a> OwnershipChecker<'a> {
         part_of: Option<&PartOf>,
     ) {
         let owned = !part_of.is_some_and(|of| !of.held);
-        match pattern {
-            Pattern::Wildcard => {
+        match &pattern.kind {
+            PatternKind::Wildcard => {
                 if let Some(ty) = scrutinee_ty {
                     if owned && self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.errors.push(OwnershipError {
@@ -6342,7 +6342,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            Pattern::Ident(name) => {
+            PatternKind::Ident(name) => {
                 // Qualified path "Enum.Variant" without parens is a constructor
                 // pattern with zero fields, not a binding (parser rule).
                 if name.contains('.') {
@@ -6367,11 +6367,11 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            Pattern::Literal(_) | Pattern::Range { .. } => {
+            PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 // Literal/range matches don't bind. Linear values are not
                 // comparable, so this position must be primitive — nothing to do.
             }
-            Pattern::Tuple(pats) => {
+            PatternKind::Tuple(pats) => {
                 let elem_tys = scrutinee_ty.and_then(|ty| match ty {
                     Type::Tuple(elems) => Some(elems.clone()),
                     _ => None,
@@ -6381,7 +6381,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 let struct_fields = scrutinee_ty
                     .and_then(|ty| self.struct_fields_for_type(ty))
                     .or_else(|| self.struct_fields_by_name(name));
@@ -6422,13 +6422,13 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 let payload_tys = scrutinee_ty
                     .and_then(|ty| self.variant_payload_for(ty, name))
                     .or_else(|| self.variant_payload_by_name(name));
                 for (i, pat) in fields.iter().enumerate() {
                     let pos_ty = payload_tys.as_ref().and_then(|tys| tys.get(i));
-                    if let Pattern::Wildcard = pat {
+                    if let PatternKind::Wildcard = &pat.kind {
                         if let Some(ty) = pos_ty {
                             if owned
                                 && self.type_is_resource(ty)
@@ -6455,14 +6455,14 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
                 }
             }
-            Pattern::Or(pats) => {
+            PatternKind::Or(pats) => {
                 // Each alternative binds the same names; let the typed walk
                 // mark resources on the first, then de-dup with the rest.
                 for pat in pats {
                     self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, part_of);
                 }
             }
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                     match part_of.filter(|of| !of.held) {

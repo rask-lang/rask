@@ -89,7 +89,7 @@ impl<'a> MirLowerer<'a> {
     /// `None` when the error propagates as-is.
     fn error_wrap_target(&self, try_id: rask_ast::NodeId) -> Option<ErrorWrapTarget> {
         let wrap = self.ctx.error_wraps.get(&try_id)?;
-        let (idx, layout) = self.ctx.find_enum(&wrap.enum_name)?;
+        let (idx, layout) = self.ctx.enum_of(&wrap.enum_ty)?;
         let variant = layout.variants.iter().find(|v| v.name == wrap.variant)?;
         let field = variant.fields.first();
         Some(ErrorWrapTarget {

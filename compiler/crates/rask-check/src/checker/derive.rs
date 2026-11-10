@@ -19,7 +19,7 @@
 //! compares through the pair (`TypedProgram::wrapper_fns`) (#1392).
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, ImplDecl, Param};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern, PatternKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::IntSuffix;
 use rask_ast::ty::TypeExpr;
@@ -107,7 +107,7 @@ impl TypeChecker {
                 {
                     params = type_params;
                     if !variants.is_empty() && derived(methods, "clone") {
-                        let body = self.enum_clone(name, variants, params);
+                        let body = self.enum_clone(id, name, variants, params);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
@@ -138,15 +138,15 @@ impl TypeChecker {
                         continue;
                     }
                     if derived(methods, "eq") {
-                        let body = self.enum_eq(name, variants);
+                        let body = self.enum_eq(id, name, variants);
                         written.push(self.method("eq", true, "bool", body));
                     }
                     if derived(methods, "hash") {
-                        let body = self.enum_hash(name, variants);
+                        let body = self.enum_hash(id, name, variants);
                         written.push(self.method("hash", false, "u64", body));
                     }
                     if derived(methods, "clone") {
-                        let body = self.enum_clone(name, variants, &[]);
+                        let body = self.enum_clone(id, name, variants, &[]);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
@@ -305,7 +305,7 @@ impl TypeChecker {
     ///     E.B => match other { E.B => return true, _ => return false }
     /// }
     /// ```
-    fn enum_eq(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
+    fn enum_eq(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
         let single = variants.len() == 1;
         let mut arms = Vec::new();
         for (variant, tys) in variants {
@@ -319,22 +319,22 @@ impl TypeChecker {
                 })
                 .collect();
             let all = self.all(compares);
-            let mut inner = vec![arm(variant_pattern(&path, tys.len(), "__b"), self.ret_block(all))];
+            let mut inner = vec![arm(self.variant_pattern(id, variant, &path, tys.len(), "__b"), self.ret_block(all))];
             // One variant: a wildcard would never match, and the checker says so.
             if !single {
                 let no = self.bool_lit(false);
-                inner.push(arm(Pattern::Wildcard, self.ret_block(no)));
+                inner.push(arm(self.pat(PatternKind::Wildcard), self.ret_block(no)));
             }
             let other = self.ident("other");
             let body = self.expr(ExprKind::Match { scrutinee: Box::new(other), arms: inner });
-            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), body));
+            arms.push(arm(self.variant_pattern(id, variant, &path, tys.len(), "__a"), body));
         }
         let scrutinee = self.ident("self");
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
     }
 
     /// The variant's position, then its payload's hashes.
-    fn enum_hash(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
+    fn enum_hash(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
         let mut arms = Vec::new();
         for (index, (variant, tys)) in variants.iter().enumerate() {
             let mut parts = vec![self.u64_lit(index as i128)];
@@ -345,7 +345,7 @@ impl TypeChecker {
             let seed = self.u64_lit(FNV_OFFSET);
             let mixed = self.mix(seed, parts);
             arms.push(arm(
-                variant_pattern(&format!("{name}.{variant}"), tys.len(), "__a"),
+                self.variant_pattern(id, variant, &format!("{name}.{variant}"), tys.len(), "__a"),
                 self.ret_block(mixed),
             ));
         }
@@ -384,7 +384,7 @@ impl TypeChecker {
     /// shares a buffer with it. A recursive enum recurses through its own
     /// `clone`: `Node(Vec<Tree>)` clones the vector, and the vector clones
     /// each `Tree` (#1428).
-    fn enum_clone(&mut self, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
+    fn enum_clone(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
         let mut arms = Vec::new();
         for (variant, tys) in variants {
             let path = format!("{name}.{variant}");
@@ -405,7 +405,7 @@ impl TypeChecker {
             };
             body.push(self.ret(built));
             let block = self.block(body);
-            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), block));
+            arms.push(arm(self.variant_pattern(id, variant, &path, tys.len(), "__a"), block));
         }
         let scrutinee = self.ident("self");
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
@@ -883,14 +883,14 @@ impl TypeChecker {
             Branch::Value(side) => {
                 let written = self.written(side);
                 if !bind {
-                    return (Pattern::TypePat { ty: written, binding: None }, None);
+                    return (self.pat(PatternKind::TypePat { ty: written, binding: None }), None);
                 }
                 let x = self.fresh_name();
                 let xe = self.ident(&x);
-                (Pattern::TypePat { ty: written, binding: Some(x) }, Some(xe))
+                (self.pat(PatternKind::TypePat { ty: written, binding: Some(x) }), Some(xe))
             }
-            Branch::None => (Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, None),
-            Branch::Void => (Pattern::Wildcard, None),
+            Branch::None => (self.pat(PatternKind::TypePat { ty: TypeExpr::NoneType, binding: None }), None),
+            Branch::Void => (self.pat(PatternKind::Wildcard), None),
         }
     }
 
@@ -1031,7 +1031,7 @@ impl TypeChecker {
                             arms.push(arm(pattern, no));
                         }
                         let yes = s.bool_lit(true);
-                        arms.push(arm(Pattern::Wildcard, yes));
+                        arms.push(arm(s.pat(PatternKind::Wildcard), yes));
                     } else {
                         let (pattern, y) = s.branch_pattern(branch, true);
                         let same = match (branch, x, y) {
@@ -1040,7 +1040,7 @@ impl TypeChecker {
                         };
                         let no = s.bool_lit(false);
                         arms.push(arm(pattern, same));
-                        arms.push(arm(Pattern::Wildcard, no));
+                        arms.push(arm(s.pat(PatternKind::Wildcard), no));
                     }
                     s.expr(ExprKind::Match { scrutinee: Box::new(b.clone()), arms })
                 })
@@ -1108,6 +1108,30 @@ impl TypeChecker {
         let id = NodeId(self.next_derived_id);
         self.next_derived_id += 1;
         id
+    }
+
+    fn pat(&mut self, kind: PatternKind) -> Pattern {
+        Pattern::new(self.derived_id(), kind)
+    }
+
+    /// `E.V` or `E.V(prefix0, prefix1, …)`, with what each part means filed
+    /// the way the checker files a written pattern's: the derived bodies are
+    /// written after checking, and nothing resolves them again.
+    fn variant_pattern(&mut self, enum_id: TypeId, variant: &str, path: &str, n: usize, prefix: &str) -> Pattern {
+        let pattern = if n == 0 {
+            self.pat(PatternKind::Ident(path.to_string()))
+        } else {
+            let fields: Vec<Pattern> = (0..n).map(|i| self.pat(PatternKind::Ident(format!("{prefix}{i}")))).collect();
+            for field in &fields {
+                self.pattern_targets.insert(field.id, rask_types::PatternTarget::Binding);
+            }
+            self.pat(PatternKind::Constructor { name: path.to_string(), fields })
+        };
+        self.pattern_targets.insert(
+            pattern.id,
+            rask_types::PatternTarget::Variant { enum_id, variant: variant.to_string() },
+        );
+        pattern
     }
 
     fn fresh_name(&mut self) -> String {
@@ -1340,16 +1364,6 @@ fn result_branches(ty: &Type) -> Vec<Branch> {
     out
 }
 
-fn variant_pattern(path: &str, n: usize, prefix: &str) -> Pattern {
-    if n == 0 {
-        Pattern::Ident(path.to_string())
-    } else {
-        Pattern::Constructor {
-            name: path.to_string(),
-            fields: (0..n).map(|i| Pattern::Ident(format!("{prefix}{i}"))).collect(),
-        }
-    }
-}
 
 /// Every wrapper type standing as a type argument inside `ty`.
 fn collect_wrapper_args(ty: &Type, out: &mut Vec<Type>) {

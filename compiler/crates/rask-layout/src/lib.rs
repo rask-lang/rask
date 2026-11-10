@@ -181,39 +181,43 @@ impl LayoutCache {
 /// compiler-provided one, or a layout read from written syntax) is found by
 /// its name, until every reader holds checked types.
 pub fn struct_for<'a>(ty: &Type, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
-    layout_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    struct_index_for(ty, layouts).map(|i| &layouts[i])
 }
 
 /// `struct_for` for enums.
 pub fn enum_for<'a>(ty: &Type, layouts: &'a [EnumLayout]) -> Option<&'a EnumLayout> {
-    layout_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    enum_index_for(ty, layouts).map(|i| &layouts[i])
 }
 
-fn layout_for<'a, L>(ty: &Type, layouts: &'a [L], parts: impl Fn(&L) -> (Option<&LayoutKey>, &str)) -> Option<&'a L> {
-    let by_key = |key: &LayoutKey| layouts.iter().find(|l| parts(l).0 == Some(key));
+/// `struct_for`, giving the layout's position: what MIR's layout ids are.
+pub fn struct_index_for(ty: &Type, layouts: &[StructLayout]) -> Option<usize> {
+    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+}
+
+/// `struct_index_for` for enums.
+pub fn enum_index_for(ty: &Type, layouts: &[EnumLayout]) -> Option<usize> {
+    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+}
+
+fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutKey>, &str)) -> Option<usize> {
+    let by_key = |key: &LayoutKey| layouts.iter().position(|l| parts(l).0 == Some(key));
+    let type_args = |args: &[GenericArg]| -> Vec<Type> {
+        args.iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect()
+    };
     match ty {
         Type::Named(id) => by_key(&LayoutKey::of(*id)),
         Type::Generic { base, args } => {
-            let args: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            by_key(&LayoutKey::instance(*base, args)).or_else(|| by_key(&LayoutKey::of(*base)))
+            by_key(&LayoutKey::instance(*base, type_args(args))).or_else(|| by_key(&LayoutKey::of(*base)))
         }
-        Type::UnresolvedNamed(name) => layouts.iter().find(|l| parts(l).1 == name),
+        Type::UnresolvedNamed(name) => layouts.iter().position(|l| parts(l).1 == name),
         Type::UnresolvedGeneric { name, args } => {
-            let args: Vec<Type> = args
-                .iter()
-                .filter_map(|a| match a {
-                    GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
-                })
-                .collect();
-            let by_name = |n: &str| layouts.iter().find(|l| parts(l).1 == n);
-            generic_instance_name(name, &args, &HashMap::new())
+            let by_name = |n: &str| layouts.iter().position(|l| parts(l).1 == n);
+            generic_instance_name(name, &type_args(args), &HashMap::new())
                 .and_then(|instance| by_name(&instance))
                 .or_else(|| by_name(name))
         }

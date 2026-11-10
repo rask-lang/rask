@@ -5,7 +5,7 @@
 //! Subject to restrictions: no I/O, no pools, no concurrency.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -2044,7 +2044,7 @@ impl ComptimeInterpreter {
             // `let Point { x, .. } = p` — bind the fields the pattern names.
             StmtKind::LetStruct { pattern, init, .. } => {
                 let value = self.eval_expr(init)?;
-                let Pattern::Struct { fields: pat_fields, .. } = pattern else {
+                let PatternKind::Struct { fields: pat_fields, .. } = &pattern.kind else {
                     return Err(ComptimeError::NotSupported(
                         "destructuring binding on a non-struct pattern".to_string(),
                     ));
@@ -2061,7 +2061,7 @@ impl ComptimeInterpreter {
                             "no field `{}` to bind", field_name
                         )));
                     };
-                    let Pattern::Ident(binding) = pat else {
+                    let PatternKind::Ident(binding) = &pat.kind else {
                         return Err(ComptimeError::NotSupported(
                             "only a name can bind a field at comptime".to_string(),
                         ));
@@ -3128,22 +3128,22 @@ impl ComptimeInterpreter {
     }
 
     fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
-        match pattern {
-            Pattern::Wildcard => Ok(true),
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(true),
             // `Level.Low` parses as a name. It was taken as a binding, so the
             // first such arm matched every value. The checker has already
             // held the pattern to the scrutinee's enum; the variant decides.
-            Pattern::Ident(name) if name.contains('.') => Ok(matches!(
+            PatternKind::Ident(name) if name.contains('.') => Ok(matches!(
                 value,
                 ComptimeValue::Enum { variant, data: None, .. }
                     if name.rsplit('.').next() == Some(variant.as_str())
             )),
-            Pattern::Ident(_) => Ok(true), // Binds anything
-            Pattern::Literal(lit) => {
+            PatternKind::Ident(_) => Ok(true), // Binds anything
+            PatternKind::Literal(lit) => {
                 let lit_val = self.eval_expr(lit)?;
                 Ok(lit_val == *value)
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let ComptimeValue::Enum { variant, data, .. } = value {
                     if variant != name {
                         return Ok(false);
@@ -3173,7 +3173,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     if patterns.len() != values.len() {
                         return Ok(false);
@@ -3188,7 +3188,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 if let ComptimeValue::Struct { name: sname, fields: sfields } = value {
                     if name != sname {
                         return Ok(false);
@@ -3207,7 +3207,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
                         return Ok(true);
@@ -3215,7 +3215,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(false)
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 let start_val = self.eval_expr(start)?;
                 let end_val = self.eval_expr(end)?;
                 Ok(match (value, &start_val, &end_val) {
@@ -3231,7 +3231,7 @@ impl ComptimeInterpreter {
                     _ => false,
                 })
             }
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::TypePat { ty, .. } => {
                 // Match when the value's enum tag matches the named type.
                 Ok(matches!(value, ComptimeValue::Enum { variant, .. } if ty.name().as_deref() == Some(variant.as_str())))
             }
@@ -3239,15 +3239,15 @@ impl ComptimeInterpreter {
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<()> {
-        match pattern {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Ident(name) if name.contains('.') => Ok(()),
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(()),
+            PatternKind::Ident(name) if name.contains('.') => Ok(()),
+            PatternKind::Ident(name) => {
                 self.env.define(name.clone(), value.clone());
                 Ok(())
             }
-            Pattern::Literal(_) => Ok(()),
-            Pattern::Constructor { fields, .. } => {
+            PatternKind::Literal(_) => Ok(()),
+            PatternKind::Constructor { fields, .. } => {
                 if let ComptimeValue::Enum { data, .. } = value {
                     match (fields.len(), data) {
                         (0, _) => Ok(()),
@@ -3266,7 +3266,7 @@ impl ComptimeInterpreter {
                     Ok(())
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     for (p, v) in patterns.iter().zip(values.iter()) {
                         self.bind_pattern(p, v)?;
@@ -3274,7 +3274,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 if let ComptimeValue::Struct { fields: sfields, .. } = value {
                     for (fname, fpat) in fields {
                         if let Some(fval) = sfields.get(fname) {
@@ -3284,7 +3284,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 // Bind from first matching pattern
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
@@ -3293,8 +3293,8 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Range { .. } => Ok(()),
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::Range { .. } => Ok(()),
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     self.env.define(name.clone(), value.clone());
                 }

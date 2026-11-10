@@ -24,7 +24,7 @@
 
 use crate::attr::{Attr, AttrValue};
 use crate::decl::{Decl, DeclKind, FnDecl};
-use crate::expr::{Expr, ExprKind, Pattern, SelectArmKind, StringSegment};
+use crate::expr::{Expr, ExprKind, Pattern, PatternKind, SelectArmKind, StringSegment};
 use crate::stmt::{Stmt, StmtKind};
 use crate::ty::TypeExpr;
 
@@ -476,30 +476,30 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
 /// Every pattern in `pattern` and below it, outermost first.
 pub fn rewrite_pattern(pattern: &mut Pattern, r: &mut impl Rewrite) {
     r.pattern(pattern);
-    match pattern {
+    match &mut pattern.kind {
         // `Ident` binds a name and `Wildcard` binds nothing; neither names a
         // declaration, and the callback has seen both already.
-        Pattern::Wildcard | Pattern::Ident(_) => {}
-        Pattern::Literal(e) => rewrite_expr(e, r),
-        Pattern::Constructor { fields, .. } => {
+        PatternKind::Wildcard | PatternKind::Ident(_) => {}
+        PatternKind::Literal(e) => rewrite_expr(e, r),
+        PatternKind::Constructor { fields, .. } => {
             for f in fields {
                 rewrite_pattern(f, r);
             }
         }
-        Pattern::Struct { fields, .. } => {
+        PatternKind::Struct { fields, .. } => {
             for (_, f) in fields {
                 rewrite_pattern(f, r);
             }
         }
-        Pattern::Tuple(parts) | Pattern::Or(parts) => {
+        PatternKind::Tuple(parts) | PatternKind::Or(parts) => {
             for p in parts {
                 rewrite_pattern(p, r);
             }
         }
-        Pattern::Range { start, end } => {
+        PatternKind::Range { start, end } => {
             rewrite_expr(start, r);
             rewrite_expr(end, r);
         }
-        Pattern::TypePat { ty, .. } => r.ty(ty),
+        PatternKind::TypePat { ty, .. } => r.ty(ty),
     }
 }

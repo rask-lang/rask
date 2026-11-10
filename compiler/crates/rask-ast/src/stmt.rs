@@ -2,7 +2,7 @@
 //! Statement AST nodes.
 
 use crate::{NodeId, Span};
-use crate::expr::{Expr, Pattern};
+use crate::expr::{Expr, Pattern, PatternKind};
 
 /// A statement in the AST.
 #[derive(Debug, Clone)]
@@ -70,29 +70,29 @@ pub fn pattern_binding_names(pattern: &Pattern) -> Vec<String> {
 }
 
 fn collect_pattern_binding_names(pattern: &Pattern, out: &mut Vec<String>) {
-    match pattern {
-        Pattern::Ident(name) => out.push(name.clone()),
-        Pattern::Struct { fields, .. } => {
+    match &pattern.kind {
+        PatternKind::Ident(name) => out.push(name.clone()),
+        PatternKind::Struct { fields, .. } => {
             for (_, p) in fields {
                 collect_pattern_binding_names(p, out);
             }
         }
-        Pattern::Constructor { fields, .. } => {
+        PatternKind::Constructor { fields, .. } => {
             for p in fields {
                 collect_pattern_binding_names(p, out);
             }
         }
-        Pattern::Tuple(patterns) | Pattern::Or(patterns) => {
+        PatternKind::Tuple(patterns) | PatternKind::Or(patterns) => {
             for p in patterns {
                 collect_pattern_binding_names(p, out);
             }
         }
-        Pattern::TypePat { binding, .. } => {
+        PatternKind::TypePat { binding, .. } => {
             if let Some(name) = binding {
                 out.push(name.clone());
             }
         }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+        PatternKind::Wildcard | PatternKind::Literal(_) | PatternKind::Range { .. } => {}
     }
 }
 
