@@ -37,8 +37,9 @@ pub struct DropField {
     pub shape: ReleaseShape,
 }
 
-/// Every field of `type_name` a box that owns the value has to release, as
-/// offsets from the start of the value.
+/// Every field of a value of type `ty` a box that owns the value has to
+/// release, as offsets from the start of the value. The struct is found by the
+/// type's identity; a type with no struct layout owns no fields.
 ///
 /// Containers *and* strings, unlike the frame's walk — a box the value was
 /// moved into owns all of it, so there is no second holder for either kind. The
@@ -51,18 +52,19 @@ pub struct DropField {
 /// descriptors use. A `T?` or `T or E` field is out for the same reason, and
 /// each omission is a leak rather than a double free.
 pub fn owned_fields(
-    type_name: &str,
+    ty: &RaskType,
     base_offset: u32,
     struct_layouts: &[rask_layout::StructLayout],
     names: &std::collections::HashMap<rask_types::TypeId, String>,
-    visited: &mut std::collections::HashSet<String>,
+    visited: &mut std::collections::HashSet<usize>,
 ) -> Vec<DropField> {
-    if !visited.insert(type_name.to_string()) {
-        return Vec::new();
-    }
-    let Some(layout) = struct_layouts.iter().find(|s| s.name == type_name) else {
+    let Some(index) = rask_layout::struct_index_for(ty, struct_layouts) else {
         return Vec::new();
     };
+    if !visited.insert(index) {
+        return Vec::new();
+    }
+    let layout = &struct_layouts[index];
     let mut out = Vec::new();
     for field in &layout.fields {
         let at = base_offset + field.offset;
@@ -77,10 +79,7 @@ pub fn owned_fields(
                 shape: ReleaseShape::ByAddress,
             }),
             RaskType::UnresolvedNamed(_) | RaskType::Named(_) | RaskType::Generic { .. } => {
-                if let Some(inner) = rask_layout::struct_for(&field.ty, struct_layouts) {
-                    let inner = inner.name.clone();
-                    out.extend(owned_fields(&inner, at, struct_layouts, names, visited));
-                }
+                out.extend(owned_fields(&field.ty, at, struct_layouts, names, visited));
             }
             _ => {}
         }

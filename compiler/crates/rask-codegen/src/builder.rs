@@ -2101,16 +2101,14 @@ impl<'a> FunctionBuilder<'a> {
     /// True when a struct field's declared type uses stack-slot (aggregate)
     /// representation in codegen. These fields return a pointer into the parent
     /// struct rather than a loaded scalar.
-    /// Byte size of a user struct/enum by name, or 0 if there's no layout for
-    /// it (a runtime-opaque handle, or a type that never got one).
-    fn named_layout_size(name: &str, ctx: &CodegenCtx) -> u32 {
-        if let Some(l) = ctx.struct_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        if let Some(l) = ctx.enum_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        0
+    /// Byte size of the struct or enum layout `ty` is laid out by, found by
+    /// the type's identity, or 0 if there's none (a runtime-opaque handle, or
+    /// a type that never got one).
+    fn declared_layout_size(ty: &RaskType, ctx: &CodegenCtx) -> u32 {
+        rask_layout::struct_for(ty, ctx.struct_layouts)
+            .map(|l| l.size)
+            .or_else(|| rask_layout::enum_for(ty, ctx.enum_layouts).map(|l| l.size))
+            .unwrap_or(0)
     }
 
     fn is_aggregate_field_type(ty: &RaskType, ctx: &CodegenCtx) -> bool {
@@ -2128,8 +2126,7 @@ impl<'a> FunctionBuilder<'a> {
             // A named type is an aggregate when it's a user struct or enum —
             // one with real bytes. Runtime-opaque handles (TcpListener, File,
             // Instant) have empty layouts and stay pointer-sized scalars.
-            RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
-            RaskType::Named(id) => ctx.type_names.get(id).is_some_and(|n| Self::named_layout_size(n, ctx) > 0),
+            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => Self::declared_layout_size(ty, ctx) > 0,
             // The niche option — `Link<T>?` — is one word with null for
             // `none`, so it loads like a scalar. Answering "aggregate" here
             // handed back the field's *address*, and a root edge read as a
