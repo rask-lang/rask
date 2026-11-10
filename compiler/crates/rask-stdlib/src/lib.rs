@@ -29,7 +29,7 @@ pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,
     StdlibLayer, type_layer, module_layer,
 };
-pub use handles::{is_runtime_handle, runtime_handle, RuntimeHandle};
+pub use handles::spelled_handle;
 pub use ptr_methods::{PtrMethod, PtrSig, PTR_METHODS};
 
 /// Information about a built-in function for the resolver

@@ -1709,6 +1709,7 @@ dependencies = [
  "rask-desugar",
  "rask-lexer",
  "rask-parser",
+ "rask-types",
 ]
 
 [[package]]

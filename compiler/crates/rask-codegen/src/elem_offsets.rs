@@ -105,6 +105,14 @@ pub struct Shapes<'a> {
     pub fields: &'a rask_mir::FieldTypes,
 }
 
+/// A struct or enum layout, by its position in its list: what a `Heap<T>`
+/// payload is laid out by, and what a self-reference is matched against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Struct(usize),
+    Enum(usize),
+}
+
 /// What one element of type `ty` owns, and where, or `None` when it owns
 /// nothing.
 pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
@@ -115,14 +123,14 @@ pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
 
 /// What a value of type `ty` at offset `base` owns, appended to `out`.
 ///
-/// `self_name` is the payload type a `Heap<T>` description is being built for,
+/// `self_layout` is the payload a `Heap<T>` description is being built for,
 /// so a field that holds another one restarts the list instead of recursing.
 fn describe(
     ty: &MirType,
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -143,28 +151,28 @@ fn describe(
         MirType::Struct(id) => {
             let layout = shapes.layouts.get(id.id as usize)?;
             let tys = shapes.fields.struct_fields(id.id);
-            flatten(&layout.fields, tys, base, shapes, depth + 1, self_name, out)?;
+            flatten(&layout.fields, tys, base, shapes, depth + 1, self_layout, out)?;
         }
-        MirType::Enum(id) => enum_arms(id.id, base, shapes, depth + 1, self_name, out)?,
+        MirType::Enum(id) => enum_arms(id.id, base, shapes, depth + 1, self_layout, out)?,
         // A niche option is the payload's own word with `none` reserved: no
         // tag, and nothing it points at is the container's.
         MirType::Option(inner) if !inner.is_niche_payload() => {
             let none = MirType::Void;
-            wrapper_arms(ty, inner, &none, base, shapes, depth, self_name, out)?;
+            wrapper_arms(ty, inner, &none, base, shapes, depth, self_layout, out)?;
         }
         MirType::Result { ok, err } => {
-            wrapper_arms(ty, ok, err, base, shapes, depth, self_name, out)?;
+            wrapper_arms(ty, ok, err, base, shapes, depth, self_layout, out)?;
         }
         // Parts at their natural offsets, the packing tuple lowering uses.
         MirType::Tuple(parts) => {
             for (part, at) in parts.iter().zip(rask_mir::tuple_offsets(parts)) {
-                describe(part, base + at as i32, shapes, depth + 1, self_name, out)?;
+                describe(part, base + at as i32, shapes, depth + 1, self_layout, out)?;
             }
         }
         MirType::Array { elem, len } => {
             let stride = elem.size() as i32;
             for i in 0..*len as i32 {
-                describe(elem, base + i * stride, shapes, depth + 1, self_name, out)?;
+                describe(elem, base + i * stride, shapes, depth + 1, self_layout, out)?;
             }
         }
         _ => {}
@@ -182,14 +190,14 @@ fn wrapper_arms(
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
     let payload_offset = wrapper.payload_offset();
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
-        describe(side, base + payload_offset as i32, shapes, depth + 1, self_name, &mut arm)?;
+        describe(side, base + payload_offset as i32, shapes, depth + 1, self_layout, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
@@ -211,7 +219,7 @@ fn enum_arms(
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -228,7 +236,7 @@ fn enum_arms(
             .map(|f| FieldLayout { offset: variant.payload_offset + f.offset, ..f.clone() })
             .collect();
         let tys = shapes.fields.variant_fields(id, i);
-        flatten(&fields, tys, base, shapes, depth + 1, self_name, &mut arm)?;
+        flatten(&fields, tys, base, shapes, depth + 1, self_layout, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
@@ -240,14 +248,14 @@ fn enum_arms(
 
 /// The fields of a struct or a variant, each at `base` plus its offset, by
 /// its MIR type. A `Heap<T>` field is the one read off its declared type: its
-/// payload's name is what a self-reference is matched by.
+/// payload's layout is what a self-reference is matched by.
 fn flatten(
     fields: &[FieldLayout],
     tys: &[MirType],
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -256,18 +264,19 @@ fn flatten(
     for (f, ty) in fields.iter().zip(tys) {
         let at = base + f.offset as i32;
         if let Some(payload) = heap_payload(&f.ty) {
-            let payload = layout_name(payload, shapes.layouts, shapes.enums);
-            // Only where a self-reference has a name to match. The
+            let payload = layout_of(payload, shapes);
+            // Only where a self-reference has a layout to match. The
             // container-element path passes `None`, because a `retain` would
             // have to copy the block and a block carries no size to copy — so
             // an element's `Heap` stays nobody's, as a boxed value's contents
             // are.
-            let Some(sn) = self_name else { continue };
+            let Some(sn) = self_layout else { continue };
             let mut body = Vec::new();
-            if payload == sn {
-                body.push(entry(0, KIND_SELF));
-            } else {
-                describe_named(&payload, 0, shapes, depth + 1, Some(&payload), &mut body)?;
+            match payload {
+                Some(p) if p == sn => body.push(entry(0, KIND_SELF)),
+                Some(p) => describe_layout(p, 0, shapes, depth + 1, Some(p), &mut body)?,
+                // A scalar payload: nothing inside the block to describe.
+                None => {}
             }
             out.push(heap_entry(at, body.len())?);
             out.extend(body);
@@ -277,7 +286,7 @@ fn flatten(
         // built, so freeing it walks its elements without this one knowing
         // what they are. A nested struct flattens into the same list, and a
         // nested enum or wrapper contributes its own guards at this offset.
-        describe(ty, at, shapes, depth, self_name, out)?;
+        describe(ty, at, shapes, depth, self_layout, out)?;
     }
     Some(())
 }
@@ -301,43 +310,42 @@ fn flatten(
 /// rather than on a depth cap that would free the first eight nodes of a list
 /// and leak the rest (#1202).
 pub fn heap_field_descriptor(ty: &RaskType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
-    let payload = layout_name(heap_payload(ty)?, shapes.layouts, shapes.enums);
     let mut out = Vec::new();
-    describe_named(&payload, 0, shapes, 0, Some(&payload), &mut out)?;
+    // A payload with no layout (a scalar) owns nothing inside the block.
+    if let Some(payload) = layout_of(heap_payload(ty)?, shapes) {
+        describe_layout(payload, 0, shapes, 0, Some(payload), &mut out)?;
+    }
     Some(out)
 }
 
-/// The name of the layout `ty` is laid out by: an instance's own when one was
-/// made, else the declaration's. A type with no layout keeps its rendering,
-/// which names none.
-fn layout_name(ty: &RaskType, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
-    rask_layout::struct_for(ty, layouts)
-        .map(|l| l.name.clone())
-        .or_else(|| rask_layout::enum_for(ty, enums).map(|l| l.name.clone()))
-        .unwrap_or_else(|| ty.to_string())
+/// The layout `ty` is laid out by, found by the type's identity: an
+/// instance's own when one was made, else the declaration's. `None` for a
+/// type with no struct or enum layout.
+fn layout_of(ty: &RaskType, shapes: Shapes<'_>) -> Option<Layout> {
+    rask_layout::struct_index_for(ty, shapes.layouts)
+        .map(Layout::Struct)
+        .or_else(|| rask_layout::enum_index_for(ty, shapes.enums).map(Layout::Enum))
 }
 
-/// What a value of the named type owns, relative to `base`. A name that isn't a
-/// layout owns nothing describable — a scalar, or a type this pass can't see.
-fn describe_named(
-    name: &str,
+/// What a value laid out by `layout` owns, relative to `base`.
+fn describe_layout(
+    layout: Layout,
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
         return None;
     }
-    if let Some(id) = shapes.layouts.iter().position(|l| l.name == name) {
-        let tys = shapes.fields.struct_fields(id as u32);
-        return flatten(&shapes.layouts[id].fields, tys, base, shapes, depth, self_name, out);
+    match layout {
+        Layout::Struct(id) => {
+            let tys = shapes.fields.struct_fields(id as u32);
+            flatten(&shapes.layouts.get(id)?.fields, tys, base, shapes, depth, self_layout, out)
+        }
+        Layout::Enum(id) => enum_arms(id as u32, base, shapes, depth, self_layout, out),
     }
-    if let Some(id) = shapes.enums.iter().position(|l| l.name == name) {
-        return enum_arms(id as u32, base, shapes, depth, self_name, out);
-    }
-    Some(())
 }
 
 /// Is this field a `Heap<T>`? The release walk asks before it looks at

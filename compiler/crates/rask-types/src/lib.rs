@@ -8,9 +8,11 @@
 mod types;
 mod defs;
 mod lang;
+mod handle;
 pub mod abi;
 
 pub use lang::LangItem;
+pub use handle::RuntimeHandle;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use defs::{

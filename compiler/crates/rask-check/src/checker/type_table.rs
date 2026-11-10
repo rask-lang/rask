@@ -2402,7 +2402,7 @@ impl TypeTable {
     /// Does the declaration say the runtime owns its storage and the value is
     /// a pointer to it (`@handle`)?
     pub fn is_handle(&self, id: TypeId) -> bool {
-        self.get(id).is_some_and(|def| def.attrs().iter().any(|a| a.is("handle")))
+        self.get(id).is_some_and(|def| def.runtime_handle().is_some())
     }
 
     pub fn get_result_type_id(&self) -> Option<TypeId> {

@@ -440,6 +440,7 @@ impl<'a> MirContext<'a> {
             return_moves: &records.return_moves,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
+            handle_releases: rask_mono::drop_names::handle_releases(&typed.types),
             // Straight off the checker — never optional.
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
@@ -575,6 +576,9 @@ pub struct MirContext<'a> {
     pub node_types: NodeMap<'a, Type>,
     /// TypeId → name mapping from the type checker, for resolving Named types.
     pub type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id, read off the checker's
+    /// table once (`rask_mono::drop_names`).
+    pub handle_releases: rask_mono::drop_names::HandleReleases,
     /// The checker's type table.
     ///
     /// A layout has dropped `@resource` and substituted its field types by the
@@ -996,6 +1000,7 @@ impl<'a> MirContext<'a> {
             operator_targets: NodeMap::of(&EMPTY_OPERATOR_TARGETS),
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
+            handle_releases: Default::default(),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
             fn_sigs: &EMPTY_FN_SIGS,
@@ -7654,6 +7659,7 @@ mod tests {
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
+            handle_releases: Default::default(),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
             fn_sigs: &EMPTY_FN_SIGS,
@@ -7754,6 +7760,7 @@ mod tests {
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
+            handle_releases: Default::default(),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
             fn_sigs: &EMPTY_FN_SIGS,
@@ -7861,6 +7868,7 @@ mod tests {
             operator_targets: NodeMap::of(&empty_operator_targets),
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
+            handle_releases: Default::default(),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
             inferred_fn_ret: &EMPTY_INFERRED_RET,
             fn_sigs: &EMPTY_FN_SIGS,

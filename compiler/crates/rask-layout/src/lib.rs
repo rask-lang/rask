@@ -150,8 +150,8 @@ impl LayoutCache {
     /// there is nothing to lay out.
     pub fn note_declared_size(&mut self, id: TypeId, def: &TypeDef) -> bool {
         let TypeDef::Struct { attrs, .. } = def else { return false };
-        if let Some(handle) = attrs.iter().find(|a| a.is("handle")) {
-            if handle_is_niche(handle) {
+        if let Some(handle) = def.runtime_handle() {
+            if handle.niche {
                 self.niches.insert(id);
             }
             let w = self.word;
@@ -223,11 +223,6 @@ fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutK
         }
         _ => None,
     }
-}
-
-/// `@handle(niche)`: a present value is never null, so `T?` is the value.
-pub fn handle_is_niche(attr: &rask_ast::attr::Attr) -> bool {
-    attr.args.iter().flatten().any(|a| a.label.is_none() && a.value.ident() == Some("niche"))
 }
 
 impl Default for LayoutCache {
@@ -400,7 +395,7 @@ fn is_niche_word(ty: &Type, cache: &LayoutCache) -> bool {
         Type::RawPtr(_) => true,
         Type::Named(id) | Type::Generic { base: id, .. } => cache.is_niche(*id),
         // The compiler-provided spelling, before the name resolves.
-        Type::UnresolvedGeneric { name, .. } => rask_stdlib::runtime_handle(name).is_some_and(|h| h.niche),
+        Type::UnresolvedGeneric { name, .. } => rask_stdlib::spelled_handle(name).is_some_and(|h| h.niche),
         _ => false,
     }
 }
@@ -585,7 +580,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
                 "char" => scalar_by_name(&Type::Char),
                 // One word: the address of storage the runtime made, in the
                 // compiler-provided spelling.
-                name if rask_stdlib::is_runtime_handle(name) => (w, w),
+                name if rask_stdlib::spelled_handle(name).is_some() => (w, w),
                 _ => {
                     if is_typevar_name(name) {
                         // Unsubstituted type parameter. A shared layout holds it
@@ -805,13 +800,14 @@ pub fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Typ
     }
 }
 
-/// A builtin generic that is one pointer whatever its arguments are: a
-/// runtime handle (`rask_stdlib::handles`).
+/// A spelled generic that is one pointer whatever its arguments are: a
+/// runtime handle with no declaration to ask (`rask_stdlib::spelled_handle`).
+/// A declared one is a handle by its id.
 ///
 /// Laying out a type that holds one never needs its arguments' layouts, so
-/// `Vec<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
+/// `Shared<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
 pub fn generic_is_one_word(name: &str) -> bool {
-    rask_stdlib::is_runtime_handle(name)
+    rask_stdlib::spelled_handle(name).is_some()
 }
 
 /// A type argument that owns storage of its own.
@@ -826,8 +822,11 @@ pub fn generic_is_one_word(name: &str) -> bool {
 /// layout costs a little compile time; a missing one costs the value. A
 /// `string` argument is not here and doesn't need to be — a string is
 /// refcounted, so the frame's own name gives it back.
+///
+/// Spelled types only, like `generic_is_one_word`; a declared argument is
+/// asked about by its id.
 pub fn arg_owns_storage(name: &str) -> bool {
-    rask_stdlib::is_runtime_handle(name)
+    rask_stdlib::spelled_handle(name).is_some()
 }
 
 /// Check whether a struct has `@layout(C)` attribute.
@@ -1500,28 +1499,29 @@ mod tests {
         assert_eq!(size, 2);
     }
 
+    /// A cache that knows `Link` as the stdlib declares it, `@handle(niche)`,
+    /// under a test id, and the `Link<i32>` that names it.
+    fn declared_link() -> (LayoutCache, Type) {
+        let id = TypeId(100);
+        let niche = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::synthetic_name("niche") };
+        let link = make_struct_with_attrs("Link", vec![], vec![rask_ast::attr::Attr::synthetic("handle", Some(vec![niche]))]);
+        let mut cache = LayoutCache::with_word(8);
+        assert!(cache.note_declared_size(id, &link));
+        (cache, Type::Generic { base: id, args: vec![GenericArg::Type(Box::new(Type::I32))] })
+    }
+
     #[test]
     fn option_link_niche_optimized() {
         // `Link<T>?` uses null for `none` — same size as a link, no tag
-        let link_ty = Type::UnresolvedGeneric {
-            name: "Link".to_string(),
-            args: vec![GenericArg::Type(Box::new(Type::I32))],
-        };
-        let (size, align) = tsa(&Type::option(link_ty));
-        assert_eq!(size, 8);
-        assert_eq!(align, 8);
+        let (cache, link_ty) = declared_link();
+        assert_eq!(type_size_align(&Type::option(link_ty), &cache), (8, 8));
     }
 
     #[test]
     fn link_size() {
         // `Link<T>` is the node's address — 8 bytes, nothing else
-        let link_ty = Type::UnresolvedGeneric {
-            name: "Link".to_string(),
-            args: vec![GenericArg::Type(Box::new(Type::I32))],
-        };
-        let (size, align) = tsa(&link_ty);
-        assert_eq!(size, 8);
-        assert_eq!(align, 8);
+        let (cache, link_ty) = declared_link();
+        assert_eq!(type_size_align(&link_ty, &cache), (8, 8));
     }
 
     #[test]

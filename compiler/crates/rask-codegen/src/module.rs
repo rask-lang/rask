@@ -24,6 +24,8 @@ pub struct CodeGenerator {
     pub(crate) struct_layouts: Vec<StructLayout>,
     /// The checker's name for each type id, from monomorphization.
     type_names: HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id; from mono.
+    handle_releases: rask_mono::drop_names::HandleReleases,
     /// Enum layouts from monomorphization
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
@@ -126,6 +128,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -200,6 +203,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -1353,6 +1357,7 @@ impl CodeGenerator {
         // Store layouts for use during code generation
         self.struct_layouts = mono.struct_layouts.clone();
         self.type_names = mono.type_names.clone();
+        self.handle_releases = mono.handle_releases.clone();
         self.enum_layouts = mono.enum_layouts.clone();
 
         for mir_fn in mir_functions {
@@ -1768,18 +1773,18 @@ impl CodeGenerator {
 
         // One reference per distinct free, declared up front — a container and
         // a string field don't share one.
-        let mut free_refs: std::collections::HashMap<&'static str, cranelift_codegen::ir::FuncRef> =
+        let mut free_refs: std::collections::HashMap<&str, cranelift_codegen::ir::FuncRef> =
             std::collections::HashMap::new();
         for f in fields {
-            if free_refs.contains_key(f.free_fn) {
+            if free_refs.contains_key(f.free_fn.as_str()) {
                 continue;
             }
             let id = *self
                 .func_ids
-                .get(f.free_fn)
-                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.to_string()))?;
+                .get(&f.free_fn)
+                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.clone()))?;
             let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
-            free_refs.insert(f.free_fn, r);
+            free_refs.insert(f.free_fn.as_str(), r);
         }
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
@@ -1793,7 +1798,7 @@ impl CodeGenerator {
 
         let data_ptr = fb.block_params(entry)[0];
         for f in fields {
-            let free_ref = free_refs[f.free_fn];
+            let free_ref = free_refs[f.free_fn.as_str()];
             match f.shape {
                 // The slot is the header: pass its address.
                 crate::drop_fields::ReleaseShape::ByAddress => {
@@ -1957,6 +1962,7 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &self.type_names,
+            &self.handle_releases,
             &string_globals,
             &string_header_globals,
             &element_offset_globals,
