@@ -96,21 +96,40 @@ impl<'a> OwnershipChecker<'a> {
         self.summarizing.set(true);
         // A summary only grows (a parameter joins the condition, or it turns
         // unconditional), so this reaches its fixed point.
+        // Bodies that share a key (a program's method on a stdlib type and the
+        // stdlib's own) are joined, or each round they'd overwrite each other
+        // and the loop would never settle.
         loop {
-            let mut changed = false;
+            let mut merged: HashMap<Key, StoreSummary> = HashMap::new();
             for (key, f, owner) in &bodies {
                 let mut params = owner.clone();
                 params.extend(rask_ast::type_params::signature_type_param_names(f));
                 self.type_params_in_scope = params;
                 self.link_param_hits.borrow_mut().clear();
                 let always = self.first_link_store(&f.body, 0).is_some();
-                let found = StoreSummary {
-                    always,
-                    if_params: if always { BTreeSet::new() } else { self.link_param_hits.take() },
-                    owner_params: owner.clone(),
-                };
-                if self.link_stores.get(key) != Some(&found) {
-                    self.link_stores.insert(key.clone(), found);
+                let hits = self.link_param_hits.take();
+                let entry = merged
+                    .entry(key.clone())
+                    .or_insert_with(|| StoreSummary { owner_params: owner.clone(), ..Default::default() });
+                entry.always |= always;
+                entry.if_params.extend(hits);
+            }
+            let mut changed = false;
+            for (key, mut found) in merged {
+                if found.always {
+                    found.if_params.clear();
+                }
+                // Never back down: what an earlier round found stands.
+                if let Some(old) = self.link_stores.get(&key) {
+                    found.always |= old.always;
+                    if !found.always {
+                        found.if_params.extend(old.if_params.iter().cloned());
+                    } else {
+                        found.if_params.clear();
+                    }
+                }
+                if self.link_stores.get(&key) != Some(&found) {
+                    self.link_stores.insert(key, found);
                     changed = true;
                 }
             }
@@ -258,7 +277,7 @@ impl<'a> OwnershipChecker<'a> {
         match &a.kind {
             // Walked with the rest of the body.
             ExprKind::Closure { .. } => None,
-            ExprKind::Ident(name) if self.named_fn_values.contains(name) => None,
+            ExprKind::Ident(name) if self.named_fn_values.contains_key(name) => None,
             _ if self.fn_key(a).is_some() => {
                 let key = self.fn_key(a)?;
                 self.link_stores.get(&key).is_some_and(StoreSummary::may_store)
@@ -338,7 +357,7 @@ impl<'a> OwnershipChecker<'a> {
                 // A closure literal the body can see: what it does, the call
                 // does.
                 if let ExprKind::Ident(name) = &func.kind {
-                    if self.named_fn_values.contains(name) {
+                    if self.named_fn_values.contains_key(name) {
                         return None;
                     }
                     if let Some(lit) = self.closure_literals.get(name) {
@@ -494,7 +513,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     match &a.kind {
                         ExprKind::Closure { .. } => {}
-                        ExprKind::Ident(name) if self.named_fn_values.contains(name) => {}
+                        ExprKind::Ident(name) if self.named_fn_values.contains_key(name) => {}
                         _ if self.fn_key(a).is_some() => {}
                         ExprKind::Ident(name) if self.closure_literals.contains_key(name) && depth < MAX_DEPTH => {
                             if let ExprKind::Closure { body: inner, .. } = &self.closure_literals[name].kind {
@@ -515,7 +534,7 @@ impl<'a> OwnershipChecker<'a> {
                     return;
                 }
                 match &func.kind {
-                    ExprKind::Ident(name) if self.named_fn_values.contains(name) => {}
+                    ExprKind::Ident(name) if self.named_fn_values.contains_key(name) => {}
                     ExprKind::Ident(name) => match self.closure_literals.get(name) {
                         Some(lit) if depth < MAX_DEPTH => {
                             if let ExprKind::Closure { body: inner, .. } = &lit.kind {

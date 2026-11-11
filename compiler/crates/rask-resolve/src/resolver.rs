@@ -803,7 +803,7 @@ impl Resolver {
                                     is_deleting: p.is_deleting,
                                 },
                                 p.ty.clone(),
-                                Span::new(0, 0),
+                                p.name_span,
                                 false,
                             )
                         })
@@ -1963,7 +1963,9 @@ impl Resolver {
                     is_deleting: param.is_deleting,
                 },
                 param.ty.clone(),
-                Span::new(0, 0),
+                // Where it's declared: a later pass tells a parameter from a
+                // local of the same name by it.
+                param.name_span,
                 false,
             );
             if let Err(e) = self.scopes.define(param.name.clone(), param_sym, Span::new(0, 0)) {

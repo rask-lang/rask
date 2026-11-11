@@ -361,7 +361,7 @@ pub struct OwnershipChecker<'a> {
     closure_literals: HashMap<String, Expr>,
     /// Names bound to a declared function (`let g = add_one`). A function
     /// captures nothing, so a fork may call one from every block.
-    named_fn_values: HashSet<String>,
+    named_fn_values: HashMap<String, replaces::Key>,
     /// The closure nodes the parser wraps around task blocks (`spawn { … }`).
     /// A task block runs once, so unlike a closure it may consume what it
     /// captures (conc.async/S6).
@@ -379,8 +379,10 @@ pub struct OwnershipChecker<'a> {
     link_stores: link_stores::LinkStores,
     /// Parameter pairs each function may use at the same time (conc.fork/FK8).
     parallel_uses: parallel_calls::ParallelUses,
-    /// The parameters of the function being checked, in order.
+    /// The parameters of the function being checked, in order, and where
+    /// each is declared: a name refers to one only when it resolves there.
     current_params: Vec<String>,
+    current_param_spans: Vec<Span>,
     /// While `link_stores` is worked out: summarizing, and the type
     /// parameters the body's possible stores hang on.
     summarizing: std::cell::Cell<bool>,
@@ -647,7 +649,7 @@ impl<'a> OwnershipChecker<'a> {
             closure_scope_limits: HashMap::new(),
             task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
-            named_fn_values: HashSet::new(),
+            named_fn_values: HashMap::new(),
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
@@ -657,6 +659,7 @@ impl<'a> OwnershipChecker<'a> {
             link_stores: HashMap::new(),
             parallel_uses: HashMap::new(),
             current_params: Vec::new(),
+            current_param_spans: Vec::new(),
             summarizing: std::cell::Cell::new(false),
             link_param_hits: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             quiet_loops: HashSet::new(),
@@ -1600,6 +1603,7 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
 
         self.current_params = fn_decl.params.iter().map(|p| p.name.clone()).collect();
+        self.current_param_spans = fn_decl.params.iter().map(|p| p.name_span).collect();
         for param in &fn_decl.params {
             if param.is_take && is_written_link(&param.ty) {
                 self.take_link_params.insert(param.name.clone());
@@ -1749,7 +1753,12 @@ impl<'a> OwnershipChecker<'a> {
     /// A body with no parameters: reset, walk, then the scope-exit check.
     fn check_body(&mut self, body: &[Stmt]) {
         self.reset_body_state();
+        self.current_params.clear();
+        self.current_param_spans.clear();
         self.check_block(body);
+        if self.instance.is_none() {
+            self.check_parallel_calls(body);
+        }
         self.check_resource_consumption(
             body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
         );
@@ -7714,10 +7723,13 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn note_named_fn_value(&mut self, name: &str, value: &Expr) {
-        if self.fn_key(value).is_some() || matches!(&value.kind, ExprKind::Ident(n) if self.named_fn_values.contains(n)) {
-            self.named_fn_values.insert(name.to_string());
-        } else {
-            self.named_fn_values.remove(name);
+        match self.callee_key(value) {
+            Some(key) => {
+                self.named_fn_values.insert(name.to_string(), key);
+            }
+            None => {
+                self.named_fn_values.remove(name);
+            }
         }
     }
 
@@ -7731,8 +7743,8 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) => {
                 self.fn_key(e).is_some()
                     || self.closure_literals.contains_key(name)
-                    || self.named_fn_values.contains(name)
-                    || self.current_params.iter().any(|p| p == name)
+                    || self.named_fn_values.contains_key(name)
+                    || self.is_param_ref(e)
             }
             _ => false,
         }
@@ -7817,8 +7829,10 @@ impl<'a> OwnershipChecker<'a> {
                             push(&a.expr, true, out);
                         }
                     }
+                    // A parameter's callers are checked for what they pass
+                    // (FK8).
                     if let ExprKind::Ident(name) = &func.kind {
-                        if captured.contains(name) {
+                        if captured.contains(name) && !self.is_param_ref(func) {
                             called.push(name.clone());
                         }
                     }
@@ -7861,7 +7875,7 @@ impl<'a> OwnershipChecker<'a> {
         for name in called {
             // A declared function captures nothing; a parameter's callers are
             // checked for what they pass (FK8).
-            if self.named_fn_values.contains(&name) || self.current_params.contains(&name) {
+            if self.named_fn_values.contains_key(&name) {
                 continue;
             }
             match self.closure_literals.get(&name) {
