@@ -1829,11 +1829,8 @@ impl<'a> MirLowerer<'a> {
             let answer = match &fact.kind {
                 // A module const with a literal value.
                 ExprKind::Ident(name) => {
-                    let (local, fact) = self.const_facts.get(name)?;
-                    let still_the_const = match local {
-                        Some(id) => self.locals.get(name).map(|(l, _)| l) == Some(id),
-                        None => !self.locals.contains_key(name),
-                    };
+                    let (own, fact) = self.const_facts.get(name)?;
+                    let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
                     return still_the_const.then(|| fact.clone());
                 }
                 // `reflect.name_of<T>()` and the other answers that are one

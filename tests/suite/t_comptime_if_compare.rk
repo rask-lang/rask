@@ -131,3 +131,16 @@ test "a const computed from other consts" {
     }
     assert out == "label;"
 }
+
+test "a computed const already read at run time still folds" {
+    // Reading `TWICE` first makes a local holding it; natively that local
+    // used to read as a binding shadowing the const.
+    assert TWICE == 16
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size == TWICE {
+            out = "{out}{f.name};"
+        }
+    }
+    assert out == "label;"
+}
