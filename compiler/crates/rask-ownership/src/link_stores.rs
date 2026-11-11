@@ -13,7 +13,7 @@
 //! list unless no delete can happen while it runs; such a loop is "quiet",
 //! and lowering walks it without registering anything.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{ArgMode, Expr, ExprKind};
@@ -24,8 +24,29 @@ use rask_types::Type;
 use crate::replaces::Key;
 use crate::{OwnershipChecker, OwnershipError, OwnershipErrorKind};
 
-/// Per function and method: whether calling it may store a link.
-pub(crate) type LinkStores = HashMap<Key, bool>;
+/// Whether calling a function may store a link: always, or only when one of
+/// its type parameters is (or holds) a link. `keep<T>(x: T)` pushing `x`
+/// into a vector stores a link exactly when `T` holds one, which only the
+/// call knows.
+#[derive(Clone, Default, PartialEq, Debug)]
+pub(crate) struct StoreSummary {
+    pub(crate) always: bool,
+    pub(crate) if_params: BTreeSet<String>,
+    /// The owner's header parameters, in order, so a method call's receiver
+    /// type arguments can be matched to them.
+    pub(crate) owner_params: Vec<String>,
+}
+
+impl StoreSummary {
+    /// Stores under some type arguments: what a caller that can't see them
+    /// has to assume.
+    fn may_store(&self) -> bool {
+        self.always || !self.if_params.is_empty()
+    }
+}
+
+/// Per function and method.
+pub(crate) type LinkStores = HashMap<Key, StoreSummary>;
 
 /// How deep a closure literal called from a closure literal is followed.
 const MAX_DEPTH: u32 = 8;
@@ -67,23 +88,29 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
         }
-        for (key, _, _) in &bodies {
-            self.link_stores.insert(key.clone(), false);
+        for (key, _, owner) in &bodies {
+            self.link_stores
+                .insert(key.clone(), StoreSummary { owner_params: owner.clone(), ..Default::default() });
         }
         let outer_params = std::mem::take(&mut self.type_params_in_scope);
-        // A store only ever turns a summary on, so this climbs to the answer
-        // in at most one round per function.
+        self.summarizing.set(true);
+        // A summary only grows (a parameter joins the condition, or it turns
+        // unconditional), so this reaches its fixed point.
         loop {
             let mut changed = false;
             for (key, f, owner) in &bodies {
-                if self.link_stores.get(key) == Some(&true) {
-                    continue;
-                }
                 let mut params = owner.clone();
                 params.extend(rask_ast::type_params::signature_type_param_names(f));
                 self.type_params_in_scope = params;
-                if self.first_link_store(&f.body, 0).is_some() {
-                    self.link_stores.insert(key.clone(), true);
+                self.link_param_hits.borrow_mut().clear();
+                let always = self.first_link_store(&f.body, 0).is_some();
+                let found = StoreSummary {
+                    always,
+                    if_params: if always { BTreeSet::new() } else { self.link_param_hits.take() },
+                    owner_params: owner.clone(),
+                };
+                if self.link_stores.get(key) != Some(&found) {
+                    self.link_stores.insert(key.clone(), found);
                     changed = true;
                 }
             }
@@ -91,13 +118,57 @@ impl<'a> OwnershipChecker<'a> {
                 break;
             }
         }
+        self.summarizing.set(false);
         self.type_params_in_scope = outer_params;
     }
 
+    /// Whether this call stores a link, by its callee's summary and the type
+    /// arguments the call supplies.
+    fn call_stores(&self, key: &Key, call: &Expr) -> Option<bool> {
+        let summary = self.link_stores.get(key)?;
+        if summary.always {
+            return Some(true);
+        }
+        if summary.if_params.is_empty() {
+            return Some(false);
+        }
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        if let Some(bindings) = self.program.call_type_args.get(&call.id) {
+            for b in bindings {
+                subst.insert(b.param.clone(), b.ty.clone());
+            }
+        }
+        if let ExprKind::MethodCall { object, .. } = &call.kind {
+            if let Some(Type::Generic { args, .. }) = self.node_ty(&object.id) {
+                for (p, a) in summary.owner_params.iter().zip(args) {
+                    if let rask_types::GenericArg::Type(t) = a {
+                        subst.entry(p.clone()).or_insert_with(|| (**t).clone());
+                    }
+                }
+            }
+        }
+        // A parameter the call doesn't bind is one nothing here can rule out.
+        Some(summary.if_params.iter().any(|p| subst.get(p).map_or(true, |t| self.holds_link_here(t))))
+    }
+
     /// Does this type, here, hold a link a store would record? A type
-    /// parameter might, so it counts.
+    /// parameter might. While a summary is being worked out, that "might" is
+    /// noted as a condition on the parameter instead (`link_param_hits`), so
+    /// each call decides it with the type it supplies.
     fn holds_link_here(&self, ty: &Type) -> bool {
-        self.program.types.holds_registered_link(ty) || self.mentions_type_param(ty)
+        if self.program.types.holds_registered_link(ty) {
+            return true;
+        }
+        if !self.summarizing.get() {
+            return self.mentions_type_param(ty);
+        }
+        ty.mentions_type_param(&|n| {
+            if self.type_params_in_scope.iter().any(|p| p == n) {
+                self.link_param_hits.borrow_mut().insert(n.to_string());
+            }
+            false
+        });
+        false
     }
 
     fn holds_rack_here(&self, ty: &Type) -> bool {
@@ -113,9 +184,12 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Can a callee handed this get at links: it holds one, or a rack it can
-    /// read them out of.
+    /// read them out of, or it's of a type parameter's type, which might.
+    /// Asked only to skip calls that can't matter, so it notes no condition.
     fn expr_reaches_links(&self, e: &Expr) -> bool {
-        self.node_ty(&e.id).is_some_and(|t| self.holds_link_here(t) || self.holds_rack_here(t))
+        self.node_ty(&e.id).is_some_and(|t| {
+            self.program.types.holds_registered_link(t) || self.holds_rack_here(t) || self.mentions_type_param(t)
+        })
     }
 
     /// The first place in `body` that stores a link, with a phrase for it.
@@ -187,7 +261,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) if self.named_fn_values.contains(name) => None,
             _ if self.fn_key(a).is_some() => {
                 let key = self.fn_key(a)?;
-                self.link_stores.get(&key).copied().unwrap_or(false)
+                self.link_stores.get(&key).is_some_and(StoreSummary::may_store)
                     .then(|| (a.span, "this function may store a link".to_string()))
             }
             ExprKind::Ident(name) if self.closure_literals.contains_key(name) => {
@@ -223,7 +297,7 @@ impl<'a> OwnershipChecker<'a> {
                     return None;
                 }
                 let key = recv.as_ref().map(|ty| Key::Method(ty.clone(), method.clone()));
-                if let Some(stores) = key.as_ref().and_then(|k| self.link_stores.get(k)) {
+                if let Some(stores) = key.as_ref().and_then(|k| self.call_stores(k, e)) {
                     return stores.then(|| (e.span, format!("`{method}` may store a link")));
                 }
                 // No body to read: a stdlib method keeps what it takes.
@@ -242,7 +316,7 @@ impl<'a> OwnershipChecker<'a> {
                     return None;
                 }
                 if let Some(key) = self.fn_key(func) {
-                    if let Some(stores) = self.link_stores.get(&key) {
+                    if let Some(stores) = self.call_stores(&key, e) {
                         let name = match &key {
                             Key::Fn(n) | Key::Method(_, n) => n.clone(),
                         };

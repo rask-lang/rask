@@ -65,7 +65,7 @@ func main() {
         let p = Pair(a: a, n: 1)
         p.n
     } and { count(world) }
-    // ERROR: a generic function may store what it's given [E0962]
+    // ERROR: a generic function stores what it's given, here a link [E0962]
     fork { keep(a) } and { count(world) }
     // ERROR: and so may a function handed one that stores [E0962]
     fork { run(stash, a) } and { count(world) }
@@ -80,6 +80,8 @@ func main() {
     ops.relink(2, a, a, grab)
     ops.relink(3, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
 
+    // The same generic function given a number stores no link.
+    let (k, n) = fork { keep(a.health) } and { count(world) }
     // Reads, a local link, and changes recorded in a buffer.
     let (s, c) = fork {
         mut o = world.staged()
@@ -93,5 +95,5 @@ func main() {
         o
     } and { count(world) }
     world.apply(s)
-    println("{y}{c}")
+    println("{y}{c}{k}{n}")
 }

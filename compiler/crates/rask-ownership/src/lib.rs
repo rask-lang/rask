@@ -376,6 +376,10 @@ pub struct OwnershipChecker<'a> {
     replaces: replaces::Replaces,
     /// Whether each function may store a link (mem.racks/RK16).
     link_stores: link_stores::LinkStores,
+    /// While `link_stores` is worked out: summarizing, and the type
+    /// parameters the body's possible stores hang on.
+    summarizing: std::cell::Cell<bool>,
+    link_param_hits: std::cell::RefCell<std::collections::BTreeSet<String>>,
     quiet_loops: HashSet<rask_ast::NodeId>,
     /// Method names some declaration gives no Rask body (`@native`,
     /// `@builtin`): a call that could reach one of them can't be summarised.
@@ -646,6 +650,8 @@ impl<'a> OwnershipChecker<'a> {
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
             link_stores: HashMap::new(),
+            summarizing: std::cell::Cell::new(false),
+            link_param_hits: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             quiet_loops: HashSet::new(),
             bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
