@@ -331,13 +331,38 @@ fn shape(func: &MirFunction, names: &BTreeSet<LocalId>) -> Shape {
     let n = func.blocks.len();
     let mut succs = vec![Vec::new(); n];
     let mut preds = vec![Vec::new(); n];
+    let mut edge = |from: usize, to: BlockId| {
+        if let Some(&si) = index_of.get(&to) {
+            if !succs[from].contains(&si) {
+                succs[from].push(si);
+                preds[si].push(from);
+            }
+        }
+    };
     for (bi, b) in func.blocks.iter().enumerate() {
-        for s in cfg::successors(&b.terminator) {
-            if let Some(&si) = index_of.get(&s) {
-                if !succs[bi].contains(&si) {
-                    succs[bi].push(si);
-                    preds[si].push(bi);
+        match &b.terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } if !cleanup_chain.is_empty() => {
+                edge(bi, cleanup_chain[0]);
+            }
+            _ => {
+                for s in cfg::successors(&b.terminator) {
+                    edge(bi, s);
                 }
+            }
+        }
+    }
+    // A cleanup return runs its `ensure` bodies one after another: into the
+    // first, and from the end of each (its `Unreachable`) into the next. As
+    // alternatives, every body was a path of its own, so each released what
+    // the bodies read and the next one read it freed. The last body's end is
+    // where the function leaves (`exit_points`).
+    for b in &func.blocks {
+        let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind else {
+            continue;
+        };
+        for pair in cleanup_chain.windows(2) {
+            for end in ensure_body_ends(func, &index_of, pair[0]) {
+                edge(end, pair[1]);
             }
         }
     }
@@ -374,6 +399,75 @@ fn shape(func: &MirFunction, names: &BTreeSet<LocalId>) -> Shape {
 
 fn is_phi(func: &MirFunction, bi: usize, si: usize) -> bool {
     matches!(func.blocks[bi].statements[si].kind, MirStmtKind::Phi { .. })
+}
+
+/// The blocks where the `ensure` body starting at `head` ends: those its
+/// sub-CFG reaches that end in `Unreachable`, which codegen turns into a jump
+/// to the next body or the function's return.
+fn ensure_body_ends(
+    func: &MirFunction,
+    index_of: &std::collections::HashMap<BlockId, usize>,
+    head: BlockId,
+) -> Vec<usize> {
+    let mut ends = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![head];
+    while let Some(id) = stack.pop() {
+        let Some(&bi) = index_of.get(&id) else { continue };
+        if !seen.insert(bi) {
+            continue;
+        }
+        let term = &func.blocks[bi].terminator;
+        match term.kind {
+            MirTerminatorKind::Unreachable => ends.push(bi),
+            MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Return { .. } => {}
+            _ => stack.extend(cfg::successors(term)),
+        }
+    }
+    ends
+}
+
+/// Where the function leaves, and which of the values still ours are released
+/// there. `None` releases all of them; `Some(names)` only those held under one
+/// of `names`.
+///
+/// A return releases everything. A cleanup return releases what its `ensure`
+/// bodies don't read, and the end of its last body (an `Unreachable` with
+/// nowhere further to go) releases what they do. Releasing what the bodies
+/// read at the cleanup return freed it before they read it; carrying
+/// everything to the end lost the release where two cleanup returns meet in
+/// one chain and only one of them brought the value.
+fn exit_points(func: &MirFunction, sh: &Shape, live: &Live) -> Vec<(usize, Exit)> {
+    let index_of: std::collections::HashMap<BlockId, usize> =
+        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let mut out = Vec::new();
+    let mut at_end: std::collections::BTreeMap<usize, BTreeSet<LocalId>> = Default::default();
+    for (bi, b) in func.blocks.iter().enumerate() {
+        match &b.terminator.kind {
+            MirTerminatorKind::Return { .. } => out.push((bi, Exit::All)),
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => match cleanup_chain.last() {
+                None => out.push((bi, Exit::All)),
+                Some(&last) => {
+                    out.push((bi, Exit::Except(live.out[bi].clone())));
+                    for end in ensure_body_ends(func, &index_of, last) {
+                        if sh.succs[end].is_empty() {
+                            at_end.entry(end).or_default().extend(live.out[bi].iter().copied());
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+    out.extend(at_end.into_iter().map(|(bi, names)| (bi, Exit::Only(names))));
+    out
+}
+
+/// Which values an exit point releases.
+enum Exit {
+    All,
+    Except(BTreeSet<LocalId>),
+    Only(BTreeSet<LocalId>),
 }
 
 fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(usize, usize)>) -> Live {
@@ -1045,7 +1139,7 @@ pub fn plan_carrying(
         let found = on_edges(func, facts, &sh, &live, &entries, &exits, &kills, &later, placement);
         if found.is_empty() {
             if placement == Placement::ScopeEnd {
-                before_returns(func, facts, &live, &entries, &kills, &mut flags, &mut out);
+                before_returns(func, facts, &sh, &live, &entries, &kills, &mut flags, &mut out);
             }
             break;
         }
@@ -1255,24 +1349,24 @@ fn on_edges(
 fn before_returns(
     func: &MirFunction,
     facts: &Facts,
+    sh: &Shape,
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
     flags: &mut FlagIndex,
     out: &mut Vec<Release>,
 ) {
-    for bi in 0..func.blocks.len() {
-        if !matches!(
-            func.blocks[bi].terminator.kind,
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
-        ) {
-            continue;
-        }
+    for (bi, exit) in exit_points(func, sh, live) {
         let Some(e) = &entries[bi] else { continue };
         let st = transfer(func, facts, live, bi, e, kills, &mut HashSet::new());
         let len = func.blocks[bi].statements.len();
         for (v, owned) in &st.own {
-            if *owned {
+            let here = match &exit {
+                Exit::All => true,
+                Exit::Except(read) => !st.needed(*v, read),
+                Exit::Only(read) => st.needed(*v, read),
+            };
+            if *owned && here {
                 if let Some(name) = pick(&st, *v, &[]) {
                     let guard = flags.of(st.guard.get(v).copied());
                     out.push(Release::At { block: bi, at: len, name, made: v.made(), guard });

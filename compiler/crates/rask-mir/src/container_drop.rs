@@ -3366,8 +3366,10 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
 /// it names a chain of blocks that run *after* it, which is where an `ensure`
 /// body lives, and appending the free to the `cleanup_return` block frees the
 /// value the ensure body is about to use. So for those, follow the chain to its
-/// ends — codegen turns a cleanup block with nowhere left to go into the actual
-/// return, so those ends are the frame's real exits.
+/// ends. The chain's bodies run one after another: codegen turns the end of
+/// each into a jump to the next, and only the last body's ends into the actual
+/// return, so those are the frame's real exits. Freeing at the end of every
+/// body freed a `Vec` two `ensure`s read before the second one read it.
 ///
 /// Each exit also carries the slots that must not be freed *there*: the ones
 /// an `ensure`'s registered resource names, on the arm reached because that
@@ -3414,7 +3416,9 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
 
     let mut out: Vec<(usize, HashSet<LocalId>)> = Vec::new();
     let mut seen: HashSet<BlockId> = HashSet::new();
-    let mut queue: Vec<(BlockId, HashSet<LocalId>)> = Vec::new();
+    // A block, what was consumed on the way, and the bodies still to run
+    // after the one this block is in.
+    let mut queue: Vec<(BlockId, HashSet<LocalId>, Vec<BlockId>)> = Vec::new();
     for block in &func.blocks {
         match &block.terminator.kind {
             MirTerminatorKind::Return { .. } => {
@@ -3428,18 +3432,18 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                         out.push((index[&block.id], HashSet::new()));
                     }
                 } else {
-                    queue.extend(cleanup_chain.iter().map(|b| (*b, HashSet::new())));
+                    queue.push((cleanup_chain[0], HashSet::new(), cleanup_chain[1..].to_vec()));
                 }
             }
             _ => {}
         }
     }
 
-    let mut walked: HashSet<(BlockId, bool)> = HashSet::new();
-    while let Some((bid, consumed)) = queue.pop() {
+    let mut walked: HashSet<(BlockId, bool, Vec<BlockId>)> = HashSet::new();
+    while let Some((bid, consumed, rest)) = queue.pop() {
         // Keyed on whether anything was consumed on the way, so a block reached
         // both ways is walked both ways and keeps the narrower answer.
-        if !walked.insert((bid, !consumed.is_empty())) {
+        if !walked.insert((bid, !consumed.is_empty(), rest.clone())) {
             continue;
         }
         let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
@@ -3458,6 +3462,10 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                 .collect(),
         };
         if next.is_empty() {
+            if let Some((&body, later)) = rest.split_first() {
+                queue.push((body, consumed, later.to_vec()));
+                continue;
+            }
             match out.iter_mut().find(|(i, _)| *i == index[&bid]) {
                 // Reached twice: free only what neither path consumed.
                 Some((_, skip)) => skip.retain(|s| consumed.contains(s)),
@@ -3467,7 +3475,7 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                 }
             }
         } else {
-            queue.extend(next);
+            queue.extend(next.into_iter().map(|(b, c)| (b, c, rest.clone())));
         }
     }
     out
