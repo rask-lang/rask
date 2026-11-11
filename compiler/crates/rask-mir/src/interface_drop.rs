@@ -361,7 +361,14 @@ fn boxes_handed_over(
     let mut out: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let (dst, hands) = match &stmt.kind {
-            MirStmtKind::Call { dst: Some(dst), func: callee, .. } => (dst, hands_back.contains(&callee.name)),
+            // A box taken out of a container (`ns.remove(i)`, `ns.pop()`,
+            // `ns.replace(i, b)` and so `ns[i] = b`) is the caller's by the
+            // declaration's `@moves_out`, as one a Rask callee hands back is.
+            MirStmtKind::Call { dst: Some(dst), func: callee, .. } => (
+                dst,
+                hands_back.contains(&callee.name)
+                    || rask_stdlib::mir_metadata::transfers_out(&callee.name),
+            ),
             MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => (
                 dst,
                 targets

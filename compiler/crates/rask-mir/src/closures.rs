@@ -788,6 +788,16 @@ fn insert_drops(
                 {
                     owned.insert(*dst, true);
                 }
+                // A closure taken out of a container (`fs.remove(i)`,
+                // `fs.replace(i, g)`, and so `fs[i] = g`) is the caller's now,
+                // by the declaration's `@moves_out`. Nothing here made it, so
+                // without this nothing freed it.
+                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                    if matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_)))
+                        && rask_stdlib::mir_metadata::transfers_out(&callee.name) =>
+                {
+                    owned.insert(*dst, true);
+                }
                 // A third way: take one back from a call *through* a closure.
                 // Same rule as the named case, asked of every body the call can
                 // reach — one that hands back somebody else's closure is the

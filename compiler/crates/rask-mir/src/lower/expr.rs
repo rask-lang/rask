@@ -7040,7 +7040,7 @@ impl<'a> MirLowerer<'a> {
 
     /// The edge-registration call a container mutator needs, if its value is a
     /// link. `None` for everything else, which is almost every call.
-    fn container_edge_call(
+    pub(super) fn container_edge_call(
         &self,
         name: &str,
         args: &[MirOperand],

@@ -698,6 +698,9 @@ impl<'a> MirLowerer<'a> {
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
                 let (val_op, val_ty) = self.lower_expr(value)?;
+                // Before any widening into `T?`: a link stored into a slot is
+                // registered as the link, not as the optional around it.
+                let unwrapped_val = val_op.clone();
                 self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
@@ -1276,11 +1279,24 @@ impl<'a> MirLowerer<'a> {
                                 // element handed to a temporary the frame
                                 // releases, so a slot has one way to be written.
                                 let old = self.builder.alloc_temp(val_ty.clone());
+                                let edge = self.container_edge_call(
+                                    "Vec_replace",
+                                    &[obj_op.clone(), idx_op.clone(), unwrapped_val.clone()],
+                                );
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(old),
                                     func: FunctionRef::internal("Vec_replace".to_string()),
                                     args: vec![obj_op, idx_op, val_op],
                                 }));
+                                // A link written into a slot is an edge its
+                                // node's delete has to reach (mem.racks/RK3).
+                                if let Some((func, args)) = edge {
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: None,
+                                        func: FunctionRef::runtime(func.to_string()),
+                                        args,
+                                    }));
+                                }
                             }
                         }
                     }

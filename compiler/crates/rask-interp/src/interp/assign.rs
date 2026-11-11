@@ -244,7 +244,12 @@ impl Interpreter {
                     let idx = *i as usize;
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        vec[idx] = wrap_like(Some(&vec[idx]), value);
+                        let stored = wrap_like(Some(&vec[idx]), value);
+                        vec[idx] = stored.clone();
+                        drop(vec);
+                        // A link written into a slot is an edge, as one pushed
+                        // is: deleting its node has to reach this slot.
+                        crate::rack::register_element(v, &stored);
                         Ok(())
                     } else {
                         Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
