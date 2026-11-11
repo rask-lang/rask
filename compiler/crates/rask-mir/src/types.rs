@@ -514,6 +514,102 @@ pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
 pub struct FieldTypes {
     pub structs: Vec<Vec<MirType>>,
     pub variants: Vec<Vec<Vec<MirType>>>,
+    /// Where each struct layout carries edges: `RASK_RACK_FIELD_*` kind and byte
+    /// offset, at any depth of inline nesting. Computed from the checker's
+    /// types, because a `Vec<Link<T>>` and a `Vec<i64>` are the same
+    /// `MirType::Container` and only the element type tells them apart.
+    pub struct_links: Vec<Vec<LinkSlot>>,
+}
+
+/// One place a value holds an edge the rack must know about: a link, or a
+/// `Vec`/`Map` whose values are links. `kind` is a `RASK_RACK_FIELD_*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkSlot {
+    pub kind: i32,
+    pub offset: u32,
+}
+
+/// The struct layouts that hold a `Rack` anywhere inside them, by value: in a
+/// field, a nested struct, a tuple or array, or an optional's payload.
+pub fn rack_holding_structs(fields: &FieldTypes) -> std::collections::HashSet<u32> {
+    fn holds(ty: &MirType, holders: &std::collections::HashSet<u32>) -> bool {
+        match ty {
+            MirType::Container(ContainerKind::Rack) => true,
+            MirType::Struct(id) => holders.contains(&id.id),
+            MirType::Tuple(parts) => parts.iter().any(|p| holds(p, holders)),
+            MirType::Array { elem, .. } | MirType::Option(elem) => holds(elem, holders),
+            MirType::Result { ok, err } => holds(ok, holders) || holds(err, holders),
+            _ => false,
+        }
+    }
+    let mut holders = std::collections::HashSet::new();
+    loop {
+        let before = holders.len();
+        for (id, tys) in fields.structs.iter().enumerate() {
+            if !holders.contains(&(id as u32)) && tys.iter().any(|t| holds(t, &holders)) {
+                holders.insert(id as u32);
+            }
+        }
+        if holders.len() == before {
+            return holders;
+        }
+    }
+}
+
+/// Every place a value of type `ty` holds an edge, offsets from the value's
+/// start.
+///
+/// The one answer to "which slots does the rack need to hear about": `insert`
+/// records a node's from it, `delete` drops them, `snapshot` re-points them,
+/// and a struct or tuple landing in ordinary storage registers them. A link
+/// one level down (`node.cursor.at`) is as much an edge as one on the node
+/// itself, and an answer that stopped at the top level left it unrecorded, so
+/// `delete` never nulled it (#1795).
+///
+/// An enum payload isn't descended into: which variant is live decides
+/// whether its slots hold links at all, and the descriptor has no way to say
+/// so.
+pub fn link_slots(ty: &MirType, fields: &FieldTypes) -> Vec<LinkSlot> {
+    link_slots_by(ty, &|id| fields.struct_links(id).to_vec())
+}
+
+/// `link_slots`, with each struct layout's own slots coming from `struct_links`
+/// — for lowering, which builds the table these are read from.
+pub fn link_slots_by(ty: &MirType, struct_links: &dyn Fn(u32) -> Vec<LinkSlot>) -> Vec<LinkSlot> {
+    let mut out = Vec::new();
+    collect_link_slots(ty, 0, struct_links, &mut out);
+    out
+}
+
+fn collect_link_slots(
+    ty: &MirType,
+    base: u32,
+    struct_links: &dyn Fn(u32) -> Vec<LinkSlot>,
+    out: &mut Vec<LinkSlot>,
+) {
+    match ty {
+        MirType::Link(_) => out.push(LinkSlot {
+            kind: rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32,
+            offset: base,
+        }),
+        MirType::Option(inner) if inner.is_niche_payload() => {
+            collect_link_slots(inner, base, struct_links, out)
+        }
+        MirType::Struct(id) => out.extend(
+            struct_links(id.id).into_iter().map(|s| LinkSlot { kind: s.kind, offset: base + s.offset }),
+        ),
+        MirType::Tuple(parts) => {
+            for (part, at) in parts.iter().zip(tuple_offsets(parts)) {
+                collect_link_slots(part, base + at, struct_links, out);
+            }
+        }
+        MirType::Array { elem, len } => {
+            for i in 0..*len {
+                collect_link_slots(elem, base + i * elem.size(), struct_links, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl FieldTypes {
@@ -521,6 +617,12 @@ impl FieldTypes {
     /// doesn't cover it.
     pub fn struct_fields(&self, id: u32) -> &[MirType] {
         self.structs.get(id as usize).map_or(&[], Vec::as_slice)
+    }
+
+    /// Where struct layout `id` holds edges (`link_slots`). Empty when the
+    /// table doesn't cover it.
+    pub fn struct_links(&self, id: u32) -> &[LinkSlot] {
+        self.struct_links.get(id as usize).map_or(&[], Vec::as_slice)
     }
 
     /// The fields of variant `variant` of enum layout `id`, in layout order.

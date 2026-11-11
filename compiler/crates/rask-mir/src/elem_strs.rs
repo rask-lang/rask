@@ -158,7 +158,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // then what a pair owns.
     ("Map_take_all", 3, 1, "Vec_free"),
     // Racks and pools carry no element description: a rack is told about its fields
-    // separately, through `Link_register_*`, and a pool's slots are opaque
+    // separately, through `rask_link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it

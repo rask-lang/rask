@@ -218,6 +218,7 @@ impl Interpreter {
                 let cloned = crate::value::VecData {
                     items: guard.items.iter().map(Value::clone_as_element).collect(),
                     bound: guard.bound,
+                    freed: false,
                 };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
@@ -251,7 +252,9 @@ impl Interpreter {
                 if idx >= vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
-                vec[idx] = val;
+                vec[idx] = val.clone();
+                drop(vec);
+                crate::rack::register_element(v, &val);
                 Ok(Value::Unit)
             }
             "insert" => {
@@ -261,7 +264,9 @@ impl Interpreter {
                 if idx > vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
-                vec.insert(idx, item);
+                vec.insert(idx, item.clone());
+                drop(vec);
+                crate::rack::register_element(v, &item);
                 Ok(Value::Unit)
             }
             "remove" | "remove_at" => {

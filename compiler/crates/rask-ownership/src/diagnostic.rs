@@ -478,6 +478,27 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            TakenFieldRead { path, name, taken_at } => {
+                Diagnostic::error(format!("`{}` read while `{}` has it", path, name))
+                    .with_code("E0959")
+                    .with_primary(self.span, format!("`{}` is empty until it's refilled", path))
+                    .with_secondary(*taken_at, format!("moved into `{}` here", name))
+                    .with_fix(format!("read `{}` instead, or move this after the refill of `{}`", name, path))
+                    .with_why("`let old = p.f` followed by a refill of `p.f` in the same block is a move: from the read to the refill the field holds nothing, and what it held is the new binding's [mem.borrowing/S1, mem.parameters/PM7]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at } => {
+                Diagnostic::error(format!("`{}` written over while `{}` views it", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this replaces `{}`, freeing what `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views `{}` until its block ends", name, path))
+                    .with_fix(format!(
+                        "use `{}.clone()` to keep a copy, or refill straight after `let {} = {}` with no `return`, `break`, `continue` or `try` in between, which makes the read a move",
+                        path, name, path
+                    ))
+                    .with_why("a field read is a view of storage the struct still holds, valid until its block ends, and the source can't be replaced while it's held: that frees what the view reads. `let old = p.f` followed by `p.f = …` is a move only when the refill always runs [mem.borrowing/S1, S5]".to_string())
+            }
+
             MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
                 let label = if *maybe {
                     format!("`{}` is given away on some paths here and not replaced", name)

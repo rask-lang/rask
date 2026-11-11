@@ -9,6 +9,7 @@
 mod state;
 mod error;
 mod field_reuse;
+mod replaces;
 mod diagnostic;
 mod resize;
 mod pointers;
@@ -165,6 +166,23 @@ pub struct OwnershipChecker<'a> {
     /// `src.items` under a name of its own (mem.borrowing/S1). Reading it is
     /// fine; handing it to an owner is the same E0909 the field read gets.
     field_views: HashMap<String, FieldView>,
+    /// Views a `let` in an inner block hid by reusing the name: (the depth
+    /// of that block, the name, the outer view), put back when it ends.
+    shadowed_views: Vec<(u32, String, FieldView)>,
+    /// Fields a paired read moved out and the refill hasn't put back yet:
+    /// (root, field path, the binding that has it, where). The slot is empty
+    /// until the refill, so reading it, or the value around it, is E0959.
+    taken_fields: Vec<(String, Vec<String>, String, Span, Option<u32>)>,
+    /// Set while the operand of a field read is checked: the outermost read
+    /// already asked about taken fields for the whole path.
+    field_path_checked: bool,
+    /// Receivers and arguments a call already answered for, from what its
+    /// callee reads (`replaces`): `self.bump()` with `self.log` taken reads
+    /// `self.n` only.
+    taken_judged: HashSet<rask_ast::NodeId>,
+    /// `let x = p.f` reads a later `p.f = …` in the same list refills
+    /// (`field_reuse::refill_pairs`): moves, not views.
+    refill_takes: HashSet<rask_ast::NodeId>,
     /// The place an assignment is writing while its value is checked.
     /// `self.list = More(h, Heap(self.list))` builds the new value out of the
     /// old one, and the old one is gone afterwards, so a field read of the
@@ -337,6 +355,12 @@ pub struct OwnershipChecker<'a> {
     escaping_closures: HashSet<rask_ast::NodeId>,
     /// Which parameters each function and method can resize (`resize.rs`).
     fn_resizes: resize::FnResizes,
+    /// What each function and method may write over under its `mutate`
+    /// parameters (`replaces`).
+    replaces: replaces::Replaces,
+    /// Method names some declaration gives no Rask body (`@native`,
+    /// `@builtin`): a call that could reach one of them can't be summarised.
+    bodyless_methods: HashSet<String>,
     method_resizes: resize::MethodResizes,
     /// See `OwnershipResult::task_bound_closures`.
     task_bound_closures: HashSet<rask_ast::NodeId>,
@@ -486,6 +510,12 @@ struct FieldView {
     field_ty: String,
     /// `let tmp = src.items` when it was bound to a name: `tmp` and the span.
     bound: Option<(String, Span)>,
+    /// The block depth the view was bound at; it lasts until that block ends
+    /// (mem.borrowing/S1).
+    block: u32,
+    /// The declaration `root` resolves to, so a later binding that reuses the
+    /// name isn't taken for it.
+    root_sym: Option<u32>,
 }
 
 /// A value a container lent out, carried from wherever the walk found it to
@@ -540,6 +570,11 @@ impl<'a> OwnershipChecker<'a> {
             borrowed_params: HashMap::new(),
             parts: Parts::default(),
             field_views: HashMap::new(),
+            shadowed_views: Vec::new(),
+            taken_fields: Vec::new(),
+            field_path_checked: false,
+            taken_judged: HashSet::new(),
+            refill_takes: HashSet::new(),
             store_target: None,
             borrowed_loop_items: HashMap::new(),
             borrowed_with: HashMap::new(),
@@ -589,6 +624,8 @@ impl<'a> OwnershipChecker<'a> {
             lent_captures: HashMap::new(),
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
+            replaces: HashMap::new(),
+            bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
             header_type_params: Vec::new(),
@@ -778,6 +815,7 @@ impl<'a> OwnershipChecker<'a> {
         self.collect_signatures(extra);
         self.collect_signatures(decls);
         self.infer_resizes(&[extra, decls]);
+        self.infer_replaces(&[extra, decls]);
         self.infer_pointer_returns(&[extra, decls]);
         self.run(decls)
     }
@@ -1480,6 +1518,8 @@ impl<'a> OwnershipChecker<'a> {
         self.borrowed_params.clear();
         self.parts.clear();
         self.field_views.clear();
+        self.shadowed_views.clear();
+        self.taken_fields.clear();
         self.store_target = None;
         self.borrowed_loop_items.clear();
         self.borrowed_with.clear();
@@ -1693,6 +1733,9 @@ impl<'a> OwnershipChecker<'a> {
         // it is done. Cheaper here than during the walk: the whole list is in
         // hand, and it is one pass.
         let last_mention = Self::last_mentions(stmts);
+        for (take, _) in field_reuse::refill_pairs(self, stmts) {
+            self.refill_takes.insert(take);
+        }
 
         for (index, stmt) in stmts.iter().enumerate() {
             self.check_mutable_capture_access(stmt);
@@ -1767,6 +1810,16 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         for name in dying {
             self.scope_limited_closures.remove(&name);
+        }
+
+        // A view lasts until its block ends (S1); an outer one a `let` here
+        // hid is back.
+        self.field_views.retain(|_, v| v.block < block_inner);
+        let (back, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.shadowed_views).into_iter().partition(|(d, _, _)| *d >= block_inner);
+        self.shadowed_views = kept;
+        for (_, name, view) in back {
+            self.field_views.insert(name, view);
         }
 
         // PT3: what this block declared is freed here, so a pointer into it
@@ -2314,7 +2367,14 @@ impl<'a> OwnershipChecker<'a> {
                 return None;
             }
         }
-        Some(FieldView { path, root, field_ty, bound: None })
+        Some(FieldView {
+            path,
+            root,
+            field_ty,
+            bound: None,
+            block: self.current_block,
+            root_sym: self.root_symbol(expr),
+        })
     }
 
     /// `value.field` when it reads a field whose value a second owner would
@@ -2339,11 +2399,170 @@ impl<'a> OwnershipChecker<'a> {
         Some((format!("{}.{}", root, fields.join(".")), self.resource_type_display(&ty)))
     }
 
+    /// Writing over `place` frees what it held, so a view still in scope of
+    /// it, of a field inside it or of the value around it would read freed
+    /// storage (mem.borrowing/S1, S5): E0958 at the write.
+    ///
+    /// A read the refill pairs with is a move, never a view, so
+    /// consume-and-replace stays legal.
+    fn check_views_at_write(&mut self, place: &Expr, under: &[String], at: Span) {
+        let Some((root, mut fields)) = self.written_place(place) else {
+            return;
+        };
+        fields.extend(under.iter().cloned());
+        let sym = self.root_symbol(place);
+        let hits = |name: &str, view: &FieldView| {
+            if view.root != root || name == root || !Self::same_root(view.root_sym, sym) {
+                return false;
+            }
+            let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
+            let n = viewed.len().min(fields.len());
+            viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
+        };
+        // A view an inner `let` hid by name still reads the field.
+        let mut ended: Vec<(String, FieldView)> = Vec::new();
+        let names: Vec<String> =
+            self.field_views.iter().filter(|(n, v)| hits(n, v)).map(|(n, _)| n.clone()).collect();
+        for name in names {
+            if let Some(view) = self.field_views.remove(&name) {
+                ended.push((name, view));
+            }
+        }
+        let mut kept = Vec::new();
+        for (depth, name, view) in std::mem::take(&mut self.shadowed_views) {
+            if hits(&name, &view) {
+                ended.push((name, view));
+            } else {
+                kept.push((depth, name, view));
+            }
+        }
+        self.shadowed_views = kept;
+        for (name, view) in ended {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ViewOutlivedReplace {
+                    name,
+                    path: view.path,
+                    viewed_at: view.bound.map(|(_, s)| s).unwrap_or(at),
+                },
+                span: at,
+            });
+        }
+    }
+
+    /// Two roots are the same binding when they resolve to the same
+    /// declaration. Without a resolution either way, the name decides.
+    fn same_root(a: Option<u32>, b: Option<u32>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        }
+    }
+
+    /// The declaration the name at the root of a place resolves to.
+    fn root_symbol(&self, e: &Expr) -> Option<u32> {
+        match &e.kind {
+            ExprKind::Ident(_) => self.program.resolutions.get(&e.id).map(|s| s.0),
+            ExprKind::Field { object, .. }
+            | ExprKind::OptionalField { object, .. }
+            | ExprKind::Index { object, .. } => self.root_symbol(object),
+            ExprKind::Unwrap { expr, .. } => self.root_symbol(expr),
+            _ => None,
+        }
+    }
+
+    /// A read of a place that overlaps a field a paired read moved out and
+    /// the refill hasn't put back: the field itself, something inside it, or
+    /// the whole value around it. Natively the slot is empty there.
+    fn check_taken_read(&mut self, expr: &Expr) {
+        if self.taken_fields.is_empty() || self.taken_judged.contains(&expr.id) {
+            return;
+        }
+        self.check_taken_path(expr, &[]);
+    }
+
+    /// A call reads, under each place it's handed, what its callee reads
+    /// there. Those places are then judged, so the plain read check skips them.
+    fn check_taken_call(&mut self, call: &Expr) {
+        if self.taken_fields.is_empty() {
+            return;
+        }
+        // Every operand the call answers for is judged, the ones it reads
+        // nothing of included: `self.bump()` reads `self.n` and not the rest
+        // of `self`.
+        let operands: Vec<rask_ast::NodeId> = match &call.kind {
+            ExprKind::MethodCall { object, args, .. } => std::iter::once(object.as_ref())
+                .chain(args.iter().map(|a| &a.expr))
+                .map(|e| e.id)
+                .collect(),
+            ExprKind::Call { args, .. } => args.iter().map(|a| a.expr.id).collect(),
+            _ => Vec::new(),
+        };
+        self.taken_judged.extend(operands);
+        for (place, under) in self.call_reads(call) {
+            self.check_taken_path(place, &under);
+        }
+    }
+
+    fn check_taken_path(&mut self, expr: &Expr, under: &[String]) {
+        let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
+            return;
+        };
+        let mut fields = fields.unwrap_or_default();
+        fields.extend(under.iter().cloned());
+        let sym = self.root_symbol(expr);
+        let hit = self.taken_fields.iter().find(|(r, f, _, _, s)| {
+            let n = f.len().min(fields.len());
+            *r == root && Self::same_root(*s, sym) && f[..n] == fields[..n]
+        });
+        if let Some((r, f, name, at, _)) = hit.cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::TakenFieldRead {
+                    path: format!("{}.{}", r, f.join(".")),
+                    name,
+                    taken_at: at,
+                },
+                span: expr.span,
+            });
+        }
+    }
+
+    /// A call writing through what it's given: each path under a `mutate`
+    /// argument or a `mutate self` receiver the callee may replace
+    /// (`replaces`). `self.set_reg(…)` writes registers, so it leaves a view of
+    /// `self.code` alone.
+    fn check_views_at_writing_call(&mut self, call: &Expr) {
+        if self.field_views.is_empty() && self.shadowed_views.is_empty() {
+            return;
+        }
+        for (place, path) in self.call_writes(call) {
+            self.check_views_at_write(place, &path, call.span);
+        }
+    }
+
     /// `let tmp = src.items`: remember that `tmp` is a view, or forget that a
     /// rebound name was one. `let t2 = tmp` is the same view again.
     fn record_field_view(&mut self, name: &str, init: &Expr) {
+        // A `let` in an inner block hides an outer view of the same name until
+        // the block ends.
+        if let Some(outer) = self.field_views.remove(name) {
+            if outer.block < self.current_block {
+                self.shadowed_views.push((self.current_block, name.to_string(), outer));
+            }
+        }
+        // Moved out until the refill puts a value back: owned, not a view.
+        if self.refill_takes.contains(&init.id) {
+            if let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) {
+                let sym = self.root_symbol(init);
+                self.taken_fields.push((root, fields, name.to_string(), init.span, sym));
+            }
+            return;
+        }
         let view = match &init.kind {
-            ExprKind::Ident(src) => self.field_views.get(src).cloned(),
+            ExprKind::Ident(src) => self.field_views.get(src).cloned().map(|v| FieldView {
+                bound: Some((name.to_string(), init.span)),
+                block: self.current_block,
+                ..v
+            }),
             _ => self.non_copy_field_view(init).and_then(|(path, field_ty)| {
                 let root = Self::extract_root_and_fields(init).0?;
                 Some(FieldView {
@@ -2351,16 +2570,13 @@ impl<'a> OwnershipChecker<'a> {
                     root,
                     field_ty,
                     bound: Some((name.to_string(), init.span)),
+                    block: self.current_block,
+                    root_sym: self.root_symbol(init),
                 })
             }),
         };
-        match view {
-            Some(v) => {
-                self.field_views.insert(name.to_string(), v);
-            }
-            None => {
-                self.field_views.remove(name);
-            }
+        if let Some(v) = view {
+            self.field_views.insert(name.to_string(), v);
         }
     }
 
@@ -2659,6 +2875,12 @@ impl<'a> OwnershipChecker<'a> {
                         self.kill_pointers_into(&root, PointerLoss::Replaced, stmt.span, None);
                     }
                 }
+                // The refill a paired read was waiting for: the slot is full
+                // again. After the value, which may not read it.
+                if let (Some(root), Some(fields)) = Self::extract_root_and_fields(target) {
+                    self.taken_fields.retain(|(r, f, ..)| !(*r == root && *f == fields));
+                }
+                self.check_views_at_write(target, &[], stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                     // What it holds now is whatever the assignment put there;
@@ -3021,6 +3243,12 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_expr(&mut self, expr: &Expr) {
         match &expr.kind {
+            ExprKind::Ident(name) if !self.field_path_checked && self.taken_fields.iter().any(|(r, ..)| r == name) => {
+                self.check_taken_read(expr);
+                self.field_path_checked = true;
+                self.check_expr(expr);
+                self.field_path_checked = false;
+            }
             ExprKind::Ident(name) => {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {
@@ -3116,6 +3344,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
+                self.check_views_at_writing_call(expr);
+                self.check_taken_call(expr);
                 // #296/PM3: a `take` parameter consumes its argument with no
                 // call-site marker. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
@@ -3217,7 +3447,9 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
+                self.check_taken_call(expr);
                 self.check_expr(object);
+                self.check_views_at_writing_call(expr);
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
@@ -3426,6 +3658,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Field { object, field: _ } | ExprKind::OptionalField { object, field: _ } => {
+                let outer_checked = self.field_path_checked;
+                if !outer_checked {
+                    self.check_taken_read(expr);
+                }
+                self.field_path_checked = true;
                 // PT3: a part with no pointer in it reads fine after the
                 // value's pointer died. Only along a chain of field reads.
                 let outer = self.pointer_free_read;
@@ -3437,6 +3674,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.pointer_free_read = chain && (outer || free);
                 self.check_expr(object);
                 self.pointer_free_read = outer;
+                self.field_path_checked = outer_checked;
             }
             ExprKind::DynamicField { object, field_expr } => {
                 self.check_expr(object);
@@ -4015,6 +4253,10 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.check_expr(inner);
+                // `take p.f` empties the field: a write, for any view of it.
+                if matches!(expr.kind, ExprKind::Take { .. }) {
+                    self.check_views_at_write(inner, &[], expr.span);
+                }
                 if matches!(expr.kind, ExprKind::Try { .. }) {
                     self.check_try_leaks_a_resource(expr.span);
                 }
@@ -9224,6 +9466,7 @@ pub fn check_ownership_with_stdlib(
     let mut stdlib = OwnershipChecker::new(program);
     stdlib.collect_signatures(decls);
     stdlib.collect_signatures(stdlib_decls);
+    stdlib.infer_replaces(&[decls, stdlib_decls]);
     for decl in stdlib_decls {
         stdlib.check_decl(decl);
     }

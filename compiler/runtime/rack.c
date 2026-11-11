@@ -31,8 +31,11 @@
 // Record `k` sits at a fixed offset from the header, so writing that field finds
 // its record by arithmetic and unlinks in O(1). Everything else that can hold a
 // link — a field of a struct outside the rack, a `Vec` or `Map` element — gets a
-// heap record found by scanning. Those live on a separate list so a hub with
-// thousands of node-field edges never makes the scanned list longer.
+// heap record. A write to one of those starts from the holder, and the record
+// hangs off the target, so the rack keeps a hash index keyed by (holder, target)
+// to get from one to the other without walking the target's list. Every edge
+// write is then O(1) whatever the in-degree; only `delete` walks a list, because
+// it has to visit every edge it nulls (RK3).
 
 #include "rask_runtime.h"
 #include <stdio.h>
@@ -53,25 +56,51 @@
 #define RACK_EDGE_SLOT   0
 #define RACK_EDGE_VEC    1
 #define RACK_EDGE_MAP    2
-#define RACK_EDGE_INLINE 3   // header-resident; holder is a slot in the node payload
+#define RACK_EDGE_INLINE 3   // header-resident; its slot is link field `ordinal` of its node
 
-// Doubly linked, so a record already in hand unlinks without a search. The old
-// `target` field was written and never read — `prev` costs nothing over it.
+// Doubly linked, so a record already in hand unlinks without a search.
+//
+// An inline record names its *target* rather than its slot. The slot follows
+// from where the record sits (`inline_slot`), and the target is what every
+// unlink needs: which list the record is on. Read off the slot instead, a
+// write that reached the slot some other way — through a `mutate` parameter,
+// say (#1807) — left the record on one list while the slot named another
+// node, and the next unlink took a different node's list apart.
 typedef struct RackEdge {
     int32_t          kind;
-    void            *holder;   // void** slot, RaskVec*, or RaskMap*
+    int32_t          ordinal;  // inline: which link field of the node
+    union {
+        void        *holder;   // heap: void** slot, RaskVec*, or RaskMap*
+        void        *target;   // inline: the node whose list it is on, or NULL
+    };
     struct RackEdge *prev;
     struct RackEdge *next;
 } RackEdge;
 
 _Static_assert(sizeof(struct RackEdge) % 16 == 0, "inline edges must keep the payload 16-byte aligned");
 
+// A foreign holder's record. It carries its target because a container holds
+// one record per target it names, so the container alone doesn't pick one out
+// of the index. The inline records don't need it — they are reached by
+// arithmetic — so they stay 32 bytes.
+//
+// A container's records are also chained from the container itself
+// (`hprev`/`hnext`), so a dying container can drop every record naming it —
+// including one for a target whose entries were removed long ago, which the
+// container's current elements can no longer lead to (#1796).
+typedef struct HeapEdge {
+    RackEdge         e;        // first, so a RackEdge* on the list casts back
+    void            *target;
+    struct HeapEdge *hprev;
+    struct HeapEdge *hnext;
+} HeapEdge;
+
 // Node header. Lives immediately before the payload; `sizeof` is a multiple of
 // 16 so the payload keeps the alignment the chunk allocation gave it.
 typedef struct RackNode {
     RaskRack *rack;
     RackEdge *inline_in;   // node-field edges, records inline before this header
-    RackEdge *heap_in;     // foreign slots, vec and map elements; found by scanning
+    RackEdge *heap_in;     // foreign slots, vec and map elements; reached via edge_index
     int64_t   slot_index;
 } RackNode;
 
@@ -103,7 +132,14 @@ struct RaskRack {
     int32_t   inline_count;   // LINK-kind fields: one inline edge record each
     int32_t   header_bytes;   // inline records + RackNode, i.e. payload's distance from slot start
     int64_t   elem_align;     // the node type's alignment; past 16 the chunks are aligned to it
-    RackEdge *edge_pool;      // recycled edge records
+    HeapEdge *edge_pool;      // recycled heap records, chained through e.next
+    // Open-addressed index over every heap record whose target is in this rack,
+    // keyed as `index_key` says. Linear probing with backward-shift
+    // deletion, so there are no tombstones to sweep. Capacity is a power of two
+    // and the load stays at or under half.
+    HeapEdge **edge_index;
+    int64_t   edge_index_cap;
+    int64_t   edge_index_len;
     uint32_t  rack_id;
     // Set on a snapshot: which rack it copied, and slot index -> copied payload.
     // `corresponding` is the only reader.
@@ -148,18 +184,130 @@ static inline int64_t round_up(int64_t n, int64_t align) {
 
 // ─── Edge records ──────────────────────────────────────────────────────────
 
-static RackEdge *edge_alloc(RaskRack *r) {
-    RackEdge *e = r->edge_pool;
-    if (e) {
-        r->edge_pool = e->next;
-        return e;
+static HeapEdge *edge_alloc(RaskRack *r) {
+    HeapEdge *h = r->edge_pool;
+    if (h) {
+        r->edge_pool = (HeapEdge *)h->e.next;
+        return h;
     }
-    return (RackEdge *)rask_alloc(sizeof(RackEdge));
+    return (HeapEdge *)rask_alloc(sizeof(HeapEdge));
 }
 
-static void edge_release(RaskRack *r, RackEdge *e) {
-    e->next = r->edge_pool;
-    r->edge_pool = e;
+static void edge_release(RaskRack *r, HeapEdge *h) {
+    h->e.next = (RackEdge *)r->edge_pool;
+    r->edge_pool = h;
+}
+
+// ─── Container chains ──────────────────────────────────────────────────────
+
+// Where a container keeps the head of its own records; NULL for a slot, which
+// has exactly one record and no chain.
+static void **holder_chain(int32_t kind, void *holder) {
+    switch (kind) {
+    case RACK_EDGE_VEC: return rask_vec_link_edges((RaskVec *)holder);
+    case RACK_EDGE_MAP: return rask_map_link_edges((RaskMap *)holder);
+    default:            return NULL;
+    }
+}
+
+static void chain_push(HeapEdge *h) {
+    void **head = holder_chain(h->e.kind, h->e.holder);
+    h->hprev = NULL;
+    h->hnext = NULL;
+    if (!head) return;
+    h->hnext = (HeapEdge *)*head;
+    if (h->hnext) h->hnext->hprev = h;
+    *head = h;
+}
+
+static void chain_unlink(HeapEdge *h) {
+    void **head = holder_chain(h->e.kind, h->e.holder);
+    if (!head) return;
+    if (h->hprev) h->hprev->hnext = h->hnext; else *head = h->hnext;
+    if (h->hnext) h->hnext->hprev = h->hprev;
+    h->hprev = NULL;
+    h->hnext = NULL;
+}
+
+// ─── Holder index ──────────────────────────────────────────────────────────
+//
+// The heap records hang off the target, but every write starts from the
+// holder: "this slot used to point at X, forget that", "does this vector
+// already have a record on X". Without an index both are a walk down X's list,
+// which is what made one assignment cost microseconds when X was a hub
+// (rask-lang/rask#981).
+
+// What a record is keyed on besides its holder. A slot holds one target at a
+// time, so the slot alone identifies its record, and retargeting it within a
+// rack leaves the index untouched. A container holds many, so its records are
+// keyed on (container, target).
+static inline const void *index_key(int32_t kind, const void *target) {
+    return kind == RACK_EDGE_SLOT ? NULL : target;
+}
+
+static inline uint64_t edge_hash(int32_t kind, const void *holder, const void *target) {
+    uint64_t h = (uint64_t)(uintptr_t)holder * 0x9E3779B97F4A7C15ull;
+    h ^= (uint64_t)(uintptr_t)index_key(kind, target) * 0xC2B2AE3D27D4EB4Full;
+    h ^= (uint64_t)kind;
+    return h ^ (h >> 29);
+}
+
+static inline int edge_matches(const HeapEdge *h, int32_t kind, const void *holder, const void *target) {
+    return h->e.holder == holder && h->e.kind == kind &&
+           index_key(kind, h->target) == index_key(kind, target);
+}
+
+static HeapEdge *index_find(const RaskRack *r, int32_t kind, void *holder, void *target) {
+    if (r->edge_index_cap == 0) return NULL;
+    uint64_t mask = (uint64_t)r->edge_index_cap - 1;
+    for (uint64_t i = edge_hash(kind, holder, target) & mask;; i = (i + 1) & mask) {
+        HeapEdge *h = r->edge_index[i];
+        if (!h) return NULL;
+        if (edge_matches(h, kind, holder, target)) return h;
+    }
+}
+
+static void index_place(HeapEdge **tab, uint64_t mask, HeapEdge *h) {
+    uint64_t i = edge_hash(h->e.kind, h->e.holder, h->target) & mask;
+    while (tab[i]) i = (i + 1) & mask;
+    tab[i] = h;
+}
+
+static void index_insert(RaskRack *r, HeapEdge *h) {
+    if ((r->edge_index_len + 1) * 2 > r->edge_index_cap) {
+        int64_t cap = r->edge_index_cap ? r->edge_index_cap * 2 : 64;
+        HeapEdge **tab = (HeapEdge **)rask_alloc(cap * (int64_t)sizeof(HeapEdge *));
+        if (!tab) rask_panic("rack: out of memory growing the edge index");
+        memset(tab, 0, (size_t)cap * sizeof(HeapEdge *));
+        for (int64_t i = 0; i < r->edge_index_cap; i++) {
+            if (r->edge_index[i]) index_place(tab, (uint64_t)cap - 1, r->edge_index[i]);
+        }
+        rask_free(r->edge_index);
+        r->edge_index = tab;
+        r->edge_index_cap = cap;
+    }
+    index_place(r->edge_index, (uint64_t)r->edge_index_cap - 1, h);
+    r->edge_index_len++;
+}
+
+// Remove `h`, then pull back any later entry of the same probe run that would
+// otherwise be cut off from its home slot by the hole.
+static void index_remove(RaskRack *r, HeapEdge *h) {
+    uint64_t mask = (uint64_t)r->edge_index_cap - 1;
+    uint64_t i = edge_hash(h->e.kind, h->e.holder, h->target) & mask;
+    while (r->edge_index[i] != h) i = (i + 1) & mask;
+    for (uint64_t j = (i + 1) & mask; r->edge_index[j]; j = (j + 1) & mask) {
+        HeapEdge *m = r->edge_index[j];
+        uint64_t home = edge_hash(m->e.kind, m->e.holder, m->target) & mask;
+        // `m` may move into the hole at `i` only if its home is not in (i, j].
+        int movable = (i <= j) ? (home <= i || home > j) : (home <= i && home > j);
+        if (movable) {
+            r->edge_index[i] = m;
+            i = j;
+        }
+    }
+    r->edge_index[i] = NULL;
+    r->edge_index_len--;
 }
 
 // ─── Doubly linked incoming lists ──────────────────────────────────────────
@@ -188,6 +336,21 @@ static inline RackEdge *inline_edge(RackNode *n, int32_t k) {
     return (RackEdge *)((char *)n - (size_t)(k + 1) * sizeof(RackEdge));
 }
 
+// The node an inline record sits in front of, and the slot it stands for: link
+// field `ordinal` of that node's type.
+static void **inline_slot(RackEdge *e) {
+    RackNode *n = (RackNode *)((char *)e + (size_t)(e->ordinal + 1) * sizeof(RackEdge));
+    const RaskRack *r = n->rack;
+    if (!r) return NULL;
+    int32_t k = 0;
+    for (int32_t i = 0; i < r->field_count; i++) {
+        if (r->fields[i * 2] != RASK_RACK_FIELD_LINK) continue;
+        if (k == e->ordinal) return (void **)((char *)n + sizeof(RackNode) + r->fields[i * 2 + 1]);
+        k++;
+    }
+    return NULL;
+}
+
 // Which LINK field of the node type starts at `offset`, as an ordinal among
 // LINK fields only. -1 when the offset names something else — a nested
 // aggregate's link, say, which keeps the scanned home.
@@ -201,42 +364,61 @@ static int32_t link_ordinal(const RaskRack *r, int64_t offset) {
     return -1;
 }
 
-static int edge_recorded(void *target, int32_t kind, void *holder) {
-    for (RackEdge *e = node_of(target)->heap_in; e; e = e->next) {
-        if (e->kind == kind && e->holder == holder) return 1;
-    }
-    return 0;
-}
-
 // Record that a *foreign* holder now points at `target`: a slot outside the
-// rack, or a container element. These are found by scanning, so they get their
-// own list — a hub with thousands of node-field edges must not lengthen it.
+// rack, or a container element. A container keeps one record per target
+// however many of its entries name it; a slot keeps one record, full stop.
 static void edge_register(int32_t kind, void *holder, void *target) {
     RackNode *n = node_of(target);
     RaskRack *r = n->rack;
-    if (kind != RACK_EDGE_SLOT && edge_recorded(target, kind, holder)) {
-        return;   // one record per (container, target), however many entries match
+    HeapEdge *found = index_find(r, kind, holder, target);
+    if (found) {
+        if (found->target == target) return;
+        // A slot record found by the slot alone but naming another node: the
+        // storage was reused without its old edge being forgotten. The slot
+        // holds `target` now, so the record moves.
+        list_unlink(&node_of(found->target)->heap_in, &found->e);
+        found->target = target;
+        list_push(&n->heap_in, &found->e);
+        return;
     }
-    RackEdge *e = edge_alloc(r);
+    HeapEdge *h = edge_alloc(r);
+    if (!h) rask_panic("rack: out of memory recording an edge");
     // Whole-struct: `edge_alloc` hands back either a fresh block or one off the
-    // free pool with a stale `prev`/`next` still in it, and `list_push` below
-    // is the only thing that overwrites those today. A field added to RackEdge
-    // would be garbage on one path and stale on the other.
-    *e = (RackEdge){ .kind = kind, .holder = holder };
-    list_push(&n->heap_in, e);
+    // free pool with stale fields still in it.
+    *h = (HeapEdge){ .e = { .kind = kind, .holder = holder }, .target = target };
+    list_push(&n->heap_in, &h->e);
+    index_insert(r, h);
+    chain_push(h);
 }
 
 // Forget the edge `holder` -> `target`. A no-op if it was never recorded, which
 // keeps `rask_link_set` safe to call on a slot the rack has never seen.
 static void edge_unregister(int32_t kind, void *holder, void *target) {
-    RackNode *n = node_of(target);
-    RaskRack *r = n->rack;
-    for (RackEdge *e = n->heap_in; e; e = e->next) {
-        if (e->kind == kind && e->holder == holder) {
-            list_unlink(&n->heap_in, e);
-            edge_release(r, e);
-            return;
-        }
+    RaskRack *r = node_of(target)->rack;
+    // A dead target: `fix_incoming` already released every record on it. A
+    // slot can still name it only if nothing ever recorded that slot.
+    if (!r) return;
+    HeapEdge *h = index_find(r, kind, holder, target);
+    if (!h) return;
+    index_remove(r, h);
+    // The record's own target, not the argument: a slot record is found by the
+    // slot alone, and a stale one can name a different node of this rack.
+    list_unlink(&node_of(h->target)->heap_in, &h->e);
+    chain_unlink(h);
+    edge_release(r, h);
+}
+
+// A container is being freed: drop every record that names it. Its targets are
+// all live — `delete` releases the records on a node as it dies — so each
+// still has a rack and a list to leave.
+void rask_link_holder_died(void **head) {
+    while (head && *head) {
+        HeapEdge *h = (HeapEdge *)*head;
+        RackNode *n = node_of(h->target);
+        index_remove(n->rack, h);
+        list_unlink(&n->heap_in, &h->e);
+        chain_unlink(h);
+        edge_release(n->rack, h);
     }
 }
 
@@ -244,13 +426,16 @@ static void edge_unregister(int32_t kind, void *holder, void *target) {
 // inline, so both the unlink and the splice are O(1) however many other things
 // point at either node — this is the write the old design charged O(in-degree)
 // for.
+static void inline_retarget(RackEdge *e, void *target) {
+    if (e->target == target) return;
+    if (e->target) list_unlink(&node_of(e->target)->inline_in, e);
+    e->target = rask_link_is_none(target) ? NULL : target;
+    if (e->target) list_push(&node_of(e->target)->inline_in, e);
+}
+
 static void node_edge_set(char *payload, int32_t k, void **slot, void *target) {
-    RackEdge *e = inline_edge(node_of(payload), k);
-    void *old = *slot;
-    if (old == target) return;
-    if (!rask_link_is_none(old)) list_unlink(&node_of(old)->inline_in, e);
     *slot = target;
-    if (!rask_link_is_none(target)) list_push(&node_of(target)->inline_in, e);
+    inline_retarget(inline_edge(node_of(payload), k), target);
 }
 
 // ─── Link stores ───────────────────────────────────────────────────────────
@@ -264,8 +449,21 @@ void rask_link_set(void **slot, void *target) {
         // Self-assignment must not drop the backlink it would re-add.
         return;
     }
-    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
     *slot = target;
+    if (!rask_link_is_none(old) && !rask_link_is_none(target)) {
+        RaskRack *r = node_of(old)->rack;
+        HeapEdge *h = r && r == node_of(target)->rack
+                          ? index_find(r, RACK_EDGE_SLOT, slot, old) : NULL;
+        if (h) {
+            // Same rack, and the index is keyed on the slot alone, so the
+            // record stays where it is in the index and only changes lists.
+            list_unlink(&node_of(h->target)->heap_in, &h->e);
+            h->target = target;
+            list_push(&node_of(target)->heap_in, &h->e);
+            return;
+        }
+    }
+    if (!rask_link_is_none(old)) edge_unregister(RACK_EDGE_SLOT, slot, old);
     if (!rask_link_is_none(target)) edge_register(RACK_EDGE_SLOT, slot, target);
 }
 
@@ -285,6 +483,90 @@ void rask_link_set_node(void *payload, int64_t offset, void *target) {
         return;
     }
     node_edge_set((char *)payload, k, slot, target);
+}
+
+// The links an element of struct type holds (`Vec<Cursor>`), recorded against
+// the container the same way a bare link element is: one record per
+// (container, target), naming no position.
+typedef struct {
+    int32_t kind;
+    void   *holder;
+} RegisterCtx;
+
+static void register_slot_cb(void **slot, void *ctx) {
+    RegisterCtx *c = (RegisterCtx *)ctx;
+    if (!rask_link_is_none(*slot)) edge_register(c->kind, c->holder, *slot);
+}
+
+void rask_link_register_element_fields(RaskVec *v, const void *elem) {
+    if (!v || !elem) return;
+    RegisterCtx c = { RACK_EDGE_VEC, v };
+    rask_elem_links((char *)elem, rask_vec_elem_strs(v), register_slot_cb, &c);
+}
+
+void rask_link_register_entry_fields(RaskMap *m, const void *value) {
+    if (!m || !value) return;
+    RegisterCtx c = { RACK_EDGE_MAP, m };
+    rask_elem_links((char *)value, rask_map_val_strs(m), register_slot_cb, &c);
+}
+
+static void register_entry_cb(char *value, void *ctx) {
+    rask_link_register_entry_fields((RaskMap *)ctx, value);
+}
+
+// Null each link slot in an element that names the dying node.
+typedef struct {
+    void   *dead;
+    int64_t fixed;
+} NullCtx;
+
+static void null_slot_cb(void **slot, void *ctx) {
+    NullCtx *c = (NullCtx *)ctx;
+    if (*slot == c->dead) {
+        *slot = RASK_LINK_NONE;
+        c->fixed++;
+    }
+}
+
+typedef struct {
+    const RaskElemStrs *strs;
+    NullCtx            *null;
+} NullValuesCtx;
+
+static void null_value_cb(char *value, void *ctx) {
+    NullValuesCtx *c = (NullValuesCtx *)ctx;
+    rask_elem_links(value, c->strs, null_slot_cb, c->null);
+}
+
+// ─── Links behind a tag ────────────────────────────────────────────────────
+//
+// A link in a variant's payload (`cur: Cursor?`, an enum's fields) is a slot
+// only while that variant is live. It has no inline record — a node's inline
+// records are one per unconditional link field — and is recorded as a
+// foreign slot instead, keyed by its address, which the index finds in O(1).
+// Whoever changes the variant forgets the live one's links before the store
+// and records the new one's after it (`Link_guarded` in MIR).
+
+
+static void guarded_register_cb(void **slot, void *ctx) {
+    (void)ctx;
+    if (!rask_link_is_none(*slot)) edge_register(RACK_EDGE_SLOT, slot, *slot);
+}
+
+static void guarded_forget_cb(void **slot, void *ctx) {
+    (void)ctx;
+    if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
+}
+
+void rask_link_guarded_range(void *base, int64_t lo, int64_t hi, int64_t reg,
+                             int64_t count, const int32_t *owned) {
+    if (!base || count <= 0 || !owned) return;
+    rask_guarded_links((char *)base, owned, count, lo, hi,
+                       reg ? guarded_register_cb : guarded_forget_cb, NULL);
+}
+
+void rask_link_guarded(void *base, int64_t reg, int64_t count, const int32_t *owned) {
+    rask_link_guarded_range(base, 0, INT64_MAX, reg, count, owned);
 }
 
 // A link stored in a `Vec<Link<T>>`. The record names the vector, not the
@@ -327,6 +609,17 @@ void rask_link_register_struct(void *base, int64_t field_count, const int32_t *f
     }
 }
 
+// A struct's storage is going away — its frame is returning. The records its
+// link slots made name addresses the next frame will reuse. Containers in it
+// drop their own records when they are freed.
+void rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fields) {
+    if (!base || field_count <= 0 || !fields) return;
+    char *p = (char *)base;
+    for (int64_t i = 0; i < field_count; i++) {
+        if (fields[i * 2] == RASK_RACK_FIELD_LINK) rask_link_forget((void **)(p + fields[i * 2 + 1]));
+    }
+}
+
 // Record every link already sitting in a container.
 //
 // For a container that arrives whole rather than element by element — the
@@ -335,6 +628,15 @@ void rask_link_register_struct(void *base, int64_t field_count, const int32_t *f
 void rask_link_register_vec(RaskVec *v) {
     if (!v) return;
     int64_t n = rask_vec_len(v);
+    if (rask_vec_holds_struct_links(v)) {
+        for (int64_t i = 0; i < n; i++) {
+            rask_link_register_element_fields(v, rask_vec_get_unchecked(v, i));
+        }
+        return;
+    }
+    // An element that owns anything isn't a bare link; reading its first word
+    // as one would follow a string or a handle.
+    if (rask_vec_elem_strs(v)->count > 0) return;
     for (int64_t i = 0; i < n; i++) {
         void *elem;
         memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -344,6 +646,11 @@ void rask_link_register_vec(RaskVec *v) {
 
 void rask_link_register_map(RaskMap *m) {
     if (!m) return;
+    if (rask_map_holds_struct_links(m)) {
+        rask_map_each_value(m, register_entry_cb, m);
+        return;
+    }
+    if (rask_map_val_strs(m)->count > 0) return;
     RaskVec *vals = rask_map_values(m);
     int64_t n = rask_vec_len(vals);
     for (int64_t i = 0; i < n; i++) {
@@ -388,26 +695,14 @@ void rask_link_forget_map(RaskMap *m) {
 // a node literal already carries, and what lets `delete` drop the edges the
 // dying node holds.
 
+// Every record naming the container goes, whatever it still holds: an entry
+// removed earlier left its record behind, and only the chain can find it.
 static void forget_vec_edges(RaskVec *v) {
-    if (!v) return;
-    int64_t n = rask_vec_len(v);
-    for (int64_t i = 0; i < n; i++) {
-        void *elem;
-        memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
-        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_VEC, v, elem);
-    }
+    if (v) rask_link_holder_died(rask_vec_link_edges(v));
 }
 
 static void forget_map_edges(RaskMap *m) {
-    if (!m) return;
-    RaskVec *vals = rask_map_values(m);
-    int64_t n = rask_vec_len(vals);
-    for (int64_t i = 0; i < n; i++) {
-        void *elem;
-        memcpy(&elem, rask_vec_get_unchecked(vals, i), sizeof(elem));
-        if (!rask_link_is_none(elem)) edge_unregister(RACK_EDGE_MAP, m, elem);
-    }
-    rask_vec_free(vals);
+    if (m) rask_link_holder_died(rask_map_link_edges(m));
 }
 
 static inline int32_t field_kind(const RaskRack *r, int32_t i) { return r->fields[i * 2]; }
@@ -423,11 +718,8 @@ static void register_own_edges(const RaskRack *r, char *payload) {
         switch (field_kind(r, i)) {
         case RASK_RACK_FIELD_LINK: {
             RackEdge *e = inline_edge(node_of(payload), k);
-            e->kind = RACK_EDGE_INLINE;
-            e->holder = slot;
-            e->prev = NULL;
-            e->next = NULL;
-            if (!rask_link_is_none(*slot)) list_push(&node_of(*slot)->inline_in, e);
+            *e = (RackEdge){ .kind = RACK_EDGE_INLINE, .ordinal = k };
+            inline_retarget(e, *slot);
             k++;
             break;
         }
@@ -439,6 +731,7 @@ static void register_own_edges(const RaskRack *r, char *payload) {
             break;
         }
     }
+    rask_link_guarded_range(payload, 0, r->elem_size, 1, r->owned_count, r->owned);
 }
 
 // Drop them again. A dying node's containers die with it, so every target they
@@ -450,9 +743,11 @@ static void forget_own_edges(const RaskRack *r, char *payload) {
         void **slot = (void **)(payload + field_offset(r, i));
         switch (field_kind(r, i)) {
         case RASK_RACK_FIELD_LINK: {
-            if (!rask_link_is_none(*slot)) {
-                list_unlink(&node_of(*slot)->inline_in, inline_edge(node_of(payload), k));
-            }
+            inline_retarget(inline_edge(node_of(payload), k), RASK_LINK_NONE);
+            // A callee writing this slot through a `mutate` parameter can't
+            // know it is inside a node, and records it as foreign storage.
+            // That record names the slot, which dies with the node.
+            if (!rask_link_is_none(*slot)) edge_unregister(RACK_EDGE_SLOT, slot, *slot);
             k++;
             break;
         }
@@ -464,6 +759,7 @@ static void forget_own_edges(const RaskRack *r, char *payload) {
             break;
         }
     }
+    rask_link_guarded_range(payload, 0, r->elem_size, 0, r->owned_count, r->owned);
 }
 
 // ─── Storage ───────────────────────────────────────────────────────────────
@@ -623,11 +919,7 @@ void *rask_rack_insert(RaskRack *r, const void *value, int64_t elem_size,
     // unlinked from wherever they pointed; clear them so the fresh node starts
     // with records that describe it.
     for (int32_t k = 0; k < r->inline_count; k++) {
-        RackEdge *e = inline_edge(n, k);
-        e->kind = RACK_EDGE_INLINE;
-        e->holder = NULL;
-        e->prev = NULL;
-        e->next = NULL;
+        *inline_edge(n, k) = (RackEdge){ .kind = RACK_EDGE_INLINE, .ordinal = k };
     }
 
     if (value) {
@@ -659,11 +951,12 @@ static void fix_incoming(RaskRack *r, char *payload) {
     while (ie) {
         RackEdge *next = ie->next;
         if (stats_enabled()) g_holders_visited++;
-        void **slot = (void **)ie->holder;
+        void **slot = inline_slot(ie);
         if (slot && *slot == payload) {
             *slot = RASK_LINK_NONE;
             if (stats_enabled()) g_edges_fixed++;
         }
+        ie->target = NULL;
         ie->prev = NULL;
         ie->next = NULL;
         ie = next;
@@ -690,6 +983,16 @@ static void fix_incoming(RaskRack *r, char *payload) {
             // `none`. Every match goes, not just the first: one record covers
             // the whole vector however many entries point here.
             RaskVec *v = (RaskVec *)e->holder;
+            // Elements of struct type keep their place and lose the link
+            // inside them, the way a struct field does.
+            if (rask_vec_holds_struct_links(v)) {
+                NullCtx nc = { payload, 0 };
+                for (int64_t i = 0; i < rask_vec_len(v); i++) {
+                    rask_elem_links(rask_vec_get_unchecked(v, i), rask_vec_elem_strs(v), null_slot_cb, &nc);
+                }
+                fixed = nc.fixed;
+                break;
+            }
             for (int64_t i = rask_vec_len(v) - 1; i >= 0; i--) {
                 void *elem;
                 memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -697,12 +1000,24 @@ static void fix_incoming(RaskRack *r, char *payload) {
             }
             break;
         }
-        case RACK_EDGE_MAP:
-            fixed = rask_map_drop_value_ptr((RaskMap *)e->holder, payload);
+        case RACK_EDGE_MAP: {
+            RaskMap *m = (RaskMap *)e->holder;
+            if (rask_map_holds_struct_links(m)) {
+                NullCtx nc = { payload, 0 };
+                NullValuesCtx vc = { rask_map_val_strs(m), &nc };
+                rask_map_each_value(m, null_value_cb, &vc);
+                fixed = nc.fixed;
+                break;
+            }
+            fixed = rask_map_drop_value_ptr(m, payload);
             break;
         }
+        }
         if (stats_enabled()) g_edges_fixed += fixed;
-        edge_release(r, e);
+        HeapEdge *h = (HeapEdge *)e;
+        index_remove(r, h);
+        chain_unlink(h);
+        edge_release(r, h);
         e = next;
     }
 }
@@ -771,24 +1086,59 @@ RaskVec *rask_rack_nodes(const RaskRack *r) {
 
 void rask_rack_free(RaskRack *r) {
     if (!r) return;
+    // First every node's own outgoing edges leave whatever lists they are on.
+    // Those records live in this rack's chunks, so leaving one on a node of
+    // another rack let that rack's next delete walk into freed memory (#1797).
+    // A node's containers go with it, and take their records along.
     for (int64_t i = 0; i < r->high_water; i++) {
         if (i < r->dir_cap && r->directory[i]) {
-            rask_owned_release_all((char *)r->directory[i], r->owned, r->owned_count);
-            RackNode *n = node_of(r->directory[i]);
-            RackEdge *e = n->heap_in;   // inline records die with the chunk
-            while (e) {
-                RackEdge *next = e->next;
-                rask_free(e);
-                e = next;
-            }
+            char *payload = (char *)r->directory[i];
+            forget_own_edges(r, payload);
+            rask_owned_release_all(payload, r->owned, r->owned_count);
         }
     }
-    RackEdge *pooled = r->edge_pool;
+    // What is left pointing in comes from outside. A node of another rack is
+    // nulled, or its own teardown would unlink a record from this rack's
+    // freed headers. A heap record is freed, and leaves its container's chain
+    // so the container doesn't walk it later; a struct slot it names is
+    // nulled too. This rack's own payloads aren't
+    // touched: nothing may read them after this, and #1587 is a place where
+    // something still does.
+    for (int64_t i = 0; i < r->high_water; i++) {
+        if (i < r->dir_cap && r->directory[i]) {
+            char *payload = (char *)r->directory[i];
+            RackNode *n = node_of(payload);
+            for (RackEdge *e = n->inline_in, *next; e; e = next) {
+                next = e->next;
+                void **slot = inline_slot(e);
+                if (slot && *slot == payload) *slot = RASK_LINK_NONE;
+                e->target = NULL;
+                e->prev = NULL;
+                e->next = NULL;
+            }
+            n->inline_in = NULL;
+            for (RackEdge *e = n->heap_in, *next; e; e = next) {
+                next = e->next;
+                // A struct field outside the rack — a local's, say, whose
+                // frame forgets it on the way out. Nulled like any other link
+                // into the rack, so that forget finds nothing to follow.
+                if (e->kind == RACK_EDGE_SLOT) {
+                    void **slot = (void **)e->holder;
+                    if (*slot == payload) *slot = RASK_LINK_NONE;
+                }
+                chain_unlink((HeapEdge *)e);
+                rask_free(e);
+            }
+            n->heap_in = NULL;
+        }
+    }
+    HeapEdge *pooled = r->edge_pool;
     while (pooled) {
-        RackEdge *next = pooled->next;
+        HeapEdge *next = (HeapEdge *)pooled->e.next;
         rask_free(pooled);
         pooled = next;
     }
+    rask_free(r->edge_index);
     for (int64_t i = 0; i < r->chunk_count; i++) rask_free(r->chunks[i]);
     rask_free(r->chunks);
     rask_free(r->directory);
@@ -831,8 +1181,29 @@ static void *snapshot_remap_cb(void *value, void *ctx) {
     return mapped ? mapped : value;
 }
 
+static void snapshot_remap_slot_cb(void **slot, void *ctx) {
+    void *mapped = snapshot_target(((SnapshotCtx *)ctx)->rack, *slot,
+                                   ((SnapshotCtx *)ctx)->origin, ((SnapshotCtx *)ctx)->n_slots);
+    if (mapped) *slot = mapped;
+}
+
+typedef struct {
+    const RaskElemStrs *strs;
+    SnapshotCtx        *snap;
+} SnapshotValuesCtx;
+
+static void snapshot_remap_value_cb(char *value, void *ctx) {
+    SnapshotValuesCtx *c = (SnapshotValuesCtx *)ctx;
+    rask_elem_links(value, c->strs, snapshot_remap_slot_cb, c->snap);
+}
+
 static void rask_map_remap_link_values(RaskMap *m, const RaskRack *r, void **origin, int64_t n_slots) {
     SnapshotCtx ctx = { r, origin, n_slots };
+    if (rask_map_holds_struct_links(m)) {
+        SnapshotValuesCtx vc = { rask_map_val_strs(m), &ctx };
+        rask_map_each_value(m, snapshot_remap_value_cb, &vc);
+        return;
+    }
     rask_map_map_values_ptr(m, snapshot_remap_cb, &ctx);
 }
 
@@ -871,6 +1242,16 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
         // source.
         rask_owned_retain_all((char *)dst, r->owned, r->owned_count);
         origin[i] = dst;
+    }
+
+    // Links behind a tag: the copies name the original's nodes until rewritten,
+    // and nothing has recorded them.
+    for (int64_t i = 0; i < n_slots; i++) {
+        char *dst = (char *)origin[i];
+        if (!dst) continue;
+        SnapshotCtx sc = { r, origin, n_slots };
+        rask_guarded_links(dst, r->owned, r->owned_count, 0, r->elem_size, snapshot_remap_slot_cb, &sc);
+        rask_link_guarded_range(dst, 0, r->elem_size, 1, r->owned_count, r->owned);
     }
 
     // Now the edges. A link is rewritten only if it names a node of *this* rack;
@@ -916,10 +1297,18 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 RaskVec *fresh = shares_original ? rask_vec_clone(cur) : cur;
                 *slot = fresh;
                 int64_t n = rask_vec_len(fresh);
-                for (int64_t e = 0; e < n; e++) {
-                    void **cell = (void **)rask_vec_get_unchecked(fresh, e);
-                    void *mapped = snapshot_target(r, *cell, origin, n_slots);
-                    if (mapped) *cell = mapped;
+                if (rask_vec_holds_struct_links(fresh)) {
+                    SnapshotCtx sc = { r, origin, n_slots };
+                    for (int64_t e = 0; e < n; e++) {
+                        rask_elem_links(rask_vec_get_unchecked(fresh, e), rask_vec_elem_strs(fresh),
+                                        snapshot_remap_slot_cb, &sc);
+                    }
+                } else {
+                    for (int64_t e = 0; e < n; e++) {
+                        void **cell = (void **)rask_vec_get_unchecked(fresh, e);
+                        void *mapped = snapshot_target(r, *cell, origin, n_slots);
+                        if (mapped) *cell = mapped;
+                    }
                 }
                 rask_link_register_vec(fresh);
                 break;

@@ -664,18 +664,21 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_set_node", "rask_link_set_node",
                             &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
-        StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),
         StdlibEntry {
-            mir_name: "Link_register_struct", c_name: "rask_link_register_struct",
+            mir_name: "rask_link_register_struct", c_name: "rask_link_register_struct",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
-        StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
-        StdlibEntry::simple("Link_forget_vec", "rask_link_forget_vec", &[types::I64], None, false),
-        StdlibEntry::simple("Link_forget_map", "rask_link_forget_map", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "rask_link_forget_struct", c_name: "rask_link_forget_struct",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "rask_link_guarded", c_name: "rask_link_guarded",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
 
         // ── Rng operations ────────────────────────────────────────
         StdlibEntry::simple("Random_free", "rask_rng_free", &[types::I64], None, false),

@@ -31,6 +31,11 @@ pub struct PassContext {
     /// rather than computed once because passes add functions: the closure
     /// environment glue arrives mid-pipeline.
     pub own_functions: HashSet<String>,
+    /// Struct layouts that hold a `Rack` somewhere inside (`rack_holding_structs`).
+    /// A value of one lives until its function exits, however early its name
+    /// is last read: links elsewhere point into the rack, and those don't show
+    /// up as reads of the name (#1587).
+    pub rack_holders: HashSet<u32>,
 }
 
 /// Convenience alias.
@@ -76,7 +81,12 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        let mut ctx = PassContext::default();
+        self.run_with(fns, HashSet::new())
+    }
+
+    /// `run`, told which struct layouts hold a rack.
+    pub fn run_with(&self, fns: &mut Vec<MirFunction>, rack_holders: HashSet<u32>) -> PipelineResult {
+        let mut ctx = PassContext { rack_holders, ..PassContext::default() };
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -299,6 +309,7 @@ impl MirPass for StringRcInsertionPass {
                 &kept,
                 &ctx.own_functions,
                 &closure_keeps,
+                &ctx.rack_holders,
             ));
         }
         crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);

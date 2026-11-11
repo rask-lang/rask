@@ -309,6 +309,7 @@ enum CallAdapt {
 enum HandAdapt {
     VecContains,
     LinkRegisterStruct,
+    LinkGuarded,
     RackInsert,
     /// A `Shared` strategy's `take`.
     BoxTake,
@@ -330,7 +331,8 @@ enum HandAdapt {
 fn hand_adaptation(name: &str) -> Option<HandAdapt> {
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
-        "Link_register_struct" => HandAdapt::LinkRegisterStruct,
+        "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
+        "rask_link_guarded" => HandAdapt::LinkGuarded,
         "Rack_insert" => HandAdapt::RackInsert,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
@@ -437,7 +439,7 @@ impl<'a> CodegenCtx<'a> {
 
 /// No field types: a builder that wasn't handed lowering's table.
 static NO_FIELD_TYPES: rask_mir::FieldTypes =
-    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new() };
+    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new(), struct_links: Vec::new() };
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -7852,13 +7854,13 @@ impl<'a> FunctionBuilder<'a> {
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
-    /// The node type's link-bearing fields, as (kind, byte offset) pairs.
+    /// Where the argument's value holds edges, as (kind, byte offset) pairs.
     ///
     /// This is the whole descriptor the rack needs: `insert` walks it to record
     /// the edges a node literal already carries, `delete` walks it to drop the
     /// edges the dying node holds, and `snapshot` walks it to re-point them at
-    /// the copy. A link is a leaf — no walk follows one — so nested aggregates
-    /// aren't descended into.
+    /// the copy. Lowering decides what counts (`rask_mir::link_slots`); this
+    /// only reads it off.
     fn link_field_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -7866,12 +7868,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> Vec<(i32, u32)> {
         let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
-        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
-        let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) else { return Vec::new() };
-        layout
-            .fields
-            .iter()
-            .filter_map(|f| Self::link_field_kind(&f.ty, ctx.type_names).map(|k| (k, f.offset)))
+        rask_mir::link_slots(&local.ty, ctx.field_types)
+            .into_iter()
+            .map(|s| (s.kind, s.offset))
             .collect()
     }
 
@@ -7896,45 +7895,6 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or_default()
     }
 
-
-    /// `Link<T>` / `Link<T>?`, `Vec<Link<T>>` or `Map<K, Link<T>>`: the
-    /// `RASK_RACK_FIELD_*` kind.
-    fn link_field_kind(
-        ty: &rask_types::Type,
-        type_names: &HashMap<rask_types::TypeId, String>,
-    ) -> Option<i32> {
-        use rask_types::{GenericArg, Type};
-        // A generic's head: by id once the checker resolved it, by name for
-        // the compiler-provided spelling.
-        let head = |t: &Type| -> Option<(String, Vec<GenericArg>)> {
-            match t {
-                Type::Generic { base, args } => Some((type_names.get(base)?.clone(), args.clone())),
-                Type::UnresolvedGeneric { name, args } => Some((name.clone(), args.clone())),
-                _ => None,
-            }
-        };
-        let bare = ty.as_option().unwrap_or(ty);
-        let (name, args) = head(bare)?;
-        let name = name.as_str();
-        if name == "Link" {
-            return Some(rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32);
-        }
-        // The value type is the last type argument: `Vec<T>`'s only one, and
-        // `Map<K, V>`'s second.
-        let value = args.iter().rev().find_map(|a| match a {
-            GenericArg::Type(t) => Some(t),
-            _ => None,
-        })?;
-        let holds_link = head(value.as_option().unwrap_or(value)).is_some_and(|(n, _)| n == "Link");
-        if !holds_link {
-            return None;
-        }
-        match name {
-            "Vec" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_VEC as i32),
-            "Map" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_MAP as i32),
-            _ => None,
-        }
-    }
 
     /// The slot an argument the runtime takes by address fills: its size,
     /// and whether the operand already is an address (an aggregate, a string)
@@ -8268,6 +8228,39 @@ impl<'a> FunctionBuilder<'a> {
                         let o = builder.ins().iconst(types::I32, *off as i64);
                         ss.store(builder, k, (i * 8) as i32);
                         ss.store(builder, o, (i * 8 + 4) as i32);
+                    }
+                    args.push(ss.addr(builder, 0));
+                }
+                CallAdapt::None
+            }
+
+            // `rask_link_guarded(addr, value, reg)`: the value's element map, read off
+            // the second operand's type, replaces that operand. The map's
+            // guarded `RASK_OWNED_LINK` entries are links behind a tag (#1801).
+            HandAdapt::LinkGuarded => {
+                let ty = mir_args
+                    .get(1)
+                    .and_then(|op| Self::operand_mir_type(op, ctx.locals))
+                    .map(|t| match t {
+                        MirType::Link(sid) => MirType::Struct(sid),
+                        other => other,
+                    });
+                let owned = ty
+                    .and_then(|t| crate::elem_offsets::owned_offsets(&t, ctx.shapes()))
+                    .unwrap_or_default();
+                if args.len() >= 2 {
+                    args.remove(1);
+                }
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    )));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        ss.store(builder, e, (i * 4) as i32);
                     }
                     args.push(ss.addr(builder, 0));
                 }

@@ -13,9 +13,5 @@
 
 # Found the day the gate first ran valgrind on the test binaries instead of on
 # `timeout`, which is what it had been instrumenting since it was written.
-p15_read_only_graph.rk            # #1587 looping over a Rack in a struct field frees it
-p19_mutate_param_link_write.rk    # #1587
-t_arena_in_a_struct_field.rk      # #1587
-t_container_through_field.rk      # #1587
 t_fixed_array_clone.rk            # #1588 b = a.clone() frees a's strings first
 t_fs_handle_imported_ensure.rk   # #1601 an imported create_file/open closes its File twice natively

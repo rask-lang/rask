@@ -1267,13 +1267,167 @@ impl<'a> MirContext<'a> {
             rask_types::GenericArg::Type(t) => Some(t),
             _ => None,
         })?;
-        if !self.is_link_type(value) {
+        // `Vec<Link<T>?>` holds edges the same as `Vec<Link<T>>`; its `none`
+        // entries are skipped by the registration. So does a `Vec<Cursor>`,
+        // whose elements hold links inside them (#1804): the runtime finds
+        // those through the element map.
+        // Links an inner container holds are that container's to record: it
+        // is a holder of its own. Asked of the outer one, the runtime would
+        // read the inner handles as links (#1804 review).
+        if !self.type_holds_link_directly(value, 0) {
             return None;
         }
         match head.as_str() {
-            "Vec" => Some("Link_register_vec"),
-            "Map" => Some("Link_register_map"),
+            "Vec" => Some("rask_link_register_vec"),
+            "Map" => Some("rask_link_register_map"),
             _ => None,
+        }
+    }
+
+    /// Whether a value of `ty` holds a link anywhere inside it: itself, a
+    /// field, a tuple or array element, or a container's elements. Bounded,
+    /// because a value type can reach itself through a container
+    /// (`struct Tree { kids: Vec<Tree> }`).
+    /// `type_holds_link`, not counting links inside a container the value holds.
+    fn type_holds_link_directly(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let bare = ty.as_option().unwrap_or(ty);
+        if self.is_link_type(bare) {
+            return true;
+        }
+        if self.generic_head(bare).is_some_and(|h| h == "Vec" || h == "Map") {
+            return false;
+        }
+        match (bare, self.type_layout(bare)) {
+            (_, MirType::Struct(id)) => self
+                .struct_layouts
+                .get(id.id as usize)
+                .is_some_and(|l| l.fields.iter().any(|f| self.type_holds_link_directly(&f.ty, depth + 1))),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link_directly(&f.ty, depth + 1)))
+            }),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link_directly(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_holds_link_directly(elem, depth + 1),
+            // `T or E`: whichever side is live holds its links where it would alone.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link_directly(ok, depth + 1) || self.type_holds_link_directly(err, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn type_holds_link(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let bare = ty.as_option().unwrap_or(ty);
+        if self.is_link_type(bare) {
+            return true;
+        }
+        if let Some(head) = self.generic_head(bare) {
+            if head == "Vec" || head == "Map" {
+                let args = match bare {
+                    Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
+                    _ => return false,
+                };
+                return args.iter().rev().find_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some(t),
+                    _ => None,
+                })
+                .is_some_and(|v| self.type_holds_link(v, depth + 1));
+            }
+        }
+        match (bare, self.type_layout(bare)) {
+            (_, MirType::Struct(id)) => self
+                .struct_layouts
+                .get(id.id as usize)
+                .is_some_and(|l| l.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1))),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_holds_link(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_holds_link(elem, depth + 1),
+            // `T or E`: whichever side is live holds its links where it would alone.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link(ok, depth + 1) || self.type_holds_link(err, depth + 1)
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a value of `ty` holds a link behind a tag: in the payload of a
+    /// tagged `T?`, or in an enum variant's fields (#1801). Those are live only
+    /// while their variant is, so they are recorded per store
+    /// (`rask_link_guarded`) rather than once, by a descriptor of fixed slots.
+    pub(crate) fn mir_has_guarded_link(&self, ty: &MirType) -> bool {
+        self.mir_guarded(ty, 0)
+    }
+
+    fn mir_guarded(&self, ty: &MirType, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            MirType::Struct(id) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_has_guarded_link(&f.ty, depth + 1))
+            }),
+            MirType::Enum(id) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            MirType::Option(inner) if !inner.is_niche_payload() => self.mir_holds_link(inner, depth + 1),
+            MirType::Result { ok, err } => {
+                self.mir_holds_link(ok, depth + 1) || self.mir_holds_link(err, depth + 1)
+            }
+            MirType::Tuple(parts) => parts.iter().any(|p| self.mir_guarded(p, depth + 1)),
+            MirType::Array { elem, .. } => self.mir_guarded(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    fn mir_holds_link(&self, ty: &MirType, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            MirType::Link(_) => true,
+            MirType::Option(inner) => self.mir_holds_link(inner, depth + 1),
+            MirType::Struct(id) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1))
+            }),
+            MirType::Enum(id) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            MirType::Tuple(parts) => parts.iter().any(|p| self.mir_holds_link(p, depth + 1)),
+            MirType::Array { elem, .. } => self.mir_holds_link(elem, depth + 1),
+            _ => false,
+        }
+    }
+
+    fn type_has_guarded_link(&self, ty: &Type, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        if let Some(inner) = ty.as_option() {
+            // A niche `Link<T>?` is a plain slot; any other optional's payload
+            // is behind its tag.
+            return !self.is_link_type(inner) && self.type_holds_link(inner, depth + 1);
+        }
+        match (ty, self.type_layout(ty)) {
+            (_, MirType::Struct(id)) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().any(|f| self.type_has_guarded_link(&f.ty, depth + 1))
+            }),
+            (_, MirType::Enum(id)) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().any(|v| v.fields.iter().any(|f| self.type_holds_link(&f.ty, depth + 1)))
+            }),
+            (Type::Tuple(elems), _) => elems.iter().any(|e| self.type_has_guarded_link(e, depth + 1)),
+            (Type::Array { elem, .. }, _) => self.type_has_guarded_link(elem, depth + 1),
+            // A `T or E` payload is behind its tag, like an optional's.
+            (Type::Result { ok, err }, _) => {
+                self.type_holds_link(ok, depth + 1) || self.type_holds_link(err, depth + 1)
+            }
+            _ => false,
         }
     }
 
@@ -1287,37 +1441,85 @@ impl<'a> MirContext<'a> {
     /// storage the program had finished with (#983).
     pub(crate) fn container_link_forget(&self, ty: &Type) -> Option<&'static str> {
         match self.container_link_registration(ty)? {
-            "Link_register_vec" => Some("Link_forget_vec"),
-            "Link_register_map" => Some("Link_forget_map"),
+            "rask_link_register_vec" => Some("rask_link_forget_vec"),
+            "rask_link_register_map" => Some("rask_link_forget_map"),
             _ => None,
         }
     }
 
-    /// Does this struct have a field that can hold an edge — a `Link<T>`, or a
-    /// `Vec`/`Map` of them? Same question codegen asks to build the descriptor;
-    /// asked here to decide whether the call is worth emitting at all.
+    /// Is this an aggregate holding an edge anywhere inside it — a `Link<T>` or
+    /// a `Vec`/`Map` of them, at any depth of inline nesting? Asked to decide
+    /// whether registering a freshly stored value is worth emitting.
+    ///
+    /// A bare link is not an aggregate: a local or parameter holding one is a
+    /// root, which the checker keeps from outliving its node (mem.racks/RK5),
+    /// and the rack never records it.
     pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
-        let MirType::Struct(sid) = ty else { return false };
-        let Some(layout) = self.struct_layouts.get(sid.id as usize) else { return false };
-        layout.fields.iter().any(|f| self.field_holds_links(&f.ty))
+        matches!(ty, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. })
+            && !crate::types::link_slots_by(ty, &|id| self.struct_link_slots(id as usize)).is_empty()
     }
 
-    /// `Link<T>` / `Link<T>?`, or a `Vec`/`Map` whose values are links.
-    pub(crate) fn field_holds_links(&self, ty: &Type) -> bool {
-        let bare = ty.as_option().unwrap_or(ty);
-        let (Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. }) = bare else { return false };
-        match self.generic_head(bare).as_deref() {
-            Some("Link") => return true,
-            Some("Vec" | "Map") => {}
-            _ => return false,
+    /// Where struct layout `id` holds edges, offsets from its start
+    /// (`crate::link_slots`).
+    ///
+    /// Walked over the checker's types rather than the MIR ones: a
+    /// `Vec<Link<T>>` field and a `Vec<i64>` field are the same
+    /// `MirType::Container`, and only the element type says which one the rack
+    /// has to hear about.
+    pub(crate) fn struct_link_slots(&self, id: usize) -> Vec<crate::LinkSlot> {
+        let mut out = Vec::new();
+        if let Some(layout) = self.struct_layouts.get(id) {
+            for f in &layout.fields {
+                self.type_link_slots(&f.ty, f.offset, 0, &mut out);
+            }
         }
-        args.iter()
-            .rev()
-            .find_map(|a| match a {
-                rask_types::GenericArg::Type(t) => Some(t),
-                _ => None,
-            })
-            .is_some_and(|v| self.is_link_type(v.as_option().unwrap_or(v)))
+        out
+    }
+
+    fn type_link_slots(&self, ty: &Type, base: u32, depth: u32, out: &mut Vec<crate::LinkSlot>) {
+        // A type that reaches itself does so through a pointer, which this walk
+        // doesn't follow; the bound only keeps a pathological nesting finite.
+        if depth > 16 {
+            return;
+        }
+        let bare = ty.as_option().unwrap_or(ty);
+        if self.is_link_type(bare) {
+            out.push(crate::LinkSlot {
+                kind: rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32,
+                offset: base,
+            });
+            return;
+        }
+        if let Some(reg) = self.container_link_registration(bare) {
+            let kind = match reg {
+                "rask_link_register_vec" => rask_mono::runtime_abi::RASK_RACK_FIELD_VEC,
+                _ => rask_mono::runtime_abi::RASK_RACK_FIELD_MAP,
+            };
+            out.push(crate::LinkSlot { kind: kind as i32, offset: base });
+            return;
+        }
+        // Only the value itself from here on: a tagged `T?` holding a struct
+        // with a link is variant-dependent, like an enum payload.
+        match (ty, self.type_layout(ty)) {
+            (_, MirType::Struct(id)) => {
+                if let Some(layout) = self.struct_layouts.get(id.id as usize) {
+                    for f in &layout.fields {
+                        self.type_link_slots(&f.ty, base + f.offset, depth + 1, out);
+                    }
+                }
+            }
+            (Type::Tuple(elems), MirType::Tuple(parts)) => {
+                for (elem, at) in elems.iter().zip(crate::tuple_offsets(&parts)) {
+                    self.type_link_slots(elem, base + at, depth + 1, out);
+                }
+            }
+            (Type::Array { elem, .. }, MirType::Array { elem: melem, len }) => {
+                for i in 0..len {
+                    self.type_link_slots(elem, base + i * melem.size(), depth + 1, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Is this the `Link<T>` type, however the checker happens to spell it?
@@ -1413,6 +1615,7 @@ impl<'a> MirContext<'a> {
                 .iter()
                 .map(|l| l.variants.iter().map(|v| v.fields.iter().map(field).collect()).collect())
                 .collect(),
+            struct_links: (0..self.struct_layouts.len()).map(|id| self.struct_link_slots(id)).collect(),
         }
     }
 

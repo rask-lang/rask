@@ -158,11 +158,15 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     rask_mir::fallback::report_coverage();
 
     let calls_as_lowered = functions.iter().map(|f| (f.name.clone(), referred_to(f, input))).collect();
-    let pipeline = rask_mir::PassManager::default_pipeline().run(&mut functions);
+    let rack_holders = rask_mir::rack_holding_structs(&ctx.field_types());
+    let pipeline = rask_mir::PassManager::default_pipeline().run_with(&mut functions, rack_holders);
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
     }
+    // Local structs holding links forget their edges when their frame ends.
+    // After SSA is gone, so the locals named are the ones that hold the bytes.
+    rask_mir::link_holders::forget_local_links(&mut functions);
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }

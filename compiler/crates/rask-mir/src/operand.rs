@@ -259,16 +259,26 @@ pub struct FunctionRef {
     /// checker typed it. Not a symbol: a pass after lowering folds it to a
     /// constant or calls a C function made for these argument types.
     pub c_macro: Option<Box<rask_c_parse::cexpr::MacroCall>>,
+    /// A C runtime function called by its own symbol, a call lowering makes
+    /// for itself (#1555): every argument a word, a word back when the call
+    /// has a destination. Codegen declares it from the call, so it needs no
+    /// dispatch row.
+    pub runtime: bool,
 }
 
 impl FunctionRef {
     /// Internal Rask or stdlib call.
     pub fn internal(name: String) -> Self {
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None }
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None }
+        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false }
+    }
+
+    /// A runtime function by its C symbol (`runtime`).
+    pub fn runtime(name: String) -> Self {
+        Self { runtime: true, ..Self::internal(name) }
     }
 }

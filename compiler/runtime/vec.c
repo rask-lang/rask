@@ -28,9 +28,28 @@ struct RaskVec {
     // construction. See `RaskElemStrs` in rask_runtime.h for why the container
     // carries this rather than every `free` site working it out.
     RaskElemStrs strs;
+    // The rack's edge records that name this vector, chained through the
+    // records themselves (rack.c). Freeing the vector drops them, so a record
+    // can't outlive the storage it names — whichever elements it still holds.
+    void *link_edges;
+    // Loops walking this vector right now, each a `RaskVecCursor` in its
+    // frame. A removal moves back every cursor past the removed entry, so a
+    // loop whose body deletes nodes the vector links to neither skips an entry
+    // nor reads past the end (#1805).
+    RaskVecCursor *cursors;
+    // Whether elements hold links inside them (`Vec<Cursor>`): 0 not asked
+    // yet, 1 no, 2 yes. Asked of the element map once.
+    int32_t links;
 };
 
 static void vec_check_no_borrows(const RaskVec *v, const char *op);
+static void vec_detach_cursors(RaskVec *v);
+// The element-links check on the push path: a field read once the vector has
+// been asked, so a vector of plain values pays a predictable branch.
+static inline int vec_links_inline(RaskVec *v) {
+    if (__builtin_expect(v->links == 1, 1)) return 0;
+    return v->links == 2 || rask_vec_holds_struct_links(v);
+}
 
 // ─── Element buffer ─────────────────────────────────────────
 //
@@ -178,28 +197,19 @@ static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
         int32_t e = entries[i];
         uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
         if (kind == RASK_OWNED_TAG_IF) {
-            int64_t body = RASK_OWNED_TAG_COUNT(e);
-            // A list that claims more entries than it has is malformed; stop
-            // rather than read past it.
-            if (i + body >= count) return;
-            const char *at = elem + RASK_OWNED_TAG_OFFSET(e);
-            int64_t tag;
-            switch (RASK_OWNED_TAG_WIDTH(e)) {
-                case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
-                case 2:  tag = (int64_t)*(const uint16_t *)at; break;
-                case 4:  tag = (int64_t)*(const uint32_t *)at; break;
-                default: tag = *(const int64_t *)at;           break;
-            }
-            if (tag == (int64_t)RASK_OWNED_TAG_VALUE(e)) {
+            int64_t body;
+            int live = rask_owned_guard(elem, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
                 owned_walk_from(elem, entries + i + 1, body, root, root_count, op);
             }
             i += body;
             continue;
         }
         if (kind == RASK_OWNED_HEAP) {
-            int64_t body = RASK_OWNED_HEAP_COUNT(e);
-            if (i + body >= count) return;
-            char **slot = (char **)(elem + RASK_OWNED_HEAP_OFFSET(e));
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            char **slot = (char **)(elem + (e & RASK_OWNED_OFFSET_MASK));
             char *block = *slot;
             if (block) {
                 // What the block holds goes first: after the free there is
@@ -406,6 +416,8 @@ RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
 void rask_vec_free_view(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    vec_detach_cursors(v);
+    if (v->link_edges) rask_link_holder_died(&v->link_edges);
     vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
@@ -423,9 +435,18 @@ void rask_vec_copy_back(const RaskVec *v, char *dst) {
 // The map came from the constructor: `Vec<string>` is the one-entry case at
 // offset zero, a `Vec<Holder>` lists each string field, and elements that own
 // nothing have no map at all.
+// A loop is still walking this vector — the body deleted the node that owned
+// it. The loop's next step stops, and its exit leaves the vector alone.
+static void vec_detach_cursors(RaskVec *v) {
+    for (RaskVecCursor *c = v->cursors; c; c = c->next) c->detached = 1;
+    v->cursors = NULL;
+}
+
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
     vec_check_no_borrows(v, "free");
+    vec_detach_cursors(v);
+    if (v->link_edges) rask_link_holder_died(&v->link_edges);
     if (v->strs.offsets && v->strs.count > 0 && v->data) {
         for (int64_t i = 0; i < v->len; i++) {
             rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
@@ -433,6 +454,10 @@ void rask_vec_free(RaskVec *v) {
     }
     vec_buf_free(v->data, v->elem_size, v->cap);
     rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+void **rask_vec_link_edges(RaskVec *v) {
+    return &v->link_edges;
 }
 
 int64_t rask_vec_len(const RaskVec *v) {
@@ -541,6 +566,7 @@ int64_t rask_vec_push(RaskVec *v, const void *elem) {
     if (vec_grow(v, v->len + 1) != 0) return -1;
     memcpy(v->data + v->len * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -594,6 +620,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     char *slot = vec_slot(v, index);
     rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
     memcpy(slot, elem, (size_t)v->elem_size);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Put back an element `with`, `for mutate` or a field write took out of this
@@ -602,6 +629,7 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
 // released here.
 void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
     memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
@@ -708,6 +736,7 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
     }
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
     v->len++;
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
     return 0;
 }
 
@@ -716,6 +745,10 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
+    }
+    for (RaskVecCursor *c = v->cursors; c; c = c->next) {
+        if (index < c->next_index) c->next_index--;
+        if (index < c->end) c->end--;
     }
     if (out) {
         memcpy(out, v->data + index * v->elem_size, (size_t)v->elem_size);
@@ -729,6 +762,140 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
     }
     v->len--;
     return 0;
+}
+
+// ─── Links inside elements ──────────────────────────────────
+//
+// An element of struct type can hold links (`Vec<Cursor>`), and the rack has to
+// find them: delete nulls the ones naming the dying node. The element map says
+// where they are, as `RASK_OWNED_LINK` entries next to the strings and
+// containers, and the same tag guards decide whether an enum payload's link is
+// live.
+
+static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
+                            RaskLinkSlotFn fn, void *ctx) {
+    if (!elem || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
+            int64_t body;
+            int live = rask_owned_guard(elem, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
+                links_walk_from(elem, entries + i + 1, body, fn, ctx);
+            }
+            i += body;
+            continue;
+        }
+        // What a heap block or a recursive value holds is out of reach of a
+        // link slot here: a node never sits behind one.
+        if (kind == RASK_OWNED_HEAP) {
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
+    }
+}
+
+// Only the entries under a guard, and only the slots in `[lo, hi)`. The links
+// outside any guard a node or a struct records some other way.
+static void guarded_walk_from(char *base, const int32_t *entries, int64_t count, int guarded,
+                              int64_t lo, int64_t hi, RaskLinkSlotFn fn, void *ctx) {
+    if (!base || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
+            int64_t body;
+            int live = rask_owned_guard(base, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
+                guarded_walk_from(base, entries + i + 1, body, 1, lo, hi, fn, ctx);
+            }
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_HEAP) {
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_LINK && guarded) {
+            int64_t off = e & RASK_OWNED_OFFSET_MASK;
+            if (off >= lo && off < hi) fn((void **)(base + off), ctx);
+        }
+    }
+}
+
+void rask_guarded_links(char *base, const int32_t *entries, int64_t count,
+                        int64_t lo, int64_t hi, RaskLinkSlotFn fn, void *ctx) {
+    guarded_walk_from(base, entries, count, 0, lo, hi, fn, ctx);
+}
+
+void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx) {
+    if (strs) links_walk_from(elem, strs->offsets, strs->count, fn, ctx);
+}
+
+static int32_t elem_strs_links(const RaskElemStrs *s) {
+    for (int64_t i = 0; s->offsets && i < s->count; i++) {
+        if (((uint32_t)s->offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) return 2;
+    }
+    return 1;
+}
+
+int64_t rask_vec_holds_struct_links(RaskVec *v) {
+    if (!v) return 0;
+    if (!v->links) v->links = elem_strs_links(&v->strs);
+    return v->links == 2;
+}
+
+const RaskElemStrs *rask_vec_elem_strs(const RaskVec *v) {
+    return &v->strs;
+}
+
+// ─── Loops that tolerate removal ────────────────────────────
+//
+// A loop over a vector of links can delete the nodes it walks, and each delete
+// takes the node's entry out of the vector. An index loop with the length read
+// up front then skips the entry after each removal and reads past the end. The
+// loop registers its cursor instead and asks for each index; a removal moves
+// the cursor back. Every entry still present when the loop gets to it is
+// visited once.
+
+// `[start, end)` is what the loop walks — a `skip`/`take` narrows it — and is
+// clamped to the vector as it stands.
+void rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end) {
+    if (start < 0) start = 0;
+    if (end > v->len) end = v->len;
+    c->next_index = start;
+    c->end = end;
+    c->detached = 0;
+    c->next = v->cursors;
+    v->cursors = c;
+}
+
+// The index to visit next, or -1 when the loop is done.
+int64_t rask_vec_iter_next(RaskVec *v, RaskVecCursor *c) {
+    if (c->detached || c->next_index >= c->end || c->next_index >= v->len) return -1;
+    return c->next_index++;
+}
+
+// `forget` is set for a temporary the loop registered: nothing can reach it
+// once the loop is done, so its edge records go too. A detached cursor means
+// the vector was freed during the loop, and its records went with it.
+void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c, int64_t forget) {
+    if (c->detached) return;
+    if (forget) rask_link_forget_vec(v);
+    for (RaskVecCursor **p = &v->cursors; *p; p = &(*p)->next) {
+        if (*p == c) {
+            *p = c->next;
+            return;
+        }
+    }
 }
 
 // clone — deep copy of the Vec (copies element bytes, not deep-cloning elements).
@@ -762,10 +929,14 @@ RaskVec *rask_vec_take_all(RaskVec *v) {
 }
 
 // `let old = self.f` ahead of `self.f = …`: the field's bytes, for a binding
-// that owns them from here. The refill writes over the slot without releasing
-// it, so nothing is zeroed.
-int64_t rask_field_take(const void *field, int64_t size, void *out) {
-    if (out && field) memcpy(out, field, (size_t)size);
+// that owns them from here. The field is zeroed, so it owns nothing either way
+// the old value goes next: written over in place, or released whole when a
+// local is rebuilt from its own fields (`c = Cursor(label: c.label, …)`).
+int64_t rask_field_take(void *field, int64_t size, void *out) {
+    if (out && field) {
+        memcpy(out, field, (size_t)size);
+        memset(field, 0, (size_t)size);
+    }
     return 0;
 }
 

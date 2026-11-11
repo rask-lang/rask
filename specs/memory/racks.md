@@ -46,9 +46,30 @@ silent if you forget it.
 | **RK2: A link is a stored reference** | `Link<T>` may be held in a struct field, which no other Rask reference may be (`mem.borrowing/B1`). That is the whole point of the type. It is a machine word naming a node, so it copies rather than moves — pushing a link into a `Vec` leaves you with the link you started with, and the rack still owns the node. What kills a link is the delete, not the handing over: see RK5. A link reads like its node: `l.field` is the node's field and `l.method()` the node's method, borrowing the node in place. Only identity (`==`, `hash`) and `clone` are the link's own, and a `take self` method can't be called through one, since it would move the node out of the rack (E0910) |
 | **RK3: Delete nulls every incoming edge** | `rack.delete(n)` sets every `Link<T>?` field pointing at `n` to `none` before it returns. A link to a deleted node therefore cannot be observed — there is no stale link to check for, and no cleanup for the program to remember |
 | **RK4: Reads are unchecked** | Following a link is a pointer dereference. RK3 is what earns that: the invalid state doesn't exist, so nothing needs testing for it |
+| **RK15: Every stored link is an edge** | RK3 covers a link wherever it is stored: a field at any depth, a tuple or array element, a `Vec` or `Map` entry, and a container held in a local. A slot is set to `none`; a container entry is removed. A *local link* is a root the compiler guards (RK5); a *local container* of links is storage the rack maintains. A loop over a vector of links keeps its place across those removals: it visits each entry still present when it gets there, once. An entry added during the loop isn't visited, and a loop whose body deletes the node that owns the vector ends there |
 
 RK3 is why the rack exists as an object. Nulling incoming edges requires knowing
 who points at whom, and that index needs one home per graph.
+
+RK15 settles a case the two neighbouring rules leave open. A local link is a
+root because the rack can't reach it, so the compiler stops you using it after
+a delete. A local vector of links can be reached: it registers its entries like
+any other holder. So a cloned child list is a list of live children, and
+deleting while walking one is ordinary code:
+
+<!-- test: skip -->
+```rask
+func delete_subtree(deleting scene: Scene, take n: Link<SceneNode>) {
+    let kids = n.children.clone()
+    for c in kids {
+        delete_subtree(deleting scene, c)    // removes c from kids, and from n.children
+    }
+    scene.nodes.delete(n)
+}
+```
+
+The loop doesn't skip the child after each removal, and it doesn't run off the
+end. It walks the vector through a cursor that a removal moves back.
 
 ## What the compiler enforces
 
@@ -126,13 +147,20 @@ in constant time whatever the in-degree. Measured across in-degree 1 → 4096, a
 retarget stays flat at ~5 ns.
 
 Everything else that can hold a link — a field of a struct outside the rack, a
-`Vec` or `Map` element — gets a heap record found by scanning. Those sit on a
-separate list, so a hub with thousands of node-field edges never lengthens the
-list that gets scanned.
+`Vec` or `Map` element — gets a heap record on a separate list, and the rack
+keeps a hash index from holder to record. A slot's record is keyed by the slot,
+since a slot names one target at a time; a container keeps one record per target
+it names, keyed by (container, target). So `c.at = b` and `vec.push(b)` find
+their record with one probe instead of walking the target's list. Measured
+across foreign in-degree 1 → 4096, a retarget stays at ~7–13 ns and a push at
+~5 ns, where both used to reach 4–9 µs.
+
+That leaves `delete` as the only operation that walks a list, and it has to: it
+visits every edge it nulls.
 
 | Rule | Description |
 |------|-------------|
-| **RK10: Retargeting is constant-time** | Overwriting a link declared on a node costs the same at any in-degree. The record is inline, so nothing is searched for. A link held outside a node still pays a scan of the target's much shorter foreign-holder list |
+| **RK10: Retargeting is constant-time** | Overwriting or storing a link costs the same at any in-degree. A link declared on a node reaches its inline record by arithmetic; any other holder reaches its heap record through the rack's index |
 
 ### Measuring it
 
@@ -182,14 +210,6 @@ Named here so the gaps are on the record rather than discovered:
 - **A link escaping inside a collection.** RK6 covers returns, assignments and
   aggregate literals; a link pushed into a `Vec` that then escapes is not yet
   caught (rask-lang/rask#941).
-- **Pushing a link into a container still scans.** One record per (container,
-  target) means `vec.push(link)` checks whether that pair is already recorded,
-  and that check walks the target's foreign-holder list. Node-field edges are on
-  the other list, so they cost it nothing — measured flat at ~3.5 ns whether one
-  node points at the target or 4096 do. What it is still linear in is the number
-  of *foreign* holders: 4096 of those make the same push 9.4 µs. Ordinary graphs
-  have few, but nothing enforces that, and it is the last place in the model
-  where in-degree leaks into a write (rask-lang/rask#981).
 - **Structural mutation under concurrency.** Edges may only connect co-owned
   nodes, and the current answer for sharing a graph is a lock around the
   ownership root. Staged structural mutation is designed and unbuilt.

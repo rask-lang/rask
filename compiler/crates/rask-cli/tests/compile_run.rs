@@ -7465,6 +7465,18 @@ fn error_int_float_arithmetic() {
     );
 }
 
+// mem.borrowing/S5: writing over a field frees what a view of it reads. A
+// `let old = p.f` the refill doesn't always follow stays a view, and reading it
+// after the refill read freed storage natively (#1838).
+#[test]
+fn error_field_view_outlives_replace() {
+    let (failed, out) = compile_error_output("field_view_outlives_replace.rk");
+    assert!(failed, "a view read after its field was replaced must be rejected: {}", out);
+    assert_eq!(out.matches("error[E0958]").count(), 16, "sixteen sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0959]").count(), 2, "two reads of an emptied field: {}", out);
+    assert!(out.contains("written over while"), "should say what happened: {}", out);
+}
+
 // mem.parameters/PM2: a `mutate` parameter is still there when the call returns,
 // so one that was consumed has to have been replaced. Consuming it *is* allowed —
 // that's the difference from a plain borrow — and nothing checked that anything
