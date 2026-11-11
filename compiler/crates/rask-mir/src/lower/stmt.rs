@@ -1274,6 +1274,47 @@ impl<'a> MirLowerer<'a> {
                                     let elem_ty = (**elem).clone();
                                     self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true);
                                 }
+                                // The element the slot is about to lose, as a
+                                // field store gives its old value back. Left
+                                // out, `a[0] = s` on a `[string; 2]` leaked the
+                                // string it replaced (#1884).
+                                //
+                                // Only an array that is a binding of its own.
+                                // Through a field (`s.v[1] = t`) the store lands
+                                // in a new SSA version of `s` while the frame
+                                // still releases the old one at its end, so the
+                                // old element would be released twice; that
+                                // case keeps leaking until #1884 is closed.
+                                let elem_ty = (**elem).clone();
+                                let own_binding = matches!(object.kind, ExprKind::Ident(_));
+                                if let Some(old) = self
+                                    .replaced_slot_type(target, reuses_old, &elem_ty)
+                                    .filter(|_| own_binding)
+                                {
+                                    let scaled = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: scaled,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Mul,
+                                            left: idx_op.clone(),
+                                            right: MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
+                                        },
+                                    }));
+                                    let at = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: at,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Add,
+                                            left: MirOperand::Local(base_id),
+                                            right: MirOperand::Local(scaled),
+                                        },
+                                    }));
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
+                                        addr: at,
+                                        offset: 0,
+                                        ty: old,
+                                    }));
+                                }
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
                                     index: idx_op,

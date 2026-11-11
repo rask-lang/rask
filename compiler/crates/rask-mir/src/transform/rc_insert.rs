@@ -435,8 +435,11 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // count. Without the inc, the dec at the local's last use freed
                 // a buffer the field still points at: `Body { error: "no route
                 // for {path}" }` printed whatever the next allocation put
-                // there (#501).
+                // there (#501). An array element is such a location too:
+                // `a[0] = s` on a `[string; 2]` left the slot holding a string
+                // the dec at `s`'s last use had freed.
                 MirStmtKind::Store { value: MirOperand::Local(src), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(src), .. }
                     if string_set.contains(src) =>
                 {
                     insertions.push((si, MirStmt::new(

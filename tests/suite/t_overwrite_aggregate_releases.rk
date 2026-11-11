@@ -90,3 +90,21 @@ test "rotating a mutate array from its own elements" {
     rotate(mutate v)
     assert v[0][0] == mk(2)
 }
+
+func touch(mutate a: [string; 2]) {
+    a[0] = mk(9)
+}
+
+test "an element store through mutate reaches the caller and releases the old one" {
+    mut a = [mk(3), mk(4)]
+    touch(mutate a)
+    assert a[0] == mk(9)
+}
+
+test "an element store into a local array" {
+    mut a = [mk(3), mk(4)]
+    let s = mk(9)
+    a[0] = s
+    assert a[0] == mk(9)
+    assert s == mk(9)
+}
