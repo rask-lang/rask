@@ -114,7 +114,15 @@ Every source of drift is closed in the kernel, so game code can't reopen it by a
 
 ## Entities
 
-An entity is a stable id. Its components live in arrays inside its region, and an indirection table maps the id to where it is now. References between entities, sorted query results, saves and render interpolation all use the id, so moving between regions or a swap-remove changes nothing a reader can see.
+Every game in this genre hand-rolls "my target died": ids with generation counters, checked on every read. Rask's racks make that impossible instead, so entities are built on them.
+
+- **One rack of entity nodes is the identity table.** A node is small and cold: a stable `id`, the entity's kind, and where its components live (region and index). Nodes never move (`mem.racks/RK1`), so an entity moving between regions changes only its node's location fields. That's the indirection table, built in.
+- **Hot data lives in region arrays.** Components sit in per-region arrays for streaming; the node says where an entity's data is right now.
+- **References are `Link<Entity>?`, stored anywhere.** A unit's target, a belt's next belt, a pawn's job site, in a node or right in a hot component array. Deleting an entity sets every link to it to `none` before the delete returns (RK3), so a stale reference can't be observed and reads need no check (RK4). Storing a link costs a few nanoseconds of bookkeeping at any number of holders (RK10); only a delete walks edges.
+- **Spawn, delete and region moves are staged** during the parallel phase and applied after the join, in id order. That's what determinism needs, and it keeps deletes' edge walks out of the parallel phase.
+- **Order and identity come from `id`.** Links compare but don't order (RK11), and a slot can be reused by a later node (RK12), so sorted queries and save identity use `id`. Hashes and checkpoints use slot numbers, which are deterministic given the same operations (`determinism/D8`); saves translate links through slot numbers as `mem.relocatable` does.
+
+Render interpolation, sorted query results and saves all follow the entity, so moving between regions or a swap-remove changes nothing a reader can see.
 
 Fields always read together (x and y, velocity and position in a movement pass) go in one array of small structs; fields read rarely (name, history, inventory) go in a cold array. Splitting every field apart costs as much as never splitting. In Rask an array of small structs is a `Vec` of `@layout(C)` structs, packed at natural width (#985), and the same buffer can go to the GPU as instance data.
 
@@ -223,7 +231,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 ## Open
 
 - The space interface in detail: what a lattice declares, whether a hierarchy of region sizes belongs in the kernel or in one space type, and how a space type states its write reach.
-- Language items, ranked from main: the ordered map the kernel needs (`determinism` open question), fork-join that can borrow (#1686), and compile-time access to a function's parameter types and modes.
+- Language items, ranked from main: the ordered map the kernel needs (`determinism` open question), fork-join that can borrow (#1686), compile-time access to a function's parameter types and modes, and staged structural mutation on racks (designed in `mem.racks`, unbuilt).
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
 - A falling-sand prototype first, as a speed benchmark. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
