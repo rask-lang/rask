@@ -2536,6 +2536,33 @@ impl Interpreter {
                 started.map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
+            // A fork's blocks run one after another, in written order: the
+            // schedule every fork may fall back to (conc.fork/FK5), so it's the
+            // reference. A block that panics doesn't stop the later ones, and
+            // the first panic is raised once they're all done (FK6), the same
+            // as when they run side by side.
+            ExprKind::Fork { sides } => {
+                let mut values = Vec::with_capacity(sides.len());
+                let mut first_panic: Option<RuntimeDiagnostic> = None;
+                for side in sides {
+                    let closure = self.eval_expr(side)?;
+                    self.failed_call_span = None;
+                    match self.call_closure(closure, Vec::new(), Vec::new()) {
+                        Ok(v) => values.push(v),
+                        Err(e) if e.is_panic() => {
+                            let at = self.failed_call_span.take().unwrap_or(side.span);
+                            first_panic.get_or_insert(RuntimeDiagnostic::new(e, at));
+                            values.push(Value::Unit);
+                        }
+                        Err(e) => return Err(RuntimeDiagnostic::new(e, side.span)),
+                    }
+                }
+                if let Some(panic) = first_panic {
+                    return Err(panic);
+                }
+                Ok(Value::Tuple(Arc::new(values)))
+            }
+
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
                 match (val, ty.bare_name().unwrap_or_default()) {

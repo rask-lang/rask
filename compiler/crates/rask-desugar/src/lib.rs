@@ -994,6 +994,11 @@ impl Desugarer {
             ExprKind::Spawn { body, .. } => {
                 self.desugar_expr(body);
             }
+            ExprKind::Fork { sides } => {
+                for side in sides {
+                    self.desugar_expr(side);
+                }
+            }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }

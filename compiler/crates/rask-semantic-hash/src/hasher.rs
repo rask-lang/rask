@@ -887,6 +887,13 @@ impl Hasher {
                 }
                 self.hash_expr(body);
             }
+            ExprKind::Fork { sides } => {
+                self.feed_tag(199);
+                self.feed_u8(sides.len() as u8);
+                for side in sides {
+                    self.hash_expr(side);
+                }
+            }
             ExprKind::Spawn { target, receiver, body } => {
                 self.feed_tag(104);
                 self.feed_u8(*target as u8);

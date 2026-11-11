@@ -819,6 +819,54 @@ impl ToDiagnostic for crate::OwnershipError {
                          what makes it safe to reach for [conc.sync/SH7]",
                     )
             }
+            ForkConflict { name, other_writes, other_span } => {
+                let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
+                Diagnostic::error(format!("two fork blocks touch `{}`, and one of them writes it", name))
+                    .with_code("E0960")
+                    .with_primary(self.span, "written here")
+                    .with_secondary(*other_span, other)
+                    .with_fix(
+                        "give each block its own variable and combine the results after the \
+                         fork: `let (a, b) = fork { … } and { … }`. A counter both blocks \
+                         bump can be an `Atomic` instead",
+                    )
+                    .with_why(
+                        "the blocks may run at the same time, so a write in one and any use \
+                         in another is a data race. Reading the same thing from every block \
+                         is fine, and so are separate fields of one value [conc.fork/FK3]",
+                    )
+            }
+            ForkTaskBound { name, other, other_span, function_value: true } => {
+                Diagnostic::error("two fork blocks call function values that may be the same closure".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used in this block", name))
+                    .with_secondary(*other_span, format!("and `{}` in this one", other))
+                    .with_fix(
+                        "write the work into the blocks, or call the function values from \
+                         one block only",
+                    )
+                    .with_why(
+                        "a function value handed in from outside may be one closure that \
+                         writes what it captured, passed twice. Nothing here can see its \
+                         body, so two blocks calling it could race [conc.fork/FK7]",
+                    )
+            }
+            ForkTaskBound { name, other, other_span, .. } => {
+                Diagnostic::error("two fork blocks name a value that has to stay on one thread".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used in this block", name))
+                    .with_secondary(*other_span, format!("and `{}` in this one", other))
+                    .with_fix(
+                        "do the work on links, racks and `Local` boxes in one block, and \
+                         give the others plain values",
+                    )
+                    .with_why(
+                        "two links can name the same node, a `Local` box takes no lock, \
+                         and storing a link anywhere writes its rack's edge index. Inside \
+                         one block that's one thread at a time; across two it's a race \
+                         [conc.fork/FK7]",
+                    )
+            }
             LinkSent { name, ty, bare_link } => {
                 let label = if *bare_link {
                     format!("`{}` is a link into a rack", name)

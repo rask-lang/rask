@@ -2217,6 +2217,23 @@ impl TypeChecker {
                 }
             }
 
+            // A fork's value is the tuple of its blocks' values (conc.fork/FK1).
+            // Each block is a closure that runs once, so its value is that
+            // closure's result.
+            ExprKind::Fork { sides } => {
+                let elems = sides
+                    .iter()
+                    .map(|side| {
+                        let side_ty = self.infer_expr(side);
+                        match self.ctx.apply(&side_ty) {
+                            Type::Fn { ret, .. } => *ret,
+                            _ => self.ctx.fresh_var(),
+                        }
+                    })
+                    .collect();
+                Type::Tuple(elems)
+            }
+
             ExprKind::Cast { expr: inner, ty } => {
                 let inner_ty = self.infer_expr(inner);
                 let target = self.resolve_written(ty, expr.span).unwrap_or(Type::Error);
@@ -7837,7 +7854,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
     fn in_expr(expr: &Expr) -> bool {
         match &expr.kind {
             // A nested closure's `return` is its own.
-            ExprKind::Closure { .. } | ExprKind::Spawn { .. } => false,
+            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Fork { .. } => false,
             ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
                 in_stmts(body)
             }

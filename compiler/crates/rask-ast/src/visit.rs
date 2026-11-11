@@ -272,6 +272,11 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
             }
             visit_expr(body, v);
         }
+        ExprKind::Fork { sides } => {
+            for side in sides {
+                visit_expr(side, v);
+            }
+        }
 
         ExprKind::Select { arms, .. } => {
             for arm in arms {

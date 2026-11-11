@@ -1278,6 +1278,15 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
+// A panic caught where it happened, to be raised again later (conc.fork/FK6).
+typedef struct RaskCaughtPanic {
+    char *message;   // malloc'd
+    int   located;   // the message starts with `file:line: `
+} RaskCaughtPanic;
+RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b);
+_Noreturn void   rask_panic_resume(RaskCaughtPanic *caught);
+void             rask_panic_discard(RaskCaughtPanic *caught);
+
 // Task ids (ctrl.panic/F1) — used internally by thread.c/green.c to prefix
 // panic output with "task N" while a runtime task is executing.
 int64_t rask_next_task_id(void);
@@ -1430,6 +1439,17 @@ void rask_threadpool_shutdown(void);
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.
 RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+
+// `fork { … } and { … }` (conc.fork). A block is `thunk(closure, out)`.
+// Blocks after the first go through `start`, which queues one on the pool, or
+// only records it when there is no pool; the forking thread runs the first
+// with `inline`, then `join`s the rest in written order. Each returns the
+// first panic so far (NULL if none), and `end` raises it.
+typedef struct RaskForkSide RaskForkSide;
+RaskForkSide    *rask_fork_start(void *thunk, void *closure, void *out);
+RaskCaughtPanic *rask_fork_inline(void *thunk, void *closure, void *out);
+RaskCaughtPanic *rask_fork_join(RaskForkSide *side, RaskCaughtPanic *first);
+void             rask_fork_end(RaskCaughtPanic *first);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

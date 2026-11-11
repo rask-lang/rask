@@ -449,6 +449,11 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             }
             rewrite_expr(body, r);
         }
+        ExprKind::Fork { sides } => {
+            for side in sides {
+                rewrite_expr(side, r);
+            }
+        }
 
         ExprKind::Select { arms, .. } => {
             for arm in arms {

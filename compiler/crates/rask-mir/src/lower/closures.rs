@@ -341,7 +341,7 @@ impl<'a> MirLowerer<'a> {
         let free_vars = self.collect_free_vars(body, params);
 
         // 2. Generate unique name for the closure function
-        let closure_name = format!("{}__closure_{}", self.parent_name, self.closure_counter);
+        let closure_name = self.next_closure_name();
         self.closure_counter += 1;
 
         // 3. Build the closure environment layout.
@@ -977,6 +977,175 @@ impl<'a> MirLowerer<'a> {
             ],
         }));
         Ok((MirOperand::Local(handle), handle_ty))
+    }
+
+    /// `fork { … } and { … }` (conc.fork).
+    ///
+    /// Each block is lowered as a closure that points at its captures (FK2):
+    /// the frame doesn't return until every block has finished, so the
+    /// pointers stay good. Every block gets a thunk that calls it and stores
+    /// its value at that block's offset in the result tuple, so the runtime
+    /// only ever moves `(thunk, closure, out)` triples and never needs to know
+    /// a result type.
+    ///
+    /// Blocks after the first are handed to the runtime first; then this
+    /// thread runs the first block itself and joins the rest in written order.
+    /// With no pool, "handing over" only records the block and the join runs
+    /// it, so the blocks run in written order (FK5). The first panic in
+    /// written order is raised once all have finished (FK6).
+    pub(super) fn lower_fork(&mut self, expr: &Expr, sides: &[Expr]) -> Result<TypedOperand, LoweringError> {
+        let elems = match self.ctx.lookup_node_type(expr.id) {
+            Some(MirType::Tuple(elems)) if elems.len() == sides.len() => elems,
+            _ => {
+                return Err(LoweringError::InvalidConstruct(
+                    "a fork's type is the tuple of its blocks' values".to_string(),
+                ))
+            }
+        };
+        // Each block's value lands in a local of its own, written through its
+        // address by the thunk. The tuple is built from them after the join
+        // with ordinary stores, so the passes that track what each value owns
+        // see where every one of them went.
+        //
+        // Each starts empty. A block that panics never writes its slot, and
+        // the tuple is built (and armed for the unwind) before the panic is
+        // raised again, so the values the other blocks returned are released
+        // with it and the empty slot releases nothing.
+        let slots: Vec<LocalId> = elems.iter().map(|ty| self.builder.alloc_temp(ty.clone())).collect();
+        for (slot, ty) in slots.iter().zip(&elems) {
+            if ty.passed_by_address() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: *slot }));
+            } else if !matches!(ty, MirType::F32 | MirType::F64 | MirType::Void) && ty.size() > 0 {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: *slot,
+                    rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(0))),
+                }));
+            }
+        }
+
+        // (thunk address, closure, out pointer) per block.
+        let mut parts: Vec<(LocalId, MirOperand, LocalId)> = Vec::with_capacity(sides.len());
+        for (k, side) in sides.iter().enumerate() {
+            let rask_ast::expr::ExprKind::Closure { params, ret_ty, body: block } = &side.kind else {
+                return Err(LoweringError::InvalidConstruct(
+                    "a fork block is the closure the parser builds".to_string(),
+                ));
+            };
+            // The name `lower_closure_expecting` gives this block's closure,
+            // read before it lowers the body: a fork or closure inside the
+            // block takes numbers of its own.
+            let closure_name = self.next_closure_name();
+            let (closure, _) = self.lower_closure_expecting(
+                params, ret_ty.as_ref(), block, false, &[], Some(side.id), false,
+            )?;
+            let thunk_name = self.synthesize_fork_thunk(&closure_name, &elems[k]);
+            let thunk = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: thunk,
+                rvalue: MirRValue::FuncAddr(thunk_name),
+            }));
+            let out = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::Ref(slots[k]),
+            }));
+            parts.push((thunk, closure, out));
+        }
+
+        let mut handles = Vec::with_capacity(sides.len() - 1);
+        for (thunk, closure, out) in parts.iter().skip(1) {
+            let h = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(h),
+                func: FunctionRef::runtime("rask_fork_start".to_string()),
+                args: vec![MirOperand::Local(*thunk), closure.clone(), MirOperand::Local(*out)],
+            }));
+            handles.push(h);
+        }
+        let panic = self.builder.alloc_temp(MirType::Ptr);
+        let (thunk, closure, out) = &parts[0];
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(panic),
+            func: FunctionRef::runtime("rask_fork_inline".to_string()),
+            args: vec![MirOperand::Local(*thunk), closure.clone(), MirOperand::Local(*out)],
+        }));
+        for h in handles {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(panic),
+                func: FunctionRef::runtime("rask_fork_join".to_string()),
+                args: vec![MirOperand::Local(h), MirOperand::Local(panic)],
+            }));
+        }
+
+        let tuple_ty = MirType::Tuple(elems.clone());
+        let result = self.builder.alloc_temp(tuple_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result }));
+        let offsets = crate::types::tuple_offsets(&elems);
+        for (k, ty) in elems.iter().enumerate() {
+            if ty.size() == 0 {
+                continue;
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: result,
+                offset: offsets[k],
+                value: MirOperand::Local(slots[k]),
+                store_size: ty.size(),
+                field: None,
+            }));
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::runtime("rask_fork_end".to_string()),
+            args: vec![MirOperand::Local(panic)],
+        }));
+        Ok((MirOperand::Local(result), tuple_ty))
+    }
+
+    /// The name the next closure `lower_closure_expecting` builds will get.
+    fn next_closure_name(&self) -> String {
+        format!("{}__closure_{}", self.parent_name, self.closure_counter)
+    }
+
+    /// `thunk(closure, out)`: call the block's closure and store its value at
+    /// `out`. The one shape the runtime calls a fork block through.
+    fn synthesize_fork_thunk(&mut self, closure_name: &str, ret: &MirType) -> String {
+        let thunk_name = format!("{closure_name}__fork");
+        let mut b = BlockBuilder::new(thunk_name.clone(), MirType::Void);
+        let closure = b.add_param("__closure".to_string(), MirType::Ptr);
+        let out = b.add_param("__out".to_string(), MirType::Ptr);
+        if *ret == MirType::Void || ret.size() == 0 {
+            b.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+                dst: None,
+                closure,
+                args: Vec::new(),
+                taken: Vec::new(),
+            }));
+        } else {
+            let value = b.alloc_local("__value".to_string(), ret.clone());
+            b.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+                dst: Some(value),
+                closure,
+                args: Vec::new(),
+                taken: Vec::new(),
+            }));
+            b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: out,
+                offset: 0,
+                value: MirOperand::Local(value),
+                store_size: ret.size(),
+                field: None,
+            }));
+        }
+        b.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(thunk_name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(b.finish());
+        thunk_name
     }
 
     /// The locals a task block captures that hold a function value, by the

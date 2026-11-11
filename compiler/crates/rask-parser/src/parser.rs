@@ -4025,6 +4025,12 @@ impl Parser {
                     return self.parse_spawn_block(SpawnTarget::Green, None, start);
                 }
 
+                // `fork { … } and { … }` — blocks that may run in parallel
+                // (conc.fork/FK1).
+                if name == "fork" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                    return self.parse_fork(start);
+                }
+
                 // Labeled loop/for/while expression: `label: loop { ... }`
                 if self.check(&TokenKind::Colon)
                     && matches!(self.peek(1), TokenKind::Loop | TokenKind::For | TokenKind::While)
@@ -4614,6 +4620,57 @@ impl Parser {
             id: self.next_id(),
             kind: ExprKind::Spawn { target, receiver, body: Box::new(body) },
             span: self.span(start, end),
+        })
+    }
+
+    /// `fork { … } and { … } …`, the current token being the first `{`. Each
+    /// block is wrapped in a parameterless closure, as a task block is; unlike
+    /// one, it stays in its frame (conc.fork/FK2).
+    fn parse_fork(&mut self, start: usize) -> Result<Expr, ParseError> {
+        let mut sides = Vec::new();
+        loop {
+            sides.push(self.parse_fork_side()?);
+            let and_follows = matches!(self.current_kind(), TokenKind::Ident(w) if w == "and")
+                && matches!(self.peek(1), TokenKind::LBrace);
+            if !and_follows {
+                break;
+            }
+            self.advance(); // `and`
+        }
+        if sides.len() < 2 {
+            let at = self.current().span.clone();
+            return Err(ParseError {
+                message: "a fork needs at least two blocks: `fork { … } and { … }`".to_string(),
+                span: at,
+                hint: Some("one block on its own runs in order anyway; drop the `fork`".to_string()),
+                why: None,
+            });
+        }
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Fork { sides },
+            span: self.span(start, end),
+        })
+    }
+
+    fn parse_fork_side(&mut self) -> Result<Expr, ParseError> {
+        let block_start = self.current().span.start;
+        // Each block is its own frame (FK4): `break` can't reach a loop outside.
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let stmts = self.parse_block_body();
+        self.loop_labels = outer_labels;
+        let stmts = stmts?;
+        let end = self.tokens[self.pos - 1].span.end;
+        let block = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Block(stmts),
+            span: self.span(block_start, end),
+        };
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(block) },
+            span: self.span(block_start, end),
         })
     }
 

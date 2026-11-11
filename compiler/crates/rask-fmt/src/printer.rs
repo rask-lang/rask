@@ -2333,6 +2333,26 @@ impl<'a> Printer<'a> {
                     _ => self.format_expr(block),
                 }
             }
+            ExprKind::Fork { sides } => {
+                self.emit("fork ");
+                for (i, side) in sides.iter().enumerate() {
+                    if i > 0 {
+                        self.emit(" and ");
+                    }
+                    let block = match &side.kind {
+                        ExprKind::Closure { body: block, .. } => block,
+                        _ => side,
+                    };
+                    match &block.kind {
+                        ExprKind::Block(stmts) if self.fits_one_line(block.span, stmts) => {
+                            self.emit("{ ");
+                            self.format_stmt_inline(&stmts[0]);
+                            self.emit(" }");
+                        }
+                        _ => self.format_expr(block),
+                    }
+                }
+            }
             ExprKind::Cast { expr: inner, ty } => {
                 self.format_cast_operand(inner);
                 self.emit(" as ");

@@ -352,6 +352,26 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// conc.fork/FK3: one fork block writes a place another block touches.
+    #[error("two fork blocks touch `{name}`, and one of them writes it")]
+    ForkConflict {
+        name: String,
+        /// The other block writes it too, rather than only reading.
+        other_writes: bool,
+        other_span: Span,
+    },
+
+    /// conc.fork/FK7: two fork blocks each name something that has to stay
+    /// on one thread.
+    #[error("two fork blocks name a value that has to stay on one thread")]
+    ForkTaskBound {
+        name: String,
+        other: String,
+        other_span: Span,
+        /// One of them is a function value the checker can't see into.
+        function_value: bool,
+    },
+
     /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
     /// A link is a node's address; two tasks holding it would both write the
     /// node.

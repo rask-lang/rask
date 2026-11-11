@@ -2870,6 +2870,11 @@ impl Resolver {
                 }
                 self.resolve_expr(body);
             }
+            ExprKind::Fork { sides } => {
+                for side in sides {
+                    self.resolve_expr(side);
+                }
+            }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }

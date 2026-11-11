@@ -1735,6 +1735,7 @@ impl<'a> MirLowerer<'a> {
 
             // Task block — its body goes to the runtime as a carrying closure.
             ExprKind::Spawn { target, body, .. } => self.lower_spawn(expr, *target, body),
+            ExprKind::Fork { sides } => self.lower_fork(expr, sides),
 
             // Cast
             ExprKind::Cast { expr: inner, ty } => self.lower_cast(expr.id, inner, ty),

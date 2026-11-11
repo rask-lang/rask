@@ -57,7 +57,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 83,
+        today: 82,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
               fact about a call stated by its name instead of on its \

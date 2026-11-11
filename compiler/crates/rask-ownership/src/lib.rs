@@ -108,6 +108,14 @@ struct ForMutateInfo {
 }
 
 /// Ownership and borrow checker.
+/// One read or write a fork block makes of a place it doesn't own.
+struct ForkAccess {
+    root: String,
+    path: Vec<String>,
+    write: bool,
+    span: Span,
+}
+
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
     program: &'a TypedProgram,
@@ -345,6 +353,9 @@ pub struct OwnershipChecker<'a> {
     /// closure makes as well as its own. Only the literal case is in here — a
     /// closure that arrives through a parameter or a call has no body to read.
     closure_literals: HashMap<String, Expr>,
+    /// Names bound to a declared function (`let g = add_one`). A function
+    /// captures nothing, so a fork may call one from every block.
+    named_fn_values: HashSet<String>,
     /// The closure nodes the parser wraps around task blocks (`spawn { … }`).
     /// A task block runs once, so unlike a closure it may consume what it
     /// captures (conc.async/S6).
@@ -619,6 +630,7 @@ impl<'a> OwnershipChecker<'a> {
             closure_scope_limits: HashMap::new(),
             task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
+            named_fn_values: HashSet::new(),
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
@@ -2621,6 +2633,7 @@ impl<'a> OwnershipChecker<'a> {
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
                 }
+                self.note_named_fn_value(name, init);
                 // Track resource types. The annotation and the initializer are
                 // both asked: an annotation the name table can't place — a
                 // wrapper, an alias — used to suppress what the checker had
@@ -2704,6 +2717,7 @@ impl<'a> OwnershipChecker<'a> {
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
                 }
+                self.note_named_fn_value(name, init);
                 // Track resource types. The annotation and the initializer are
                 // both asked: an annotation the name table can't place — a
                 // wrapper, an alias — used to suppress what the checker had
@@ -2993,6 +3007,7 @@ impl<'a> OwnershipChecker<'a> {
                 // `mut f` reassigned to a second closure still answered with
                 // the first one's body.
                 if let ExprKind::Ident(target_name) = &target.kind {
+                    self.note_named_fn_value(target_name, value);
                     if matches!(value.kind, ExprKind::Closure { .. }) {
                         self.closure_literals.insert(target_name.clone(), value.clone());
                     } else {
@@ -3736,6 +3751,18 @@ impl<'a> OwnershipChecker<'a> {
                 });
                 for (_, closure) in named {
                     self.check_spawn_lost_writes(&closure);
+                }
+            }
+            // A fork's blocks are closures that stay in this frame, so each
+            // points at what it names (conc.fork/FK2). What's new is that they
+            // may run at the same time, so the borrows have to hold *between*
+            // them too.
+            ExprKind::Fork { sides } => {
+                for side in sides {
+                    self.check_expr(side);
+                }
+                if self.instance.is_none() {
+                    self.check_fork_sides(sides);
                 }
             }
             ExprKind::Closure { params, body, .. } => {
@@ -6922,6 +6949,8 @@ impl<'a> OwnershipChecker<'a> {
                 ty: self.program.types.resolve_type_names(ty).to_string(),
                 bare_link: self.is_link_type(ty),
             },
+            // `task_bound` never answers it: a rack moves whole.
+            rask_check::TaskBound::Rack => return,
         };
         self.errors.push(OwnershipError { kind, span });
     }
@@ -7317,6 +7346,11 @@ impl<'a> OwnershipChecker<'a> {
                 for p in params { inner_locals.insert(p.name.clone()); }
                 self.collect_free_vars_inner(body, &inner_locals, out, projections);
             }
+            ExprKind::Fork { sides } => {
+                for side in sides {
+                    self.collect_free_vars_inner(side, locals, out, projections);
+                }
+            }
             ExprKind::Match { scrutinee, arms } => {
                 self.collect_free_vars_inner(scrutinee, locals, out, projections);
                 for arm in arms {
@@ -7496,6 +7530,378 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Return(None) | StmtKind::Break { value: None, .. }
             | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
         }
+    }
+
+    // ---- conc.fork: blocks that may run at the same time ----
+
+    /// FK3 and FK7 across a fork's blocks.
+    fn check_fork_sides(&mut self, sides: &[Expr]) {
+        let accesses: Vec<Vec<ForkAccess>> = sides.iter().map(|s| self.fork_side_accesses(s)).collect();
+
+        // FK3: one block's write against anything another block does to an
+        // overlapping place.
+        let mut reported: HashSet<String> = HashSet::new();
+        for i in 0..accesses.len() {
+            for j in 0..accesses.len() {
+                if i == j {
+                    continue;
+                }
+                for w in accesses[i].iter().filter(|a| a.write) {
+                    if reported.contains(&w.root) {
+                        continue;
+                    }
+                    // A write in an earlier block is reported against the
+                    // later one's access; a pair of writes once, not twice.
+                    let hit = accesses[j].iter().find(|a| {
+                        a.root == w.root
+                            && Self::paths_overlap(&a.path, &w.path)
+                            && (!a.write || i < j)
+                    });
+                    if let Some(other) = hit {
+                        reported.insert(w.root.clone());
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::ForkConflict {
+                                name: Self::path_text(&w.root, &w.path),
+                                other_writes: other.write,
+                                other_span: other.span,
+                            },
+                            span: w.span,
+                        });
+                    }
+                }
+            }
+        }
+
+        // FK7: whatever must stay on one thread, in one block only.
+        let mut first: Option<(String, Span, bool)> = None;
+        for side in sides {
+            let ExprKind::Closure { params, body, .. } = &side.kind else { continue };
+            let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            let mut captures = Vec::new();
+            self.collect_free_vars_with_projections(body, &locals, &mut captures, &mut HashMap::new());
+            let mut bound = captures.iter().find_map(|name| {
+                let at = Self::first_use(body, name)?;
+                let ty = self.node_ty(&at.id)?;
+                self.program.types.fork_bound(ty).map(|_| (name.clone(), at.span, false))
+            });
+            // A function value whose body this pass can't see — a parameter,
+            // a field, a vector element — may be the same closure another
+            // block calls, and that closure may write what it captured:
+            // `both(h, h)`. Only a declared function or a closure literal
+            // this pass has read is called in the open.
+            if bound.is_none() {
+                bound = self.opaque_call_in(body);
+            }
+            // A closure value the block calls takes what it captured along.
+            if bound.is_none() {
+                bound = captures.iter().find_map(|name| {
+                    let lit = self.closure_literals.get(name)?;
+                    if !self.task_bound_closures.contains(&lit.id) {
+                        return None;
+                    }
+                    Some((name.clone(), Self::first_use(body, name)?.span, false))
+                });
+            }
+            let Some((name, span, opaque_fn)) = bound else { continue };
+            match &first {
+                None => first = Some((name, span, opaque_fn)),
+                Some((other, other_span, other_fn)) => {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::ForkTaskBound {
+                            name,
+                            other: other.clone(),
+                            other_span: *other_span,
+                            function_value: opaque_fn || *other_fn,
+                        },
+                        span,
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    fn note_named_fn_value(&mut self, name: &str, value: &Expr) {
+        if self.fn_key(value).is_some() || matches!(&value.kind, ExprKind::Ident(n) if self.named_fn_values.contains(n)) {
+            self.named_fn_values.insert(name.to_string());
+        } else {
+            self.named_fn_values.remove(name);
+        }
+    }
+
+    /// A function value whose body this pass has read, or that has none to
+    /// hide: a declared function, a name bound to one, a closure literal or a
+    /// name bound to one.
+    fn fn_value_in_view(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Closure { .. } | ExprKind::GenericName { .. } => true,
+            ExprKind::Ident(name) => {
+                self.fn_key(e).is_some()
+                    || self.closure_literals.contains_key(name)
+                    || self.named_fn_values.contains(name)
+            }
+            _ => false,
+        }
+    }
+
+    /// The first function value in `body` that the pass can't see into, called
+    /// or handed on, with what to call it in a message.
+    fn opaque_call_in(&self, body: &Expr) -> Option<(String, Span, bool)> {
+        let mut found = None;
+        rask_ast::visit::walk_expr_pruned(body, &mut |e| {
+            if found.is_some() {
+                return false;
+            }
+            if !matches!(self.node_ty(&e.id), Some(Type::Fn { .. })) {
+                return true;
+            }
+            if self.fn_value_in_view(e) {
+                // A literal's body is walked like the rest of the block.
+                return matches!(e.kind, ExprKind::Closure { .. });
+            }
+            let name = match &e.kind {
+                ExprKind::Ident(name) => name.clone(),
+                _ => "this function value".to_string(),
+            };
+            found = Some((name, e.span, true));
+            false
+        });
+        found
+    }
+
+    /// Every place a fork block reads or writes that it doesn't declare
+    /// itself, by root name and field path. A closure value the block calls is
+    /// expanded into what its body does, since that runs in the block too.
+    fn fork_side_accesses(&self, side: &Expr) -> Vec<ForkAccess> {
+        let ExprKind::Closure { params, body, .. } = &side.kind else { return Vec::new() };
+        let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut out = Vec::new();
+        self.collect_fork_accesses(body, &locals, &mut out, 0);
+        out
+    }
+
+    fn collect_fork_accesses(&self, body: &Expr, locals: &HashSet<String>, out: &mut Vec<ForkAccess>, depth: u32) {
+        let mut captures = Vec::new();
+        self.collect_free_vars_with_projections(body, locals, &mut captures, &mut HashMap::new());
+        let captured: HashSet<&String> = captures.iter().collect();
+        let push = |place: &Expr, write: bool, out: &mut Vec<ForkAccess>| {
+            if let Some((root, path)) = Self::fork_place(place) {
+                if captured.contains(&root) {
+                    out.push(ForkAccess { root, path, write, span: place.span });
+                }
+            }
+        };
+        let mut called: Vec<String> = Vec::new();
+        rask_ast::visit::walk_expr_pruned(body, &mut |e| {
+            match &e.kind {
+                ExprKind::Block(_)
+                | ExprKind::Loop { .. }
+                | ExprKind::UsingBlock { .. }
+                | ExprKind::Unsafe { .. }
+                | ExprKind::Comptime { .. } => {
+                    for stmt in Self::own_stmts(e) {
+                        match &stmt.kind {
+                            StmtKind::Assign { target, .. } => push(target, true, out),
+                            StmtKind::For { mutate: true, iter, .. } => push(iter, true, out),
+                            _ => {}
+                        }
+                    }
+                }
+                ExprKind::MethodCall { object, method, args, .. } => {
+                    if self.is_mutate_self_method(object, method) || self.is_take_self_method(object, method) {
+                        push(object, true, out);
+                    }
+                    for a in args {
+                        if matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                            push(&a.expr, true, out);
+                        }
+                    }
+                }
+                ExprKind::Call { func, args } => {
+                    for a in args {
+                        if matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                            push(&a.expr, true, out);
+                        }
+                    }
+                    if let ExprKind::Ident(name) = &func.kind {
+                        if captured.contains(name) {
+                            called.push(name.clone());
+                        }
+                    }
+                }
+                // `with v[0] as e { e += 1 }` writes `v` through `e`.
+                ExprKind::WithAs { bindings, body } => {
+                    for b in bindings {
+                        if self.body_writes_name(body, &b.name) {
+                            push(&b.source, true, out);
+                        }
+                    }
+                    for stmt in Self::own_stmts(e) {
+                        match &stmt.kind {
+                            StmtKind::Assign { target, .. } => push(target, true, out),
+                            StmtKind::For { mutate: true, iter, .. } => push(iter, true, out),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // The outermost place is the read; its parts aren't read apart
+            // from it. An index's subscript is still its own read.
+            if let Some((root, path)) = Self::fork_place(e) {
+                if captured.contains(&root) {
+                    out.push(ForkAccess { root, path, write: false, span: e.span });
+                }
+                if let ExprKind::Index { index, .. } = &e.kind {
+                    let mut inner = Vec::new();
+                    self.collect_fork_accesses(index, locals, &mut inner, depth);
+                    out.extend(inner);
+                }
+                return false;
+            }
+            true
+        });
+        // A closure value the block calls does what its body does. One whose
+        // body this pass can't see (a function-typed parameter) might write
+        // whatever it captured, so calling it counts as writing it.
+        for name in called {
+            if self.named_fn_values.contains(&name) {
+                continue;
+            }
+            match self.closure_literals.get(&name) {
+                Some(lit) if depth < 8 => {
+                    if let ExprKind::Closure { params, body: inner, .. } = &lit.kind {
+                        let inner_locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                        let mut inner_out = Vec::new();
+                        self.collect_fork_accesses(inner, &inner_locals, &mut inner_out, depth + 1);
+                        let at = Self::first_use(body, &name).map(|e| e.span).unwrap_or(body.span);
+                        out.extend(inner_out.into_iter().map(|a| ForkAccess { span: at, ..a }));
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(at) = Self::first_use(body, &name) {
+                        out.push(ForkAccess { root: name.clone(), path: Vec::new(), write: true, span: at.span });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether these statements write `name` or something under it: assign
+    /// to it, call a `mutate self` method on it, or hand it to a `mutate`
+    /// parameter.
+    fn body_writes_name(&self, body: &[Stmt], name: &str) -> bool {
+        let rooted = |e: &Expr| Self::fork_place(e).is_some_and(|(root, _)| root == name);
+        let mode_writes = |a: &rask_ast::expr::CallArg| {
+            matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) && rooted(&a.expr)
+        };
+        let stmt_writes = |st: &Stmt| match &st.kind {
+            StmtKind::Assign { target, .. } => rooted(target),
+            StmtKind::For { mutate: true, iter, .. } => rooted(iter),
+            _ => false,
+        };
+        let mut all = Vec::new();
+        Self::flatten_stmts(body, &mut all);
+        if all.iter().any(|st| stmt_writes(st)) {
+            return true;
+        }
+        let mut found = false;
+        for stmt in body {
+            rask_ast::visit::walk_stmt(stmt, &mut |e| match &e.kind {
+                ExprKind::MethodCall { object, method, args, .. } => {
+                    if rooted(object)
+                        && (self.is_mutate_self_method(object, method) || self.is_take_self_method(object, method))
+                    {
+                        found = true;
+                    }
+                    if args.iter().any(|a| mode_writes(a)) {
+                        found = true;
+                    }
+                }
+                ExprKind::Call { args, .. } if args.iter().any(|a| mode_writes(a)) => found = true,
+                // `with e[0] as g { g += 1 }` inside `with v[0] as e` writes
+                // `e`, however deep the chain of bindings goes.
+                ExprKind::WithAs { bindings, body: inner }
+                    if bindings.iter().any(|b| rooted(&b.source) && self.body_writes_name(inner, &b.name)) =>
+                {
+                    found = true;
+                }
+                _ => {
+                    if Self::own_stmts(e).iter().any(|st| stmt_writes(st)) {
+                        found = true;
+                    }
+                }
+            });
+        }
+        found
+    }
+
+    /// The statements an expression holds directly, and those of the loops,
+    /// `ensure`s and `comptime` bodies among them, which hang off a statement
+    /// rather than off an expression the walker visits.
+    fn own_stmts(e: &Expr) -> Vec<&Stmt> {
+        let mut out = Vec::new();
+        match &e.kind {
+            ExprKind::Block(body)
+            | ExprKind::Loop { body, .. }
+            | ExprKind::UsingBlock { body, .. }
+            | ExprKind::WithAs { body, .. }
+            | ExprKind::Unsafe { body }
+            | ExprKind::Comptime { body } => Self::flatten_stmts(body, &mut out),
+            _ => {}
+        }
+        out
+    }
+
+    fn flatten_stmts<'s>(body: &'s [Stmt], out: &mut Vec<&'s Stmt>) {
+        for stmt in body {
+            out.push(stmt);
+            match &stmt.kind {
+                StmtKind::While { body, .. }
+                | StmtKind::WhileLet { body, .. }
+                | StmtKind::Loop { body, .. }
+                | StmtKind::For { body, .. }
+                | StmtKind::ComptimeFor { body, .. }
+                | StmtKind::Comptime(body) => Self::flatten_stmts(body, out),
+                StmtKind::Ensure { body, else_handler } => {
+                    Self::flatten_stmts(body, out);
+                    if let Some((_, handler)) = else_handler {
+                        Self::flatten_stmts(handler, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The root name and field path of a place: `p` → `(p, [])`, `p.a.b` →
+    /// `(p, [a, b])`. An index stands for the whole container, since nothing
+    /// here can tell two subscripts apart.
+    fn fork_place(expr: &Expr) -> Option<(String, Vec<String>)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some((name.clone(), Vec::new())),
+            ExprKind::Field { object, field } | ExprKind::OptionalField { object, field } => {
+                let (root, mut path) = Self::fork_place(object)?;
+                path.push(field.clone());
+                Some((root, path))
+            }
+            ExprKind::Index { object, .. } => Self::fork_place(object),
+            _ => None,
+        }
+    }
+
+    fn paths_overlap(a: &[String], b: &[String]) -> bool {
+        a.iter().zip(b).all(|(x, y)| x == y)
+    }
+
+    fn path_text(root: &str, path: &[String]) -> String {
+        let mut s = root.to_string();
+        for f in path {
+            s.push('.');
+            s.push_str(f);
+        }
+        s
     }
 
     // ---- MC2: a mutable capture is exclusive while it lasts ----

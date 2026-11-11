@@ -147,6 +147,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 |------|-------------|
 | [sync.md](concurrency/sync.md) | OS threads, channels, synchronization |
 | [async.md](concurrency/async.md) | Green tasks, Multitasking |
+| [fork.md](concurrency/fork.md) | Fork-join: parallel blocks that borrow |
 | [select.md](concurrency/select.md) | Select statement, multiplexing |
 
 ## Structure — How code is organized

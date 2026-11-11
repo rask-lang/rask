@@ -588,6 +588,12 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             effects.async_ = true;
             classify_expr(body, effects, callees, t);
         }
+        // A fork waits for its blocks, so what they do is what it does.
+        ExprKind::Fork { sides } => {
+            for side in sides {
+                classify_expr(side, effects, callees, t);
+            }
+        }
         ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => {
             classify_body(body, effects, callees, t);
@@ -768,6 +774,13 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
             depth == 0
         }
         ExprKind::Spawn { body, .. } => rt_scan_expr(body, depth, rs),
+        ExprKind::Fork { sides } => {
+            let mut any = false;
+            for side in sides {
+                any |= rt_scan_expr(side, depth, rs);
+            }
+            any
+        }
 
         // `using Multitasking { }` guards the body — increase depth
         ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {

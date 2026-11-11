@@ -946,12 +946,11 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
 ///
-/// `rask_closure_refuse_crossing` is the check a task block makes of each
-/// closure value it captures: it reads the closure's header and hands it back.
+/// A runtime function in `RUNTIME_FUNCTIONS` that gives nothing away keeps
+/// nothing either, so it answers from that list rather than from this one.
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",
-    "rask_closure_refuse_crossing",
 ];
 
 /// Does this call use its callback up before returning?
@@ -959,6 +958,7 @@ pub fn borrows_its_callback(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     BORROWS_ITS_CALLBACK.contains(&base)
+        || RUNTIME_FUNCTIONS.iter().any(|(n, gives)| *n == base && gives.is_empty())
 }
 
 /// Does this call take its receiver away — a `take self` method, or one of the

@@ -206,6 +206,7 @@ go down.
 | [spawn_closure_form.rk](spawn_closure_form.rk) | The retired closure spellings of a task — `spawn(\|\| …)`, `spawn_with(value, \|take v: T\| …)`, `Thread.spawn(\|\| …)`, `ThreadPool.spawn(\|\| …)` (E0915). Each names the block form as its fix |
 | [closure_carries_linear_capture.rk](closure_carries_linear_capture.rk) | A linear value captured by a closure that outlives its frame (E0913, #1318): a returned closure over a `Conn` or a `Heap<i64>`. Moved into an environment the body can never give it up from, nothing would consume it. A closure that stays in its frame stays legal |
 | [task_lost_write.rk](task_lost_write.rk) | A task writing a capture nothing reads back (SP1, E0896, #1281) — inline, under an `if`, through a closure named before it was spawned, a read that comes before the write, and an accumulator loop whose every write is read by the next iteration. The legal shapes sit below: a task that returns what it summed, and one that counts for its own output |
+| [fork_blocks_conflict.rk](fork_blocks_conflict.rk) | Two `fork` blocks touching a place one of them writes (conc.fork/FK3, E0960): a variable, a field, a whole value against its field, a `push`, two `mutate` arguments. Two blocks each naming a link (FK7, E0961). Separate fields and shared reads below must compile |
 
 ### Other
 

@@ -398,6 +398,11 @@ impl<'a> WarnContext<'a> {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
+            ExprKind::Fork { sides } => {
+                for side in sides {
+                    self.check_expr(side, warnings);
+                }
+            }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);

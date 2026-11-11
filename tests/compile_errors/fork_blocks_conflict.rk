@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The blocks of a `fork` may run at the same time and borrow from the frame,
+// so the borrow rules hold between them (conc.fork/FK3, E0960): a place one
+// block writes, no other block may touch. A link, a rack or a `Local` box may
+// be named by one block only (FK7, E0961). The forks at the end are the legal
+// shapes and must compile.
+
+import memory.Rack
+import memory.Link
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Node {
+    hp: i64
+    next: Link<Node>?
+}
+
+struct Holder {
+    f: func()
+}
+
+func bump(mutate n: i64) {
+    n += 1
+}
+
+// `both(h, h)` would hand one closure that writes its captures to two blocks.
+func both(f: func(), g: func()) {
+    // ERROR: two function values this body can't see into [E0961]
+    fork { f() } and { g() }
+}
+
+func through_a_field(h: Holder) {
+    // ERROR: reached through a field, the same closure twice [E0961]
+    fork { (h.f)() } and { (h.f)() }
+}
+
+func main() {
+    mut count = 0
+    // ERROR: written in one block, read in the other [E0960]
+    let (a, b) = fork { count += 1 } and { count * 2 }
+
+    mut p = Point(x: 1, y: 2)
+    // ERROR: the same field on both sides [E0960]
+    let (c, d) = fork { p.x = 5 } and { p.x + 1 }
+    // ERROR: the whole value overlaps each field [E0960]
+    let (e, f) = fork { p = Point(x: 0, y: 0) } and { p.y }
+
+    mut v = Vec.from([1, 2])
+    // ERROR: `push` writes the vector the other block reads [E0960]
+    let (g, h) = fork { v.push(3) } and { v.len() }
+    // ERROR: two `mutate` arguments [E0960]
+    fork { bump(mutate count) } and { bump(mutate count) }
+
+    // ERROR: a write inside a loop is still a write [E0960]
+    fork {
+        for i in 0..3 {
+            count += 1
+        }
+    } and { count }
+    // ERROR: `e` writes the element of `v` it is bound to [E0960]
+    fork {
+        with v[0] as e {
+            e += 1
+        }
+    } and { v.len() }
+    // ERROR: a fork inside a block writes for that block [E0960]
+    fork {
+        let (x, y) = fork { count += 1 } and { 0 }
+    } and { count }
+
+    mut r = Rack.new()
+    let n1 = r.insert(Node(hp: 1, next: none))
+    let n2 = r.insert(Node(hp: 2, next: none))
+    // ERROR: `n1` and `n2` may name the same node [E0961]
+    let (m, o) = fork { n1.hp } and { n2.hp }
+
+    // Separate fields, reads of a shared value, and graph work in one block.
+    fork { p.x = v.len().to<i64>()! } and { p.y = v.len().to<i64>()! }
+    let (s, t) = fork { n1.hp + n2.hp } and { v.len() }
+    println("{a}{b}{c}{d}{e}{f}{g}{h}{m}{o}{s}{t}{count}")
+}
