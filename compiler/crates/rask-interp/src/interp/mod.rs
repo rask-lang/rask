@@ -953,8 +953,8 @@ impl Interpreter {
         form: &str,
         closure: Value,
         block: &rask_ast::expr::Expr,
-    ) -> Result<(Interpreter, rask_ast::expr::Expr), RuntimeError> {
-        let Value::Closure { body, captured_env, task_bound, generics, .. } = closure else {
+    ) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
+        let Value::Closure { body, captured_env, task_bound, generics, wraps_ok, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "{form}: a task block evaluated to {}",
                 closure.type_name()
@@ -979,16 +979,16 @@ impl Interpreter {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
         let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body))
+        Ok((child, body, wraps_ok))
     }
 
     /// Start an OS thread (`Thread.spawn { … }`).
     pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
-        let (child, body) = self.task_from_closure("Thread.spawn", closure, block)?;
+        let (child, body, wraps_ok) = self.task_from_closure("Thread.spawn", closure, block)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
-            crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+            crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
     }
@@ -1009,7 +1009,7 @@ impl Interpreter {
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
-        let (child, body) = self.task_from_closure("spawn", closure, block)?;
+        let (child, body, wraps_ok) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
         // task slots before running, so `workers: n` bounds how many
@@ -1018,7 +1018,7 @@ impl Interpreter {
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
             crate::with_task_slot(move || {
-                crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
             })
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
@@ -1037,7 +1037,7 @@ impl Interpreter {
                 ))
             }
         };
-        let (child, body) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
+        let (child, body, wraps_ok) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
@@ -1045,7 +1045,7 @@ impl Interpreter {
 
         let task = PoolTask {
             work: Box::new(move || {
-                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body));
+                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok));
                 let _ = result_tx.send(ended);
             }),
         };
@@ -1717,11 +1717,14 @@ impl std::error::Error for RuntimeDiagnostic {}
 
 /// Run a task block to its result, or the message it failed with. A `return`
 /// in the block ends the task with that value.
-fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr) -> Result<Value, String> {
+/// The task's result, the way a closure call produces one: `return v` and a
+/// `try` that leaves both end the block with their value (conc.async/S7), and
+/// a value of type `T` filling a `T or E` result is its success side.
+fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, wraps_ok: bool) -> Result<Value, String> {
     match interp.eval_expr(&body) {
-        Ok(val) => Ok(val),
+        Ok(val) => Ok(dispatch::closure_result(val, wraps_ok)),
         Err(diag) => match diag.error {
-            RuntimeError::Return(val) => Ok(val),
+            RuntimeError::Return(val) | RuntimeError::TryError(val) => Ok(dispatch::closure_result(val, wraps_ok)),
             _ => Err(interp.task_failure_message(&diag)),
         },
     }

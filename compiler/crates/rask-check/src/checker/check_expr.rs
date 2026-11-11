@@ -2150,6 +2150,20 @@ impl TypeChecker {
                             self.ctx.default_var_to(id, Type::Never);
                         }
                     }
+                } else if self.tail_fills_error_slot(&inferred_ret, &closure_return_type) {
+                    // A `try` in the body made the return `T or E` (GC7), and
+                    // the body's own value is the `T`. That's a `return v`
+                    // through the success side, so it coerces the way one
+                    // would. Unified instead, `i64` met `? or E`, failed in
+                    // silence, and left `?` open: `|| try parse(s)` was "type
+                    // is still open", and the same block under `spawn` crashed.
+                    self.coerce_into_node(
+                        CoercionSite::Return,
+                        inferred_ret.clone(),
+                        closure_return_type.clone(),
+                        Some(body.id),
+                        body.span,
+                    );
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -8215,4 +8229,19 @@ struct ArmReach {
     closed_by: Option<String>,
     /// Variants tested by a bare, unguarded arm.
     tags: std::collections::HashSet<String>,
+}
+
+impl TypeChecker {
+    /// The body of a closure with no written return type has a settled value
+    /// that isn't a `T or E`, while its return type has become one.
+    fn tail_fills_error_slot(&self, body_ty: &Type, ret: &Type) -> bool {
+        let ret = self.ctx.apply(ret);
+        if !matches!(&ret, Type::Result { err, .. } if !matches!(**err, Type::None)) {
+            return false;
+        }
+        !matches!(
+            self.ctx.apply(body_ty),
+            Type::Result { .. } | Type::Var(_) | Type::Never | Type::Error
+        )
+    }
 }

@@ -498,6 +498,9 @@ impl<'a> MirLowerer<'a> {
             // would drain it here, branching to block ids this function does
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+            // A closure is its own frame with its own return, so a `try` in it
+            // leaves the closure even when the closure sits in a `test` block.
+            let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
@@ -530,6 +533,7 @@ impl<'a> MirLowerer<'a> {
             self.addressed_captures = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
+            self.in_test_body = saved_in_test;
             self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
