@@ -332,7 +332,6 @@ void    *rask_vec_borrow_elem(RaskVec *v, int64_t index);
 void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
-void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
 void     rask_vec_write_back(RaskVec *v, int64_t index, const void *elem);
 void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);

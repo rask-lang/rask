@@ -66,7 +66,7 @@ test "first and last" {
 
 test "set replaces in place" {
     mut v: Vec<i32> = [1, 2, 3]
-    v.set(1, 99)
+    v[1] = 99
     assert v[1] == 99
     assert v.len() == 3
 }

@@ -417,7 +417,7 @@ Buffer implements Reader {
             with self.pos.write() as at {
                 mut from = at
                 while copied < want && from < total {
-                    buf.set(copied, bytes.get(from) ?? 0)
+                    buf[copied] = bytes.get(from) ?? 0
                     copied = copied + 1
                     from = from + 1
                 }

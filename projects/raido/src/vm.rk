@@ -109,7 +109,7 @@ extend Vm {
         } else {
             0
         }
-        self.registers.set(base + idx, val)
+        self.registers[base + idx] = val
     }
 
     func execute(self) -> Value or VmError {

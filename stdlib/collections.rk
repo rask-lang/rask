@@ -454,17 +454,13 @@ extend Vec<T> {
     @copies_elements
     public func clone(self) -> Vec<T> {}
 
-    /// Set element at index. Panics if out of bounds.
-    @native("rask_vec_set", panics: true)
-    @drops_elements
-    public func set(mutate self, index: i64, take value: T) {}
-
     /// Put `value` at `index` and hand back what was there. Panics if out of
     /// bounds.
     ///
     /// `v[i]` copies out only a Copy element (V1), so without this the one way
     /// to take a non-Copy element out of the middle of a vector was `remove`,
-    /// which shifts everything behind it.
+    /// which shifts everything behind it. `v[i] = x` is this call with the
+    /// old element dropped.
     @native("rask_vec_replace", panics: true)
     @moves_out
     public func replace(mutate self, index: i64, take value: T) -> T {}
@@ -1135,7 +1131,7 @@ extend OrderedMap<K, V> {
             if self.slots.replace(i, none)? as entry {
                 mut taken = entry
                 let out = f(mutate taken.1)
-                self.slots.set(i, taken)
+                self.slots[i] = taken
                 return out
             }
         }

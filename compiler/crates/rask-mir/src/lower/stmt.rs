@@ -1201,7 +1201,7 @@ impl<'a> MirLowerer<'a> {
                     // Index assignment: a[i] = val
                     ExprKind::Index { object, index } => {
                         // A pool index is a handle, not a position. Falling through
-                        // to `Vec_set(pool, handle, v)` below used it as one, and a
+                        // to the vector store below used it as one, and a
                         // handle is `index:32 | generation:32` — so the store landed
                         // far outside the arena and `pool[h] = 7` segfaulted for any
                         // element type with no field to write (#719). The field-path
@@ -1261,20 +1261,27 @@ impl<'a> MirLowerer<'a> {
                                 }));
                             }
                         } else {
-                            // A map key is not a position. `Vec_set` on a map
-                            // reached the native runtime as `rask_vec_set`,
-                            // which takes arg 1 as an integer index — so
-                            // `m["a"] = 1` used the key's address as the index
-                            // and panicked with `index is 140728023345216 but
-                            // length is 8`. The interpreter accepts a map
-                            // receiver for `Vec_set`, which is why only native
-                            // failed.
-                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: None,
-                                func: FunctionRef::internal(setter.to_string()),
-                                args: vec![obj_op, idx_op, val_op],
-                            }));
+                            // A map key is not a position: a vector store on
+                            // a map took the key's address as the index, and
+                            // `m["a"] = 1` panicked with `index is
+                            // 140728023345216 but length is 8`.
+                            if self.is_map_expr(object) {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: FunctionRef::internal("Map_set".to_string()),
+                                    args: vec![obj_op, idx_op, val_op],
+                                }));
+                            } else {
+                                // `v[i] = x` is `v.replace(i, x)` with the old
+                                // element handed to a temporary the frame
+                                // releases, so a slot has one way to be written.
+                                let old = self.builder.alloc_temp(val_ty.clone());
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: Some(old),
+                                    func: FunctionRef::internal("Vec_replace".to_string()),
+                                    args: vec![obj_op, idx_op, val_op],
+                                }));
+                            }
                         }
                     }
                     // Deref assignment: *ptr = value → Store through pointer
@@ -2780,7 +2787,7 @@ impl<'a> MirLowerer<'a> {
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        // For `for mutate`, create writeback blocks that call Vec_set
+        // For `for mutate`, create writeback blocks that call Vec_write_back
         // before continuing or breaking out of the loop.
         let (wb_block, break_wb_block) = if mutate && !is_array {
             let wb = self.builder.create_block();

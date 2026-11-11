@@ -245,18 +245,6 @@ impl Interpreter {
                 }
                 Ok(Value::Map(map))
             }
-            "set" => {
-                let idx = self.expect_int(&args, 0)? as usize;
-                let val = args.into_iter().nth(1).unwrap_or(Value::Unit).copy_on_bind();
-                let mut vec = v.lock().unwrap();
-                if idx >= vec.len() {
-                    return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
-                }
-                vec[idx] = val.clone();
-                drop(vec);
-                crate::rack::register_element(v, &val);
-                Ok(Value::Unit)
-            }
             "replace" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 let val = args.into_iter().nth(1).unwrap_or(Value::Unit).copy_on_bind();

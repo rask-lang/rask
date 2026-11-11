@@ -358,7 +358,7 @@ impl Default for ErrorCodeRegistry {
                     "A `@noreturn` function never comes back to its caller, so `return` contradicts it. End the path in `panic(…)` or `exit(…)` instead, or drop `@noreturn`.",
                     "@noreturn\nfunc fail() {\n    return  // error\n}"),
                 "E0823" => ("would drop or copy a linear element", Ownership,
-                    "A `Vec` or `Map` holding values that must be consumed is itself owed, and the methods that would throw an element away (`clear`, `set`) or hand out a copy of one (`get`, `first`, `clone`) aren't available on it (RC5). Look at elements where they live (`with v[i] as x`, `for x in v`) and take them out with `pop` or `remove`.",
+                    "A `Vec` or `Map` holding values that must be consumed is itself owed, and the methods that would throw an element away (`clear`, `remove_where`) or hand out a copy of one (`get`, `first`, `clone`) aren't available on it (RC5). Look at elements where they live (`with v[i] as x`, `for x in v`) and take them out with `pop` or `remove`.",
                     "@resource\nstruct File { fd: i32 }\nfiles.clear()  // error: pop each one and close it"),
                 "E0821" => ("ensure receiver maybe-consumed", Ownership,
                     "A resource with a pending `ensure` was consumed on some paths but not all, and the paths merge before scope exit (C4). Which cleanup runs must be statically definite — never decided by hidden runtime state (C3). Exit inside the consuming branch, or consume on every path.",

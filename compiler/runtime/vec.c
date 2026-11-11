@@ -533,7 +533,7 @@ static int vec_grow(RaskVec *v, int64_t needed) {
 }
 
 // Every mutator that moves elements or frees the buffer goes through this.
-// Writing *into* an element (rask_vec_set) is fine — nothing moves.
+// Writing *into* an element (rask_vec_replace) is fine — nothing moves.
 static void vec_check_no_borrows(const RaskVec *v, const char *op) {
     if (v && v->borrows > 0) {
         rask_panic_fmt("Vec.%s while one of its elements was being modified — "
@@ -613,18 +613,9 @@ static char *vec_slot(RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
-// `v[i] = x` and `v.set(i, x)`: the slot takes `elem` and gives up what it
-// held. The old element is released before the copy, so a slot set to a copy
-// of itself is retained by the caller first and comes out even.
-void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
-    char *slot = vec_slot(v, index);
-    rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
-    memcpy(slot, elem, (size_t)v->elem_size);
-    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
-}
-
-// `v.replace(i, x)`: the slot takes `elem` and its old element goes to `out`,
-// owned by the caller now, so nothing is released here.
+// `v.replace(i, x)`, and `v[i] = x`, which is the same call with the result
+// dropped: the slot takes `elem` and its old element goes to `out`, owned by
+// the caller now, so nothing is released here.
 int64_t rask_vec_replace(RaskVec *v, int64_t index, const void *elem, void *out) {
     char *slot = vec_slot(v, index);
     if (out) memcpy(out, slot, (size_t)v->elem_size);

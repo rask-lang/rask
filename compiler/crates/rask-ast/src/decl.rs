@@ -269,7 +269,7 @@ pub struct DeclaredEffects {
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
-    /// Drops elements without handing them back (`clear`, `set` over one).
+    /// Drops elements without handing them back (`clear`, `remove_where`).
     /// Refused on a container whose elements must be consumed
     /// (mem.resources/RC5).
     pub drops_elements: bool,

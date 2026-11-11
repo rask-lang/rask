@@ -2727,7 +2727,7 @@ impl<'a> MirLowerer<'a> {
 
     /// LP13: a Vec element goes back by index, a Map value by key.
     ///
-    /// Not `Vec_set`/`Map_set`: those replace the slot and release what it
+    /// Not `Vec_replace`/`Map_set`: those replace the slot and release what it
     /// held, and here what it held is the binding being put back.
     pub(crate) fn emit_write_back(&mut self, wb: &PendingWriteBack) {
         let func = if wb.map { "Map_write_back" } else { "Vec_write_back" };
