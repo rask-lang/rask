@@ -879,6 +879,12 @@ impl<'a> Monomorphizer<'a> {
                     ret: Box::new(Self::nameable_type(ret, types)?),
                 })
             }
+            // `Box<[i64; 3]>.first()` returns 24 bytes; a shared body sized
+            // for a word read past the value.
+            Type::Array { elem, len } => Some(Type::Array {
+                elem: Box::new(Self::nameable_type(elem, types)?),
+                len: *len,
+            }),
             Type::None | Type::Unit => Some(ty.clone()),
             _ => None,
         }
