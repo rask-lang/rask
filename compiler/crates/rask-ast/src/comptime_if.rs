@@ -40,6 +40,26 @@ pub fn branch<'a>(taken: bool, then_branch: &'a Expr, else_branch: Option<&'a Ex
     }
 }
 
+/// The statements of the branch a decided chain keeps: `then` when `cond`
+/// holds, else the `else` block, else — for `else if` — the same question of
+/// the next link. `None` when any condition on the way can't be decided.
+pub fn choose<'a>(
+    cond: &Expr,
+    then_branch: &'a Expr,
+    else_branch: Option<&'a Expr>,
+    fact: &mut impl FnMut(&Expr) -> Option<Fact>,
+) -> Option<&'a [Stmt]> {
+    if decide(cond, fact)? {
+        return branch(true, then_branch, else_branch);
+    }
+    match else_branch.map(|e| &e.kind) {
+        Some(ExprKind::If { cond, then_branch, else_branch, .. }) => {
+            choose(cond, then_branch, else_branch.as_deref(), fact)
+        }
+        _ => branch(false, then_branch, else_branch),
+    }
+}
+
 /// What one fact about the loop iteration folds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fact {
@@ -56,7 +76,9 @@ pub enum Fact {
 /// A comparison reaches here desugared to a method call (`a.eq(b)`,
 /// `a.lt(b)`, and `!a.eq(b)` for `!=`). It folds when both sides are facts
 /// or literals of the same kind: `item.type_name == "f64"` does,
-/// `item.type_name == other` doesn't.
+/// `item.type_name == other` doesn't. Integer `+`, `-`, `*` and unary `-`
+/// fold too. Anything else a side names — a module const, a `reflect.*()`
+/// call — goes to `fact` as well, which answers what its backend knows.
 pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<bool> {
     match value(cond, fact)? {
         Fact::Bool(b) => Some(b),
@@ -64,11 +86,39 @@ pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Opti
     }
 }
 
-fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fact> {
+/// A literal's value.
+pub fn literal(expr: &Expr) -> Option<Fact> {
     match &expr.kind {
         ExprKind::Bool(b) => Some(Fact::Bool(*b)),
         ExprKind::Int(n, _) => Some(Fact::Int(*n)),
         ExprKind::String(s) => Some(Fact::Str(s.clone())),
+        _ => None,
+    }
+}
+
+fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fact> {
+    if let Some(lit) = literal(expr) {
+        return Some(lit);
+    }
+    match &expr.kind {
+        ExprKind::MethodCall { object, method, args, .. } if method == "neg" && args.is_empty() => {
+            match value(object, fact)? {
+                Fact::Int(n) => Some(Fact::Int(n.checked_neg()?)),
+                _ => None,
+            }
+        }
+        ExprKind::MethodCall { object, method, args, .. }
+            if args.len() == 1 && matches!(method.as_str(), "add" | "sub" | "mul") =>
+        {
+            let (Fact::Int(a), Fact::Int(b)) = (value(object, fact)?, value(&args[0].expr, fact)?) else {
+                return None;
+            };
+            Some(Fact::Int(match method.as_str() {
+                "add" => a.checked_add(b)?,
+                "sub" => a.checked_sub(b)?,
+                _ => a.checked_mul(b)?,
+            }))
+        }
         // `!x` after desugaring.
         ExprKind::MethodCall { object, method, args, .. } if method == "not" && args.is_empty() => {
             Some(Fact::Bool(!decide(object, fact)?))
@@ -79,7 +129,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
             let (l, r) = (value(object, fact)?, value(&args[0].expr, fact)?);
             let ord = match (&l, &r) {
                 (Fact::Int(a), Fact::Int(b)) => a.cmp(b),
-                (Fact::Str(a), Fact::Str(b)) if method == "eq" => a.cmp(b),
+                (Fact::Str(a), Fact::Str(b)) => a.cmp(b),
                 (Fact::Bool(a), Fact::Bool(b)) if method == "eq" => a.cmp(b),
                 _ => return None,
             };
@@ -91,7 +141,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
                 _ => ord.is_ge(),
             }))
         }
-        ExprKind::MethodCall { .. } | ExprKind::Field { .. } => fact(expr),
+        ExprKind::MethodCall { .. } | ExprKind::Field { .. } | ExprKind::Ident(_) => fact(expr),
         ExprKind::Unary { op: UnaryOp::Not, operand } => Some(Fact::Bool(!decide(operand, fact)?)),
         ExprKind::Binary { op, left, right } => {
             let (l, r) = (decide(left, fact)?, decide(right, fact)?);

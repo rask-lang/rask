@@ -5,6 +5,9 @@
 // unsettled" while the interpreter ran it.
 import std.reflect
 
+const WIDE: usize = 16
+const FLOAT: string = "f64"
+
 annotation @scale {
     by: i64
 }
@@ -70,4 +73,50 @@ func second_index<F>(f: F) -> string {
 
 test "a parameter's index" {
     assert second_index(sys) == "string"
+}
+
+test "an else-if chain dispatches on the type" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "i64" {
+            out = "{out}int;"
+        } else if f.type_name == "f64" {
+            out = "{out}float;"
+        } else {
+            out = "{out}other;"
+        }
+    }
+    assert out == "int;float;other;"
+}
+
+test "the other side can be a const, arithmetic or a reflect answer" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size >= WIDE {
+            out = "{out}wide:{f.name};"
+        }
+        comptime if f.type_name == FLOAT {
+            out = "{out}const:{f.name};"
+        }
+        comptime if f.offset == 4 + 4 {
+            out = "{out}second:{f.name};"
+        }
+        comptime if f.type_name == reflect.name_of<string>() {
+            out = "{out}name_of:{f.name};"
+        }
+        comptime if f.name < "m" {
+            out = "{out}before_m:{f.name};"
+        }
+    }
+    assert out == "before_m:id;const:value;second:value;wide:label;name_of:label;before_m:label;"
+}
+
+test "a const-guarded annotation read" {
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == FLOAT {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
 }

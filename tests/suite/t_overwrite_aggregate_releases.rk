@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writing a whole array over a struct field, or an array or tuple through a
+// `mutate` parameter, gives back the strings the old value held. Natively the
+// release list for those stores left arrays out (and tuples, for the
+// parameter), so each write leaked what it replaced. The leak gate runs this
+// file with RASK_LEAK_CHECK=1.
+
+struct Slots {
+    v: [string; 2]
+}
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func reset(mutate v: [string; 2]) {
+    v = [mk(5), mk(6)]
+}
+
+func retuple(mutate t: (string, string)) {
+    t = (mk(7), mk(8))
+}
+
+test "an array written over a field" {
+    mut s = Slots(v: [mk(1), mk(2)])
+    s.v = [mk(3), mk(4)]
+    assert s.v[1] == mk(4)
+}
+
+test "an array and a tuple written through mutate" {
+    mut a = [mk(1), mk(2)]
+    reset(mutate a)
+    mut t = (mk(3), mk(4))
+    retuple(mutate t)
+    assert a[0] == mk(5)
+    assert t.1 == mk(8)
+}
+
+test "an array of scalars has nothing to give back" {
+    mut s = [1, 2, 3]
+    s = [4, 5, 6]
+    assert s[2] == 6
+}

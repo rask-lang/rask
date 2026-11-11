@@ -2199,6 +2199,10 @@ pub struct MirLowerer<'a> {
     /// overflow before reaching main's first line (#463). Materializing at the
     /// use site keeps them out of functions that never mention them.
     pending_module_consts: HashMap<String, (Expr, Option<TypeExpr>)>,
+    /// Module consts with a literal value, by name: the local they were
+    /// injected as and the value, for a `comptime if` to compare against.
+    /// A local of the same name declared later is a different local.
+    literal_consts: HashMap<String, (LocalId, rask_ast::comptime_if::Fact)>,
     /// Module-level consts that own a global slot, and the type stored there.
     /// A reference loads from the slot instead of re-running the initializer.
     const_slots: HashMap<String, MirType>,
@@ -4811,6 +4815,7 @@ impl<'a> MirLowerer<'a> {
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
+            literal_consts: HashMap::new(),
             const_slots: HashMap::new(),
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
@@ -4922,6 +4927,9 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                    if let Some(fact) = rask_ast::comptime_if::literal(&c.init) {
+                        lowerer.literal_consts.insert(c.name.clone(), (local_id, fact));
+                    }
                 } else if lowerer.ctx.folded.consts.contains_key(&c.name) {
                     // Folded at compile time: a reference reads the folded value
                     // (`load_folded`). Queueing the initializer as well

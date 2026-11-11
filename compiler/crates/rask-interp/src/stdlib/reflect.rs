@@ -258,7 +258,15 @@ impl Interpreter {
         let id = self.types.get_type_id(&base).ok_or_else(not_enum)?;
         let type_args = self.checked_type_args(ty.args()).ok_or_else(not_enum)?;
         let layout = self.types.enum_layout(id, &type_args).ok_or_else(not_enum)?;
-        let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
+        // The declaration's parameters against this instantiation's
+        // arguments, for a payload declared as `T`.
+        let subst: Vec<(String, TypeExpr)> = match self.types.get(id) {
+            Some(rask_types::TypeDef::Enum { type_params, .. }) if type_params.len() == ty.args().len() => {
+                type_params.iter().cloned().zip(ty.args().iter().cloned()).collect()
+            }
+            _ => Vec::new(),
+        };
+        let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &subst);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }
 }

@@ -3349,6 +3349,7 @@ pub(super) fn unguarded_annotation_read(
     binding: &str,
     attrs: &[rask_ast::attr::Attr],
     props: &indexmap::IndexMap<String, Value>,
+    other: &mut dyn FnMut(&Expr) -> Option<rask_ast::comptime_if::Fact>,
 ) -> Option<(String, Option<String>, rask_ast::Span)> {
     use rask_ast::comptime_if;
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -3359,6 +3360,7 @@ pub(super) fn unguarded_annotation_read(
         binding: &'b str,
         attrs: &'b [rask_ast::attr::Attr],
         props: &'b indexmap::IndexMap<String, Value>,
+        other: &'b mut dyn FnMut(&Expr) -> Option<rask_ast::comptime_if::Fact>,
         found: Option<(String, Option<String>, Span)>,
     }
 
@@ -3387,13 +3389,14 @@ pub(super) fn unguarded_annotation_read(
                 return true;
             };
             let (binding, attrs, props) = (self.binding, self.attrs, self.props);
+            let other = &mut *self.other;
             // The facts native folds from the unrolled item: `has<A>()` and
             // the item's own properties.
-            let taken = comptime_if::decide(cond, &mut |fact| {
+            let kept = comptime_if::choose(cond, then_branch, else_branch, &mut |fact| {
                 if let Some(a) = names_annotation(fact, binding, "has") {
                     return Some(comptime_if::Fact::Bool(carries(attrs, a)));
                 }
-                let ExprKind::Field { object, field } = &fact.kind else { return None };
+                let ExprKind::Field { object, field } = &fact.kind else { return other(fact) };
                 if object.name() != Some(binding) || field.starts_with("__") {
                     return None;
                 }
@@ -3404,7 +3407,7 @@ pub(super) fn unguarded_annotation_read(
                     _ => None,
                 }
             });
-            match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
+            match kept {
                 Some(kept) => {
                     visit_body(kept, self);
                     false
@@ -3431,7 +3434,7 @@ pub(super) fn unguarded_annotation_read(
         }
     }
 
-    let mut reads = Reads { binding, attrs, props, found: None };
+    let mut reads = Reads { binding, attrs, props, other, found: None };
     visit_body(body, &mut reads);
     reads.found
 }

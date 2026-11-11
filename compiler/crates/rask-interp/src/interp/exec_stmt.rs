@@ -537,8 +537,9 @@ impl Interpreter {
                                 if s.lock().unwrap().name == "FieldInfo" {
                                     let attrs = self.field_info_attrs(s);
                                     let props = s.lock().unwrap().fields.clone();
+                                    let mut other = |e: &rask_ast::expr::Expr| self.comptime_if_fact(e);
                                     if let Some((annotation, field, span)) =
-                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs, &props)
+                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs, &props, &mut other)
                                     {
                                         let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
                                         return Err(RuntimeDiagnostic::new(
@@ -846,3 +847,29 @@ fn value_option_depth(value: &Value) -> usize {
     }
 }
 
+
+impl Interpreter {
+    /// A fact a `comptime if` in a `comptime for` may compare against, other
+    /// than the item's own: a module const with a literal value, or a
+    /// `reflect.*()` call that answers with one value. The same ones native
+    /// folds (`try_eval_comptime_if_locally`).
+    pub(super) fn comptime_if_fact(&mut self, expr: &rask_ast::expr::Expr) -> Option<rask_ast::comptime_if::Fact> {
+        use rask_ast::comptime_if::Fact;
+        use rask_ast::expr::ExprKind;
+        match &expr.kind {
+            ExprKind::Ident(name) => self.literal_consts.get(name).cloned(),
+            ExprKind::MethodCall { object, method, .. }
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                    && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
+            {
+                match self.eval_expr(expr).ok()? {
+                    Value::Bool(b) => Some(Fact::Bool(b)),
+                    Value::Int(n, _) => Some(Fact::Int(n as i128)),
+                    Value::String(s) => Some(Fact::Str(s.lock().unwrap().clone())),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}

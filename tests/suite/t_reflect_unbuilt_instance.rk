@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Reflecting on a generic instantiation the program never builds.
+// `reflect.fields<Holder<string>>()` names `Holder<string>` only as a type
+// argument to a native stub, so natively no layout of its own was made and
+// the facts came off the shared one: `t: T` read as an eight-byte `i64` at
+// offset 0, `n` at offset 8. A `comptime if f.type_name == "string"` then
+// silently took the other branch. When the instance does fit the shared
+// layout (`Holder<f64>`) the sizes were right but the name was still `i64`.
+import std.reflect
+
+struct Holder<T> {
+    t: T
+    n: i64
+}
+
+enum Answer<T> {
+    Yes(T)
+    No
+}
+
+test "an instance that is never built has its own field facts" {
+    mut out = ""
+    comptime for f in reflect.fields<Holder<string>>() {
+        out = "{out}{f.name}:{f.type_name}:{f.size}@{f.offset};"
+    }
+    assert out == "t:string:16@0;n:i64:8@16;"
+}
+
+test "an instance that fits the shared layout names its own types" {
+    mut out = ""
+    comptime for f in reflect.fields<Holder<f64>>() {
+        out = "{out}{f.name}:{f.type_name};"
+    }
+    assert out == "t:f64;n:i64;"
+}
+
+test "an enum payload declared as T" {
+    let small = reflect.variants<Answer<f64>>()
+    assert small[0].fields[0].type_name == "f64"
+    let wide = reflect.variants<Answer<string>>()
+    assert wide[0].fields[0].type_name == "string"
+    assert wide[0].fields[0].size == 16
+}

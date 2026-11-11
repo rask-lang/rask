@@ -809,13 +809,21 @@ fn monomorphize_inner(
     // Every instantiation the program mentions: in an expression's type, as a
     // call's type argument, or as a field of a concrete type. A generic body's
     // expression types count at each of its instances.
+    //
+    // A call's type arguments count whether or not anything is built from
+    // them: `reflect.fields<Holder<string>>()` calls a native stub, so no
+    // instance of a generic function carries `Holder<string>`, and the field
+    // facts were read off the shared layout, where `t: T` is one word (#968).
     let instance_node_types: Vec<Type> = mono
         .results
         .iter()
         .filter(|f| !f.type_args.is_empty())
         .flat_map(|f| {
             let inst = Instance::new(&f.type_args, &f.projections, program);
-            reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
+            reachability::body_nodes(&f.body).into_iter().flat_map(move |id| {
+                let call_args = inst.call_type_args(id).unwrap_or_default().into_iter().map(|b| b.ty);
+                inst.node_type(id).into_iter().chain(call_args)
+            })
         })
         .collect();
     // A concrete function's expression types as the checker recorded them.
@@ -826,7 +834,10 @@ fn monomorphize_inner(
         .iter()
         .filter(|f| f.type_args.is_empty())
         .flat_map(|f| reachability::body_nodes(&f.body))
-        .filter_map(|id| program.node_types.get(&id))
+        .flat_map(|id| {
+            let call_args = program.call_type_args.get(&id).into_iter().flatten().map(|b| &b.ty);
+            program.node_types.get(&id).into_iter().chain(call_args)
+        })
         .collect();
     let mut reached: Vec<(TypeId, Vec<Type>)> = Vec::new();
     for ty in concrete_node_types

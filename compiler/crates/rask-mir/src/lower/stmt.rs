@@ -277,22 +277,30 @@ impl<'a> MirLowerer<'a> {
         }
         // A closure in a field is the aggregate's, released with it (#1253),
         // so writing a new one over it gives the old one back the same way.
-        // Left out, `p.run = || …` leaked the closure it replaced.
+        // Left out, `p.run = || …` leaked the closure it replaced. An array's
+        // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
+        // `[string; 2]` field leaked the two strings it replaced.
         matches!(
             fty,
             MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::FuncPtr(_)
+                | MirType::Array { .. } | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
 
     /// What writing over a variable reached through a pointer — a `mutate`
     /// parameter, a closure's capture — gives back: the value it held, which
-    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
-    /// a container. A scalar holds nothing to give back.
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
+    /// or an array, a string, a container. A scalar holds nothing to give
+    /// back. Tuples and arrays were left out, so `v = [s1, s2]` through a
+    /// `mutate v: [string; 2]` leaked the strings it replaced.
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
+            matches!(
+                t,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+                    | MirType::Buffer | MirType::Container(_)
+            )
         })
     }
 
@@ -1761,11 +1769,28 @@ impl<'a> MirLowerer<'a> {
         let mut ordered: Vec<&rask_layout::FieldLayout> = layout.fields.iter().collect();
         ordered.sort_by_key(|fl| fl.decl_index);
 
+        // The type each field was declared with. A shared layout — which an
+        // instance keeps when its arguments fit it, `Holder<f64>` — holds a
+        // word where the declaration says `T`, and the name read off it was
+        // `i64`.
+        let declared_fields = match &checked {
+            Some(rask_types::Type::Named(id) | rask_types::Type::Generic { base: id, .. }) => {
+                match self.ctx.type_defs.get(*id) {
+                    Some(rask_types::TypeDef::Struct { fields, .. }) => Some(fields),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
         Ok(ordered
             .into_iter()
             .map(|fl| {
+                let declared = declared_fields
+                    .and_then(|fs| fs.iter().find(|(n, _)| *n == fl.name))
+                    .map_or(&fl.ty, |(_, t)| t);
                 let type_name =
-                    rask_check::reflect::substituted_label(self.ctx.type_defs, &fl.ty, &type_subst);
+                    rask_check::reflect::substituted_label(self.ctx.type_defs, declared, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
@@ -1798,8 +1823,23 @@ impl<'a> MirLowerer<'a> {
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
         use rask_ast::comptime_if;
         let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
-        let taken = comptime_if::decide(cond, &mut |fact| {
+        comptime_if::choose(cond, then_branch, else_branch, &mut |fact| {
             let answer = match &fact.kind {
+                // A module const with a literal value.
+                ExprKind::Ident(name) => {
+                    let (id, fact) = self.literal_consts.get(name)?;
+                    return (self.locals.get(name).map(|(l, _)| l) == Some(id)).then(|| fact.clone());
+                }
+                // `reflect.name_of<T>()` and the other answers that are one
+                // constant. The list-valued ones build a vector, which a
+                // condition can't compare.
+                ExprKind::MethodCall { object, method, type_args, args }
+                    if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                        && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
+                {
+                    let type_args = self.checked_type_args(type_args);
+                    self.try_lower_reflect_call(object, method, &type_args, args).ok()??
+                }
                 ExprKind::MethodCall { object, method, type_args, .. } => {
                     let type_args = self.checked_type_args(type_args);
                     self.comptime_field_method_const(object, method, &type_args)?
@@ -1813,8 +1853,7 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }
-        })?;
-        comptime_if::branch(taken, then_branch, else_branch)
+        })
     }
 
     /// Try to evaluate a `comptime if` block at compile time.

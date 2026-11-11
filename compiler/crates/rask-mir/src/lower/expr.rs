@@ -7391,7 +7391,7 @@ impl<'a> MirLowerer<'a> {
     /// The answers come from `rask_check::reflect` so the interpreter folds the
     /// same ones. Where neither backend can answer — anything needing layout —
     /// it says so instead of picking a number.
-    fn try_lower_reflect_call(
+    pub(super) fn try_lower_reflect_call(
         &mut self,
         object: &Expr,
         method: &str,
