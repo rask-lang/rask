@@ -123,3 +123,18 @@ test "conc.fork/FK1 a block hands back what it built" {
     assert v.len() == 3
     assert s == "built"
 }
+
+func both(f: func(), g: func()) {
+    fork { f() } and { g() }
+}
+
+test "conc.fork/FK8 a function that forks its arguments" {
+    mut a = 0
+    mut b = 0
+    both(|| { a += 1 }, || { b += 2 })
+    assert a == 1 && b == 2
+    using ThreadPool(workers: 2) {
+        both(|| { a += 10 }, || { b += 20 })
+    }
+    assert a == 11 && b == 22
+}

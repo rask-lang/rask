@@ -34,7 +34,8 @@ func total(tree: Tree) -> i64 {
 | **FK4: A block is its own frame** | As with a task block (`conc.async/S7`): `return v` ends the block with `v`, `try` ends it with the error and makes that block's value `T or E`, and `break`/`continue` can't reach a loop outside it |
 | **FK5: Parallel on a pool, in order without one** | Inside `using ThreadPool`, blocks after the first go to the pool and the forking thread runs the first. Outside one, the blocks run one after another in written order. FK3 makes the answer the same either way, so a library may fork without opening a runtime (`conc.async/C6`) |
 | **FK6: A panic waits for its siblings** | A block that panics doesn't cut the others short. When all have finished, the fork re-raises the first panic in written order. The other blocks still point into the frame, so it can't unwind before they stop |
-| **FK7: Task-bound values stay in one block** | A link, a rack, a `Local` box, or a value holding one may be named by one block only (E0961). Inside that block it is used by one thread at a time, as always. The same goes for a function value whose body the compiler can't see, such as a parameter: `both(h, h)` would hand one closure that writes its captures to two blocks |
+| **FK7: Task-bound values stay in one block** | A `Local` box, or a value holding one, may be named by one block only (E0961). Inside that block it is used by one thread at a time, as always. So may a function value taken from a field, a container or a call: two of those can be copies of one closure, and nothing says whether it writes what it captured. Racks and links are the exception (`mem.racks/RK16`) |
+| **FK8: A function value from a parameter is checked at the call** | A block may call a function-typed parameter, and another block may use it too. The function's callers are checked instead: the same closure passed where the function may run it twice at once, when it writes what it captured, or two arguments where one writes something the other touches, is an error at the call (E0964). A declared function captures nothing and always passes. A function handing its own parameters on to such a function is checked the same way at its own calls |
 
 Racks are the exception to FK7: several blocks may name one rack, its links
 and values holding them, as long as every one of those blocks only reads it.
@@ -64,14 +65,15 @@ WHY: the blocks may run at the same time, so a write in one and a read in the
 ```
 
 ```
-ERROR [conc.fork/FK7]: two fork blocks call function values that may be the same closure
+ERROR [conc.fork/FK8]: these arguments may run at the same time, and they race
    |
- 3 |  fork { f() } and { g() }
-   |         ^           -
+ 5 |  both(tick, tick)
+   |       ^^^^  ---- may run while this one does
+   |       `tick` runs twice at once and writes what it captured
    |
-FIX: write the work into the blocks, or call function values from one block
-WHY: `both(h, h)` hands one closure to both blocks, and it may write what it
-     captured.
+FIX: pass closures that touch different variables, or one that only reads
+WHY: `both` runs its arguments in different fork blocks, which may be on
+     different threads.
 ```
 
 ## Appendix (non-normative)

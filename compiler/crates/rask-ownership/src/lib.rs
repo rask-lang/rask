@@ -11,6 +11,7 @@ mod error;
 mod field_reuse;
 mod replaces;
 mod link_stores;
+mod parallel_calls;
 mod diagnostic;
 mod resize;
 mod pointers;
@@ -376,6 +377,10 @@ pub struct OwnershipChecker<'a> {
     replaces: replaces::Replaces,
     /// Whether each function may store a link (mem.racks/RK16).
     link_stores: link_stores::LinkStores,
+    /// Parameter pairs each function may use at the same time (conc.fork/FK8).
+    parallel_uses: parallel_calls::ParallelUses,
+    /// The parameters of the function being checked, in order.
+    current_params: Vec<String>,
     /// While `link_stores` is worked out: summarizing, and the type
     /// parameters the body's possible stores hang on.
     summarizing: std::cell::Cell<bool>,
@@ -650,6 +655,8 @@ impl<'a> OwnershipChecker<'a> {
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
             link_stores: HashMap::new(),
+            parallel_uses: HashMap::new(),
+            current_params: Vec::new(),
             summarizing: std::cell::Cell::new(false),
             link_param_hits: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             quiet_loops: HashSet::new(),
@@ -845,6 +852,7 @@ impl<'a> OwnershipChecker<'a> {
         self.infer_resizes(&[extra, decls]);
         self.infer_replaces(&[extra, decls]);
         self.infer_link_stores(&[extra, decls]);
+        self.infer_parallel_uses(&[extra, decls]);
         self.infer_pointer_returns(&[extra, decls]);
         self.run(decls)
     }
@@ -1591,6 +1599,7 @@ impl<'a> OwnershipChecker<'a> {
             .map(|p| p.name.clone())
             .collect();
 
+        self.current_params = fn_decl.params.iter().map(|p| p.name.clone()).collect();
         for param in &fn_decl.params {
             if param.is_take && is_written_link(&param.ty) {
                 self.take_link_params.insert(param.name.clone());
@@ -1721,6 +1730,9 @@ impl<'a> OwnershipChecker<'a> {
 
         // Check function body
         self.check_block(&fn_decl.body);
+        if self.instance.is_none() {
+            self.check_parallel_calls(&fn_decl.body);
+        }
 
         // Check for unconsumed resources at function exit. The closing brace, not
         // the last statement — "goes out of scope here" pointing at whatever
@@ -7715,10 +7727,12 @@ impl<'a> OwnershipChecker<'a> {
     fn fn_value_in_view(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Closure { .. } | ExprKind::GenericName { .. } => true,
+            // A parameter is checked where the function is called (FK8).
             ExprKind::Ident(name) => {
                 self.fn_key(e).is_some()
                     || self.closure_literals.contains_key(name)
                     || self.named_fn_values.contains(name)
+                    || self.current_params.iter().any(|p| p == name)
             }
             _ => false,
         }
@@ -7845,7 +7859,9 @@ impl<'a> OwnershipChecker<'a> {
         // body this pass can't see (a function-typed parameter) might write
         // whatever it captured, so calling it counts as writing it.
         for name in called {
-            if self.named_fn_values.contains(&name) {
+            // A declared function captures nothing; a parameter's callers are
+            // checked for what they pass (FK8).
+            if self.named_fn_values.contains(&name) || self.current_params.contains(&name) {
                 continue;
             }
             match self.closure_literals.get(&name) {

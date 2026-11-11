@@ -352,6 +352,13 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// conc.fork/FK8: two arguments a callee may use at the same time conflict.
+    #[error("these arguments may run at the same time: {what}")]
+    ParallelArgsConflict {
+        what: String,
+        other_span: Span,
+    },
+
     /// mem.racks/RK16: a fork block that shares a rack with another block
     /// writes through a link or a rack, or stores a link.
     #[error("a fork block that shares a rack with another block changes it")]

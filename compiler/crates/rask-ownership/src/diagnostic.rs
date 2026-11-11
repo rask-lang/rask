@@ -819,6 +819,22 @@ impl ToDiagnostic for crate::OwnershipError {
                          what makes it safe to reach for [conc.sync/SH7]",
                     )
             }
+            ParallelArgsConflict { what, other_span } => {
+                Diagnostic::error("these arguments may run at the same time, and they race".to_string())
+                    .with_code("E0964")
+                    .with_primary(self.span, what.clone())
+                    .with_secondary(*other_span, "may run while this one does")
+                    .with_fix(
+                        "pass closures that touch different variables, or one that only \
+                         reads; a counter both need can be an `Atomic`",
+                    )
+                    .with_why(
+                        "the function runs these in different fork blocks, which may be on \
+                         different threads. A closure that writes what it captured, run \
+                         beside something that touches the same thing (itself included), \
+                         is a data race [conc.fork/FK8]",
+                    )
+            }
             SharedGraphWrite { what } => {
                 Diagnostic::error("a fork block that shares a rack with another block changes it".to_string())
                     .with_code("E0962")
@@ -873,13 +889,13 @@ impl ToDiagnostic for crate::OwnershipError {
                     .with_primary(self.span, format!("`{}` is used in this block", name))
                     .with_secondary(*other_span, format!("and `{}` in this one", other))
                     .with_fix(
-                        "write the work into the blocks, or call the function values from \
-                         one block only",
+                        "call them from one block, or take them as parameters, so each \
+                         call of this function is checked for what it passes",
                     )
                     .with_why(
-                        "a function value handed in from outside may be one closure that \
-                         writes what it captured, passed twice. Nothing here can see its \
-                         body, so two blocks calling it could race [conc.fork/FK7]",
+                        "a function value from a field, a container or a call may be a copy \
+                         of another, and nothing here says whether it writes what it \
+                         captured [conc.fork/FK7]",
                     )
             }
             ForkTaskBound { name, other, other_span, .. } => {

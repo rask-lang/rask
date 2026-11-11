@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // The blocks of a `fork` may run at the same time and borrow from the frame,
 // so the borrow rules hold between them (conc.fork/FK3, E0960): a place one
-// block writes, no other block may touch. A link, a rack or a `Local` box may
-// be named by one block only (FK7, E0961), unless every block naming a rack or
-// its links only reads it (mem.racks/RK16, E0962). The forks at the end are the legal
-// shapes and must compile.
+// block writes, no other block may touch. A `Local` box, or a function value
+// from a field or a container, may be named by one block only (FK7, E0961).
+// A function value a parameter brings is checked where the function is
+// called (FK8, E0964). A rack or its links may be shared by blocks that only
+// read it (mem.racks/RK16, E0962). The forks at the end are the legal shapes
+// and must compile.
 
 import memory.Rack
 import memory.Link
@@ -27,9 +29,9 @@ func bump(mutate n: i64) {
     n += 1
 }
 
-// `both(h, h)` would hand one closure that writes its captures to two blocks.
+// Runs `f` and `g` at once. Fine on its own: each call is checked for what it
+// passes (FK8).
 func both(f: func(), g: func()) {
-    // ERROR: two function values this body can't see into [E0961]
     fork { f() } and { g() }
 }
 
@@ -72,14 +74,23 @@ func main() {
         let (x, y) = fork { count += 1 } and { 0 }
     } and { count }
 
+    let tick = || { count += 1 }
+    // ERROR: one closure that writes `count`, run twice at once [E0964]
+    both(tick, tick)
+    // ERROR: one writes `count` while the other reads it [E0964]
+    both(tick, || { println("{count}") })
+
     mut r = Rack.new()
     let n1 = r.insert(Node(hp: 1, next: none))
     let n2 = r.insert(Node(hp: 2, next: none))
     // ERROR: `n1` and `n2` may name the same node, and one block writes it [E0962]
     fork { n1.hp = 5 } and { n2.hp }
 
-    // Separate fields, reads of a shared value, graph work in one block, and
-    // two blocks only reading the graph (mem.racks/RK16).
+    // Separate fields, reads of a shared value, graph work in one block, two
+    // blocks only reading the graph (mem.racks/RK16), and closures over
+    // different variables run at once.
+    mut other = 0
+    both(|| { other += 1 }, || { println("{p.x}") })
     let (m, o) = fork { n1.hp } and { n2.hp }
     fork { p.x = v.len().to<i64>()! } and { p.y = v.len().to<i64>()! }
     let (s, t) = fork { n1.hp + n2.hp } and { v.len() }
