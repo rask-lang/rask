@@ -800,9 +800,13 @@ pub(crate) fn params_a_callee_keeps(
                 if kept.get(&func.name).is_some_and(|v| v[i]) {
                     continue;
                 }
-                // The callee stores its own copy; the caller's stays the
-                // caller's to release.
-                if crate::transform::rc_insert::retains_what_it_hands_on(func, i, copy_layouts) {
+                // Not written `take`: the caller still owns it after the
+                // call. A borrowed Copy value the callee stores is a copy with
+                // references of its own (`rc_insert::retains_what_it_hands_on`),
+                // a borrowed non-Copy one can't be given away (PM6), and a
+                // `mutate` slot the callee moves out of comes back refilled
+                // (PM7), the new value the caller's to release (#1885).
+                if func.taken_params.get(i) == Some(&false) {
                     continue;
                 }
                 if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {

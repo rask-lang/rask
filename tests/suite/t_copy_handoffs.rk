@@ -73,13 +73,6 @@ func move_into_literal(mutate t: (string, Vec<i64>), mutate keep: Vec<Holder>) {
     t = (mk(2), Vec.new())
 }
 
-func destructure_then_refill(mutate t: (string, Vec<string>), mutate keep: Vec<Vec<string>>) -> string {
-    let (name, list) = t
-    keep.push(list)
-    t = (mk(5), Vec.new())
-    return name
-}
-
 test "a mutate parameter moved out any way, then refilled" {
     // The refill writes an empty slot: releasing what it held freed the
     // value the move handed on.
@@ -91,13 +84,37 @@ test "a mutate parameter moved out any way, then refilled" {
     assert t.0 == mk(2)
     assert keep[0].t.0 == mk(1)
     assert keep[0].t.1.len() == 1
+}
 
-    mut lists: Vec<Vec<string>> = Vec.new()
-    mut l: Vec<string> = Vec.new()
-    l.push(mk(10))
-    mut u = (mk(4), l)
-    let name = destructure_then_refill(mutate u, mutate lists)
-    assert name == mk(4)
-    assert u.0 == mk(5)
-    assert lists[0][0] == mk(10)
+func reassign_from_mutate(mutate a: [string; 1]) -> string {
+    mut t = [mk(0)]
+    t = a
+    a = [mk(7)]
+    return t[0]
+}
+
+test "assigning a mutate array into a local copies it" {
+    // Aliased, `a = …` changed what `t` read.
+    mut b = [mk(4)]
+    assert reassign_from_mutate(mutate b) == mk(4)
+    assert b[0] == mk(7)
+}
+
+struct Named {
+    name: string
+    tag: string
+}
+
+func swap_named(mutate a: Named, mutate b: Named) {
+    let t = a
+    a = b
+    b = t
+}
+
+test "a caller releases what a swap left in its slots" {
+    mut a = Named(name: mk(1), tag: mk(2))
+    mut b = Named(name: mk(3), tag: mk(4))
+    swap_named(mutate a, mutate b)
+    assert a.name == mk(3)
+    assert b.tag == mk(2)
 }

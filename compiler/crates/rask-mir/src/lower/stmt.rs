@@ -964,10 +964,28 @@ impl<'a> MirLowerer<'a> {
                             if struct_assigned && self.ctx.mir_has_guarded_link(&dst_ty) {
                                 self.emit_link_guarded(MirOperand::Local(local_id), local_id, false);
                             }
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local_id,
-                                rvalue: MirRValue::Use(val_op),
-                            }));
+                            // `t = a` copies the array the way `let t = a`
+                            // does; aliased, `a = …` after it changed `t`.
+                            // The `ZeroAggregate` makes a new value in the
+                            // slot, so the release pass gives back the old one
+                            // while it is still the frame's.
+                            if !self.addressed_captures.contains(&local_id)
+                                && self.reads_caller_array_slot(value, &dst_ty)
+                            {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: local_id,
+                                    offset: 0,
+                                    value: val_op,
+                                    store_size: dst_ty.size(),
+                                    field: None,
+                                }));
+                            } else {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: local_id,
+                                    rvalue: MirRValue::Use(val_op),
+                                }));
+                            }
                             self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
@@ -1942,7 +1960,7 @@ impl<'a> MirLowerer<'a> {
     ///
     /// A Copy array, from any place: `let t = s.one` then `s.one = …` changed
     /// what `t` read. A whole `mutate` array parameter too, which is moved
-    /// out and refilled (`field_reuse::refill_pairs`). Not a non-Copy array
+    /// out and refilled (`OwnershipResult::refills_after_move`). Not a non-Copy array
     /// read out of a field or an element: unpaired with a refill that read
     /// is a view of the slot (mem.borrowing/S1), and the checker stops it
     /// being read once the slot is written over.
