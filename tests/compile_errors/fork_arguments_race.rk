@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function that may run two of its arguments at once is checked where it
+// is called: the two arguments are held to what two fork blocks would be
+// (conc.fork/FK8, E0964). That covers a closure that writes what it captured
+// passed twice, a writer beside a reader, a `Local` box reaching two threads,
+// and a rack written while another argument reads it. A local closure named
+// like a parameter is not that parameter. The calls at the end are legal.
+
+import memory.Rack
+import memory.Link
+import sync.Shared
+
+struct Node {
+    hp: i64
+    next: Link<Node>?
+}
+
+func both(f: func(), g: func()) {
+    fork { f() } and { g() }
+}
+
+func twice(x: func()) {
+    let w = || { x() }
+    both(w, w)
+}
+
+func apply2(r: func(func(), func()), a: func()) {
+    r(a, a)
+}
+
+func shadowed(f: func(), k: i64) {
+    mut n = k
+    let f = || { n += 1 }
+    // ERROR: the local `f` is a closure that writes `n`, not the parameter [E0960]
+    fork { f() } and { f() }
+}
+
+func main() {
+    mut count = 0
+    let tick = || { count += 1 }
+    // ERROR: one closure that writes `count`, twice at once [E0964]
+    both(tick, tick)
+    // ERROR: through a closure wrapping the parameter [E0964]
+    twice(tick)
+    // ERROR: through a function value that may fork its arguments [E0964]
+    apply2(both, tick)
+    let b = both
+    // ERROR: through a name bound to the function [E0964]
+    b(tick, tick)
+
+    let box = Shared.local(0)
+    let peek = || {
+        with box.read() as v {
+            println("{v}")
+        }
+    }
+    // ERROR: a `Local` box read on two threads [E0964]
+    both(peek, peek)
+
+    mut r = Rack.new()
+    let a = r.insert(Node(hp: 1, next: none))
+    // ERROR: a node written while the other argument reads the rack [E0964]
+    both(|| { a.hp = 5 }, || { println("{r.len()}") })
+
+    // Closures over different variables, and a declared function.
+    mut other = 0
+    both(|| { other += 1 }, || { println("{a.hp}") })
+    both(main_helper, main_helper)
+    println("{count}{other}")
+}
+
+func main_helper() {
+    println("helper")
+}
+
+test "a test block is checked too" {
+    mut n = 0
+    let bump = || { n += 1 }
+    // ERROR: the same race in a test [E0964]
+    both(bump, bump)
+}
