@@ -2437,6 +2437,7 @@ fn container_free(kind: crate::ContainerKind) -> &'static str {
         crate::ContainerKind::Vec => "Vec_free",
         crate::ContainerKind::Map => "Map_free",
         crate::ContainerKind::Rack => "Rack_free",
+        crate::ContainerKind::Handle(release) => release,
     }
 }
 

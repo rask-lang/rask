@@ -650,6 +650,42 @@ fn insert_aggregate_release(
         }
     }
 
+    // A slot a part was parked in, and the part: the one whole-width store of
+    // a tracked name into a slot that is not itself an aggregate. A load back
+    // out of the slot is the same value again. The drop pass frees a
+    // container a stack closure captured by loading it from its slot
+    // (`container_drop`'s lent slots), and read as anything else that free
+    // handed nothing over, so the wrapper the container came out of released
+    // it a second time (#1887).
+    let parked: HashMap<LocalId, LocalId> = {
+        let mut seen: HashMap<LocalId, Option<LocalId>> = HashMap::new();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
+                let one = uses::operand_local(value).filter(|v| {
+                    *offset == 0 && tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr)
+                });
+                match seen.get(addr) {
+                    None => {
+                        seen.insert(*addr, one);
+                    }
+                    Some(_) => {
+                        seen.insert(*addr, None);
+                    }
+                }
+            }
+        }
+        seen.into_iter().filter_map(|(a, v)| Some((a, v?))).collect()
+    };
+    if !parked.is_empty() {
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(a)) } = &stmt.kind {
+                if parked.contains_key(a) {
+                    tracked.insert(*dst);
+                }
+            }
+        }
+    }
+
     // Locals holding the address of a place inside other storage: `base + k`
     // where the base is a link or an aggregate. Copied into an aggregate
     // name, that name borrows the place; it doesn't own it.
@@ -727,6 +763,11 @@ fn insert_aggregate_release(
             };
             match &stmt.kind {
                 MirStmtKind::Phi { .. } => {}
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(a)) }
+                    if is_tracked(dst) && parked.contains_key(a) =>
+                {
+                    ev.push(ownership::Event::Alias { dst: *dst, src: parked[a] });
+                }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if is_tracked(dst) =>
                 {

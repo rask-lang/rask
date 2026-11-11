@@ -272,6 +272,9 @@ static inline int rask_owned_guard(const char *elem, const int32_t *entries, int
 // entry decides whether the entries after it apply, so the walk has to be able
 // to skip and cannot be a loop over the single-entry calls above.
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+// Free a handle through its stdlib type's declared release, by its index in
+// `RASK_HANDLE_RELEASES`. Null handles and unknown indexes do nothing.
+void rask_handle_release(int64_t index, void *handle);
 
 // A `Heap<T>` field: releases what the block holds and then frees the block.
 // `entries` describe a `T`, so a `RASK_OWNED_SELF` inside them restarts against
@@ -588,6 +591,7 @@ int64_t     rask_string_first_nul(const RaskStr *s);
 int64_t     rask_cstring_from_string(const RaskStr *s);
 int64_t     rask_cstring_as_ptr(int64_t cs);
 void        rask_cstring_free(int64_t cs);
+void        rask_atomic_free(int64_t ptr);
 RaskVec    *rask_cstring_bytes(int64_t cs);
 void        rask_panic_str(const RaskStr *msg);
 void        rask_panic_str_at(const char *file, int32_t line, int32_t col,

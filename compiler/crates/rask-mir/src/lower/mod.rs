@@ -1633,9 +1633,17 @@ impl<'a> MirContext<'a> {
         if mir != MirType::Ptr {
             return mir;
         }
-        match crate::ContainerKind::of(ty, self.type_names) {
-            Some(kind) => MirType::Container(kind),
-            None => mir,
+        if let Some(kind) = crate::ContainerKind::of(ty, self.type_names) {
+            return MirType::Container(kind);
+        }
+        // A handle that frees itself, by its declaration's release.
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self
+                .handle_releases
+                .get(id)
+                .and_then(|r| crate::ContainerKind::handle(r))
+                .map_or(mir, MirType::Container),
+            _ => mir,
         }
     }
 

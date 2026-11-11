@@ -5955,8 +5955,8 @@ impl<'a> MirLowerer<'a> {
                                     .first()
                                     .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                                     .map(|ty| {
-                                        let head = self.head_name(&ty);
-                                        crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                                        let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                                        crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                                     })
                                     .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
@@ -6431,8 +6431,8 @@ impl<'a> MirLowerer<'a> {
                 .first()
                 .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                 .map(|ty| {
-                    let head = self.head_name(&ty);
-                    crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                    let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                    crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                 })
                 .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));

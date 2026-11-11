@@ -251,10 +251,9 @@ impl<'a> MirLowerer<'a> {
     /// What a field slot holds that has to be given back before it is written
     /// over, or `None` when it holds nothing the release walks.
     ///
-    /// A container's kind comes from the checker's type of the place, through
-    /// the head name rather than `Display`, because a resolved generic renders
-    /// as `<type#7><i64>`; the field's MIR type can be a bare `Ptr` where
-    /// lowering only had an address. A string, struct, enum or
+    /// A container or a self-freeing handle comes from the checker's type of
+    /// the place: the field's MIR type can be a bare `Ptr` where lowering only
+    /// had an address. A string, struct, enum or
     /// tuple the field's own MIR type already says, and codegen walks it for
     /// whatever it holds. Leaving the aggregates out leaked the old value of
     /// `self.active = MemTable.new()` (tiered_store).
@@ -269,10 +268,8 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
-            if let Some(head) = self.head_name(&ty) {
-                if let Some(kind) = crate::ContainerKind::from_head(&head) {
-                    return Some(MirType::Container(kind));
-                }
+            if let container @ MirType::Container(_) = self.ctx.type_to_mir(&ty) {
+                return Some(container);
             }
         }
         // A closure in a field is the aggregate's, released with it (#1253),

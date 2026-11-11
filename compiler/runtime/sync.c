@@ -92,7 +92,12 @@ static void box_payload_free(int64_t payload_kind, void *data) {
             inner->release(inner);
             break;
         }
-        default: break;
+        default:
+            if (payload_kind >= RASK_BOX_PAYLOAD_HANDLE_BASE) {
+                rask_handle_release(payload_kind - RASK_BOX_PAYLOAD_HANDLE_BASE,
+                                    (void *)(intptr_t)handle);
+            }
+            break;
     }
 }
 

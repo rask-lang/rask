@@ -1723,6 +1723,68 @@ impl TypeTable {
     /// an `item: T`. The declaration alone can't say — `T` is linear only at
     /// some instantiations — so `is_transitive_resource` was false and a
     /// `Holder<Conn>` was dropped with no error (#1366).
+    /// A handle that frees itself and has no `clone`, where cloning `ty` would
+    /// copy it: the value itself, an element of a container whose clone copies
+    /// its elements, a field or a payload. Copying the handle's pointer leaves
+    /// two owners to free one block (#1887).
+    pub fn uncloneable_handle(&self, ty: &Type) -> Option<Type> {
+        self.uncloneable_handle_in(ty, &mut Vec::new())
+    }
+
+    fn uncloneable_handle_in(&self, ty: &Type, seen: &mut Vec<(TypeId, Vec<GenericArg>)>) -> Option<Type> {
+        let (id, args): (TypeId, &[GenericArg]) = match ty {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args),
+            Type::Tuple(parts) | Type::Union(parts) => {
+                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen));
+            }
+            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen),
+            Type::Result { ok, err } => {
+                return self.uncloneable_handle_in(ok, seen).or_else(|| self.uncloneable_handle_in(err, seen));
+            }
+            _ => return None,
+        };
+        let def = self.get(id)?;
+        let declares_clone = match def {
+            TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => {
+                methods.iter().any(|m| m.name == "clone")
+            }
+            _ => true,
+        };
+        if def.runtime_handle().is_some_and(|h| h.release.is_some()) {
+            if !declares_clone {
+                return Some(ty.clone());
+            }
+            // A container's clone copies its elements.
+            return args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen),
+                _ => None,
+            });
+        }
+        if seen.iter().any(|(i, a)| *i == id && a.as_slice() == args) {
+            return None;
+        }
+        seen.push((id, args.to_vec()));
+        let (params, slots): (&Vec<String>, Vec<&Type>) = match def {
+            TypeDef::Struct { type_params, fields, .. } => (type_params, fields.iter().map(|(_, t)| t).collect()),
+            TypeDef::Enum { type_params, variants, .. } => {
+                (type_params, variants.iter().flat_map(|(_, ts)| ts.iter()).collect())
+            }
+            _ => return None,
+        };
+        let subst: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        slots
+            .into_iter()
+            .find_map(|t| self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen))
+    }
+
     fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {
         let (params, slots): (&Vec<String>, Vec<&Type>) = match self.get(base) {
             Some(TypeDef::Struct { type_params, fields, .. }) => {

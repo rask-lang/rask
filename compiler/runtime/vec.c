@@ -93,11 +93,38 @@ const int32_t rask_elem_strs_pair[2] = {0, 16};
 // free walks the outer array and leaves every inner vector behind.
 const int32_t rask_elem_vec_one[1] = {(int32_t)(RASK_OWNED_VEC << RASK_OWNED_KIND_SHIFT)};
 
+// Every stdlib handle's release, indexed the way `RASK_OWNED_HANDLE` entries
+// and handle box payloads index them. The releases take a handle word, some
+// typed as a pointer and some as `int64_t`; compiled code already calls each
+// one with a single word in the first argument register, and this table calls
+// them the same way.
+#define RASK_HANDLE_RELEASE_ENTRY(f) (void (*)(void *))(f),
+void (*const rask_handle_releases[])(void *) = {
+    RASK_HANDLE_RELEASES(RASK_HANDLE_RELEASE_ENTRY)
+};
+#undef RASK_HANDLE_RELEASE_ENTRY
+const int64_t rask_handle_release_count =
+    (int64_t)(sizeof rask_handle_releases / sizeof rask_handle_releases[0]);
+
+void rask_handle_release(int64_t index, void *handle) {
+    if (!handle || index < 0 || index >= rask_handle_release_count) return;
+    rask_handle_releases[index](handle);
+}
+
 // One entry of an element map. Shared by every container's free and retain
 // walks — the encoding is described next to `RaskElemStrs` in the header.
 void rask_owned_release(char *elem, int32_t entry) {
     char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
     switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        // The offset bits split in two: the byte offset, and above it which
+        // release the handle declared.
+        case RASK_OWNED_HANDLE: {
+            int32_t bits = entry & RASK_OWNED_OFFSET_MASK;
+            void **slot = (void **)(elem + (bits & RASK_OWNED_HANDLE_OFFSET_MASK));
+            rask_handle_release(bits >> RASK_OWNED_HANDLE_INDEX_SHIFT, *slot);
+            *slot = NULL;
+            break;
+        }
         case RASK_OWNED_STRING:
             rask_string_free((const RaskStr *)at);
             break;

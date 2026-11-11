@@ -20,7 +20,7 @@
 //! as owning nothing and every string in it leaked (#1395).
 
 use rask_mono::runtime_abi;
-use crate::{MirConst, MirOperand, MirType};
+use crate::{ContainerKind, MirConst, MirOperand, MirType};
 
 /// The constructor argument describing elements of type `ty`. Pass the type
 /// with its containers named (`payload_to_mir`), or a `Vec<Vec<i64>>` frees
@@ -54,18 +54,19 @@ pub const BOX_PAYLOAD_CLOSURE: i64 = runtime_abi::RASK_BOX_PAYLOAD_CLOSURE;
 /// its own release, and the runtime calls that (#1302).
 pub const BOX_PAYLOAD_BOX: i64 = runtime_abi::RASK_BOX_PAYLOAD_BOX;
 
-/// The payload kind for a checker type and its head name.
+/// The payload kind for a payload's MIR type, and whether it is itself a box.
 ///
-/// A function type has no head name, so asking by name alone could only ever say
-/// `NONE`, and every `Shared.local(|x| …)` leaked the closure.
-pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
-    if matches!(ty, rask_types::Type::Fn { .. }) {
-        return BOX_PAYLOAD_CLOSURE;
-    }
-    match head {
-        Some("Vec") => BOX_PAYLOAD_VEC,
-        Some("Map") => BOX_PAYLOAD_MAP,
-        Some("Shared") => BOX_PAYLOAD_BOX,
+/// The MIR type says how the payload is released: a closure block, a container,
+/// or a handle with a declared release (#1887). A box is a `Ptr` like any other
+/// unowned pointer, so that one fact comes from the checker.
+pub fn box_payload_kind_of(mir: &MirType, is_box: bool) -> i64 {
+    match mir {
+        MirType::FuncPtr(_) => BOX_PAYLOAD_CLOSURE,
+        MirType::Container(ContainerKind::Vec) => BOX_PAYLOAD_VEC,
+        MirType::Container(ContainerKind::Map) => BOX_PAYLOAD_MAP,
+        MirType::Container(ContainerKind::Handle(release)) => runtime_abi::handle_release_index(release)
+            .map_or(BOX_PAYLOAD_NONE, |i| runtime_abi::RASK_BOX_PAYLOAD_HANDLE_BASE + i),
+        _ if is_box => BOX_PAYLOAD_BOX,
         _ => BOX_PAYLOAD_NONE,
     }
 }

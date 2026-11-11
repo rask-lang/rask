@@ -7142,6 +7142,7 @@ impl<'a> FunctionBuilder<'a> {
             ContainerKind::Vec => "rask_vec_free",
             ContainerKind::Map => "rask_map_free",
             ContainerKind::Rack => "rask_rack_free",
+            ContainerKind::Handle(release) => release,
         }
     }
 
