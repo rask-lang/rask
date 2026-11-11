@@ -6708,12 +6708,11 @@ impl<'a> MirLowerer<'a> {
         } else {
             None
         }.unwrap_or_else(|| self
-            // Qualified first. `Type_method` names exactly one function;
-            // the bare method name is whatever else in the program shares it,
-            // so consulting it first let an unrelated `join` answer for
-            // `Handle_join`.
+            // `Type_method` names exactly one function. The bare method name is
+            // whatever free function shares it, so it is never asked: when the
+            // stub's return names `T`, a program's own `func join(n) -> i64`
+            // typed `h.join()` as an `i64` and the `!` after it segfaulted.
             .sig_ret_ty(&qualified_name)
-            .or_else(|| self.sig_ret_ty(&method))
             .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
 
         // A method on a generic type is lowered once, so its signature says `T`
