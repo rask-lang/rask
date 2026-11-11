@@ -9,7 +9,7 @@ use std::process;
 use crate::output;
 
 pub fn cmd_test_specs(path: Option<&str>) {
-    use rask_spec_test::{extract_tests, has_rk_tests, run_test_with_config, run_rk_test_file, extract_deps, check_staleness, RunConfig, TestSummary};
+    use rask_spec_test::{extract_tests, has_rk_tests, run_test_with_config, run_rk_package, run_rk_test_file, extract_deps, check_staleness, RunConfig, TestSummary};
 
     let specs_dir = path.unwrap_or("specs");
     let specs_path = Path::new(specs_dir);
@@ -71,7 +71,23 @@ pub fn cmd_test_specs(path: Option<&str>) {
 
     // Run .rk test files (files with `test "..." { ... }` blocks)
     let mut rk_results: Vec<rask_spec_test::RkTestResult> = Vec::new();
+    let mut packages_run: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
     for rk_path in &rk_files {
+        // A file in a package runs with the rest of it, once per package.
+        if let Some(root) = package_root(rk_path) {
+            if !packages_run.insert(root.clone()) {
+                continue;
+            }
+            let Some(binary) = &config.rask_binary else { continue };
+            println!("{}", output::file_path(&root.display().to_string()));
+            let rk_result = run_rk_package(&root, binary);
+            report_rk(&rk_result, &mut summary);
+            if !rk_result.interp_ok() || !rk_result.native_ok() {
+                rk_results.push(rk_result);
+            }
+            println!();
+            continue;
+        }
         let content = match fs::read_to_string(rk_path) {
             Ok(c) => c,
             Err(e) => {
@@ -87,43 +103,7 @@ pub fn cmd_test_specs(path: Option<&str>) {
         println!("{}", output::file_path(&rk_path.display().to_string()));
         let rk_result = run_rk_test_file(rk_path, &content, &config);
 
-        // Display results
-        let interp_status = if rk_result.interp_ok() {
-            format!("interp: {}/{} {}", rk_result.interp_passed, rk_result.interp_total, "ok".green())
-        } else {
-            format!("interp: {}/{} {}", rk_result.interp_passed, rk_result.interp_total, "FAIL".red().bold())
-        };
-
-        let native_status = match (rk_result.native_passed, rk_result.native_total) {
-            (Some(p), Some(t)) if p == t && t > 0 => {
-                format!("  native: {}/{} {}", p, t, "ok".green())
-            }
-            (Some(p), Some(t)) => {
-                format!("  native: {}/{} {}", p, t, "FAIL".red().bold())
-            }
-            _ => String::new(),
-        };
-
-        println!("  {} {}{}", if rk_result.interp_ok() { output::status_pass() } else { output::status_fail() }, interp_status, native_status);
-
-        // Show failures
-        for f in &rk_result.interp_failures {
-            println!("       {} {}", "interp:".red(), f);
-        }
-        for f in &rk_result.native_failures {
-            println!("       {} {}", "native:".red(), f);
-        }
-
-        // Update summary
-        summary.total += rk_result.interp_total;
-        summary.passed += rk_result.interp_passed;
-        summary.failed += rk_result.interp_total - rk_result.interp_passed;
-        if let (Some(np), Some(nt)) = (rk_result.native_passed, rk_result.native_total) {
-            summary.native_total += nt;
-            summary.native_passed += np;
-            summary.native_failed += nt - np;
-        }
-
+        report_rk(&rk_result, &mut summary);
         if !rk_result.interp_ok() || !rk_result.native_ok() {
             rk_results.push(rk_result);
         }
@@ -339,4 +319,51 @@ fn collect_test_files(dir: &Path) -> Vec<PathBuf> {
 
     files.sort();
     files
+}
+
+/// Print one `.rk` result and add it to the summary.
+fn report_rk(rk_result: &rask_spec_test::RkTestResult, summary: &mut rask_spec_test::TestSummary) {
+    // Display results
+    let interp_status = if rk_result.interp_ok() {
+        format!("interp: {}/{} {}", rk_result.interp_passed, rk_result.interp_total, "ok".green())
+    } else {
+        format!("interp: {}/{} {}", rk_result.interp_passed, rk_result.interp_total, "FAIL".red().bold())
+    };
+
+    let native_status = match (rk_result.native_passed, rk_result.native_total) {
+        (Some(p), Some(t)) if p == t && t > 0 => {
+            format!("  native: {}/{} {}", p, t, "ok".green())
+        }
+        (Some(p), Some(t)) => {
+            format!("  native: {}/{} {}", p, t, "FAIL".red().bold())
+        }
+        _ => String::new(),
+    };
+
+    println!("  {} {}{}", if rk_result.interp_ok() { output::status_pass() } else { output::status_fail() }, interp_status, native_status);
+
+    // Show failures
+    for f in &rk_result.interp_failures {
+        println!("       {} {}", "interp:".red(), f);
+    }
+    for f in &rk_result.native_failures {
+        println!("       {} {}", "native:".red(), f);
+    }
+
+    // Update summary
+    summary.total += rk_result.interp_total;
+    summary.passed += rk_result.interp_passed;
+    summary.failed += rk_result.interp_total - rk_result.interp_passed;
+    if let (Some(np), Some(nt)) = (rk_result.native_passed, rk_result.native_total) {
+        summary.native_total += nt;
+        summary.native_passed += np;
+        summary.native_failed += nt - np;
+    }
+
+}
+
+/// The package `path` belongs to: the nearest directory above it holding a
+/// `rask.toml`.
+fn package_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors().skip(1).find(|d| d.join("rask.toml").is_file()).map(Path::to_path_buf)
 }
