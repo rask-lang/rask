@@ -3499,7 +3499,7 @@ impl<'a> MirLowerer<'a> {
             let mut elem_ty = MirType::I32;
             for (i, elem) in elems.iter().enumerate() {
                 let (elem_op, ty) = self.lower_expr(elem)?;
-                self.retain_element_copy(&elem_op, elem);
+                let elem_op = self.owned_copy_of_place(elem_op, elem);
                 if i == 0 {
                     elem_ty = ty.clone();
                 }
@@ -3544,12 +3544,59 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), array_ty))
         }
 
-    /// An aggregate literal's element copied out of a place: its strings get
-    /// references of their own, as a `let` copy's do (`retain_copy_of_place`).
-    fn retain_element_copy(&mut self, op: &MirOperand, elem: &Expr) {
-        if let MirOperand::Local(local) = op {
-            self.retain_copy_of_place(*local, elem);
+    /// A Copy aggregate read out of a place to be stored somewhere else — a
+    /// literal's element, an assignment's value, a variant's payload — as a
+    /// copy of its own with its own references to the strings it holds.
+    ///
+    /// The bytes copy the string pointers, so without references the stored
+    /// value shared the place's strings uncounted, and releasing either freed
+    /// what the other reads (#1876). Retaining the place's own local didn't
+    /// work: the RC pass reads a retained local as a fresh owner and releases
+    /// the name it came from on the spot. A fresh temporary is a fresh owner,
+    /// which is exactly what the store hands over.
+    pub(crate) fn owned_copy_of_place(&mut self, op: MirOperand, expr: &Expr) -> MirOperand {
+        if !matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            return op;
         }
+        // A `Vec` or `Map` element read already hands back a copy with
+        // references of its own.
+        if let ExprKind::Index { object, .. } = &expr.kind {
+            if self.is_vec_expr(object) || self.is_map_expr(object) {
+                return op;
+            }
+        }
+        let MirOperand::Local(src) = op else { return op };
+        let Some(ty) = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned) else {
+            return op;
+        };
+        if !self.ctx.type_defs.is_copy(&ty) {
+            return op;
+        }
+        let Some(mty) = self.builder.local_type(src) else { return op };
+        // Copy is at most 16 bytes, so the copy costs a couple of moves; one
+        // holding nothing counted retains nothing.
+        if !matches!(
+            mty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+                | MirType::Option(_) | MirType::Result { .. }
+        ) {
+            return op;
+        }
+        // The bytes go into a fresh slot by `Store` (an array-to-array `Use`
+        // names the same storage), and the copy takes the references. The RC
+        // pass reads a store into a slot whose contents are retained right
+        // after as this copy, so the place stays the frame's to release.
+        let copy = self.builder.alloc_temp(mty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: copy }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: copy,
+            offset: 0,
+            value: MirOperand::Local(src),
+            store_size: mty.size(),
+            field: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: copy }));
+        MirOperand::Local(copy)
     }
 
     fn lower_tuple(&mut self, expr: &Expr, elems: &[Expr]) -> Result<TypedOperand, LoweringError> {
@@ -3557,7 +3604,7 @@ impl<'a> MirLowerer<'a> {
             let mut lowered_elems = Vec::new();
             for elem in elems.iter() {
                 let (elem_op, elem_ty) = self.lower_expr(elem)?;
-                self.retain_element_copy(&elem_op, elem);
+                let elem_op = self.owned_copy_of_place(elem_op, elem);
                 lowered_elems.push(elem_op);
                 elem_types.push(elem_ty);
             }
@@ -3727,7 +3774,7 @@ impl<'a> MirLowerer<'a> {
                 let lowered = self.lower_expr(&field.value);
                 self.field_type_hint = saved_hint;
                 let (val_op, val_ty) = lowered?;
-                self.retain_element_copy(&val_op, &field.value);
+                let val_op = self.owned_copy_of_place(val_op, &field.value);
                 // Look up field offset and size from layout
                 let Some(fl) = layout
                     .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
@@ -3892,6 +3939,7 @@ impl<'a> MirLowerer<'a> {
         value: &Expr,
     ) -> Result<(), LoweringError> {
         let (val, val_ty) = self.lower_expr(value)?;
+        let val = self.owned_copy_of_place(val, value);
         let (offset, field_size) = match fields.get(i) {
             Some(f) => (payload_offset + f.offset, f.size),
             None => (payload_offset + (i as u32 * 8), 8),

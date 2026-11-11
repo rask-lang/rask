@@ -419,4 +419,4 @@
 # Format: one basename per line, then `# N allocations`.
 
 t_http_client_loopback.rk   # 40 allocations — #1609 a server task answering a request leaks its headers Map
-t_overwrite_aggregate_releases.rk # 11 allocations — #1876 an array written over a field or through `mutate` isn't released, since a Copy aggregate copied out of it may share its strings uncounted; #1877 `let t = a` on a `mutate` array binds the caller's slot
+t_mutate_array_swap.rk           # 4 allocations — #1885 a caller never releases a `mutate` parameter its callee moved out of and refilled

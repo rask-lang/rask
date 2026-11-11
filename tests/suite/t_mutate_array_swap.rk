@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A swap through two `mutate` arrays. Natively `let t = a` binds the caller's
-// slot rather than copying it, so `a = b` changes what `t` reads and the swap
-// gives `b, b` (#1877); tests/known_divergences.txt tracks it. Once that's
-// fixed the caller still never releases a parameter its callee moved out of
-// and refilled (#1885).
+// A swap through two `mutate` arrays. Natively `let t = a` bound the caller's
+// slot rather than copying it, so `a = b` changed what `t` read and the swap
+// gave `b, b` (#1877). It still leaks: the caller never releases a parameter
+// its callee moved out of and refilled (#1885), tracked in known_leaks.txt.
 
 func mk(i: i64) -> string {
     return "item-{i}-long-enough-to-live-on-the-heap"

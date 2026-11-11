@@ -3,13 +3,10 @@
 // parameters, new values built from the old one's elements, element stores.
 // Each answer has to be right and nothing may read freed memory; the memcheck
 // gate runs this file under valgrind. A small Copy aggregate (`[string; 1]`)
-// copied into a literal used to share the old value's strings uncounted, and
-// an element store gave its string no reference of its own (#1876).
-//
-// It still leaks: an array written over a field or through `mutate` isn't
-// released, because releasing it is only safe once every copy of a Copy
-// aggregate takes its own references (#1876) and `let t = a` on a `mutate`
-// array copies (#1877). tests/known_leaks.txt holds the count.
+// copied out of a place used to share the old value's strings uncounted, an
+// element store gave its string no reference of its own, and an array written
+// over a field or through `mutate` was never released because releasing it
+// freed what those copies read (#1876). The leak gate runs this file too.
 
 struct Slots {
     v: [string; 2]
