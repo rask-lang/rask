@@ -38,6 +38,7 @@ pub fn insert_rc_ops(
     own: &HashSet<String>,
     closure_keeps: &ClosureKeeps,
     rack_holders: &HashSet<u32>,
+    copy_layouts: &crate::CopyLayouts,
 ) -> Vec<CarriedSite> {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::Buffer);
 
@@ -82,7 +83,7 @@ pub fn insert_rc_ops(
 
     // A copy of an aggregate read out of somebody else's storage, given to a
     // keeper, takes references of its own to what it holds.
-    retain_views_handed_over(func, kept, own, &owns_copy);
+    retain_views_handed_over(func, kept, own, &owns_copy, copy_layouts);
 
     // And an aggregate written back to its slot that the frame still uses.
     retain_written_back_while_live(func);
@@ -218,6 +219,7 @@ fn retain_views_handed_over(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
+    copy_layouts: &crate::CopyLayouts,
 ) {
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
@@ -247,7 +249,7 @@ fn retain_views_handed_over(
     // array pushed then refilled shared the caller's strings uncounted.
     for (i, p) in func.params.iter().enumerate() {
         let taken = func.taken_params.get(i).copied();
-        if taken == Some(false) && is_aggregate(&p.id) {
+        if taken == Some(false) && is_aggregate(&p.id) && copy_layouts.is_copy(&p.ty) {
             views.insert(p.id);
         }
     }
@@ -298,7 +300,8 @@ fn retain_views_handed_over(
     // of `_19`. Handing a part to a keeper hands on the value it is part of,
     // so the part is a copy while that value is still read afterwards
     // (`c.one = a.one` then `a.one = …`).
-    let mut source_of: HashMap<LocalId, LocalId> = HashMap::new();
+    // A join (`if c { a } else { s.one }`) has a source per way in.
+    let mut source_of: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         match &stmt.kind {
             MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
@@ -307,7 +310,14 @@ fn retain_views_handed_over(
                 rvalue: MirRValue::Field { base: MirOperand::Local(src), .. }
                     | MirRValue::ArrayIndex { base: MirOperand::Local(src), .. },
             } if dst != src => {
-                source_of.insert(*dst, *src);
+                source_of.entry(*dst).or_default().push(*src);
+            }
+            MirStmtKind::Phi { dst, args } => {
+                for (_, op) in args {
+                    if let Some(src) = uses::operand_local(op).filter(|s| s != dst) {
+                        source_of.entry(*dst).or_default().push(src);
+                    }
+                }
             }
             _ => {}
         }
@@ -332,22 +342,32 @@ fn retain_views_handed_over(
             }
             aliases.terminator_reads(term, local) || live.live_at_exit(block.id, local)
         };
-        let copies = |si: usize, v: LocalId, stmts: &[MirStmt], term: &crate::MirTerminator| {
+        // `into` is the storage the value is going into, for a store: a value
+        // read out of that storage (`s.one = if c { … } else { s.one }`) is
+        // what the slot's release frees, so it has to be a copy.
+        let copies = |si: usize, v: LocalId, into: Option<LocalId>, stmts: &[MirStmt], term: &crate::MirTerminator| {
             if views.contains(&v) {
                 return true;
             }
-            if !is_aggregate(&v) || owns_copy.contains(&v) {
+            // Only a Copy value: a part of a value moved out and refilled
+            // (`let old = self.log`) has its source read afterwards too.
+            if !is_aggregate(&v) || owns_copy.contains(&v) || !ty_of.get(&v).is_some_and(|t| copy_layouts.is_copy(t)) {
                 return false;
             }
-            // The value itself, or what it was read out of, read again.
-            let mut name = v;
-            for _ in 0..16 {
-                if used_after(si, name, stmts, term) {
+            // The value itself, or anything it was read out of, read again.
+            let mut seen: HashSet<LocalId> = HashSet::new();
+            let mut todo = vec![v];
+            while let Some(name) = todo.pop() {
+                if !seen.insert(name) || seen.len() > 64 {
+                    continue;
+                }
+                if into == Some(name) || used_after(si, name, stmts, term) {
                     return true;
                 }
-                match source_of.get(&name) {
-                    Some(src) if !owns_copy.contains(src) => name = *src,
-                    _ => return false,
+                for src in source_of.get(&name).into_iter().flatten() {
+                    if !owns_copy.contains(src) {
+                        todo.push(*src);
+                    }
                 }
             }
             false
@@ -361,7 +381,7 @@ fn retain_views_handed_over(
                         let written_back = rask_stdlib::mir_metadata::written_back_at(&fref.name) == Some(i);
                         if call_keeps_arg(fref, i, kept)
                             && !(written_back && !views.contains(&id))
-                            && copies(si, id, &block.statements, &block.terminator)
+                            && copies(si, id, None, &block.statements, &block.terminator)
                         {
                             insertions.push((si, id));
                         }
@@ -374,7 +394,7 @@ fn retain_views_handed_over(
                 | MirStmtKind::ArrayStore { base: addr, value: MirOperand::Local(v), .. }
                     if addr != v
                         && !store_is_narrow(stmt, &ty_of)
-                        && copies(si, *v, &block.statements, &block.terminator) =>
+                        && copies(si, *v, Some(*addr), &block.statements, &block.terminator) =>
                 {
                     // Before the release of the slot it is about to fill, if
                     // the statement before gives that slot back: the value
@@ -2127,7 +2147,7 @@ mod tests {
             taken_params: Vec::new(),
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -2175,7 +2195,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2228,7 +2248,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2297,7 +2317,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2367,7 +2387,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2400,7 +2420,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2419,7 +2439,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2439,7 +2459,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2464,7 +2484,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2510,7 +2530,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2531,7 +2551,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }

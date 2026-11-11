@@ -3499,7 +3499,6 @@ impl<'a> MirLowerer<'a> {
             let mut elem_ty = MirType::I32;
             for (i, elem) in elems.iter().enumerate() {
                 let (elem_op, ty) = self.lower_expr(elem)?;
-                self.retain_element_copy(&elem_op, elem);
                 if i == 0 {
                     elem_ty = ty.clone();
                 }
@@ -3544,20 +3543,11 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), array_ty))
         }
 
-    /// An aggregate literal's element copied out of a place: its strings get
-    /// references of their own, as a `let` copy's do (`retain_copy_of_place`).
-    fn retain_element_copy(&mut self, op: &MirOperand, elem: &Expr) {
-        if let MirOperand::Local(local) = op {
-            self.retain_copy_of_place(*local, elem);
-        }
-    }
-
     fn lower_tuple(&mut self, expr: &Expr, elems: &[Expr]) -> Result<TypedOperand, LoweringError> {
             let mut elem_types = Vec::new();
             let mut lowered_elems = Vec::new();
             for elem in elems.iter() {
                 let (elem_op, elem_ty) = self.lower_expr(elem)?;
-                self.retain_element_copy(&elem_op, elem);
                 lowered_elems.push(elem_op);
                 elem_types.push(elem_ty);
             }
@@ -3727,7 +3717,6 @@ impl<'a> MirLowerer<'a> {
                 let lowered = self.lower_expr(&field.value);
                 self.field_type_hint = saved_hint;
                 let (val_op, val_ty) = lowered?;
-                self.retain_element_copy(&val_op, &field.value);
                 // Look up field offset and size from layout
                 let Some(fl) = layout
                     .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))

@@ -1929,11 +1929,6 @@ impl<'a> MirLowerer<'a> {
 
     /// Give a copy of a Copy aggregate references of its own.
     ///
-    /// An element of an array, tuple or struct literal is such a copy too:
-    /// `(b.t.1, b.t.0)` on `([string; 1], [string; 1])` copies each half into
-    /// the new tuple, and the store over `b.t` then released the strings the
-    /// new tuple holds (#1876). `retain_element_copy` calls this for those.
-    ///
     /// `let p = items[0]` copies the bytes, and the bytes include the source's
     /// string pointers. Without references of its own the copy was a second
     /// name for the source's strings, so anything that released them while
@@ -1942,11 +1937,13 @@ impl<'a> MirLowerer<'a> {
     /// The source can be a collection slot, a `with` or `for mutate` binding,
     /// a `mutate` parameter, a field, or a local of the frame's own; all of
     /// them keep their references and can drop them while the copy lives.
-    /// Is `init` a whole `mutate` array parameter, read for a value of array
-    /// type? Its local is the caller's slot.
+    /// Is `init` an array read out of a place — a `mutate` array parameter,
+    /// a local, a field, an element? An array-to-array `Use` names the place's
+    /// storage rather than copying it, so `let t = s.one` followed by `s.one
+    /// = …` changed what `t` read.
     fn reads_caller_array_slot(&self, init: &Expr, ty: &MirType) -> bool {
-        let ExprKind::Ident(name) = &init.kind else { return false };
-        matches!(ty, MirType::Array { .. }) && self.meta(name).is_some_and(|m| m.assigns_through)
+        matches!(ty, MirType::Array { .. })
+            && matches!(init.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
     }
 
     pub(crate) fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
@@ -2161,10 +2158,11 @@ impl<'a> MirLowerer<'a> {
             rask_ast::coercion::CoercionSite::AnnotatedBinding,
             init_op, &inferred_ty, &var_ty,
         );
-        // `let t = a` on a `mutate a: [T; N]`: the parameter's local is the
-        // caller's slot, and an array-to-array `Use` names the same storage
-        // (`for mutate` and `with` bind that way on purpose). A `let` is a
-        // value, so the bytes are copied into `t`'s own slot. Aliased, `a = b`
+        // `let t = a`, `let t = s.one`, `let t = g[1]` on an array: an
+        // array-to-array `Use` names the place's storage (`for mutate` and
+        // `with` bind that way on purpose). A `let` is a value, so the bytes
+        // are copied into `t`'s own slot, and the RC pass gives the copy
+        // references of its own while the place lives on. Aliased, `a = b`
         // changed what `t` read and a swap gave `b, b` (#1877).
         if self.reads_caller_array_slot(init, &var_ty) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
