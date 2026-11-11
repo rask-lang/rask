@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Vec.replace(i, x)` puts `x` in slot `i` and hands back what was there.
+// `v[i]` copies out only a Copy element, so before this the one way to take a
+// non-Copy element out of the middle was `remove`, which shifts the rest.
+// `OrderedMap` needs it for both `insert` over an existing key and `remove`.
+
+test "replace hands back the old element" {
+    mut v: Vec<i64> = [1, 2, 3]
+    assert v.replace(1, 20) == 2
+    assert v[1] == 20
+    assert v.len() == 3
+}
+
+test "an element that owns memory moves out whole" {
+    mut v: Vec<Vec<i64>> = Vec.new()
+    v.push([1, 2])
+    v.push([3])
+    let old = v.replace(0, [9, 9, 9])
+    assert old.len() == 2
+    assert old[1] == 2
+    assert v[0].len() == 3
+    assert v[1].len() == 1
+}
+
+test "heap strings change hands without a double release" {
+    mut v: Vec<string> = Vec.new()
+    v.push("a string long enough to live on the heap")
+    let old = v.replace(0, "another string long enough for the heap")
+    assert old == "a string long enough to live on the heap"
+    assert v[0] == "another string long enough for the heap"
+}
+
+test "an optional slot can be emptied" {
+    mut v: Vec<(string, i64)?> = Vec.new()
+    v.push(("a", 1))
+    let old = v.replace(0, none)
+    if old? as gone {
+        assert gone.0 == "a"
+    } else {
+        assert false
+    }
+    assert v[0] is none
+    let back = v.replace(0, ("b", 2))
+    assert back is none
+    if v[0]? as entry {
+        assert entry.0 == "b"
+    } else {
+        assert false
+    }
+}

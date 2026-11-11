@@ -343,6 +343,7 @@ void     rask_vec_shrink_to(RaskVec *v, int64_t min_capacity);
 int64_t  rask_vec_is_empty(const RaskVec *v);
 int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
 int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
+int64_t  rask_vec_replace(RaskVec *v, int64_t index, const void *elem, void *out);
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);

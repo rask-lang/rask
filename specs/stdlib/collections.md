@@ -1,11 +1,11 @@
 <!-- id: std.collections -->
 <!-- status: decided -->
-<!-- summary: Vec and Map with inline access + `with`, optional capacity bounds, fallible try_ variants -->
+<!-- summary: Vec, Map, Set and OrderedMap with inline access + `with`, optional capacity bounds, fallible try_ variants -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 
-# Collections (Vec, Map and Set)
+# Collections (Vec, Map, Set and OrderedMap)
 
-Vec, Map and Set with optional capacity constraints, inline element access, fallible allocation. For nodes that reference each other, see `mem.racks`.
+Vec, Map, Set and OrderedMap with optional capacity constraints, inline element access, fallible allocation. For nodes that reference each other, see `mem.racks`.
 
 ## Collection Types
 
@@ -21,6 +21,7 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | `Vec<T>` | Ordered, indexed | `Vec.new()`, `Vec.with_capacity(n)`, `Vec.fixed(n)`, `Vec.from([T; N])` |
 | `Map<K,V>` | Key-value associative | `Map.new()`, `Map.with_capacity(n)`, `Map.from([(K,V); N])` |
 | `Set<T>` | Unique values | `Set.new()` |
+| `OrderedMap<K,V>` | Key-value, walked in insertion order | `OrderedMap.new()`, after `import collections.OrderedMap` |
 
 <!-- surface -->
 ```rask
@@ -76,6 +77,53 @@ for v in seen { … }
 `Set` has been in BI1's always-available list from the start. It resolved as a
 builtin and had no methods at all until #1017 — `Set.new()` type-checked and
 `s.insert(x)` was "no method `insert` found" three lines later.
+
+## OrderedMap
+
+`Map`'s iteration order is seeded per process (`determinism/D7`). `OrderedMap`
+is for state whose order is part of what the program computes — a lockstep
+simulation walking its entity table every tick, where two machines have to
+visit the entries in the same order.
+
+| Rule | Description |
+|------|-------------|
+| **OM1: Insertion order** | Iteration visits entries in the order their keys were first inserted. Re-inserting a present key replaces the value and keeps its place; a removed key inserted again goes to the back |
+| **OM2: Order comes from a slot vector** | Entries live in a `Vec<(K, V)?>` in insertion order, with a `Map<K, usize>` from key to slot. The index's hash seed decides where buckets sit and nothing a program can observe, so the order is the same in every mode and on every machine, and `sim/SD1`'s hash-order stream doesn't reach it |
+| **OM3: Removal leaves a hole** | `remove` empties the slot and moves nothing. Once holes number at least 16 and outnumber live entries, the slots are packed in order and the index rewritten — `remove` is amortized O(1). When that happens depends only on the sequence of inserts and removes |
+| **OM4: Keys are stored twice** | Once in the slot, once in the index, so `insert` needs `K: Cloneable`. `string` and the integers are Copy and pay nothing |
+| **OM5: `get` needs a Copy value** | `get` hands the value out, which only a Copy value survives; other values go through `read`, `modify` or `get_clone`, as with `vec.get` |
+| **OM6: Order counts for `==`** | Two ordered maps are equal when they hold equal entries in the same order. Order is what this type promises, so unlike `Map` (C7a) it is part of the value |
+| **OM7: Written in Rask** | Over `Vec` and `Map`, like `Set` (C7), so both backends run one source. It's a stdlib type, imported like any other, not one of BI1's always-available names |
+
+<!-- surface -->
+```rask
+extend OrderedMap<K, V> {
+    func new() -> OrderedMap<K, V>
+    func len(self) -> usize
+    func contains(self, key: K) -> bool
+    func insert(mutate self, take key: K, take value: V) -> V?
+    func remove(mutate self, key: K) -> V?
+    func read(self, key: K, f: func(V) -> R) -> R?
+    func modify(mutate self, key: K, f: func(mutate V) -> R) -> R?
+    func get(self, key: K) -> V?
+    func keys(self) -> Sequence<K>
+    func values(self) -> Sequence<V>
+    func as_sequence(self) -> Sequence<(K, V)>
+}
+```
+
+<!-- test: skip -->
+```rask
+import collections.OrderedMap
+
+mut entities: OrderedMap<u32, Entity> = OrderedMap.new()
+entities.insert(id, spawn())
+for (id, e) in entities { … }      // same order on every machine
+```
+
+Key order — a B-tree, with range queries — was the other candidate. Insertion
+order is cheaper on every operation and is what the programs asking for this
+need; a sorted map is a separate type if one ever earns its place.
 
 ## Capacity Semantics
 
@@ -221,6 +269,7 @@ first place is the bug that error is pointing at.
 | `vec.insert(i, x)` | `()` | none | Yes (OOB or alloc) |
 | `vec.remove(i)` | `T` | none | Yes (OOB) |
 | `vec.remove_unordered(i)` | `T` | none | Yes (OOB) |
+| `vec.replace(i, x)` | `T` | none | Yes (OOB) |
 | `vec.pop()` | `T?` | none | No |
 
 <!-- surface -->
@@ -231,6 +280,7 @@ extend Vec<T> {
     func insert(mutate self, index: i64, take value: T)
     func remove(mutate self, index: i64) -> T
     func remove_unordered(mutate self, index: i64) -> T
+    func replace(mutate self, index: i64, take value: T) -> T
     func pop(mutate self) -> T?
 }
 ```
@@ -242,6 +292,7 @@ extend Vec<T> {
 | **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()` or alloc failure |
 | **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
 | **V6: Pop last** | `vec.pop()` removes and returns the last element as `T?`. Returns `none` on empty vec |
+| **V7a: Replace** | `vec.replace(i, x)` puts `x` at `i` and returns the element that was there, moving nothing else. How a non-Copy element comes out of the middle of a vector without shifting the rest. Panics on `i >= len()` |
 | **V7: Unordered remove** | `vec.remove_unordered(i)` removes and returns the element at `i` by swapping in the last element — O(1), does not preserve order. Panics on `i >= len()` |
 
 <!-- test: skip -->
@@ -623,6 +674,7 @@ FIX: Use try_push to handle capacity limits:
 **When to use which collection:**
 - `Vec<T>` — Ordered data, access by position, elements don't need stable identity
 - `Map<K,V>` — Lookup by arbitrary key, no ordering guarantees
+- `OrderedMap<K,V>` — Lookup by key, walked in insertion order on every run and machine
 - `Rack<T>` + `Link<T>` — Elements reference each other (graphs, trees), need stable identity
 
 **Pattern selection for element access:**

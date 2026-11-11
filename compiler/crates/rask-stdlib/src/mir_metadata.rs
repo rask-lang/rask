@@ -742,6 +742,7 @@ const TRANSFERS_OUT: &[&str] = &[
     "Vec_pop",
     "Vec_remove",
     "Vec_remove_unordered",
+    "Vec_replace",
     "Vec_move_out",
     "Field_take",
     "Map_insert",

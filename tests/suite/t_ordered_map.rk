@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `OrderedMap`: a map whose iteration order is insertion order, the same on
+// every run and every machine (determinism/D7a, #1862). `Map`'s order is
+// seeded per process on purpose, so a lockstep simulation walking a table
+// every tick has nothing it can walk without sorting first.
+//
+// Removal leaves a hole so nothing behind it moves, and the holes are packed
+// out once they outnumber the live entries. The tests that remove dozens of
+// keys are there to cross that line.
+
+import collections.OrderedMap
+
+func walk(m: OrderedMap<string, i64>) -> string {
+    mut out = ""
+    for (k, v) in m {
+        out = "{out}{k}={v} "
+    }
+    return out
+}
+
+test "iteration follows insertion order, not key order" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("zebra", 1)
+    m.insert("apple", 2)
+    m.insert("mango", 3)
+    assert walk(m) == "zebra=1 apple=2 mango=3 "
+}
+
+test "re-inserting a key replaces the value and keeps its place" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    assert m.insert("a", 10)! == 1
+    assert walk(m) == "a=10 b=2 "
+    assert m.len() == 2
+}
+
+test "remove keeps the order of what is left" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    assert m.remove("b")! == 2
+    assert m.remove("b") is none
+    assert walk(m) == "a=1 c=3 "
+    assert !m.contains("b")
+    assert m.len() == 2
+}
+
+test "a removed key inserted again goes to the back" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.remove("a")
+    m.insert("a", 3)
+    assert walk(m) == "b=2 a=3 "
+}
+
+test "packing the holes keeps order and lookups" {
+    mut m: OrderedMap<i64, i64> = OrderedMap.new()
+    mut i: i64 = 0
+    while i < 200 {
+        m.insert(i, i * 10)
+        i = i + 1
+    }
+    // Remove every key but the multiples of 7, which crosses the pack
+    // threshold several times.
+    i = 0
+    while i < 200 {
+        if i % 7 != 0 {
+            assert m.remove(i)! == i * 10
+        }
+        i = i + 1
+    }
+    assert m.len() == 29
+    mut expect: i64 = 0
+    for (k, v) in m {
+        assert k == expect
+        assert v == expect * 10
+        expect = expect + 7
+    }
+    assert m.get(196)! == 1960
+    assert m.get(195) is none
+    m.insert(1, 1)
+    assert m.keys().to_vec().last()! == 1
+}
+
+test "values that own memory move in and out" {
+    mut m: OrderedMap<string, Vec<i64>> = OrderedMap.new()
+    m.insert("a", [1, 2])
+    m.insert("b", [3])
+    if m.insert("a", [4, 5, 6])? as old {
+        assert old.len() == 2
+    } else {
+        assert false
+    }
+    m.modify("b", |mutate v: Vec<i64>| { v.push(7) })
+    assert m.read("b", |v| v.len())! == 2
+    if m.remove("a")? as gone {
+        assert gone.len() == 3
+    } else {
+        assert false
+    }
+    assert m.get_clone("b")!.len() == 2
+    assert m.read("a", |v| v.len()) is none
+}
+
+test "clone copies the order and is independent" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("x", 1)
+    m.insert("y", 2)
+    mut c = m.clone()
+    c.insert("z", 3)
+    m.remove("x")
+    assert walk(c) == "x=1 y=2 z=3 "
+    assert walk(m) == "y=2 "
+}
+
+test "equal means same entries in the same order" {
+    mut a: OrderedMap<string, i64> = OrderedMap.new()
+    mut b: OrderedMap<string, i64> = OrderedMap.new()
+    a.insert("x", 1)
+    a.insert("y", 2)
+    b.insert("y", 2)
+    b.insert("x", 1)
+    assert a != b
+    b.remove("y")
+    b.insert("y", 2)
+    assert a == b
+}
+
+test "sequence methods come from as_sequence" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    let big = m.filter(|e| e.1 > 1).map(|e| e.0).to_vec()
+    assert big.len() == 2
+    assert big[0] == "b"
+    assert m.values().to_vec()[2] == 3
+}
+
+test "clear empties it" {
+    mut m: OrderedMap<string, i64> = OrderedMap.new()
+    m.insert("a", 1)
+    m.clear()
+    assert m.is_empty()
+    m.insert("b", 2)
+    assert walk(m) == "b=2 "
+}

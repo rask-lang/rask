@@ -65,6 +65,9 @@ pub enum ArgAdapt {
     InPlaceStringMut,
     /// Append 8-byte (or 16-byte for string dst) out-param
     AppendOutParam,
+    /// WrapArg2, then AppendOutParam: a value goes in by address and the one
+    /// it displaced comes back out (`Vec.replace`).
+    WrapArg2AppendOutParam,
     /// Append the destination `T?`'s payload address as an out-param. The call
     /// returns 1 (wrote a value) or 0 (nothing there), which becomes the tag.
     /// For anything that hands an element back out of a container it's about to
@@ -1269,6 +1272,7 @@ fn declared_entry(
     let arg_adapt = match (wrap, out_param) {
         (wrap, None) => wrap,
         (ArgAdapt::None, Some(out)) => out,
+        (ArgAdapt::WrapArg2, Some(ArgAdapt::AppendOutParam)) => ArgAdapt::WrapArg2AppendOutParam,
         (_, Some(_)) => {
             return Err(format!(
                 "{}: takes a value by address and returns through an out-parameter, \

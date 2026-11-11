@@ -8140,6 +8140,11 @@ impl<'a> FunctionBuilder<'a> {
                 return Self::append_out_param(builder, args, dst, ctx);
             }
 
+            ArgAdapt::WrapArg2AppendOutParam => {
+                Self::wrap_arg_as_ptr(builder, args, mir_args, 2, ctx.locals);
+                return Self::append_out_param(builder, args, dst, ctx);
+            }
+
 
             ArgAdapt::OptionOutParam => {
                 // Hand the callee the destination's payload address so it can

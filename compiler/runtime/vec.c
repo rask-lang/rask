@@ -623,6 +623,16 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
+// `v.replace(i, x)`: the slot takes `elem` and its old element goes to `out`,
+// owned by the caller now, so nothing is released here.
+int64_t rask_vec_replace(RaskVec *v, int64_t index, const void *elem, void *out) {
+    char *slot = vec_slot(v, index);
+    if (out) memcpy(out, slot, (size_t)v->elem_size);
+    memcpy(slot, elem, (size_t)v->elem_size);
+    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
+    return 0;
+}
+
 // Put back an element `with`, `for mutate` or a field write took out of this
 // slot (`Vec_lend` in MIR). What the copy owns is what the slot owned, less
 // whatever the body released and plus whatever it stored, so nothing is

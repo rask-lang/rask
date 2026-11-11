@@ -1381,7 +1381,7 @@ impl Interpreter {
                 // element came back as an i64 that `?` refused to test.
                 if let Some((arg_index, type_arg_index)) = match (&receiver, method.as_str()) {
                     (Value::Vec(_), "push") => Some((0usize, 0usize)),
-                    (Value::Vec(_), "set") | (Value::Vec(_), "insert") => Some((1, 0)),
+                    (Value::Vec(_), "set" | "replace" | "insert") => Some((1, 0)),
                     (Value::Map(_), "insert") => Some((1, 1)),
                     _ => None,
                 } {
