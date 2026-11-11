@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The rules: what each command does to the world, and who hears about it.
+
+import memory.Link
+
+// Something a player can look at.
+public interface Describe {
+    func describe(self) -> string
+}
+
+Item implements Describe {
+    public func describe(self) -> string {
+        return self.name
+    }
+}
+
+Exit implements Describe {
+    public func describe(self) -> string {
+        if self.to? {
+            return self.dir.name()
+        }
+        return "{self.dir.name()} (blocked)"
+    }
+}
+
+// "a, b and c", or `empty` when there is nothing to list.
+public func listing<T: Describe>(things: Vec<T>, empty: string) -> string {
+    let n = things.len()
+    if n == 0 {
+        return empty
+    }
+    mut out = things[0].describe()
+    for i in 1..n {
+        let sep = if i == n - 1: " and " else: ", "
+        out = "{out}{sep}{things[i].describe()}"
+    }
+    return out
+}
+
+// A line for one player, as opposed to the reply to whoever typed the command.
+public struct Heard {
+    public to: string
+    public text: string
+}
+
+public struct Outcome {
+    public reply: string
+    public heard: Vec<Heard>
+}
+
+public func reply(text: string) -> Outcome {
+    return Outcome(reply: text, heard: Vec.new())
+}
+
+func tell_room(world: World, room: Link<Room>, except: string, text: string, mutate heard: Vec<Heard>) {
+    for name in world.players_in(room, except) {
+        heard.push(Heard(to: name, text))
+    }
+}
+
+public func describe_room(world: World, room: Link<Room>, viewer: string) -> string {
+    let items = listing(room.items, "nothing")
+    let exits = listing(room.exits, "none")
+    mut text = "{room.name}\n{room.description}\nYou see {items}.\nExits: {exits}."
+    let others = world.players_in(room, viewer)
+    if !others.is_empty() {
+        text = "{text}\nAlso here: {others.join(", ")}."
+    }
+    for m in world.monsters.nodes() {
+        if m.at? as r {
+            if r == room {
+                text = "{text}\nA {m.name} is here."
+            }
+        }
+    }
+    return text
+}
+
+public func enter(mutate world: World, name: string, start: string) -> Outcome {
+    let room = world.room(start) ?? return reply("The world has no room called {start}.")
+    world.players.insert(Player(name, at: room, inventory: Vec.new()))
+    mut heard = Vec.new()
+    tell_room(world, room, name, "{name} arrives.", mutate heard)
+    return Outcome(reply: describe_room(world, room, name), heard)
+}
+
+// What a leaving player carried stays behind, on the floor where they stood.
+public func leave(deleting world: World, name: string) -> Outcome {
+    let p = world.player(name) ?? return reply("")
+    mut heard = Vec.new()
+    if p.at? as room {
+        while p.inventory.pop()? as item {
+            room.items.push(item)
+        }
+        tell_room(world, room, name, "{name} leaves.", mutate heard)
+    }
+    world.players.delete(p)
+    return Outcome(reply: "Goodbye.", heard)
+}
+
+public func apply(mutate world: World, name: string, cmd: Command) -> Outcome {
+    let p = world.player(name) ?? return reply("You aren't in the game.")
+    let here = p.at ?? return reply("You are nowhere at all.")
+    return match cmd {
+        Command.Look => reply(describe_room(world, here, name)),
+        Command.Go(dir) => go(mutate world, p, here, dir),
+        Command.Take(thing) => take_item(mutate world, p, here, thing),
+        Command.Drop(thing) => drop_item(mutate world, p, here, thing),
+        Command.Inventory => reply("You carry {listing(p.inventory, "nothing")}."),
+        Command.Say(text) => say(world, p, here, text),
+        Command.Help => reply(HELP),
+        Command.Quit => reply("Type 'quit' again at the prompt to leave."),
+    }
+}
+
+const HELP: string = "Commands: look, n/s/e/w/u/d, take <item>, drop <item>, inventory, say <words>, quit."
+
+func go(mutate world: World, p: Link<Player>, here: Link<Room>, dir: Direction) -> Outcome {
+    let exit = here.exit(dir) ?? return reply("You can't go {dir.name()}.")
+    let there = exit.to ?? return reply("Rubble blocks the way {dir.name()}.")
+    mut heard = Vec.new()
+    tell_room(world, here, p.name, "{p.name} goes {dir.name()}.", mutate heard)
+    p.at = there
+    tell_room(world, there, p.name, "{p.name} arrives.", mutate heard)
+    return Outcome(reply: describe_room(world, there, p.name), heard)
+}
+
+// Picking something up moves it: out of the room, into the inventory.
+func take_item(mutate world: World, p: Link<Player>, here: Link<Room>, thing: string) -> Outcome {
+    let i = find_item(here.items, thing) ?? return reply("There's no {thing} here.")
+    let item = here.items.remove(i)
+    p.inventory.push(item)
+    mut heard = Vec.new()
+    tell_room(world, here, p.name, "{p.name} takes the {thing}.", mutate heard)
+    return Outcome(reply: "You take the {thing}.", heard)
+}
+
+func drop_item(mutate world: World, p: Link<Player>, here: Link<Room>, thing: string) -> Outcome {
+    let i = find_item(p.inventory, thing) ?? return reply("You don't have a {thing}.")
+    let item = p.inventory.remove(i)
+    here.items.push(item)
+    mut heard = Vec.new()
+    tell_room(world, here, p.name, "{p.name} drops the {thing}.", mutate heard)
+    return Outcome(reply: "You drop the {thing}.", heard)
+}
+
+func say(world: World, p: Link<Player>, here: Link<Room>, text: string) -> Outcome {
+    mut heard = Vec.new()
+    tell_room(world, here, p.name, "{p.name} says \"{text}\"", mutate heard)
+    return Outcome(reply: "You say \"{text}\"", heard)
+}
+
+// Each monster walks through one open exit, picked by `step`.
+public func tick(mutate world: World, step: u64) -> Vec<Heard> {
+    mut heard = Vec.new()
+    for m in world.monsters.nodes() {
+        let here = m.at ?? continue
+        mut open: Vec<Exit> = Vec.new()
+        for e in here.exits {
+            if e.to? {
+                open.push(e)
+            }
+        }
+        if open.is_empty() {
+            continue
+        }
+        let pick = step % open.len()
+        let exit = open[pick]
+        let there = exit.to ?? continue
+        tell_room(world, here, "", "The {m.name} scurries {exit.dir.name()}.", mutate heard)
+        m.at = there
+        tell_room(world, there, "", "A {m.name} scurries in.", mutate heard)
+    }
+    return heard
+}

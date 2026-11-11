@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `mud` plays alone in this terminal. `mud serve 4000` runs the server.
+
+import io
+import fs
+import os
+
+const SAVE: string = "mud.save"
+
+func main() -> void or Error {
+    let args = os.args()
+    if args.len() >= 2 && args[1] == "serve" {
+        let port = if args.len() >= 3: args[2] else: "4000"
+        return try serve("127.0.0.1:{port}")
+    }
+    play_alone()
+}
+
+func load_or_start(path: string) -> World {
+    if !fs.exists(path) {
+        return default_world()
+    }
+    return load(path) catch e => {
+        println("{path} didn't load ({e.message()}); starting fresh.")
+        return default_world()
+    }
+}
+
+// The world is saved however this ends: `quit`, end of input, or a panic.
+func play_alone() {
+    mut world = load_or_start(SAVE)
+    ensure save(world, SAVE) catch e => println("Couldn't save: {e.message()}")
+    println(enter(mutate world, "you", START).reply)
+    loop {
+        let line = io.read_line() catch _ => break
+        if line.trim() == "quit" {
+            break
+        }
+        println(respond(mutate world, "you", line).reply)
+    }
+    let _ = leave(deleting world, "you")
+}

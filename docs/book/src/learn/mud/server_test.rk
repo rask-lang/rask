@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The server with scripted players on the other end. Run with `rask test --sim`:
+// the sockets are in-process, and each seed is a different interleaving.
+
+import net
+import net.TcpConnection
+import io.BufferedReader
+import async.{Handles, Receiver, Sender}
+import sync.Shared
+import sim
+import sim.Fault
+
+// Reads lines until one equal to `want` arrives. False if the connection ended first.
+func wait_for(lines: BufferedReader<TcpConnection>, want: string) -> bool {
+    loop {
+        let line = lines.read_line() catch _ => return false
+        if line == want || line.ends_with(want) {
+            return true
+        }
+    }
+}
+
+func type_line(conn: TcpConnection, text: string) {
+    let _ = conn.write_text("{text}\n")
+}
+
+test "two players meet and chat" {
+    let world = Shared.new(default_world())
+    using Multitasking {
+        let listener = try net.tcp_listen("127.0.0.1:0")
+        let addr = listener.local_addr()
+        let server_world = world.clone()
+        let server = spawn { run(listener, server_world, 2)! }
+        ensure server.detach()
+
+        let (ada_in, ada_here) = Channel<bool>.buffered(1)
+        let (bo_in, bo_here) = Channel<bool>.buffered(1)
+        let (spoke, ada_spoke) = Channel<bool>.buffered(1)
+
+        let ada = spawn {
+            let conn = net.tcp_connect(addr)!
+            let lines = BufferedReader.new(conn.clone())
+            type_line(conn, "ada")
+            assert wait_for(lines, "Exits: north and south.")
+            ada_in.send(true)!
+            bo_here.receive()!
+            assert wait_for(lines, "bo arrives.")
+            type_line(conn, "say hi bo")
+            assert wait_for(lines, "You say \"hi bo\"")
+            spoke.send(true)!
+            type_line(conn, "quit")
+            let _ = lines.take().close()
+            conn.close()!
+        }
+        ensure ada.detach()
+
+        let bo = spawn {
+            ada_here.receive()!
+            let conn = net.tcp_connect(addr)!
+            let lines = BufferedReader.new(conn.clone())
+            type_line(conn, "bo")
+            assert wait_for(lines, "Also here: ada.")
+            bo_in.send(true)!
+            assert wait_for(lines, "ada says \"hi bo\"")
+            ada_spoke.receive()!
+            type_line(conn, "quit")
+            let _ = lines.take().close()
+            conn.close()!
+        }
+        ensure bo.detach()
+
+        ada.join()!
+        bo.join()!
+        server.join()!
+    }
+    assert world.read().players.len() == 0
+}
+
+// Connections cut at random. Whatever was cut, nobody is left in the world
+// afterwards, and no item was lost or doubled on the way out.
+test "a dropped connection leaves the room" {
+    sim.require(faults: [Fault.Disconnect])
+    let world = Shared.new(default_world())
+    let items = world.read().item_count()
+    using Multitasking {
+        let listener = try net.tcp_listen("127.0.0.1:0")
+        let addr = listener.local_addr()
+        let server_world = world.clone()
+        let server = spawn { run(listener, server_world, 3)! }
+        ensure server.detach()
+        mut clients = Handles<void>.new()
+        ensure clients.join_all()
+        for name in ["ada", "bo", "cy"] {
+            clients.add(spawn {
+                let conn = net.tcp_connect(addr) catch _ => return
+                type_line(conn, name)
+                for cmd in ["take lamp", "n", "say hello", "e", "drop lamp", "w"] {
+                    type_line(conn, cmd)
+                }
+                type_line(conn, "quit")
+                let _ = conn.read_text()
+                let _ = conn.close()
+            })
+        }
+        for r in clients.join_all() {
+            r!
+        }
+        server.join()!
+    }
+    assert world.read().players.len() == 0
+    assert world.read().item_count() == items
+}

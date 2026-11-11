@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What the game promises, whatever the players type.
+
+import mud
+
+const LINES: Vec<string> = [
+    "n", "s", "e", "w", "u", "d", "look", "i",
+    "take lamp", "take coin", "take rope", "take key",
+    "drop lamp", "drop coin", "drop rope", "drop key",
+]
+
+// Every item is in exactly one place: on the floor of one room or in one
+// player's pack. Never two, never none.
+claim no_item_in_two_places(moves: Vec<(bool, u8)>) {
+    mut w = mud.default_world()
+    let _ = mud.enter(mutate w, "ada", mud.START)
+    let _ = mud.enter(mutate w, "bo", mud.START)
+    let names = where_items_are(w)
+    for (second, pick) in moves {
+        let who = if second: "bo" else: "ada"
+        let k = pick.to<u64>()! % LINES.len()
+        let line = LINES[k]
+        let _ = mud.respond(mutate w, who, line)
+        let now = where_items_are(w)
+        assert now.len() == names.len()
+        for name in names {
+            assert count(now, name) == 1
+        }
+    }
+}
+
+// Every item's name, once for each place it's in.
+func where_items_are(w: mud.World) -> Vec<string> {
+    mut names = Vec.new()
+    for r in w.rooms.nodes() {
+        for item in r.items {
+            names.push(item.name)
+        }
+    }
+    for p in w.players.nodes() {
+        for item in p.inventory {
+            names.push(item.name)
+        }
+    }
+    return names
+}
+
+func count(names: Vec<string>, name: string) -> u64 {
+    return names.filter(|n| n == name).count()
+}
