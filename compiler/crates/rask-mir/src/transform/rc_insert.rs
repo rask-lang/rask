@@ -705,18 +705,7 @@ fn insert_aggregate_release(
         let mut retained: HashSet<LocalId> = HashSet::new();
         // The local the statement before this one took references for.
         let mut just_retained: Option<LocalId> = None;
-        let copy_stores: HashSet<usize> = block
-            .statements
-            .windows(2)
-            .enumerate()
-            .filter(|(_, w)| matches!(
-                (&w[0].kind, &w[1].kind),
-                (MirStmtKind::Store { addr, offset: 0, .. }, MirStmtKind::RcIncContents { local })
-                    if addr == local
-            ))
-            .map(|(i, _)| i)
-            .collect();
-        for (si, stmt) in block.statements.iter().enumerate() {
+        for stmt in &block.statements {
             if let MirStmtKind::ClosureRetain { closure, .. } = &stmt.kind {
                 retained.insert(*closure);
             }
@@ -839,13 +828,7 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Store { addr, value, .. } => {
-                    // A store into a slot whose contents are retained by the
-                    // very next statement is a copy with references of its
-                    // own (`owned_copy_of_place`): the value stays the frame's.
-                    let copied = copy_stores.contains(&si);
-                    if let Some(v) = uses::operand_local(value)
-                        .filter(|v| is_tracked(v) && !retained.contains(v) && !copied)
-                    {
+                    if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
                         if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
                             // at it: whoever reads the buffer reads through the
@@ -1013,20 +996,9 @@ fn insert_aggregate_release(
             };
             let mut r = Vec::new();
             let mut k = Vec::new();
-            // The retain that completes a copy (`owned_copy_of_place`) still
-            // needs the copied value alive: released between the store and
-            // the retain, a string whose count was one was freed before the
-            // copy took its reference.
-            let copy_source = si
-                .checked_sub(1)
-                .filter(|prev| copy_stores.contains(prev))
-                .and_then(|prev| match &block.statements[prev].kind {
-                    MirStmtKind::Store { value, .. } => uses::operand_local(value),
-                    _ => None,
-                });
             if !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
                 for name in &facts.names {
-                    let reads = copy_source == Some(*name) || match store_into {
+                    let reads = match store_into {
                         // A replacement keeps the aggregate going: what lands
                         // in the slot is the aggregate's to release. Unread,
                         // `a.text = t` as the last thing done to `a` put the
