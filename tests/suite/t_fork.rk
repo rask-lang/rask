@@ -138,3 +138,18 @@ test "conc.fork/FK8 a function that forks its arguments" {
     }
     assert a == 11 && b == 22
 }
+
+func in_turn(f: func(), g: func()) {
+    f()
+    g()
+}
+
+func apply2(r: func(func(), func()), a: func()) {
+    r(a, a)
+}
+
+test "conc.fork/FK8 a function value is checked as what the caller passes" {
+    mut n = 0
+    apply2(in_turn, || { n += 1 })
+    assert n == 2
+}

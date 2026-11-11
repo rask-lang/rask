@@ -2856,7 +2856,7 @@ impl Resolver {
                                     is_deleting: false,
                         },
                         param.ty.clone(),
-                        expr.span,
+                        param.name_span,
                         false,
                     );
                     if let Err(e) = self.scopes.define(param.name.clone(), sym_id, expr.span) {

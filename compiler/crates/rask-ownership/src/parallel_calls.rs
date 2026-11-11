@@ -18,7 +18,7 @@
 //! call through a function value nothing here can read may run its function
 //! arguments at once, so it counts as one.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
@@ -34,8 +34,14 @@ use crate::{OwnershipChecker, OwnershipError, OwnershipErrorKind};
 pub(crate) struct ParallelUse {
     /// Every parameter in order, `self` first for a method.
     pub(crate) params: Vec<String>,
+    /// The parameters that hold functions.
+    pub(crate) fn_params: BTreeSet<String>,
     /// `(f, q)`: function value `f` may run while `q` is used elsewhere.
     pub(crate) pairs: BTreeSet<(String, String)>,
+    /// `(f, args)`: function parameter `f` is called with these arguments,
+    /// each the set of parameters it names. What that runs at once depends
+    /// on what each caller passes for `f`.
+    pub(crate) calls: BTreeSet<(String, Vec<BTreeSet<String>>)>,
 }
 
 pub(crate) type ParallelUses = HashMap<Key, ParallelUse>;
@@ -52,9 +58,26 @@ impl<'a> OwnershipChecker<'a> {
             return Some(k);
         }
         match &func.kind {
-            ExprKind::Ident(name) => self.named_fn_values.get(name).cloned(),
+            ExprKind::Ident(name) if self.bound_once(name) => self.named_fn_values.get(name).cloned(),
             _ => None,
         }
+    }
+
+    /// Whether `name` is bound once in the body being checked, so the one
+    /// binding is what every use of it holds.
+    fn bound_once(&self, name: &str) -> bool {
+        self.fn_name_bindings.get(name).is_none_or(|n| *n <= 1)
+    }
+
+    /// Whether `e` names a parameter: of the function being checked, or of a
+    /// closure literal in it. Either way the callers say what it holds.
+    fn names_any_param(&self, e: &Expr) -> bool {
+        let ExprKind::Ident(_) = &e.kind else { return false };
+        let Some(sym) = self.program.resolutions.get(&e.id) else { return false };
+        self.program
+            .symbols
+            .get(*sym)
+            .is_some_and(|s| matches!(s.kind, rask_resolve::SymbolKind::Parameter { .. }))
     }
 
     /// Whether `e` names one of the parameters declared at `spans`, by what
@@ -100,17 +123,32 @@ impl<'a> OwnershipChecker<'a> {
         }
         for (key, f) in &bodies {
             let params = f.params.iter().map(|p| p.name.clone()).collect();
-            self.parallel_uses.insert(key.clone(), ParallelUse { params, pairs: BTreeSet::new() });
+            self.parallel_uses.insert(key.clone(), ParallelUse { params, ..Default::default() });
         }
-        // Bodies sharing a key are joined, and a pair once found stays: both
+        // Bodies sharing a key are joined, and what is found once stays: both
         // keep the loop from trading answers between rounds.
         loop {
             let mut changed = false;
             for (key, f) in &bodies {
-                let pairs = self.body_parallel_pairs(f);
+                let params: Vec<SummaryParam> = f
+                    .params
+                    .iter()
+                    .map(|p| SummaryParam {
+                        name: p.name.clone(),
+                        span: p.name_span,
+                        is_fn: matches!(p.ty, Some(rask_ast::ty::TypeExpr::Func { .. })),
+                    })
+                    .collect();
+                let found = self.summarize(&params, Body::Stmts(&f.body));
                 let entry = self.parallel_uses.get_mut(key).expect("seeded above");
-                for p in pairs {
+                for p in found.fn_params {
+                    changed |= entry.fn_params.insert(p);
+                }
+                for p in found.pairs {
                     changed |= entry.pairs.insert(p);
+                }
+                for c in found.calls {
+                    changed |= entry.calls.insert(c);
                 }
             }
             if !changed {
@@ -119,151 +157,247 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    fn body_parallel_pairs(&self, f: &FnDecl) -> BTreeSet<(String, String)> {
-        let spans: Vec<Span> = f.params.iter().map(|p| p.name_span).collect();
-        let fn_typed: HashSet<&str> = f
-            .params
-            .iter()
-            .filter(|p| matches!(p.ty, Some(rask_ast::ty::TypeExpr::Func { .. })))
-            .map(|p| p.name.as_str())
-            .collect();
+    /// What a body with these parameters may run at once, and which of its
+    /// function parameters it calls with which of its parameters.
+    fn summarize<'b>(&self, params: &[SummaryParam], body: Body<'b>) -> ParallelUse {
+        let spans: Vec<Span> = params.iter().map(|p| p.span).collect();
+        let mut fn_params: BTreeSet<String> =
+            params.iter().filter(|p| p.is_fn).map(|p| p.name.clone()).collect();
         // Closures the body binds to a name: `let w = || x()` names `x`
-        // wherever `w` is handed on.
-        let mut local_closures: HashMap<&str, &Expr> = HashMap::new();
-        for stmt in &f.body {
-            visit::walk_stmt(stmt, &mut |e| {
-                for st in Self::own_stmts(e) {
-                    if let StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } = &st.kind {
-                        if matches!(init.kind, ExprKind::Closure { .. }) {
-                            local_closures.insert(name.as_str(), init);
-                        }
-                    }
+        // wherever `w` is handed on, and `w(…)` runs the literal.
+        let mut locals: HashMap<String, &'b Expr> = HashMap::new();
+        let mut fns: HashMap<String, Key> = HashMap::new();
+        let mut bindings: HashMap<String, u32> = HashMap::new();
+        let mut bind = |name: &String, init: &'b Expr, locals: &mut HashMap<String, &'b Expr>, fns: &mut HashMap<String, Key>| {
+            *bindings.entry(name.clone()).or_default() += 1;
+            if matches!(init.kind, ExprKind::Closure { .. }) {
+                locals.insert(name.clone(), init);
+            } else if let Some(k) = self.fn_key(init) {
+                fns.insert(name.clone(), k);
+            }
+        };
+        let mut seen_stmts: std::collections::HashSet<*const Stmt> = std::collections::HashSet::new();
+        body.each(&mut |e| {
+            for st in Self::own_stmts(e) {
+                if !seen_stmts.insert(st as *const Stmt) {
+                    continue;
                 }
-            });
-        }
-        for st in &f.body {
-            if let StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } = &st.kind {
-                if matches!(init.kind, ExprKind::Closure { .. }) {
-                    local_closures.insert(name.as_str(), init);
+                match &st.kind {
+                    StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                        bind(name, init, &mut locals, &mut fns)
+                    }
+                    StmtKind::Assign { target: Expr { kind: ExprKind::Ident(name), .. }, value, .. } => {
+                        bind(name, value, &mut locals, &mut fns)
+                    }
+                    _ => {}
+                }
+            }
+            if let ExprKind::Ident(n) = &e.kind {
+                if self.names_param_at(e, &spans) && matches!(self.node_ty(&e.id), Some(Type::Fn { .. })) {
+                    fn_params.insert(n.clone());
+                }
+            }
+        });
+        if let Body::Stmts(stmts) = body {
+            for st in stmts {
+                if !seen_stmts.insert(st as *const Stmt) {
+                    continue;
+                }
+                match &st.kind {
+                    StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                        bind(name, init, &mut locals, &mut fns)
+                    }
+                    StmtKind::Assign { target: Expr { kind: ExprKind::Ident(name), .. }, value, .. } => {
+                        bind(name, value, &mut locals, &mut fns)
+                    }
+                    _ => {}
                 }
             }
         }
+        // A name bound more than once holds different things at different
+        // calls, so no one binding answers for it.
+        locals.retain(|n, _| bindings.get(n).is_none_or(|c| *c <= 1));
+        fns.retain(|n, _| bindings.get(n).is_none_or(|c| *c <= 1));
         // The parameters an expression names, by resolution, through the
         // local closures it names.
         fn collect<'x>(
             this: &OwnershipChecker<'_>,
             e: &'x Expr,
             spans: &[Span],
-            local_closures: &HashMap<&str, &'x Expr>,
-            out: &mut HashSet<String>,
+            locals: &HashMap<String, &'x Expr>,
+            out: &mut BTreeSet<String>,
             depth: u32,
         ) {
             visit::walk_expr(e, &mut |x| {
                 if let ExprKind::Ident(n) = &x.kind {
                     if this.names_param_at(x, spans) {
                         out.insert(n.clone());
-                    } else if let Some(lit) = local_closures.get(n.as_str()) {
+                    } else if let Some(lit) = locals.get(n) {
                         if depth < 8 {
-                            collect(this, lit, spans, local_closures, out, depth + 1);
+                            collect(this, lit, spans, locals, out, depth + 1);
                         }
                     }
                 }
             });
         }
-        let named_in = |e: &Expr| -> HashSet<String> {
-            let mut out = HashSet::new();
-            collect(self, e, &spans, &local_closures, &mut out, 0);
+        let named_in = |e: &Expr| -> BTreeSet<String> {
+            let mut out = BTreeSet::new();
+            collect(self, e, &spans, &locals, &mut out, 0);
             out
         };
+        let at = Site { spans: &spans, locals: &locals, fns: &fns };
         let mut pairs = BTreeSet::new();
-        for stmt in &f.body {
-            visit::walk_stmt(stmt, &mut |e| {
-                let groups: Vec<(&Expr, &Expr)> = match &e.kind {
-                    ExprKind::Fork { sides } => {
-                        let mut out = Vec::new();
-                        for (i, a) in sides.iter().enumerate() {
-                            for (j, b) in sides.iter().enumerate() {
-                                if i != j {
-                                    out.push((a, b));
-                                }
+        let mut calls = BTreeSet::new();
+        body.each(&mut |e| {
+            let mut groups: Vec<(&Expr, &Expr)> = Vec::new();
+            match &e.kind {
+                ExprKind::Fork { sides } => {
+                    for (i, a) in sides.iter().enumerate() {
+                        for (j, b) in sides.iter().enumerate() {
+                            if i != j {
+                                groups.push((a, b));
                             }
-                        }
-                        out
-                    }
-                    ExprKind::Call { .. } | ExprKind::MethodCall { .. } => self.call_pairs(e),
-                    _ => Vec::new(),
-                };
-                for (a, b) in groups {
-                    let (here, there) = (named_in(a), named_in(b));
-                    for p in here.iter().filter(|p| fn_typed.contains(p.as_str())) {
-                        for q in &there {
-                            pairs.insert((p.clone(), q.clone()));
                         }
                     }
                 }
-            });
-        }
-        pairs
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
+                    let found = self.parallel_effects(e, &at);
+                    groups.extend(found.pairs);
+                    for (via, args) in found.through {
+                        let ExprKind::Ident(name) = &via.kind else { continue };
+                        let args = args
+                            .iter()
+                            .map(|exprs| exprs.iter().flat_map(|x| named_in(x)).collect())
+                            .collect();
+                        calls.insert((name.clone(), args));
+                    }
+                }
+                _ => {}
+            }
+            for (a, b) in groups {
+                let (here, there) = (named_in(a), named_in(b));
+                for p in here.iter().filter(|p| fn_params.contains(*p)) {
+                    for q in &there {
+                        pairs.insert((p.clone(), q.clone()));
+                    }
+                }
+            }
+        });
+        ParallelUse { params: params.iter().map(|p| p.name.clone()).collect(), fn_params, pairs, calls }
     }
 
     /// What this call may run at the same time, as pairs of argument
-    /// expressions: the callee's pairs, or for a call through a function value
-    /// nothing here can read, every function argument against every argument.
-    fn call_pairs<'e>(&self, call: &'e Expr) -> Vec<(&'e Expr, &'e Expr)> {
-        let (key, receiver, args): (Option<Key>, Option<&'e Expr>, &'e [CallArg]) = match &call.kind {
-            ExprKind::Call { func, args } => (self.callee_key(func), None, args),
+    /// expressions, plus the calls it makes through the parameters at `at`,
+    /// which that function's callers answer for.
+    fn parallel_effects<'e>(&self, call: &'e Expr, at: &Site<'_, 'e>) -> Effects<'e> {
+        let mut out = Effects::default();
+        match &call.kind {
+            ExprKind::Call { func, args } => {
+                if let Some(key) = self.callee_key(func).filter(|k| self.parallel_uses.contains_key(k)) {
+                    let uses = &self.parallel_uses[&key];
+                    let bind = bind_args(uses, None, args);
+                    self.instantiate(uses, &bind, at, 0, &mut out);
+                } else if matches!(self.node_ty(&func.id), Some(Type::Fn { .. })) {
+                    let args = args.iter().map(|a| vec![&a.expr]).collect();
+                    self.apply_fn_value(func, args, at, 0, &mut out);
+                }
+            }
             ExprKind::MethodCall { object, method, args, .. } => {
-                (self.receiver_type_name(object).map(|ty| Key::Method(ty, method.clone())), Some(object.as_ref()), args)
+                let key = self.receiver_type_name(object).map(|ty| Key::Method(ty, method.clone()));
+                if let Some(uses) = key.as_ref().and_then(|k| self.parallel_uses.get(k)) {
+                    let bind = bind_args(uses, Some(object), args);
+                    self.instantiate(uses, &bind, at, 0, &mut out);
+                }
             }
-            _ => return Vec::new(),
-        };
-        let Some(uses) = key.as_ref().and_then(|k| self.parallel_uses.get(k)) else {
-            return self.unknown_call_pairs(call, args);
-        };
-        if uses.pairs.is_empty() {
-            return Vec::new();
-        }
-        let mut by_param: HashMap<&str, &'e Expr> = HashMap::new();
-        let mut positional = uses.params.iter().filter(|p| receiver.is_none() || *p != "self");
-        if let Some(r) = receiver {
-            by_param.insert("self", r);
-        }
-        for a in args {
-            let param = match &a.name {
-                Some(label) => uses.params.iter().find(|p| *p == label),
-                None => positional.next(),
-            };
-            if let Some(p) = param {
-                by_param.insert(p.as_str(), &a.expr);
-            }
-        }
-        uses.pairs
-            .iter()
-            .filter_map(|(p, q)| Some((*by_param.get(p.as_str())?, *by_param.get(q.as_str())?)))
-            .collect()
-    }
-
-    /// A call through a function value with no body here: `r(a, a)` with `r`
-    /// a parameter may be `both`. Only a call with a function argument can
-    /// run anything at once.
-    fn unknown_call_pairs<'e>(&self, call: &'e Expr, args: &'e [CallArg]) -> Vec<(&'e Expr, &'e Expr)> {
-        let ExprKind::Call { func, .. } = &call.kind else { return Vec::new() };
-        if !matches!(self.node_ty(&func.id), Some(Type::Fn { .. })) {
-            return Vec::new();
-        }
-        if let ExprKind::Ident(name) = &func.kind {
-            if self.closure_literals.contains_key(name) {
-                return Vec::new();
-            }
-        }
-        let is_fn = |e: &Expr| matches!(self.node_ty(&e.id), Some(Type::Fn { .. }));
-        let mut out = Vec::new();
-        for a in args.iter().filter(|a| is_fn(&a.expr)) {
-            for b in args {
-                out.push((&a.expr, &b.expr));
-            }
+            _ => {}
         }
         out
+    }
+
+    /// A summary with its parameters bound to the expressions passed for them.
+    fn instantiate<'e>(
+        &self,
+        uses: &ParallelUse,
+        bind: &HashMap<String, Vec<&'e Expr>>,
+        at: &Site<'_, 'e>,
+        depth: u32,
+        out: &mut Effects<'e>,
+    ) {
+        let none = Vec::new();
+        let get = |p: &str| bind.get(p).unwrap_or(&none);
+        for (p, q) in &uses.pairs {
+            for a in get(p) {
+                for b in get(q) {
+                    out.pairs.push((*a, *b));
+                }
+            }
+        }
+        for (via, args) in &uses.calls {
+            let args: Vec<Vec<&'e Expr>> =
+                args.iter().map(|set| set.iter().flat_map(|p| get(p).iter().copied()).collect()).collect();
+            for f in get(via) {
+                self.apply_fn_value(f, args.clone(), at, depth + 1, out);
+            }
+        }
+    }
+
+    /// A call through the function value `f` with these arguments: what the
+    /// function `f` turns out to be decides what runs at once.
+    fn apply_fn_value<'e>(
+        &self,
+        f: &'e Expr,
+        args: Vec<Vec<&'e Expr>>,
+        at: &Site<'_, 'e>,
+        depth: u32,
+        out: &mut Effects<'e>,
+    ) {
+        if depth <= MAX_DEPTH {
+            // A declared function, or a name bound to one: its own summary.
+            let named = match &f.kind {
+                ExprKind::Ident(name) => at.fns.get(name).cloned(),
+                _ => None,
+            };
+            if let Some(uses) = self.callee_key(f).or(named).and_then(|k| self.parallel_uses.get(&k)) {
+                let bind = uses.params.iter().cloned().zip(args).collect();
+                self.instantiate(uses, &bind, at, depth, out);
+                return;
+            }
+            // A parameter of the function being summarized or checked: its
+            // callers say what it is.
+            if self.names_param_at(f, at.spans) {
+                out.through.push((f, args));
+                return;
+            }
+            // A closure literal, written here or bound to a local name: its
+            // body, summarized over its own parameters.
+            let literal = match &f.kind {
+                ExprKind::Closure { .. } => Some(f),
+                ExprKind::Ident(name) => at.locals.get(name).copied(),
+                _ => None,
+            };
+            if let Some(Expr { kind: ExprKind::Closure { params, body, .. }, .. }) = literal {
+                let params: Vec<SummaryParam> = params
+                    .iter()
+                    .map(|p| SummaryParam {
+                        name: p.name.clone(),
+                        span: p.name_span,
+                        is_fn: matches!(p.ty, Some(rask_ast::ty::TypeExpr::Func { .. })),
+                    })
+                    .collect();
+                let uses = self.summarize(&params, Body::Expr(body));
+                let bind = uses.params.iter().cloned().zip(args).collect();
+                self.instantiate(&uses, &bind, at, depth, out);
+                return;
+            }
+        }
+        // Anything else — a field, an element, a call's result — may be a
+        // function that runs every function argument beside every argument.
+        let all: Vec<&'e Expr> = args.into_iter().flatten().collect();
+        for a in all.iter().filter(|a| matches!(self.node_ty(&a.id), Some(Type::Fn { .. }))) {
+            for b in &all {
+                out.pairs.push((*a, *b));
+            }
+        }
     }
 
     /// An argument as the fork block it may run as. A closure is its own body;
@@ -306,13 +440,39 @@ impl<'a> OwnershipChecker<'a> {
         let mode_of = |e: &Expr| -> ArgMode {
             args.iter().find(|a| std::ptr::eq(&a.expr, e)).map_or(ArgMode::Default, |a| a.mode)
         };
-        for (a, b) in self.call_pairs(call) {
+        let locals = self.closure_literals.clone();
+        let locals: HashMap<String, &Expr> =
+            locals.iter().filter(|(n, _)| self.bound_once(n)).map(|(n, e)| (n.clone(), e)).collect();
+        let fns = HashMap::new();
+        let spans = self.current_param_spans.clone();
+        let at = Site { spans: &spans, locals: &locals, fns: &fns };
+        let effects = self.parallel_effects(call, &at);
+        let mut found = effects.pairs;
+        // A call through a parameter: what runs at once is the callers'
+        // question for the arguments they passed, and this body's own for the
+        // rest. An argument that is a local closure exists only here, so the
+        // callers can't check it: it's checked here as though the function may
+        // run it beside every argument.
+        let passed_in = |e: &Expr| self.callee_key(e).is_some() || self.names_any_param(e);
+        for (_, args) in &effects.through {
+            let all: Vec<&Expr> = args.iter().flatten().copied().collect();
+            for a in all.iter().filter(|a| matches!(self.node_ty(&a.id), Some(Type::Fn { .. }))) {
+                for b in &all {
+                    if !(passed_in(a) && passed_in(b)) {
+                        found.push((*a, *b));
+                    }
+                }
+            }
+        }
+        let pairs: Vec<(Expr, ArgMode, Expr, ArgMode)> = found
+            .into_iter()
             // A declared function captures nothing; a parameter's own callers
             // are checked for it.
-            if self.callee_key(a).is_some() || self.is_param_ref(a) {
-                continue;
-            }
-            let sides = [self.as_fork_block(a, mode_of(a)), self.as_fork_block(b, mode_of(b))];
+            .filter(|(a, _)| !passed_in(a))
+            .map(|(a, b)| (a.clone(), mode_of(a), b.clone(), mode_of(b)))
+            .collect();
+        for (a, a_mode, b, b_mode) in pairs {
+            let sides = [self.as_fork_block(&a, a_mode), self.as_fork_block(&b, b_mode)];
             let before = self.errors.len();
             self.check_fork_sides(&sides);
             let found: Vec<OwnershipError> = self.errors.split_off(before);
@@ -333,7 +493,7 @@ impl<'a> OwnershipChecker<'a> {
         let mut calls: Vec<Expr> = Vec::new();
         for stmt in body {
             visit::walk_stmt(stmt, &mut |e| {
-                if matches!(e.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) && !self.call_pairs(e).is_empty() {
+                if matches!(e.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
                     calls.push(e.clone());
                 }
             });
@@ -342,4 +502,75 @@ impl<'a> OwnershipChecker<'a> {
             self.check_parallel_args(call);
         }
     }
+}
+
+/// How deep a chain of function values is followed before the answer is the
+/// cautious one.
+const MAX_DEPTH: u32 = 8;
+
+/// A parameter a summary is in terms of.
+struct SummaryParam {
+    name: String,
+    span: Span,
+    /// Declared with a function type. One used as a function counts too.
+    is_fn: bool,
+}
+
+/// A function's body, or a closure literal's.
+#[derive(Clone, Copy)]
+enum Body<'b> {
+    Stmts(&'b [Stmt]),
+    Expr(&'b Expr),
+}
+
+impl<'b> Body<'b> {
+    fn each(&self, f: &mut dyn FnMut(&'b Expr)) {
+        match self {
+            Body::Stmts(stmts) => {
+                for st in *stmts {
+                    visit::walk_stmt(st, &mut |e| f(e));
+                }
+            }
+            Body::Expr(e) => visit::walk_expr(e, &mut |x| f(x)),
+        }
+    }
+}
+
+/// Where a call is read: the parameters of the function around it, and the
+/// closure literals it binds to names.
+struct Site<'s, 'e> {
+    spans: &'s [Span],
+    locals: &'s HashMap<String, &'e Expr>,
+    /// Names bound to a declared function.
+    fns: &'s HashMap<String, Key>,
+}
+
+/// What one call may run at once.
+#[derive(Default)]
+struct Effects<'e> {
+    /// Argument expressions that may run at the same time.
+    pairs: Vec<(&'e Expr, &'e Expr)>,
+    /// Calls through a parameter of the function around the call, with each
+    /// argument's expressions: what runs at once is up to that function's
+    /// callers.
+    through: Vec<(&'e Expr, Vec<Vec<&'e Expr>>)>,
+}
+
+/// The argument expressions passed for each parameter of `uses`.
+fn bind_args<'e>(uses: &ParallelUse, receiver: Option<&'e Expr>, args: &'e [CallArg]) -> HashMap<String, Vec<&'e Expr>> {
+    let mut bind: HashMap<String, Vec<&'e Expr>> = HashMap::new();
+    let mut positional = uses.params.iter().filter(|p| receiver.is_none() || *p != "self");
+    if let Some(r) = receiver {
+        bind.insert("self".to_string(), vec![r]);
+    }
+    for a in args {
+        let param = match &a.name {
+            Some(label) => uses.params.iter().find(|p| *p == label),
+            None => positional.next(),
+        };
+        if let Some(p) = param {
+            bind.insert(p.clone(), vec![&a.expr]);
+        }
+    }
+    bind
 }

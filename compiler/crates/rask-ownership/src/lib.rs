@@ -362,6 +362,10 @@ pub struct OwnershipChecker<'a> {
     /// Names bound to a declared function (`let g = add_one`). A function
     /// captures nothing, so a fork may call one from every block.
     named_fn_values: HashMap<String, replaces::Key>,
+    /// How many times each name in this body is bound or assigned. FK8 checks
+    /// a body's calls after walking it, when these maps hold each name's last
+    /// binding, so a name bound more than once is followed by none of them.
+    fn_name_bindings: HashMap<String, u32>,
     /// The closure nodes the parser wraps around task blocks (`spawn { … }`).
     /// A task block runs once, so unlike a closure it may consume what it
     /// captures (conc.async/S6).
@@ -650,6 +654,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bodies: HashSet::new(),
             closure_literals: HashMap::new(),
             named_fn_values: HashMap::new(),
+            fn_name_bindings: HashMap::new(),
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
@@ -1551,6 +1556,8 @@ impl<'a> OwnershipChecker<'a> {
         // Keyed by name too, so an `f` in one body would otherwise answer for
         // the next body's `f`.
         self.closure_literals.clear();
+        self.named_fn_values.clear();
+        self.fn_name_bindings.clear();
         self.mutable_captures.clear();
         self.param_types.clear();
         self.identified_links.clear();
@@ -7723,6 +7730,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn note_named_fn_value(&mut self, name: &str, value: &Expr) {
+        *self.fn_name_bindings.entry(name.to_string()).or_default() += 1;
         match self.callee_key(value) {
             Some(key) => {
                 self.named_fn_values.insert(name.to_string(), key);
