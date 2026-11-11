@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writes through a `mutate` array that give the right answer and still leak.
+// The answers are the point here: a swap through a local used to read the
+// caller's slot back (#1877), and an element store inlined onto a copy never
+// reached the caller. The leaks are tracked in tests/known_leaks.txt: the old
+// element of `a[0] = s` isn't released (#1884), and a caller never releases a
+// parameter its callee moved out of and refilled (#1885).
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func swap(mutate a: [string; 2], mutate b: [string; 2]) {
+    let t = a
+    a = b
+    b = t
+}
+
+test "swapping two mutate arrays through a local" {
+    mut a = [mk(3), mk(4)]
+    mut b = [mk(5), mk(6)]
+    swap(mutate a, mutate b)
+    assert a[0] == mk(5)
+    assert b[1] == mk(4)
+}
+
+func touch(mutate a: [string; 2]) {
+    a[0] = mk(9)
+}
+
+test "an element store through mutate reaches the caller" {
+    mut a = [mk(3), mk(4)]
+    touch(mutate a)
+    assert a[0] == mk(9)
+}

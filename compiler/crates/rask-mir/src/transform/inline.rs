@@ -205,16 +205,22 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
 
     let mut written: HashMap<String, HashSet<usize>> = HashMap::new();
 
-    // Seed with direct stores through a parameter.
+    // Seed with direct stores through a parameter. An element store is one:
+    // `a[0] = x` on a `mutate a: [string; 2]` writes the caller's array, and
+    // inlined onto a copy of it the caller never saw the write.
     for f in fns {
         let mut set = HashSet::new();
         let alias = param_aliases(f);
         for b in &f.blocks {
             for s in &b.statements {
-                if let MirStmtKind::Store { addr, .. } = &s.kind {
-                    if let Some(&i) = alias.get(addr) {
-                        set.insert(i);
-                    }
+                let written = match &s.kind {
+                    MirStmtKind::Store { addr, .. } => Some(addr),
+                    MirStmtKind::ArrayStore { base, .. } => Some(base),
+                    MirStmtKind::ZeroAggregate { local } => Some(local),
+                    _ => None,
+                };
+                if let Some(&i) = written.and_then(|w| alias.get(w)) {
+                    set.insert(i);
                 }
             }
         }

@@ -237,6 +237,17 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             emptied.clear();
             continue;
         }
+        // `a = b` moves `b` out as well as refilling `a`: `let t = a; a = b;
+        // b = t` swaps two `mutate` parameters, and `b = t` refills a slot
+        // `a = b` emptied. Releasing there freed what `a` holds now (#1877).
+        let moved_by_assign = match &stmt.kind {
+            StmtKind::Assign { target, value, .. }
+                if place_path(value).is_some() && moves(value) && place_path(value) != place_path(target) =>
+            {
+                place_path(value).map(|p| (p, value.id))
+            }
+            _ => None,
+        };
         match &stmt.kind {
             StmtKind::Assign { target, .. } if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _)| *e == p)) => {
                 let place = place_path(target).unwrap_or_default();
@@ -245,8 +256,12 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                     emptied.remove(at);
                 }
             }
+            // A whole binding moves the same way a field does: `let t = a` on
+            // a `mutate a` empties the caller's slot until `a = …` refills it.
             StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
-                if matches!(init.kind, ExprKind::Field { .. }) && place_path(init).is_some() && moves(init) =>
+                if matches!(init.kind, ExprKind::Field { .. } | ExprKind::Ident(_))
+                    && place_path(init).is_some()
+                    && moves(init) =>
             {
                 // A second read of the same field reads the emptied slot; the
                 // latest read is the one the refill pairs with.
@@ -271,6 +286,10 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                     })
                 });
             }
+        }
+        if let Some((place, read)) = moved_by_assign {
+            emptied.retain(|(p, _)| *p != place);
+            emptied.push((place, read));
         }
     }
     pairs

@@ -418,4 +418,5 @@
 #
 # Format: one basename per line, then `# N allocations`.
 
-t_http_client_loopback.rk   # 55 allocations — #1609 a server task answering a request leaks its headers Map
+t_http_client_loopback.rk   # 40 allocations — #1609 a server task answering a request leaks its headers Map
+t_mutate_array_leaks.rk     # 5 allocations — #1884 an element store into a fixed array keeps the old element; #1885 a caller never releases a `mutate` parameter its callee moved out of and refilled
