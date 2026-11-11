@@ -3396,13 +3396,16 @@ pub(super) fn unguarded_annotation_read(
                 if let Some(a) = names_annotation(fact, binding, "has") {
                     return Some(comptime_if::Fact::Bool(carries(attrs, a)));
                 }
+                if let Some(read) = comptime_if::annotation_read(fact, binding, attrs) {
+                    return Some(read);
+                }
                 let ExprKind::Field { object, field } = &fact.kind else { return other(fact) };
                 if object.name() != Some(binding) || field.starts_with("__") {
                     return None;
                 }
                 match props.get(field)? {
                     Value::Bool(b) => Some(comptime_if::Fact::Bool(*b)),
-                    Value::Int(n, _) => Some(comptime_if::Fact::Int(*n as i128)),
+                    Value::Int(n, _) => Some(comptime_if::Fact::int(*n as i128)),
                     Value::String(t) => Some(comptime_if::Fact::Str(t.lock().unwrap().clone())),
                     _ => None,
                 }

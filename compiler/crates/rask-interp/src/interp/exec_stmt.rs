@@ -861,13 +861,13 @@ impl Interpreter {
             // current value has to be the const's.
             ExprKind::Ident(name) => {
                 let fact = self.const_facts.get(name)?.clone();
-                let current = match self.env.get(name)? {
-                    Value::Bool(b) => Fact::Bool(b),
-                    Value::Int(n, _) => Fact::Int(n as i128),
-                    Value::String(s) => Fact::Str(s.lock().unwrap().clone()),
-                    _ => return None,
+                let same = match (self.env.get(name)?, &fact) {
+                    (Value::Bool(b), Fact::Bool(c)) => b == *c,
+                    (Value::Int(n, _), Fact::Int(m, _)) => n as i128 == *m,
+                    (Value::String(s), Fact::Str(t)) => *s.lock().unwrap() == *t,
+                    _ => false,
                 };
-                (current == fact).then_some(fact)
+                same.then_some(fact)
             }
             ExprKind::MethodCall { object, method, .. }
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
@@ -875,7 +875,7 @@ impl Interpreter {
             {
                 match self.eval_expr(expr).ok()? {
                     Value::Bool(b) => Some(Fact::Bool(b)),
-                    Value::Int(n, _) => Some(Fact::Int(n as i128)),
+                    Value::Int(n, _) => Some(Fact::int(n as i128)),
                     Value::String(s) => Some(Fact::Str(s.lock().unwrap().clone())),
                     _ => None,
                 }

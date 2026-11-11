@@ -144,3 +144,25 @@ test "a computed const already read at run time still folds" {
     }
     assert out == "label;"
 }
+
+test "&& short-circuits: the guarded side is only asked when the guard holds" {
+    // `id` has no @scale, so `f.get<scale>().by` has no answer there; the
+    // left side already says no.
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.has<scale>() && f.get<scale>().by > 5 {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
+}
+
+test "|| short-circuits too" {
+    mut n = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if !f.has<scale>() || f.get<scale>().by > 5 {
+            n += 1
+        }
+    }
+    assert n == 3
+}

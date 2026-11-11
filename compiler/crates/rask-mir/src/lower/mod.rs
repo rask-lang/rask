@@ -4925,7 +4925,11 @@ impl<'a> MirLowerer<'a> {
         }
 
         let module_consts = all_decls.iter().filter_map(|d| match &d.kind {
-            DeclKind::Const(c) => Some((c.name.as_str(), &c.init)),
+            DeclKind::Const(c) => Some((
+                c.name.as_str(),
+                &c.init,
+                c.ty.as_ref().and_then(|t| t.bare_name()).and_then(rask_ast::comptime_if::int_range),
+            )),
             _ => None,
         });
         lowerer.const_facts = rask_ast::comptime_if::const_facts(module_consts)

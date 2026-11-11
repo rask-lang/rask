@@ -1887,12 +1887,19 @@ impl<'a> MirLowerer<'a> {
                     let type_args = self.checked_type_args(type_args);
                     self.comptime_field_method_const(object, method, &type_args)?
                 }
+                // `f.get<A>().x`: the attachment's written value.
+                ExprKind::Field { object, .. } if matches!(object.kind, ExprKind::MethodCall { .. }) => {
+                    let ExprKind::MethodCall { object: item, .. } = &object.kind else { return None };
+                    let name = item.name()?;
+                    let Some(super::ComptimeItem::Field(fc)) = self.comptime_binding(name) else { return None };
+                    return comptime_if::annotation_read(fact, name, &fc.attrs);
+                }
                 ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
                 _ => return None,
             };
             match answer.0 {
                 MirOperand::Constant(MirConst::Bool(b)) => Some(comptime_if::Fact::Bool(b)),
-                MirOperand::Constant(MirConst::Int(n)) => Some(comptime_if::Fact::Int(n as i128)),
+                MirOperand::Constant(MirConst::Int(n)) => Some(comptime_if::Fact::int(n as i128)),
                 MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }

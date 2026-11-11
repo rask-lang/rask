@@ -413,7 +413,13 @@ impl Interpreter {
 
         // Evaluate top-level const declarations after builtins are registered
         self.const_facts = std::sync::Arc::new(rask_ast::comptime_if::const_facts(
-            top_level_consts.iter().map(|c| (c.name.as_str(), &c.init)),
+            top_level_consts.iter().map(|c| {
+                (
+                    c.name.as_str(),
+                    &c.init,
+                    c.ty.as_ref().and_then(|t| t.bare_name()).and_then(rask_ast::comptime_if::int_range),
+                )
+            }),
         ));
         for c in &top_level_consts {
             let value = self.eval_expr(&c.init)

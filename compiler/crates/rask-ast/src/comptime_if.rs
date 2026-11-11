@@ -64,8 +64,34 @@ pub fn choose<'a>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fact {
     Bool(bool),
-    Int(i128),
+    /// An integer, and the range of the type it was declared with when it
+    /// has one (`const SMALL: u8 = 200`). Arithmetic that leaves the range
+    /// doesn't fold: the program overflows there, and saying `300` instead
+    /// would be a different program.
+    Int(i128, Option<(i128, i128)>),
     Str(String),
+}
+
+impl Fact {
+    /// An integer of no particular declared type: a literal, a reflect fact.
+    pub fn int(n: i128) -> Fact {
+        Fact::Int(n, None)
+    }
+}
+
+/// The range of an integer type by its name, for a const's declared type.
+pub fn int_range(name: &str) -> Option<(i128, i128)> {
+    Some(match name {
+        "i8" => (i8::MIN as i128, i8::MAX as i128),
+        "i16" => (i16::MIN as i128, i16::MAX as i128),
+        "i32" => (i32::MIN as i128, i32::MAX as i128),
+        "i64" | "isize" => (i64::MIN as i128, i64::MAX as i128),
+        "u8" => (0, u8::MAX as i128),
+        "u16" => (0, u16::MAX as i128),
+        "u32" => (0, u32::MAX as i128),
+        "u64" | "usize" => (0, u64::MAX as i128),
+        _ => return None,
+    })
 }
 
 /// A condition built from facts only the loop iteration can answer,
@@ -91,13 +117,23 @@ pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Opti
 /// — in declaration order. A `comptime if` in a `comptime for` can compare
 /// against these; both backends build the table here so they fold the same
 /// names.
-pub fn const_facts<'a>(consts: impl IntoIterator<Item = (&'a str, &'a Expr)>) -> std::collections::HashMap<String, Fact> {
+///
+/// `range` is the const's declared integer type's range, from its
+/// annotation: the value is held to it, and so is arithmetic on it.
+pub fn const_facts<'a>(
+    consts: impl IntoIterator<Item = (&'a str, &'a Expr, Option<(i128, i128)>)>,
+) -> std::collections::HashMap<String, Fact> {
     let mut table = std::collections::HashMap::new();
-    for (name, init) in consts {
+    for (name, init, range) in consts {
         let folded = value(init, &mut |e| match &e.kind {
             ExprKind::Ident(n) => table.get(n.as_str()).cloned(),
             _ => None,
         });
+        let folded = match (folded, range) {
+            (Some(Fact::Int(n, _)), Some((lo, hi))) if n < lo || n > hi => None,
+            (Some(Fact::Int(n, _)), Some(r)) => Some(Fact::Int(n, Some(r))),
+            (other, _) => other,
+        };
         if let Some(fact) = folded {
             table.insert(name.to_string(), fact);
         }
@@ -109,7 +145,7 @@ pub fn const_facts<'a>(consts: impl IntoIterator<Item = (&'a str, &'a Expr)>) ->
 pub fn literal(expr: &Expr) -> Option<Fact> {
     match &expr.kind {
         ExprKind::Bool(b) => Some(Fact::Bool(*b)),
-        ExprKind::Int(n, _) => Some(Fact::Int(*n)),
+        ExprKind::Int(n, _) => Some(Fact::int(*n)),
         ExprKind::String(s) => Some(Fact::Str(s.clone())),
         _ => None,
     }
@@ -122,17 +158,17 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
     match &expr.kind {
         ExprKind::MethodCall { object, method, args, .. } if method == "neg" && args.is_empty() => {
             match value(object, fact)? {
-                Fact::Int(n) => Some(Fact::Int(n.checked_neg()?)),
+                Fact::Int(n, range) => in_range(n.checked_neg()?, range),
                 _ => None,
             }
         }
         ExprKind::MethodCall { object, method, args, .. }
             if args.len() == 1 && matches!(method.as_str(), "add" | "sub" | "mul" | "div" | "rem") =>
         {
-            let (Fact::Int(a), Fact::Int(b)) = (value(object, fact)?, value(&args[0].expr, fact)?) else {
+            let (Fact::Int(a, ra), Fact::Int(b, rb)) = (value(object, fact)?, value(&args[0].expr, fact)?) else {
                 return None;
             };
-            Some(Fact::Int(match method.as_str() {
+            in_range(match method.as_str() {
                 "add" => a.checked_add(b)?,
                 "sub" => a.checked_sub(b)?,
                 "mul" => a.checked_mul(b)?,
@@ -140,7 +176,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
                 // zero it doesn't fold, and the program says so where it runs.
                 "div" => a.checked_div(b)?,
                 _ => a.checked_rem(b)?,
-            }))
+            }, ra.or(rb))
         }
         // `!x` after desugaring.
         ExprKind::MethodCall { object, method, args, .. } if method == "not" && args.is_empty() => {
@@ -151,7 +187,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
         {
             let (l, r) = (value(object, fact)?, value(&args[0].expr, fact)?);
             let ord = match (&l, &r) {
-                (Fact::Int(a), Fact::Int(b)) => a.cmp(b),
+                (Fact::Int(a, _), Fact::Int(b, _)) => a.cmp(b),
                 (Fact::Str(a), Fact::Str(b)) => a.cmp(b),
                 (Fact::Bool(a), Fact::Bool(b)) if method == "eq" => a.cmp(b),
                 _ => return None,
@@ -166,14 +202,38 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
         }
         ExprKind::MethodCall { .. } | ExprKind::Field { .. } | ExprKind::Ident(_) => fact(expr),
         ExprKind::Unary { op: UnaryOp::Not, operand } => Some(Fact::Bool(!decide(operand, fact)?)),
-        ExprKind::Binary { op, left, right } => {
-            let (l, r) = (decide(left, fact)?, decide(right, fact)?);
-            match op {
-                BinOp::And => Some(Fact::Bool(l && r)),
-                BinOp::Or => Some(Fact::Bool(l || r)),
-                _ => None,
-            }
+        // Short-circuit, as at run time: the right side of `f.has<A>() &&
+        // f.get<A>().x > 5` is only a question when the left side holds.
+        ExprKind::Binary { op: BinOp::And, left, right } => {
+            Some(Fact::Bool(decide(left, fact)? && decide(right, fact)?))
+        }
+        ExprKind::Binary { op: BinOp::Or, left, right } => {
+            Some(Fact::Bool(decide(left, fact)? || decide(right, fact)?))
         }
         _ => None,
+    }
+}
+
+/// `n` as an integer fact, when it fits the declared range it carries.
+fn in_range(n: i128, range: Option<(i128, i128)>) -> Option<Fact> {
+    match range {
+        Some((lo, hi)) if n < lo || n > hi => None,
+        _ => Some(Fact::Int(n, range)),
+    }
+}
+
+/// `item.get<A>().field` as a fact: the attachment's written value, when
+/// it's a literal. `attrs` are the item's attachments.
+pub fn annotation_read(expr: &Expr, binding: &str, attrs: &[crate::attr::Attr]) -> Option<Fact> {
+    let ExprKind::Field { object, field } = &expr.kind else { return None };
+    let ExprKind::MethodCall { object: item, method, type_args, .. } = &object.kind else { return None };
+    if method != "get" || item.name() != Some(binding) {
+        return None;
+    }
+    let annotation = type_args.as_ref()?.first()?.bare_name()?;
+    let attr = attrs.iter().find(|a| a.is(annotation))?;
+    match attr.arg(field)? {
+        crate::attr::AttrValue::Expr(e) => literal(e),
+        crate::attr::AttrValue::RuleName(_) => None,
     }
 }
