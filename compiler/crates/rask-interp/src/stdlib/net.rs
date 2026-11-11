@@ -135,15 +135,12 @@ impl Interpreter {
                     Ok(n) => n.max(0) as usize,
                     Err(e) => return Some(Err(e)),
                 };
-                let guard = stream.lock().unwrap();
-                let Some(s) = guard.as_ref() else {
-                    return Some(Err(RuntimeError::ResourceClosed {
-                        resource_type: "TcpConnection".to_string(),
-                        operation: "read from".to_string(),
-                    }));
+                let conn = match Self::unlocked_socket(stream, "read from") {
+                    Ok(conn) => conn,
+                    Err(e) => return Some(Err(e)),
                 };
                 let mut buf = vec![0u8; max];
-                match Cancellable::new(s).and_then(|mut c| c.read(&mut buf)) {
+                match conn.and_then(|mut c| c.read(&mut buf)) {
                     Ok(n) => {
                         buf.truncate(n);
                         let bytes: Vec<Value> =
@@ -546,6 +543,22 @@ impl Interpreter {
         }
     }
 
+    /// A handle of the connection's own, taken under the lock and used after
+    /// it's released. `clone()` shares the lock, so I/O that waited while
+    /// holding it stalled every other clone: a task reading the socket kept
+    /// the task writing to it from ever sending what the read waited for.
+    fn unlocked_socket(
+        stream: &Arc<Mutex<Socket<std::net::TcpStream>>>,
+        operation: &str,
+    ) -> Result<std::io::Result<Cancellable>, RuntimeError> {
+        let guard = stream.lock().unwrap();
+        let s = guard.as_ref().ok_or_else(|| RuntimeError::ResourceClosed {
+            resource_type: "TcpConnection".to_string(),
+            operation: operation.to_string(),
+        })?;
+        Ok(Cancellable::new(s))
+    }
+
     /// Handle TcpConnection instance methods.
     pub(crate) fn call_tcp_stream_method(
         &mut self,
@@ -564,12 +577,9 @@ impl Interpreter {
             // in net.rk over these; their Rust copies here used to win, and a
             // failure came back as `Err(<a string>)` (#1562).
             "read_bytes_raw" => {
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
-                })?;
+                let conn = Self::unlocked_socket(stream, "read from")?;
                 let mut buf = Vec::new();
-                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
+                match conn.and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
                         Ok(Value::some(Value::vec(bytes)))
@@ -591,11 +601,8 @@ impl Interpreter {
                         args.first().map(|v| v.type_name()).unwrap_or("missing")
                     ))),
                 };
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
-                })?;
-                match Cancellable::new(s).and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
+                let conn = Self::unlocked_socket(stream, "write to")?;
+                match conn.and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
                     Ok(()) => Ok(Value::int(bytes.len() as i64)),
                     Err(e) => {
                         set_last_os_error(&e);
