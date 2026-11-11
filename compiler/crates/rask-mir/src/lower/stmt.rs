@@ -1598,6 +1598,7 @@ impl<'a> MirLowerer<'a> {
     /// out, so the next one added gets it without anyone remembering to.
     fn lower_body_scoped(&mut self, body: &[Stmt]) -> Result<(), LoweringError> {
         let saved = self.comptime_strings.clone();
+        let saved_locals = self.locals.clone();
         let mut result = Ok(());
         for stmt in body {
             result = self.lower_stmt(stmt);
@@ -1606,6 +1607,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         self.comptime_strings = saved;
+        self.locals = saved_locals;
         result
     }
 
@@ -1630,12 +1632,23 @@ impl<'a> MirLowerer<'a> {
 
         let items = self.comptime_for_items(iter)?;
 
+        // The binding hides an outer local of the same name for the body, and
+        // a local the body declares under that name hides the binding
+        // (`comptime_binding`).
+        let outer = self.locals.remove(&name);
+        let mut result = Ok(());
         for item in items {
             self.comptime_for_bindings.push((name.clone(), item));
-            self.lower_body_scoped(body)?;
+            result = self.lower_body_scoped(body);
             self.comptime_for_bindings.pop();
+            if result.is_err() {
+                break;
+            }
         }
-        Ok(())
+        if let Some(outer) = outer {
+            self.locals.insert(name, outer);
+        }
+        result
     }
 
     /// CT51: the iterable must be comptime-known. Implemented so far —
@@ -2649,7 +2662,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// For loop: counter-based while for ranges, iterator protocol otherwise.
+    ///
+    /// The loop binding is scoped to the loop. Each lowering below binds it
+    /// into `locals`, and without the restore it outlived the loop: a
+    /// `let p = "outer"` before `for p in [1, 2]` read `2` afterwards.
     fn lower_for(
+        &mut self,
+        label: Option<&str>,
+        binding: &ForBinding,
+        mutate: bool,
+        iter_expr: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let saved_locals = self.locals.clone();
+        let result = self.lower_for_unscoped(label, binding, mutate, iter_expr, body);
+        self.locals = saved_locals;
+        result
+    }
+
+    fn lower_for_unscoped(
         &mut self,
         label: Option<&str>,
         binding: &ForBinding,

@@ -5430,8 +5430,11 @@ impl TypeChecker {
     /// else — an ordinary `for` over `reflect.fields<T>()`, a `Vec` element —
     /// native has nothing to fold and the call has no body to run.
     fn check_unrolled_reflect_item(&mut self, item: &Expr, item_ty: &Type, method: &str, span: Span) {
-        if matches!(&item.kind, ExprKind::Ident(n) if self.comptime_for_bindings.contains(n)) {
-            return;
+        if let ExprKind::Ident(n) = &item.kind {
+            let defined_in = self.local_types.iter().rposition(|scope| scope.contains_key(n));
+            if defined_in.is_some_and(|d| self.comptime_for_bindings.contains(&(n.clone(), d))) {
+                return;
+            }
         }
         // The receiver's type is often still open here — an ordinary `for`
         // over `reflect.fields<T>()` binds a variable solved later.

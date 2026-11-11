@@ -784,9 +784,12 @@ impl Interpreter {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         ty.substitute(&|name| {
             let bound = frame?.get(name)?;
+            // A type `nameable_type` doesn't cover (an array, anywhere
+            // inside) still has to come out with its declared types named:
+            // the bare ids print as `<type#N>`, which nothing resolves.
             Some(
                 rask_mono::Monomorphizer::nameable_type(bound, &self.types)
-                    .unwrap_or_else(|| bound.clone())
+                    .unwrap_or_else(|| self.types.resolve_type_names(bound))
                     .to_type_expr(),
             )
         })

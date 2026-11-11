@@ -81,3 +81,31 @@ test "params as a value, from a written function type" {
 test "a function with no parameters has none" {
     assert reflect.params<func() -> i64>().len() == 0
 }
+
+func with_array(mutate p: Pos, grid: [i64; 3]) -> [i64; 2] {
+    return [grid[0], grid[1]]
+}
+
+test "an array in the signature keeps the other types named" {
+    // The interpreter rendered the whole type as `<type#N>` once anything in
+    // it was an array, and `is<Pos>()` came back false.
+    assert schedule(with_array) == "writes Pos;"
+    assert count_of<Pos>(with_array) == 1
+}
+
+/// An inner loop reusing the name sees its own items, and the outer binding
+/// comes back after it.
+func shadowed<F>(f: F) -> string {
+    mut out = ""
+    comptime for p in reflect.params<F>() {
+        for p in reflect.params<func(i64, bool)>() {
+            out = "{out}{p.type_name},"
+        }
+        out = "{out}{p.type_name};"
+    }
+    return out
+}
+
+test "a loop inside comptime for can reuse the binding's name" {
+    assert shadowed(mixed) == "i64,bool,Pos;i64,bool,Pos?;i64,bool,i64;"
+}

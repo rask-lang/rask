@@ -4993,8 +4993,13 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// The item an active `comptime for` binding of this name is bound to —
-    /// the innermost, so a nested loop's binding shadows an outer one.
+    /// the innermost, so a nested loop's binding shadows an outer one. A
+    /// local of the same name declared inside the body (`for p in …`,
+    /// `let p = …`) shadows the binding: the loop removed any outer one.
     pub(super) fn comptime_binding(&self, name: &str) -> Option<&super::ComptimeItem> {
+        if self.locals.contains_key(name) {
+            return None;
+        }
         self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name).map(|(_, item)| item)
     }
 

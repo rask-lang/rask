@@ -173,7 +173,9 @@ pub struct TypeChecker {
     /// Bindings of the `comptime for` loops enclosing the code being checked.
     /// `has<A>()`, `get<A>()` and `is<T>()` on a reflect item are answered
     /// while the loop unrolls, so only these may ask them.
-    pub(super) comptime_for_bindings: Vec<String>,
+    /// Each with the index of the scope that defines it in `local_types`, so
+    /// a name redeclared inside the body isn't mistaken for the binding.
+    pub(super) comptime_for_bindings: Vec<(String, usize)>,
     /// `has`/`get`/`is` called on something that isn't such a binding, with
     /// the receiver's type — an error once solving says it's a reflect item.
     pub(super) pending_reflect_items: Vec<(Type, String, rask_ast::Span)>,

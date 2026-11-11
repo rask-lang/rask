@@ -34,6 +34,17 @@ func runtime_is() -> bool {
     return ps[0].is<i64>()           // ERROR: not a comptime for binding
 }
 
+func probe<F>(f: F) {
+    comptime for p in reflect.params<F>() {
+        // A local of the same name hides the binding.
+        let p = reflect.params<func(i64)>()[0].clone()
+        if p.is<i64>() {             // ERROR: not the comptime for binding
+            println("i64")
+        }
+    }
+}
+
 func main() {
+    probe(runtime_is)
     println("{runtime_has()} {runtime_get()} {runtime_is()}")
 }

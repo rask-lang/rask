@@ -581,7 +581,7 @@ impl TypeChecker {
                 match binding {
                     ForBinding::Single(name) => {
                         self.define_local(name.clone(), elem_ty);
-                        self.comptime_for_bindings.push(name.clone());
+                        self.comptime_for_bindings.push((name.clone(), self.local_types.len() - 1));
                     }
                     ForBinding::Tuple(names) => {
                         let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
@@ -590,9 +590,13 @@ impl TypeChecker {
                         }
                     }
                 }
+                // The body's own scope, so a `let` there shadows the binding
+                // rather than overwriting it in place.
+                self.push_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
                 self.comptime_for_bindings.truncate(unrolled);
                 self.pop_scope();
             }
