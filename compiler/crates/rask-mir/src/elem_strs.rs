@@ -166,6 +166,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // A `Random` is a heap block behind an opaque handle — no elements, no
     // sizes, and nothing was freeing it. Here so the drop pass knows the
     // caller owns what came back.
+    // A `Staged` buffer from `rack.staged()`: unapplied, it still owns the
+    // nodes and functions it recorded.
+    ("Rack_staged", 0, 0, "Staged_free"),
     ("Random_new", 0, 0, "Random_free"),
     ("Random_from_seed", 0, 0, "Random_free"),
     // An `Atomic<T>` is the same shape: one heap word behind an opaque handle,

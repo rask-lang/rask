@@ -32,6 +32,22 @@ func collect(world: Rack<Entity>) -> usize {
     return out.len()
 }
 
+func keep<T>(take x: T) -> usize {
+    mut v: Vec<T> = Vec.new()
+    v.push(x)
+    return v.len()
+}
+
+func stash(l: Link<Entity>) -> usize {
+    mut v: Vec<Link<Entity>> = Vec.new()
+    v.push(l)
+    return v.len()
+}
+
+func run(f: func(Link<Entity>) -> usize, l: Link<Entity>) -> usize {
+    return f(l)
+}
+
 func main() {
     mut world: Rack<Entity> = Rack.new()
     let a = world.insert(Entity(id: 1, health: 1, target: none))
@@ -49,13 +65,20 @@ func main() {
         let p = Pair(a: a, n: 1)
         p.n
     } and { count(world) }
+    // ERROR: a generic function may store what it's given [E0962]
+    fork { keep(a) } and { count(world) }
+    // ERROR: and so may a function handed one that stores [E0962]
+    fork { run(stash, a) } and { count(world) }
     // ERROR: handing a link back to the frame [E0962]
     let (x, y) = fork { a } and { count(world) }
 
     mut ops = world.staged()
     // ERROR: the relink function captured `a` [E0963]
     ops.relink(1, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = a })
-    ops.relink(2, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
+    let grab = |mutate n: Entity, to: Link<Entity>| { n.target = a }
+    // ERROR: bound to a name first, the same [E0963]
+    ops.relink(2, a, a, grab)
+    ops.relink(3, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
 
     // Reads, a local link, and changes recorded in a buffer.
     let (s, c) = fork {

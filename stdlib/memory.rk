@@ -122,4 +122,9 @@ extend Staged<T> {
     /// Number of changes recorded.
     @native("rask_staged_len")
     public func len(self) -> usize {}
+
+    /// What a buffer nobody applied is released with: the nodes and functions
+    /// it recorded go with it.
+    @native("rask_staged_free")
+    func free(take self) -> void {}
 }

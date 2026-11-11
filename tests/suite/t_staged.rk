@@ -91,3 +91,42 @@ test "mem.racks/RK16 blocks share a rack for reading" {
     }
     assert world.len() == 120
 }
+
+func call_it(f: func(u64) -> void, k: u64) {
+    f(k)
+}
+
+test "mem.racks/RK15 a loop that deletes through a function it hands on keeps its place" {
+    mut world: Rack<Entity> = Rack.new()
+    let a = world.insert(Entity(id: 1, name: "a", health: 10, target: none))
+    let b = world.insert(Entity(id: 2, name: "b", health: 20, target: none))
+    let c = world.insert(Entity(id: 3, name: "c", health: 30, target: none))
+    let v = Vec.from([a, b, c])
+    let kill = |k: u64| {
+        for n in world.nodes() {
+            if n.id == k {
+                world.delete(n)
+                return
+            }
+        }
+    }
+    mut seen = ""
+    for x in v {
+        seen = "{seen}{x.name}"
+        if x.id == 1 {
+            call_it(kill, 2)
+        }
+    }
+    assert seen == "ac"
+    assert v.len() == 2
+}
+
+test "mem.racks/RK17 a buffer nobody applies releases what it recorded" {
+    mut world: Rack<Entity> = Rack.new()
+    let a = world.insert(Entity(id: 1, name: "a", health: 10, target: none))
+    mut ops = world.staged()
+    ops.insert(1, Entity(id: 2, name: "never inserted", health: 1, target: a))
+    ops.relink(2, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
+    assert ops.len() == 2
+    assert world.len() == 1
+}

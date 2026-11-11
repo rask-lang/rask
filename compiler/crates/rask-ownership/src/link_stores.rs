@@ -35,42 +35,53 @@ impl<'a> OwnershipChecker<'a> {
     /// fixed point: every body starts out storing nothing, and a call to one
     /// that stores makes its caller store too.
     pub(crate) fn infer_link_stores(&mut self, groups: &[&[Decl]]) {
-        let mut bodies: Vec<(Key, &FnDecl)> = Vec::new();
+        // Each body with the type parameters its owner and its signature
+        // bring into scope: a `T` might be a link, so storing one counts.
+        let mut bodies: Vec<(Key, &FnDecl, Vec<String>)> = Vec::new();
         for decls in groups {
             for decl in decls.iter() {
                 match &decl.kind {
-                    DeclKind::Fn(f) if !f.body_lives_elsewhere() => bodies.push((Key::Fn(f.name.clone()), f)),
+                    DeclKind::Fn(f) if !f.body_lives_elsewhere() => {
+                        bodies.push((Key::Fn(f.name.clone()), f, Vec::new()))
+                    }
                     DeclKind::Impl(i) => {
                         let ty = i.target_ty.name().unwrap_or_default();
+                        let owner = rask_check::header_type_params(i, &self.program.types);
                         for m in i.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
-                            bodies.push((Key::Method(ty.clone(), m.name.clone()), m));
+                            bodies.push((Key::Method(ty.clone(), m.name.clone()), m, owner.clone()));
                         }
                     }
                     DeclKind::Struct(st) => {
+                        let owner = rask_ast::type_params::struct_type_param_names(st);
                         for m in st.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
-                            bodies.push((Key::Method(st.name.clone(), m.name.clone()), m));
+                            bodies.push((Key::Method(st.name.clone(), m.name.clone()), m, owner.clone()));
                         }
                     }
                     DeclKind::Enum(en) => {
+                        let owner = rask_ast::type_params::enum_type_param_names(en);
                         for m in en.methods.iter().filter(|m| !m.body_lives_elsewhere()) {
-                            bodies.push((Key::Method(en.name.clone(), m.name.clone()), m));
+                            bodies.push((Key::Method(en.name.clone(), m.name.clone()), m, owner.clone()));
                         }
                     }
                     _ => {}
                 }
             }
         }
-        for (key, _) in &bodies {
+        for (key, _, _) in &bodies {
             self.link_stores.insert(key.clone(), false);
         }
+        let outer_params = std::mem::take(&mut self.type_params_in_scope);
         // A store only ever turns a summary on, so this climbs to the answer
         // in at most one round per function.
         loop {
             let mut changed = false;
-            for (key, f) in &bodies {
+            for (key, f, owner) in &bodies {
                 if self.link_stores.get(key) == Some(&true) {
                     continue;
                 }
+                let mut params = owner.clone();
+                params.extend(rask_ast::type_params::signature_type_param_names(f));
+                self.type_params_in_scope = params;
                 if self.first_link_store(&f.body, 0).is_some() {
                     self.link_stores.insert(key.clone(), true);
                     changed = true;
@@ -80,6 +91,7 @@ impl<'a> OwnershipChecker<'a> {
                 break;
             }
         }
+        self.type_params_in_scope = outer_params;
     }
 
     /// Does this type, here, hold a link a store would record? A type
@@ -162,8 +174,43 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// A function value handed to a call may be called by it, so it stores
+    /// what its body stores: a closure literal's body, a declared function's
+    /// summary. One this pass can't see into might store anything.
+    fn fn_arg_stores_link(&self, a: &Expr, depth: u32) -> Option<(Span, String)> {
+        if !matches!(self.node_ty(&a.id), Some(Type::Fn { .. })) {
+            return None;
+        }
+        match &a.kind {
+            // Walked with the rest of the body.
+            ExprKind::Closure { .. } => None,
+            ExprKind::Ident(name) if self.named_fn_values.contains(name) => None,
+            _ if self.fn_key(a).is_some() => {
+                let key = self.fn_key(a)?;
+                self.link_stores.get(&key).copied().unwrap_or(false)
+                    .then(|| (a.span, "this function may store a link".to_string()))
+            }
+            ExprKind::Ident(name) if self.closure_literals.contains_key(name) => {
+                if depth >= MAX_DEPTH {
+                    return None;
+                }
+                let ExprKind::Closure { body, .. } = &self.closure_literals[name].kind else { return None };
+                self.first_store_in_expr(std::slice::from_ref(body.as_ref()), depth + 1)
+                    .map(|_| (a.span, format!("`{name}` may store a link")))
+            }
+            _ => Some((a.span, "a function value this can't see into may store a link".to_string())),
+        }
+    }
+
     /// A call that may store a link it's handed.
     fn expr_stores_link(&self, e: &Expr, depth: u32) -> Option<(Span, String)> {
+        let fn_args: Vec<&Expr> = match &e.kind {
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => args.iter().map(|a| &a.expr).collect(),
+            _ => Vec::new(),
+        };
+        if let Some(hit) = fn_args.iter().find_map(|a| self.fn_arg_stores_link(a, depth)) {
+            return Some(hit);
+        }
         match &e.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let recv = self.receiver_type_name(object);
@@ -217,6 +264,9 @@ impl<'a> OwnershipChecker<'a> {
                 // A closure literal the body can see: what it does, the call
                 // does.
                 if let ExprKind::Ident(name) = &func.kind {
+                    if self.named_fn_values.contains(name) {
+                        return None;
+                    }
                     if let Some(lit) = self.closure_literals.get(name) {
                         if depth < MAX_DEPTH {
                             if let ExprKind::Closure { body, .. } = &lit.kind {
@@ -224,9 +274,13 @@ impl<'a> OwnershipChecker<'a> {
                                 return self.first_store_in_expr(stmts, depth + 1).map(|(_, why)| (e.span, why));
                             }
                         }
+                        return None;
                     }
                 }
-                None
+                // A function value with no body here to read: a parameter, a
+                // field. Handed links, it may keep them.
+                matches!(self.node_ty(&func.id), Some(Type::Fn { .. }))
+                    .then(|| (e.span, "a function value this can't see into may store a link".to_string()))
             }
             _ => None,
         }
@@ -352,6 +406,32 @@ impl<'a> OwnershipChecker<'a> {
             visit::walk_stmt(stmt, &mut |e| {
                 if !quiet {
                     return;
+                }
+                // A function value handed to a call may be called by it.
+                let handed: Vec<&Expr> = match &e.kind {
+                    ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+                        args.iter().map(|a| &a.expr).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                for a in handed {
+                    if !matches!(self.node_ty(&a.id), Some(Type::Fn { .. })) {
+                        continue;
+                    }
+                    match &a.kind {
+                        ExprKind::Closure { .. } => {}
+                        ExprKind::Ident(name) if self.named_fn_values.contains(name) => {}
+                        _ if self.fn_key(a).is_some() => {}
+                        ExprKind::Ident(name) if self.closure_literals.contains_key(name) && depth < MAX_DEPTH => {
+                            if let ExprKind::Closure { body: inner, .. } = &self.closure_literals[name].kind {
+                                let as_stmt = Stmt { id: inner.id, kind: StmtKind::Expr((**inner).clone()), span: inner.span };
+                                if !self.quiet_at(std::slice::from_ref(&as_stmt), depth + 1) {
+                                    quiet = false;
+                                }
+                            }
+                        }
+                        _ => quiet = false,
+                    }
                 }
                 let ExprKind::Call { func, .. } = &e.kind else { return };
                 if self.fn_key(func).is_some() {

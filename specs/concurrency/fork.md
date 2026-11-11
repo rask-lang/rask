@@ -64,13 +64,14 @@ WHY: the blocks may run at the same time, so a write in one and a read in the
 ```
 
 ```
-ERROR [conc.fork/FK7]: two fork blocks name a link
+ERROR [conc.fork/FK7]: two fork blocks call function values that may be the same closure
    |
- 3 |  fork { a.hp -= 1 } and { b.hp -= 1 }
-   |         ^                 ^
+ 3 |  fork { f() } and { g() }
+   |         ^           -
    |
-FIX: do the graph work in one block
-WHY: two links can name the same node, and two blocks writing one node race.
+FIX: write the work into the blocks, or call function values from one block
+WHY: `both(h, h)` hands one closure to both blocks, and it may write what it
+     captured.
 ```
 
 ## Appendix (non-normative)

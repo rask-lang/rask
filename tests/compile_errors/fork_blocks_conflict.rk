@@ -2,7 +2,8 @@
 // The blocks of a `fork` may run at the same time and borrow from the frame,
 // so the borrow rules hold between them (conc.fork/FK3, E0960): a place one
 // block writes, no other block may touch. A link, a rack or a `Local` box may
-// be named by one block only (FK7, E0961). The forks at the end are the legal
+// be named by one block only (FK7, E0961), unless every block naming a rack or
+// its links only reads it (mem.racks/RK16, E0962). The forks at the end are the legal
 // shapes and must compile.
 
 import memory.Rack
@@ -74,10 +75,12 @@ func main() {
     mut r = Rack.new()
     let n1 = r.insert(Node(hp: 1, next: none))
     let n2 = r.insert(Node(hp: 2, next: none))
-    // ERROR: `n1` and `n2` may name the same node [E0961]
-    let (m, o) = fork { n1.hp } and { n2.hp }
+    // ERROR: `n1` and `n2` may name the same node, and one block writes it [E0962]
+    fork { n1.hp = 5 } and { n2.hp }
 
-    // Separate fields, reads of a shared value, and graph work in one block.
+    // Separate fields, reads of a shared value, graph work in one block, and
+    // two blocks only reading the graph (mem.racks/RK16).
+    let (m, o) = fork { n1.hp } and { n2.hp }
     fork { p.x = v.len().to<i64>()! } and { p.y = v.len().to<i64>()! }
     let (s, t) = fork { n1.hp + n2.hp } and { v.len() }
     println("{a}{b}{c}{d}{e}{f}{g}{h}{m}{o}{s}{t}{count}")

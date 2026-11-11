@@ -888,14 +888,14 @@ impl ToDiagnostic for crate::OwnershipError {
                     .with_primary(self.span, format!("`{}` is used in this block", name))
                     .with_secondary(*other_span, format!("and `{}` in this one", other))
                     .with_fix(
-                        "do the work on links, racks and `Local` boxes in one block, and \
-                         give the others plain values",
+                        "use the `Local` box, or the function value, in one block only; a \
+                         box both blocks need can be `Shared.new(…)`, which locks",
                     )
                     .with_why(
-                        "two links can name the same node, a `Local` box takes no lock, \
-                         and storing a link anywhere writes its rack's edge index. Inside \
-                         one block that's one thread at a time; across two it's a race \
-                         [conc.fork/FK7]",
+                        "a `Local` box takes no lock, and a function value the checker \
+                         can't see into may touch the same graph or box the other block \
+                         uses. Inside one block that's one thread at a time; across two \
+                         it's a race [conc.fork/FK7]",
                     )
             }
             LinkSent { name, ty, bare_link } => {

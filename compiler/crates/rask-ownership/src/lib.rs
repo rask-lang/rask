@@ -3619,9 +3619,13 @@ impl<'a> OwnershipChecker<'a> {
                 // checked at the apply; one in a closure environment isn't.
                 if self.receiver_type_name(object).as_deref() == Some("Staged") {
                     for a in args {
-                        if matches!(a.expr.kind, ExprKind::Closure { .. })
-                            && self.task_bound_closures.contains(&a.expr.id)
-                        {
+                        // Written in place or bound to a name first.
+                        let literal_id = match &a.expr.kind {
+                            ExprKind::Closure { .. } => Some(a.expr.id),
+                            ExprKind::Ident(name) => self.closure_literals.get(name).map(|l| l.id),
+                            _ => None,
+                        };
+                        if literal_id.is_some_and(|id| self.task_bound_closures.contains(&id)) {
                             self.errors.push(OwnershipError {
                                 kind: OwnershipErrorKind::StagedFnHoldsLink,
                                 span: a.expr.span,
