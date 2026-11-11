@@ -2492,16 +2492,6 @@ impl<'a> FunctionBuilder<'a> {
             // external pointer for mutate-params).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
              MirRValue::Use(MirOperand::Local(_))) => true,
-            // An array from an array is one too: left out, `let t = a` on a
-            // `mutate a: [string; 2]` made `t` the caller's slot, and `a = b`
-            // then changed what `t` read (#1877). From a bare `Ptr` it is a
-            // view of that address instead — `p.data[2] = 30` through a raw
-            // pointer names the array where it lives.
-            (MirType::Array { .. }, MirRValue::Use(MirOperand::Local(src_id))) => ctx
-                .locals
-                .iter()
-                .find(|l| l.id == *src_id)
-                .is_some_and(|l| matches!(l.ty, MirType::Array { .. })),
             // Result/Option whole-aggregate copy: only when src and dst
             // have the same general shape. Avoid clobbering layout when
             // src is Result and dst is Option (different payload offsets).

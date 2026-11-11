@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Writing a whole array over a struct field, or an array or tuple through a
-// `mutate` parameter, gives back the strings the old value held. Natively the
-// release list for those stores left arrays out (and tuples, for the
-// parameter), so each write leaked what it replaced. Releasing them was held
-// back by two bugs that turned the leak into a use-after-free: a small Copy
-// aggregate (`[string; 1]`) copied out of a place took no references of its
-// own (#1876), and `let t = a` on a `mutate` array bound the caller's slot
-// instead of copying it (#1877). The leak gate runs this file with
-// RASK_LEAK_CHECK=1, and the memcheck gate runs it under valgrind.
+// Writing arrays and tuples of strings over each other: fields, `mutate`
+// parameters, new values built from the old one's elements, element stores.
+// Each answer has to be right and nothing may read freed memory; the memcheck
+// gate runs this file under valgrind. A small Copy aggregate (`[string; 1]`)
+// copied into a literal used to share the old value's strings uncounted, and
+// an element store gave its string no reference of its own (#1876).
+//
+// It still leaks: an array written over a field or through `mutate` isn't
+// released, because releasing it is only safe once every copy of a Copy
+// aggregate takes its own references (#1876) and `let t = a` on a `mutate`
+// array copies (#1877). tests/known_leaks.txt holds the count.
 
 struct Slots {
     v: [string; 2]

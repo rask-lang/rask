@@ -277,29 +277,31 @@ impl<'a> MirLowerer<'a> {
         }
         // A closure in a field is the aggregate's, released with it (#1253),
         // so writing a new one over it gives the old one back the same way.
-        // Left out, `p.run = || …` leaked the closure it replaced. An array's
-        // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
-        // `[string; 2]` field leaked the strings it replaced.
+        // Left out, `p.run = || …` leaked the closure it replaced.
+        //
+        // Workaround: an array is left out, so writing one over a field leaks
+        // the strings the old one held. Releasing it frees strings that a copy
+        // made from it still reads, because a Copy aggregate stored somewhere
+        // isn't always given references of its own (#1876).
         matches!(
             fty,
             MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::Array { .. } | MirType::FuncPtr(_)
+                | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
 
     /// What writing over a variable reached through a pointer — a `mutate`
     /// parameter, a closure's capture — gives back: the value it held, which
-    /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
-    /// or an array, a string, a container. A scalar holds nothing to give
-    /// back.
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
+    /// a container. A scalar holds nothing to give back.
+    ///
+    /// Workaround: tuples and arrays are left out and leak what they held,
+    /// because releasing them frees what a local copy still reads — `let t =
+    /// a` on a `mutate` array binds the caller's slot, not a copy (#1877).
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(
-                t,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
-                    | MirType::Buffer | MirType::Container(_)
-            )
+            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
         })
     }
 
@@ -706,21 +708,6 @@ impl<'a> MirLowerer<'a> {
                 let target = self.peel_owned_deref(target);
                 let (val_op, val_ty) = self.lower_expr(value)?;
                 self.check_resource_moved(value);
-                // A Copy aggregate copied out of a place into another takes
-                // references of its own, whatever the target: `c.one = a.one`
-                // on a `[string; 1]` left `c` sharing `a`'s strings uncounted,
-                // and writing over `a.one` freed them (#1876). `p = p` copies
-                // nothing. A `Vec` or `Map` element's store already retains
-                // its copy before handing it to the runtime's `set`.
-                let collection_slot = matches!(
-                    &target.kind,
-                    ExprKind::Index { object, .. } if self.is_vec_expr(object) || self.is_map_expr(object)
-                );
-                if !same_place(target, value) && !collection_slot {
-                    if let MirOperand::Local(local) = &val_op {
-                        self.retain_copy_of_place(*local, value);
-                    }
-                }
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
                 // accepts the widening; without the wrap the bare value lands in the
@@ -978,6 +965,7 @@ impl<'a> MirLowerer<'a> {
                                 dst: local_id,
                                 rvalue: MirRValue::Use(val_op),
                             }));
+                            self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
                         // links before there is anything to record. Through a
@@ -3963,14 +3951,3 @@ pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
     !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
 }
 
-/// Do two expressions name the same place — the same binding and the same
-/// field path? `p = p` and `s.f = s.f` copy nothing.
-fn same_place(a: &Expr, b: &Expr) -> bool {
-    match (&a.kind, &b.kind) {
-        (ExprKind::Ident(x), ExprKind::Ident(y)) => x == y,
-        (ExprKind::Field { object: oa, field: fa }, ExprKind::Field { object: ob, field: fb }) => {
-            fa == fb && same_place(oa, ob)
-        }
-        _ => false,
-    }
-}
