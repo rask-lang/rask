@@ -271,7 +271,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 ## Open
 
 - The space interface in detail: what a lattice declares, whether a hierarchy of region sizes belongs in the kernel or in one space type, and how a space type states its write reach.
-- Language items, ranked from main: the ordered map the kernel needs (`determinism` open question), fork-join that can borrow (#1686), compile-time access to a function's parameter types and modes, and staged structural mutation on racks (designed in `mem.racks`, unbuilt).
+- Language items, ranked from main: a map with a deterministic order (#1862), fork-join that can borrow (#1686), compile-time reflection of a function's parameters (#1863), staged structural mutation on racks (#1864), and `kernel` blocks (#1654).
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
 - A falling-sand prototype first, as a speed benchmark against the performance budget. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
