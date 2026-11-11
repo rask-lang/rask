@@ -140,6 +140,7 @@ The region is the unit for storage, copy-on-write checkpoints, the state hash, p
 - **Fields** (fog, temperature, gas, flow): dense data per region with a ring of copied neighbour cells (a halo) filled at the start of each tick. Domain decomposition, as supercomputer simulations call it.
 - **Unbounded worlds:** a region is generated from the world seed and its key, so every machine generates the same one. Which regions simulate depends only on the state (activity, nearness to any player), never on one client's camera.
 - **Large coordinates:** positions are relative to their region.
+- **Far regions run less often.** A region's rate (every tick, every 4th, every 16th) depends only on state: distance to the nearest player-owned thing or active event, never a camera. A system opts in by taking a `dt: Ticks` parameter and integrating over the elapsed ticks (growth, temperature, a far colony's economy); a system without one (belts, combat) runs every tick, and a region where one is active stays at full rate. A region at rate k runs on ticks where `tick % k` equals a phase derived from its key, which spreads the load. A full-rate region reading a slower neighbour sees data up to k ticks old: deterministic and bounded. An event promotes a slow region to full rate from the next tick. Sleep comes first; reduced rates are opt-in, and the default is every tick. A cheaper model for far-away places (Dwarf Fortress's world simulation, RimWorld's world map) is the game's to write.
 
 ## Parallelism
 
@@ -154,6 +155,45 @@ Systems run at their own rates (temperature every 4 ticks, path requests spread 
 What's missing in the language is fork-join that can borrow (#1686) and `kernel` blocks where each lane writes only its own slot (#1654). Those are ranked from main like any other compiler work.
 
 Rendering doesn't join the tick. The simulation runs on its own thread at a fixed rate and publishes each finished state. The renderer draws at the display's rate from the last two published states, interpolating by entity id.
+
+## Testing determinism
+
+A game should learn it's nondeterministic from a failing test, not from a multiplayer bug report.
+
+**The twin run.** `rask test` runs the game twice from the same seed and input log, varying everything that's supposed not to matter, and compares the state hash after every tick:
+
+| Varied | Catches |
+|---|---|
+| Thread count (one versus all cores) | anything that depends on threads |
+| Task order, drawn from a seed (Rask's sim mode) | merges in completion order, races |
+| Region size, where the space allows | random draws or merges keyed by region or task |
+| Map iteration seed (its own sim-mode stream, `sim/SD1`) | iterating a `Map` in game state |
+| Memory layout | an address leaking into logic |
+
+During the test the hash is taken after every system, per region, so the first difference names the tick, the system and the region; diffing the two states then names the entity and the field. The report ends with a replay line, as sim mode's do.
+
+The same machinery gives:
+
+- **Regression tests:** a recorded session (seed, input log, hash trail) replays and must match. When the rules change on purpose, it's re-recorded.
+- **Cross-machine runs:** recorded sessions run on x86-64 and on aarch64 under qemu in CI.
+- **Seed search:** bot players with random inputs over many seeds (`--seeds N`).
+
+`rask lint` warns when a system iterates a `Map`, reads the clock, or reaches outside its parameters. Information, not enforcement; the twin run enforces. It costs twice the CPU, so it's for tests and CI; a dev build can run a shadow copy every N ticks.
+
+## Performance budget
+
+Estimates for the prototype to confirm or break, not measurements. At 60 ticks a second a tick is 16.7 ms; joining needs headroom, so the simulation gets about 10 ms on the slowest supported machine (8 cores). Rendering runs on its own thread.
+
+| Work | Estimate | Target |
+|---|---|---|
+| A simple entity system over 100,000 units | about 5 MB of memory traffic, about 0.5 ms on one core | ≤ 0.2 ms on 8 cores |
+| Falling sand, 1024×512 cells, 30% awake | about 10 ns per awake cell, about 1.5 ms on one core | ≤ 0.5 ms on 8 cores |
+| A flow field over 1 million cells | 10 to 20 ms from scratch | spread over ticks with a count budget, ≤ 1 ms per tick |
+| Kernel overhead: staging, merges, rolling hash, link bookkeeping | grows with changes, not world size | ≤ 0.5 ms |
+| Mod handlers | unknown | ≤ 2 ms, set by fuel |
+| Left for game logic | | about 5 ms |
+
+What that asks of Rask's compiler, as a measured target: a loop over a `Vec` of small structs within 1.5 to 2× of the same loop in C. That means bounds checks hoisted, no refcount traffic in loops, small functions inlined, fields in registers, SIMD where it fits. `rask bench` already compares against a C baseline, so the prototype measures nanoseconds per cell and per entity against C. Misses become compiler work, ranked from main.
 
 ## Mods
 
@@ -234,7 +274,7 @@ The stress test for the design: rewrite each target game on the kernel and see w
 - Language items, ranked from main: the ordered map the kernel needs (`determinism` open question), fork-join that can borrow (#1686), compile-time access to a function's parameter types and modes, and staged structural mutation on racks (designed in `mem.racks`, unbuilt).
 - The headroom target for joining.
 - The transport under Ting: stay on ngtcp2, or move to GameNetworkingSockets, which has relays and NAT traversal.
-- A falling-sand prototype first, as a speed benchmark. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
+- A falling-sand prototype first, as a speed benchmark against the performance budget. Every target game is hand-tuned C++ or C#, and throughput decides whether lockstep and fast-forward exist at all. Compiler work it turns up is ranked from main.
 
 - Literal-built number types for simulation units such as `Fixed` and `Meters`: done in rask-lang/rask#1752 (`FromLiteral<T>`).
 - Shared-library output from `rask build`, for running as a plugin in another engine.
