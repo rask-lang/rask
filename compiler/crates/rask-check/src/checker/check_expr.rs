@@ -4494,6 +4494,9 @@ impl TypeChecker {
         }
 
         let obj_ty_raw = self.infer_expr(object);
+        if matches!(method, "has" | "is") {
+            self.check_unrolled_reflect_item(object, &obj_ty_raw, method, span);
+        }
         // A mutating method on a field or element of a binding mutates the
         // binding: `b.items.push(2)` on a `let b`, `v[0].bump()` on a
         // read-only parameter. Only a bare receiver was checked, so a `let`
@@ -5345,13 +5348,20 @@ impl TypeChecker {
     /// names the annotation instead of blaming a missing method on a value that
     /// was never going to exist.
     fn annotation_projection_type(&mut self, object: &Expr, field: &str, span: Span) -> Option<Type> {
-        let ExprKind::MethodCall { method, type_args, .. } = &object.kind else { return None };
+        let ExprKind::MethodCall { object: item, method, type_args, .. } = &object.kind else { return None };
         if method != "get" {
             return None;
         }
         let name = type_args.as_ref()?.first()?.bare_name()?.to_string();
         if !self.annotation_types.contains(&name) {
             return None;
+        }
+        let item_ty = match &item.kind {
+            ExprKind::Ident(n) => self.lookup_local(n),
+            _ => Some(self.infer_expr(item)),
+        };
+        if let Some(item_ty) = item_ty {
+            self.check_unrolled_reflect_item(item, &item_ty, method, object.span);
         }
         let id = match self.types.lookup(&name) {
             Some(Type::Named(id)) => id,
@@ -5410,6 +5420,36 @@ impl TypeChecker {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// `item.has<A>()`, `item.get<A>()` and `item.is<T>()` on a `FieldInfo`
+    /// or `ParamInfo` are answered while a `comptime for` unrolls: the item is
+    /// a fact about one iteration, not a value with the answer inside it. So
+    /// the receiver has to be an enclosing `comptime for` binding. Anywhere
+    /// else — an ordinary `for` over `reflect.fields<T>()`, a `Vec` element —
+    /// native has nothing to fold and the call has no body to run.
+    fn check_unrolled_reflect_item(&mut self, item: &Expr, item_ty: &Type, method: &str, span: Span) {
+        if matches!(&item.kind, ExprKind::Ident(n) if self.comptime_for_bindings.contains(n)) {
+            return;
+        }
+        // The receiver's type is often still open here — an ordinary `for`
+        // over `reflect.fields<T>()` binds a variable solved later.
+        self.pending_reflect_items.push((item_ty.clone(), method.to_string(), span));
+    }
+
+    pub(super) fn check_reflect_items(&mut self) {
+        use rask_types::LangItem;
+        for (ty, method, span) in std::mem::take(&mut self.pending_reflect_items) {
+            let ty = self.ctx.apply(&ty);
+            let info = if self.types.is_lang(&ty, LangItem::FieldInfo) {
+                "FieldInfo"
+            } else if self.types.is_lang(&ty, LangItem::ParamInfo) {
+                "ParamInfo"
+            } else {
+                continue;
+            };
+            self.errors.push(TypeError::ReflectItemNotUnrolled { info, method, span });
         }
     }
 

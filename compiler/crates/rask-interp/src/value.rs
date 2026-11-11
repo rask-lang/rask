@@ -1173,6 +1173,10 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// A checked type held by reflection metadata, hidden behind a `__` key
+    /// so `param.is<T>()` compares types rather than their spellings. Never
+    /// reaches user code (ctrl.comptime/CT66).
+    ReflectedType(Arc<rask_types::Type>),
     /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
     Cell(Arc<Mutex<Value>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
@@ -1462,7 +1466,7 @@ impl Value {
             Value::Closure { .. } => "closure",
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
-            Value::Type(_) => "type",
+            Value::Type(_) | Value::ReflectedType(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
             Value::Link { .. } => "Link",
@@ -1779,6 +1783,7 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::ReflectedType(ty) => write!(f, "<type {}>", ty),
             Value::Cell(c) => {
                 let inner = c.lock().unwrap();
                 write!(f, "Cell({})", inner)

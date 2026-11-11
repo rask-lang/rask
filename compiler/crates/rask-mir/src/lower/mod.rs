@@ -2231,11 +2231,11 @@ pub struct MirLowerer<'a> {
     /// attaches to. Armed by `lower_try` and discharged by `lower_expr` when it
     /// reaches that step.
     pending_try_step: Option<(NodeId, NodeId)>,
-    /// Active `comptime for` loop-binding names and the field they're currently
-    /// bound to (innermost last, for nesting). `field` here isn't a runtime
+    /// Active `comptime for` loop-binding names and the item they're currently
+    /// bound to (innermost last, for nesting). The binding isn't a runtime
     /// value — `field.name`/`value.(field.name)` splice this directly instead
     /// of going through the normal local/struct-layout lookup (CT48/CT49).
-    comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
+    comptime_for_bindings: Vec<(String, ComptimeItem)>,
     /// Bindings in this body whose initializer folded to a compile-time string.
     /// `value.(name)` reads them so a field name can be given a name of its own
     /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
@@ -2243,6 +2243,15 @@ pub struct MirLowerer<'a> {
     /// Raw pointers whose block lowering saw made, by the local holding them.
     /// See `PtrBlock`.
     ptr_blocks: HashMap<LocalId, PtrBlock>,
+}
+
+/// What one iteration of an unrolled `comptime for` is bound to.
+#[derive(Clone)]
+pub(crate) enum ComptimeItem {
+    /// `reflect.fields<T>()`.
+    Field(ReflectFieldConst),
+    /// `reflect.params<F>()`.
+    Param(rask_check::reflect::ParamFact),
 }
 
 /// One field's compile-time-known metadata inside an unrolled `comptime for

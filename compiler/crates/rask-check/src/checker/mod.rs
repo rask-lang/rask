@@ -170,6 +170,13 @@ pub struct TypeChecker {
     /// the header has was rewritten to its declaration before resolve, so a
     /// dotted type still under one names nothing.
     pub(super) c_namespaces: std::collections::HashSet<String>,
+    /// Bindings of the `comptime for` loops enclosing the code being checked.
+    /// `has<A>()`, `get<A>()` and `is<T>()` on a reflect item are answered
+    /// while the loop unrolls, so only these may ask them.
+    pub(super) comptime_for_bindings: Vec<String>,
+    /// `has`/`get`/`is` called on something that isn't such a binding, with
+    /// the receiver's type — an error once solving says it's a reflect item.
+    pub(super) pending_reflect_items: Vec<(Type, String, rask_ast::Span)>,
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
     stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
@@ -671,6 +678,8 @@ impl TypeChecker {
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
             c_namespaces: std::collections::HashSet::new(),
+            comptime_for_bindings: Vec::new(),
+            pending_reflect_items: Vec::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
@@ -1214,6 +1223,7 @@ impl TypeChecker {
 
         self.check_c_fn_pointers();
         self.check_variadic_args();
+        self.check_reflect_items();
         let unsafe_ops = self.unsafe_ops;
 
         let fn_sigs: HashMap<NodeId, rask_types::FnSignature> = self

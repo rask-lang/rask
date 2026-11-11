@@ -221,6 +221,55 @@ struct VariantInfo {
 
 A payload field is a `FieldInfo` like a struct field's, read from the same layout. A positional payload is named by its index (`_0`, `_1`). `offset` counts from the start of the enum value, the same origin a struct field's does, so it lands after the tag. A payload has no visibility or wire annotations of its own: `is_public` is true and `serial_name` is the field's name. A generic enum reports the instantiation: `Answer<string>`'s `Yes` holds a 16-byte `string` where `Answer<i64>`'s holds 8.
 
+## Function Parameters
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `params<F>()` | `-> Vec<ParamInfo>` | Each parameter of the function type `F`, in order (compile error if `F` isn't a function type) |
+
+<!-- surface -->
+```rask
+extend reflect {
+    func params<F>() -> Vec<ParamInfo>
+}
+
+struct ParamInfo {
+    index: usize
+    type_name: string
+    is_mutate: bool
+    is_take: bool
+}
+
+extend ParamInfo {
+    func is<T>(self) -> bool
+}
+```
+
+A function's value has a function type, and a parameter's mode is part of that type (`type.functions/FT1`), so `params` reads both off it. A named function reaches `F` through a type parameter: `schedule(drift)` makes `F` drift's type, `func(mutate Pos, Vel)`. A closure's type is a function type too and reflects the same way; its captures aren't parameters and don't appear. R5 holds: a generic function reflects the signature it was instantiated with.
+
+A function type has no parameter names, so `index` tells parameters apart. Neither flag set means the parameter is borrowed.
+
+`is<T>()` asks whether the parameter's type is exactly `T`: `is<Pos>()` is false for a `Pos?`. The mode isn't part of the question. Types reach comptime code only as type arguments (`ctrl.comptime/CT66`), which is why this is a method taking `T` rather than a type stored in the struct.
+
+`is<T>()`, like `FieldInfo`'s `has<A>()` and `get<A>()`, is answered while a `comptime for` unrolls, so it's only callable on that loop's binding. On anything else — an ordinary `for` over the same `Vec`, an element held in a variable — it's a compile error (E0960). The plain fields read anywhere.
+
+<!-- test: skip -->
+```rask
+func drift(mutate p: Pos, v: Vel) {
+    p.x += v.x
+}
+
+func schedule<F>(system: F) {
+    comptime for p in reflect.params<F>() {
+        comptime if p.is<Pos>() && p.is_mutate {
+            // drift writes Pos
+        }
+    }
+}
+```
+
+Generating a call to the function from its parameters — one argument per `ParamInfo` — needs a way to splice a list of arguments, which nothing provides yet.
+
 ## Error Messages
 
 ```
@@ -259,6 +308,8 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | `has_field<T>()` on a non-struct | — | `false` |
 | `methods<T>()` on a generic instantiation | R5 | Only the methods whose `extend` header and `where` clause T meets |
 | `interfaces<T>()` with derived conformances | — | Not listed; `implements` answers |
+| `params<F>()` on a non-function type | — | Compile error |
+| `is<T>()` / `has<A>()` / `get<A>()` outside a `comptime for` over the item | R1 | Compile error (E0960) |
 
 ---
 

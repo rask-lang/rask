@@ -1628,37 +1628,34 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let fields = self.reflect_fields_for(iter)?;
+        let items = self.comptime_for_items(iter)?;
 
-        for field in fields {
-            self.comptime_for_bindings.push((name.clone(), field));
+        for item in items {
+            self.comptime_for_bindings.push((name.clone(), item));
             self.lower_body_scoped(body)?;
             self.comptime_for_bindings.pop();
         }
         Ok(())
     }
 
-    /// CT51: the iterable must be comptime-known. The only form implemented
-    /// so far — matching the interpreter (rask-interp/src/stdlib/reflect.rs)
-    /// — is `reflect.fields<T>()`, T already concrete after mono substitution.
-    fn reflect_fields_for(
+    /// CT51: the iterable must be comptime-known. Implemented so far —
+    /// matching the interpreter (rask-interp/src/stdlib/reflect.rs) — are
+    /// `reflect.fields<T>()` and `reflect.params<F>()`, the type argument
+    /// already concrete after mono substitution.
+    fn comptime_for_items(
         &self,
         iter: &Expr,
-    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
-        
-
+    ) -> Result<Vec<super::ComptimeItem>, LoweringError> {
         let unsupported = || {
             LoweringError::InvalidConstruct(
-                "comptime for requires a comptime-known iterable, e.g. reflect.fields<T>()".into(),
+                "comptime for requires a comptime-known iterable: reflect.fields<T>() or reflect.params<F>()".into(),
             )
         };
 
         let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
             return Err(unsupported());
         };
-        let is_reflect_fields = method == "fields"
-            && matches!(&object.kind, ExprKind::Ident(n) if n == "reflect");
-        if !is_reflect_fields {
+        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
             return Err(unsupported());
         }
         let type_args = self.checked_type_args(type_args);
@@ -1667,7 +1664,25 @@ impl<'a> MirLowerer<'a> {
             .and_then(|ta| ta.first())
             .ok_or_else(unsupported)?;
 
-        self.reflect_field_consts(ty)
+        match method.as_str() {
+            "fields" => Ok(self
+                .reflect_field_consts(ty)?
+                .into_iter()
+                .map(super::ComptimeItem::Field)
+                .collect()),
+            "params" => {
+                // The uninstantiated template is lowered too, with `F` still
+                // literal; it never runs (type.generics/G2), so it unrolls to
+                // nothing, as `fields` does.
+                if ty.bare_name().is_some_and(is_bare_type_param) {
+                    return Ok(Vec::new());
+                }
+                rask_check::reflect::params(self.ctx.type_defs, ty)
+                    .map(|ps| ps.into_iter().map(super::ComptimeItem::Param).collect())
+                    .map_err(LoweringError::InvalidConstruct)
+            }
+            _ => Err(unsupported()),
+        }
     }
 
     /// The declaration's type parameters paired with an instantiation's written

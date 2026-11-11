@@ -84,7 +84,7 @@ func print_fields<T>(value: T) {
 | Rule | Description |
 |------|-------------|
 | **CT50: Unrolling** | `comptime for` fully unrolls at monomorphization time. Not a runtime loop — each iteration may have different types via comptime field access |
-| **CT51: Comptime iterable** | The iterable must be comptime-known: `reflect.fields<T>()`, `reflect.variants<T>()`, or any comptime array |
+| **CT51: Comptime iterable** | The iterable must be comptime-known: `reflect.fields<T>()`, `reflect.params<F>()`, `reflect.variants<T>()`, or any comptime array |
 | **CT52: No branch quota** | `comptime for` unrolling doesn't count against the backwards branch quota (CT35). The quota applies to comptime *interpreter* execution, not monomorphization-time unrolling |
 | **CT53: Field name must be comptime** | The expression in `value.(expr)` must be comptime-known: a string literal, a `comptime { … }` block, a `let` bound to either, or a `comptime for` binding's `.name`. Anything else — a call, an `if`, a `mut` — is a compile error |
 | **CT54: Field must exist** | Compile error if the comptime string doesn't match any field on the value's type |

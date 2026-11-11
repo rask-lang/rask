@@ -1634,6 +1634,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.reflect/R1: `has<A>()`, `get<A>()` and `is<T>()` on a reflect item
+    /// are answered while a `comptime for` unrolls, so the item has to be that
+    /// loop's binding.
+    #[error("`{method}` on a `{info}` only answers inside a `comptime for` over it")]
+    ReflectItemNotUnrolled {
+        info: &'static str,
+        method: String,
+        span: Span,
+    },
+
     /// std.collections/V1 (#310): an index expression `c[i]` whose index type
     /// doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -1909,6 +1919,7 @@ impl TypeError {
             // Carry no types.
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
+            | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
             | AmbiguousConformance { .. }

@@ -577,8 +577,12 @@ impl TypeChecker {
                 // type to dispatch a string method from or to infer a Vec's
                 // element from (#931).
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
+                let unrolled = self.comptime_for_bindings.len();
                 match binding {
-                    ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
+                    ForBinding::Single(name) => {
+                        self.define_local(name.clone(), elem_ty);
+                        self.comptime_for_bindings.push(name.clone());
+                    }
                     ForBinding::Tuple(names) => {
                         let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
                         for (name, var) in names.iter().zip(vars) {
@@ -589,6 +593,7 @@ impl TypeChecker {
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.comptime_for_bindings.truncate(unrolled);
                 self.pop_scope();
             }
             StmtKind::MutTuple { patterns, init } | StmtKind::LetTuple { patterns, init } => {

@@ -1500,6 +1500,34 @@ impl Interpreter {
                     }
                 }
 
+                // `param.is<T>()` on a reflect ParamInfo: the parameter's
+                // checked type against T, as native folds it.
+                if let Value::Struct(s) = &receiver {
+                    let param_ty = {
+                        let guard = s.lock().unwrap();
+                        match (guard.name.as_str(), guard.fields.get("__type")) {
+                            ("ParamInfo", Some(Value::ReflectedType(t))) => Some(t.clone()),
+                            _ => None,
+                        }
+                    };
+                    if let (Some(param_ty), true) = (param_ty, method == "is") {
+                        let Some(candidate) = type_args.as_ref().and_then(|ta| ta.first()) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(
+                                    "`param.is<T>()` needs the type it's asking about".into(),
+                                ),
+                                expr.span,
+                            ));
+                        };
+                        let candidate = self.resolve_type_param(candidate);
+                        return Ok(Value::Bool(rask_check::reflect::param_is(
+                            &self.types,
+                            &param_ty,
+                            &candidate,
+                        )));
+                    }
+                }
+
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));

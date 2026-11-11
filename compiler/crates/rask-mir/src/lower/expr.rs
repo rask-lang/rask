@@ -4975,13 +4975,10 @@ impl<'a> MirLowerer<'a> {
     /// `None` for anything else (not that binding, or not a FieldInfo member),
     /// so the caller falls through to ordinary field-access lowering.
     pub(super) fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
-        let fc = self
-            .comptime_for_bindings
-            .iter()
-            .rev()
-            .find(|(name, _)| name == object_name)?
-            .1
-            .clone();
+        let fc = match self.comptime_binding(object_name)? {
+            super::ComptimeItem::Field(fc) => fc.clone(),
+            super::ComptimeItem::Param(p) => return Self::comptime_param_const(p, field),
+        };
         Some(match field {
             "name" => (MirOperand::Constant(MirConst::String(fc.name)), MirType::Buffer),
             "type_name" => (MirOperand::Constant(MirConst::String(fc.type_name)), MirType::Buffer),
@@ -4991,6 +4988,24 @@ impl<'a> MirLowerer<'a> {
             "is_public" => (MirOperand::Constant(MirConst::Bool(fc.is_public)), MirType::Bool),
             "is_skipped" => (MirOperand::Constant(MirConst::Bool(fc.is_skipped)), MirType::Bool),
             "has_default" => (MirOperand::Constant(MirConst::Bool(fc.has_default)), MirType::Bool),
+            _ => return None,
+        })
+    }
+
+    /// The item an active `comptime for` binding of this name is bound to —
+    /// the innermost, so a nested loop's binding shadows an outer one.
+    pub(super) fn comptime_binding(&self, name: &str) -> Option<&super::ComptimeItem> {
+        self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name).map(|(_, item)| item)
+    }
+
+    /// `param.<field>` for a `reflect.params<F>()` binding, spliced.
+    fn comptime_param_const(p: &rask_check::reflect::ParamFact, field: &str) -> Option<TypedOperand> {
+        use rask_ast::ty::ParamMode;
+        Some(match field {
+            "index" => (MirOperand::Constant(MirConst::Int(p.index as i64)), MirType::U64),
+            "type_name" => (MirOperand::Constant(MirConst::String(p.type_name.clone())), MirType::Buffer),
+            "is_mutate" => (MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Mutate)), MirType::Bool),
+            "is_take" => (MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Take)), MirType::Bool),
             _ => return None,
         })
     }
@@ -5005,19 +5020,20 @@ impl<'a> MirLowerer<'a> {
         method: &str,
         type_args: &Option<Vec<TypeExpr>>,
     ) -> Option<TypedOperand> {
-        let Some(object_name) = object.name() else { return None };
-        if method != "has" {
-            return None;
-        }
-        let annotation = type_args.as_ref()?.first()?.bare_name()?;
-        let fc = &self
-            .comptime_for_bindings
-            .iter()
-            .rev()
-            .find(|(name, _)| name == object_name)?
-            .1;
-        let has = fc.attrs.iter().any(|attr| attr.is(annotation));
-        Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
+        let object_name = object.name()?;
+        let answer = match (self.comptime_binding(object_name)?, method) {
+            (super::ComptimeItem::Field(fc), "has") => {
+                let annotation = type_args.as_ref()?.first()?.bare_name()?;
+                fc.attrs.iter().any(|attr| attr.is(annotation))
+            }
+            // `param.is<T>()`, T as this instance sees it.
+            (super::ComptimeItem::Param(p), "is") => {
+                let candidate = self.written_in_instance(type_args.as_ref()?.first()?);
+                rask_check::reflect::param_is(self.ctx.type_defs, &p.ty, &candidate)
+            }
+            _ => return None,
+        };
+        Some((MirOperand::Constant(MirConst::Bool(answer)), MirType::Bool))
     }
 
     /// `binding.get<A>().field` where `binding` is an active `comptime for`
@@ -5046,8 +5062,7 @@ impl<'a> MirLowerer<'a> {
         let Some(annotation) = type_args.as_ref().and_then(|ta| ta.first()).and_then(TypeExpr::bare_name) else {
             return Ok(None);
         };
-        let Some((_, fc)) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == binding)
-        else {
+        let Some(super::ComptimeItem::Field(fc)) = self.comptime_binding(binding) else {
             return Ok(None);
         };
 
@@ -5152,15 +5167,11 @@ impl<'a> MirLowerer<'a> {
             // `field.name` inside an unrolled `comptime for` (CT49).
             ExprKind::Field { object, field } => {
                 let Some(name) = object.name() else { return Ok(None) };
-                let Some((_, fc)) =
-                    self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)
-                else {
-                    return Ok(None);
-                };
-                match field.as_str() {
-                    "name" => Some(fc.name.clone()),
-                    "serial_name" => Some(fc.serial_name.clone()),
-                    "type_name" => Some(fc.type_name.clone()),
+                match (self.comptime_binding(name), field.as_str()) {
+                    (Some(super::ComptimeItem::Field(fc)), "name") => Some(fc.name.clone()),
+                    (Some(super::ComptimeItem::Field(fc)), "serial_name") => Some(fc.serial_name.clone()),
+                    (Some(super::ComptimeItem::Field(fc)), "type_name") => Some(fc.type_name.clone()),
+                    (Some(super::ComptimeItem::Param(p)), "type_name") => Some(p.type_name.clone()),
                     _ => None,
                 }
             }
@@ -10615,7 +10626,7 @@ impl<'a> MirLowerer<'a> {
         use rask_check::reflect;
         if !matches!(
             method,
-            "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants"
+            "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants" | "params"
         ) {
             return Ok(None);
         }
@@ -10642,6 +10653,22 @@ impl<'a> MirLowerer<'a> {
                     })
                     .collect();
                 self.lower_info_vec(rask_types::LangItem::MethodInfo, rows)?
+            }
+            "params" => {
+                use rask_ast::ty::ParamMode;
+                let rows = reflect::params(types, ty)
+                    .map_err(refused)?
+                    .into_iter()
+                    .map(|p| {
+                        vec![
+                            ("index", MirOperand::Constant(MirConst::Int(p.index as i64))),
+                            ("type_name", MirOperand::Constant(MirConst::String(p.type_name))),
+                            ("is_mutate", MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Mutate))),
+                            ("is_take", MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Take))),
+                        ]
+                    })
+                    .collect();
+                self.lower_info_vec(rask_types::LangItem::ParamInfo, rows)?
             }
             "has_method" => {
                 let names: Vec<String> =

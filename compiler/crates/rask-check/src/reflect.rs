@@ -450,6 +450,60 @@ pub fn implements(types: &TypeTable, ty: &TypeExpr, iface: &TypeExpr) -> Result<
     Ok(satisfies(types, &resolved, iface))
 }
 
+/// One parameter of a function type, as `reflect.params<F>()` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamFact {
+    /// Position in the parameter list. A function type has no parameter
+    /// names (`func(mutate Pos, Vel)`), so this is how one is told apart.
+    pub index: usize,
+    /// The parameter's type, for `param.is<T>()`.
+    pub ty: Type,
+    pub type_name: String,
+    /// Borrowed, `mutate` or `take` — part of the type (type.functions/FT1).
+    pub mode: rask_ast::ty::ParamMode,
+}
+
+/// `reflect.params<F>()`: each parameter of the function type `F`, in order.
+///
+/// `F` reaches here as a function type: written out, or a type parameter a
+/// caller filled by passing a named function (`run(drift)` makes `F` drift's
+/// type). A function item can't be a type argument itself, and a closure's
+/// type is a function type like any other, so it reflects the same way.
+pub fn params(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<ParamFact>, String> {
+    let resolved = resolve_type_expr(ty, types)
+        .map_err(|_| format!("reflect.params<{}>(): no type by that name", ty.source()))?;
+    let Type::Fn { params, .. } = resolved else {
+        return Err(format!(
+            "reflect.params<{}>(): `{}` isn't a function type — this asks about `func(…)`",
+            ty.source(),
+            ty.source()
+        ));
+    };
+    Ok(params
+        .into_iter()
+        .enumerate()
+        .map(|(index, p)| {
+            let ty = named(types, p.ty);
+            ParamFact {
+                index,
+                type_name: types.resolve_type_names(&ty).to_type_expr().to_string(),
+                ty,
+                mode: p.mode,
+            }
+        })
+        .collect())
+}
+
+/// `param.is<T>()`: whether the parameter's type is exactly `T`. The mode
+/// isn't part of the question; `is_mutate` and `is_take` answer that.
+///
+/// Exact, not "satisfies": `is<Pos>()` on a `Pos?` parameter is false. A
+/// name that resolves to no type is false too — nothing has a type that
+/// doesn't exist.
+pub fn param_is(types: &TypeTable, param: &Type, candidate: &TypeExpr) -> bool {
+    resolve_type_expr(candidate, types).is_ok_and(|t| named(types, t) == *param)
+}
+
 /// `reflect.has_field<T>(name)`: the struct's field names, in declaration
 /// order. Anything that isn't a struct has none, so the answer is false rather
 /// than an error — a predicate is how a caller finds out what it's holding.
