@@ -682,6 +682,57 @@ fn inline_arg_size(ty: &Type, types: &rask_check::TypeTable, cache: &LayoutCache
     }
 }
 
+/// Close `reached` over what each instance holds by value. `Outer<string> {
+/// h: Holder<T> }` holds a `Holder<string>`, and when `Outer<string>` was
+/// only named — `reflect.fields<S>()` with `S = Outer<string>` — nothing
+/// else mentioned `Holder<string>`, so `h` was laid out as the shared
+/// one-word `Holder` and every offset after it was wrong.
+///
+/// Only instances held inline: those are what the outer layout needs, and an
+/// inline type can't contain itself, so the walk ends. Following boxed ones
+/// too would never end on polymorphic recursion (`Nest<T>` holding
+/// `Owned<Nest<Vec<T>>>`).
+fn held_inline_instances(types: &rask_check::TypeTable, reached: &mut Vec<(TypeId, Vec<Type>)>) {
+    fn inline(ty: &Type, out: &mut Vec<(TypeId, Vec<Type>)>) {
+        match ty {
+            Type::Generic { base, args } => {
+                let arg_tys = type_args_of(args);
+                if arg_tys.len() == args.len() {
+                    out.push((*base, arg_tys));
+                }
+            }
+            Type::Tuple(elems) => elems.iter().for_each(|e| inline(e, out)),
+            Type::Array { elem, .. } => inline(elem, out),
+            Type::Result { ok, err } => {
+                inline(ok, out);
+                inline(err, out);
+            }
+            _ => {}
+        }
+    }
+    let mut seen: HashSet<(TypeId, Vec<Type>)> = reached.iter().cloned().collect();
+    let mut next = 0;
+    while next < reached.len() {
+        let (base, args) = reached[next].clone();
+        next += 1;
+        let Some(def) = types.get(base) else { continue };
+        let params = def.type_params();
+        if params.len() != args.len() {
+            continue;
+        }
+        let subst: HashMap<String, Type> = params.iter().cloned().zip(args).collect();
+        let mut found = Vec::new();
+        for held in def.held_types() {
+            inline(&rask_check::substitute_type(held, &subst), &mut found);
+        }
+        for instance in found {
+            if seen.insert(instance.clone()) {
+                reached.push(instance);
+            }
+        }
+    }
+}
+
 /// Every generic declaration's instantiation this type mentions, at any
 /// depth. A compiler-provided generic (`Heap<T>`) has no declaration to lay
 /// out, so only its arguments are walked.
@@ -862,6 +913,7 @@ fn monomorphize_inner(
             }
         }
     }
+    held_inline_instances(&program.types, &mut reached);
 
     // Declared and instance layouts in one dependency order, the declared ones
     // shared with the interpreter so both backends read one set of offsets

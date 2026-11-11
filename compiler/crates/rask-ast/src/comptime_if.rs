@@ -76,7 +76,7 @@ pub enum Fact {
 /// A comparison reaches here desugared to a method call (`a.eq(b)`,
 /// `a.lt(b)`, and `!a.eq(b)` for `!=`). It folds when both sides are facts
 /// or literals of the same kind: `item.type_name == "f64"` does,
-/// `item.type_name == other` doesn't. Integer `+`, `-`, `*` and unary `-`
+/// `item.type_name == other` doesn't. Integer `+`, `-`, `*`, `/`, `%` and unary `-`
 /// fold too. Anything else a side names — a module const, a `reflect.*()`
 /// call — goes to `fact` as well, which answers what its backend knows.
 pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<bool> {
@@ -84,6 +84,25 @@ pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Opti
         Fact::Bool(b) => Some(b),
         _ => None,
     }
+}
+
+/// The value of each module const whose initializer folds from literals and
+/// earlier consts — `const W = 16`, `const TWICE = W * 2`, `const F = "f64"`
+/// — in declaration order. A `comptime if` in a `comptime for` can compare
+/// against these; both backends build the table here so they fold the same
+/// names.
+pub fn const_facts<'a>(consts: impl IntoIterator<Item = (&'a str, &'a Expr)>) -> std::collections::HashMap<String, Fact> {
+    let mut table = std::collections::HashMap::new();
+    for (name, init) in consts {
+        let folded = value(init, &mut |e| match &e.kind {
+            ExprKind::Ident(n) => table.get(n.as_str()).cloned(),
+            _ => None,
+        });
+        if let Some(fact) = folded {
+            table.insert(name.to_string(), fact);
+        }
+    }
+    table
 }
 
 /// A literal's value.
@@ -108,7 +127,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
             }
         }
         ExprKind::MethodCall { object, method, args, .. }
-            if args.len() == 1 && matches!(method.as_str(), "add" | "sub" | "mul") =>
+            if args.len() == 1 && matches!(method.as_str(), "add" | "sub" | "mul" | "div" | "rem") =>
         {
             let (Fact::Int(a), Fact::Int(b)) = (value(object, fact)?, value(&args[0].expr, fact)?) else {
                 return None;
@@ -116,7 +135,11 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
             Some(Fact::Int(match method.as_str() {
                 "add" => a.checked_add(b)?,
                 "sub" => a.checked_sub(b)?,
-                _ => a.checked_mul(b)?,
+                "mul" => a.checked_mul(b)?,
+                // Truncating, as the language's integer `/` and `%` are; by
+                // zero it doesn't fold, and the program says so where it runs.
+                "div" => a.checked_div(b)?,
+                _ => a.checked_rem(b)?,
             }))
         }
         // `!x` after desugaring.

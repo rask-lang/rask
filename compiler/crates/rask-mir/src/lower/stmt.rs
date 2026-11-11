@@ -277,30 +277,32 @@ impl<'a> MirLowerer<'a> {
         }
         // A closure in a field is the aggregate's, released with it (#1253),
         // so writing a new one over it gives the old one back the same way.
-        // Left out, `p.run = || …` leaked the closure it replaced. An array's
-        // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
-        // `[string; 2]` field leaked the two strings it replaced.
+        // Left out, `p.run = || …` leaked the closure it replaced.
+        //
+        // Workaround: an array is left out, so writing one over a field leaks
+        // the strings the old one held. Releasing it frees strings a new value
+        // built from the old one's elements still holds — a ≤16-byte element
+        // (`[string; 1]`) is copied without a reference of its own — which is
+        // a use-after-free instead of a leak. See #1876.
         matches!(
             fty,
             MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::Array { .. } | MirType::FuncPtr(_)
+                | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
 
     /// What writing over a variable reached through a pointer — a `mutate`
     /// parameter, a closure's capture — gives back: the value it held, which
-    /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
-    /// or an array, a string, a container. A scalar holds nothing to give
-    /// back. Tuples and arrays were left out, so `v = [s1, s2]` through a
-    /// `mutate v: [string; 2]` leaked the strings it replaced.
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
+    /// a container. A scalar holds nothing to give back.
+    ///
+    /// Workaround: tuples and arrays are left out and leak what they held,
+    /// because releasing them frees what a local copy still reads — `let t =
+    /// a` on a `mutate` parameter binds the pointer, not the value (#1877).
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(
-                t,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
-                    | MirType::Buffer | MirType::Container(_)
-            )
+            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
         })
     }
 
@@ -1827,8 +1829,12 @@ impl<'a> MirLowerer<'a> {
             let answer = match &fact.kind {
                 // A module const with a literal value.
                 ExprKind::Ident(name) => {
-                    let (id, fact) = self.literal_consts.get(name)?;
-                    return (self.locals.get(name).map(|(l, _)| l) == Some(id)).then(|| fact.clone());
+                    let (local, fact) = self.const_facts.get(name)?;
+                    let still_the_const = match local {
+                        Some(id) => self.locals.get(name).map(|(l, _)| l) == Some(id),
+                        None => !self.locals.contains_key(name),
+                    };
+                    return still_the_const.then(|| fact.clone());
                 }
                 // `reflect.name_of<T>()` and the other answers that are one
                 // constant. The list-valued ones build a vector, which a

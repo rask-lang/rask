@@ -7,6 +7,7 @@ import std.reflect
 
 const WIDE: usize = 16
 const FLOAT: string = "f64"
+const TWICE: usize = WIDE / 2 * 2
 
 annotation @scale {
     by: i64
@@ -119,4 +120,14 @@ test "a const-guarded annotation read" {
         }
     }
     assert by == 10
+}
+
+test "a const computed from other consts" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size == TWICE {
+            out = "{out}{f.name};"
+        }
+    }
+    assert out == "label;"
 }

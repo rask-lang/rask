@@ -180,9 +180,10 @@ pub struct Interpreter {
     /// scope. Resolved through here before the static-call path reads the name
     /// (#998).
     pub(crate) transparent_aliases: HashMap<String, String>,
-    /// Module consts with a literal value and that value. A `comptime if` in
-    /// a `comptime for` can compare against one, as native folds it.
-    pub(crate) literal_consts: Arc<HashMap<String, rask_ast::comptime_if::Fact>>,
+    /// Module consts whose value folds (`comptime_if::const_facts`). A
+    /// `comptime if` in a `comptime for` can compare against one, as native
+    /// folds it.
+    pub(crate) const_facts: Arc<HashMap<String, rask_ast::comptime_if::Fact>>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
@@ -482,7 +483,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
-            literal_consts: Arc::new(HashMap::new()),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
@@ -530,7 +531,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
-            literal_consts: Arc::new(HashMap::new()),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
@@ -580,7 +581,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
-            literal_consts: Arc::new(HashMap::new()),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
@@ -902,7 +903,7 @@ impl Interpreter {
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();
-        child.literal_consts = self.literal_consts.clone();
+        child.const_facts = self.const_facts.clone();
         child.call_type_args = self.call_type_args.clone();
         child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();

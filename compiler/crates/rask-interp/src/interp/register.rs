@@ -412,12 +412,9 @@ impl Interpreter {
         }
 
         // Evaluate top-level const declarations after builtins are registered
-        self.literal_consts = std::sync::Arc::new(
-            top_level_consts
-                .iter()
-                .filter_map(|c| Some((c.name.clone(), rask_ast::comptime_if::literal(&c.init)?)))
-                .collect(),
-        );
+        self.const_facts = std::sync::Arc::new(rask_ast::comptime_if::const_facts(
+            top_level_consts.iter().map(|c| (c.name.as_str(), &c.init)),
+        ));
         for c in &top_level_consts {
             let value = self.eval_expr(&c.init)
                 .map_err(|diag| RuntimeError::Generic(format!("Error evaluating const {}: {}", c.name, diag.error)))?;

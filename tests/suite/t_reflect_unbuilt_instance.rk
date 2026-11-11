@@ -41,3 +41,22 @@ test "an enum payload declared as T" {
     assert wide[0].fields[0].type_name == "string"
     assert wide[0].fields[0].size == 16
 }
+
+struct Outer<T> {
+    h: Holder<T>
+    n: i64
+}
+
+func dump<S>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<S>() {
+        out = "{out}{f.name}:{f.type_name}:{f.size}@{f.offset};"
+    }
+    return out
+}
+
+test "an instance held inside one that is only named through a generic" {
+    // `Outer<string>` reaches here as `S`; its `Holder<string>` field was
+    // laid out as the shared `Holder`, one word for `t`, so `n` sat at 16.
+    assert dump<Outer<string>>() == "h:Holder<string>:24@0;n:i64:8@24;"
+}

@@ -850,14 +850,25 @@ fn value_option_depth(value: &Value) -> usize {
 
 impl Interpreter {
     /// A fact a `comptime if` in a `comptime for` may compare against, other
-    /// than the item's own: a module const with a literal value, or a
+    /// than the item's own: a module const whose value folds, or a
     /// `reflect.*()` call that answers with one value. The same ones native
     /// folds (`try_eval_comptime_if_locally`).
     pub(super) fn comptime_if_fact(&mut self, expr: &rask_ast::expr::Expr) -> Option<rask_ast::comptime_if::Fact> {
         use rask_ast::comptime_if::Fact;
         use rask_ast::expr::ExprKind;
         match &expr.kind {
-            ExprKind::Ident(name) => self.literal_consts.get(name).cloned(),
+            // The const, unless something in scope shadows it: the name's
+            // current value has to be the const's.
+            ExprKind::Ident(name) => {
+                let fact = self.const_facts.get(name)?.clone();
+                let current = match self.env.get(name)? {
+                    Value::Bool(b) => Fact::Bool(b),
+                    Value::Int(n, _) => Fact::Int(n as i128),
+                    Value::String(s) => Fact::Str(s.lock().unwrap().clone()),
+                    _ => return None,
+                };
+                (current == fact).then_some(fact)
+            }
             ExprKind::MethodCall { object, method, .. }
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
                     && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
