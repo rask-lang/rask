@@ -65,6 +65,9 @@ func deliver(inboxes: Inboxes, heard: Vec<Heard>) {
     with inboxes.read() as boxes {
         for h in heard {
             if boxes.contains(h.to) {
+                // Workaround: should be `try_send`, dropping a line to a
+                // player whose inbox is full. `try_send` frees what it sends
+                // natively (#1898).
                 let _ = boxes[h.to].send("{h.text}\n")
             }
         }
