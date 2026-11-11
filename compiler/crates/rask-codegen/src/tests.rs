@@ -2027,6 +2027,7 @@ mod tests {
             struct_layouts: vec![],
             enum_layouts: vec![],
             type_names: Default::default(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
@@ -2078,6 +2079,7 @@ mod tests {
             ],
             enum_layouts: vec![],
             type_names: Default::default(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
@@ -2088,6 +2090,7 @@ mod tests {
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             type_names: Default::default(),
+            handle_releases: Default::default(),
         vtables: Default::default(),
         symbols: Default::default(),
             functions: vec![],

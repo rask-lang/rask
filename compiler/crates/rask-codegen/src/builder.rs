@@ -202,6 +202,8 @@ struct CodegenCtx<'a> {
     /// The checker's name for each type id, so a resolved type's head can be
     /// read off it rather than off its rendering.
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id (`rask_mono::drop_names`).
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -369,6 +371,7 @@ pub struct FunctionBuilder<'a> {
     /// Enum layouts from monomorphization
     enum_layouts: &'a [EnumLayout],
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
@@ -446,6 +449,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
+        handle_releases: &'a rask_mono::drop_names::HandleReleases,
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -464,6 +468,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts,
             enum_layouts,
             type_names,
+            handle_releases,
             string_globals,
             string_header_globals,
             element_offset_globals,
@@ -753,6 +758,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
             type_names: self.type_names,
+            handle_releases: self.handle_releases,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
             element_offset_globals: self.element_offset_globals,
@@ -2103,16 +2109,14 @@ impl<'a> FunctionBuilder<'a> {
     /// True when a struct field's declared type uses stack-slot (aggregate)
     /// representation in codegen. These fields return a pointer into the parent
     /// struct rather than a loaded scalar.
-    /// Byte size of a user struct/enum by name, or 0 if there's no layout for
-    /// it (a runtime-opaque handle, or a type that never got one).
-    fn named_layout_size(name: &str, ctx: &CodegenCtx) -> u32 {
-        if let Some(l) = ctx.struct_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        if let Some(l) = ctx.enum_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        0
+    /// Byte size of the struct or enum layout `ty` is laid out by, found by
+    /// the type's identity, or 0 if there's none (a runtime-opaque handle, or
+    /// a type that never got one).
+    fn declared_layout_size(ty: &RaskType, ctx: &CodegenCtx) -> u32 {
+        rask_layout::struct_for(ty, ctx.struct_layouts)
+            .map(|l| l.size)
+            .or_else(|| rask_layout::enum_for(ty, ctx.enum_layouts).map(|l| l.size))
+            .unwrap_or(0)
     }
 
     fn is_aggregate_field_type(ty: &RaskType, ctx: &CodegenCtx) -> bool {
@@ -2130,8 +2134,7 @@ impl<'a> FunctionBuilder<'a> {
             // A named type is an aggregate when it's a user struct or enum —
             // one with real bytes. Runtime-opaque handles (TcpListener, File,
             // Instant) have empty layouts and stay pointer-sized scalars.
-            RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
-            RaskType::Named(id) => ctx.type_names.get(id).is_some_and(|n| Self::named_layout_size(n, ctx) > 0),
+            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => Self::declared_layout_size(ty, ctx) > 0,
             // The niche option — `Link<T>?` — is one word with null for
             // `none`, so it loads like a scalar. Answering "aggregate" here
             // handed back the field's *address*, and a root edge read as a
@@ -7451,7 +7454,7 @@ impl<'a> FunctionBuilder<'a> {
     /// anything? A runtime handle — a `Shared`, an `Atomic`, a `File` — is a
     /// bare pointer to MIR, and only its declared type says it has a free.
     fn field_owns(declared: &RaskType, ty: &MirType, ctx: &CodegenCtx, depth: u32) -> bool {
-        crate::drop_fields::container_free_for(declared, ctx.type_names).is_some()
+        crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases).is_some()
             || Self::holds_string_mir(ty, ctx, depth)
     }
 
@@ -7476,7 +7479,7 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(ty, MirType::Heap(_)) {
             return Self::emit_heap_field_release(builder, base, offset, declared, ctx);
         }
-        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names) {
+        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
         Self::release_strings_mir(builder, base, offset, ty, ctx, depth)

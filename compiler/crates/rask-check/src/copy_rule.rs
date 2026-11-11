@@ -141,7 +141,7 @@ impl TypeTable {
             // A non-generic runtime handle (`Random`, `File`, ...) declares no
             // fields, so the field rule below would call it a zero-byte Copy
             // and two names would free one block.
-            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => Move,
+            Type::Named(type_id) if self.is_handle(*type_id) => Move,
 
             // User-defined types: need to check size and fields
             Type::Named(type_id) => match self.get(*type_id) {
@@ -182,9 +182,8 @@ impl TypeTable {
             // up being at this instantiation — same rule as a non-generic
             // struct, just substituted first (W4).
             Type::Generic { base, args } => {
-                let base_name = self.type_name(*base);
-                if rask_stdlib::is_runtime_handle(&base_name) {
-                    return if base_name.as_str() == "Link" { Copy } else { Move };
+                if self.is_handle(*base) {
+                    return if self.type_name(*base) == "Link" { Copy } else { Move };
                 }
                 match self.get(*base) {
                     None => Unknown,

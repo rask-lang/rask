@@ -44,8 +44,10 @@ pub struct ExternFuncSig {
     /// The symbol to link to, when it isn't `name`: a header's inline
     /// function is reached through a wrapper (struct.c-interop/IN2).
     pub link_name: Option<String>,
-    pub param_types: Vec<rask_ast::ty::TypeExpr>,
-    pub ret_ty: Option<rask_ast::ty::TypeExpr>,
+    /// The checker's types for the parameters and the result: what the
+    /// C ABI classifier lays a struct argument out by.
+    pub param_types: Vec<rask_types::Type>,
+    pub ret_ty: Option<rask_types::Type>,
 }
 
 #[derive(Debug, Clone)]

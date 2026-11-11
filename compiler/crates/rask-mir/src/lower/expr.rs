@@ -2712,7 +2712,10 @@ impl<'a> MirLowerer<'a> {
                     // else spread across the block is walked.
                     let handle_free = arg_expr
                         .and_then(|e| self.ctx.lookup_raw_type(e.id))
-                        .and_then(|t| rask_mono::drop_names::container_free_for(t.peel_heap(), self.ctx.type_names));
+                        .and_then(|t| {
+                            rask_mono::drop_names::container_free_for(t.peel_heap(), self.ctx.type_names, &self.ctx.handle_releases)
+                                .map(str::to_string)
+                        });
                     match handle_free {
                         Some(free_fn) => {
                             let handle = self.builder.alloc_temp(MirType::Ptr);

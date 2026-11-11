@@ -330,14 +330,14 @@ fn emit_inner(
                 None => e.c_symbol(),
             }),
             // The parser rejects an extern parameter without a type.
-            param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
-            ret_ty: e.ret_ty.clone(),
+            param_types: e.params.iter().filter_map(|p| p.ty.as_ref()).map(|t| checked_extern_type(t, &input.typed.types)).collect(),
+            ret_ty: e.ret_ty.as_ref().map(|t| checked_extern_type(t, &input.typed.types)),
         }),
         _ => None,
     }).collect();
-    let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
+    let variadic = crate::variadic::route_calls(&mut functions, input.decls, &input.typed.types)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
-    let macros = crate::c_macros::route_calls(&mut functions)?;
+    let macros = crate::c_macros::route_calls(&mut functions, &input.typed.types)?;
     extern_sigs.extend(macros.plain.iter().map(|w| w.sig.clone()));
     extern_sigs.extend(macros.with_header.iter().map(|(_, w)| w.sig.clone()));
     // Only the externs the program reaches. A header declares far more than
@@ -574,10 +574,21 @@ fn extern_func_names(decls: &[Decl]) -> HashSet<String> {
     }).collect()
 }
 
+/// The checker's type for a type written in an extern's signature: what the
+/// C ABI classifier finds a struct argument's layout by, and what codegen
+/// declares a scalar with. The checker resolved the same spelling when it
+/// checked calls to the extern; one it couldn't is `Error`, which crosses as
+/// a word.
+pub(crate) fn checked_extern_type(ty: &rask_ast::ty::TypeExpr, types: &rask_check::TypeTable) -> rask_types::Type {
+    rask_check::resolve_type_expr(ty, types).unwrap_or(rask_types::Type::Error)
+}
+
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
 fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_codegen::vtable::VTableInfo> {
-    let by_name: HashMap<&str, &rask_mono::VTable> =
-        mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect();
+    // Each table with the concrete type it was built for: what the box's
+    // value owns is read off that type's layout.
+    let by_name: HashMap<&str, (&rask_types::Type, &rask_mono::VTable)> =
+        mono.vtables.iter().map(|((ty, _), vt)| (vt.name.as_str(), (ty, vt))).collect();
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
     for mir_fn in functions {
@@ -591,7 +602,7 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                 if !seen.insert(vtable_name.clone()) {
                     continue;
                 }
-                let Some(table) = by_name.get(vtable_name.as_str()) else { continue };
+                let Some(&(concrete, table)) = by_name.get(vtable_name.as_str()) else { continue };
                 let vt_methods = table.slots.iter().enumerate()
                     .map(|(i, slot)| rask_codegen::vtable::VTableMethod {
                         name: slot.method.clone(),
@@ -604,7 +615,7 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                 // holder for either.
                 let mut visited = HashSet::new();
                 let owned = rask_codegen::drop_fields::owned_fields(
-                    concrete_type, 0, &mono.struct_layouts, &mono.type_names, &mut visited,
+                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mono.handle_releases, &mut visited,
                 );
                 vtables.push(rask_codegen::vtable::VTableInfo {
                     data_name: vtable_name.clone(),

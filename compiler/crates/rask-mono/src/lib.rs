@@ -64,6 +64,8 @@ pub struct MonoProgram {
     /// whatever needs to know what it is — which handle a field owns, say —
     /// reads the name here rather than off the type's rendering.
     pub type_names: HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id (`drop_names`).
+    pub handle_releases: drop_names::HandleReleases,
     /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
     /// and the functions that are (#1391).
     pub map_key_fns: HashMap<NodeId, MapKeyFns>,
@@ -336,9 +338,7 @@ fn compute_layouts(
     let mut handles = HashSet::new();
     for (i, def) in types.iter().enumerate() {
         let id = TypeId(i as u32);
-        if layout_cache.note_declared_size(id, def)
-            && matches!(def, TypeDef::Struct { attrs, .. } if attrs.iter().any(|a| a.is("handle")))
-        {
+        if layout_cache.note_declared_size(id, def) && def.runtime_handle().is_some() {
             handles.insert(id);
         }
     }
@@ -878,6 +878,7 @@ fn monomorphize_inner(
         struct_layouts,
         enum_layouts,
         type_names: program.types.type_name_map(),
+        handle_releases: drop_names::handle_releases(&program.types),
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,

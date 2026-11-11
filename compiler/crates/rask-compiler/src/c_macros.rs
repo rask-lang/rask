@@ -43,10 +43,11 @@ fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
 
 /// How codegen declares one of a wrapper's types: the Rask number, or a
 /// pointer, which crosses as a word.
-fn sig_type(ty: &rask_c_parse::CType) -> Option<TypeExpr> {
+fn sig_type(ty: &rask_c_parse::CType, types: &rask_check::TypeTable) -> Option<rask_types::Type> {
     match cexpr::canonical(ty) {
-        rask_c_parse::CType::Pointer(_) => Some(TypeExpr::RawPtr(Box::new(TypeExpr::Unit))),
-        other => cexpr::rask_scalar(&other).map(TypeExpr::named),
+        rask_c_parse::CType::Pointer(_) => Some(rask_types::Type::RawPtr(Box::new(rask_types::Type::Unit))),
+        other => cexpr::rask_scalar(&other)
+            .map(|name| crate::emit::checked_extern_type(&TypeExpr::named(name), types)),
     }
 }
 
@@ -69,9 +70,9 @@ fn symbol_part(c: &str) -> String {
 /// computes the body as written; a macro that reads memory or calls into C
 /// is compiled with its header and called by its own name, so C does all of
 /// it.
-fn wrapper(call: &MacroCall) -> Option<Wrapper> {
-    let param_types: Vec<TypeExpr> = call.args.iter().map(sig_type).collect::<Option<_>>()?;
-    let ret_ty = sig_type(&call.result)?;
+fn wrapper(call: &MacroCall, types: &rask_check::TypeTable) -> Option<Wrapper> {
+    let param_types: Vec<rask_types::Type> = call.args.iter().map(|a| sig_type(a, types)).collect::<Option<_>>()?;
+    let ret_ty = sig_type(&call.result, types)?;
     let parts: Vec<String> = call.arg_c.iter().map(|c| symbol_part(c)).collect();
     // `cb.F` → `2cb_1F`, `pa.c.F` → `2pa_1c_1F`: each part after its
     // length, so no package, alias, macro name or argument types run into
@@ -123,7 +124,7 @@ pub struct Routed {
 
 /// Fold or route every macro call in `functions`, and answer the C functions
 /// the routed ones need (one per macro and argument types).
-pub fn route_calls(functions: &mut [MirFunction]) -> Result<Routed, Vec<String>> {
+pub fn route_calls(functions: &mut [MirFunction], types: &rask_check::TypeTable) -> Result<Routed, Vec<String>> {
     let mut plain: BTreeMap<String, Wrapper> = BTreeMap::new();
     let mut with_header: BTreeMap<String, (Vec<String>, Wrapper)> = BTreeMap::new();
     let mut errors = Vec::new();
@@ -138,7 +139,7 @@ pub fn route_calls(functions: &mut [MirFunction]) -> Result<Routed, Vec<String>>
                         continue;
                     }
                 }
-                let Some(w) = wrapper(&call) else {
+                let Some(w) = wrapper(&call, types) else {
                     errors.push(format!("`{}` is a C macro whose types have no C spelling here", call.name));
                     continue;
                 };
@@ -198,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_run_time_call_gets_a_function_for_its_types() {
-        let w = wrapper(&mask(CType::UnsignedChar)).unwrap();
+        let w = wrapper(&mask(CType::UnsignedChar), &rask_check::TypeTable::new()).unwrap();
         assert_eq!(w.sig.name, "rask_macro_4MASK__unsigned_char");
         assert_eq!(
             w.source,

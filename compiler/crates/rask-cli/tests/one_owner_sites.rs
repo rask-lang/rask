@@ -91,7 +91,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "size or alignment computed outside the layout model",
-        today: 5,
+        today: 4,
         target: 0,
         why: "a second answer to how wide a value is; one layout crate answers \
               everyone (rask-lang/rask#1567)",
