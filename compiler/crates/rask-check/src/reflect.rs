@@ -73,6 +73,30 @@ const NEEDS_INSTANTIATION: &str =
     "is a generic instantiation, and the walk would read the declaration's type \
      parameters rather than what this instantiation substituted for them";
 
+/// A type as reflection spells it — `i64 or Shape`, the language's own
+/// spelling (`TypeExpr::source`) — with the names the program declared,
+/// never the symbols the compiler filed them under. A package's `Pos` is
+/// merged as `Pos_geo` and a program type shadowing the stdlib's is
+/// `ParseError#57`; `name_of`, `type_name` and `return_type_name` say `Pos`
+/// and `ParseError`, as a printed value does.
+pub fn type_label(types: &TypeTable, ty: &Type) -> TypeExpr {
+    types.display_type_names(ty).to_type_expr()
+}
+
+/// `type_label` for a type as written, which may still say `Pos_geo`. A
+/// spelling that resolves to nothing (a template's bare `T`) is kept.
+pub fn written_label(types: &TypeTable, ty: &TypeExpr) -> TypeExpr {
+    resolve_type_expr(ty, types).map(|t| type_label(types, &t)).unwrap_or_else(|_| ty.clone())
+}
+
+/// A declared type with an instantiation's arguments put in, labelled.
+/// `subst` is the arguments as written, by parameter name.
+pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+    type_label(types, declared)
+        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| written_label(types, a)))
+        .source()
+}
+
 /// Fold `reflect.<method><T>()` to its constant.
 ///
 /// `ty` is `T` as written at the call site, already substituted by
@@ -82,7 +106,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {
-        "name_of" => Str(ty.source()),
+        "name_of" => Str(written_label(decls.type_table(), ty).source()),
         "is_struct" => Bool(decls.declares_struct(&head)),
         "is_enum" => Bool(decls.declares_enum(&head)),
         "is_optional" => Bool(optional_payload(ty).is_some()),
@@ -401,7 +425,7 @@ pub fn methods(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<MethodFact>, Stri
         let fact = MethodFact {
             is_public: types.method_is_public(c.id, &name),
             param_count: sig.params.len(),
-            return_type_name: types.resolve_type_names(&ret).to_type_expr().to_string(),
+            return_type_name: type_label(types, &ret).source(),
             name,
         };
         // The stdlib's declarations are read once as stubs and once with
@@ -426,7 +450,7 @@ pub fn interfaces(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<String>, Strin
     }
     let mut out: Vec<String> = Vec::new();
     for iface in written {
-        let name = iface.to_string();
+        let name = written_label(types, &iface).source();
         if satisfies(types, &c.ty, &iface) && !out.contains(&name) {
             out.push(name);
         }
@@ -486,7 +510,7 @@ pub fn params(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<ParamFact>, String
             let ty = named(types, p.ty);
             ParamFact {
                 index,
-                type_name: types.resolve_type_names(&ty).to_type_expr().to_string(),
+                type_name: type_label(types, &ty).source(),
                 ty,
                 mode: p.mode,
             }

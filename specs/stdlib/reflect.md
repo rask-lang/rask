@@ -76,6 +76,8 @@ These enable comptime type dispatch without string-comparing type names. Primary
 
 Everything here folds to a constant on both backends, and so does everything in the sections below.
 
+Every string that names a type — `name_of`, and `type_name` and `return_type_name` in the sections below — spells it the way source does (`i64 or Shape`, `Vec<Pos>?`) with the names the program declared. A type from another package is `Pos`, not the name the compiler merged it under, and a program type that shares a stdlib name is `ParseError`, not the compiler's symbol for it.
+
 `size_of` and `align_of` are the layout: the bytes the value occupies in memory, padding included (`compiler.layout`). That is the same size the 16-byte Copy threshold measures (`mem.value/VS1`), so `is_copy<T>()` is true exactly when `T` copies: `{ a: u8, b: i64 }` is 16 bytes and copies, a struct holding one of those plus a byte is 24 and moves. A generic instance has its own: `Pair<u8>` is 2 bytes.
 
 `is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.

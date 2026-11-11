@@ -53,11 +53,7 @@ pub fn variant_facts(
                 .iter()
                 .map(|f| PayloadField {
                     name: f.name.clone(),
-                    type_name: types
-                        .resolve_type_names(&f.ty)
-                        .to_type_expr()
-                        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| a.clone()))
-                        .to_string(),
+                    type_name: rask_check::reflect::substituted_label(types, &f.ty, subst),
                     offset: v.payload_offset + f.offset,
                     size: f.size,
                     has_default: f.has_declared_default,

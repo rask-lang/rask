@@ -1764,12 +1764,8 @@ impl<'a> MirLowerer<'a> {
         Ok(ordered
             .into_iter()
             .map(|fl| {
-                let declared = self.ctx.type_defs.resolve_type_names(&fl.ty).to_type_expr();
-                let type_name = declared
-                    .substitute(&|name| {
-                        type_subst.iter().find(|(p, _)| p == name).map(|(_, a)| a.clone())
-                    })
-                    .to_string();
+                let type_name =
+                    rask_check::reflect::substituted_label(self.ctx.type_defs, &fl.ty, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,

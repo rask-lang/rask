@@ -189,7 +189,9 @@ impl Interpreter {
                 );
                 fields.insert(
                     "type_name".to_string(),
-                    Value::String(Arc::new(Mutex::new(substitute(&f.ty).to_string()))),
+                    Value::String(Arc::new(Mutex::new(
+                        reflect::written_label(&self.types, &substitute(&f.ty)).source(),
+                    ))),
                 );
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
