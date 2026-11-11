@@ -217,8 +217,8 @@ pub struct ContainerDropInsertionPass;
 
 impl MirPass for ContainerDropInsertionPass {
     fn name(&self) -> &str { "container_drop_insertion" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_container_drops(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::insert_container_drops(fns, &ctx.copy_layouts);
     }
 }
 
@@ -305,7 +305,7 @@ impl MirPass for StringRcInsertionPass {
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         let targets = crate::closure_targets::ClosureTargets::build(fns);
         let reach = crate::closure_reach::ClosureReach::build(fns);
-        let kept = crate::container_drop::params_a_callee_keeps(fns, &targets, &reach);
+        let kept = crate::container_drop::params_a_callee_keeps(fns, &targets, &reach, &ctx.copy_layouts);
         let closure_keeps = |func: &str, closure, i, n| {
             crate::container_drop::closure_call_keeps_argument(&targets, &reach, &kept, func, closure, i, n)
         };

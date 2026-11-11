@@ -1,0 +1,103 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Copy value holding strings, handed somewhere that keeps it while the
+// original stays in use, gives the keeper references of its own (#1876).
+// Each case here once freed a string twice or dropped the original's.
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+struct Pt {
+    s: string
+}
+
+func stash(p: Pt, mutate keep: Vec<Pt>) {
+    keep.push(p)
+}
+
+func stash_arr(p: [string; 1], mutate keep: Vec<[string; 1]>) {
+    keep.push(p)
+}
+
+test "a borrowed Copy parameter the callee keeps stays the caller's" {
+    mut keep: Vec<Pt> = Vec.new()
+    mut ka: Vec<[string; 1]> = Vec.new()
+    for i in 0..3 {
+        let q = Pt(s: mk(i))
+        stash(q, mutate keep)
+        let a = [mk(10 + i)]
+        stash_arr(a, mutate ka)
+        assert q.s == mk(i)
+        assert a[0] == mk(10 + i)
+    }
+    assert keep[2].s == mk(2)
+    assert ka[1][0] == mk(11)
+}
+
+test "a closure parameter the closure keeps stays the caller's" {
+    mut keep: Vec<Pt> = Vec.new()
+    let add = |x: Pt, mutate k: Vec<Pt>| {
+        k.push(x)
+    }
+    let p = Pt(s: mk(1))
+    add(p, mutate keep)
+    add(p, mutate keep)
+    assert p.s == mk(1)
+    assert keep[1].s == mk(1)
+}
+
+test "copying a Copy array into a new binding" {
+    let s = [mk(3)]
+    let w = s
+    assert w[0] == mk(3)
+    assert s[0] == mk(3)
+}
+
+test "an element copied out, kept, and read after the source is gone" {
+    mut items: Vec<Pt> = Vec.new()
+    items.push(Pt(s: mk(7)))
+    mut keep: Vec<Pt> = Vec.new()
+    let q = items[0]
+    keep.push(q)
+    keep.clear()
+    items.clear()
+    assert q.s == mk(7)
+}
+
+struct Holder {
+    t: (string, Vec<i64>)
+}
+
+func move_into_literal(mutate t: (string, Vec<i64>), mutate keep: Vec<Holder>) {
+    keep.push(Holder(t: t))
+    t = (mk(2), Vec.new())
+}
+
+func destructure_then_refill(mutate t: (string, Vec<string>), mutate keep: Vec<Vec<string>>) -> string {
+    let (name, list) = t
+    keep.push(list)
+    t = (mk(5), Vec.new())
+    return name
+}
+
+test "a mutate parameter moved out any way, then refilled" {
+    // The refill writes an empty slot: releasing what it held freed the
+    // value the move handed on.
+    mut keep: Vec<Holder> = Vec.new()
+    mut v: Vec<i64> = Vec.new()
+    v.push(7)
+    mut t = (mk(1), v)
+    move_into_literal(mutate t, mutate keep)
+    assert t.0 == mk(2)
+    assert keep[0].t.0 == mk(1)
+    assert keep[0].t.1.len() == 1
+
+    mut lists: Vec<Vec<string>> = Vec.new()
+    mut l: Vec<string> = Vec.new()
+    l.push(mk(10))
+    mut u = (mk(4), l)
+    let name = destructure_then_refill(mutate u, mutate lists)
+    assert name == mk(4)
+    assert u.0 == mk(5)
+    assert lists[0][0] == mk(10)
+}

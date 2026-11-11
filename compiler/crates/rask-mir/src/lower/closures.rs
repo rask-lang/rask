@@ -544,6 +544,13 @@ impl<'a> MirLowerer<'a> {
 
         let mut closure_fn = closure_builder.finish();
         closure_fn.is_extern_c = c_abi;
+        // Same meaning as a declared function's: the environment and every
+        // parameter not written `take` stay the caller's.
+        closure_fn.taken_params = env_param_id
+            .map(|_| false)
+            .into_iter()
+            .chain(params.iter().map(|p| p.is_take))
+            .collect();
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
             ret_ty: closure_ret.clone(),

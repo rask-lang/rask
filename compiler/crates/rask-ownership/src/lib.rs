@@ -60,6 +60,13 @@ pub struct OwnershipResult {
     /// lent parameters of that frame. The environment holds the caller's
     /// value without owning it, so lowering marks those slots never to free.
     pub lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// Assignments to a whole binding whose value had moved out, on every
+    /// path (`Moved`) or on some (`MaybeMoved`): `let (a, b) = t; t = …`,
+    /// `keep.push(Holder(t: t)); t = …`. The slot holds nothing of its own
+    /// there, so writing over it releases nothing; lowering reads these
+    /// with `field_reuses`. On a maybe-moved path that leaks what the other
+    /// path left in the slot rather than freeing what the move took.
+    pub refills_after_move: HashSet<rask_ast::NodeId>,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -366,6 +373,8 @@ pub struct OwnershipChecker<'a> {
     task_bound_closures: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::lent_captures`.
     lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// See `OwnershipResult::refills_after_move`.
+    refills_after_move: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::generic_closure_captures`.
     generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
     /// The type parameters the body being walked can name: its own and its
@@ -622,6 +631,7 @@ impl<'a> OwnershipChecker<'a> {
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
+            refills_after_move: HashSet::new(),
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
@@ -888,6 +898,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bound_closures: self.task_bound_closures,
             generic_closure_captures: self.generic_closure_captures,
             lent_captures: self.lent_captures,
+            refills_after_move: self.refills_after_move,
         }
     }
 
@@ -2892,7 +2903,15 @@ impl<'a> OwnershipChecker<'a> {
                 // target here (the type checker already forbids assigning a
                 // `const`). Field/index targets are a genuine use of the root.
                 let reinit_target = match &target.kind {
-                    ExprKind::Ident(_) => true,
+                    ExprKind::Ident(name) => {
+                        if matches!(
+                            self.bindings.get(name),
+                            Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. })
+                        ) {
+                            self.refills_after_move.insert(stmt.id);
+                        }
+                        true
+                    }
                     _ => {
                         self.check_expr(target);
                         false
@@ -9474,6 +9493,7 @@ pub fn check_ownership_with_stdlib(
     // A stdlib closure crosses to a task the same way a program's does.
     result.task_bound_closures.extend(stdlib.task_bound_closures);
     result.lent_captures.extend(stdlib.lent_captures);
+    result.refills_after_move.extend(stdlib.refills_after_move);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result
 }

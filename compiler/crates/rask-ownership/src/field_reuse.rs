@@ -237,12 +237,16 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             emptied.clear();
             continue;
         }
-        // `a = b` moves `b` out as well as refilling `a`: `let t = a; a = b;
-        // b = t` swaps two `mutate` parameters, and `b = t` refills a slot
-        // `a = b` emptied. Releasing there freed what `a` holds now (#1877).
+        // `a = s.f` moves the field out as well as writing `a`. A whole
+        // binding moved out any way at all is the ownership checker's to
+        // report (`OwnershipResult::refills_after_move`): it tracks moves,
+        // where this only sees shapes.
         let moved_by_assign = match &stmt.kind {
             StmtKind::Assign { target, value, .. }
-                if place_path(value).is_some() && moves(value) && place_path(value) != place_path(target) =>
+                if matches!(value.kind, ExprKind::Field { .. })
+                    && place_path(value).is_some()
+                    && moves(value)
+                    && place_path(value) != place_path(target) =>
             {
                 place_path(value).map(|p| (p, value.id))
             }
@@ -256,10 +260,8 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                     emptied.remove(at);
                 }
             }
-            // A whole binding moves the same way a field does: `let t = a` on
-            // a `mutate a` empties the caller's slot until `a = …` refills it.
             StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
-                if matches!(init.kind, ExprKind::Field { .. } | ExprKind::Ident(_))
+                if matches!(init.kind, ExprKind::Field { .. })
                     && place_path(init).is_some()
                     && moves(init) =>
             {
@@ -291,56 +293,8 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             emptied.retain(|(p, _)| *p != place);
             emptied.push((place, read));
         }
-        // A whole binding handed to a `take` parameter is moved out the same
-        // way: `keep.push(a); a = [mk(10), mk(11)]` on a `mutate a` refills a
-        // slot the push emptied, and releasing there freed what the vector
-        // holds. Only whole bindings: a field handed to `take` keeps the
-        // convention described above.
-        for (place, read) in bindings_taken_by_calls(checker, stmt, &moves) {
-            emptied.retain(|(p, _)| *p != place);
-            emptied.push((place, read));
-        }
     }
     pairs
-}
-
-/// Whole bindings `stmt` hands to a `take` parameter of a call, with the
-/// argument that moved each.
-fn bindings_taken_by_calls(
-    checker: &OwnershipChecker<'_>,
-    stmt: &Stmt,
-    moves: &dyn Fn(&Expr) -> bool,
-) -> Vec<(Vec<String>, NodeId)> {
-    let mut out = Vec::new();
-    visit::walk_stmt(stmt, &mut |e| {
-        let taken: Vec<&Expr> = match &e.kind {
-            ExprKind::Call { func, args } => {
-                let Some(takes) = func.name().and_then(|n| checker.fn_take_params.get(n)) else { return };
-                args.iter()
-                    .enumerate()
-                    .filter(|(i, _)| takes.get(*i).copied().unwrap_or(false))
-                    .map(|(_, a)| &a.expr)
-                    .collect()
-            }
-            ExprKind::MethodCall { object, method, args, .. } => {
-                let modes = checker.method_param_modes(e.id, object, method);
-                args.iter()
-                    .enumerate()
-                    .filter(|(i, _)| matches!(modes.as_ref().and_then(|m| m.get(*i)), Some(ParamMode::Take)))
-                    .map(|(_, a)| &a.expr)
-                    .collect()
-            }
-            _ => return,
-        };
-        for arg in taken {
-            if let ExprKind::Ident(name) = &arg.kind {
-                if moves(arg) {
-                    out.push((vec![name.clone()], arg.id));
-                }
-            }
-        }
-    });
-    out
 }
 
 /// Whether `stmt` calls through a local or a parameter, a closure value, or

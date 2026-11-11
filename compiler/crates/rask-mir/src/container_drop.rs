@@ -172,7 +172,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
     }
 }
 
-pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
+pub fn insert_container_drops(fns: &mut Vec<MirFunction>, copy_layouts: &crate::CopyLayouts) {
     // Before anything reads the MIR: an `own` capture of a refcounted handle
     // becomes a capture of a fresh reference to it (#1139).
     for func in fns.iter_mut() {
@@ -184,7 +184,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let reach = ClosureReach::build(fns);
-    let kept = params_a_callee_keeps(fns, &targets, &reach);
+    let kept = params_a_callee_keeps(fns, &targets, &reach, copy_layouts);
     let interface_kept = interface_method_args_kept(fns, &kept);
     let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets, reach: &reach };
     let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
@@ -784,6 +784,7 @@ pub(crate) fn params_a_callee_keeps(
     fns: &[MirFunction],
     targets: &ClosureTargets,
     reach: &ClosureReach,
+    copy_layouts: &crate::CopyLayouts,
 ) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
@@ -797,6 +798,11 @@ pub(crate) fn params_a_callee_keeps(
         for func in fns {
             for (i, param) in func.params.iter().enumerate() {
                 if kept.get(&func.name).is_some_and(|v| v[i]) {
+                    continue;
+                }
+                // The callee stores its own copy; the caller's stays the
+                // caller's to release.
+                if crate::transform::rc_insert::retains_what_it_hands_on(func, i, copy_layouts) {
                     continue;
                 }
                 if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {

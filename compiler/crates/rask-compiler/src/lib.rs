@@ -646,6 +646,7 @@ fn check_loaded_scoped(
         &[&parse_result.decls, &stdlib_decls],
         &[&stdlib_decls, &parse_result.decls],
     );
+    typed.field_reuses.extend(ownership_result.refills_after_move.iter().copied());
 
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
@@ -1079,6 +1080,7 @@ fn check_package_scoped(
         &[&pkg_ctx.all_decls, &stdlib_decls],
         &[&stdlib_decls, &pkg_ctx.all_decls],
     );
+    typed.field_reuses.extend(ownership_result.refills_after_move.iter().copied());
 
     // --- Effects ---
     let method_targets = typed.method_targets();
