@@ -96,7 +96,8 @@ pub(crate) fn show_diagnostics(
             }
         }
         Format::Json => {
-            let report = json::to_json_report(diagnostics, source, file, phase);
+            let sources = sources_for(&[(file.to_string(), source)]);
+            let report = json::to_json_report(diagnostics, &sources, file, phase);
             println!("{}", json::to_json_string(&report));
         }
     }
@@ -125,10 +126,14 @@ pub(crate) fn display_pipeline_output<T>(
             }
             Format::Json => {
                 // For JSON, emit each diagnostic individually for now
-                if let Some((path, source)) = source_files.first() {
+                if let Some((path, _)) = source_files.first() {
+                    let named: Vec<(String, &str)> = source_files
+                        .iter()
+                        .map(|(p, text)| (p.to_string_lossy().into_owned(), text.as_str()))
+                        .collect();
                     let report = json::to_json_report(
                         std::slice::from_ref(d),
-                        source,
+                        &sources_for(&named),
                         &path.to_string_lossy(),
                         "check",
                     );

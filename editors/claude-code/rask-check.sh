@@ -31,7 +31,7 @@ errors=$(jq -r '
   | .diagnostics[]
   | select(.severity == "error")
   | ([.labels[]? | select(.role == "primary") | .message][0]) as $label
-  | "\($f):\(.location.line):\(.location.column): error[\(.code)] \(.message)"
+  | "\(.location.file // $f):\(.location.line):\(.location.column): error[\(.code)] \(.message)"
     + (if $label then ": \($label)" else "" end)
     + (if .help then "\n    help: \(.help)" else "" end)
 ' <<<"$json" 2>/dev/null)
