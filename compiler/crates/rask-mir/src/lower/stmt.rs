@@ -1937,13 +1937,28 @@ impl<'a> MirLowerer<'a> {
     /// The source can be a collection slot, a `with` or `for mutate` binding,
     /// a `mutate` parameter, a field, or a local of the frame's own; all of
     /// them keep their references and can drop them while the copy lives.
-    /// Is `init` an array read out of a place — a `mutate` array parameter,
-    /// a local, a field, an element? An array-to-array `Use` names the place's
-    /// storage rather than copying it, so `let t = s.one` followed by `s.one
-    /// = …` changed what `t` read.
+    /// Should `let t = init` copy an array out of a place into `t`'s own
+    /// slot? An array-to-array `Use` names the place's storage.
+    ///
+    /// A Copy array, from any place: `let t = s.one` then `s.one = …` changed
+    /// what `t` read. A whole `mutate` array parameter too, which is moved
+    /// out and refilled (`field_reuse::refill_pairs`). Not a non-Copy array
+    /// read out of a field or an element: unpaired with a refill that read
+    /// is a view of the slot (mem.borrowing/S1), and the checker stops it
+    /// being read once the slot is written over.
     fn reads_caller_array_slot(&self, init: &Expr, ty: &MirType) -> bool {
-        matches!(ty, MirType::Array { .. })
-            && matches!(init.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. })
+        if !matches!(ty, MirType::Array { .. }) {
+            return false;
+        }
+        let copy = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+        match &init.kind {
+            ExprKind::Ident(name) => copy || self.meta(name).is_some_and(|m| m.assigns_through),
+            ExprKind::Field { .. } | ExprKind::Index { .. } => copy,
+            _ => false,
+        }
     }
 
     pub(crate) fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {

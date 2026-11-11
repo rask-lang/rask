@@ -291,8 +291,56 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             emptied.retain(|(p, _)| *p != place);
             emptied.push((place, read));
         }
+        // A whole binding handed to a `take` parameter is moved out the same
+        // way: `keep.push(a); a = [mk(10), mk(11)]` on a `mutate a` refills a
+        // slot the push emptied, and releasing there freed what the vector
+        // holds. Only whole bindings: a field handed to `take` keeps the
+        // convention described above.
+        for (place, read) in bindings_taken_by_calls(checker, stmt, &moves) {
+            emptied.retain(|(p, _)| *p != place);
+            emptied.push((place, read));
+        }
     }
     pairs
+}
+
+/// Whole bindings `stmt` hands to a `take` parameter of a call, with the
+/// argument that moved each.
+fn bindings_taken_by_calls(
+    checker: &OwnershipChecker<'_>,
+    stmt: &Stmt,
+    moves: &dyn Fn(&Expr) -> bool,
+) -> Vec<(Vec<String>, NodeId)> {
+    let mut out = Vec::new();
+    visit::walk_stmt(stmt, &mut |e| {
+        let taken: Vec<&Expr> = match &e.kind {
+            ExprKind::Call { func, args } => {
+                let Some(takes) = func.name().and_then(|n| checker.fn_take_params.get(n)) else { return };
+                args.iter()
+                    .enumerate()
+                    .filter(|(i, _)| takes.get(*i).copied().unwrap_or(false))
+                    .map(|(_, a)| &a.expr)
+                    .collect()
+            }
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let modes = checker.method_param_modes(e.id, object, method);
+                args.iter()
+                    .enumerate()
+                    .filter(|(i, _)| matches!(modes.as_ref().and_then(|m| m.get(*i)), Some(ParamMode::Take)))
+                    .map(|(_, a)| &a.expr)
+                    .collect()
+            }
+            _ => return,
+        };
+        for arg in taken {
+            if let ExprKind::Ident(name) = &arg.kind {
+                if moves(arg) {
+                    out.push((vec![name.clone()], arg.id));
+                }
+            }
+        }
+    });
+    out
 }
 
 /// Whether `stmt` calls through a local or a parameter, a closure value, or
