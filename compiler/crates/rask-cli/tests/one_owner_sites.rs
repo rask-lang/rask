@@ -57,9 +57,9 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 83,
+        today: 75,
         target: 0,
-        why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
+        why: "a row in INTERNAL_SPELLINGS or BORROWS_ITS_CALLBACK: a \
               fact about a call stated by its name instead of on its \
               declaration (rask-lang/rask#1564, #1565)",
         count: mir_metadata_rows,
@@ -214,7 +214,7 @@ fn any_wildcards(crates: &Path) -> Vec<String> {
 }
 
 fn mir_metadata_rows(crates: &Path) -> Vec<String> {
-    let tables = ["INTERNAL_SPELLINGS", "TRANSFERS_OUT", "BORROWS_ITS_CALLBACK"];
+    let tables = ["INTERNAL_SPELLINGS", "BORROWS_ITS_CALLBACK"];
     let mut rows = Vec::new();
     let mut inside: Option<&str> = None;
     for (rel, line, code) in source_lines(crates, &["rask-stdlib/src/mir_metadata.rs"], &[]) {

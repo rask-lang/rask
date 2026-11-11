@@ -100,6 +100,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
+    ("moves_out", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),

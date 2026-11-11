@@ -90,6 +90,7 @@ extend Shared<T, S> {
 
     /// Swap in a new value, return the old one.
     @builtin
+    @moves_out
     public func replace(self, take value: T) -> T {}
 
     /// Consume the `Shared`, return what it held. Only for a box holding a

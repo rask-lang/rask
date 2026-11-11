@@ -149,3 +149,26 @@ test "clear empties it" {
     m.insert("b", 2)
     assert walk(m) == "b=2 "
 }
+
+struct Ent {
+    hp: i64
+    name: string
+}
+
+// `modify` used to run the closure on an `as` copy of the slot, so a struct
+// or a scalar value came back unchanged. A `Vec` value hid it: the copy
+// shares the buffer.
+test "modify writes a struct or scalar value back" {
+    mut m: OrderedMap<i64, Ent> = OrderedMap.new()
+    m.insert(1, Ent(hp: 10, name: "orc"))
+    let left = m.modify(1, |mutate e: Ent| -> i64 {
+        e.hp = e.hp - 3
+        return e.hp
+    })
+    assert left! == 7
+    assert m.read(1, |e| e.hp)! == 7
+    mut n: OrderedMap<string, i64> = OrderedMap.new()
+    n.insert("a", 1)
+    n.modify("a", |mutate v: i64| { v = v + 100 })
+    assert n.get("a")! == 101
+}

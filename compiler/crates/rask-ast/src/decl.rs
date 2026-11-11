@@ -240,6 +240,7 @@ impl FnDecl {
             shrinks: has("shrinks"),
             drops_elements: has("drops_elements"),
             copies_elements: has("copies_elements"),
+            moves_out: has("moves_out"),
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
@@ -276,6 +277,11 @@ pub struct DeclaredEffects {
     /// a container whose elements must be consumed: a copy would be a second
     /// owner (RC5).
     pub copies_elements: bool,
+    /// Takes an element out of its receiver and hands it to the caller, who
+    /// now owns it (`pop`, `remove`, `replace`, and `Map.insert`'s displaced
+    /// value). Without it, a result typed by the receiver's own parameter is
+    /// a view the receiver still owns, and the caller frees nothing.
+    pub moves_out: bool,
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,

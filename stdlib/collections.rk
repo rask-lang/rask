@@ -111,6 +111,7 @@ extend Vec<T> {
     /// Remove and return the last element.
     @native("rask_vec_pop")
     @shrinks
+    @moves_out
     public func pop(mutate self) -> Option<T> {}
 
     /// Remove all elements.
@@ -138,6 +139,7 @@ extend Vec<T> {
     /// Remove and return the element at the given index.
     @native("rask_vec_remove_at", panics: true)
     @shrinks
+    @moves_out
     public func remove(mutate self, index: i64) -> T {}
 
     /// Remove and return the element at the given index by swapping in the
@@ -147,6 +149,7 @@ extend Vec<T> {
     /// halves, and writing it here means both backends run the same three
     /// lines. The index is checked by `swap`.
     @shrinks
+    @moves_out
     public func remove_unordered(mutate self, index: i64) -> T {
         let last = self.len().wrap<i64>() - 1
         if index != last {
@@ -463,6 +466,7 @@ extend Vec<T> {
     /// to take a non-Copy element out of the middle of a vector was `remove`,
     /// which shifts everything behind it.
     @native("rask_vec_replace", panics: true)
+    @moves_out
     public func replace(mutate self, index: i64, take value: T) -> T {}
 
     /// Give back allocation past `to` elements — or past the current length,
@@ -691,11 +695,13 @@ extend Map<K, V> {
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert_displaced")
     @grows
+    @moves_out
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 
     /// Remove a key and return its value.
     @native("rask_map_take")
     @shrinks
+    @moves_out
     public func remove(mutate self, key: K) -> Option<V> {}
 
     /// Remove all entries.
@@ -1119,14 +1125,19 @@ extend OrderedMap<K, V> {
     }
 
     /// Modify the value under `key` through a closure.
+    ///
+    /// The entry comes out of its slot, `f` changes it, and it goes back. An
+    /// `as` binding on the slot would be a copy, so `f` would change nothing
+    /// (type.optionals/OPT19).
     public func modify(mutate self, key: K, f: func(mutate V) -> R) -> Option<R> {
         if self.index.get(key)? as at {
-            return self.slots.modify(at.wrap<i64>(), |mutate slot: (K, V)?| {
-                if slot? as entry {
-                    return f(mutate entry.1)
-                }
-                panic("OrderedMap: index points at a removed slot")
-            })
+            let i = at.wrap<i64>()
+            if self.slots.replace(i, none)? as entry {
+                mut taken = entry
+                let out = f(mutate taken.1)
+                self.slots.set(i, taken)
+                return out
+            }
         }
         return none
     }

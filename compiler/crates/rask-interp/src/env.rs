@@ -28,6 +28,10 @@ pub enum Slot {
     /// A map entry by position. A position stays put while the entry is
     /// borrowed: nothing can remove from the map until the borrow ends.
     Entry(Arc<Mutex<MapData>>, usize),
+    /// Element `i` of the tuple held at another place (`mutate t.1`). A
+    /// tuple is an immutable shared value, so there is no storage inside it
+    /// to point at: a write rebuilds the tuple and stores it in the parent.
+    TupleElem(Box<Slot>, usize),
 }
 
 /// Wrap a value in fresh storage.
@@ -54,6 +58,7 @@ impl Slot {
             }
             Slot::Elem(v, i) => base(Arc::as_ptr(v) as *const u8 as usize).wrapping_add(*i as u64 * 8),
             Slot::Entry(m, i) => base(Arc::as_ptr(m) as *const u8 as usize).wrapping_add(*i as u64 * 8),
+            Slot::TupleElem(parent, i) => parent.identity().wrapping_add((*i as u64 + 1) * 8),
         }
     }
 
@@ -65,6 +70,10 @@ impl Slot {
             Slot::Field(s, field) => s.lock().unwrap().fields.get(field).cloned(),
             Slot::Elem(v, i) => v.lock().unwrap().items.get(*i).cloned(),
             Slot::Entry(m, i) => m.lock().unwrap().get_index(*i).map(|(_, v)| v.clone()),
+            Slot::TupleElem(parent, i) => match parent.get()? {
+                Value::Tuple(items) => items.get(*i).cloned(),
+                _ => None,
+            },
         }
     }
 
@@ -101,6 +110,13 @@ impl Slot {
                 }
                 None => false,
             },
+            Slot::TupleElem(parent, i) => {
+                let Some(Value::Tuple(items)) = parent.get() else { return false };
+                let mut items = (*items).clone();
+                let Some(item) = items.get_mut(*i) else { return false };
+                *item = value;
+                parent.set(Value::tuple(items))
+            }
         }
     }
 }

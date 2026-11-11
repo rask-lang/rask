@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A tuple element passed as a `mutate` argument is written back (#1819).
+// The interpreter holds a tuple as one immutable shared value, so `mutate t.1`
+// had no place to bind to and the callee wrote a copy. Native passes the
+// element's address and was right all along.
+
+struct Pt {
+    x: i32
+    t: (i32, i32)
+}
+
+func inc(mutate x: i32) {
+    x = x + 10
+}
+
+test "a tuple element in a local" {
+    mut t = (1, 2)
+    inc(mutate t.1)
+    assert t.1 == 12
+    assert t.0 == 1
+}
+
+test "a tuple inside a struct field" {
+    mut p = Pt(x: 0, t: (3, 4))
+    inc(mutate p.t.0)
+    assert p.t.0 == 13
+    assert p.t.1 == 4
+}
+
+test "a tuple inside a tuple" {
+    mut nested = ((1, 2), 3)
+    inc(mutate nested.0.1)
+    assert nested.0.1 == 12
+    assert nested.1 == 3
+}
+
+test "through a closure's mutate parameter" {
+    mut t = (5, "five")
+    let f = |mutate n: i32| { n = n * 2 }
+    f(mutate t.0)
+    assert t.0 == 10
+}
