@@ -401,6 +401,7 @@ impl Interpreter {
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Rack(_) => "Rack".to_string(),
+            Value::Staged(_) => "Staged".to_string(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),
             Value::File(_) => "File".to_string(),

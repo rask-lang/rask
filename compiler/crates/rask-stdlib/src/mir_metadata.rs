@@ -112,6 +112,8 @@ pub struct StdlibMethodMeta {
     /// Which declared parameters are `take`, positionally. The receiver is not
     /// among them; see `keeps_argument` for the index shift.
     pub takes: Vec<bool>,
+    /// `@places_node`: the last argument is a node bound for a rack.
+    pub places_node: bool,
 }
 
 /// Cached metadata derived from StubRegistry.
@@ -168,6 +170,7 @@ fn build_cache() -> MetadataCache {
                 takes_self: method.takes_self,
                 take_self: method.take_self,
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
+                places_node: method.effects.places_node,
             });
         }
     }
@@ -184,6 +187,7 @@ fn build_cache() -> MetadataCache {
             takes_self: false,
             take_self: false,
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
+            places_node: func.effects.places_node,
         });
     }
 

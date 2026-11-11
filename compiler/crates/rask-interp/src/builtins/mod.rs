@@ -222,6 +222,7 @@ impl Interpreter {
             Value::Vec(v) => return self.call_vec_method(v, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Rack(s) => return self.call_rack_method(s, method, args),
+            Value::Staged(s) => return self.call_staged_method(s, method, args),
             Value::Link { rack_id, node } => {
                 return self.call_link_method(*rack_id, node, method, args);
             }

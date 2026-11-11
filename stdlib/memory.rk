@@ -22,6 +22,7 @@ extend Rack<T> {
     /// Insert a node, returning a link to it.
     @native("rask_rack_insert")
     @grows
+    @places_node
     public func insert(mutate self, take node: T) -> Link<T> {}
 
     /// Delete a node. Every edge pointing at it becomes `none` before this
@@ -70,4 +71,55 @@ extend Rack<T> {
     /// buys you a starting point inside the copy.
     @native("rask_rack_corresponding")
     public func corresponding(self, link: Link<T>) -> Link<T>? {}
+
+    /// An empty buffer of structural changes for this rack (mem.racks/RK17).
+    /// Fork blocks that only read the rack record their inserts, deletes and
+    /// relinks in one each; `apply` makes them, after the join.
+    @native("rask_rack_staged")
+    public func staged(self) -> Staged<T> {}
+
+    /// Make every change `ops` recorded, in key order, deletes last
+    /// (mem.racks/RK18, RK19). Panics if `ops` was made for another rack, or
+    /// this one has deleted anything since (RK21).
+    @native("rask_rack_apply")
+    @grows
+    @shrinks
+    public func apply(mutate self, take ops: Staged<T>) -> void {}
+}
+
+/// Structural changes to a `Rack<T>`, recorded now and made by `rack.apply`.
+///
+/// The links it holds aren't edges: nothing records them, so nothing nulls
+/// them. That is what lets a fork block record changes while other blocks read
+/// the rack, and `apply` refusing a buffer the rack has outlived is what keeps
+/// it sound (mem.racks/RK21).
+@handle(release: "rask_staged_free")
+public struct Staged<T> { }
+
+extend Staged<T> {
+    /// Delete `node` when the buffer applies. A node deleted twice is
+    /// deleted once.
+    @native("rask_staged_delete")
+    public func delete(mutate self, key: u64, node: Link<T>) -> void {}
+
+    /// Insert `node` when the buffer applies. A link in it to a node the same
+    /// apply deletes ends up `none`.
+    @native("rask_staged_insert")
+    @places_node
+    public func insert(mutate self, key: u64, take node: T) -> void {}
+
+    /// At apply, call `f(mutate node, to)`, unless either is being deleted by
+    /// the same apply. `f` may not capture a link: these two are the ones it
+    /// gets (mem.racks/RK20).
+    @native("rask_staged_relink")
+    public func relink(mutate self, key: u64, node: Link<T>, to: Link<T>, take f: func(mutate T, Link<T>)) -> void {}
+
+    /// Move `other`'s changes onto the end of this buffer. Both must be for
+    /// the same rack.
+    @native("rask_staged_append")
+    public func append(mutate self, take other: Staged<T>) -> void {}
+
+    /// Number of changes recorded.
+    @native("rask_staged_len")
+    public func len(self) -> usize {}
 }

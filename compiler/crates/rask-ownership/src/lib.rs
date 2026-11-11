@@ -10,6 +10,7 @@ mod state;
 mod error;
 mod field_reuse;
 mod replaces;
+mod link_stores;
 mod diagnostic;
 mod resize;
 mod pointers;
@@ -60,6 +61,10 @@ pub struct OwnershipResult {
     /// lent parameters of that frame. The environment holds the caller's
     /// value without owning it, so lowering marks those slots never to free.
     pub lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// The source expressions of `for` loops over links whose body can't
+    /// delete anything, so lowering walks the list without recording it with
+    /// its rack or keeping a cursor (mem.racks/RK16).
+    pub quiet_loops: HashSet<rask_ast::NodeId>,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -369,6 +374,9 @@ pub struct OwnershipChecker<'a> {
     /// What each function and method may write over under its `mutate`
     /// parameters (`replaces`).
     replaces: replaces::Replaces,
+    /// Whether each function may store a link (mem.racks/RK16).
+    link_stores: link_stores::LinkStores,
+    quiet_loops: HashSet<rask_ast::NodeId>,
     /// Method names some declaration gives no Rask body (`@native`,
     /// `@builtin`): a call that could reach one of them can't be summarised.
     bodyless_methods: HashSet<String>,
@@ -637,6 +645,8 @@ impl<'a> OwnershipChecker<'a> {
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
+            link_stores: HashMap::new(),
+            quiet_loops: HashSet::new(),
             bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
@@ -828,6 +838,7 @@ impl<'a> OwnershipChecker<'a> {
         self.collect_signatures(decls);
         self.infer_resizes(&[extra, decls]);
         self.infer_replaces(&[extra, decls]);
+        self.infer_link_stores(&[extra, decls]);
         self.infer_pointer_returns(&[extra, decls]);
         self.run(decls)
     }
@@ -900,6 +911,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bound_closures: self.task_bound_closures,
             generic_closure_captures: self.generic_closure_captures,
             lent_captures: self.lent_captures,
+            quiet_loops: self.quiet_loops,
         }
     }
 
@@ -3109,6 +3121,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
+                self.note_quiet_loop(iter, body);
                 // RC5: the loop owns what `take_all` handed back, and an early
                 // exit drops the rest. Elements that must be consumed are
                 // drained with `while v.pop()? as x`, which leaves the rest in
@@ -3585,12 +3598,12 @@ impl<'a> OwnershipChecker<'a> {
                     };
                     self.check_held_node_deleted(object, victim.as_deref(), expr.span);
                 }
-                // `rack.clear()` deletes every node at once. It names no link,
-                // so a local link into that rack has to die here the same way
-                // it would at an explicit `delete` — otherwise the checkless
-                // read the whole model rests on reads freed memory.
-                if method == "clear" && self.receiver_type_name(object).as_deref() == Some("Rack")
-                {
+                // `rack.clear()` deletes every node at once, and `rack.apply(ops)`
+                // the ones `ops` recorded. Neither names a link, so a local link
+                // into that rack has to die here the same way it would at an
+                // explicit `delete`; otherwise the checkless read the whole
+                // model rests on reads freed memory.
+                if self.unnamed_rack_delete(expr, object, method) {
                     self.kill_links_into_rack(object, expr.span);
                     // A clear is a delete, so the names it kills must report as
                     // freed rather than as moved.
@@ -3600,6 +3613,21 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 for rack_arg in &method_deleting_args {
                     self.forward_to_deleting_param(rack_arg, expr.span);
+                }
+                // RK20: a function a `Staged` buffer keeps until it applies
+                // may not hold a link of its own. The buffer's links are
+                // checked at the apply; one in a closure environment isn't.
+                if self.receiver_type_name(object).as_deref() == Some("Staged") {
+                    for a in args {
+                        if matches!(a.expr.kind, ExprKind::Closure { .. })
+                            && self.task_bound_closures.contains(&a.expr.id)
+                        {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::StagedFnHoldsLink,
+                                span: a.expr.span,
+                            });
+                        }
+                    }
                 }
                 // W2/LP14: a size change to what a `with` or `for mutate`
                 // holds a place in, through the receiver or an argument.
@@ -5021,6 +5049,15 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// Only a closure literal bound to a name is seen into; one that arrives
     /// through a parameter has no body here to read.
+    /// A rack method that removes nodes the call doesn't name: one its
+    /// declaration says shrinks the rack (`clear`, `apply`), other than
+    /// `delete`, which names its node.
+    fn unnamed_rack_delete(&self, call: &Expr, object: &Expr, method: &str) -> bool {
+        method != "delete"
+            && self.receiver_type_name(object).as_deref() == Some("Rack")
+            && self.program.declared_effects(call.id).shrinks
+    }
+
     fn replay_closure_deletes(&mut self, closure: &Expr, span: Span) {
         let ExprKind::Closure { body, .. } = &closure.kind else { return };
         let mut deletes: Vec<(Expr, Option<String>)> = Vec::new();
@@ -5038,7 +5075,7 @@ impl<'a> OwnershipChecker<'a> {
                         .map(str::to_string);
                     deletes.push(((**object).clone(), named));
                 }
-                "clear" => deletes.push(((**object).clone(), None)),
+                _ if self.unnamed_rack_delete(e, object, method) => deletes.push(((**object).clone(), None)),
                 _ => {}
             }
         });
@@ -7572,29 +7609,35 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
 
-        // FK7: whatever must stay on one thread, in one block only.
-        let mut first: Option<(String, Span, bool)> = None;
-        for side in sides {
+        // FK7: whatever must stay on one thread, in one block only. A rack
+        // and its links are the exception when every block naming one only
+        // reads it (mem.racks/RK16): those blocks are checked as readers.
+        let mut first_exclusive: Option<(String, Span, bool)> = None;
+        let mut first_any: Option<(String, Span, bool)> = None;
+        let mut graph_sides: Vec<usize> = Vec::new();
+        for (i, side) in sides.iter().enumerate() {
             let ExprKind::Closure { params, body, .. } = &side.kind else { continue };
             let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
             let mut captures = Vec::new();
             self.collect_free_vars_with_projections(body, &locals, &mut captures, &mut HashMap::new());
-            let mut bound = captures.iter().find_map(|name| {
-                let at = Self::first_use(body, name)?;
-                let ty = self.node_ty(&at.id)?;
-                self.program.types.fork_bound(ty).map(|_| (name.clone(), at.span, false))
-            });
-            // A function value whose body this pass can't see — a parameter,
-            // a field, a vector element — may be the same closure another
-            // block calls, and that closure may write what it captured:
-            // `both(h, h)`. Only a declared function or a closure literal
-            // this pass has read is called in the open.
-            if bound.is_none() {
-                bound = self.opaque_call_in(body);
+            let mut graph: Option<(String, Span, bool)> = None;
+            let mut exclusive: Option<(String, Span, bool)> = None;
+            for name in &captures {
+                let Some(at) = Self::first_use(body, name) else { continue };
+                let Some(ty) = self.node_ty(&at.id) else { continue };
+                match self.program.types.fork_bound(ty) {
+                    Some(rask_check::TaskBound::LocalBox) if exclusive.is_none() => {
+                        exclusive = Some((name.clone(), at.span, false));
+                    }
+                    Some(rask_check::TaskBound::Link | rask_check::TaskBound::Rack) if graph.is_none() => {
+                        graph = Some((name.clone(), at.span, false));
+                    }
+                    _ => {}
+                }
             }
             // A closure value the block calls takes what it captured along.
-            if bound.is_none() {
-                bound = captures.iter().find_map(|name| {
+            if exclusive.is_none() {
+                exclusive = captures.iter().find_map(|name| {
                     let lit = self.closure_literals.get(name)?;
                     if !self.task_bound_closures.contains(&lit.id) {
                         return None;
@@ -7602,21 +7645,48 @@ impl<'a> OwnershipChecker<'a> {
                     Some((name.clone(), Self::first_use(body, name)?.span, false))
                 });
             }
-            let Some((name, span, opaque_fn)) = bound else { continue };
-            match &first {
-                None => first = Some((name, span, opaque_fn)),
-                Some((other, other_span, other_fn)) => {
-                    self.errors.push(OwnershipError {
-                        kind: OwnershipErrorKind::ForkTaskBound {
-                            name,
-                            other: other.clone(),
-                            other_span: *other_span,
-                            function_value: opaque_fn || *other_fn,
-                        },
-                        span,
-                    });
-                    return;
-                }
+            // A function value whose body this pass can't see — a parameter,
+            // a field, a vector element — may be the same closure another
+            // block calls, and that closure may write what it captured:
+            // `both(h, h)`. Only a declared function or a closure literal
+            // this pass has read is called in the open.
+            if exclusive.is_none() {
+                exclusive = self.opaque_call_in(body);
+            }
+            if graph.is_some() {
+                graph_sides.push(i);
+            }
+            let this = exclusive.clone().or_else(|| graph.clone());
+            let Some((name, span, opaque_fn)) = this else { continue };
+            // Something exclusive in one block conflicts with anything bound
+            // in another; two readers of a graph don't.
+            let clash = match (&exclusive, &first_exclusive, &first_any) {
+                (Some(_), _, Some(other)) => Some(other.clone()),
+                (None, Some(other), _) => Some(other.clone()),
+                _ => None,
+            };
+            if let Some((other, other_span, other_fn)) = clash {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ForkTaskBound {
+                        name,
+                        other,
+                        other_span,
+                        function_value: opaque_fn || other_fn,
+                    },
+                    span,
+                });
+                return;
+            }
+            if exclusive.is_some() && first_exclusive.is_none() {
+                first_exclusive = exclusive.clone();
+            }
+            if first_any.is_none() {
+                first_any = Some((name, span, opaque_fn));
+            }
+        }
+        if graph_sides.len() >= 2 {
+            for i in graph_sides {
+                self.check_shared_graph_block(&sides[i]);
             }
         }
     }
@@ -9881,6 +9951,7 @@ pub fn check_ownership_with_stdlib(
     result.task_bound_closures.extend(stdlib.task_bound_closures);
     result.lent_captures.extend(stdlib.lent_captures);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
+    result.quiet_loops.extend(stdlib.quiet_loops);
     result
 }
 

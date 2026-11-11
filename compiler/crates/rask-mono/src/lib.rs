@@ -108,6 +108,8 @@ pub struct NodeRecords {
     pub lent_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value takes the old one (ownership).
     pub field_reuses: HashSet<NodeId>,
+    /// Loops over links that no delete can reach (ownership).
+    pub quiet_loops: HashSet<NodeId>,
     /// The bindings each `return` moves (ownership).
     pub return_moves: HashMap<NodeId, Vec<String>>,
     /// Closure literals that may not reach another task (#1356).
@@ -127,6 +129,7 @@ impl NodeRecords {
             escaping_closures: typed.escaping_closures.clone(),
             lent_captures: typed.lent_captures.clone(),
             field_reuses: typed.field_reuses.clone(),
+            quiet_loops: typed.quiet_loops.clone(),
             return_moves: typed.return_moves.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
         }
@@ -1047,6 +1050,7 @@ mod tests {
             escaping_closures: std::collections::HashSet::new(),
             lent_captures: std::collections::HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
+            quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),

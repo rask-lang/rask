@@ -819,6 +819,37 @@ impl ToDiagnostic for crate::OwnershipError {
                          what makes it safe to reach for [conc.sync/SH7]",
                     )
             }
+            SharedGraphWrite { what } => {
+                Diagnostic::error("a fork block that shares a rack with another block changes it".to_string())
+                    .with_code("E0962")
+                    .with_primary(self.span, what.clone())
+                    .with_fix(
+                        "record the change instead and make it after the join: \
+                         `let ops = rack.staged()`, `ops.delete(key, n)` or \
+                         `ops.relink(key, n, to, f)` in the block, return `ops`, then \
+                         `rack.apply(ops)`",
+                    )
+                    .with_why(
+                        "several blocks read this rack at the same time. Writing a node \
+                         changes what another block is reading, and storing a link \
+                         anywhere records it with the rack, which every other block's \
+                         stores write too [mem.racks/RK16]",
+                    )
+            }
+            StagedFnHoldsLink => {
+                Diagnostic::error("the function a `Staged` buffer keeps can't hold a link".to_string())
+                    .with_code("E0963")
+                    .with_primary(self.span, "this captures a link or a `Local` box")
+                    .with_fix(
+                        "pass the link as `to` and read it from the second parameter: \
+                         `ops.relink(key, n, to, |mutate n: T, to: Link<T>| n.next = to)`",
+                    )
+                    .with_why(
+                        "the buffer runs the function when it applies, after other deletes \
+                         may have run. It checks `n` and `to` are alive first; a link the \
+                         function captured is one nothing checks [mem.racks/RK20]",
+                    )
+            }
             ForkConflict { name, other_writes, other_span } => {
                 let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
                 Diagnostic::error(format!("two fork blocks touch `{}`, and one of them writes it", name))

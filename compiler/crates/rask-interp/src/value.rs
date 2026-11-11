@@ -432,6 +432,32 @@ pub struct RackData {
     /// caller still holds into the equivalent node over here.
     pub origin_id: Option<u32>,
     pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
+    /// Bumped by every node that leaves. A `Staged` buffer remembers it, and
+    /// one the rack has deleted past can't apply (mem.racks/RK21).
+    pub epoch: u64,
+}
+
+/// A `Staged<T>` buffer: structural changes recorded now and made by
+/// `rack.apply` (mem.racks/RK17). Its links are the nodes themselves, with no
+/// backlink recorded, so no delete fixup reaches them.
+#[derive(Debug)]
+pub struct StagedData {
+    pub rack_id: u32,
+    pub epoch: u64,
+    pub ops: Vec<StagedOp>,
+}
+
+#[derive(Debug)]
+pub struct StagedOp {
+    pub key: u64,
+    pub kind: StagedKind,
+}
+
+#[derive(Debug)]
+pub enum StagedKind {
+    Delete(Arc<Mutex<StructData>>),
+    Insert(Value),
+    Relink { node: Arc<Mutex<StructData>>, to: Arc<Mutex<StructData>>, f: Value },
 }
 
 impl RackData {
@@ -445,6 +471,7 @@ impl RackData {
             slot_of: HashMap::new(),
             origin_id: None,
             origin: HashMap::new(),
+            epoch: 0,
         }
     }
 
@@ -1177,6 +1204,8 @@ pub enum Value {
     Cell(Arc<Mutex<Value>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
     Rack(Arc<Mutex<RackData>>),
+    /// Structural changes to a rack, waiting for `rack.apply`.
+    Staged(Arc<Mutex<StagedData>>),
     /// Link — one edge to a node. Holds the node pointer directly, so following
     /// it is a deref with no generation check and no rack lookup. `rack_id`
     /// only names the owning rack for structural ops and for delete's fixup.
@@ -1465,6 +1494,7 @@ impl Value {
             Value::Type(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
+            Value::Staged(_) => "Staged",
             Value::Link { .. } => "Link",
             Value::Handle(_) => "Handle",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
@@ -1787,6 +1817,7 @@ impl fmt::Display for Value {
                 let rack = s.lock().unwrap();
                 write!(f, "<Rack len={}>", rack.len)
             }
+            Value::Staged(s) => write!(f, "<Staged len={}>", s.lock().unwrap().ops.len()),
             // Print the node, not the address — a link is the node, as far as
             // reading it goes.
             Value::Link { node, .. } => {

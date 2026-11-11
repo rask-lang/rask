@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Fork blocks may share a rack only to read it (mem.racks/RK16, E0962): no
+// write through a link or a rack, and no link stored anywhere but a `Staged`
+// buffer, in the block or in a function it calls. A relink function may not
+// capture a link of its own (RK20, E0963). The forks at the end are the
+// legal shapes and must compile.
+
+import memory.Rack
+import memory.Link
+import memory.Staged
+
+struct Entity {
+    id: u64
+    health: i64
+    target: Link<Entity>?
+}
+
+struct Pair {
+    a: Link<Entity>?
+    n: i64
+}
+
+func count(world: Rack<Entity>) -> usize {
+    return world.len()
+}
+
+func collect(world: Rack<Entity>) -> usize {
+    mut out: Vec<Link<Entity>> = Vec.new()
+    for e in world.nodes() {
+        out.push(e)
+    }
+    return out.len()
+}
+
+func main() {
+    mut world: Rack<Entity> = Rack.new()
+    let a = world.insert(Entity(id: 1, health: 1, target: none))
+    // ERROR: writes a node another block reads [E0962]
+    fork { a.health = 5 } and { count(world) }
+    fork {
+        // ERROR: a local vector of links is recorded with the rack [E0962]
+        mut v: Vec<Link<Entity>> = Vec.new()
+        v.push(a)
+    } and { count(world) }
+    // ERROR: so it is in a function the block calls [E0962]
+    fork { collect(world) } and { count(world) }
+    fork {
+        // ERROR: a struct holding a link [E0962]
+        let p = Pair(a: a, n: 1)
+        p.n
+    } and { count(world) }
+    // ERROR: handing a link back to the frame [E0962]
+    let (x, y) = fork { a } and { count(world) }
+
+    mut ops = world.staged()
+    // ERROR: the relink function captured `a` [E0963]
+    ops.relink(1, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = a })
+    ops.relink(2, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
+
+    // Reads, a local link, and changes recorded in a buffer.
+    let (s, c) = fork {
+        mut o = world.staged()
+        let t = a
+        for e in world.nodes() {
+            if e.health > 0 {
+                o.delete(e.id, e)
+            }
+        }
+        o.insert(9, Entity(id: 9, health: 1, target: t))
+        o
+    } and { count(world) }
+    world.apply(s)
+    println("{y}{c}")
+}

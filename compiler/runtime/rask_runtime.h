@@ -804,6 +804,20 @@ static inline int rask_link_is_none(const void *p) {
 }
 
 RaskRack *rask_rack_new(void);
+
+// A rack's structural changes, recorded now and made by `rask_rack_apply`
+// (mem.racks/RK16–RK21).
+typedef struct RaskStaged RaskStaged;
+RaskStaged *rask_rack_staged(RaskRack *r);
+void        rask_rack_apply(RaskRack *r, RaskStaged *s);
+void        rask_staged_delete(RaskStaged *s, uint64_t key, void *node);
+void        rask_staged_insert(RaskStaged *s, uint64_t key, const void *value, int64_t elem_size,
+                               int64_t field_count, const int32_t *fields,
+                               int64_t owned_count, const int32_t *owned, int64_t elem_align);
+void        rask_staged_relink(RaskStaged *s, uint64_t key, void *node, void *to, void *closure);
+void        rask_staged_append(RaskStaged *s, RaskStaged *other);
+int64_t     rask_staged_len(const RaskStaged *s);
+void        rask_staged_free(RaskStaged *s);
 void      rask_rack_free(RaskRack *r);
 int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);

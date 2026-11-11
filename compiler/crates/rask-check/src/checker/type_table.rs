@@ -17,8 +17,21 @@ use rask_types::{GenericArg, Type, TypeId, TypeVarId};
 pub enum TaskBound {
     LocalBox,
     Link,
-    /// Only ever answered by `fork_bound`.
+    /// Only ever answered by `fork_bound` and `holds_rack`.
     Rack,
+}
+
+/// Which question `task_bound_inner` answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundMode {
+    /// May it go to another task: links and `Local` boxes, not racks.
+    Task,
+    /// May two fork blocks name it: racks too.
+    Fork,
+    /// Does storing it record a link with a rack.
+    Store,
+    /// Does it hold a rack.
+    Racks,
 }
 
 /// MN3/XC3: an `T implements Interface` block, as the conformance table remembers
@@ -1794,7 +1807,7 @@ impl TypeTable {
     /// closure literal; monomorphization asks again for a closure in a generic
     /// body, whose capture types are only concrete per instantiation.
     pub fn task_bound(&self, ty: &Type) -> Option<TaskBound> {
-        self.task_bound_inner(ty, &mut Vec::new(), false)
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Task)
     }
 
     /// What keeps a value inside one block of a fork (conc.fork/FK7): what
@@ -1802,7 +1815,20 @@ impl TypeTable {
     /// since moving it takes its links along; two fork blocks *borrowing* one
     /// would both write its edge index whenever either stores a link.
     pub fn fork_bound(&self, ty: &Type) -> Option<TaskBound> {
-        self.task_bound_inner(ty, &mut Vec::new(), true)
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Fork)
+    }
+
+    /// Whether storing a value of this type records a link with a rack: it is
+    /// or holds one, and isn't a `Staged` buffer, whose links aren't edges
+    /// (mem.racks/RK17). A rack it holds doesn't count; its links are its own.
+    pub fn holds_registered_link(&self, ty: &Type) -> bool {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Store).is_some()
+    }
+
+    /// Whether a value of this type is or holds a rack, and so can delete
+    /// nodes through a `mutate` use of it.
+    pub fn holds_rack(&self, ty: &Type) -> bool {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Racks).is_some()
     }
 
     /// Is a closure in a generic body task-bound in one instantiation? Its
@@ -1858,54 +1884,57 @@ impl TypeTable {
     ///
     /// A `Rack` isn't walked: moving the whole rack takes its nodes' links with
     /// the nodes they point at, which is how `snapshot()` hands a graph over.
-    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>, racks: bool) -> Option<TaskBound> {
+    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>, mode: BoundMode) -> Option<TaskBound> {
         if let Some(args) = self.shared_args(ty) {
-            if self.shared_strategy_name(args) == "Local" {
+            if matches!(mode, BoundMode::Task | BoundMode::Fork) && self.shared_strategy_name(args) == "Local" {
                 return Some(TaskBound::LocalBox);
             }
         }
         let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
-            "Link" => Some(TaskBound::Link),
-            "Rack" => racks.then_some(TaskBound::Rack),
+            "Link" => (mode != BoundMode::Racks).then_some(TaskBound::Link),
+            "Rack" => matches!(mode, BoundMode::Fork | BoundMode::Racks).then_some(TaskBound::Rack),
+            // A buffer's links aren't edges, and it can't delete anything; it
+            // still may not cross to another task, where its rack isn't.
+            "Staged" if mode != BoundMode::Task => None,
             _ => args.iter().find_map(|a| match a {
-                GenericArg::Type(t) => self.task_bound_inner(t, seen, racks),
+                GenericArg::Type(t) => self.task_bound_inner(t, seen, mode),
                 _ => None,
             }),
         };
         match ty {
-            Type::Named(id) => self.def_task_bound(*id, seen, racks),
+            Type::Named(id) => self.def_task_bound(*id, seen, mode),
             Type::UnresolvedNamed(name) => {
-                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, racks))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, mode))
             }
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen, racks))
+                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen, mode))
             }
             Type::UnresolvedGeneric { name, args } => generic(name, args, seen).or_else(|| {
-                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, racks))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, mode))
             }),
             Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().find_map(|t| self.task_bound_inner(t, seen, racks))
+                elems.iter().find_map(|t| self.task_bound_inner(t, seen, mode))
             }
-            Type::Array { elem, .. } => self.task_bound_inner(elem, seen, racks),
+            Type::Array { elem, .. } => self.task_bound_inner(elem, seen, mode),
             Type::Result { ok, err } => self
-                .task_bound_inner(ok, seen, racks)
-                .or_else(|| self.task_bound_inner(err, seen, racks)),
+                .task_bound_inner(ok, seen, mode)
+                .or_else(|| self.task_bound_inner(err, seen, mode)),
             _ => None,
         }
     }
 
-    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>, racks: bool) -> Option<TaskBound> {
+    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>, mode: BoundMode) -> Option<TaskBound> {
         if seen.contains(&id) {
             return None;
         }
         seen.push(id);
         match self.types.get(id.0 as usize) {
             Some(TypeDef::Struct { fields, .. }) => {
-                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen, racks))
+                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen, mode))
             }
             Some(TypeDef::Enum { variants, .. }) => variants.iter().find_map(|(_, payload)| {
-                payload.iter().find_map(|t| self.task_bound_inner(t, seen, racks))
+                payload.iter().find_map(|t| self.task_bound_inner(t, seen, mode))
             }),
             _ => None,
         }

@@ -240,6 +240,7 @@ impl FnDecl {
             shrinks: has("shrinks"),
             drops_elements: has("drops_elements"),
             copies_elements: has("copies_elements"),
+            places_node: has("places_node"),
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
@@ -276,6 +277,10 @@ pub struct DeclaredEffects {
     /// a container whose elements must be consumed: a copy would be a second
     /// owner (RC5).
     pub copies_elements: bool,
+    /// The last argument is a node bound for a rack's storage (`Rack.insert`,
+    /// `Staged.insert`). The call carries the node type's layout with it: its
+    /// size, where its links are and what it owns.
+    pub places_node: bool,
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,

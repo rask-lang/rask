@@ -36,10 +36,10 @@ func total(tree: Tree) -> i64 {
 | **FK6: A panic waits for its siblings** | A block that panics doesn't cut the others short. When all have finished, the fork re-raises the first panic in written order. The other blocks still point into the frame, so it can't unwind before they stop |
 | **FK7: Task-bound values stay in one block** | A link, a rack, a `Local` box, or a value holding one may be named by one block only (E0961). Inside that block it is used by one thread at a time, as always. The same goes for a function value whose body the compiler can't see, such as a parameter: `both(h, h)` would hand one closure that writes its captures to two blocks |
 
-FK7 is stricter than it has to be for racks. Two blocks reading one rack is
-race-free in principle, except that storing a link anywhere writes the rack's
-edge index (`mem.racks/RK10`, RK15), and so does the list a `for` over
-`nodes()` walks. Staged structural mutation is what lifts it: see `mem.racks`.
+Racks are the exception to FK7: several blocks may name one rack, its links
+and values holding them, as long as every one of those blocks only reads it.
+A block records structural changes in a `Staged<T>` buffer and the rack
+applies them after the join (`mem.racks/RK16`–RK21).
 
 ## Not covered
 

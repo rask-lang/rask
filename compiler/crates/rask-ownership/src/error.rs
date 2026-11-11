@@ -352,6 +352,18 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// mem.racks/RK16: a fork block that shares a rack with another block
+    /// writes through a link or a rack, or stores a link.
+    #[error("a fork block that shares a rack with another block changes it")]
+    SharedGraphWrite {
+        what: String,
+    },
+
+    /// mem.racks/RK20: a function a `Staged` buffer keeps captured a link or a
+    /// `Local` box.
+    #[error("the function a `Staged` buffer keeps can't hold a link")]
+    StagedFnHoldsLink,
+
     /// conc.fork/FK3: one fork block writes a place another block touches.
     #[error("two fork blocks touch `{name}`, and one of them writes it")]
     ForkConflict {

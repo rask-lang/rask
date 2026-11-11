@@ -2677,7 +2677,8 @@ impl<'a> MirLowerer<'a> {
         // most common loop, so the fast path wins the tie.
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-                return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+                let quiet = self.ctx.quiet_loops.contains(&iter_expr.id);
+                return self.lower_for_iter_chain(label, single_name, &chain, body, binding, quiet);
             }
         }
 
@@ -3620,8 +3621,15 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         body: &[Stmt],
         for_binding: &ForBinding,
+        quiet: bool,
     ) -> Result<(), LoweringError> {
-        let setup = self.setup_iter_chain_loop_tracked(chain)?;
+        // A loop no delete can reach can't lose an entry, so it walks the
+        // list by index with nothing recorded (mem.racks/RK16).
+        let setup = if quiet {
+            self.setup_iter_chain_loop_quiet(chain)?
+        } else {
+            self.setup_iter_chain_loop_tracked(chain)?
+        };
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
