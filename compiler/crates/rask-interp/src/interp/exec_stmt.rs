@@ -536,8 +536,9 @@ impl Interpreter {
                             if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
                                 if s.lock().unwrap().name == "FieldInfo" {
                                     let attrs = self.field_info_attrs(s);
+                                    let props = s.lock().unwrap().fields.clone();
                                     if let Some((annotation, field, span)) =
-                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs)
+                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs, &props)
                                     {
                                         let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
                                         return Err(RuntimeDiagnostic::new(

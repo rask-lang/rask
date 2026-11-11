@@ -40,23 +40,64 @@ pub fn branch<'a>(taken: bool, then_branch: &'a Expr, else_branch: Option<&'a Ex
     }
 }
 
-/// A condition built from tests only the loop iteration can answer, combined
-/// with `!`, `&&` and `||`. `test` answers one fact about the field — a method
-/// call (`item.has<A>()`) or a property (`item.is_skipped`) — or gives `None`;
-/// any other shape is `None` too.
-pub fn decide(cond: &Expr, test: &mut impl FnMut(&Expr) -> Option<bool>) -> Option<bool> {
-    match &cond.kind {
+/// What one fact about the loop iteration folds to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fact {
+    Bool(bool),
+    Int(i128),
+    Str(String),
+}
+
+/// A condition built from facts only the loop iteration can answer,
+/// combined with `!`, `&&`, `||` and comparisons. `fact` answers one fact
+/// about the item — a method call (`item.has<A>()`) or a property
+/// (`item.is_skipped`, `item.type_name`) — or gives `None`.
+///
+/// A comparison reaches here desugared to a method call (`a.eq(b)`,
+/// `a.lt(b)`, and `!a.eq(b)` for `!=`). It folds when both sides are facts
+/// or literals of the same kind: `item.type_name == "f64"` does,
+/// `item.type_name == other` doesn't.
+pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<bool> {
+    match value(cond, fact)? {
+        Fact::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fact> {
+    match &expr.kind {
+        ExprKind::Bool(b) => Some(Fact::Bool(*b)),
+        ExprKind::Int(n, _) => Some(Fact::Int(*n)),
+        ExprKind::String(s) => Some(Fact::Str(s.clone())),
         // `!x` after desugaring.
         ExprKind::MethodCall { object, method, args, .. } if method == "not" && args.is_empty() => {
-            Some(!decide(object, test)?)
+            Some(Fact::Bool(!decide(object, fact)?))
         }
-        ExprKind::MethodCall { .. } | ExprKind::Field { .. } => test(cond),
-        ExprKind::Unary { op: UnaryOp::Not, operand } => Some(!decide(operand, test)?),
+        ExprKind::MethodCall { object, method, args, .. }
+            if args.len() == 1 && matches!(method.as_str(), "eq" | "lt" | "le" | "gt" | "ge") =>
+        {
+            let (l, r) = (value(object, fact)?, value(&args[0].expr, fact)?);
+            let ord = match (&l, &r) {
+                (Fact::Int(a), Fact::Int(b)) => a.cmp(b),
+                (Fact::Str(a), Fact::Str(b)) if method == "eq" => a.cmp(b),
+                (Fact::Bool(a), Fact::Bool(b)) if method == "eq" => a.cmp(b),
+                _ => return None,
+            };
+            Some(Fact::Bool(match method.as_str() {
+                "eq" => ord.is_eq(),
+                "lt" => ord.is_lt(),
+                "le" => ord.is_le(),
+                "gt" => ord.is_gt(),
+                _ => ord.is_ge(),
+            }))
+        }
+        ExprKind::MethodCall { .. } | ExprKind::Field { .. } => fact(expr),
+        ExprKind::Unary { op: UnaryOp::Not, operand } => Some(Fact::Bool(!decide(operand, fact)?)),
         ExprKind::Binary { op, left, right } => {
-            let (l, r) = (decide(left, test)?, decide(right, test)?);
+            let (l, r) = (decide(left, fact)?, decide(right, fact)?);
             match op {
-                BinOp::And => Some(l && r),
-                BinOp::Or => Some(l || r),
+                BinOp::And => Some(Fact::Bool(l && r)),
+                BinOp::Or => Some(Fact::Bool(l || r)),
                 _ => None,
             }
         }

@@ -1812,7 +1812,9 @@ impl<'a> MirLowerer<'a> {
                 _ => return None,
             };
             match answer.0 {
-                MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                MirOperand::Constant(MirConst::Bool(b)) => Some(comptime_if::Fact::Bool(b)),
+                MirOperand::Constant(MirConst::Int(n)) => Some(comptime_if::Fact::Int(n as i128)),
+                MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }
         })?;

@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `comptime if` inside an unrolled `comptime for` can compare the item's
+// string and integer properties (#1868). Natively only boolean facts folded,
+// so `field.type_name == "f64"` stopped the build with "reached lowering
+// unsettled" while the interpreter ran it.
+import std.reflect
+
+annotation @scale {
+    by: i64
+}
+
+struct Reading {
+    public id: i64
+    @scale(by: 10)
+    public value: f64
+    public label: string
+}
+
+test "compare a field's type_name and name" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "f64" {
+            out = "{out}float:{f.name};"
+        }
+        comptime if f.name != "id" && f.type_name != "f64" {
+            out = "{out}other:{f.name};"
+        }
+    }
+    assert out == "float:value;other:label;"
+}
+
+test "compare integer properties" {
+    mut wide = 0
+    mut first = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size >= 16 {
+            wide += 1
+        }
+        comptime if f.offset == 0 {
+            first = f.name
+        }
+    }
+    assert wide == 1
+    assert first == "id"
+}
+
+test "a comparison can guard an annotation read" {
+    // Only `value` is an f64, and only `value` carries @scale, so the read
+    // survives in exactly the iteration that has something to read.
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "f64" {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
+}
+
+func sys(mutate a: i64, b: string) {}
+
+func second_index<F>(f: F) -> string {
+    mut out = ""
+    comptime for p in reflect.params<F>() {
+        comptime if p.index == 1 {
+            out = p.type_name
+        }
+    }
+    return out
+}
+
+test "a parameter's index" {
+    assert second_index(sys) == "string"
+}

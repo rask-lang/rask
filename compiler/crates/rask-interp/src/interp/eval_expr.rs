@@ -3348,6 +3348,7 @@ pub(super) fn unguarded_annotation_read(
     body: &[rask_ast::stmt::Stmt],
     binding: &str,
     attrs: &[rask_ast::attr::Attr],
+    props: &indexmap::IndexMap<String, Value>,
 ) -> Option<(String, Option<String>, rask_ast::Span)> {
     use rask_ast::comptime_if;
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -3357,6 +3358,7 @@ pub(super) fn unguarded_annotation_read(
     struct Reads<'b> {
         binding: &'b str,
         attrs: &'b [rask_ast::attr::Attr],
+        props: &'b indexmap::IndexMap<String, Value>,
         found: Option<(String, Option<String>, Span)>,
     }
 
@@ -3384,9 +3386,23 @@ pub(super) fn unguarded_annotation_read(
             let Some((cond, then_branch, else_branch)) = comptime_if::parts(stmts) else {
                 return true;
             };
-            let (binding, attrs) = (self.binding, self.attrs);
-            let taken = comptime_if::decide(cond, &mut |call| {
-                names_annotation(call, binding, "has").map(|a| carries(attrs, a))
+            let (binding, attrs, props) = (self.binding, self.attrs, self.props);
+            // The facts native folds from the unrolled item: `has<A>()` and
+            // the item's own properties.
+            let taken = comptime_if::decide(cond, &mut |fact| {
+                if let Some(a) = names_annotation(fact, binding, "has") {
+                    return Some(comptime_if::Fact::Bool(carries(attrs, a)));
+                }
+                let ExprKind::Field { object, field } = &fact.kind else { return None };
+                if object.name() != Some(binding) || field.starts_with("__") {
+                    return None;
+                }
+                match props.get(field)? {
+                    Value::Bool(b) => Some(comptime_if::Fact::Bool(*b)),
+                    Value::Int(n, _) => Some(comptime_if::Fact::Int(*n as i128)),
+                    Value::String(t) => Some(comptime_if::Fact::Str(t.lock().unwrap().clone())),
+                    _ => None,
+                }
             });
             match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
                 Some(kept) => {
@@ -3415,7 +3431,7 @@ pub(super) fn unguarded_annotation_read(
         }
     }
 
-    let mut reads = Reads { binding, attrs, found: None };
+    let mut reads = Reads { binding, attrs, props, found: None };
     visit_body(body, &mut reads);
     reads.found
 }
