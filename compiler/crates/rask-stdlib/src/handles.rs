@@ -40,6 +40,36 @@ pub fn spelled_handle(name: &str) -> Option<RuntimeHandle<'static>> {
     })
 }
 
+/// What frees a stdlib type that declares `@handle(release: "…")`, by its
+/// name: the C symbol the declaration names.
+pub fn declared_release(type_name: &str) -> Option<&'static str> {
+    crate::stubs::parsed_decls().find_map(|decl| match &decl.kind {
+        DeclKind::Struct(s) if s.name == type_name => RuntimeHandle::declared(&s.attrs)?.release,
+        _ => None,
+    })
+}
+
+/// Every release a stdlib handle declares.
+pub fn declared_releases() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = crate::stubs::parsed_decls()
+        .filter_map(|decl| match &decl.kind {
+            DeclKind::Struct(s) => RuntimeHandle::declared(&s.attrs)?.release,
+            _ => None,
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Whether `symbol` is some stdlib handle's declared release.
+pub fn is_declared_release(symbol: &str) -> bool {
+    crate::stubs::parsed_decls().any(|decl| match &decl.kind {
+        DeclKind::Struct(s) => RuntimeHandle::declared(&s.attrs).and_then(|h| h.release) == Some(symbol),
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

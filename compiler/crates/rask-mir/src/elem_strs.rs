@@ -163,19 +163,11 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it
     // leaked (#1048).
-    // A `Random` is a heap block behind an opaque handle — no elements, no
-    // sizes, and nothing was freeing it. Here so the drop pass knows the
-    // caller owns what came back.
-    // A `Staged` buffer from `rack.staged()`: unapplied, it still owns the
-    // nodes and functions it recorded.
-    ("Rack_staged", 0, 0, "Staged_free"),
-    ("Random_new", 0, 0, "Random_free"),
-    ("Random_from_seed", 0, 0, "Random_free"),
-    // An `Atomic<T>` is the same shape: one heap word behind an opaque handle,
-    // with a free that didn't exist. Every counter in a program leaked eight
-    // bytes, and `Atomic<T>` is what mem.atomics/GA1 makes you write.
-    ("Atomic_new", 0, 0, "Atomic_free"),
-    ("Atomic_default", 0, 0, "Atomic_free"),
+    //
+    // A handle that frees itself (`Random`, `Atomic<T>`, a `Staged` buffer, a
+    // `cstring`) needs no row: a native whose declared return type is one
+    // hands the caller a fresh one, freed by the declared release
+    // (`mir_metadata::fresh_handle_release`).
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
     // `rack.nodes()` walks the directory and pushes each node's address into a
@@ -246,10 +238,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // rejected byte sequence leaked the builder and its buffer.
     ("StringBuilder_new", 0, 0, "StringBuilder_free"),
     ("StringBuilder_with_capacity", 0, 0, "StringBuilder_free"),
-    // A cstring owns the NUL-terminated copy it made, and it is the caller's to
-    // free — that is what makes it different from `string.as_ptr()`, which
-    // points into a buffer the string still holds (#949).
-    ("string_copy_terminated", 0, 0, "cstring_free"),
     // The other two strategies build their own runtime object, so each needs
     // its own release: `Shared.mutex(0)` is `Mutex_new` and `Shared.local(0)`
     // is `Cell_new`, and neither is `Shared_new`. Only the third was listed, so

@@ -448,13 +448,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
-    ("Random_free", Internal::ConsumesReceiver),
-
-
-    // ── `Atomic<T>` ─────────────────────────────────────────────
-    // stdlib/sync.rk declares its methods. The release is the one spelling it
-    // doesn't: the frame frees an atomic nobody consumed.
-    ("Atomic_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
     // if nobody else holds one (#1099).
@@ -474,7 +467,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
     // `CTORS` line that emits it (#949).
-    ("cstring_free", Internal::ConsumesReceiver),
     // The free for an array receiver's view (`rask_vec_view`), emitted by the
     // drop pass from its `CTORS` line.
     ("Vec_free_view", Internal::ConsumesReceiver),
@@ -886,6 +878,19 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     // nothing.
     ("rask_closure_refuse_crossing", &[]),
 ];
+
+/// The release of the handle a stdlib call hands back, when its declared
+/// return type is a handle that frees itself (`@handle(release: "…")`) and
+/// isn't a container, whose free also walks its elements: `Random.new()`,
+/// `Rack.staged()`, `Atomic.new(v)`. The caller owns what comes back.
+pub fn fresh_handle_release(qualified_name: &str) -> Option<&'static str> {
+    let meta = declared(qualified_name)?;
+    let head = meta.ret_ty.last_segment()?;
+    if matches!(head, "Vec" | "Map" | "Rack") {
+        return None;
+    }
+    crate::handles::declared_release(head)
+}
 
 /// What a call does with the argument at `arg_index`, by its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
