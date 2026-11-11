@@ -808,6 +808,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
         }
     }
@@ -996,6 +997,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
         };
         construct(&mut func);

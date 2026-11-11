@@ -19,6 +19,11 @@ pub struct MirFunction {
     pub source_file: Option<String>,
     /// Written `@inline`: the inliner takes it whatever its size.
     pub inline_hint: bool,
+    /// Which parameters are `take`, by position: the caller gave those up,
+    /// and handing one to a keeper moves it. Every other parameter is the
+    /// caller's storage, so a keeper given one gets a copy (`rc_insert`).
+    /// Empty for a function lowering didn't build from a declaration.
+    pub taken_params: Vec<bool>,
 }
 
 impl MirFunction {

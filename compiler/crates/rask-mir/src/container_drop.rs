@@ -749,6 +749,7 @@ fn build_env_drop(
         entry_block: entry,
         is_extern_c: false,
         inline_hint: false,
+        taken_params: Vec::new(),
         source_file,
     }
 }

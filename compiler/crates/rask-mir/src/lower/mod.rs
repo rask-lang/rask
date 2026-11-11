@@ -5078,6 +5078,14 @@ impl<'a> MirLowerer<'a> {
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
+        // By name: lowering can add parameters the declaration doesn't write.
+        main_fn.taken_params = main_fn
+            .params
+            .iter()
+            .map(|p| {
+                p.name.as_deref().is_some_and(|n| fn_decl.params.iter().any(|d| d.name == n && d.is_take))
+            })
+            .collect();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {

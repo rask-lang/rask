@@ -1179,6 +1179,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
 
         }
@@ -1207,6 +1208,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
 
         }
@@ -1274,6 +1276,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
         };
         let caller = MirFunction {
@@ -1293,6 +1296,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
         };
 
@@ -1362,6 +1366,7 @@ mod tests {
                 entry_block: BlockId(0),
                 is_extern_c: false,
                 inline_hint: false,
+                taken_params: Vec::new(),
                 source_file: None,
     
             },
@@ -1396,6 +1401,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
         }
     }
@@ -1445,6 +1451,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            taken_params: Vec::new(),
             source_file: None,
 
         }];
