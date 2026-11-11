@@ -1899,7 +1899,20 @@ impl<'a> MirLowerer<'a> {
             };
             match answer.0 {
                 MirOperand::Constant(MirConst::Bool(b)) => Some(comptime_if::Fact::Bool(b)),
-                MirOperand::Constant(MirConst::Int(n)) => Some(comptime_if::Fact::int(n as i128)),
+                MirOperand::Constant(MirConst::Int(n)) => {
+                    // A reflect property's own type (`offset` is a `usize`).
+                    let range = match &answer.1 {
+                        MirType::U8 => comptime_if::int_range("u8"),
+                        MirType::U16 => comptime_if::int_range("u16"),
+                        MirType::U32 => comptime_if::int_range("u32"),
+                        MirType::U64 => comptime_if::int_range("u64"),
+                        MirType::I8 => comptime_if::int_range("i8"),
+                        MirType::I16 => comptime_if::int_range("i16"),
+                        MirType::I32 => comptime_if::int_range("i32"),
+                        _ => None,
+                    };
+                    Some(comptime_if::Fact::Int(n as i128, range))
+                }
                 MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }

@@ -34,6 +34,22 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// The range a `comptime if` holds arithmetic on this value to
+    /// (`rask_ast::comptime_if::Fact`). `Untyped` is an `i64`.
+    pub fn fact_range(self) -> Option<(i128, i128)> {
+        use rask_ast::comptime_if::int_range;
+        match self {
+            IntKind::I8 => int_range("i8"),
+            IntKind::I16 => int_range("i16"),
+            IntKind::I32 => int_range("i32"),
+            IntKind::I64 | IntKind::Untyped => None,
+            IntKind::U8 => int_range("u8"),
+            IntKind::U16 => int_range("u16"),
+            IntKind::U32 => int_range("u32"),
+            IntKind::U64 => int_range("u64"),
+        }
+    }
+
     /// P2: what `usize` is on this target — pointer-sized. The width comes
     /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
     pub fn usize_kind() -> IntKind {

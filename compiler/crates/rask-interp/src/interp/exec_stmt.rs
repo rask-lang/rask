@@ -864,6 +864,7 @@ impl Interpreter {
                 let same = match (self.env.get(name)?, &fact) {
                     (Value::Bool(b), Fact::Bool(c)) => b == *c,
                     (Value::Int(n, _), Fact::Int(m, _)) => n as i128 == *m,
+                    (Value::Float(x, _), Fact::Float(y)) => x == *y,
                     (Value::String(s), Fact::Str(t)) => *s.lock().unwrap() == *t,
                     _ => false,
                 };
@@ -875,7 +876,7 @@ impl Interpreter {
             {
                 match self.eval_expr(expr).ok()? {
                     Value::Bool(b) => Some(Fact::Bool(b)),
-                    Value::Int(n, _) => Some(Fact::int(n as i128)),
+                    Value::Int(n, k) => Some(Fact::Int(n as i128, k.fact_range())),
                     Value::String(s) => Some(Fact::Str(s.lock().unwrap().clone())),
                     _ => None,
                 }

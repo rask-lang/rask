@@ -3405,7 +3405,7 @@ pub(super) fn unguarded_annotation_read(
                 }
                 match props.get(field)? {
                     Value::Bool(b) => Some(comptime_if::Fact::Bool(*b)),
-                    Value::Int(n, _) => Some(comptime_if::Fact::int(*n as i128)),
+                    Value::Int(n, k) => Some(comptime_if::Fact::Int(*n as i128, k.fact_range())),
                     Value::String(t) => Some(comptime_if::Fact::Str(t.lock().unwrap().clone())),
                     _ => None,
                 }

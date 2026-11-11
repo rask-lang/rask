@@ -61,14 +61,15 @@ pub fn choose<'a>(
 }
 
 /// What one fact about the loop iteration folds to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Fact {
     Bool(bool),
-    /// An integer, and the range of the type it was declared with when it
-    /// has one (`const SMALL: u8 = 200`). Arithmetic that leaves the range
-    /// doesn't fold: the program overflows there, and saying `300` instead
-    /// would be a different program.
+    /// An integer, and the range of its type (`const SMALL: u8 = 200`,
+    /// `f.offset` is a `usize`). `None` is a literal or an untyped const,
+    /// which is an `i64`. Arithmetic that leaves the range doesn't fold: the
+    /// program overflows there, and an answer would be a different program.
     Int(i128, Option<(i128, i128)>),
+    Float(f64),
     Str(String),
 }
 
@@ -118,20 +119,27 @@ pub fn decide(cond: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Opti
 /// against these; both backends build the table here so they fold the same
 /// names.
 ///
-/// `range` is the const's declared integer type's range, from its
-/// annotation: the value is held to it, and so is arithmetic on it.
+/// `declared` is the type the const was written with, if any: an integer
+/// type holds the value and arithmetic on it to its range, and a float type
+/// makes an integer literal a float (`const F: f64 = 7`).
 pub fn const_facts<'a>(
-    consts: impl IntoIterator<Item = (&'a str, &'a Expr, Option<(i128, i128)>)>,
+    consts: impl IntoIterator<Item = (&'a str, &'a Expr, Option<&'a str>)>,
 ) -> std::collections::HashMap<String, Fact> {
     let mut table = std::collections::HashMap::new();
-    for (name, init, range) in consts {
+    for (name, init, declared) in consts {
         let folded = value(init, &mut |e| match &e.kind {
             ExprKind::Ident(n) => table.get(n.as_str()).cloned(),
             _ => None,
         });
-        let folded = match (folded, range) {
-            (Some(Fact::Int(n, _)), Some((lo, hi))) if n < lo || n > hi => None,
-            (Some(Fact::Int(n, _)), Some(r)) => Some(Fact::Int(n, Some(r))),
+        let folded = match (folded, declared) {
+            (Some(Fact::Int(n, _)), Some("f32" | "f64")) => Some(Fact::Float(n as f64)),
+            (Some(Fact::Int(n, _)), Some(ty)) => match int_range(ty) {
+                Some((lo, hi)) if n < lo || n > hi => None,
+                Some(r) => Some(Fact::Int(n, Some(r))),
+                // A type the fold doesn't know (`i128`, a nominal type):
+                // nothing to hold the value to, so it isn't folded.
+                None => None,
+            },
             (other, _) => other,
         };
         if let Some(fact) = folded {
@@ -141,12 +149,21 @@ pub fn const_facts<'a>(
     table
 }
 
-/// A literal's value.
+/// A literal's value. A negative number is `-n` after desugaring, and is
+/// one too.
 pub fn literal(expr: &Expr) -> Option<Fact> {
     match &expr.kind {
         ExprKind::Bool(b) => Some(Fact::Bool(*b)),
         ExprKind::Int(n, _) => Some(Fact::int(*n)),
+        ExprKind::Float(x, _) => Some(Fact::Float(*x)),
         ExprKind::String(s) => Some(Fact::Str(s.clone())),
+        ExprKind::MethodCall { object, method, args, .. } if method == "neg" && args.is_empty() => {
+            match literal(object)? {
+                Fact::Int(n, r) => Some(Fact::Int(-n, r)),
+                Fact::Float(x) => Some(Fact::Float(-x)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -159,13 +176,24 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
         ExprKind::MethodCall { object, method, args, .. } if method == "neg" && args.is_empty() => {
             match value(object, fact)? {
                 Fact::Int(n, range) => in_range(n.checked_neg()?, range),
+                Fact::Float(x) => Some(Fact::Float(-x)),
                 _ => None,
             }
         }
         ExprKind::MethodCall { object, method, args, .. }
             if args.len() == 1 && matches!(method.as_str(), "add" | "sub" | "mul" | "div" | "rem") =>
         {
-            let (Fact::Int(a, ra), Fact::Int(b, rb)) = (value(object, fact)?, value(&args[0].expr, fact)?) else {
+            let (l, r) = (value(object, fact)?, value(&args[0].expr, fact)?);
+            if let (Fact::Float(a), Fact::Float(b)) = (&l, &r) {
+                return Some(Fact::Float(match method.as_str() {
+                    "add" => a + b,
+                    "sub" => a - b,
+                    "mul" => a * b,
+                    "div" => a / b,
+                    _ => a % b,
+                }));
+            }
+            let (Fact::Int(a, ra), Fact::Int(b, rb)) = (l, r) else {
                 return None;
             };
             in_range(match method.as_str() {
@@ -188,6 +216,7 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
             let (l, r) = (value(object, fact)?, value(&args[0].expr, fact)?);
             let ord = match (&l, &r) {
                 (Fact::Int(a, _), Fact::Int(b, _)) => a.cmp(b),
+                (Fact::Float(a), Fact::Float(b)) => a.partial_cmp(b)?,
                 (Fact::Str(a), Fact::Str(b)) => a.cmp(b),
                 (Fact::Bool(a), Fact::Bool(b)) if method == "eq" => a.cmp(b),
                 _ => return None,
@@ -214,12 +243,11 @@ fn value(expr: &Expr, fact: &mut impl FnMut(&Expr) -> Option<Fact>) -> Option<Fa
     }
 }
 
-/// `n` as an integer fact, when it fits the declared range it carries.
+/// `n` as an integer fact, when it fits the range of its type: the one it
+/// carries, else `i64`'s.
 fn in_range(n: i128, range: Option<(i128, i128)>) -> Option<Fact> {
-    match range {
-        Some((lo, hi)) if n < lo || n > hi => None,
-        _ => Some(Fact::Int(n, range)),
-    }
+    let (lo, hi) = range.unwrap_or((i64::MIN as i128, i64::MAX as i128));
+    (lo..=hi).contains(&n).then_some(Fact::Int(n, range))
 }
 
 /// `item.get<A>().field` as a fact: the attachment's written value, when

@@ -4928,7 +4928,7 @@ impl<'a> MirLowerer<'a> {
             DeclKind::Const(c) => Some((
                 c.name.as_str(),
                 &c.init,
-                c.ty.as_ref().and_then(|t| t.bare_name()).and_then(rask_ast::comptime_if::int_range),
+                c.ty.as_ref().and_then(|t| t.bare_name()),
             )),
             _ => None,
         });
