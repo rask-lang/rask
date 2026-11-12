@@ -25,13 +25,15 @@ this checks each:
    no `{{#include}}`: a block that shows a file says `<!-- from: path -->`
    instead, and the book gate checks it's a verbatim run of that file.
 
-3. The shell commands in the chapters run, in chapter order, in a copy of
-   the tutorial directory, with the built `rask` first on PATH. A `bash`
-   block followed by `<!-- from: output/x.out -->` and a `text` block has to
-   print what that file holds; one with no output block has to exit 0. A
-   block marked `<!-- learn: skip -->` isn't run (the install line).
-   Durations print as `(0ms)`, so a pinned output doesn't change with the
-   machine.
+3. The shell commands in the chapters (`bash`, `sh` or `shell` blocks) run,
+   in chapter order, in a copy of the tutorial directory, with the built
+   `rask` first on PATH and `bash -e`, so any failing line counts. The first
+   `<!-- from: output/x.out -->` block after a command, before the next one,
+   is its output, and the command has to print what that file holds; one
+   with no output block has to exit 0. A file in output/ that no command
+   prints is stale. A block marked `<!-- learn: skip -->` isn't run (the
+   install line). Durations print as `(0ms)`, so a pinned output doesn't
+   change with the machine.
 
 `--update` regenerates exercise files and pinned outputs, and rewrites an
 output block in a chapter that showed the whole of the old output.
@@ -48,7 +50,11 @@ import tempfile
 
 MARK = re.compile(r"^(\s*)// exercise (\d+):")
 FUNC = re.compile(r"^(\s*)(public\s+)?func\s+\w+")
-FENCE = re.compile(r"^```(\w*)\s*$")
+FENCE = re.compile(r"^(```+)\s*(.*)$")
+# The line that closes a function body, at the function's indentation.
+CLOSE = re.compile(r"^\}\s*(//.*)?$")
+# Fences whose blocks are commands to run.
+SHELLS = ("bash", "sh", "shell")
 FROM = re.compile(r"^<!--\s*from:\s*(\S+)\s*-->\s*$")
 SKIP = "<!-- learn: skip -->"
 GENERATED = (
@@ -64,6 +70,7 @@ class Gate:
         self.update = update
         self.fails = []
         self.ok = 0
+        self.marked = 0
 
     def fail(self, msg):
         self.fails.append(msg)
@@ -83,6 +90,9 @@ class Gate:
             m = re.match(r"(\d+)-[\w-]+\.rk$", name.strip())
             if not m:
                 self.fail(f"exercises:{n}: `{name.strip()}` isn't `NN-name.rk`")
+                continue
+            if name.strip() in out:
+                self.fail(f"exercises:{n}: {name.strip()} is listed twice")
                 continue
             out[name.strip()] = (m.group(1), mods.split())
         return out
@@ -138,10 +148,17 @@ class Gate:
             indent = FUNC.match(lines[i]).group(1)
             out.append(lines[i])
             i += 1
-            while i < len(lines) and lines[i] != indent + "}":
+            # The body ends at the first line back at the function's own
+            # indentation, which `rask fmt` makes its closing brace. Anything
+            # else there means the indentation can't be trusted to say.
+            while i < len(lines) and (not lines[i].strip() or lines[i].startswith(indent + " ")):
                 i += 1
+            if i >= len(lines) or not CLOSE.match(lines[i][len(indent):]):
+                self.fail(f"exercise {number}: a marked function's body doesn't end in a `}}` at the function's own indentation")
+                return lines
+            self.marked += 1
             out.append(indent + "    todo()")
-            out.append(indent + "}")
+            out.append(lines[i])
             i += 1
         return out
 
@@ -168,8 +185,13 @@ class Gate:
         for name in sorted(committed - set(manifest)):
             self.fail(f"{name} isn't in `exercises`: delete it, or list what it's made of")
         for name, (number, modules) in sorted(manifest.items()):
+            self.marked = 0
+            before = len(self.fails)
             text = self.generate(number, modules)
-            if text is None:
+            if text is None or len(self.fails) > before:
+                continue
+            if self.marked == 0:
+                self.fail(f"{name}: no function in {', '.join(modules)} is marked `// exercise {number}:`, so the exercise would be the finished program")
                 continue
             path = os.path.join(self.learn, name)
             if self.update:
@@ -190,35 +212,45 @@ class Gate:
     def chapters(self):
         return sorted(f for f in os.listdir(self.learn) if f.endswith(".md"))
 
-    def commands(self, md):
-        """(line, script, output path or None, output block span) per bash block."""
-        lines = open(os.path.join(self.learn, md)).read().split("\n")
+    def fences(self, lines):
+        """(open line, info word, body start, close line) for each fenced block."""
         out, i = [], 0
         while i < len(lines):
             m = FENCE.match(lines[i])
-            if not m or m.group(1) != "bash":
+            if not m:
                 i += 1
                 continue
-            skipped = i > 0 and lines[i - 1].strip() == SKIP
-            start = i + 1
-            j = start
-            while j < len(lines) and lines[j].strip() != "```":
+            ticks, info = m.group(1), m.group(2).split()
+            j = i + 1
+            while j < len(lines) and lines[j].rstrip() != ticks:
                 j += 1
-            script = "\n".join(lines[start:j])
-            # An output block is the next thing on the page, blank lines aside.
-            k = j + 1
-            while k < len(lines) and not lines[k].strip():
-                k += 1
-            output, span = None, None
-            if k + 1 < len(lines) and FROM.match(lines[k]) and FENCE.match(lines[k + 1]):
-                output = FROM.match(lines[k]).group(1)
-                end = k + 2
-                while end < len(lines) and lines[end].strip() != "```":
-                    end += 1
-                span = (k + 2, end)
-            if not skipped:
-                out.append((i + 1, script, output, span))
+            out.append((i, info[0] if info else "", i + 1, j))
             i = j + 1
+        return out
+
+    def commands(self, md):
+        """(line, script, output path or None, output block span) per shell block.
+
+        A command's output block is the first `from:` block after it and
+        before the next command, prose in between or not.
+        """
+        lines = open(os.path.join(self.learn, md)).read().split("\n")
+        fences = self.fences(lines)
+        out = []
+        for n, (open_, info, start, close) in enumerate(fences):
+            if info not in SHELLS:
+                continue
+            skipped = open_ > 0 and lines[open_ - 1].strip() == SKIP
+            output, span = None, None
+            for o_open, o_info, o_start, o_close in fences[n + 1:]:
+                if o_info in SHELLS:
+                    break
+                m = FROM.match(lines[o_open - 1]) if o_open > 0 else None
+                if m and m.group(1).startswith("output/"):
+                    output, span = m.group(1), (o_start, o_close)
+                    break
+            if not skipped:
+                out.append((open_ + 1, "\n".join(lines[start:close]), output, span))
         return out
 
     def run_chapters(self):
@@ -234,14 +266,22 @@ class Gate:
             os.mkdir(bindir)
             os.symlink(os.path.abspath(self.rask), os.path.join(bindir, "rask"))
             env = dict(os.environ, PATH=bindir + os.pathsep + os.environ.get("PATH", ""), NO_COLOR="1")
+            produced = set()
             for md in self.chapters():
                 for line, script, output, span in self.commands(md):
                     self.run_one(md, line, script, output, span, copy, env)
+                    if output:
+                        produced.add(os.path.normpath(output))
+            outdir = os.path.join(self.learn, "output")
+            if os.path.isdir(outdir):
+                for name in sorted(os.listdir(outdir)):
+                    if os.path.normpath(os.path.join("output", name)) not in produced:
+                        self.fail(f"output/{name} isn't what any command in a chapter prints: delete it, or put its block after the command")
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
     def run_one(self, md, line, script, output, span, copy, env):
-        r = subprocess.run(["bash", "-o", "pipefail", "-c", script], cwd=copy, env=env,
+        r = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=copy, env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=600)
         got = r.stdout.replace(copy + "/", "").replace(copy, ".")
         got = re.sub(r"\(\d+(\.\d+)?m?s\)", "(0ms)", got)

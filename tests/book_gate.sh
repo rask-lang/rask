@@ -118,10 +118,11 @@ rm -f "$ROOT/.book_gate_includes"
 
 # ── 1b. Every `from:` block is a verbatim run of its file ─────────────────────
 
-from_out="$(find "$BOOK_SRC" "$WRITING_SRC" -name '*.md' -print0 | xargs -0 python3 "$ROOT/tests/book_from.py")"
-if [ -n "$from_out" ]; then
+from_out="$(find "$BOOK_SRC" "$WRITING_SRC" -name '*.md' -print0 | xargs -0 python3 "$ROOT/tests/book_from.py" 2>&1)"
+from_status=$?
+if [ -n "$from_out" ] || [ $from_status -ne 0 ]; then
     printf '%s\n' "$from_out" | sed "s|$ROOT/||"
-    fails=$((fails + $(printf '%s\n' "$from_out" | wc -l)))
+    fails=$((fails + 1))
 else
     ok=$((ok + 1))
 fi
@@ -140,7 +141,7 @@ while IFS= read -r md; do
     # a compile/run marker on the line above the fence. Anything else is loose.
     loose=$(awk '
         /^<!-- test:/ { marker = $0; next }
-        /^<!-- from:/ { marker = $0; next }
+        /^<!-- from: *[^ ]+ *-->[ \t]*$/ { marker = $0; next }
         /^```rask/ {
             verified = 0
             if (marker ~ /test: *(compile|run|run-interp)/) verified = 1

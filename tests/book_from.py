@@ -22,11 +22,18 @@ FENCE = re.compile(r"^(```+)")
 
 
 def blocks(lines):
-    """(line number of the marker, path, block lines) for each `from:` block."""
+    """(line number of the marker, path, block lines) for each `from:` block.
+
+    A line that starts like a marker and isn't one comes back with path
+    `None`: `<!-- from: world.rk (the Room type) -->` would otherwise be
+    neither checked here nor refused by the book gate's count.
+    """
     i = 0
     while i < len(lines):
         m = MARKER.match(lines[i])
         if not m:
+            if lines[i].lstrip().startswith("<!-- from:"):
+                yield i + 1, None, None
             i += 1
             continue
         fence = FENCE.match(lines[i + 1]) if i + 1 < len(lines) else None
@@ -57,6 +64,9 @@ def check(md):
         lines = f.read().split("\n")
     for line, path, body in blocks(lines):
         where = f"{md}:{line}"
+        if path is None:
+            fails.append(f"{where}: a `from:` marker is `<!-- from: path -->` and nothing else")
+            continue
         if body is None:
             fails.append(f"{where}: `from: {path}` isn't on the line above a fenced block")
             continue
@@ -64,8 +74,12 @@ def check(md):
         if not os.path.isfile(target):
             fails.append(f"{where}: `from: {path}` names a file that isn't there")
             continue
-        with open(target) as f:
-            source = f.read().split("\n")
+        try:
+            with open(target) as f:
+                source = f.read().split("\n")
+        except UnicodeDecodeError:
+            fails.append(f"{where}: {path} isn't UTF-8 text")
+            continue
         if not is_run_of(body, source):
             fails.append(f"{where}: the block isn't a run of lines in {path}, verbatim")
     return fails

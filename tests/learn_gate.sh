@@ -34,8 +34,10 @@ status=$?
 
 FIXTURE="$ROOT/tests/learn_gate"
 self_fails=0
+cases=0
 expect() {
     local want=$1 what=$2 dir=$3
+    cases=$((cases + 1))
     python3 "$ROOT/tests/learn_gate.py" "$dir" "$RASK" > "$dir.log" 2>&1
     local got=$?
     python3 "$ROOT/tests/book_from.py" "$dir"/*.md >> "$dir.log" 2>&1
@@ -83,9 +85,48 @@ d="$(broken exits)"
 printf '\n```bash\nrask test 01-hello.rk\n```\n' >> "$d/01-hello.md"
 expect fail "a failing command with no output block" "$d"
 
+d="$(broken prose)"
+python3 - "$d/01-hello.md" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("rask test mud\n```\n\n", "rask test mud\n```\n\nIt prints:\n\n", 1)
+open(p, "w").write(s)
+PY
+sed -i 's/1 passed/2 passed/' "$d/output/01-test-solved.out" "$d/01-hello.md"
+expect fail "an output block with prose before it, and a different output" "$d"
+
+d="$(broken early)"
+printf '\n```bash\nrask check no-such-file.rk\nls mud\n```\n' >> "$d/01-hello.md"
+expect fail "a block whose first line fails" "$d"
+
+d="$(broken marker)"
+sed -i 's|<!-- from: mud/greet.rk -->|<!-- from: mud/greet.rk (the function) -->|' "$d/01-hello.md"
+expect fail "a from: marker with words after the path" "$d"
+
+d="$(broken unmarked)"
+printf '02-more.rk: greet.rk\n' >> "$d/exercises"
+cp "$d/01-hello.rk" "$d/02-more.rk"
+expect fail "an exercise with no function marked for it" "$d"
+
+d="$(broken brace)"
+sed -i 's/^    return "Hello, {name}!"$/return "Hello, {name}!"/' "$d/mud/greet.rk"
+expect fail "a marked function whose body isn't indented, so where it ends is a guess" "$d"
+
+d="$(broken sh)"
+printf '\n```sh\nfalse\n```\n' >> "$d/01-hello.md"
+expect fail "a failing sh block" "$d"
+
+d="$(broken stray)"
+cp "$d/output/01-test.out" "$d/output/stray.out"
+expect fail "a pinned output no command prints" "$d"
+
+d="$(broken twice)"
+printf '01-hello.rk: greet.rk\n' >> "$d/exercises"
+expect fail "an exercise listed twice" "$d"
+
 if [ $self_fails -ne 0 ]; then
     echo "learn gate self-test: $self_fails failed"
     exit 1
 fi
-echo "learn gate self-test: 7 ok"
+echo "learn gate self-test: $cases ok"
 exit $status
