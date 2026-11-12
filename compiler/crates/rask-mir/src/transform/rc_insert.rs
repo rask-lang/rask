@@ -626,9 +626,11 @@ fn insert_aggregate_release(
                         })
                 }
                 MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } => {
-                    (crate::own_names::returns_a_view(&fref.name, own)
-                        && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r)))
-                    .then_some(*dst)
+                    let views_receiver = crate::own_names::returns_a_view(&fref.name, own)
+                        && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r));
+                    let points_into = fref.points_into_args
+                        && args.iter().filter_map(uses::operand_local).any(|a| tracked.contains(&a));
+                    (views_receiver || points_into).then_some(*dst)
                 }
                 MirStmtKind::Store { addr, value, .. } => uses::operand_local(value)
                     .filter(|v| tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr))
@@ -645,6 +647,42 @@ fn insert_aggregate_release(
             if let Some(d) = reached {
                 if tracked.insert(d) {
                     changed = true;
+                }
+            }
+        }
+    }
+
+    // A slot a part was parked in, and the part: the one whole-width store of
+    // a tracked name into a slot that is not itself an aggregate. A load back
+    // out of the slot is the same value again. The drop pass frees a
+    // container a stack closure captured by loading it from its slot
+    // (`container_drop`'s lent slots), and read as anything else that free
+    // handed nothing over, so the wrapper the container came out of released
+    // it a second time (#1887).
+    let parked: HashMap<LocalId, LocalId> = {
+        let mut seen: HashMap<LocalId, Option<LocalId>> = HashMap::new();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
+                let one = uses::operand_local(value).filter(|v| {
+                    *offset == 0 && tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr)
+                });
+                match seen.get(addr) {
+                    None => {
+                        seen.insert(*addr, one);
+                    }
+                    Some(_) => {
+                        seen.insert(*addr, None);
+                    }
+                }
+            }
+        }
+        seen.into_iter().filter_map(|(a, v)| Some((a, v?))).collect()
+    };
+    if !parked.is_empty() {
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(a)) } = &stmt.kind {
+                if parked.contains_key(a) {
+                    tracked.insert(*dst);
                 }
             }
         }
@@ -727,6 +765,11 @@ fn insert_aggregate_release(
             };
             match &stmt.kind {
                 MirStmtKind::Phi { .. } => {}
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(a)) }
+                    if is_tracked(dst) && parked.contains_key(a) =>
+                {
+                    ev.push(ownership::Event::Alias { dst: *dst, src: parked[a] });
+                }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if is_tracked(dst) =>
                 {
@@ -817,6 +860,15 @@ fn insert_aggregate_release(
                                 Some(recv) => ev.push(ownership::Event::View { dst, base: recv }),
                                 None => ev.push(ownership::Event::Other(dst)),
                             }
+                        } else if fref.points_into_args
+                            && args.iter().filter_map(uses::operand_local).any(|a| is_tracked(&a))
+                        {
+                            // The result points into its arguments, so it keeps
+                            // them needed for as long as it is in use: a pointer
+                            // out of `as_ptr`, a borrowing task's handle.
+                            for a in args.iter().filter_map(uses::operand_local).filter(|a| is_tracked(a)) {
+                                ev.push(ownership::Event::View { dst, base: a });
+                            }
                         } else if aggregates.contains(&dst) {
                             ev.push(ownership::Event::Make(dst));
                         } else {
@@ -826,7 +878,14 @@ fn insert_aggregate_release(
                 }
                 MirStmtKind::Store { addr, value, .. } => {
                     if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
-                        if !aggregates.contains(&v) && !aggregates.contains(addr) {
+                        if owns_copy.contains(addr) {
+                            // A Copy value bound into a slot lowering retains
+                            // (`retain_bound_copy`): the slot takes references
+                            // of its own, so this is a copy and the source
+                            // keeps what it had. `let half = p.left`, with
+                            // `half` in memory because a closure points at it,
+                            // read as handing `p` away and leaked it.
+                        } else if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
                             // at it: whoever reads the buffer reads through the
                             // aggregate. `json.encode(p)` on a `struct { counts:

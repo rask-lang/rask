@@ -112,6 +112,8 @@ pub struct StdlibMethodMeta {
     /// Which declared parameters are `take`, positionally. The receiver is not
     /// among them; see `keeps_argument` for the index shift.
     pub takes: Vec<bool>,
+    /// `@places_node`: the last argument is a node bound for a rack.
+    pub places_node: bool,
 }
 
 /// Cached metadata derived from StubRegistry.
@@ -168,6 +170,7 @@ fn build_cache() -> MetadataCache {
                 takes_self: method.takes_self,
                 take_self: method.take_self,
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
+                places_node: method.effects.places_node,
             });
         }
     }
@@ -184,6 +187,7 @@ fn build_cache() -> MetadataCache {
             takes_self: false,
             take_self: false,
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
+            places_node: func.effects.places_node,
         });
     }
 
@@ -444,13 +448,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
-    ("Random_free", Internal::ConsumesReceiver),
-
-
-    // ── `Atomic<T>` ─────────────────────────────────────────────
-    // stdlib/sync.rk declares its methods. The release is the one spelling it
-    // doesn't: the frame frees an atomic nobody consumed.
-    ("Atomic_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
     // if nobody else holds one (#1099).
@@ -470,7 +467,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
     // `CTORS` line that emits it (#949).
-    ("cstring_free", Internal::ConsumesReceiver),
     // The free for an array receiver's view (`rask_vec_view`), emitted by the
     // drop pass from its `CTORS` line.
     ("Vec_free_view", Internal::ConsumesReceiver),
@@ -883,6 +879,19 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     ("rask_closure_refuse_crossing", &[]),
 ];
 
+/// The release of the handle a stdlib call hands back, when its declared
+/// return type is a handle that frees itself (`@handle(release: "…")`) and
+/// isn't a container, whose free also walks its elements: `Random.new()`,
+/// `Rack.staged()`, `Atomic.new(v)`. The caller owns what comes back.
+pub fn fresh_handle_release(qualified_name: &str) -> Option<&'static str> {
+    let meta = declared(qualified_name)?;
+    let head = meta.ret_ty.last_segment()?;
+    if matches!(head, "Vec" | "Map" | "Rack") {
+        return None;
+    }
+    crate::handles::declared_release(head)
+}
+
 /// What a call does with the argument at `arg_index`, by its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgMode {
@@ -946,12 +955,11 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
 ///
-/// `rask_closure_refuse_crossing` is the check a task block makes of each
-/// closure value it captures: it reads the closure's header and hands it back.
+/// A runtime function in `RUNTIME_FUNCTIONS` that gives nothing away keeps
+/// nothing either, so it answers from that list rather than from this one.
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",
-    "rask_closure_refuse_crossing",
 ];
 
 /// Does this call use its callback up before returning?
@@ -959,6 +967,7 @@ pub fn borrows_its_callback(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     BORROWS_ITS_CALLBACK.contains(&base)
+        || RUNTIME_FUNCTIONS.iter().any(|(n, gives)| *n == base && gives.is_empty())
 }
 
 /// Does this call take its receiver away — a `take self` method, or one of the

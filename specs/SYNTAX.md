@@ -1059,6 +1059,11 @@ spawn { conn.close() }.detach()
 // An OS thread, a pool job
 let t = Thread.spawn { work() }
 let j = ThreadPool.spawn { crunch(x) }
+// Joined in the block that spawned it, a task borrows instead of copying.
+// With no pool, `requires_pool: false` runs it right here.
+let h = ThreadPool.spawn(requires_pool: false) { total(left) }
+let r = total(right)
+let sum = try h.join() + r
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)

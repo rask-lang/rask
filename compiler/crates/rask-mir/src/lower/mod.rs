@@ -437,6 +437,7 @@ impl<'a> MirContext<'a> {
             escaping_closures: &records.escaping_closures,
             lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
+            quiet_loops: &records.quiet_loops,
             return_moves: &records.return_moves,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
@@ -643,6 +644,9 @@ pub struct MirContext<'a> {
     /// Assignments whose new value takes the old one: the slot's old value is
     /// the new one's now, so nothing is released before the write (ownership).
     pub field_reuses: &'a std::collections::HashSet<NodeId>,
+    /// `for` loops over links that no delete can reach, by source expression
+    /// (ownership): walked without recording the list or keeping a cursor.
+    pub quiet_loops: &'a std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (ownership). A `for` body over a sequence returns from inside a
     /// closure, and the frame learns from this what left on that exit.
@@ -987,6 +991,7 @@ impl<'a> MirContext<'a> {
             escaping_closures: &EMPTY_ESCAPING,
             lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
+            quiet_loops: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
@@ -1628,9 +1633,17 @@ impl<'a> MirContext<'a> {
         if mir != MirType::Ptr {
             return mir;
         }
-        match crate::ContainerKind::of(ty, self.type_names) {
-            Some(kind) => MirType::Container(kind),
-            None => mir,
+        if let Some(kind) = crate::ContainerKind::of(ty, self.type_names) {
+            return MirType::Container(kind);
+        }
+        // A handle that frees itself, by its declaration's release.
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self
+                .handle_releases
+                .get(id)
+                .and_then(|r| crate::ContainerKind::handle(r))
+                .map_or(mir, MirType::Container),
+            _ => mir,
         }
     }
 
@@ -7849,6 +7862,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -7950,6 +7964,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8058,6 +8073,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,

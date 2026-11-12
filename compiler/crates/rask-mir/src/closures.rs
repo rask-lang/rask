@@ -264,7 +264,7 @@ fn retain_borrowed_closures_handed_on(
                         let Some(id) = uses::operand_local(arg).filter(|id| borrowed.contains(id)) else {
                             continue;
                         };
-                        if callee_keeps(callee_escapes, &callee.name, i) {
+                        if callee_keeps(callee_escapes, callee, i) {
                             at.push((si, id));
                         }
                     }
@@ -320,12 +320,19 @@ fn retain_borrowed_closures_handed_on(
 
 /// Does a call keep argument `i`? A callee with no body of its own keeps what
 /// it isn't known to borrow.
-fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &str, i: usize) -> bool {
+fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::FunctionRef, i: usize) -> bool {
     callee_escapes
-        .get(callee)
+        .get(&callee.name)
         .and_then(|e| e.get(i))
         .copied()
-        .unwrap_or_else(|| !rask_stdlib::mir_metadata::borrows_its_callback(callee))
+        .unwrap_or_else(|| !uses_up_callback(callee))
+}
+
+/// A bodiless callee that is done with a closure it's handed before it
+/// returns: one written down as using its callback up, or a runtime call
+/// lowering made for itself, which only reads what it's handed (#1555).
+fn uses_up_callback(callee: &crate::FunctionRef) -> bool {
+    callee.runtime || rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
 }
 
 /// The hand-overs of a closure this frame owns where the frame still uses the
@@ -367,7 +374,7 @@ fn handed_on_while_still_used(
                         let Some(id) = uses::operand_local(arg).filter(|id| tracked.contains(id)) else {
                             continue;
                         };
-                        if callee_keeps(callee_escapes, &callee.name, i) {
+                        if callee_keeps(callee_escapes, callee, i) {
                             sites.push((bi, si, id));
                         }
                     }
@@ -558,7 +565,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
                                 .and_then(|e| e.get(idx))
                                 .copied()
                                 .unwrap_or_else(|| {
-                                    !rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+                                    !uses_up_callback(callee)
                                 });
                             // A callee that keeps it only inside what it hands
                             // back keeps it exactly as long as that result
@@ -733,7 +740,7 @@ fn frame_routes(
                         let Some(id) = uses::operand_local(arg) else { continue };
                         let route = match routes.get(&callee.name) {
                             Some(r) => r.get(i).copied().unwrap_or(Route::Away),
-                            None if rask_stdlib::mir_metadata::borrows_its_callback(&callee.name) => {
+                            None if uses_up_callback(callee) => {
                                 Route::Stays
                             }
                             None => Route::Away,
@@ -934,7 +941,7 @@ fn closure_facts(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if callee_keeps(callee_escapes, &callee.name, i) {
+                        if callee_keeps(callee_escapes, callee, i) {
                             give(&mut ev, id);
                         }
                     }
@@ -1173,7 +1180,7 @@ fn param_escapes_from(
                             .and_then(|e| e.get(arg_idx))
                             .map(|escapes| !escapes)
                             .unwrap_or_else(|| {
-                                rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+                                uses_up_callback(callee)
                             });
                         if !borrows {
                             return true;
@@ -1245,9 +1252,7 @@ fn find_escaping_closures(
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
                                     .unwrap_or_else(|| {
-                                        rask_stdlib::mir_metadata::borrows_its_callback(
-                                            &callee.name,
-                                        )
+                                        uses_up_callback(callee)
                                     });
 
                                 if !is_borrow {

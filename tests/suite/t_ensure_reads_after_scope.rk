@@ -14,6 +14,11 @@
 // Released at the end of the whole chain instead, a value made after an early
 // return leaked: that end is shared with the early return's chain, where the
 // value doesn't exist yet, so neither pass could release it there.
+//
+// What an ensure body makes for itself is released at the end of that body.
+// Nothing released it once a call in the body was inlined there: the callee's
+// own Vec and strings now lived in the body, whose end released only what
+// came from before the ensure.
 
 import memory.Rack
 
@@ -73,6 +78,33 @@ func after_an_early_return(early: bool, mutate seen: Vec<u64>) {
     ensure count(n, mutate seen)
 }
 
+func lengths(n: i64) -> u64 {
+    mut v: Vec<string> = Vec.new()
+    for i in 0..n {
+        v.push("a heap string long enough to allocate, number {i}")
+    }
+    return v.len()
+}
+
+func made_in_the_body(early: bool, mutate seen: Vec<u64>) -> string {
+    ensure seen.push(lengths(2))
+    if early {
+        return "an early result that is long enough for the heap"
+    }
+    mut w: Vec<string> = Vec.new()
+    w.push("a heap string read by the second ensure only")
+    ensure seen.push(w.len() + lengths(3))
+    return "a late result that is long enough for the heap too"
+}
+
+func bound_in_a_body(mutate out: Vec<u64>) {
+    ensure out.push(1)
+    ensure {
+        let v: Vec<string> = ["a name string long enough for the heap {out.len()}"]
+        out.push(v.len())
+    }
+}
+
 func rack_in_ensure(mutate out: Vec<string>) {
     mut w = World(rooms: Rack.new())
     ensure out.push(room_names(w))
@@ -109,4 +141,24 @@ test "a value made after an early return is released once" {
     after_an_early_return(false, mutate seen)
     after_an_early_return(true, mutate seen)
     assert seen.len() == 4
+}
+
+test "what an ensure body makes is released there" {
+    mut seen: Vec<u64> = Vec.new()
+    let a = made_in_the_body(false, mutate seen)
+    let b = made_in_the_body(true, mutate seen)
+    assert a.starts_with("a late")
+    assert b.starts_with("an early")
+    assert seen.len() == 3
+    assert seen[0] == 4
+    assert seen[1] == 2
+    assert seen[2] == 2
+}
+
+test "a value one body binds is released once, before the next body runs" {
+    mut out: Vec<u64> = Vec.new()
+    bound_in_a_body(mutate out)
+    assert out.len() == 2
+    assert out[0] == 1
+    assert out[1] == 1
 }

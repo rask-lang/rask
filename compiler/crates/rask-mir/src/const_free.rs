@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use crate::function::{BlockId, LocalId, MirBlock, MirFunction, MirLocal};
 use crate::lower::{const_slot_name, CONST_SLOT_PREFIX};
-use crate::operand::{FunctionRef, MirOperand, MirRValue};
+use crate::operand::{MirOperand, MirRValue};
 use crate::stmt::{MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind};
 use crate::types::MirType;
 
@@ -125,7 +125,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
         return Some((slot, "rask_free", MirType::Ptr));
     }
 
-    let free_fn = crate::elem_strs::free_fn(ctor)?;
+    let free_fn = crate::container_drop::free_for(ctor)?;
     Some((slot, free_fn, ty))
 }
 
@@ -153,7 +153,7 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         }));
         statements.push(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal(free_fn.to_string()),
+            func: crate::container_drop::free_call(free_fn),
             args: vec![MirOperand::Local(value)],
         }));
     }

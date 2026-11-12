@@ -865,6 +865,15 @@ impl<'a> MirLowerer<'a> {
         self.setup_iter_chain_loop_inner(chain, true)
     }
 
+    /// The same loop for a body no delete can reach: nothing to record, no
+    /// cursor to move.
+    pub(super) fn setup_iter_chain_loop_quiet(
+        &mut self,
+        chain: &super::IterChain<'_>,
+    ) -> Result<IterLoopSetup, LoweringError> {
+        self.setup_iter_chain_loop_inner(chain, false)
+    }
+
     fn setup_iter_chain_loop_inner(
         &mut self,
         chain: &super::IterChain<'_>,

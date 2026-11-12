@@ -37,8 +37,21 @@ use crate::{
 /// `elem_strs::CTORS` names both — the calls that hand a container back and
 /// the free that matches each. The free takes nothing but the container: it
 /// knows what its elements are.
-fn free_for(ctor: &str) -> Option<&'static str> {
-    crate::elem_strs::free_fn(ctor)
+/// What frees a value fresh out of a call to `ctor`: a container's free from
+/// its constructor row, or the declared release of a handle a native hands back.
+pub(crate) fn free_for(ctor: &str) -> Option<&'static str> {
+    crate::elem_strs::free_fn(ctor).or_else(|| rask_stdlib::mir_metadata::fresh_handle_release(ctor))
+}
+
+/// The call that gives back what `free` frees. A handle's declared release is
+/// a runtime symbol called as itself; anything else is a stdlib name codegen
+/// dispatches.
+pub(crate) fn free_call(free: &str) -> FunctionRef {
+    if rask_stdlib::handles::is_declared_release(free) {
+        FunctionRef::runtime(free.to_string())
+    } else {
+        FunctionRef::internal(free.to_string())
+    }
 }
 
 /// What puts a reference back on a handle its free gives up.
@@ -731,7 +744,7 @@ fn build_env_drop(
         }));
         statements.push(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal(free.to_string()),
+            func: free_call(free),
             args: vec![MirOperand::Local(held)],
         }));
     }
@@ -2363,7 +2376,7 @@ fn insert_capture_drops(
                 MirStmt::new(
                     MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal((*free).to_string()),
+                        func: free_call(free),
                         args: vec![MirOperand::Local(*local)],
                     },
                     span,
@@ -2424,6 +2437,7 @@ fn container_free(kind: crate::ContainerKind) -> &'static str {
         crate::ContainerKind::Vec => "Vec_free",
         crate::ContainerKind::Map => "Map_free",
         crate::ContainerKind::Rack => "Rack_free",
+        crate::ContainerKind::Handle(release) => release,
     }
 }
 
@@ -3288,7 +3302,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             }));
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(free.to_string()),
+                func: free_call(free),
                 args: vec![MirOperand::Local(tmp)],
             }));
         }
@@ -3338,7 +3352,7 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
                     MirStmt::dummy(MirStmtKind::Assign { dst: tmp, rvalue: MirRValue::Deref(MirOperand::Local(*cell)) }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal(free.to_string()),
+                        func: free_call(free),
                         args: vec![MirOperand::Local(tmp)],
                     }),
                 ]

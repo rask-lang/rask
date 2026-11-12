@@ -251,10 +251,9 @@ impl<'a> MirLowerer<'a> {
     /// What a field slot holds that has to be given back before it is written
     /// over, or `None` when it holds nothing the release walks.
     ///
-    /// A container's kind comes from the checker's type of the place, through
-    /// the head name rather than `Display`, because a resolved generic renders
-    /// as `<type#7><i64>`; the field's MIR type can be a bare `Ptr` where
-    /// lowering only had an address. A string, struct, enum or
+    /// A container or a self-freeing handle comes from the checker's type of
+    /// the place: the field's MIR type can be a bare `Ptr` where lowering only
+    /// had an address. A string, struct, enum or
     /// tuple the field's own MIR type already says, and codegen walks it for
     /// whatever it holds. Leaving the aggregates out leaked the old value of
     /// `self.active = MemTable.new()` (tiered_store).
@@ -269,10 +268,8 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
-            if let Some(head) = self.head_name(&ty) {
-                if let Some(kind) = crate::ContainerKind::from_head(&head) {
-                    return Some(MirType::Container(kind));
-                }
+            if let container @ MirType::Container(_) = self.ctx.type_to_mir(&ty) {
+                return Some(container);
             }
         }
         // A closure in a field is the aggregate's, released with it (#1253),
@@ -2677,7 +2674,8 @@ impl<'a> MirLowerer<'a> {
         // most common loop, so the fast path wins the tie.
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-                return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+                let quiet = self.ctx.quiet_loops.contains(&iter_expr.id);
+                return self.lower_for_iter_chain(label, single_name, &chain, body, binding, quiet);
             }
         }
 
@@ -3620,8 +3618,15 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         body: &[Stmt],
         for_binding: &ForBinding,
+        quiet: bool,
     ) -> Result<(), LoweringError> {
-        let setup = self.setup_iter_chain_loop_tracked(chain)?;
+        // A loop no delete can reach can't lose an entry, so it walks the
+        // list by index with nothing recorded (mem.racks/RK16).
+        let setup = if quiet {
+            self.setup_iter_chain_loop_quiet(chain)?
+        } else {
+            self.setup_iter_chain_loop_tracked(chain)?
+        };
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,

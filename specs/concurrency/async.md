@@ -1,7 +1,7 @@
 <!-- id: conc.async -->
 <!-- status: decided -->
 <!-- summary: Green tasks with must-use handles, no async/await split, explicit resource declaration -->
-<!-- depends: memory/ownership.md, memory/resource-types.md -->
+<!-- depends: memory/ownership.md, memory/resource-types.md, memory/closures.md, memory/borrowing.md -->
 
 # Execution Model
 
@@ -21,10 +21,10 @@ func serve_one(server: HttpServer, handler: func(Request) -> Response) -> void o
 | Rule | Description |
 |------|-------------|
 | **S1: Green task** | `spawn { … }` runs the block as a green task; must run with an active `using Multitasking` block in the process |
-| **S2: Pooled thread** | `ThreadPool.spawn { … }` runs the block on the thread pool; must run with an active `using ThreadPool` block |
+| **S2: Pooled thread** | `ThreadPool.spawn { … }` runs the block on the thread pool; must run with an active `using ThreadPool` block. `ThreadPool.spawn(requires_pool: false) { … }` doesn't: with no pool open, the block runs right there, before the spawn returns |
 | **S3: Raw thread** | `Thread.spawn { … }` runs the block on a new OS thread; no runtime required |
 | **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
-| **S5: The task works on copies** | Every spawn form carries what its block names into the task: a Copy value is copied, anything else is moved and the outer name is gone. A borrow can't cross (E0862), and neither can a link or a `Local` box (`mem.ownership/T2`, `conc.sync/SH7`). A write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn). The value both sides need is a `Shared` reached through a clone, or the block's result |
+| **S5: A task that leaves works on copies** | A task whose handle leaves the block that spawned it carries what its block names: a Copy value is copied, anything else is moved and the outer name is gone. A borrow can't cross (E0862), and neither can a link or a `Local` box (`mem.ownership/T2`, `conc.sync/SH7`). A write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn). The value both sides need is a `Shared` reached through a clone, or the block's result. A task joined where it was spawned borrows instead ([B1](#tasks-that-borrow)) |
 | **S6: The block runs once** | A task block isn't a closure value: nothing can name it or run it a second time. So it may use up what it captures — answer a responder, close a file, hand a value on, return it — the way any block may. A resource it captures is the task's to consume on every path (`mem.linear/L1`). A closure never may (`mem.closures/CM4`) |
 | **S7: The block's value is the result** | What the block evaluates to is what `join()` hands back. `return v` ends the task with `v`, and `try` ends it with the error, so the task's result is a `T or E`. The block is the task's whole frame, the same as a closure body is (`ctrl.flow/CF26`): the function that spawned it may have returned long before, so there is nothing further out for `return` to leave. `break` and `continue` can't reach a loop outside the block |
 
@@ -71,6 +71,52 @@ func handle_connection(conn: TcpConnection) -> void or Error {
     try conn.write(user.to_json())
 }
 ```
+
+## Tasks that borrow
+
+A closure that stays in its frame points at what it names, and one that leaves
+carries it (`mem.closures/CM1`). A task gets the same rule. If its handle is
+joined in the block that spawned it, before anything else touches the handle,
+the task can't outlive the frame, so it points at what it names. What runs
+beside it is the code between the spawn and the join.
+
+<!-- test: skip -->
+```rask
+func total(tree: Tree) -> i64 {
+    match tree {
+        Leaf(v) => return v,
+        Node(l, r) => {
+            let h = ThreadPool.spawn(requires_pool: false) { total(l) }
+            let b = total(r)
+            return try h.join() + b
+        }
+    }
+}
+```
+
+| Rule | Description |
+|------|-------------|
+| **B1: Joined here, borrowed** | `let h = <spawn> { … }` followed, later in the same block, by `h.join()` as the handle's only use: the task points at what its block names, as a closure that stays does. Nothing is copied or moved in. The join has to run whenever its statement does: not after `&&`, `\|\|` or `??`, not in a branch, a loop or a closure. A block that consumes something it names (hands it to a `take` parameter, calls a `take self` method on it, returns it, moves it into a binding) carries instead, since a task may use up what it carried in (S6). So does anything else done with the handle (stored, passed, detached) ([S5](#spawn-constructs)) |
+| **B2: No conflicts** | If the task writes a place, the code before its join may not read or write it, and the other way round. Giving a value away counts as writing it, and so does calling, or handing on, a closure that writes. Places are compared by path, so `p.x` and `p.y` are separate and `p` overlaps both. Both may read the same thing (E0960). In the statement holding the join, what's written to the join's left runs before it |
+| **B3: One side for what stays on one thread** | A `Local` box, or a value holding one, may be named by the task or the code beside it, not both (E0961). So may a function value taken from a field, a container or a call: two of those can be copies of one closure, and nothing says whether it writes what it captured. Racks and links are the exception (`mem.racks/RK16`) |
+| **B4: Function values are checked where they're passed** | A task may call a function-typed parameter. Whoever calls the function is checked instead: the same closure passed where the function may run it twice at once, when it writes what it captured, or two arguments where one writes what the other touches, is an error at the call (E0964). A declared function captures nothing and always passes. A call through a function-typed parameter is followed to what each caller passes: a declared function or a closure literal by what its body runs at once, anything else as though it may run every function argument beside every argument. An argument local to the function making the call is checked there in that cautious way. A name bound more than once is followed by none of its bindings |
+| **B5: A panic waits for the task** | If the spawning code panics before the join, the unwind waits for the task before any frame goes: the task still points into them. A borrowing task needs no `ensure` (E0882 doesn't apply) |
+| **B6: A worker's join may run the task** | A pool worker that joins a pooled task nobody has started runs it itself. A worker then only waits for a task another thread is running, so recursive spawn-and-join can't deadlock a small pool. Any other thread waits, so the pool never runs more tasks at once than it has workers |
+
+B2 is what makes the schedule not matter. Running the task first, running it
+beside the code before the join, or running that code first all give the same
+answer. That's why `requires_pool: false` may run the block on the spot: a
+library can split its work without making every caller open a pool, and runs
+in order when nobody did.
+
+Racks are the exception to B3: the task and the code beside it may both name
+one rack, its links and values holding them, as long as both only read it.
+Structural changes go into a `Staged<T>` buffer that the rack applies after
+the join (`mem.racks/RK16`–RK21).
+
+Not covered: two halves of one `Vec`. There's no way yet to lend out two
+non-overlapping index ranges of one buffer, so sorting the halves in place
+needs them in separate values.
 
 ## Must-Use Handles
 
@@ -385,6 +431,31 @@ This can happen when:
   - FFI calls back into Rask outside any scope
 
 Install a `using Multitasking { ... }` block that encloses the call.
+```
+
+```
+ERROR [conc.async/B2]: a task and the code before its join both touch `count`, and one writes it
+   |
+ 3 |  let h = ThreadPool.spawn { count += 1 }
+   |                             ^^^^^ written here
+ 4 |  print(count)
+   |        ----- read here, maybe at the same time
+   |
+FIX: give the task its own variable and combine the results after the join
+WHY: the task may run at the same time as the code before its join, so a
+     write on one side and a read on the other is a data race.
+```
+
+```
+ERROR [conc.async/B4]: these arguments may run at the same time, and they race
+   |
+ 5 |  both(tick, tick)
+   |       ^^^^  ---- may run while this one does
+   |       `tick` runs twice at once and writes what it captured
+   |
+FIX: pass closures that touch different variables, or one that only reads
+WHY: `both` runs one in a task and the other beside it, which may be on
+     different threads.
 ```
 
 ## Edge Cases

@@ -409,8 +409,17 @@ fn ensure_body_ends(
     index_of: &std::collections::HashMap<BlockId, usize>,
     head: BlockId,
 ) -> Vec<usize> {
+    ensure_body(func, index_of, head).1
+}
+
+/// The blocks of the `ensure` body starting at `head`, and the ones it ends in.
+fn ensure_body(
+    func: &MirFunction,
+    index_of: &std::collections::HashMap<BlockId, usize>,
+    head: BlockId,
+) -> (BTreeSet<usize>, Vec<usize>) {
     let mut ends = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut stack = vec![head];
     while let Some(id) = stack.pop() {
         let Some(&bi) = index_of.get(&id) else { continue };
@@ -424,25 +433,29 @@ fn ensure_body_ends(
             _ => stack.extend(cfg::successors(term)),
         }
     }
-    ends
+    (seen, ends)
 }
 
 /// Where the function leaves, and which of the values still ours are released
-/// there. `All` releases all of them; `Except(names)` and `Only(names)` those
-/// held under none, or one, of `names`.
+/// there.
 ///
 /// A return releases everything. A cleanup return releases what its `ensure`
-/// bodies don't read, and each value they do read is released at the end of
-/// the last body in the chain that reads it. Released at the cleanup return,
-/// it was freed before the bodies read it. Carried to the end of the chain,
-/// it was lost where that end is shared with an earlier cleanup return's
-/// chain, from before the value existed: there the value is only ours on
-/// some paths, and nothing is released.
+/// bodies don't read. The end of each body (its `Unreachable`) releases what
+/// the body made, and each value from before the cleanup return that this
+/// body is the last in the chain to read.
+///
+/// Released at the cleanup return, a value the bodies read was freed before
+/// they read it. Carried to the end of the chain, it was lost where that end
+/// is shared with an earlier cleanup return's chain, from before the value
+/// existed: there the value is only ours on some paths, and nothing is
+/// released. A body end can't release whatever is still ours there: the
+/// dataflow doesn't see the releases placed at an earlier body's end, so a
+/// value one body made and released still reads as ours at the next end.
 fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
     let index_of: std::collections::HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
     let mut out = Vec::new();
-    let mut at_end: std::collections::BTreeMap<usize, BTreeSet<LocalId>> = Default::default();
+    let mut at_end: std::collections::BTreeMap<usize, (BTreeSet<LocalId>, BTreeSet<usize>)> = Default::default();
     for (bi, b) in func.blocks.iter().enumerate() {
         match &b.terminator.kind {
             MirTerminatorKind::Return { .. } => out.push((bi, Exit::All)),
@@ -451,30 +464,41 @@ fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
             }
             MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
                 out.push((bi, Exit::Except(live.out[bi].clone())));
-                for &name in &live.out[bi] {
+                for &head in cleanup_chain {
+                    let (blocks, ends) = ensure_body(func, &index_of, head);
                     // Live into a body means read there or in a later one, so
-                    // the last body it's live into is the last that reads it.
-                    let last_reader = cleanup_chain.iter().rev().find(|head| {
-                        index_of.get(head).is_some_and(|&hi| live.at[hi].first().is_some_and(|l| l.contains(&name)))
-                    });
-                    let Some(&head) = last_reader else { continue };
-                    for end in ensure_body_ends(func, &index_of, head) {
-                        at_end.entry(end).or_default().insert(name);
+                    // the last body a name is live into is the last that reads it.
+                    let last_read: Vec<LocalId> = live.out[bi]
+                        .iter()
+                        .copied()
+                        .filter(|name| {
+                            let reads = |h: &BlockId| {
+                                index_of.get(h).is_some_and(|&hi| live.at[hi].first().is_some_and(|l| l.contains(name)))
+                            };
+                            cleanup_chain.iter().rev().find(|h| reads(h)) == Some(&head)
+                        })
+                        .collect();
+                    for end in ends {
+                        let entry = at_end.entry(end).or_default();
+                        entry.0.extend(last_read.iter().copied());
+                        entry.1.extend(blocks.iter().copied());
                     }
                 }
             }
             _ => {}
         }
     }
-    out.extend(at_end.into_iter().map(|(bi, names)| (bi, Exit::Only(names))));
+    out.extend(at_end.into_iter().map(|(bi, (read, made_in))| (bi, Exit::BodyEnd { read, made_in })));
     out
 }
 
 /// Which values an exit point releases.
 enum Exit {
     All,
+    /// Those held under none of these names.
     Except(BTreeSet<LocalId>),
-    Only(BTreeSet<LocalId>),
+    /// Those held under one of `read`, and those made in one of `made_in`.
+    BodyEnd { read: BTreeSet<LocalId>, made_in: BTreeSet<usize> },
 }
 
 fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(usize, usize)>) -> Live {
@@ -1375,7 +1399,9 @@ fn before_returns(
             let here = match &exit {
                 Exit::All => true,
                 Exit::Except(read) => !st.needed(*v, read),
-                Exit::Only(read) => st.needed(*v, read),
+                Exit::BodyEnd { read, made_in } => {
+                    st.needed(*v, read) || made_in.contains(&(v.block as usize))
+                }
             };
             if *owned && here {
                 if let Some(name) = pick(&st, *v, &[]) {
