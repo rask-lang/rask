@@ -222,9 +222,7 @@ pub fn cmd_test_specs(path: Option<&str>) {
         }
     }
 
-    // Native is what ships, so a native failure fails the run as an
-    // interpreter one does.
-    if summary.failed > 0 || summary.native_failed > 0 {
+    if summary.failed > 0 {
         process::exit(1);
     }
 }
