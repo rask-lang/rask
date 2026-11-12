@@ -14,6 +14,7 @@ Prose, and code that something else already verifies. Nothing else.
 | A small self-contained snippet | an inline block with `<!-- test: compile -->` or `<!-- test: run \| expected output -->` |
 | What the compiler says when you get it wrong | `\{{#include ../../errors/<chapter>/<case>.out}}` |
 | What a program prints | `\{{#include ../../../../tests/golden/<name>.out}}` |
+| Lines of a file, in a page that has to read as raw Markdown | `<!-- from: path -->` on the line above the block |
 
 `<!-- test: parse -->` does not count as verified anywhere in the book. Parsing proves the
 syntax is current; syntax is not what rots. The front-page snippet passed `test: parse`
@@ -26,6 +27,21 @@ while. What it can't tell you is whether a block has a marker at all, or whether
 it has is strong enough, which is what `tests/book_gate.sh` is for. It also checks that every include resolves: the file is
 present *and* the named anchor really is in it, because mdBook renders a missing anchor as
 nothing at all and says so quietly.
+
+## The tutorial
+
+"Learn the language" is read in a clone as often as on the site, so its chapters can't
+use `\{{#include}}`: in the raw file it's a directive, not the code. A block that shows a
+file carries `<!-- from: path -->` instead, and `tests/book_gate.sh` checks its text is a
+run of that file's lines, verbatim. That goes for program output too, pinned under
+`learn/output/`.
+
+The program is `learn/mud/`. An exercise file is that program with the bodies of the
+functions marked `// exercise NN: <task>` replaced by `todo()`, generated from the files
+`learn/exercises` lists for it. Never edit one by hand. The shell commands in the
+chapters run in order, and a command followed by an output block has to print it.
+`tests/learn_gate.sh --update` regenerates the exercises and the outputs;
+`tests/learn_gate.py` has the rules.
 
 ## Errors are content
 

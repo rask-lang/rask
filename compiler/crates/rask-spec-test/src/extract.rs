@@ -280,6 +280,16 @@ pub fn native_may_fail(source: &str) -> Option<String> {
     })
 }
 
+/// The reason after a `// test-specs: skip` line, when the file has one: a
+/// file whose tests aren't meant to pass, such as a tutorial exercise, which
+/// starts out failing until the reader fills it in.
+pub fn skipped(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("// test-specs: skip")?;
+        Some(rest.trim_start_matches(|c: char| c == ':' || c == ',' || c.is_whitespace()).to_string())
+    })
+}
+
 pub fn has_rk_tests(source: &str) -> bool {
     source.lines().any(|line| {
         let trimmed = line.trim();
@@ -290,6 +300,13 @@ pub fn has_rk_tests(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipped_reads_its_reason() {
+        let src = "// test-specs: skip: an exercise\ntest \"t\" {}\n";
+        assert_eq!(skipped(src).as_deref(), Some("an exercise"));
+        assert_eq!(skipped("test \"t\" {}\n"), None);
+    }
 
     #[test]
     fn native_may_fail_reads_its_reason() {

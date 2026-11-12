@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Generated from mud/ by `tests/learn_gate.sh --update`. Edit the MUD, not this.
+// test-specs: skip: an exercise starts with its tests failing
+
+// ── mud/greet.rk ────────────────────────────────────────────────────
+
+// The learn gate's own tutorial: one function, one exercise.
+
+// exercise 01: Greet `name` as "Hello, <name>!".
+public func greet(name: string) -> string {
+    todo()
+}
+
+test "greets by name" {
+    assert greet("ada") == "Hello, ada!"
+}
