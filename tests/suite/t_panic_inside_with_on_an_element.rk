@@ -6,10 +6,10 @@
 // panic in between released the copy as if the frame owned it, and the
 // collection's own release then freed what the copy pointed at a second time:
 // natively, the test runner that caught the panic crashed on the next test.
-// Here the panic comes from a call that gets inlined, and the write-back runs
-// before it, so the writes are kept. A field replaced before a panic that
-// unwinds from a call that isn't inlined still frees the old value twice
-// (#1922).
+// Here the panic comes from a call that gets inlined, or from `!` on an
+// error, and the write-back runs before it, so field writes are kept. A
+// field replaced before a panic that unwinds from a call that isn't inlined,
+// and a whole element replaced before a panic, are still wrong (#1922).
 
 import sync.Shared
 
@@ -71,4 +71,39 @@ test "replacing the whole element releases the old one" {
     }
     assert rooms[0].name == "the hall, a name long enough to allocate"
     assert rooms[0].items.len() == 0
+}
+
+enum Failed {
+    Always
+}
+
+func fails(n: i64) -> i64 or Failed {
+    if n > 0 {
+        return Failed.Always
+    }
+    return n
+}
+
+func force(rooms: Shared<Vec<Room>>, n: i64) {
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room.items.push("a key, in a string long enough to allocate")
+            let k = fails(n)!
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+// `!` panics a few blocks after the one where the element is last used.
+test "a panic from ! inside with leaves the element whole" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { force(other, 1) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].items.len() == 2
+    }
 }

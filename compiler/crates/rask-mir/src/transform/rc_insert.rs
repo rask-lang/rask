@@ -1156,10 +1156,12 @@ fn insert_aggregate_release(
     // Map is a copy of bytes the collection's slot still holds until the
     // write-back. Two paths don't reach that write-back:
     //
-    // - A block that ends in a call that never returns (`panic`, `todo`, `!`
-    //   on an error, a failed assert). The release placed there is the last
-    //   thing done with the element, and releasing would free what the slot
-    //   points at for the collection to free again. It writes back instead.
+    // - A block from which no path returns: every way on ends in a call that
+    //   never returns (`panic`, `todo`, `!` on an error, a failed assert),
+    //   though not always in that same block. The release placed there is the
+    //   last thing done with the element, and releasing would free what the
+    //   slot points at for the collection to free again. It writes back
+    //   instead.
     //   A release anywhere else, such as the old element a body replaced
     //   with `room = …`, stays a release.
     // - An unwind from a call that panicked. Workaround: the copy isn't armed,
@@ -1168,11 +1170,7 @@ fn insert_aggregate_release(
     //   and this frees it twice; the fix is a write-back on unwind, which needs
     //   more of the frame than an unwind release can read (#1922).
     let lent = lent_elements(func);
-    let dead_end: Vec<bool> = func
-        .blocks
-        .iter()
-        .map(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable))
-        .collect();
+    let dead_end = never_returns(func);
     let guards = ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = ownership::place_unwind(
         func,
@@ -2557,4 +2555,36 @@ fn lent_elements(func: &MirFunction) -> HashMap<LocalId, (&'static str, MirOpera
             return out;
         }
     }
+}
+
+
+/// Blocks no path from which reaches the function's return: each one leads
+/// only to a call that never returns. An `ensure` body's end counts as a
+/// return, since codegen turns it into one.
+fn never_returns(func: &MirFunction) -> Vec<bool> {
+    let index: HashMap<BlockId, usize> = func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let cleanup = cfg::cleanup_only_blocks(func);
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
+    let mut returns = Vec::new();
+    for (i, b) in func.blocks.iter().enumerate() {
+        match &b.terminator.kind {
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => returns.push(i),
+            MirTerminatorKind::Unreachable if cleanup.contains(&b.id) => returns.push(i),
+            _ => {}
+        }
+        for s in cfg::successors(&b.terminator) {
+            if let Some(&si) = index.get(&s) {
+                preds[si].push(i);
+            }
+        }
+    }
+    let mut reaches = vec![false; func.blocks.len()];
+    while let Some(i) = returns.pop() {
+        if reaches[i] {
+            continue;
+        }
+        reaches[i] = true;
+        returns.extend(preds[i].iter().copied());
+    }
+    reaches.into_iter().map(|r| !r).collect()
 }
