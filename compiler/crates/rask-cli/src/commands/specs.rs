@@ -99,7 +99,7 @@ pub fn cmd_test_specs(path: Option<&str>) {
             }
         };
 
-        if !has_rk_tests(&content) {
+        if !has_rk_tests(&content) || rask_spec_test::skipped(&content).is_some() {
             continue;
         }
 
