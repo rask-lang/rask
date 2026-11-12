@@ -428,16 +428,17 @@ fn ensure_body_ends(
 }
 
 /// Where the function leaves, and which of the values still ours are released
-/// there. `None` releases all of them; `Some(names)` only those held under one
-/// of `names`.
+/// there. `All` releases all of them; `Except(names)` and `Only(names)` those
+/// held under none, or one, of `names`.
 ///
 /// A return releases everything. A cleanup return releases what its `ensure`
-/// bodies don't read, and the end of its last body (an `Unreachable` with
-/// nowhere further to go) releases what they do. Releasing what the bodies
-/// read at the cleanup return freed it before they read it; carrying
-/// everything to the end lost the release where two cleanup returns meet in
-/// one chain and only one of them brought the value.
-fn exit_points(func: &MirFunction, sh: &Shape, live: &Live) -> Vec<(usize, Exit)> {
+/// bodies don't read, and each value they do read is released at the end of
+/// the last body in the chain that reads it. Released at the cleanup return,
+/// it was freed before the bodies read it. Carried to the end of the chain,
+/// it was lost where that end is shared with an earlier cleanup return's
+/// chain, from before the value existed: there the value is only ours on
+/// some paths, and nothing is released.
+fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
     let index_of: std::collections::HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
     let mut out = Vec::new();
@@ -445,17 +446,23 @@ fn exit_points(func: &MirFunction, sh: &Shape, live: &Live) -> Vec<(usize, Exit)
     for (bi, b) in func.blocks.iter().enumerate() {
         match &b.terminator.kind {
             MirTerminatorKind::Return { .. } => out.push((bi, Exit::All)),
-            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => match cleanup_chain.last() {
-                None => out.push((bi, Exit::All)),
-                Some(&last) => {
-                    out.push((bi, Exit::Except(live.out[bi].clone())));
-                    for end in ensure_body_ends(func, &index_of, last) {
-                        if sh.succs[end].is_empty() {
-                            at_end.entry(end).or_default().extend(live.out[bi].iter().copied());
-                        }
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } if cleanup_chain.is_empty() => {
+                out.push((bi, Exit::All));
+            }
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
+                out.push((bi, Exit::Except(live.out[bi].clone())));
+                for &name in &live.out[bi] {
+                    // Live into a body means read there or in a later one, so
+                    // the last body it's live into is the last that reads it.
+                    let last_reader = cleanup_chain.iter().rev().find(|head| {
+                        index_of.get(head).is_some_and(|&hi| live.at[hi].first().is_some_and(|l| l.contains(&name)))
+                    });
+                    let Some(&head) = last_reader else { continue };
+                    for end in ensure_body_ends(func, &index_of, head) {
+                        at_end.entry(end).or_default().insert(name);
                     }
                 }
-            },
+            }
             _ => {}
         }
     }
@@ -1139,7 +1146,7 @@ pub fn plan_carrying(
         let found = on_edges(func, facts, &sh, &live, &entries, &exits, &kills, &later, placement);
         if found.is_empty() {
             if placement == Placement::ScopeEnd {
-                before_returns(func, facts, &sh, &live, &entries, &kills, &mut flags, &mut out);
+                before_returns(func, facts, &live, &entries, &kills, &mut flags, &mut out);
             }
             break;
         }
@@ -1299,8 +1306,13 @@ fn on_edges(
     for pi in 0..func.blocks.len() {
         let Some(px) = &exits[pi] else { continue };
         // A cleanup return's successors are the `ensure` blocks it runs on the
-        // way out; what it returns flows through them to the caller.
-        if matches!(func.blocks[pi].terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+        // way out; what it returns flows through them to the caller. And the
+        // end of one body leads to the next by codegen's jump, not a branch
+        // an edge's release can be put on: `exit_points` places those.
+        if matches!(
+            func.blocks[pi].terminator.kind,
+            MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Unreachable
+        ) {
             continue;
         }
         let mut p_out = live.out[pi].clone();
@@ -1349,14 +1361,13 @@ fn on_edges(
 fn before_returns(
     func: &MirFunction,
     facts: &Facts,
-    sh: &Shape,
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
     flags: &mut FlagIndex,
     out: &mut Vec<Release>,
 ) {
-    for (bi, exit) in exit_points(func, sh, live) {
+    for (bi, exit) in exit_points(func, live) {
         let Some(e) = &entries[bi] else { continue };
         let st = transfer(func, facts, live, bi, e, kills, &mut HashSet::new());
         let len = func.blocks[bi].statements.len();

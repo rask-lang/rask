@@ -3231,13 +3231,13 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let return_blocks = exit_blocks(func);
+    let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
-    for (block_idx, consumed_here) in return_blocks {
-        let exit = func.blocks[block_idx].id;
-        for (cell, holds, store_block) in cells {
+    for (ci, (cell, holds, store_block)) in cells.iter().enumerate() {
+        for (block_idx, consumed_here) in exits[ci].clone() {
+            let exit = func.blocks[block_idx].id;
             if !dom.dominates(*store_block, exit) {
                 continue;
             }
@@ -3368,8 +3368,12 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
 /// value the ensure body is about to use. So for those, follow the chain to its
 /// ends. The chain's bodies run one after another: codegen turns the end of
 /// each into a jump to the next, and only the last body's ends into the actual
-/// return, so those are the frame's real exits. Freeing at the end of every
-/// body freed a `Vec` two `ensure`s read before the second one read it.
+/// return. A cell is freed at the end of the last body that reads it, or of
+/// the last body if none does. Freeing at the end of every body freed a `Vec`
+/// two `ensure`s read before the second one read it. Freeing only at the end
+/// of the chain lost a value made after an early return: that end is shared
+/// with the early return's chain, where the value doesn't exist, so the store
+/// doesn't dominate it.
 ///
 /// Each exit also carries the slots that must not be freed *there*: the ones
 /// an `ensure`'s registered resource names, on the arm reached because that
@@ -3384,7 +3388,7 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
 /// cell down for any value anything hands away, which is true today and is
 /// still an argument rather than a check. `ResourceRegister` names its slot, so
 /// this asks the question directly: this arm, this slot, no free.
-fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
+fn exit_blocks(func: &MirFunction, cell: LocalId) -> Vec<(usize, HashSet<LocalId>)> {
     let index: HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
     // The runtime token each registration hands back, and the slot it is about.
@@ -3432,7 +3436,12 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                         out.push((index[&block.id], HashSet::new()));
                     }
                 } else {
-                    queue.push((cleanup_chain[0], HashSet::new(), cleanup_chain[1..].to_vec()));
+                    let last_reader = cleanup_chain
+                        .iter()
+                        .rposition(|head| ensure_body_reads(func, *head, cell))
+                        .unwrap_or(cleanup_chain.len() - 1);
+                    let run = &cleanup_chain[..=last_reader];
+                    queue.push((run[0], HashSet::new(), run[1..].to_vec()));
                 }
             }
             _ => {}
@@ -3479,6 +3488,28 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
         }
     }
     out
+}
+
+/// Whether the `ensure` body starting at `head` reads `cell`.
+fn ensure_body_reads(func: &MirFunction, head: BlockId, cell: LocalId) -> bool {
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    let mut stack = vec![head];
+    while let Some(bid) = stack.pop() {
+        if !seen.insert(bid) {
+            continue;
+        }
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        if block.statements.iter().any(|st| crate::analysis::uses::stmt_reads(st, cell)) {
+            return true;
+        }
+        if !matches!(
+            block.terminator.kind,
+            MirTerminatorKind::Unreachable | MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
+        ) {
+            stack.extend(crate::analysis::cfg::successors(&block.terminator));
+        }
+    }
+    false
 }
 
 /// Does every closure that captured `cell` only ever read it?

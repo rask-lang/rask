@@ -9,6 +9,11 @@
 // placed before any ensure body ran, so even one ensure read a freed rack.
 // A plain `Vec` or `Map` had the first problem in a second pass, which frees
 // a container kept in a slot at the end of every ensure body.
+//
+// Each value is released at the end of the last ensure body that reads it.
+// Released at the end of the whole chain instead, a value made after an early
+// return leaked: that end is shared with the early return's chain, where the
+// value doesn't exist yet, so neither pass could release it there.
 
 import memory.Rack
 
@@ -53,6 +58,21 @@ func plain_containers(mutate seen: Vec<u64>) {
     m.insert("another key long enough to sit on the heap", 1)
 }
 
+func after_an_early_return(early: bool, mutate seen: Vec<u64>) {
+    mut x: Vec<string> = Vec.new()
+    x.push("a heap string that is long enough to allocate one")
+    ensure seen.push(x.len())
+    if early {
+        return
+    }
+    mut y: Vec<string> = Vec.new()
+    y.push("a heap string that is long enough to allocate two")
+    ensure seen.push(y.len())
+    mut n = Names(list: Vec.new())
+    n.list.push("a third heap string, held in a struct this time")
+    ensure count(n, mutate seen)
+}
+
 func rack_in_ensure(mutate out: Vec<string>) {
     mut w = World(rooms: Rack.new())
     ensure out.push(room_names(w))
@@ -82,4 +102,11 @@ test "two ensures read a plain Vec and Map" {
     assert seen.len() == 2
     assert seen[0] == 2
     assert seen[1] == 2
+}
+
+test "a value made after an early return is released once" {
+    mut seen: Vec<u64> = Vec.new()
+    after_an_early_return(false, mutate seen)
+    after_an_early_return(true, mutate seen)
+    assert seen.len() == 4
 }
