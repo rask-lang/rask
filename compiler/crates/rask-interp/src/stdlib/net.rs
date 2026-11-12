@@ -239,22 +239,28 @@ fn wait_ready(
     }
 }
 
-/// A socket a cancel can interrupt (conc.async/CN3). In a task it's
-/// non-blocking while this is alive, and a call that would block waits in
+/// A socket a cancel can interrupt (conc.async/CN3). In a task each call
+/// asks not to wait (`MSG_DONTWAIT`), and one that would wait does so in
 /// `wait_ready`; outside one it's the plain blocking socket.
+///
+/// Per call, not `set_nonblocking`: that flag belongs to the socket, which
+/// every clone of the connection shares. A task clearing it on its way out
+/// put a socket another task was reading back into blocking mode, and that
+/// read could no longer be cancelled.
 struct Cancellable {
     s: std::net::TcpStream,
     token: Option<Arc<crate::value::CancelToken>>,
 }
 
+#[cfg(target_os = "linux")]
+const SEND_FLAGS: libc::c_int = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
+// Elsewhere std sets SO_NOSIGPIPE on the socket when it makes it.
+#[cfg(not(target_os = "linux"))]
+const SEND_FLAGS: libc::c_int = libc::MSG_DONTWAIT;
+
 impl Cancellable {
     fn new(s: &std::net::TcpStream) -> std::io::Result<Self> {
-        let s = s.try_clone()?;
-        let token = crate::value::current_cancel();
-        if token.is_some() {
-            s.set_nonblocking(true)?;
-        }
-        Ok(Cancellable { s, token })
+        Ok(Cancellable { s: s.try_clone()?, token: crate::value::current_cancel() })
     }
 
     fn retry<T>(
@@ -280,26 +286,43 @@ impl Cancellable {
     }
 }
 
-impl Drop for Cancellable {
-    fn drop(&mut self) {
-        if self.token.is_some() {
-            let _ = self.s.set_nonblocking(false);
-        }
+/// `n` from a `recv`/`send`, or the error it set.
+fn sock_result(n: isize) -> std::io::Result<usize> {
+    if n < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(n as usize)
     }
 }
 
 impl Read for Cancellable {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.retry(false, |s| s.read(buf))
+        use std::os::fd::AsRawFd;
+        if self.token.is_none() {
+            return self.s.read(buf);
+        }
+        self.retry(false, |s| {
+            let n = unsafe {
+                libc::recv(s.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len(), libc::MSG_DONTWAIT)
+            };
+            sock_result(n)
+        })
     }
 }
 
 impl Write for Cancellable {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.retry(true, |s| s.write(buf))
+        use std::os::fd::AsRawFd;
+        if self.token.is_none() {
+            return self.s.write(buf);
+        }
+        self.retry(true, |s| {
+            let n = unsafe { libc::send(s.as_raw_fd(), buf.as_ptr() as *const libc::c_void, buf.len(), SEND_FLAGS) };
+            sock_result(n)
+        })
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.retry(true, |s| s.flush())
+        Ok(())
     }
 }
 
