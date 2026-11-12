@@ -1430,6 +1430,20 @@ impl CodeGenerator {
                 &mir_fn.name
             };
 
+            // Only what C reaches by name is global: `extern "C"` functions,
+            // the entry point and the constants' release. Everything else is
+            // local to the object. A global `write` or `read` in the program
+            // was the one the linker handed the C runtime, so `sock_write`'s
+            // call to libc's `write(2)` ran a Rask function instead.
+            let linkage = if mir_fn.is_extern_c
+                || mir_fn.name == "main"
+                || mir_fn.name == rask_mir::CONST_FREE_FN
+            {
+                Linkage::Export
+            } else {
+                Linkage::Local
+            };
+
             // C calls it with a struct by value: the exported name goes to a
             // thunk that follows C's rules, and the body keeps Rask's.
             let func_id = match self.c_entry_plan(mir_fn) {
@@ -1438,7 +1452,7 @@ impl CodeGenerator {
                     self.declare_c_entry(mir_fn, &export_name, &sig, params, ret)?
                 }
                 None => self.module
-                    .declare_function(export_name, Linkage::Export, &sig)
+                    .declare_function(export_name, linkage, &sig)
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?,
             };
 

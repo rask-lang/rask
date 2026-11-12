@@ -3231,13 +3231,13 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let return_blocks = exit_blocks(func);
+    let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
-    for (block_idx, consumed_here) in return_blocks {
-        let exit = func.blocks[block_idx].id;
-        for (cell, holds, store_block) in cells {
+    for (ci, (cell, holds, store_block)) in cells.iter().enumerate() {
+        for (block_idx, consumed_here) in exits[ci].clone() {
+            let exit = func.blocks[block_idx].id;
             if !dom.dominates(*store_block, exit) {
                 continue;
             }
@@ -3366,8 +3366,14 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
 /// it names a chain of blocks that run *after* it, which is where an `ensure`
 /// body lives, and appending the free to the `cleanup_return` block frees the
 /// value the ensure body is about to use. So for those, follow the chain to its
-/// ends — codegen turns a cleanup block with nowhere left to go into the actual
-/// return, so those ends are the frame's real exits.
+/// ends. The chain's bodies run one after another: codegen turns the end of
+/// each into a jump to the next, and only the last body's ends into the actual
+/// return. A cell is freed at the end of the last body that reads it, or of
+/// the last body if none does. Freeing at the end of every body freed a `Vec`
+/// two `ensure`s read before the second one read it. Freeing only at the end
+/// of the chain lost a value made after an early return: that end is shared
+/// with the early return's chain, where the value doesn't exist, so the store
+/// doesn't dominate it.
 ///
 /// Each exit also carries the slots that must not be freed *there*: the ones
 /// an `ensure`'s registered resource names, on the arm reached because that
@@ -3382,7 +3388,7 @@ fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> Has
 /// cell down for any value anything hands away, which is true today and is
 /// still an argument rather than a check. `ResourceRegister` names its slot, so
 /// this asks the question directly: this arm, this slot, no free.
-fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
+fn exit_blocks(func: &MirFunction, cell: LocalId) -> Vec<(usize, HashSet<LocalId>)> {
     let index: HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
     // The runtime token each registration hands back, and the slot it is about.
@@ -3414,7 +3420,9 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
 
     let mut out: Vec<(usize, HashSet<LocalId>)> = Vec::new();
     let mut seen: HashSet<BlockId> = HashSet::new();
-    let mut queue: Vec<(BlockId, HashSet<LocalId>)> = Vec::new();
+    // A block, what was consumed on the way, and the bodies still to run
+    // after the one this block is in.
+    let mut queue: Vec<(BlockId, HashSet<LocalId>, Vec<BlockId>)> = Vec::new();
     for block in &func.blocks {
         match &block.terminator.kind {
             MirTerminatorKind::Return { .. } => {
@@ -3428,18 +3436,23 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                         out.push((index[&block.id], HashSet::new()));
                     }
                 } else {
-                    queue.extend(cleanup_chain.iter().map(|b| (*b, HashSet::new())));
+                    let last_reader = cleanup_chain
+                        .iter()
+                        .rposition(|head| ensure_body_reads(func, *head, cell))
+                        .unwrap_or(cleanup_chain.len() - 1);
+                    let run = &cleanup_chain[..=last_reader];
+                    queue.push((run[0], HashSet::new(), run[1..].to_vec()));
                 }
             }
             _ => {}
         }
     }
 
-    let mut walked: HashSet<(BlockId, bool)> = HashSet::new();
-    while let Some((bid, consumed)) = queue.pop() {
+    let mut walked: HashSet<(BlockId, bool, Vec<BlockId>)> = HashSet::new();
+    while let Some((bid, consumed, rest)) = queue.pop() {
         // Keyed on whether anything was consumed on the way, so a block reached
         // both ways is walked both ways and keeps the narrower answer.
-        if !walked.insert((bid, !consumed.is_empty())) {
+        if !walked.insert((bid, !consumed.is_empty(), rest.clone())) {
             continue;
         }
         let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
@@ -3458,6 +3471,10 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                 .collect(),
         };
         if next.is_empty() {
+            if let Some((&body, later)) = rest.split_first() {
+                queue.push((body, consumed, later.to_vec()));
+                continue;
+            }
             match out.iter_mut().find(|(i, _)| *i == index[&bid]) {
                 // Reached twice: free only what neither path consumed.
                 Some((_, skip)) => skip.retain(|s| consumed.contains(s)),
@@ -3467,10 +3484,32 @@ fn exit_blocks(func: &MirFunction) -> Vec<(usize, HashSet<LocalId>)> {
                 }
             }
         } else {
-            queue.extend(next);
+            queue.extend(next.into_iter().map(|(b, c)| (b, c, rest.clone())));
         }
     }
     out
+}
+
+/// Whether the `ensure` body starting at `head` reads `cell`.
+fn ensure_body_reads(func: &MirFunction, head: BlockId, cell: LocalId) -> bool {
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    let mut stack = vec![head];
+    while let Some(bid) = stack.pop() {
+        if !seen.insert(bid) {
+            continue;
+        }
+        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
+        if block.statements.iter().any(|st| crate::analysis::uses::stmt_reads(st, cell)) {
+            return true;
+        }
+        if !matches!(
+            block.terminator.kind,
+            MirTerminatorKind::Unreachable | MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
+        ) {
+            stack.extend(crate::analysis::cfg::successors(&block.terminator));
+        }
+    }
+    false
 }
 
 /// Does every closure that captured `cell` only ever read it?

@@ -269,6 +269,17 @@ fn is_rask_code_fence(line: &str) -> bool {
 ///
 /// Returns true if the file has `test "..."` blocks, making it eligible for
 /// differential testing via `rask test <file>`.
+/// The reason after a `// test-specs: native may fail` line, when the file
+/// has one: a program whose plain native run fails some of the time on
+/// purpose, such as a race shown off for sim to find. Its native failures are
+/// shown and don't fail the run.
+pub fn native_may_fail(source: &str) -> Option<String> {
+    source.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("// test-specs: native may fail")?;
+        Some(rest.trim_start_matches(|c: char| c == ':' || c == ',' || c.is_whitespace()).to_string())
+    })
+}
+
 pub fn has_rk_tests(source: &str) -> bool {
     source.lines().any(|line| {
         let trimmed = line.trim();
@@ -279,6 +290,13 @@ pub fn has_rk_tests(source: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_may_fail_reads_its_reason() {
+        let src = "// A race.\n//\n// test-specs: native may fail: timing decides\ntest \"t\" {}\n";
+        assert_eq!(native_may_fail(src).as_deref(), Some("timing decides"));
+        assert_eq!(native_may_fail("test \"t\" {}\n"), None);
+    }
 
     fn parse_single(line: &str) -> Option<Expectation> {
         parse_annotation_multi(&[line], 0).map(|(e, _)| e)

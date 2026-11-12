@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One player's line in, the game's answer out. The terminal loop, the server
+// and the tests all go through here.
+
+public func respond(mutate world: World, name: string, line: string) -> Outcome {
+    let cmd = parse(line) catch e => return reply(e.message())
+    return apply(mutate world, name, cmd)
+}
+
+// A list of commands standing in for a player, and every reply they got.
+public func script(mutate world: World, name: string, lines: Vec<string>) -> Vec<string> {
+    mut replies = Vec.new()
+    replies.push(enter(mutate world, name, START)!.reply)
+    for line in lines {
+        replies.push(respond(mutate world, name, line).reply)
+    }
+    return replies
+}
+
+test "walking to the hall" {
+    mut w = default_world()
+    let out = script(mutate w, "ada", ["n", "e"])
+    assert out[2].starts_with("Hall\n")
+    assert out[2].contains("You see coin.")
+}
+
+test "picking something up moves it" {
+    mut w = default_world()
+    let before = w.item_count()
+    let out = script(mutate w, "ada", ["take lamp", "look", "i"])
+    assert out[1] == "You take the lamp."
+    assert out[2].contains("You see nothing.")
+    assert out[3] == "You carry lamp."
+    assert w.item_count() == before
+}
+
+test "a dead end and a typo" {
+    mut w = default_world()
+    let out = script(mutate w, "ada", ["w", "dance"])
+    assert out[1] == "You can't go west."
+    assert out[2] == "I don't know how to 'dance'. Try 'help'."
+}
+
+test "two players in one room hear each other" {
+    mut w = default_world()
+    enter(mutate w, "ada", START)!
+    let joined = enter(mutate w, "bo", START)!
+    assert joined.heard.len() == 1
+    assert joined.heard[0].to == "ada"
+    assert joined.heard[0].text == "bo arrives."
+    let said = respond(mutate w, "ada", "say hi")
+    assert said.heard[0].to == "bo"
+    assert said.heard[0].text == "ada says \"hi\""
+}
+
+test "a collapsed tunnel leaves a blocked exit" {
+    mut w = default_world()
+    assert w.collapse("Tunnel")
+    let out = script(mutate w, "ada", ["look", "s"])
+    assert out[1].contains("Exits: north and south (blocked).")
+    assert out[2] == "Rubble blocks the way south."
+}
+
+test "leaving drops what you carried" {
+    mut w = default_world()
+    let _ = script(mutate w, "ada", ["take lamp", "n"])
+    let _ = leave(deleting w, "ada")
+    let yard = w.room("Courtyard")!
+    assert find_item(yard.items, "lamp")?
+}
+
+test "the rat wanders" {
+    mut w = default_world()
+    let heard = tick(mutate w, 0)
+    assert heard.is_empty()
+    let rat = w.monsters.nodes()[0]
+    assert rat.at!.name != "Cellar"
+}
+
+test "a name already in the game is refused" {
+    mut w = default_world()
+    enter(mutate w, "ada", START)!
+    assert enter(mutate w, "ada", START) is EnterError.NameTaken
+    assert enter(mutate w, "", START) is EnterError.NoName
+    assert w.players.len() == 1
+}
