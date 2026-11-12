@@ -195,12 +195,39 @@ fn suggestion(fields: &[String], index: usize, value: &str) -> String {
     }
 }
 
+/// The type parameters a declaration writes: its own, and each of its
+/// functions'.
+fn declared_type_params(decl: &Decl) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut add = |tps: &[rask_ast::decl::TypeParam]| names.extend(tps.iter().map(|t| t.name.clone()));
+    match &decl.kind {
+        DeclKind::Fn(f) => add(&f.type_params),
+        DeclKind::Struct(s) => {
+            add(&s.type_params);
+            s.methods.iter().for_each(|m| add(&m.type_params));
+        }
+        DeclKind::Enum(e) => {
+            add(&e.type_params);
+            e.methods.iter().for_each(|m| add(&m.type_params));
+        }
+        DeclKind::Impl(i) => {
+            // `extend Holder<T>`: the header names the parameters.
+            names.extend(i.target_ty.args().iter().filter_map(|a| a.bare_name().map(str::to_string)));
+            let mut add = |tps: &[rask_ast::decl::TypeParam]| names.extend(tps.iter().map(|t| t.name.clone()));
+            i.methods.iter().for_each(|m| add(&m.type_params));
+        }
+        _ => {}
+    }
+    names
+}
+
 /// Turn constructions written as calls into struct literals, everywhere.
 pub fn resolve_constructions(decls: &mut [Decl], stdlib: &[Decl]) -> Vec<DesugarError> {
     let shapes = Shapes::collect(decls, stdlib);
     let mut errors = Vec::new();
     for decl in decls.iter_mut() {
-        let mut pass = Construct { shapes: &shapes, errors: &mut errors, at: decl.span, placed: HashSet::new() };
+        let type_params = declared_type_params(decl);
+        let mut pass = Construct { shapes: &shapes, errors: &mut errors, at: decl.span, placed: HashSet::new(), type_params };
         rewrite::rewrite_decl(decl, &mut pass);
     }
     errors
@@ -215,6 +242,9 @@ struct Construct<'a> {
     /// `is` test's, a destructuring `let`'s — by address, so the walk that
     /// reaches them afterwards leaves them be.
     placed: HashSet<*const Pattern>,
+    /// The type parameters the declaration being walked names, its own and
+    /// its functions'. `Q(comptime for … )` builds a `Q` (ctrl.comptime/CT73).
+    type_params: HashSet<String>,
 }
 
 impl Construct<'_> {
@@ -229,6 +259,20 @@ impl Construct<'_> {
         let mut fields = Vec::new();
         let mut spread = None;
         for (i, arg) in args.iter().enumerate() {
+            // CT69: a `comptime for` gives fields by computed label, which
+            // the instance settles. It stays as written, under no name.
+            if matches!(arg.expr.kind, ExprKind::Splice(_)) {
+                fields.push(FieldInit { name: String::new(), value: arg.expr.clone() });
+                continue;
+            }
+            if arg.computed_label.is_some() {
+                self.error(
+                    format!("a computed label in `{}(…)` names a field a `comptime for` gives; write the field's name here", name),
+                    "the label is worked out at compile time",
+                    arg.expr.span,
+                );
+                continue;
+            }
             match (arg.mode, &arg.name) {
                 (ArgMode::Spread, _) => spread = Some(Box::new(arg.expr.clone())),
                 (ArgMode::Mutate | ArgMode::Deleting, _) => self.error(
@@ -300,6 +344,15 @@ impl Rewrite for Construct<'_> {
         }
         let labelled = |args: &[CallArg]| args.iter().any(|a| a.name.is_some() || a.mode == ArgMode::Spread);
         let built = match &e.kind {
+            // A type parameter built field by field: only a `comptime for`
+            // knows its fields (CT73).
+            ExprKind::Call { func, args }
+                if matches!(&func.kind, ExprKind::Ident(n) if self.type_params.contains(n))
+                    && args.iter().any(|a| matches!(a.expr.kind, ExprKind::Splice(_))) =>
+            {
+                let ExprKind::Ident(name) = &func.kind else { unreachable!() };
+                Some((name.clone(), Vec::new(), args.clone(), Vec::new()))
+            }
             ExprKind::Call { func, args } => callee_path(func).and_then(|(path, type_args)| {
                 let fields = self.shapes.built_fields(&path, labelled(args), false)?;
                 Some((path.join("."), type_args, args.clone(), fields))

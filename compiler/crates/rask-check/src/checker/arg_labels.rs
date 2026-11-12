@@ -172,7 +172,7 @@ impl TypeChecker {
             .map(|p| match p {
                 Placement::Written(i) => args.get(*i).cloned(),
                 Placement::Default(expr) => {
-                    Some(CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() })
+                    Some(CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: expr.clone() })
                 }
             })
             .collect()

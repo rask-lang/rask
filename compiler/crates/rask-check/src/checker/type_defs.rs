@@ -260,7 +260,7 @@ impl TypedProgram {
                     .iter()
                     .map(|p| match p {
                         PlacedArg::Written(i) => written[*i].clone(),
-                        PlacedArg::Default(expr) => CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() },
+                        PlacedArg::Default(expr) => CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: expr.clone() },
                     })
                     .collect();
                 if let Some(hoist) = self.hoists.get(&e.id) {
@@ -479,8 +479,8 @@ impl rask_ast::rewrite::Rewrite for Calls<'_> {
             e.kind = old;
             return;
         };
-        let mut call_args = vec![CallArg { name: None, mode: ArgMode::Default, expr: *object }];
-        call_args.extend(args.drain(..).map(|a| CallArg { name: None, mode: ArgMode::Default, expr: a.expr }));
+        let mut call_args = vec![CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: *object }];
+        call_args.extend(args.drain(..).map(|a| CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: a.expr }));
         e.kind = ExprKind::Call {
             func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
             args: call_args,

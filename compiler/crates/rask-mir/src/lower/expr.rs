@@ -1449,6 +1449,15 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        // A copy a list made of an entry its `comptime for` gives: lowered
+        // with the loop items it was written under (`lower/splice.rs`).
+        if let Some(items) = self.entry_scope(expr) {
+            let key = expr as *const Expr as usize;
+            self.entry_items.remove(&key);
+            let result = self.with_entry_items(items.clone(), |this| this.lower_expr(expr));
+            self.entry_items.insert(key, items);
+            return result;
+        }
         // ER16a: this is the chain step an enclosing `try` attached to. Lower it,
         // then branch right here — the rest of the chain then works on the
         // payload, which is what `(try read_file(p)).len()` means.
@@ -1573,6 +1582,11 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Bool(b) => Ok((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
             // StringInterp is desugared to concat chains before MIR lowering
             ExprKind::StringInterp(_) => unreachable!("StringInterp should be desugared before MIR"),
+            // A list expands its entries before lowering them (CT69); one
+            // anywhere else has no list to stand in.
+            ExprKind::Splice(_) => Err(LoweringError::InvalidConstruct(
+                "`comptime for`/`comptime if` stands for list entries, and this one isn't in a list".into(),
+            )),
             ExprKind::None => self.lower_none(expr),
             // Variable reference (or bare enum variant like None)
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => self.lower_ident(expr, name),
@@ -1581,6 +1595,55 @@ impl<'a> MirLowerer<'a> {
 
             // Unary operations (only !, &, * survive desugar)
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand),
+
+            // CT69: lists with `comptime for`/`comptime if` entries, flattened
+            // for this instance and then lowered like any other
+            // (`lower/splice.rs`).
+            ExprKind::Call { func, args } if Self::is_spliced(args.iter().map(|a| &a.expr)) => {
+                let flat = self.flatten_entries(args)?;
+                let (args, items): (Vec<CallArg>, Vec<_>) = flat.into_iter().unzip();
+                self.scope_entries(args.iter().map(|a| &a.expr).zip(items.iter()));
+                let result = self.lower_call(expr, func, &args);
+                self.unscope_entries(args.iter().map(|a| &a.expr));
+                result
+            }
+            ExprKind::MethodCall { object, method, args, type_args }
+                if Self::is_spliced(args.iter().map(|a| &a.expr)) =>
+            {
+                let type_args = &self.checked_type_args(type_args);
+                let flat = self.flatten_entries(args)?;
+                let (args, items): (Vec<CallArg>, Vec<_>) = flat.into_iter().unzip();
+                self.scope_entries(args.iter().map(|a| &a.expr).zip(items.iter()));
+                let result = self.lower_method_call(expr, object, method, &args, type_args);
+                self.unscope_entries(args.iter().map(|a| &a.expr));
+                result
+            }
+            ExprKind::Array(elems) if Self::is_spliced(elems.iter()) => {
+                let as_args: Vec<CallArg> = elems.iter().cloned().map(CallArg::plain).collect();
+                let flat = self.flatten_entries(&as_args)?;
+                let (elems, items): (Vec<Expr>, Vec<_>) = flat.into_iter().map(|(a, i)| (a.expr, i)).unzip();
+                self.scope_entries(elems.iter().zip(items.iter()));
+                let result = self.lower_array(expr, &elems);
+                self.unscope_entries(elems.iter());
+                result
+            }
+            ExprKind::Tuple(elems) if Self::is_spliced(elems.iter()) => {
+                let as_args: Vec<CallArg> = elems.iter().cloned().map(CallArg::plain).collect();
+                let flat = self.flatten_entries(&as_args)?;
+                let (elems, items): (Vec<Expr>, Vec<_>) = flat.into_iter().map(|(a, i)| (a.expr, i)).unzip();
+                self.scope_entries(elems.iter().zip(items.iter()));
+                let result = self.lower_tuple(expr, &elems);
+                self.unscope_entries(elems.iter());
+                result
+            }
+            ExprKind::StructLit { name, fields, spread, .. } if Self::is_spliced(fields.iter().map(|f| &f.value)) => {
+                let flat = self.flatten_fields(fields)?;
+                let (fields, items): (Vec<FieldInit>, Vec<_>) = flat.into_iter().unzip();
+                self.scope_entries(fields.iter().map(|f| &f.value).zip(items.iter()));
+                let result = self.lower_struct_lit(expr, name, &fields, spread.as_deref());
+                self.unscope_entries(fields.iter().map(|f| &f.value));
+                result
+            }
 
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {

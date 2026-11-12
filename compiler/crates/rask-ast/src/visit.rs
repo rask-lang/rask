@@ -151,13 +151,13 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         ExprKind::Call { func, args } => {
             visit_expr(func, v);
             for a in args {
-                visit_expr(&a.expr, v);
+                visit_arg(a, v);
             }
         }
         ExprKind::MethodCall { object, args, .. } => {
             visit_expr(object, v);
             for a in args {
-                visit_expr(&a.expr, v);
+                visit_arg(a, v);
             }
         }
 
@@ -177,6 +177,16 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => visit_body(body, v),
+
+        ExprKind::Splice(splice) => {
+            match &**splice {
+                crate::expr::Splice::For { iter, .. } => visit_expr(iter, v),
+                crate::expr::Splice::If { cond, .. } => visit_expr(cond, v),
+            }
+            for a in splice.entries() {
+                visit_arg(a, v);
+            }
+        }
 
         ExprKind::If { cond, then_branch, else_branch, .. } => {
             visit_expr(cond, v);
@@ -254,7 +264,7 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
 
         ExprKind::UsingBlock { args, body, .. } => {
             for a in args {
-                visit_expr(&a.expr, v);
+                visit_arg(a, v);
             }
             visit_body(body, v);
         }
@@ -307,6 +317,14 @@ pub fn walk_stmt<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr)) {
 /// Every expression in `stmt` and below it, the visitor deciding where to stop.
 pub fn walk_stmt_pruned<'a>(stmt: &'a Stmt, f: &mut impl FnMut(&'a Expr) -> bool) {
     visit_stmt(stmt, &mut ExprsOnly(f));
+}
+
+/// An argument or list entry: its computed label, then its value.
+pub fn visit_arg<'a>(a: &'a crate::expr::CallArg, v: &mut impl Visit<'a>) {
+    if let Some(label) = &a.computed_label {
+        visit_expr(label, v);
+    }
+    visit_expr(&a.expr, v);
 }
 
 pub fn visit_stmt<'a>(stmt: &'a Stmt, v: &mut impl Visit<'a>) {
@@ -449,7 +467,7 @@ mod tests {
     fn a_node_comes_before_its_children() {
         let call = e(ExprKind::Call {
             func: Box::new(ident("f")),
-            args: vec![CallArg { name: None, mode: ArgMode::Default, expr: ident("a") }],
+            args: vec![CallArg::plain(ident("a"))],
         });
         let mut kinds = Vec::new();
         walk_expr(&call, &mut |x| {
@@ -488,7 +506,7 @@ mod tests {
             ty: None,
             init: e(ExprKind::Call {
                 func: Box::new(ident("f")),
-                args: vec![CallArg { name: None, mode: ArgMode::Default, expr: ident("a") }],
+                args: vec![CallArg::plain(ident("a"))],
             }),
         })];
         let loop_expr = e(ExprKind::Loop { label: None, body });

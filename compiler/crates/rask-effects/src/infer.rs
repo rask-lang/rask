@@ -588,6 +588,11 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             effects.async_ = true;
             classify_expr(body, effects, callees, t);
         }
+        ExprKind::Splice(splice) => {
+            for e in splice.exprs() {
+                classify_expr(e, effects, callees, t);
+            }
+        }
         ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => {
             classify_body(body, effects, callees, t);
@@ -862,6 +867,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
             r
         }
         ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
+        ExprKind::Splice(splice) => splice.exprs().fold(false, |acc, e| acc | rt_scan_expr(e, depth, rs)),
         ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -1306,3 +1312,4 @@ mod tests {
         assert!(effects["caller"].is_pure());
     }
 }
+

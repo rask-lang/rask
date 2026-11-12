@@ -398,6 +398,15 @@ impl<'a> WarnContext<'a> {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
+            ExprKind::Splice(splice) => {
+                match &**splice {
+                    rask_ast::expr::Splice::For { iter, .. } => self.check_expr(iter, warnings),
+                    rask_ast::expr::Splice::If { cond, .. } => self.check_expr(cond, warnings),
+                }
+                for a in splice.entries() {
+                    self.check_expr(&a.expr, warnings);
+                }
+            }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);

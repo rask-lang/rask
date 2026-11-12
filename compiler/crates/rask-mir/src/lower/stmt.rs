@@ -1745,7 +1745,7 @@ impl<'a> MirLowerer<'a> {
     /// matching the interpreter (rask-interp/src/stdlib/reflect.rs) — are
     /// `reflect.fields<T>()` and `reflect.params<F>()`, the type argument
     /// already concrete after mono substitution.
-    fn comptime_for_items(
+    pub(super) fn comptime_for_items(
         &self,
         iter: &Expr,
     ) -> Result<Vec<super::ComptimeItem>, LoweringError> {
@@ -1905,7 +1905,19 @@ impl<'a> MirLowerer<'a> {
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
         use rask_ast::comptime_if;
         let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
-        comptime_if::choose(cond, then_branch, else_branch, &mut |fact| {
+        comptime_if::choose(cond, then_branch, else_branch, &mut |fact| self.comptime_fact(fact))
+    }
+
+    /// Which way a `comptime if` goes here, when this instance settles it.
+    pub(super) fn decide_comptime(&mut self, cond: &Expr) -> Option<bool> {
+        rask_ast::comptime_if::decide(cond, &mut |fact| self.comptime_fact(fact))
+    }
+
+    /// One fact a `comptime if` condition reads: a const, a reflect answer, or
+    /// a property of the loop's item.
+    fn comptime_fact(&mut self, fact: &Expr) -> Option<rask_ast::comptime_if::Fact> {
+        use rask_ast::comptime_if;
+        {
             let answer = match &fact.kind {
                 // A module const with a literal value.
                 ExprKind::Ident(name) => {
@@ -1956,7 +1968,7 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }
-        })
+        }
     }
 
     /// Try to evaluate a `comptime if` block at compile time.

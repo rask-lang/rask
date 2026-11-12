@@ -1571,6 +1571,11 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(inner);
             }
             ExprKind::Convert { expr, .. } => self.visit_expr(expr),
+            ExprKind::Splice(splice) => {
+                for e in splice.exprs() {
+                    self.visit_expr(e);
+                }
+            }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body {

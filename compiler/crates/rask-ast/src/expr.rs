@@ -258,6 +258,10 @@ pub enum ExprKind {
     Comptime {
         body: Vec<super::stmt::Stmt>,
     },
+    /// A list entry that stands for others (ctrl.comptime/CT69). Only ever an
+    /// element of an array or tuple literal or the expression of a call
+    /// argument.
+    Splice(Box<Splice>),
     /// Select expression (channel multiplexing)
     Select {
         arms: Vec<SelectArm>,
@@ -335,6 +339,67 @@ pub struct CallArg {
     pub name: Option<String>,
     pub mode: ArgMode,
     pub expr: Expr,
+    /// A label worked out at compile time, `(f.name): value` (ctrl.comptime/CT71).
+    /// `name` is `None` when this is set.
+    pub computed_label: Option<Box<Expr>>,
+}
+
+impl CallArg {
+    /// A positional argument with no mode: an array or tuple entry, or a
+    /// plain call argument.
+    pub fn plain(expr: Expr) -> CallArg {
+        CallArg { name: None, mode: ArgMode::Default, expr, computed_label: None }
+    }
+}
+
+/// `comptime for` or `comptime if` written among a list's entries
+/// (ctrl.comptime/CT69). It stands for the entries its body gives, written as
+/// that list's own: labels and modes in a call, plain values in an array or
+/// tuple.
+#[derive(Debug, Clone)]
+pub enum Splice {
+    For {
+        binding: crate::stmt::ForBinding,
+        iter: Expr,
+        entries: Vec<CallArg>,
+    },
+    If {
+        cond: Expr,
+        then_entries: Vec<CallArg>,
+        /// `else comptime if …` is a single `If` entry here.
+        else_entries: Vec<CallArg>,
+    },
+}
+
+impl Splice {
+    /// Every entry either way: the loop's body, or both branches.
+    pub fn entries(&self) -> impl Iterator<Item = &CallArg> {
+        let (a, b): (&[CallArg], &[CallArg]) = match self {
+            Splice::For { entries, .. } => (entries, &[]),
+            Splice::If { then_entries, else_entries, .. } => (then_entries, else_entries),
+        };
+        a.iter().chain(b.iter())
+    }
+
+    /// Everything it evaluates, in order: the iterable or condition, then
+    /// each entry's computed label and value.
+    pub fn exprs(&self) -> impl Iterator<Item = &Expr> {
+        let head = match self {
+            Splice::For { iter, .. } => iter,
+            Splice::If { cond, .. } => cond,
+        };
+        std::iter::once(head).chain(
+            self.entries().flat_map(|a| a.computed_label.as_deref().into_iter().chain(std::iter::once(&a.expr))),
+        )
+    }
+
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut CallArg> {
+        let (a, b): (&mut [CallArg], &mut [CallArg]) = match self {
+            Splice::For { entries, .. } => (entries, &mut []),
+            Splice::If { then_entries, else_entries, .. } => (then_entries, else_entries),
+        };
+        a.iter_mut().chain(b.iter_mut())
+    }
 }
 
 /// A field initializer in a struct literal.
@@ -801,6 +866,7 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Convert { .. } => "Convert",
         ExprKind::Unsafe { .. } => "Unsafe",
         ExprKind::Comptime { .. } => "Comptime",
+        ExprKind::Splice(_) => "Splice",
         ExprKind::Select { .. } => "Select",
         ExprKind::Loop { .. } => "Loop",
         ExprKind::Assert { .. } => "Assert",

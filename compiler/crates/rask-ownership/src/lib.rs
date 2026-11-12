@@ -4435,6 +4435,12 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Comptime { body } => {
                 self.check_block(body);
             }
+            // CT69: checked once, like the statement form's body.
+            ExprKind::Splice(splice) => {
+                for e in splice.exprs() {
+                    self.check_expr(e);
+                }
+            }
             ExprKind::Loop { label, body } => {
                 self.check_loop_body(body, &[], label.as_ref(), true);
             }
@@ -7414,6 +7420,11 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 self.collect_free_vars_body_inner(body, locals, out, projections);
+            }
+            ExprKind::Splice(splice) => {
+                for e in splice.exprs() {
+                    self.collect_free_vars_inner(e, locals, out, projections);
+                }
             }
             _ => {
                 // Literals, string interpolation, etc.

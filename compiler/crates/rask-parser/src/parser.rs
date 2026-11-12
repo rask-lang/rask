@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, PatternKind, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, PatternKind, SelectArm, SelectArmKind, SpawnTarget, Splice, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -4440,14 +4440,16 @@ impl Parser {
         }
 
         self.skip_newlines();
-        let first = self.parse_expr()?;
+        let first = self.parse_list_value(ListKind::Plain)?;
 
-        let tuple = self.check(&TokenKind::Comma);
+        // `(comptime for …)` stands for entries, so it's a tuple of them
+        // whether or not a comma follows (ctrl.comptime/CT69).
+        let tuple = self.check(&TokenKind::Comma) || matches!(first.kind, ExprKind::Splice(_));
         if self.list_continues(&TokenKind::RParen)? || tuple {
             let mut elements = vec![first];
             self.in_comma_list = true;
             while !self.check(&TokenKind::RParen) && !self.at_end() {
-                elements.push(self.parse_expr()?);
+                elements.push(self.parse_list_value(ListKind::Plain)?);
                 if !self.list_continues(&TokenKind::RParen)? { break; }
             }
             self.in_comma_list = false;
@@ -4480,7 +4482,7 @@ impl Parser {
             return Ok(Expr { id: self.next_id(), kind: ExprKind::Array(Vec::new()), span: self.span(start, end) });
         }
 
-        let first = self.parse_expr()?;
+        let first = self.parse_list_value(ListKind::Plain)?;
 
         if self.match_token(&TokenKind::Semi) {
             let count = self.parse_expr()?;
@@ -4497,7 +4499,7 @@ impl Parser {
         let mut elements = vec![first];
         if self.list_continues(&TokenKind::RBracket)? {
             while !self.check(&TokenKind::RBracket) && !self.at_end() {
-                elements.push(self.parse_expr()?);
+                elements.push(self.parse_list_value(ListKind::Plain)?);
                 if !self.list_continues(&TokenKind::RBracket)? { break; }
             }
         }
@@ -4853,6 +4855,140 @@ impl Parser {
         }
     }
 
+    /// An array or tuple element: a value, or a `comptime for`/`comptime if`
+    /// standing for some (ctrl.comptime/CT69).
+    fn parse_list_value(&mut self, kind: ListKind) -> Result<Expr, ParseError> {
+        match self.parse_splice_entry(kind)? {
+            Some(splice) => Ok(splice),
+            None => self.parse_expr(),
+        }
+    }
+
+    /// `(expr):` before an argument: a label the compiler works out
+    /// (ctrl.comptime/CT71). Anything else starting with `(` is a value, and
+    /// the position is put back.
+    fn take_computed_label(&mut self) -> Result<Option<Box<Expr>>, ParseError> {
+        if !self.check(&TokenKind::LParen) {
+            return Ok(None);
+        }
+        let saved = (self.pos, self.errors.len());
+        self.advance();
+        let label = match self.parse_expr() {
+            Ok(label) => label,
+            Err(_) => {
+                self.pos = saved.0;
+                self.errors.truncate(saved.1);
+                return Ok(None);
+            }
+        };
+        if self.match_token(&TokenKind::RParen) && self.match_token(&TokenKind::Colon) {
+            self.skip_newlines();
+            return Ok(Some(Box::new(label)));
+        }
+        self.pos = saved.0;
+        self.errors.truncate(saved.1);
+        Ok(None)
+    }
+
+    /// `comptime for x in it { entries }` or `comptime if c { entries } else
+    /// { entries }` in a list (ctrl.comptime/CT69). `None`, and nothing
+    /// consumed, when the next tokens are something else.
+    fn parse_splice_entry(&mut self, kind: ListKind) -> Result<Option<Expr>, ParseError> {
+        if !self.check(&TokenKind::Comptime) || !matches!(self.peek(1), TokenKind::For | TokenKind::If) {
+            return Ok(None);
+        }
+        let start = self.current().span.start;
+        self.advance();
+        let splice = if self.match_token(&TokenKind::For) {
+            let binding = if self.match_token(&TokenKind::LParen) {
+                let mut names = Vec::new();
+                loop {
+                    names.push(self.expect_ident()?);
+                    if !self.match_token(&TokenKind::Comma) { break; }
+                }
+                self.expect(&TokenKind::RParen)?;
+                ForBinding::Tuple(names)
+            } else {
+                ForBinding::Single(self.expect_ident()?)
+            };
+            self.expect(&TokenKind::In)?;
+            let iter = self.parse_expr_no_braces()?;
+            let entries = self.parse_splice_entries(kind)?;
+            Splice::For { binding, iter, entries }
+        } else {
+            self.expect(&TokenKind::If)?;
+            self.parse_splice_if(kind)?
+        };
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Some(Expr { id: self.next_id(), kind: ExprKind::Splice(Box::new(splice)), span: self.span(start, end) }))
+    }
+
+    /// After `comptime if`: the condition, the entries, and an `else` that is
+    /// entries or another `if` (which is comptime too).
+    fn parse_splice_if(&mut self, kind: ListKind) -> Result<Splice, ParseError> {
+        let cond = self.parse_expr_no_braces()?;
+        let then_entries = self.parse_splice_entries(kind)?;
+        let else_entries = if self.match_token(&TokenKind::Else) {
+            if self.check(&TokenKind::If) {
+                let start = self.current().span.start;
+                self.advance();
+                let nested = self.parse_splice_if(kind)?;
+                let end = self.tokens[self.pos - 1].span.end;
+                let expr = Expr { id: self.next_id(), kind: ExprKind::Splice(Box::new(nested)), span: self.span(start, end) };
+                vec![CallArg::plain(expr)]
+            } else {
+                self.parse_splice_entries(kind)?
+            }
+        } else {
+            Vec::new()
+        };
+        Ok(Splice::If { cond, then_entries, else_entries })
+    }
+
+    /// `{ entries }`: written as the enclosing list's own, separated by
+    /// commas or newlines (CT70).
+    fn parse_splice_entries(&mut self, kind: ListKind) -> Result<Vec<CallArg>, ParseError> {
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace)?;
+        let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
+        let result = self.parse_splice_entries_inner(kind);
+        self.allow_brace_expr = outer_braces;
+        self.in_comma_list = outer_list;
+        result
+    }
+
+    fn parse_splice_entries_inner(&mut self, kind: ListKind) -> Result<Vec<CallArg>, ParseError> {
+        let mut entries = Vec::new();
+        self.skip_newlines();
+        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            if let Some(splice) = self.parse_splice_entry(kind)? {
+                entries.push(CallArg::plain(splice));
+            } else if kind == ListKind::Call {
+                let name = self.take_label();
+                let computed_label = if name.is_none() { self.take_computed_label()? } else { None };
+                let mode = if self.check(&TokenKind::MutateKw) {
+                    self.advance();
+                    ArgMode::Mutate
+                } else if self.match_contextual_mode("deleting") {
+                    ArgMode::Deleting
+                } else {
+                    ArgMode::Default
+                };
+                let expr = self.parse_expr()?;
+                entries.push(CallArg { name, mode, expr, computed_label });
+            } else {
+                entries.push(CallArg::plain(self.parse_expr()?));
+            }
+            if !self.list_continues(&TokenKind::RBrace)? {
+                break;
+            }
+        }
+        self.skip_newlines();
+        self.expect(&TokenKind::RBrace)?;
+        Ok(entries)
+    }
+
     fn parse_args(&mut self) -> Result<Vec<CallArg>, ParseError> {
         self.parse_args_with(false)
     }
@@ -4887,7 +5023,7 @@ impl Parser {
                     let start = self.current().span.start;
                     self.advance();
                     let span = self.span(start, self.tokens[self.pos - 1].span.end);
-                    args.push(CallArg {
+                    args.push(CallArg { computed_label: None,
                         name: None,
                         mode: ArgMode::Default,
                         expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
@@ -4900,12 +5036,20 @@ impl Parser {
             // the named ones are what it's the rest of.
             if self.match_token(&TokenKind::DotDot) {
                 let expr = self.parse_expr()?;
-                args.push(CallArg { name: None, mode: ArgMode::Spread, expr });
+                args.push(CallArg { computed_label: None, name: None, mode: ArgMode::Spread, expr });
                 self.list_continues(&TokenKind::RParen)?;
                 break;
             }
+            // CT69: `comptime for`/`comptime if` standing for arguments.
+            if let Some(splice) = self.parse_splice_entry(ListKind::Call)? {
+                args.push(CallArg::plain(splice));
+                if !self.list_continues(&TokenKind::RParen)? { break; }
+                continue;
+            }
             // Capture named argument labels (name: expr)
             let arg_name = self.take_label();
+            // CT71: `(f.name): value`, a label worked out at compile time.
+            let computed_label = if arg_name.is_none() { self.take_computed_label()? } else { None };
 
             // Call-site mode keywords (PM4). A move needs none: the name is
             // consumed and every later use of it is an error, which says it
@@ -4920,7 +5064,7 @@ impl Parser {
             };
 
             let expr = self.parse_expr()?;
-            args.push(CallArg { name: arg_name, mode, expr });
+            args.push(CallArg { computed_label, name: arg_name, mode, expr });
             if !self.list_continues(&TokenKind::RParen)? { break; }
         }
 
@@ -5900,6 +6044,14 @@ impl ParseResult {
 }
 
 /// What declares a type parameter list.
+/// Which list a `comptime for` among the entries belongs to, and so how its
+/// entries are written (ctrl.comptime/CT70): a call's take labels and modes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListKind {
+    Call,
+    Plain,
+}
+
 #[derive(Clone, Copy)]
 enum ParamOwner {
     Interface,

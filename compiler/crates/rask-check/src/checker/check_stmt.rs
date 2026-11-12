@@ -39,6 +39,66 @@ impl TypeChecker {
     /// the same field to resolve: indexing a container and iterating it don't
     /// agree on a Map. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
     /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
+    /// CT69: a `comptime for` or `comptime if` among a list's entries.
+    /// Checked once, the way the statement forms are: the loop's binding is in
+    /// scope for the entries, and where `want` says what each entry is (an
+    /// array's element type), each has to fit it. How many entries there are,
+    /// and what a field-typed one is, is the instance's (CT72).
+    pub(super) fn check_splice(&mut self, splice: &rask_ast::expr::Splice, want: Option<&Type>) {
+        match splice {
+            rask_ast::expr::Splice::For { binding, iter, entries } => {
+                let iter_ty = self.infer_expr(iter);
+                self.push_scope();
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
+                let unrolled = self.comptime_for_bindings.len();
+                match binding {
+                    ForBinding::Single(name) => {
+                        self.define_local(name.clone(), elem_ty);
+                        self.comptime_for_bindings.push((name.clone(), self.local_types.len() - 1));
+                    }
+                    ForBinding::Tuple(names) => {
+                        for name in names {
+                            let var = self.ctx.fresh_var();
+                            self.define_local(name.clone(), var);
+                        }
+                    }
+                }
+                for entry in entries {
+                    self.check_splice_entry(entry, want);
+                }
+                self.comptime_for_bindings.truncate(unrolled);
+                self.pop_scope();
+            }
+            rask_ast::expr::Splice::If { cond, then_entries, else_entries } => {
+                let cond_ty = self.infer_expr(cond);
+                self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, cond.span));
+                for entry in then_entries.iter().chain(else_entries) {
+                    self.check_splice_entry(entry, want);
+                }
+            }
+        }
+    }
+
+    fn check_splice_entry(&mut self, entry: &rask_ast::expr::CallArg, want: Option<&Type>) {
+        if let Some(label) = &entry.computed_label {
+            let _ = self.infer_expr(label);
+            // CT71: a computed label names a field the way `value.(…)` does.
+            if !self.comptime_field_name_shape(label) {
+                self.errors.push(TypeError::DynamicFieldNameNotComptime { span: label.span });
+            }
+        }
+        match (&entry.expr.kind, want) {
+            (ExprKind::Splice(inner), _) => self.check_splice(inner, want),
+            (_, Some(want)) => {
+                let got = self.infer_expr_expecting(&entry.expr, want);
+                self.coerce_into(CoercionSite::CollectionElement, got, want.clone(), entry.expr.span);
+            }
+            (_, None) => {
+                let _ = self.infer_expr(&entry.expr);
+            }
+        }
+    }
+
     fn iter_elem_type(&mut self, iter_ty: &Type, node: rask_ast::NodeId, span: Span) -> Type {
         // `for x in 5`: the literal is still a variable, and an open
         // container waits. Nothing it waited for would make a number
