@@ -1092,49 +1092,74 @@ fn insert_aggregate_release(
     // The unwind marks go in first, against the blocks as planned. A literal
     // is armed from its `ZeroAggregate`, which leaves every field it hasn't
     // stored yet reading as empty (#1518).
+    //
+    // An element `with`, `for mutate` or a field write lent out of a Vec or a
+    // Map is a copy of bytes the collection's slot still holds until the
+    // write-back. Releasing it as the frame's own value frees what the slot
+    // points at, and the collection frees it again: a panic inside
+    // `with rooms[0] as room` crashed the test runner that caught it. So an
+    // unwind leaves it to the collection, and a path that never reaches the
+    // write-back (a call that doesn't return) writes it back instead.
+    let lent = lent_elements(func);
     let guards = ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
-        &mut |_: &mut MirFunction, name: LocalId, _| {
+        &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| {
+            if made.is_some_and(|m| lent.contains_key(&m)) {
+                return Vec::new();
+            }
             vec![MirStmt::dummy(MirStmtKind::RcDecContents { local: name })]
         },
     );
-    let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<usize>)>> = HashMap::new();
+    let release_of = |name: LocalId, made: Option<LocalId>, span: crate::Span| -> MirStmt {
+        match made.and_then(|m| lent.get(&m)) {
+            Some((write_back, coll, at)) => MirStmt::new(
+                MirStmtKind::Call {
+                    dst: None,
+                    func: crate::FunctionRef::internal(write_back.to_string()),
+                    args: vec![coll.clone(), at.clone(), MirOperand::Local(name)],
+                },
+                span,
+            ),
+            None => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
+        }
+    };
+    let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<LocalId>, Option<usize>)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            ownership::Release::At { block, at, name, guard, .. } => {
+            ownership::Release::At { block, at, name, made, guard } => {
                 let stmts = &func.blocks[block].statements;
                 let mut at = shifted.at(block, at);
                 while at < stmts.len() && matches!(stmts[at].kind, MirStmtKind::RcInc { .. }) {
                     at += 1;
                 }
-                by_block.entry(block).or_default().push((at, name, guard));
+                by_block.entry(block).or_default().push((at, name, made, guard));
             }
-            ownership::Release::OnEdge { from, to, name, guard, .. } => {
+            ownership::Release::OnEdge { from, to, name, made, guard } => {
                 let span = func
                     .blocks
                     .iter()
                     .find(|b| b.id == from)
                     .map(|b| b.terminator.span)
                     .unwrap_or(crate::Span::new(0, 0));
-                let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
+                let release = vec![release_of(name, made, span)];
                 on_edges.push((from, to, guards.wrap(guard, release)));
             }
         }
     }
     for (bi, mut list) in by_block {
         list.sort_by(|a, b| b.0.cmp(&a.0).then(b.1 .0.cmp(&a.1 .0)));
-        for (at, name, guard) in list {
+        for (at, name, made, guard) in list {
             let block = &mut func.blocks[bi];
             let span = block
                 .statements
                 .get(at.saturating_sub(1))
                 .map(|s| s.span)
                 .unwrap_or(block.terminator.span);
-            let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
+            let release = vec![release_of(name, made, span)];
             for (k, stmt) in guards.wrap(guard, release).into_iter().enumerate() {
                 block.statements.insert(at + k, stmt);
             }
@@ -2420,4 +2445,24 @@ mod tests {
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
+}
+
+/// The elements a `Vec_lend` or `Map_lend` copied out, by the local they were
+/// made under: the write-back that puts each one back, and its collection and
+/// index or key.
+fn lent_elements(func: &MirFunction) -> HashMap<LocalId, (&'static str, MirOperand, MirOperand)> {
+    let mut out = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Call { dst: Some(dst), func: f, args } = &stmt.kind {
+            let write_back = match f.name.as_str() {
+                "Vec_lend" => "Vec_write_back",
+                "Map_lend" => "Map_write_back",
+                _ => continue,
+            };
+            if let [coll, at] = args.as_slice() {
+                out.insert(*dst, (write_back, coll.clone(), at.clone()));
+            }
+        }
+    }
+    out
 }

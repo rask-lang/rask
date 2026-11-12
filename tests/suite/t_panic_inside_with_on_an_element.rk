@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A panic inside `with v[i] as x` leaves the collection whole for whoever
+// catches it.
+//
+// `with` copies the element's bytes out and writes them back at the end. A
+// panic in between released the copy as if the frame owned it, and the
+// collection's own release then freed what the copy pointed at a second time:
+// natively, the test runner that caught the panic crashed on the next test.
+// Writes made before the panic are kept, as with any `with`.
+
+import sync.Shared
+
+struct Room {
+    name: string
+    items: Vec<string>
+}
+
+func risky(n: i64) -> i64 {
+    if n > 0 {
+        panic("boom")
+    }
+    return n
+}
+
+func fill(rooms: Shared<Vec<Room>>, n: i64) {
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room.items.push("a key, in a string long enough to allocate")
+            room.name = "the courtyard, a name long enough to allocate"
+            let k = risky(n)
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+test "a panic inside with leaves the element for the next reader" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { fill(other, 1) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].items.len() == 2
+        assert rs[0].name == "the courtyard, a name long enough to allocate"
+    }
+}
+
+test "the next test runs" {
+    mut rooms: Vec<Room> = [Room(name: "hall", items: Vec.new())]
+    with rooms[0] as room {
+        room.items.push("coin")
+    }
+    assert rooms[0].items.len() == 1
+}
