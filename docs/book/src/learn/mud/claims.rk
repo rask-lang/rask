@@ -13,8 +13,8 @@ const LINES: Vec<string> = [
 // player's pack. Never two, never none.
 claim no_item_in_two_places(moves: Vec<(bool, u8)>) {
     mut w = mud.default_world()
-    let _ = mud.enter(mutate w, "ada", mud.START)
-    let _ = mud.enter(mutate w, "bo", mud.START)
+    mud.enter(mutate w, "ada", mud.START)!
+    mud.enter(mutate w, "bo", mud.START)!
     let names = where_items_are(w)
     for (second, pick) in moves {
         let who = if second: "bo" else: "ada"

@@ -10,7 +10,7 @@ public func respond(mutate world: World, name: string, line: string) -> Outcome 
 // A list of commands standing in for a player, and every reply they got.
 public func script(mutate world: World, name: string, lines: Vec<string>) -> Vec<string> {
     mut replies = Vec.new()
-    replies.push(enter(mutate world, name, START).reply)
+    replies.push(enter(mutate world, name, START)!.reply)
     for line in lines {
         replies.push(respond(mutate world, name, line).reply)
     }
@@ -43,8 +43,8 @@ test "a dead end and a typo" {
 
 test "two players in one room hear each other" {
     mut w = default_world()
-    let _ = enter(mutate w, "ada", START)
-    let joined = enter(mutate w, "bo", START)
+    enter(mutate w, "ada", START)!
+    let joined = enter(mutate w, "bo", START)!
     assert joined.heard.len() == 1
     assert joined.heard[0].to == "ada"
     assert joined.heard[0].text == "bo arrives."
@@ -75,4 +75,12 @@ test "the rat wanders" {
     assert heard.is_empty()
     let rat = w.monsters.nodes()[0]
     assert rat.at!.name != "Cellar"
+}
+
+test "a name already in the game is refused" {
+    mut w = default_world()
+    enter(mutate w, "ada", START)!
+    assert enter(mutate w, "ada", START) is EnterError.NameTaken
+    assert enter(mutate w, "", START) is EnterError.NoName
+    assert w.players.len() == 1
 }

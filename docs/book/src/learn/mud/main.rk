@@ -30,7 +30,7 @@ func load_or_start(path: string) -> World {
 func play_alone() {
     mut world = load_or_start(SAVE)
     ensure save(world, SAVE) catch e => println("Couldn't save: {e.message()}")
-    println(enter(mutate world, "you", START).reply)
+    println(enter(mutate world, "you", START)!.reply)
     loop {
         let line = io.read_line() catch _ => break
         if line.trim() == "quit" {

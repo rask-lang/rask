@@ -76,8 +76,31 @@ public func describe_room(world: World, room: Link<Room>, viewer: string) -> str
     return text
 }
 
-public func enter(mutate world: World, name: string, start: string) -> Outcome {
-    let room = world.room(start) ?? return reply("The world has no room called {start}.")
+public enum EnterError {
+    NoName
+    NameTaken(string)
+    NoSuchRoom(string)
+}
+
+extend EnterError {
+    public func message(self) -> string {
+        return match self {
+            EnterError.NoName => "You'll need a name.",
+            EnterError.NameTaken(n) => "Someone called {n} is already here.",
+            EnterError.NoSuchRoom(r) => "The world has no room called {r}.",
+        }
+    }
+}
+
+// A name is who you are in the game, so two players can't share one.
+public func enter(mutate world: World, name: string, start: string) -> Outcome or EnterError {
+    if name.is_empty() {
+        return EnterError.NoName
+    }
+    if world.player(name)? {
+        return EnterError.NameTaken(name)
+    }
+    let room = world.room(start) ?? return EnterError.NoSuchRoom(start)
     world.players.insert(Player(name, at: room, inventory: Vec.new()))
     mut heard = Vec.new()
     tell_room(world, room, name, "{name} arrives.", mutate heard)

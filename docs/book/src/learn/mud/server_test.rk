@@ -58,6 +58,7 @@ test "two players meet and chat" {
             ada_here.receive()!
             let conn = net.tcp_connect(addr)!
             let lines = BufferedReader.new(conn.clone())
+            type_line(conn, "ada")
             type_line(conn, "bo")
             assert wait_for(lines, "Also here: ada.")
             bo_in.send(true)!

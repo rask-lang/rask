@@ -85,8 +85,7 @@ func session(take conn: TcpConnection, world: Shared<World>, inboxes: Inboxes) {
     let socket = conn.clone()
     let reader = spawn { read_lines(socket, typed) }
     ensure reader.cancel()
-    let first = from_socket.receive() catch _ => return
-    let name = first ?? return
+    let (name, hello) = join_game(conn, from_socket, world) ?? return
     let (to_me, inbox) = Channel<string>.buffered(64)
     inboxes.write().insert(name, to_me)
     ONLINE.fetch_add(1, MemoryOrder.Relaxed)
@@ -94,7 +93,6 @@ func session(take conn: TcpConnection, world: Shared<World>, inboxes: Inboxes) {
     // However this ends, the player leaves the world and nobody writes to
     // their inbox again. A dropped connection ends it the same way `quit` does.
     ensure goodbye(world, inboxes, name)
-    let hello = with world.write() as w: enter(mutate w, name, START)
     deliver(inboxes, hello.heard)
     let _ = conn.write_text("{ONLINE.load(MemoryOrder.Relaxed)} online.\n{hello.reply}\n")
 
@@ -106,6 +104,23 @@ func session(take conn: TcpConnection, world: Shared<World>, inboxes: Inboxes) {
         if !more {
             break
         }
+    }
+}
+
+// Asks until the player gives a name nobody in the game has, and enters
+// them under it. Checking and entering under one lock is what keeps two
+// connections from both getting the same name. `none` if they leave first.
+func join_game(conn: TcpConnection, from_socket: Receiver<string?>, world: Shared<World>) -> (string, Outcome)? {
+    loop {
+        let typed = from_socket.receive() catch _ => return none
+        let name = (typed ?? return none).trim().to_string()
+        let hello = with world.write() as w: enter(mutate w, name, START) catch e => {
+            if !write(conn, "{e.message()} What is your name? ") {
+                return none
+            }
+            continue
+        }
+        return (name, hello)
     }
 }
 
