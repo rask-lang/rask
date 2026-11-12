@@ -650,15 +650,6 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
 }
 
-// Put back an element `with`, `for mutate` or a field write took out of this
-// slot (`Vec_lend` in MIR). What the copy owns is what the slot owned, less
-// whatever the body released and plus whatever it stored, so nothing is
-// released here.
-void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
-    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
-    if (vec_links_inline(v)) rask_link_register_element_fields(v, elem);
-}
-
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
 // adapter — same convention as rask_map_get). On success, returns a
 // pointer into the buffer for the just-vacated slot; the codegen reads

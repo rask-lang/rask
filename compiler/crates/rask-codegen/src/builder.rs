@@ -1304,6 +1304,21 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
+            // The variable holds the slot's address, as a borrowed capture's
+            // does: `addr_taken` has made every read and write of the local go
+            // through it, and the local has no slot of its own.
+            MirStmtKind::BindPlace { dst, addr } => {
+                let addr_val = builder.use_var(*ctx.var_map.get(addr)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace address variable not found".to_string()
+                    ))?);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr_val);
+            }
+
             MirStmtKind::ClosureDrop { closure, .. } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(

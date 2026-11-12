@@ -465,34 +465,19 @@ impl<'a> MirLowerer<'a> {
             target: have_block,
         }));
 
-        // The value is taken out for the closure and put back after it, like
-        // a `with m[k]` binding.
+        // The closure works on the value where it sits, like a `with m[k]`
+        // binding.
         self.builder.switch_to_block(have_block);
-        let value = self.builder.alloc_temp(value_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(value),
-            func: FunctionRef::internal("Map_lend".to_string()),
-            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
+        let (body_op, body_ty) = self.inline_closure_with_param(
             &args[2].expr,
-            MirOperand::Local(value),
+            ClosureArg::InPlace { collection: MirOperand::Local(map), at: MirOperand::Local(key), map: true },
             value_ty,
         )?;
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("Map_write_back".to_string()),
-            args: vec![
-                MirOperand::Local(map),
-                MirOperand::Local(key),
-                MirOperand::Local(param_local.unwrap_or(value)),
-            ],
-        }));
         Ok(Some((body_op, body_ty)))
     }
 
     /// Inline a closure that takes nothing — `|| default`. The same machinery as
-    /// `inline_closure_keeping_param` without a parameter to bind.
+    /// `inline_closure_with_param` without a parameter to bind.
     fn inline_closure_no_arg(
         &mut self,
         closure: &Expr,
@@ -504,7 +489,7 @@ impl<'a> MirLowerer<'a> {
         let cont_block = self.builder.create_block();
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
+        self.inline_return_target = Some((result_local, cont_block, None));
 
         let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -574,30 +559,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(present_block);
-        let value = self.builder.alloc_temp(value_ty.clone());
-        // `modify` takes the value out and writes it back; `read` only looks.
-        let read = if method == "modify" { "Map_lend" } else { "Map_get_unwrap" };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(value),
-            func: FunctionRef::internal(read.to_string()),
-            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
-            &args[1].expr,
-            MirOperand::Local(value),
-            value_ty,
-        )?;
-        if method == "modify" {
+        // `modify` works on the value where it sits; `read` only looks.
+        let arg = if method == "modify" {
+            ClosureArg::InPlace { collection: MirOperand::Local(map), at: MirOperand::Local(key), map: true }
+        } else {
+            let value = self.builder.alloc_temp(value_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Map_write_back".to_string()),
-                args: vec![
-                    MirOperand::Local(map),
-                    MirOperand::Local(key),
-                    MirOperand::Local(param_local.unwrap_or(value)),
-                ],
+                dst: Some(value),
+                func: FunctionRef::internal("Map_get_unwrap".to_string()),
+                args: vec![MirOperand::Local(map), MirOperand::Local(key)],
             }));
-        }
+            ClosureArg::Value(MirOperand::Local(value))
+        };
+        let (body_op, body_ty) = self.inline_closure_with_param(&args[1].expr, arg, value_ty)?;
         // The slot's payload is what the closure answered, known only now.
         let result_ty = MirType::Option(Box::new(body_ty));
         self.builder.set_local_type(result, result_ty.clone());
@@ -626,7 +600,7 @@ impl<'a> MirLowerer<'a> {
     ///
     /// The result slot is allocated before its payload type is known and
     /// retyped once the body has been lowered, the same way
-    /// `inline_closure_keeping_param` handles its own result local: `R` is
+    /// `inline_closure_with_param` handles its own result local: `R` is
     /// whatever the closure returns, and there's no way to know that without
     /// lowering it.
     fn lower_vec_element_closure(
@@ -702,33 +676,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(present_block);
-        let elem = self.builder.alloc_temp(elem_ty.clone());
-        // `modify` takes the element out and writes it back; `read` only looks.
-        let read = if method == "modify" { "Vec_lend" } else { "Vec_index" };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(elem),
-            func: FunctionRef::internal(read.to_string()),
-            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
-            &args[1].expr,
-            MirOperand::Local(elem),
-            elem_ty,
-        )?;
-        if method == "modify" {
-            // Always put the element back, even through a closure that takes
-            // no parameter: the frame owns the lent copy until it does.
-            let value = param_local.unwrap_or(elem);
+        // `modify` works on the element where it sits; `read` only looks.
+        let arg = if method == "modify" {
+            ClosureArg::InPlace { collection: MirOperand::Local(collection), at: MirOperand::Local(idx), map: false }
+        } else {
+            let elem = self.builder.alloc_temp(elem_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_write_back".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(value),
-                ],
+                dst: Some(elem),
+                func: FunctionRef::internal("Vec_index".to_string()),
+                args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
-        }
+            ClosureArg::Value(MirOperand::Local(elem))
+        };
+        let (body_op, body_ty) = self.inline_closure_with_param(&args[1].expr, arg, elem_ty)?;
         // The slot's payload is what the closure answered, known only now.
         let result_ty = MirType::Option(Box::new(body_ty));
         self.builder.set_local_type(result, result_ty.clone());
@@ -757,32 +717,32 @@ impl<'a> MirLowerer<'a> {
         arg_op: MirOperand,
         arg_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {
-        let (result, _) = self.inline_closure_keeping_param(closure, arg_op, arg_ty)?;
-        Ok(result)
+        self.inline_closure_with_param(closure, ClosureArg::Value(arg_op), arg_ty)
     }
 
-    /// The same, handing back the local the closure's parameter was bound to.
-    ///
-    /// `modify` needs it: the closure is given mutable access to the element and
-    /// whatever it leaves there is the new element. Inlining is what makes that
-    /// cheap — the parameter *is* a local, so a body that assigns to it has
-    /// already written the value, and the write-back is one store of this local
-    /// into the slot.
-    pub(super) fn inline_closure_keeping_param(
+    /// The same, with the parameter bound either to a value or, for
+    /// `modify`, to the element where it sits: the closure is given mutable
+    /// access to the element, so whatever it leaves there is the new element.
+    pub(super) fn inline_closure_with_param(
         &mut self,
         closure: &Expr,
-        arg_op: MirOperand,
+        arg: ClosureArg,
         arg_ty: MirType,
-    ) -> Result<(TypedOperand, Option<LocalId>), LoweringError> {
+    ) -> Result<TypedOperand, LoweringError> {
         if let ExprKind::Closure { params, body, .. } = &closure.kind {
             if let Some(param) = params.first() {
                 let param_name = &param.name;
                 let saved = self.locals.remove(param_name);
                 let param_local = self.builder.alloc_local(param_name.clone(), arg_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: param_local,
-                    rvalue: MirRValue::Use(arg_op),
-                }));
+                match arg {
+                    ClosureArg::Value(op) => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: param_local,
+                        rvalue: MirRValue::Use(op),
+                    })),
+                    ClosureArg::InPlace { collection, at, map } => {
+                        self.bind_element_in_place(param_local, collection, at, map)
+                    }
+                }
                 self.locals.insert(param_name.clone(), (param_local, arg_ty));
 
                 // `|x| { return x % 2 == 0 }` is the ordinary way to write this
@@ -803,7 +763,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
+                self.inline_return_target = Some((result_local, cont_block, None));
 
                 let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -834,10 +794,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(prev) = saved {
                     self.locals.insert(param_name.clone(), prev);
                 }
-                return Ok((
-                    (MirOperand::Local(result_local), body_ty),
-                    Some(param_local),
-                ));
+                return Ok((MirOperand::Local(result_local), body_ty));
             }
         }
         Err(LoweringError::InvalidConstruct("expected closure".to_string()))
@@ -1519,7 +1476,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((acc, setup.inc_block, self.pending_write_backs.len(), None));
+                self.inline_return_target = Some((acc, setup.inc_block, None));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
@@ -1951,7 +1908,7 @@ impl<'a> MirLowerer<'a> {
 
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((acc, after_block, self.pending_write_backs.len(), None));
+        self.inline_return_target = Some((acc, after_block, None));
         let (result_op, _) = self.lower_expr(body)?;
         let returned = self.inline_return_taken.take().is_some();
         self.inline_return_target = saved_return_target;
@@ -2437,4 +2394,11 @@ impl<'a> MirLowerer<'a> {
 
         Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void))
     }
+}
+
+/// What an inlined closure's parameter is bound to.
+pub(super) enum ClosureArg {
+    Value(MirOperand),
+    /// The element `collection[at]` where it sits (`modify`).
+    InPlace { collection: MirOperand, at: MirOperand, map: bool },
 }

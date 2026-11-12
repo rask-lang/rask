@@ -479,13 +479,13 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Emit LoadCapture for each free variable
-        let mut addressed_captures = std::collections::HashSet::new();
+        let mut addressed_locals = std::collections::HashSet::new();
         for (i, (name, _outer_id, ty, _)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
             let access = capture_access;
             if access.is_addressed() {
-                addressed_captures.insert(local_id);
+                addressed_locals.insert(local_id);
             }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
@@ -500,7 +500,7 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
-            let saved_captures = std::mem::replace(&mut self.addressed_captures, addressed_captures);
+            let saved_captures = std::mem::replace(&mut self.addressed_locals, addressed_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -539,7 +539,7 @@ impl<'a> MirLowerer<'a> {
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
-            self.addressed_captures = saved_captures;
+            self.addressed_locals = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
             self.in_test_body = saved_in_test;
@@ -750,7 +750,7 @@ impl<'a> MirLowerer<'a> {
         let mut inner_flag = None;
         let mut inner_value = None;
         // The body reaches the loop's variables by address, like any borrowing
-        // closure (`addressed_captures`).
+        // closure (`addressed_locals`).
         let mut body_captures = std::collections::HashSet::new();
         for (i, (name, outer_id, ty, _)) in free_vars.iter().enumerate() {
             let dst = yb.alloc_local(name.clone(), ty.clone());
@@ -781,7 +781,7 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
-            let saved_captures = std::mem::replace(&mut self.addressed_captures, body_captures);
+            let saved_captures = std::mem::replace(&mut self.addressed_locals, body_captures);
             let saved_moved = std::mem::replace(&mut self.seq_moved_names, Some(Default::default()));
             let saved_loops = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
@@ -790,8 +790,6 @@ impl<'a> MirLowerer<'a> {
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
             let saved_inline = self.inline_return_target.take();
-            // Element write-backs are the enclosing function's for the same reason.
-            let saved_write_backs = std::mem::take(&mut self.pending_write_backs);
 
             // `break` and `continue` in the body are this loop's, and this loop
             // is one call of the yield.
@@ -801,14 +799,13 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: None,
                 ensure_depth: self.ensure_stack.len(),
-                writeback_depth: self.pending_write_backs.len(),
             });
             // `return v` assigns to the captured value local and jumps to the
             // block that raises the flag. Writing the local *is* a store through
             // the capture pointer — `transform::addr_taken` rewrites it.
             self.inline_return_target = inner_value
                 .or(inner_flag)
-                .map(|dst| (dst, nonlocal_block, 0, Some(outer_ret.clone())));
+                .map(|dst| (dst, nonlocal_block, Some(outer_ret.clone())));
 
             // `for (k, v) in seq` — read the names off the item, the same way
             // the index loop reads them off a Map entry. Has to happen with the
@@ -841,11 +838,10 @@ impl<'a> MirLowerer<'a> {
 
             self.loop_stack = saved_loops;
             self.ensure_stack = saved_ensure_stack;
-            self.pending_write_backs = saved_write_backs;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
-            self.addressed_captures = saved_captures;
+            self.addressed_locals = saved_captures;
             let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
             // A `return` in a loop nested in another loop's body leaves that
             // body too, so what it moved is moved there as well.

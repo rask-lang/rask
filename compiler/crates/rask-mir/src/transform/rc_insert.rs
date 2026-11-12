@@ -84,9 +84,6 @@ pub fn insert_rc_ops(
     // keeper, takes references of its own to what it holds.
     retain_views_handed_over(func, kept, own, &owns_copy);
 
-    // And an aggregate written back to its slot that the frame still uses.
-    retain_written_back_while_live(func);
-
     // And a Copy aggregate copied into a heap closure's environment.
     retain_copy_captures(func);
 
@@ -256,6 +253,8 @@ fn retain_views_handed_over(
                 // #1449); one that carries it still can, and then each call
                 // deep-clones it.
                 MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
+                // An element bound where it sits: the collection keeps it.
+                MirStmtKind::BindPlace { dst, .. } => Some(*dst),
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     views.contains(src).then_some(*dst)
                 }
@@ -319,69 +318,6 @@ fn retain_views_handed_over(
         }
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
-            block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
-        }
-    }
-}
-
-/// Take a reference to what an element binding holds before writing it back,
-/// when the frame still reads the binding afterwards.
-///
-/// ```text
-/// with v[0] as line { return line }
-/// ```
-///
-/// The binding holds the slot's references, and the write-back gives them
-/// back to the slot. Returning it hands the same strings to the caller, so
-/// the caller needs references of its own, or `v[0] = …` frees what it got
-/// back. A string binding gets that from `retain_locals_handed_over_while_live`
-/// like any string handed to a keeper; this is the aggregate case. A
-/// write-back is the one keeper that can see its argument used afterwards:
-/// anywhere else the checker rejects a use after the move.
-fn retain_written_back_while_live(func: &mut MirFunction) {
-    let ty_of: HashMap<LocalId, MirType> = func
-        .locals
-        .iter()
-        .chain(func.params.iter())
-        .map(|l| (l.id, l.ty.clone()))
-        .collect();
-    let is_aggregate = |l: &LocalId| {
-        ty_of.get(l).is_some_and(|t| {
-            aggregate_may_hold_string(t) || matches!(t, MirType::InterfaceObject { .. })
-        })
-    };
-    let live = liveness::analyze_phis_on_edges(func);
-    let aliases = AddrAliases::build(func);
-    for block in &mut func.blocks {
-        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
-        for (si, stmt) in block.statements.iter().enumerate() {
-            let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
-            let Some(at) = rask_stdlib::mir_metadata::written_back_at(&fref.name) else { continue };
-            let Some(local) = args.get(at).and_then(uses::operand_local).filter(|l| is_aggregate(l))
-            else {
-                continue;
-            };
-            let mut used_after = None;
-            for later in &block.statements[si + 1..] {
-                if aliases.stmt_reads(later, local) {
-                    used_after = Some(true);
-                    break;
-                }
-                if uses::stmt_def(later) == Some(local) {
-                    used_after = Some(false);
-                    break;
-                }
-            }
-            let used_after = used_after.unwrap_or_else(|| {
-                aliases.terminator_reads(&block.terminator, local)
-                    || live.live_at_exit(block.id, local)
-            });
-            if used_after {
-                insertions.push((si, local));
-            }
-        }
-        for (idx, local) in insertions.into_iter().rev() {
-            let span = block.statements[idx].span;
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
         }
     }
@@ -635,6 +571,7 @@ fn insert_aggregate_release(
                 MirStmtKind::Store { addr, value, .. } => uses::operand_local(value)
                     .filter(|v| tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr))
                     .map(|_| *addr),
+                MirStmtKind::BindPlace { dst, addr } => tracked.contains(addr).then_some(*dst),
                 MirStmtKind::ClosureCreate { dst, .. } | MirStmtKind::InterfaceBox { dst, .. } => {
                     Some(*dst)
                 }
@@ -707,6 +644,17 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
+    // Elements bound where they sit (`BindPlace`): a store through one writes
+    // the collection's element, never a value of this frame's.
+    let places: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
     let params: Vec<LocalId> = func.params.iter().map(|p| p.id).collect();
     let mut facts = ownership::Facts {
         names: tracked.iter().copied().collect(),
@@ -738,15 +686,9 @@ fn insert_aggregate_release(
         // that reference, so the aggregate the closure was read out of still
         // holds its own and still has to release it.
         let mut retained: HashSet<LocalId> = HashSet::new();
-        // The local the statement before this one took references for.
-        let mut just_retained: Option<LocalId> = None;
         for stmt in &block.statements {
             if let MirStmtKind::ClosureRetain { closure, .. } = &stmt.kind {
                 retained.insert(*closure);
-            }
-            let retained_for_this = just_retained.take();
-            if let MirStmtKind::RcIncContents { local } = &stmt.kind {
-                just_retained = Some(*local);
             }
             let replaces = match &stmt.kind {
                 MirStmtKind::ReleaseSlot { addr, offset, .. } => {
@@ -813,6 +755,11 @@ fn insert_aggregate_release(
                         _ => ev.push(ownership::Event::Other(*dst)),
                     }
                 }
+                // An element bound where it sits reaches into the collection
+                // it sits in, which has to outlive the binding.
+                MirStmtKind::BindPlace { dst, addr } if is_tracked(dst) => {
+                    ev.push(ownership::Event::View { dst: *dst, base: *addr });
+                }
                 // `Ref` hands out the address.
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
                     hand_over(&mut ev, *src);
@@ -824,15 +771,6 @@ fn insert_aggregate_release(
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if !is_tracked(&id) || retained.contains(&id) {
-                            continue;
-                        }
-                        // A write-back of a binding the frame still uses was
-                        // given references of its own for the slot
-                        // (`retain_written_back_while_live`), so the binding
-                        // stays the frame's.
-                        if retained_for_this == Some(id)
-                            && rask_stdlib::mir_metadata::written_back_at(&fref.name) == Some(i)
-                        {
                             continue;
                         }
                         // What the callee does with it: from the body when this
@@ -900,6 +838,7 @@ fn insert_aggregate_release(
                     }
                     if aggregates.contains(addr)
                         && !replaces
+                        && !places.contains(addr)
                         && !store_is_narrow(stmt, &ty_of)
                     {
                         ev.push(ownership::Event::Fill(*addr));
@@ -1151,90 +1090,49 @@ fn insert_aggregate_release(
     // The unwind marks go in first, against the blocks as planned. A literal
     // is armed from its `ZeroAggregate`, which leaves every field it hasn't
     // stored yet reading as empty (#1518).
-    //
-    // An element `with`, `for mutate` or a field write lent out of a Vec or a
-    // Map is a copy of bytes the collection's slot still holds until the
-    // write-back. Two paths don't reach that write-back:
-    //
-    // - A block from which no path returns: every way on ends in a call that
-    //   never returns (`panic`, `todo`, `!` on an error, a failed assert),
-    //   though not always in that same block. The release placed there is the
-    //   last thing done with the element, and releasing would free what the
-    //   slot points at for the collection to free again. It writes back
-    //   instead.
-    //   A release anywhere else, such as the old element a body replaced
-    //   with `room = …`, stays a release.
-    // - An unwind from a call that panicked. Workaround: the copy isn't armed,
-    //   so the collection's release frees the element once. If the body
-    //   replaced a field first, the slot still points at the freed old value
-    //   and this frees it twice; the fix is a write-back on unwind, which needs
-    //   more of the frame than an unwind release can read (#1922).
-    let lent = lent_elements(func);
-    let dead_end = never_returns(func);
     let guards = ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
-        &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| {
-            if lent.contains_key(&name) || made.is_some_and(|m| lent.contains_key(&m)) {
-                return Vec::new();
-            }
+        &mut |_: &mut MirFunction, name: LocalId, _| {
             vec![MirStmt::dummy(MirStmtKind::RcDecContents { local: name })]
         },
     );
-    let write_back_of = |name: LocalId, made: Option<LocalId>, span: crate::Span| -> Option<MirStmt> {
-        let (write_back, coll, at) = lent.get(&name).or_else(|| made.and_then(|m| lent.get(&m)))?;
-        Some(MirStmt::new(
-            MirStmtKind::Call {
-                dst: None,
-                func: crate::FunctionRef::internal(write_back.to_string()),
-                args: vec![coll.clone(), at.clone(), MirOperand::Local(name)],
-            },
-            span,
-        ))
-    };
-    let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<LocalId>, Option<usize>)>> = HashMap::new();
+    let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<usize>)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            ownership::Release::At { block, at, name, made, guard } => {
+            ownership::Release::At { block, at, name, guard, .. } => {
                 let stmts = &func.blocks[block].statements;
                 let mut at = shifted.at(block, at);
                 while at < stmts.len() && matches!(stmts[at].kind, MirStmtKind::RcInc { .. }) {
                     at += 1;
                 }
-                by_block.entry(block).or_default().push((at, name, made, guard));
+                by_block.entry(block).or_default().push((at, name, guard));
             }
-            ownership::Release::OnEdge { from, to, name, made, guard } => {
+            ownership::Release::OnEdge { from, to, name, guard, .. } => {
                 let span = func
                     .blocks
                     .iter()
                     .find(|b| b.id == from)
                     .map(|b| b.terminator.span)
                     .unwrap_or(crate::Span::new(0, 0));
-                let into_dead_end = func.blocks.iter().position(|b| b.id == to).is_some_and(|i| dead_end[i]);
-                let release = vec![match write_back_of(name, made, span) {
-                    Some(write_back) if into_dead_end => write_back,
-                    _ => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
-                }];
+                let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
                 on_edges.push((from, to, guards.wrap(guard, release)));
             }
         }
     }
     for (bi, mut list) in by_block {
         list.sort_by(|a, b| b.0.cmp(&a.0).then(b.1 .0.cmp(&a.1 .0)));
-        for (at, name, made, guard) in list {
+        for (at, name, guard) in list {
             let block = &mut func.blocks[bi];
             let span = block
                 .statements
                 .get(at.saturating_sub(1))
                 .map(|s| s.span)
                 .unwrap_or(block.terminator.span);
-            let release = vec![match write_back_of(name, made, span) {
-                Some(write_back) if dead_end[bi] => write_back,
-                _ => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
-            }];
+            let release = vec![MirStmt::new(MirStmtKind::RcDecContents { local: name }, span)];
             for (k, stmt) in guards.wrap(guard, release).into_iter().enumerate() {
                 block.statements.insert(at + k, stmt);
             }
@@ -1502,6 +1400,8 @@ fn string_views(func: &MirFunction, strings: &HashSet<LocalId>, own: &HashSet<St
             {
                 Some(*dst)
             }
+            // An element bound where it sits: the collection keeps it.
+            MirStmtKind::BindPlace { dst, .. } if strings.contains(dst) => Some(*dst),
             _ => None,
         })
         .collect()
@@ -2520,71 +2420,4 @@ mod tests {
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
-}
-
-/// The elements a lend (`Vec_lend`, `Map_lend`) copied out, by the local they
-/// were made under: the write-back that puts each one back, and its
-/// collection and index or key.
-///
-/// A plain copy of one (`_16 = _15`) is the same element: lowering binds the
-/// `with` name that way, and a field store then makes a value under the copy's
-/// name.
-fn lent_elements(func: &MirFunction) -> HashMap<LocalId, (&'static str, MirOperand, MirOperand)> {
-    let mut out = HashMap::new();
-    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        if let MirStmtKind::Call { dst: Some(dst), func: f, args } = &stmt.kind {
-            let Some(write_back) = rask_stdlib::mir_metadata::written_back_by(&f.name) else { continue };
-            if let [coll, at] = args.as_slice() {
-                out.insert(*dst, (write_back, coll.clone(), at.clone()));
-            }
-        }
-    }
-    loop {
-        let mut grew = false;
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
-                if !out.contains_key(dst) {
-                    if let Some(entry) = out.get(src).cloned() {
-                        out.insert(*dst, entry);
-                        grew = true;
-                    }
-                }
-            }
-        }
-        if !grew {
-            return out;
-        }
-    }
-}
-
-
-/// Blocks no path from which reaches the function's return: each one leads
-/// only to a call that never returns. An `ensure` body's end counts as a
-/// return, since codegen turns it into one.
-fn never_returns(func: &MirFunction) -> Vec<bool> {
-    let index: HashMap<BlockId, usize> = func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
-    let cleanup = cfg::cleanup_only_blocks(func);
-    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); func.blocks.len()];
-    let mut returns = Vec::new();
-    for (i, b) in func.blocks.iter().enumerate() {
-        match &b.terminator.kind {
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => returns.push(i),
-            MirTerminatorKind::Unreachable if cleanup.contains(&b.id) => returns.push(i),
-            _ => {}
-        }
-        for s in cfg::successors(&b.terminator) {
-            if let Some(&si) = index.get(&s) {
-                preds[si].push(i);
-            }
-        }
-    }
-    let mut reaches = vec![false; func.blocks.len()];
-    while let Some(i) = returns.pop() {
-        if reaches[i] {
-            continue;
-        }
-        reaches[i] = true;
-        returns.extend(preds[i].iter().copied());
-    }
-    reaches.into_iter().map(|r| !r).collect()
 }

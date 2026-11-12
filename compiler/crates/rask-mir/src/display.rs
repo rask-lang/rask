@@ -238,6 +238,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
+            MirStmtKind::BindPlace { dst, addr } => write!(f, "_{} = place *_{}", dst.0, addr.0),
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let how = match access {
                     crate::CaptureAccess::Value => "",

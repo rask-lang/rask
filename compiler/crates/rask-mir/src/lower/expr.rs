@@ -2233,7 +2233,6 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: Some(result_local),
                 ensure_depth,
-                writeback_depth: self.pending_write_backs.len(),
             });
 
             for stmt in body {
@@ -4713,17 +4712,12 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Default: simple alias binding (Vec/Map element, ...)
-            // A `with v[i]` / `with m[k]` binding is a copy of the element, so
-            // it goes back into the collection when the body ends — normally or
-            // by `return`, `try`, `break` or `continue`. Without that, changes
-            // made through the binding are lost.
-            let writeback_mark = self.pending_write_backs.len();
+            // A `with v[i]` / `with m[k]` binding names the element where it
+            // sits, so a write through it is a write to the element.
             for binding in bindings {
                 // Reached through a field (`self.items[0]`) just as much as by
-                // bare name — the element is copied out either way. It is lent
-                // (`Vec_lend`/`Map_lend`): the binding holds the slot's own
-                // references until the write-back hands them back.
-                let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
+                // bare name.
+                let element = if let ExprKind::Index { object, index } = &binding.source.kind {
                     let map = match self.index_object_base(object).as_deref() {
                         Some("Vec") => Some(false),
                         Some("Map") => Some(true),
@@ -4741,44 +4735,24 @@ impl<'a> MirLowerer<'a> {
                     None
                 };
 
-                let (val, val_ty) = match &coll_writeback_info {
-                    Some((obj_op, idx_op, map, elem_ty)) => {
-                        let lent = self.builder.alloc_temp(elem_ty.clone());
-                        let lend = if *map { "Map_lend" } else { "Vec_lend" };
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(lent),
-                            func: FunctionRef::internal(lend.to_string()),
-                            args: vec![obj_op.clone(), idx_op.clone()],
-                        }));
-                        (MirOperand::Local(lent), elem_ty.clone())
+                match element {
+                    Some((collection, at, map, elem_ty)) => {
+                        let local = self.builder.alloc_local(binding.name.clone(), elem_ty.clone());
+                        self.locals.insert(binding.name.clone(), (local, elem_ty));
+                        self.bind_element_in_place(local, collection, at, map);
                     }
-                    None => self.lower_expr(&binding.source)?,
-                };
-                let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: local,
-                    rvalue: MirRValue::Use(val),
-                }));
-
-                if let Some((collection, at, map, _)) = coll_writeback_info {
-                    self.pending_write_backs.push(super::PendingWriteBack {
-                        collection,
-                        at,
-                        value: local,
-                        map,
-                    });
+                    None => {
+                        let (val, val_ty) = self.lower_expr(&binding.source)?;
+                        let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
+                        self.locals.insert(binding.name.clone(), (local, val_ty));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Use(val),
+                        }));
+                    }
                 }
             }
-            let result = self.lower_block(body);
-            // The body's own end: write back, innermost first.
-            let opened = self.pending_write_backs.split_off(writeback_mark);
-            if self.builder.current_block_unterminated() {
-                for wb in opened.iter().rev() {
-                    self.emit_write_back(wb);
-                }
-            }
-            result
+            self.lower_block(body)
         }
 
     fn lower_assert(&mut self, condition: &Expr, message: Option<&Expr>) -> Result<TypedOperand, LoweringError> {
@@ -6453,9 +6427,9 @@ impl<'a> MirLowerer<'a> {
         // the slot holds). `all_args[0]` is the receiver.
         let slot_args: &[(usize, usize)] = match qualified_name.as_str() {
             "Vec_push" | "Vec_try_push" | "Vec_remove_item" | "Vec_contains" => &[(0, 0)],
-            "Vec_set" | "Vec_insert" | "Vec_write_back" => &[(1, 0)],
-            "Map_insert" | "Map_set" | "Map_write_back" => &[(0, 0), (1, 1)],
-            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_lend"
+            "Vec_set" | "Vec_insert" => &[(1, 0)],
+            "Map_insert" | "Map_set" => &[(0, 0), (1, 1)],
+            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_slot"
             | "Map_borrow_elem" => &[(0, 0)],
             "Sender_send" | "Sender_try_send" | "Rack_insert" => &[(0, 0)],
             "Shared_set" | "Shared_replace" | "Mutex_set" | "Mutex_replace" | "Cell_set"

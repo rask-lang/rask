@@ -765,6 +765,10 @@ fn remap_stmt(
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
             taken: taken.clone(),
         },
+        MirStmtKind::BindPlace { dst, addr } => MirStmtKind::BindPlace {
+            dst: local_map.get(dst).copied().unwrap_or(*dst),
+            addr: local_map.get(addr).copied().unwrap_or(*addr),
+        },
         MirStmtKind::LoadCapture {
             dst,
             env_ptr,

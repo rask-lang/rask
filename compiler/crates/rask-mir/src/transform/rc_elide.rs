@@ -115,6 +115,13 @@ fn views_and_handovers(
     let mut views: HashSet<LocalId> = HashSet::new();
     let mut handed: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        // An element bound where it sits points into the collection's storage.
+        if let MirStmtKind::BindPlace { dst, .. } = &stmt.kind {
+            if string_locals.contains(dst) {
+                views.insert(*dst);
+            }
+            continue;
+        }
         let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
         if crate::own_names::returns_a_view(&fref.name, own) {
             if let Some(dst) = dst.filter(|d| string_locals.contains(d)) {

@@ -217,18 +217,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
         },
-        // An element taken out for `with`, `for mutate` or a field write, and
-        // put back afterwards. The read is `v[i]`'s; only who owns the copy
-        // differs (see `Internal::LendsElement`).
+        // The element's address, for a `with` or `for mutate` binding or a
+        // field write that works on it in place (`BindPlace`). The read is
+        // `v[i]`'s without the copy out.
         StdlibEntry {
-            mir_name: "Vec_lend", c_name: "rask_vec_get",
+            mir_name: "Vec_slot", c_name: "rask_vec_get",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
-        StdlibEntry {
-            mir_name: "Vec_write_back", c_name: "rask_vec_write_back",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Vec_remove_at", c_name: "rask_vec_remove_at",
@@ -629,16 +624,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
-        // The Map twins of `Vec_lend` / `Vec_write_back`, by key.
+        // The Map twin of `Vec_slot`, by key.
         StdlibEntry {
-            mir_name: "Map_lend", c_name: "rask_map_get_unwrap",
+            mir_name: "Map_slot", c_name: "rask_map_get_unwrap",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
-        },
-        StdlibEntry {
-            mir_name: "Map_write_back", c_name: "rask_map_write_back",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_get_unwrap", c_name: "rask_map_get_unwrap",
