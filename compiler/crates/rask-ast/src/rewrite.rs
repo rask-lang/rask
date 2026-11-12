@@ -210,14 +210,6 @@ pub fn rewrite_body(body: &mut Vec<Stmt>, r: &mut impl Rewrite) {
 }
 
 /// Every expression, pattern and type in one statement.
-/// An argument or list entry: its computed label, then its value.
-pub fn rewrite_arg(a: &mut crate::expr::CallArg, r: &mut impl Rewrite) {
-    if let Some(label) = &mut a.computed_label {
-        rewrite_expr(label, r);
-    }
-    rewrite_expr(&mut a.expr, r);
-}
-
 pub fn rewrite_stmt(stmt: &mut Stmt, r: &mut impl Rewrite) {
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(e, r),
@@ -307,7 +299,7 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         ExprKind::Call { func, args } => {
             rewrite_expr(func, r);
             for a in args {
-                rewrite_arg(a, r);
+                rewrite_expr(&mut a.expr, r);
             }
         }
         ExprKind::MethodCall { object, args, type_args, .. } => {
@@ -316,7 +308,7 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
                 r.ty(t);
             }
             for a in args {
-                rewrite_arg(a, r);
+                rewrite_expr(&mut a.expr, r);
             }
         }
 
@@ -336,16 +328,6 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => rewrite_body(body, r),
-
-        ExprKind::Splice(splice) => {
-            match &mut **splice {
-                crate::expr::Splice::For { iter, .. } => rewrite_expr(iter, r),
-                crate::expr::Splice::If { cond, .. } => rewrite_expr(cond, r),
-            }
-            for a in splice.entries_mut() {
-                rewrite_arg(a, r);
-            }
-        }
 
         ExprKind::If { cond, then_branch, else_branch, .. } => {
             rewrite_expr(cond, r);
@@ -439,7 +421,7 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
 
         ExprKind::UsingBlock { args, body, .. } => {
             for a in args {
-                rewrite_arg(a, r);
+                rewrite_expr(&mut a.expr, r);
             }
             rewrite_body(body, r);
         }

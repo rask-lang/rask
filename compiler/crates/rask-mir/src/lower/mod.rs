@@ -11,7 +11,6 @@ mod iterators;
 mod json_decode;
 mod match_lower;
 mod result_path;
-mod splice;
 mod stmt;
 
 use crate::FieldAccess;
@@ -2243,9 +2242,6 @@ pub struct MirLowerer<'a> {
     /// value — `field.name`/`value.(field.name)` splice this directly instead
     /// of going through the normal local/struct-layout lookup (CT48/CT49).
     comptime_for_bindings: Vec<(String, ComptimeItem)>,
-    /// The copies of list entries a `comptime for` gave, by address, with the
-    /// loop items each is lowered under (`lower/splice.rs`).
-    entry_items: HashMap<usize, splice::EntryItems>,
     /// Bindings in this body whose initializer folded to a compile-time string.
     /// `value.(name)` reads them so a field name can be given a name of its own
     /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
@@ -4840,7 +4836,6 @@ impl<'a> MirLowerer<'a> {
             in_test_body: fn_decl.attrs.iter().any(|a| a.is("test_body")),
             pending_try_step: None,
             comptime_for_bindings: Vec::new(),
-            entry_items: HashMap::new(),
             comptime_strings: HashMap::new(),
             ptr_blocks: HashMap::new(),
         };
@@ -6057,16 +6052,6 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Block(stmts) => {
                 self.walk_free_vars_block(stmts, bound, seen, free);
-            }
-            // The loop's binding is a compile-time item, never a capture.
-            ExprKind::Splice(splice) => {
-                let mut inner = bound.clone();
-                if let rask_ast::expr::Splice::For { binding, .. } = &**splice {
-                    inner.extend(binding.names().into_iter().map(str::to_string));
-                }
-                for e in splice.exprs() {
-                    self.walk_free_vars(e, &inner, seen, free);
-                }
             }
             ExprKind::Binary { left, right, .. } => {
                 self.walk_free_vars(left, bound, seen, free);

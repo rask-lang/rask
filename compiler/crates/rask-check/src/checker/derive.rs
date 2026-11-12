@@ -1182,7 +1182,7 @@ impl TypeChecker {
             object: Box::new(object),
             method: method.to_string(),
             type_args: None,
-            args: args.into_iter().map(|e| CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: e }).collect(),
+            args: args.into_iter().map(|e| CallArg { name: None, mode: ArgMode::Default, expr: e }).collect(),
         })
     }
 
@@ -1196,7 +1196,7 @@ impl TypeChecker {
         }
         self.expr(ExprKind::Call {
             func: Box::new(callee),
-            args: args.into_iter().map(|e| CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: e }).collect(),
+            args: args.into_iter().map(|e| CallArg { name: None, mode: ArgMode::Default, expr: e }).collect(),
         })
     }
 

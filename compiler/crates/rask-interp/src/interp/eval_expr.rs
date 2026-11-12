@@ -502,12 +502,6 @@ impl Interpreter {
     /// just its value. Each part of the expression is evaluated once, so a
     /// caller can read the value from the place instead of evaluating twice.
     fn locate(&mut self, expr: &Expr) -> Result<Located, RuntimeDiagnostic> {
-        // A `mutate` entry a `comptime for` gave: the place, under its items.
-        if let Some(items) = self.take_entry_scope(expr) {
-            let result = self.eval_in_items(items.clone(), |this| this.locate(expr));
-            self.put_entry_scope(expr, items);
-            return result;
-        }
         match &expr.kind {
             ExprKind::Ident(name) => match self.env.slot_of(name) {
                 Some(cell) => Ok(Located::Place(cell.clone())),
@@ -844,20 +838,6 @@ impl Interpreter {
     }
 
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
-        // CT69: a copy of a list entry a `comptime for` gave, evaluated under
-        // the loop items it was written under (`interp/splice.rs`).
-        if let Some(items) = self.take_entry_scope(expr) {
-            let result = self.eval_in_items(items.clone(), |this| this.eval_expr(expr));
-            self.put_entry_scope(expr, items);
-            return result;
-        }
-        // A list with such entries, flattened and then evaluated as written
-        // out.
-        if let Some(rebuilt) = self.rebuild_spliced(expr)? {
-            let result = self.eval_expr(&rebuilt);
-            self.unscope_rebuilt(&rebuilt);
-            return result;
-        }
         // ER16a: this is the chain step an enclosing `try` attached to. Evaluate
         // it, then propagate here — the rest of the chain works on the payload,
         // which is what `(try read_file(p)).len()` means.

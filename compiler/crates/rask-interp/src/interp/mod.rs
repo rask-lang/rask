@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 
 mod register;
-mod splice;
 mod monomorphize;
 mod call;
 mod exec_stmt;
@@ -228,9 +227,6 @@ pub struct Interpreter {
     /// called, because it can run after the generic call that built it has
     /// returned, or on another task.
     pub(crate) generic_frames: Vec<GenericFrame>,
-    /// The copies of list entries a `comptime for` gave, by address, with the
-    /// loop items each is evaluated under (`interp/splice.rs`).
-    pub(crate) entry_items: HashMap<usize, splice::EntryItems>,
     /// `(type, method)` → its `extend` header's target arguments as written
     /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
     /// method call matches them against the receiver's type.
@@ -532,7 +528,6 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            entry_items: HashMap::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -579,7 +574,6 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            entry_items: HashMap::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -632,7 +626,6 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            entry_items: HashMap::new(),
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),

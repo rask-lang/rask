@@ -91,50 +91,6 @@ func print_fields<T>(value: T) {
 
 Primary use case: serialization format libraries. See `std.encoding` for the full pattern.
 
-## Comptime Control Inside a List
-
-The same two forms work where a list of values is written, so a call, an
-array or a struct literal can have one entry per field without a second
-mechanism to learn.
-
-| Rule | Description |
-|------|-------------|
-| **CT69: List entries** | In a comma-separated list — a call's arguments (a struct literal is written as a call), an array literal, a tuple — an entry may be `comptime for x in iterable { entries }` or `comptime if cond { entries } else { entries }`. It stands for the entries its body gives: each iteration's in turn, or the chosen branch's. CT50–CT53 and CT59 apply as they do to the statements |
-| **CT70: Entries are the list's own** | Inside the braces, entries are written as that list's are, separated by commas or newlines: a label and `mutate` in a call, plain values in an array or tuple. An iteration may give any number, none included |
-| **CT71: Computed labels** | A label may be written `(expr): value`, where `expr` names a field by CT53: `(f.name): 0` |
-| **CT72: Checked once expanded** | Arity, labels, missing fields (`std.encoding/E27`) and argument types are checked against the list each instance expands to |
-| **CT73: Building a type parameter** | `Q(comptime for f in reflect.fields<Q>() { (f.name): … })` builds whatever type the instance gives `Q`. Only a `comptime for` can say which fields that is, so a literal of a type parameter needs one. An array literal with comptime entries builds a `Vec`: its length is the instance's |
-
-<!-- test: parse -->
-```rask
-import std.reflect
-
-struct Point {
-    x: i64
-    y: i64
-}
-
-func origin() -> Point {
-    return Point(comptime for f in reflect.fields<Point>() { (f.name): 0 })
-}
-
-func names<T>() -> Vec<string> {
-    return [comptime for f in reflect.fields<T>() { f.name }]
-}
-
-// CT73: each field from the matching one of another value.
-func shifted<T>(a: T, by: i64) -> T {
-    return T(comptime for f in reflect.fields<T>() { (f.name): a.(f.name) + by })
-}
-
-// Each argument by the parameter's mode: `mutate` where the callee writes.
-func apply<F>(f: F, mutate acc: Point, seen: Point) {
-    f(comptime for p in reflect.params<F>() {
-        comptime if p.is_mutate { mutate acc } else { seen }
-    })
-}
-```
-
 ## Calls at Comptime
 
 Being callable at comptime is a property of what a function does, not of its marking. `comptime func` asserts the property at the definition; unmarked functions are checked where comptime code calls them.

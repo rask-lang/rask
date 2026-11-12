@@ -205,12 +205,6 @@ impl TypeChecker {
             // its own elements instead, `let xs: [i64?; 3] = [1, 2, 3]` reported
             // "expected `i64?`, found `i64`" — the literal never learned that its
             // elements fill optional slots, so no element could widen (#771).
-            ExprKind::Array(elements) if elements.iter().any(is_splice) => {
-                let want = self.collection_elem_type(expected);
-                let ty = self.spliced_array(elements, want);
-                self.node_types.insert(expr.id, ty.clone());
-                return ty;
-            }
             ExprKind::Array(elements) => {
                 if let Some(want_elem) = self.collection_elem_type(expected) {
                     for element in elements.iter() {
@@ -789,26 +783,11 @@ impl TypeChecker {
             // it was in statement position and answered `void`. The same
             // expression in `let s = out.push(…)` was fine, because a `let`
             // never sets the flag.
-            ExprKind::Call { func, args } if args.iter().any(|a| is_splice(&a.expr)) => {
-                self.in_stmt_expr = false;
-                let func_ty = self.infer_expr(func);
-                self.check_spliced_args(args);
-                match self.ctx.apply(&func_ty) {
-                    Type::Fn { ret, .. } => *ret,
-                    _ => self.ctx.fresh_var(),
-                }
-            }
             ExprKind::Call { func, args } => {
                 self.in_stmt_expr = false;
                 self.check_call(expr.id, func, args, expr.span)
             }
 
-            ExprKind::MethodCall { object, args, .. } if args.iter().any(|a| is_splice(&a.expr)) => {
-                self.in_stmt_expr = false;
-                let _ = self.infer_expr(object);
-                self.check_spliced_args(args);
-                self.ctx.fresh_var()
-            }
             ExprKind::MethodCall {
                 object,
                 method,
@@ -1239,19 +1218,6 @@ impl TypeChecker {
                 result
             }
 
-            // CT72: which fields a `comptime for` fills is the instance's to
-            // say, so the literal is held to its fields once it's expanded.
-            ExprKind::StructLit { name, fields, spread, .. }
-                if fields.iter().any(|f| is_splice(&f.value)) =>
-            {
-                for field in fields {
-                    let _ = self.infer_expr(&field.value);
-                }
-                if let Some(base) = spread {
-                    let _ = self.infer_expr(base);
-                }
-                self.resolve_named(&Type::UnresolvedNamed(name.clone()))
-            }
             ExprKind::StructLit { name, type_args, fields, spread } => {
                 let built = {
                 // `Point(x: 1, x: 2)`: the last one won, silently.
@@ -1596,13 +1562,6 @@ impl TypeChecker {
                 built
             }
 
-            ExprKind::Splice(splice) => {
-                self.check_splice(splice, None);
-                Type::Error
-            }
-
-            ExprKind::Array(elements) if elements.iter().any(is_splice) => self.spliced_array(elements, None),
-
             ExprKind::Array(elements) => {
                 if elements.is_empty() {
                     let elem_ty = self.ctx.fresh_var();
@@ -1632,15 +1591,6 @@ impl TypeChecker {
                         len: elements.len(),
                     }
                 }
-            }
-
-            // CT69: how many elements, and so the tuple's type, is the
-            // instance's to say.
-            ExprKind::Tuple(elements) if elements.iter().any(is_splice) => {
-                for e in elements {
-                    let _ = self.infer_expr(e);
-                }
-                Type::Error
             }
 
             ExprKind::Tuple(elements) => {
@@ -8332,44 +8282,4 @@ struct ArmReach {
     closed_by: Option<String>,
     /// Variants tested by a bare, unguarded arm.
     tags: std::collections::HashSet<String>,
-}
-
-/// A `comptime for` or `comptime if` among a list's entries (ctrl.comptime/CT69).
-pub(super) fn is_splice(e: &Expr) -> bool {
-    matches!(e.kind, ExprKind::Splice(_))
-}
-
-impl TypeChecker {
-    /// An array literal with entries a `comptime for` gives. Its length is the
-    /// instance's, so it builds a `Vec` whatever slot it lands in; its element
-    /// type is still every entry's, and the slot's when it names one.
-    fn spliced_array(&mut self, elements: &[Expr], want: Option<Type>) -> Type {
-        let elem = want.unwrap_or_else(|| self.ctx.fresh_var());
-        for e in elements {
-            match &e.kind {
-                ExprKind::Splice(splice) => self.check_splice(splice, Some(&elem)),
-                _ => {
-                    let got = self.infer_expr_expecting(e, &elem);
-                    self.coerce_into(CoercionSite::CollectionElement, got, elem.clone(), e.span);
-                }
-            }
-        }
-        self.resolve_named(&Type::UnresolvedGeneric {
-            name: "Vec".to_string(),
-            args: vec![GenericArg::Type(Box::new(elem))],
-        })
-    }
-
-    /// A call whose arguments a `comptime for` gives: each is checked, and
-    /// how many there are and what each is for is the instance's (CT72).
-    fn check_spliced_args(&mut self, args: &[CallArg]) {
-        for arg in args {
-            match &arg.expr.kind {
-                ExprKind::Splice(splice) => self.check_splice(splice, None),
-                _ => {
-                    let _ = self.infer_expr(&arg.expr);
-                }
-            }
-        }
-    }
 }

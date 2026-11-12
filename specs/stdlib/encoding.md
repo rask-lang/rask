@@ -370,7 +370,7 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 
 | Rule | Description |
 |------|-------------|
-| **E26: Comptime for in struct literal** | `comptime for` inside `T(…)` produces field initializers, one `(field.name): value` per field (`ctrl.comptime/CT69`–`CT71`) |
+| **E26: Comptime for in struct literal** | `comptime for` inside `T { ... }` produces field initializers. Each iteration must produce exactly one `(field.name): value` pair |
 | **E27: All fields required** | The compiler verifies every non-skipped field is initialized. Missing fields are a compile error |
 
 ## Error Messages

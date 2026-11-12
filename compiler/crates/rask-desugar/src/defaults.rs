@@ -326,9 +326,7 @@ impl DefaultDesugarer {
                 // FD2/FD5: fill omitted fields from declared defaults. A spread
                 // (`..base`) already covers every unlisted field, so defaults
                 // only fire when there is no spread.
-                // A `comptime for` gives fields only the instance knows,
-                // so defaults wait for none of them (ctrl.comptime/CT72).
-                if spread.is_none() && !fields.iter().any(|f| matches!(f.value.kind, ExprKind::Splice(_))) {
+                if spread.is_none() {
                     self.fill_struct_defaults(name, fields);
                 }
             }
@@ -344,15 +342,6 @@ impl DefaultDesugarer {
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.desugar_expr(&mut b.source); }
                 for s in body { self.desugar_stmt(s); }
-            }
-            ExprKind::Splice(splice) => {
-                match &mut **splice {
-                    rask_ast::expr::Splice::For { iter, .. } => self.desugar_expr(iter),
-                    rask_ast::expr::Splice::If { cond, .. } => self.desugar_expr(cond),
-                }
-                for a in splice.entries_mut() {
-                    self.desugar_expr(&mut a.expr);
-                }
             }
             ExprKind::Unsafe { body }
             | ExprKind::Comptime { body }

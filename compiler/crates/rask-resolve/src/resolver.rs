@@ -2470,48 +2470,8 @@ impl Resolver {
         self.errors.push(ResolveError::undefined(name.to_string(), expr.span));
     }
 
-    /// An argument or list entry: its computed label, then its value.
-    fn resolve_arg(&mut self, arg: &rask_ast::expr::CallArg) {
-        if let Some(label) = &arg.computed_label {
-            self.resolve_expr(label);
-        }
-        self.resolve_expr(&arg.expr);
-    }
-
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Splice(splice) => match &**splice {
-                rask_ast::expr::Splice::For { binding, iter, entries } => {
-                    self.resolve_expr(iter);
-                    self.scopes.push(ScopeKind::Block);
-                    let names = match binding {
-                        ForBinding::Single(name) => vec![name.clone()],
-                        ForBinding::Tuple(names) => names.clone(),
-                    };
-                    for name in &names {
-                        let sym_id = self.symbols.insert(
-                            name.clone(),
-                            SymbolKind::Variable { mutable: false },
-                            None,
-                            expr.span,
-                            false,
-                        );
-                        if let Err(e) = self.scopes.define(name.clone(), sym_id, expr.span) {
-                            self.errors.push(e);
-                        }
-                    }
-                    for entry in entries {
-                        self.resolve_arg(entry);
-                    }
-                    self.scopes.pop();
-                }
-                rask_ast::expr::Splice::If { cond, then_entries, else_entries } => {
-                    self.resolve_expr(cond);
-                    for entry in then_entries.iter().chain(else_entries) {
-                        self.resolve_arg(entry);
-                    }
-                }
-            },
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
             ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None => {}
             ExprKind::Ident(name) => self.resolve_name(expr, name),
@@ -2547,7 +2507,7 @@ impl Resolver {
                     self.resolve_expr(func);
                 }
                 for arg in args {
-                    self.resolve_arg(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, method, args, .. }
@@ -2565,7 +2525,7 @@ impl Resolver {
                 });
                 self.resolve_expr(object);
                 for arg in args {
-                    self.resolve_arg(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, method, args, .. } => {
@@ -2613,7 +2573,7 @@ impl Resolver {
                     self.resolve_expr(object);
                 }
                 for arg in args {
-                    self.resolve_arg(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::Field { object, field } => {
@@ -2808,8 +2768,6 @@ impl Resolver {
                 }
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     self.resolutions.insert(expr.id, sym_id);
-                } else if self.is_type_param(name) {
-                    // `Q(comptime for … )`: the instance's type (ctrl.comptime/CT73).
                 } else if name.contains('.') {
                     // Qualified name: Enum.Variant or pkg.Struct
                     let parts: Vec<&str> = name.splitn(2, '.').collect();
@@ -2858,7 +2816,7 @@ impl Resolver {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.resolve_arg(arg);
+                    self.resolve_expr(&arg.expr);
                 }
                 self.scopes.push(ScopeKind::Block);
                 for stmt in body {

@@ -1685,11 +1685,6 @@ impl<'a> Printer<'a> {
             self.emit(name);
             self.emit(": ");
         }
-        if let Some(label) = &arg.computed_label {
-            self.emit("(");
-            self.format_expr(label);
-            self.emit("): ");
-        }
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
             ArgMode::Deleting => self.emit("deleting "),
@@ -1697,74 +1692,6 @@ impl<'a> Printer<'a> {
             ArgMode::Default => {}
         }
         self.format_expr(&arg.expr);
-    }
-
-    /// `comptime for f in it { a, b }` or `comptime if c { a } else { b }`
-    /// among a list's entries (ctrl.comptime/CT69), kept on one line.
-    fn format_splice(&mut self, splice: &rask_ast::expr::Splice) {
-        match splice {
-            rask_ast::expr::Splice::For { binding, iter, entries } => {
-                self.emit("comptime for ");
-                match binding {
-                    ForBinding::Single(name) => self.emit(name),
-                    ForBinding::Tuple(names) => {
-                        self.emit("(");
-                        self.emit(&names.join(", "));
-                        self.emit(")");
-                    }
-                }
-                self.emit(" in ");
-                self.format_expr(iter);
-                self.emit(" ");
-                self.format_splice_entries(entries);
-            }
-            rask_ast::expr::Splice::If { cond, then_entries, else_entries } => {
-                self.emit("comptime if ");
-                self.format_expr(cond);
-                self.emit(" ");
-                self.format_splice_entries(then_entries);
-                if let [only] = else_entries.as_slice() {
-                    if let ExprKind::Splice(inner) = &only.expr.kind {
-                        if matches!(**inner, rask_ast::expr::Splice::If { .. }) {
-                            self.emit(" else ");
-                            self.format_splice(inner);
-                            return;
-                        }
-                    }
-                }
-                if !else_entries.is_empty() {
-                    self.emit(" else ");
-                    self.format_splice_entries(else_entries);
-                }
-            }
-        }
-    }
-
-    /// `{ a, b }` on one line, or one entry per line when written that way.
-    fn format_splice_entries(&mut self, entries: &[CallArg]) {
-        let spans: Vec<Span> = entries.iter().map(|e| e.expr.span).collect();
-        if !self.written_one_per_line(&spans) {
-            self.emit("{ ");
-            for (i, entry) in entries.iter().enumerate() {
-                if i > 0 {
-                    self.emit(", ");
-                }
-                self.format_call_arg(entry);
-            }
-            self.emit(" }");
-            return;
-        }
-        self.emit("{");
-        self.emit_newline();
-        self.indent += 1;
-        for entry in entries {
-            self.emit_indent();
-            self.format_call_arg(entry);
-            self.emit_newline();
-        }
-        self.indent -= 1;
-        self.emit_indent();
-        self.emit("}");
     }
 
     /// Was this list written one item per line? Its first item starts a line,
@@ -2449,7 +2376,6 @@ impl<'a> Printer<'a> {
                     self.format_unbraced_body(body);
                 }
             }
-            ExprKind::Splice(splice) => self.format_splice(splice),
             ExprKind::Comptime { body } => {
                 self.emit("comptime {");
                 self.emit_newline();

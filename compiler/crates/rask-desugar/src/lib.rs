@@ -997,18 +997,6 @@ impl Desugarer {
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
-            ExprKind::Splice(splice) => {
-                match &mut **splice {
-                    rask_ast::expr::Splice::For { iter, .. } => self.desugar_expr(iter),
-                    rask_ast::expr::Splice::If { cond, .. } => self.desugar_expr(cond),
-                }
-                for a in splice.entries_mut() {
-                    if let Some(label) = &mut a.computed_label {
-                        self.desugar_expr(label);
-                    }
-                    self.desugar_expr(&mut a.expr);
-                }
-            }
             ExprKind::Unsafe { body }
             | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 for s in body {
@@ -1082,7 +1070,7 @@ impl Desugarer {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
                             type_args: None,
-                            args: vec![CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: right_expr }],
+                            args: vec![CallArg { name: None, mode: ArgMode::Default, expr: right_expr }],
                         },
                         span,
                     };
@@ -1095,7 +1083,7 @@ impl Desugarer {
                         object: Box::new(left_expr),
                         method: method.to_string(),
                         type_args: None,
-                        args: vec![CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: right_expr }],
+                        args: vec![CallArg { name: None, mode: ArgMode::Default, expr: right_expr }],
                     };
                 }
             }
@@ -1162,7 +1150,7 @@ impl Desugarer {
                         None => synth(ExprKind::None),
                     };
                     let through = synth(ExprKind::Bool(inclusive));
-                    let arg = |expr| CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr };
+                    let arg = |expr| CallArg { name: None, mode: ArgMode::Default, expr };
                     self.operator_calls.insert(expr.id);
                     expr.kind = ExprKind::MethodCall {
                         object,
@@ -1544,7 +1532,7 @@ impl Desugarer {
         };
 
         let (ty, width, precision, align, fill) = spec.encode();
-        let int_arg = |this: &mut Self, n: i64| CallArg { computed_label: None,
+        let int_arg = |this: &mut Self, n: i64| CallArg {
             name: None,
             mode: ArgMode::Default,
             expr: Expr { id: this.fresh_id(), kind: ExprKind::Int(i128::from(n), None), span },
@@ -1554,7 +1542,7 @@ impl Desugarer {
             int_arg(self, width),
             int_arg(self, precision),
             int_arg(self, align),
-            CallArg { computed_label: None,
+            CallArg {
                 name: None,
                 mode: ArgMode::Default,
                 expr: Expr { id: self.fresh_id(), kind: ExprKind::Char(fill), span },
@@ -1592,7 +1580,7 @@ impl Desugarer {
                     // for this to target (std.strings, #303).
                     method: "__concat".to_string(),
                     type_args: None,
-                    args: vec![CallArg { computed_label: None, name: None, mode: ArgMode::Default, expr: seg_expr }],
+                    args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
                 },
                 span,
             };
