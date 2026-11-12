@@ -373,13 +373,18 @@ fn package_root(path: &Path) -> Option<PathBuf> {
     path.ancestors().skip(1).find(|d| d.join("rask.toml").is_file()).map(Path::to_path_buf)
 }
 
-/// Whether any file of the package at `root` has a `test` block. A package
-/// with none is skipped, as a lone file with none is.
+/// Whether any file of the package at `root` has a `test` block, in the
+/// files `rask test` runs: the directory and those below it, short of a
+/// directory that is a package of its own. A package with none is skipped,
+/// as a lone file with none is.
 fn package_has_tests(root: &Path) -> bool {
     let Ok(entries) = fs::read_dir(root) else { return false };
-    entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "rk"))
-        .any(|p| fs::read_to_string(&p).is_ok_and(|c| rask_spec_test::has_rk_tests(&c)))
+    entries.flatten().map(|e| e.path()).any(|p| {
+        if p.is_dir() {
+            !p.join("rask.toml").is_file() && package_has_tests(&p)
+        } else {
+            p.extension().is_some_and(|e| e == "rk")
+                && fs::read_to_string(&p).is_ok_and(|c| rask_spec_test::has_rk_tests(&c))
+        }
+    })
 }
