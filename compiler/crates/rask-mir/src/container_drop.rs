@@ -796,6 +796,7 @@ pub(crate) fn params_a_callee_keeps(
     // where the caller's box keeps owning the receiver and releases it
     // (`interface_drop_owned`). Its `take self` is read off the body, as
     // before modes were: one answer has to serve both kinds of call.
+    // Workaround until an interface call hands the receiver over (#1911).
     let behind_vtable: HashSet<&str> = vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()).collect();
 
     loop {
