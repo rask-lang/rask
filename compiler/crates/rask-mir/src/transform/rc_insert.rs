@@ -878,7 +878,14 @@ fn insert_aggregate_release(
                 }
                 MirStmtKind::Store { addr, value, .. } => {
                     if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
-                        if !aggregates.contains(&v) && !aggregates.contains(addr) {
+                        if owns_copy.contains(addr) {
+                            // A Copy value bound into a slot lowering retains
+                            // (`retain_bound_copy`): the slot takes references
+                            // of its own, so this is a copy and the source
+                            // keeps what it had. `let half = p.left`, with
+                            // `half` in memory because a closure points at it,
+                            // read as handing `p` away and leaked it.
+                        } else if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
                             // at it: whoever reads the buffer reads through the
                             // aggregate. `json.encode(p)` on a `struct { counts:
