@@ -298,8 +298,8 @@ enum Internal {
     /// references back to the slot. Borrows its receiver, keeps nothing.
     /// Answering "a view" instead is what took a reference too many for a
     /// `with` over a string element (#1431) and released nothing a `for
-    /// mutate` body replaced.
-    LendsElement,
+    /// mutate` body replaced. Carries the spelling of its write-back.
+    LendsElement(&'static str),
     /// Puts back what `LendsElement` took out: the slot keeps the last
     /// argument and releases nothing. Borrows its receiver and only reads the
     /// index or key.
@@ -361,7 +361,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // Putting a `with` binding back is not `v[i] = x`: the binding *is* what
     // the slot held, so there is nothing to release. It has its own spelling
     // rather than being recognised after the fact.
-    ("Vec_lend", Internal::LendsElement),
+    ("Vec_lend", Internal::LendsElement("Vec_write_back")),
     // `for x in v.take_all()` moves each element out of the vector `take_all`
     // returned: a `remove` that zeroes the slot instead of shifting.
     ("Vec_move_out", Internal::SameAs("Vec_remove")),
@@ -369,7 +369,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // field's value, handed to the binding. Argument zero is the field's
     // address, borrowed; nothing in the slot is released.
     ("Field_take", Internal::SameAs("Vec_remove")),
-    ("Map_lend", Internal::LendsElement),
+    ("Map_lend", Internal::LendsElement("Map_write_back")),
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
 
@@ -521,7 +521,7 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
         | Some(Internal::NoReceiver)
-        | Some(Internal::LendsElement)
+        | Some(Internal::LendsElement(_))
         | Some(Internal::WritesBack) => return None,
         None => {}
     }
@@ -933,7 +933,7 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
     }
     match internal_spelling(base)? {
         Internal::SameAs(_) => None,
-        Internal::FreshFromReceiver | Internal::NoReceiver | Internal::LendsElement => {
+        Internal::FreshFromReceiver | Internal::NoReceiver | Internal::LendsElement(_) => {
             Some(ArgMode::Lent)
         }
         Internal::WritesBack => Some(mode(Some(arg_index) == written_back_at(base))),
@@ -976,6 +976,16 @@ pub fn borrows_its_callback(qualified_name: &str) -> bool {
 /// The opposite question from `borrows_receiver`, and not its negation: a
 /// static method has no receiver at all, so both are false for it. Unaccounted
 /// for answers `false`, which leaks rather than freeing something twice.
+/// The write-back that puts back the element this call lends out, when it
+/// lends one: `Vec_lend` is undone by `Vec_write_back`.
+pub fn written_back_by(qualified_name: &str) -> Option<&'static str> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    match internal_spelling(head.split('$').next().unwrap_or(head)) {
+        Some(Internal::LendsElement(write_back)) => Some(write_back),
+        _ => None,
+    }
+}
+
 pub fn consumes_receiver(qualified_name: &str) -> bool {
     if let Some(m) = declared(qualified_name) {
         return m.takes_self && m.take_self;
@@ -1005,7 +1015,7 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     let base = head.split('$').next().unwrap_or(head);
     matches!(
         internal_spelling(base),
-        Some(Internal::FreshFromReceiver | Internal::LendsElement | Internal::WritesBack)
+        Some(Internal::FreshFromReceiver | Internal::LendsElement(_) | Internal::WritesBack)
     )
 }
 

@@ -1154,36 +1154,47 @@ fn insert_aggregate_release(
     //
     // An element `with`, `for mutate` or a field write lent out of a Vec or a
     // Map is a copy of bytes the collection's slot still holds until the
-    // write-back. Releasing it as the frame's own value frees what the slot
-    // points at, and the collection frees it again: a panic inside
-    // `with rooms[0] as room` crashed the test runner that caught it. So an
-    // unwind leaves it to the collection, and a path that never reaches the
-    // write-back (a call that doesn't return) writes it back instead.
+    // write-back. Two paths don't reach that write-back:
+    //
+    // - A block that ends in a call that never returns (`panic`, `todo`, `!`
+    //   on an error, a failed assert). The release placed there is the last
+    //   thing done with the element, and releasing would free what the slot
+    //   points at for the collection to free again. It writes back instead.
+    //   A release anywhere else, such as the old element a body replaced
+    //   with `room = …`, stays a release.
+    // - An unwind from a call that panicked. Workaround: the copy isn't armed,
+    //   so the collection's release frees the element once. If the body
+    //   replaced a field first, the slot still points at the freed old value
+    //   and this frees it twice; the fix is a write-back on unwind, which needs
+    //   more of the frame than an unwind release can read (#1922).
     let lent = lent_elements(func);
+    let dead_end: Vec<bool> = func
+        .blocks
+        .iter()
+        .map(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable))
+        .collect();
     let guards = ownership::Guards::new(func, &plan);
     let (shifted, unwind_edges) = ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
         &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| {
-            if made.is_some_and(|m| lent.contains_key(&m)) {
+            if lent.contains_key(&name) || made.is_some_and(|m| lent.contains_key(&m)) {
                 return Vec::new();
             }
             vec![MirStmt::dummy(MirStmtKind::RcDecContents { local: name })]
         },
     );
-    let release_of = |name: LocalId, made: Option<LocalId>, span: crate::Span| -> MirStmt {
-        match made.and_then(|m| lent.get(&m)) {
-            Some((write_back, coll, at)) => MirStmt::new(
-                MirStmtKind::Call {
-                    dst: None,
-                    func: crate::FunctionRef::internal(write_back.to_string()),
-                    args: vec![coll.clone(), at.clone(), MirOperand::Local(name)],
-                },
-                span,
-            ),
-            None => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
-        }
+    let write_back_of = |name: LocalId, made: Option<LocalId>, span: crate::Span| -> Option<MirStmt> {
+        let (write_back, coll, at) = lent.get(&name).or_else(|| made.and_then(|m| lent.get(&m)))?;
+        Some(MirStmt::new(
+            MirStmtKind::Call {
+                dst: None,
+                func: crate::FunctionRef::internal(write_back.to_string()),
+                args: vec![coll.clone(), at.clone(), MirOperand::Local(name)],
+            },
+            span,
+        ))
     };
     let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<LocalId>, Option<usize>)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
@@ -1204,7 +1215,11 @@ fn insert_aggregate_release(
                     .find(|b| b.id == from)
                     .map(|b| b.terminator.span)
                     .unwrap_or(crate::Span::new(0, 0));
-                let release = vec![release_of(name, made, span)];
+                let into_dead_end = func.blocks.iter().position(|b| b.id == to).is_some_and(|i| dead_end[i]);
+                let release = vec![match write_back_of(name, made, span) {
+                    Some(write_back) if into_dead_end => write_back,
+                    _ => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
+                }];
                 on_edges.push((from, to, guards.wrap(guard, release)));
             }
         }
@@ -1218,7 +1233,10 @@ fn insert_aggregate_release(
                 .get(at.saturating_sub(1))
                 .map(|s| s.span)
                 .unwrap_or(block.terminator.span);
-            let release = vec![release_of(name, made, span)];
+            let release = vec![match write_back_of(name, made, span) {
+                Some(write_back) if dead_end[bi] => write_back,
+                _ => MirStmt::new(MirStmtKind::RcDecContents { local: name }, span),
+            }];
             for (k, stmt) in guards.wrap(guard, release).into_iter().enumerate() {
                 block.statements.insert(at + k, stmt);
             }
@@ -2506,22 +2524,37 @@ mod tests {
     }
 }
 
-/// The elements a `Vec_lend` or `Map_lend` copied out, by the local they were
-/// made under: the write-back that puts each one back, and its collection and
-/// index or key.
+/// The elements a lend (`Vec_lend`, `Map_lend`) copied out, by the local they
+/// were made under: the write-back that puts each one back, and its
+/// collection and index or key.
+///
+/// A plain copy of one (`_16 = _15`) is the same element: lowering binds the
+/// `with` name that way, and a field store then makes a value under the copy's
+/// name.
 fn lent_elements(func: &MirFunction) -> HashMap<LocalId, (&'static str, MirOperand, MirOperand)> {
     let mut out = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         if let MirStmtKind::Call { dst: Some(dst), func: f, args } = &stmt.kind {
-            let write_back = match f.name.as_str() {
-                "Vec_lend" => "Vec_write_back",
-                "Map_lend" => "Map_write_back",
-                _ => continue,
-            };
+            let Some(write_back) = rask_stdlib::mir_metadata::written_back_by(&f.name) else { continue };
             if let [coll, at] = args.as_slice() {
                 out.insert(*dst, (write_back, coll.clone(), at.clone()));
             }
         }
     }
-    out
+    loop {
+        let mut grew = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if !out.contains_key(dst) {
+                    if let Some(entry) = out.get(src).cloned() {
+                        out.insert(*dst, entry);
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            return out;
+        }
+    }
 }

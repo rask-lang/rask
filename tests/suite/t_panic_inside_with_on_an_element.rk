@@ -57,3 +57,18 @@ test "the next test runs" {
     }
     assert rooms[0].items.len() == 1
 }
+
+// Replacing the whole element releases the old one, and the new one goes
+// back into the slot. The first version of this fix wrote the old one back
+// instead of releasing it, and leaked it.
+test "replacing the whole element releases the old one" {
+    mut rooms: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    with rooms[0] as room {
+        room = Room(name: "the courtyard, a name long enough to allocate", items: ["a key, long enough to allocate"])
+    }
+    for mutate r in rooms {
+        r = Room(name: "the hall, a name long enough to allocate", items: Vec.new())
+    }
+    assert rooms[0].name == "the hall, a name long enough to allocate"
+    assert rooms[0].items.len() == 0
+}
