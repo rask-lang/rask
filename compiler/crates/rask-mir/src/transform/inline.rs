@@ -860,8 +860,9 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
-        MirStmtKind::RcIncContents { local } => MirStmtKind::RcIncContents {
+        MirStmtKind::RcIncContents { local, for_hand_off } => MirStmtKind::RcIncContents {
             local: local_map.get(local).copied().unwrap_or(*local),
+            for_hand_off: *for_hand_off,
         },
         MirStmtKind::ZeroAggregate { local } => MirStmtKind::ZeroAggregate {
             local: local_map.get(local).copied().unwrap_or(*local),
@@ -1179,7 +1180,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
 
         }
@@ -1208,7 +1209,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
 
         }
@@ -1276,7 +1277,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
         };
         let caller = MirFunction {
@@ -1296,7 +1297,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1366,7 +1367,7 @@ mod tests {
                 entry_block: BlockId(0),
                 is_extern_c: false,
                 inline_hint: false,
-                taken_params: Vec::new(),
+                param_modes: Vec::new(),
                 source_file: None,
     
             },
@@ -1401,7 +1402,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
         }
     }
@@ -1451,7 +1452,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
 
         }];

@@ -10924,7 +10924,7 @@ impl<'a> MirLowerer<'a> {
                     field: None,
                 }));
             }
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result, for_hand_off: false }));
             return (MirOperand::Local(result), kept_ty);
         }
         // A narrower element is a scalar and owns nothing.

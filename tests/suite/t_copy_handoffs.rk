@@ -118,3 +118,43 @@ test "a caller releases what a swap left in its slots" {
     assert a.name == mk(3)
     assert b.tag == mk(2)
 }
+
+struct Big {
+    name: string
+    tag: string
+    v: Vec<i64>
+}
+
+func maybe_keep(mutate b: Big, mutate keep: Vec<Big>, c: bool) {
+    if c {
+        keep.push(b)
+    }
+    b = Big(name: mk(60), tag: mk(61), v: Vec.new())
+}
+
+test "a mutate parameter moved out on some paths, then refilled" {
+    // The refill releases the old value only on the path that still holds
+    // it (#1903).
+    mut keep: Vec<Big> = Vec.new()
+    mut b = Big(name: mk(1), tag: mk(2), v: Vec.new())
+    maybe_keep(mutate b, mutate keep, false)
+    maybe_keep(mutate b, mutate keep, true)
+    maybe_keep(mutate b, mutate keep, false)
+    assert b.name == mk(60)
+    assert keep.len() == 1
+    assert keep[0].tag == mk(61)
+}
+
+struct Bag {
+    items: Vec<i32>
+}
+
+func count(take b: Bag) -> usize {
+    return b.items.len()
+}
+
+test "a take parameter the callee only reads is the callee's to release" {
+    mut v: Vec<i32> = Vec.new()
+    v.push(1)
+    assert count(Bag(items: v)) == 1
+}

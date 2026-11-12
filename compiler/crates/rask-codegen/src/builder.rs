@@ -1415,7 +1415,7 @@ impl<'a> FunctionBuilder<'a> {
             // what it holds. The element map is the one a container of this
             // type would carry, so this retains exactly what a cloned vector
             // would retain per element; `collect_element_offsets` registered it.
-            MirStmtKind::RcIncContents { local } => {
+            MirStmtKind::RcIncContents { local, .. } => {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };

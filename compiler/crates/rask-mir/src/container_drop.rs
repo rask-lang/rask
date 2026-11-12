@@ -24,6 +24,7 @@
 //! `inner` over and keeps `v`.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use rask_ast::ty::ParamMode;
 
 use crate::closure_reach::ClosureReach;
 use crate::closure_targets::ClosureTargets;
@@ -749,7 +750,7 @@ fn build_env_drop(
         entry_block: entry,
         is_extern_c: false,
         inline_hint: false,
-        taken_params: Vec::new(),
+        param_modes: Vec::new(),
         source_file,
     }
 }
@@ -806,8 +807,18 @@ pub(crate) fn params_a_callee_keeps(
                 // a borrowed non-Copy one can't be given away (PM6), and a
                 // `mutate` slot the callee moves out of comes back refilled
                 // (PM7), the new value the caller's to release (#1885).
-                if func.taken_params.get(i) == Some(&false) {
-                    continue;
+                match func.param_modes.get(i) {
+                    Some(ParamMode::Borrow | ParamMode::Mutate) => continue,
+                    // Written `take`: the frame owns it from the call on, and
+                    // releases what it doesn't hand on.
+                    Some(ParamMode::Take) => {
+                        if let Some(v) = kept.get_mut(&func.name) {
+                            v[i] = true;
+                            grew = true;
+                        }
+                        continue;
+                    }
+                    None => {}
                 }
                 if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {
                     if let Some(v) = kept.get_mut(&func.name) {
@@ -947,7 +958,7 @@ fn param_is_kept_by(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::RcIncContents { local } => Some(*local),
+            MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
             _ => None,
         })
         .collect();
@@ -1386,7 +1397,7 @@ fn owned_like_params(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::RcIncContents { local } => Some(*local),
+            MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
             _ => None,
         })
         .collect();

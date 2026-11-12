@@ -120,7 +120,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(Named::Local(*local)),
+        | MirStmtKind::RcIncContents { local, .. } => f(Named::Local(*local)),
         MirStmtKind::ReleaseSlot { addr, .. } => f(Named::Local(*addr)),
         // Bookkeeping: an arm copies the value into the frame's unwind record
         // and nothing reads it there but a panic. Counted as a read, every
@@ -261,7 +261,7 @@ pub fn visit_stmt_use_locals_mut(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(local, UseKind::Value),
+        | MirStmtKind::RcIncContents { local, .. } => f(local, UseKind::Value),
         // The variable's storage: a `mutate` parameter's pointer, or a local a
         // closure reaches by address, which `addr_taken` keeps in memory. The
         // release reads what that storage holds, so loading the local first

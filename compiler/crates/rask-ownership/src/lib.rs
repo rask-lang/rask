@@ -64,8 +64,14 @@ pub struct OwnershipResult {
     /// path (`Moved`) or on some (`MaybeMoved`): `let (a, b) = t; t = …`,
     /// `keep.push(Holder(t: t)); t = …`. The slot holds nothing of its own
     /// there, so writing over it releases nothing; lowering reads these
-    /// with `field_reuses`. On a maybe-moved path that leaks what the other
-    /// path left in the slot rather than freeing what the move took.
+    /// with `field_reuses`.
+    ///
+    /// An aggregate `mutate` parameter that isn't Copy doesn't need this: the
+    /// release pass holds it for the call and decides per path
+    /// (`rc_insert::held_mutate_params`). A bare container parameter still
+    /// does. Workaround there for `MaybeMoved`: the release is decided once,
+    /// so it leaks what the other path left in the slot rather than freeing
+    /// what the move took (#1903).
     pub refills_after_move: HashSet<rask_ast::NodeId>,
 }
 

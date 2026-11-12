@@ -5079,11 +5079,16 @@ impl<'a> MirLowerer<'a> {
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         // By name: lowering can add parameters the declaration doesn't write.
-        main_fn.taken_params = main_fn
+        main_fn.param_modes = main_fn
             .params
             .iter()
             .map(|p| {
-                p.name.as_deref().is_some_and(|n| fn_decl.params.iter().any(|d| d.name == n && d.is_take))
+                p.name
+                    .as_deref()
+                    .and_then(|n| fn_decl.params.iter().find(|d| d.name == n))
+                    .map_or(rask_ast::ty::ParamMode::Borrow, |d| {
+                        rask_ast::ty::ParamMode::from_flags(d.is_take, d.is_mutate)
+                    })
             })
             .collect();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());

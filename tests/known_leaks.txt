@@ -419,4 +419,4 @@
 # Format: one basename per line, then `# N allocations`.
 
 t_http_client_loopback.rk   # 40 allocations — #1609 a server task answering a request leaks its headers Map
-t_mutate_array_swap.rk           # 4 allocations — #1885 a caller never releases a `mutate` parameter its callee moved out of and refilled
+t_destructure_part_handed_on.rk  # 2 allocations — #1902 a destructure retains the string part instead of moving it, and handing the other part on leaves the tuple unreleased

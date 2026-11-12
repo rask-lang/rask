@@ -19,11 +19,13 @@ pub struct MirFunction {
     pub source_file: Option<String>,
     /// Written `@inline`: the inliner takes it whatever its size.
     pub inline_hint: bool,
-    /// Which parameters are `take`, by position: the caller gave those up,
-    /// and handing one to a keeper moves it. Every other parameter is the
-    /// caller's storage, so a keeper given one gets a copy (`rc_insert`).
-    /// Empty for a function lowering didn't build from a declaration.
-    pub taken_params: Vec<bool>,
+    /// How each parameter was declared, by position. A `take` one the
+    /// caller gave up: it is the frame's, and handing it to a keeper moves
+    /// it. A borrowed one stays the caller's, so a keeper given it gets a
+    /// copy (`rc_insert`). A `mutate` one is the caller's slot, which the
+    /// frame holds for the call and hands back full. Empty for a function
+    /// lowering didn't build from a declaration.
+    pub param_modes: Vec<rask_ast::ty::ParamMode>,
 }
 
 impl MirFunction {

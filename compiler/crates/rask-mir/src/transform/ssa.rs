@@ -464,7 +464,7 @@ fn rename_stmt(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => {
+        | MirStmtKind::RcIncContents { local, .. } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
         MirStmtKind::ZeroAggregate { local: addr }
@@ -808,7 +808,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
         }
     }
@@ -997,7 +997,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
             source_file: None,
         };
         construct(&mut func);

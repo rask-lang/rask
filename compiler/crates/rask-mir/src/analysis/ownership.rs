@@ -1033,7 +1033,17 @@ pub fn plan_carrying(
         let (entries, exits, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
         let later = NeededLater::new(func, &sh, &live, &entries);
         if placement == Placement::LastUse {
-            let found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
+            let mut found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
+            // One release per value per solve, the earliest in program order.
+            // Each block was read against entries that don't know about the
+            // others' releases yet, so a value whose last use is in one block
+            // could also read as dying further down the same path (where a
+            // name that held it is written over), and was released twice.
+            // Another release of it that is still due comes out of the next
+            // solve.
+            found.sort_by_key(|(block, si, ..)| (order[*block], *si));
+            let mut first_of: HashSet<Value> = HashSet::new();
+            found.retain(|(_, _, _, v, _)| first_of.insert(*v));
             if !found.is_empty() {
                 for (block, si, name, v, g) in found {
                     out.push(Release::At { block, at: si + 1, name, made: v.made(), guard: flags.of(g) });

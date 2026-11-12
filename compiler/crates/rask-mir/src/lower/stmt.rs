@@ -881,14 +881,33 @@ impl<'a> MirLowerer<'a> {
                             // records with them when they're freed. A field
                             // the new value took from the old one was zeroed by
                             // the take, so releasing the rest is safe too.
-                            let renew = in_place;
+                            //
+                            // A `mutate` aggregate that isn't Copy is the same:
+                            // the frame holds the caller's slot for the call
+                            // (`rc_insert::held_mutate_params`), so whether the
+                            // old value is still there to release — it may have
+                            // moved out on some paths — is the release pass's
+                            // to say (#1903).
+                            let held_param = assigns_through
+                                && scalar_mutate.is_none()
+                                && self.builder.is_param(local_id)
+                                && matches!(
+                                    dst_ty,
+                                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                                        | MirType::Array { .. } | MirType::Option(_) | MirType::Result { .. }
+                                )
+                                && !self
+                                    .ctx
+                                    .lookup_raw_type(target.id)
+                                    .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+                            let renew = in_place || held_param;
                             // `c = c` (or `c = { c }`): the value is the slot.
                             // Renewing would release it and then copy the
                             // released bytes back.
-                            if in_place && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
+                            if renew && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
                                 return Ok(());
                             }
-                            let replaced = if in_place {
+                            let replaced = if renew {
                                 None
                             } else if assigns_through {
                                 self.released_on_overwrite(target, reuses_old, &dst_ty)
@@ -2087,7 +2106,7 @@ impl<'a> MirLowerer<'a> {
             )
         );
         if aggregate {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local, for_hand_off: false }));
         }
     }
 

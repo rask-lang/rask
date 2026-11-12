@@ -146,7 +146,7 @@ mod tests {
             source_file: None,
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -185,7 +185,7 @@ mod tests {
             source_file: None,
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -226,7 +226,7 @@ mod tests {
             source_file: None,
             is_extern_c: false,
             inline_hint: false,
-            taken_params: Vec::new(),
+            param_modes: Vec::new(),
         };
 
         let removed = eliminate_dead_code(&mut func);

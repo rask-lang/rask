@@ -544,12 +544,11 @@ impl<'a> MirLowerer<'a> {
 
         let mut closure_fn = closure_builder.finish();
         closure_fn.is_extern_c = c_abi;
-        // Same meaning as a declared function's: the environment and every
-        // parameter not written `take` stay the caller's.
-        closure_fn.taken_params = env_param_id
-            .map(|_| false)
+        // Same meaning as a declared function's; the environment is borrowed.
+        closure_fn.param_modes = env_param_id
+            .map(|_| rask_ast::ty::ParamMode::Borrow)
             .into_iter()
-            .chain(params.iter().map(|p| p.is_take))
+            .chain(params.iter().map(|p| rask_ast::ty::ParamMode::from_flags(p.is_take, p.is_mutate)))
             .collect();
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {

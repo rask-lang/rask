@@ -171,7 +171,7 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         entry_block: BlockId(0),
         is_extern_c: true,
         inline_hint: false,
-        taken_params: Vec::new(),
+        param_modes: Vec::new(),
         source_file: None,
     }
 }
