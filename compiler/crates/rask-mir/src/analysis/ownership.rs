@@ -616,6 +616,8 @@ fn make(st: &mut State, n: LocalId, bi: usize, si: usize) {
 struct Kills {
     at: HashSet<(usize, usize, Value)>,
     edges: HashSet<(usize, usize, Value)>,
+    /// Owned from entry and released before the first statement.
+    entry: HashSet<Value>,
 }
 
 fn join(
@@ -821,6 +823,10 @@ fn transfer(
     st
 }
 
+/// The statement index `after_last_use` gives a release before block 0's
+/// first statement.
+const ENTRY: usize = usize::MAX;
+
 fn killed_at(st: &mut State, kills: &Kills, bi: usize, si: usize) {
     for (b, s, v) in &kills.at {
         if *b == bi && *s == si {
@@ -830,7 +836,7 @@ fn killed_at(st: &mut State, kills: &Kills, bi: usize, si: usize) {
     }
 }
 
-fn entry_state(facts: &Facts) -> State {
+fn entry_state(facts: &Facts, kills: &Kills) -> State {
     let mut st = State::default();
     for n in &facts.foreign {
         st.bind.insert(*n, BTreeSet::from([Bind::Other]));
@@ -839,7 +845,7 @@ fn entry_state(facts: &Facts) -> State {
     for n in &facts.owned {
         let v = Value { block: 0, at: u32::MAX - 1, name: *n };
         st.bind.insert(*n, BTreeSet::from([Bind::Own(v)]));
-        st.own.insert(v, true);
+        st.own.insert(v, !kills.entry.contains(&v));
     }
     st
 }
@@ -865,7 +871,7 @@ fn solve(
         defs.clear();
         for &bi in &sh.rpo {
             let entry = if bi == 0 {
-                Some(entry_state(facts))
+                Some(entry_state(facts, kills))
             } else {
                 join(bi, sh, &exits, &live.at[bi][0], kills, &mut defs)
             };
@@ -1041,13 +1047,17 @@ pub fn plan_carrying(
             // name that held it is written over), and was released twice.
             // Another release of it that is still due comes out of the next
             // solve.
-            found.sort_by_key(|(block, si, ..)| (order[*block], *si));
+            found.sort_by_key(|(block, _, at, ..)| (order[*block], *at));
             let mut first_of: HashSet<Value> = HashSet::new();
-            found.retain(|(_, _, _, v, _)| first_of.insert(*v));
+            found.retain(|(_, _, _, _, v, _)| first_of.insert(*v));
             if !found.is_empty() {
-                for (block, si, name, v, g) in found {
-                    out.push(Release::At { block, at: si + 1, name, made: v.made(), guard: flags.of(g) });
-                    kills.at.insert((block, si, v));
+                for (block, si, at, name, v, g) in found {
+                    out.push(Release::At { block, at, name, made: v.made(), guard: flags.of(g) });
+                    if si == ENTRY {
+                        kills.entry.insert(v);
+                    } else {
+                        kills.at.insert((block, si, v));
+                    }
                 }
                 continue;
             }
@@ -1158,11 +1168,28 @@ fn after_last_use(
     entries: &[Option<State>],
     kills: &Kills,
     later: &NeededLater,
-) -> Vec<(usize, usize, LocalId, Value, Option<GuardKey>)> {
+) -> Vec<(usize, usize, usize, LocalId, Value, Option<GuardKey>)> {
     let mut out = Vec::new();
     for bi in 0..func.blocks.len() {
         let Some(entry) = &entries[bi] else { continue };
         let mut st = entry.clone();
+        // A parameter owned from entry that nothing ever reads: `take self`
+        // on a method that builds its answer from the other arguments. With
+        // no statement to follow, it goes before the first.
+        if bi == 0 {
+            let unread: Vec<Value> = facts
+                .owned
+                .iter()
+                .map(|n| Value { block: 0, at: u32::MAX - 1, name: *n })
+                .filter(|v| st.owned(*v) && !st.needed(*v, &live.at[0][0]))
+                .collect();
+            for v in unread {
+                if let Some(name) = pick(&st, v, &[]) {
+                    out.push((0, ENTRY, 0, name, v, st.guard.remove(&v)));
+                    st.own.insert(v, false);
+                }
+            }
+        }
         for si in 0..func.blocks[bi].statements.len() {
             if is_phi(func, bi, si) {
                 continue;
@@ -1189,7 +1216,14 @@ fn after_last_use(
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &touched) {
-                    out.push((bi, si, name, v, st.guard.remove(&v)));
+                    out.push((bi, si, si + 1, name, v, st.guard.remove(&v)));
+                    st.own.insert(v, false);
+                } else if let Some(name) = pick(&before, v, &touched) {
+                    // This statement wrote over the last name holding it, and
+                    // nothing read it first: a `mutate` parameter's slot
+                    // refilled outright, a `take` parameter replaced. Released
+                    // just before, under the name it still has there.
+                    out.push((bi, si, si, name, v, st.guard.remove(&v)));
                     st.own.insert(v, false);
                 }
             }

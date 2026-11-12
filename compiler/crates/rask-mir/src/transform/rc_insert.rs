@@ -1020,8 +1020,16 @@ fn insert_aggregate_release(
                             ev.push(ownership::Event::HandOver(v));
                         }
                     }
+                    // A held `mutate` parameter is the caller's slot: a store
+                    // writes into it and never starts a value of its own. Its
+                    // only new value is a refill's `ZeroAggregate`. Read as a
+                    // fill, a field store after a join that took a field out
+                    // on one way in made a new value there, and the old one
+                    // was released while the caller still held it.
+                    let into_slot = held.contains(addr);
                     if aggregates.contains(addr)
                         && !replaces
+                        && !into_slot
                         && !store_is_narrow(stmt, &ty_of)
                     {
                         ev.push(ownership::Event::Fill(*addr));
@@ -1031,7 +1039,7 @@ fn insert_aggregate_release(
                     // value. `mut p = …; p.run = || …` stores into `p`'s new
                     // version, and releasing the struct under the old name
                     // freed the replaced closure a second time.
-                    if aggregates.contains(addr) && replaces {
+                    if aggregates.contains(addr) && (replaces || into_slot) {
                         ev.push(ownership::Event::WriteThrough(*addr));
                     }
                 }
