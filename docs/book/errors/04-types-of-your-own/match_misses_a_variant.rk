@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+enum Direction {
+    North
+    South
+    Up
+}
+
+func name(dir: Direction) -> string {
+    return match dir {
+        Direction.North => "north",
+        Direction.South => "south",
+    }
+}
+
+func main() {
+    println(name(Direction.Up))
+}

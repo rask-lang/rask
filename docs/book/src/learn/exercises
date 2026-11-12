@@ -1,0 +1,10 @@
+# Each chapter's exercise file, and the files it's made from. The files are
+# the tutorial's program; the exercise has the functions marked for that
+# chapter emptied out. tests/learn_gate.sh --update writes them.
+03-your-first-program.rk: early/first.rk
+04-types-of-your-own.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
+05-branching-and-looping.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
+06-holding-many-things.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
+07-when-there-might-be-nothing.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
+08-errors-are-values.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
+09-passing-values.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk

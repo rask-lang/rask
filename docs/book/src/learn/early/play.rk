@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A line the player typed in, the game's answer out.
+//
+// test-specs: skip: these tests run in the exercise files, which put this
+// together with the rest of the program (tests/learn_gate.sh)
+
+public func respond(mutate world: World, line: string) -> string {
+    let cmd = parse(line) catch e => return e.message()
+    return apply(mutate world, cmd)
+}
+
+// exercise 05: Look around first, then answer each line in turn. Every
+// answer goes in the list, in order.
+public func script(mutate world: World, lines: Vec<string>) -> Vec<string> {
+    mut replies: Vec<string> = Vec.new()
+    replies.push(describe(world))
+    for line in lines {
+        replies.push(respond(mutate world, line))
+    }
+    return replies
+}
+
+test "the game starts at the gate" {
+    let w = default_world()
+    assert describe(w) == "Gate\nA rusted iron gate stands open to the north.\nThere is a lamp here.\nExits: north."
+}
+
+test "walking to the hall" {
+    mut w = default_world()
+    let out = script(mutate w, ["n", "e"])
+    assert out[2].starts_with("Hall\n")
+    assert out[2].contains("There is a coin here.")
+}
+
+test "a dead end and a typo" {
+    mut w = default_world()
+    let out = script(mutate w, ["w", "dance"])
+    assert out[1] == "You can't go west."
+    assert out[2] == "I don't know how to 'dance'. Try 'help'."
+}
+
+test "picking something up moves it" {
+    mut w = default_world()
+    let out = script(mutate w, ["take lamp", "look", "i", "take lamp"])
+    assert out[1] == "You take the lamp."
+    assert !out[2].contains("lamp")
+    assert out[3] == "You carry lamp."
+    assert out[4] == "There's no lamp here."
+}
+
+test "putting it down somewhere else" {
+    mut w = default_world()
+    let out = script(mutate w, ["take lamp", "n", "drop lamp", "i", "look", "drop lamp"])
+    assert out[3] == "You drop the lamp."
+    assert out[4] == "You carry nothing."
+    assert out[5].contains("There is a lamp here.")
+    assert out[6] == "You don't have a lamp."
+}

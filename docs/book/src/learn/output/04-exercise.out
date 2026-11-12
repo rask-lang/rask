@@ -1,0 +1,21 @@
+=== Testing 04-types-of-your-own.rk ===
+
+  ✗ every direction leads back the way it came
+      04-types-of-your-own.rk:44: not yet implemented
+  ✓ finding an item by name (0ms)
+  ✓ a direction alone is a move (0ms)
+  ✓ the object keeps its case and inner spaces (0ms)
+  ✓ what can go wrong is a value (0ms)
+  ✗ the game starts at the gate
+      04-types-of-your-own.rk:44: not yet implemented
+  ✗ walking to the hall
+      04-types-of-your-own.rk:44: not yet implemented
+  ✗ a dead end and a typo
+      04-types-of-your-own.rk:44: not yet implemented
+  ✗ picking something up moves it
+      04-types-of-your-own.rk:44: not yet implemented
+  ✗ putting it down somewhere else
+      04-types-of-your-own.rk:44: not yet implemented
+
+──────────────────────────────────────────────────
+10 tests, 4 passed, 6 failed (0ms)

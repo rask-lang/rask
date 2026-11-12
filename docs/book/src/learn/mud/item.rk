@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Things lying around, and things carried.
+
+public struct Item {
+    public name: string
+    public description: string
+}
+
+// exercise 07: Where the item called `name` sits in `items`, or none if
+// it isn't there.
+public func find_item(items: Vec<Item>, name: string) -> u64? {
+    for i in 0..items.len() {
+        if items[i].name == name {
+            return i
+        }
+    }
+    return none
+}
+
+test "finding an item by name" {
+    let items: Vec<Item> = [Item(name: "lamp", description: ""), Item(name: "key", description: "")]
+    assert find_item(items, "key") == 1
+    assert find_item(items, "rope") is none
+}

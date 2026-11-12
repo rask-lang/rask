@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The world a new game starts in.
+
+public func default_world() -> World {
+    mut w = World.new()
+    let gate = w.add_room("Gate", "A rusted iron gate stands open to the north.")
+    let yard = w.add_room("Courtyard", "Weeds push up between the flagstones.")
+    let hall = w.add_room("Hall", "A long table, set for a feast nobody came to.")
+    let tower = w.add_room("Tower", "Wind whistles through the arrow slits.")
+    let cellar = w.add_room("Cellar", "Barrels line the walls. Something drips.")
+
+    w.connect(gate, Direction.North, yard)
+    w.connect(yard, Direction.East, hall)
+    w.connect(yard, Direction.Up, tower)
+    w.connect(hall, Direction.Down, cellar)
+
+    w.rooms[gate].items.push(Item(name: "lamp", description: "A brass lamp, still half full of oil."))
+    w.rooms[hall].items.push(Item(name: "coin", description: "A gold coin with a worn face."))
+    w.rooms[tower].items.push(Item(name: "rope", description: "Twenty feet of good rope."))
+    w.rooms[cellar].items.push(Item(name: "key", description: "A heavy iron key."))
+    w.here = gate
+    return w
+}

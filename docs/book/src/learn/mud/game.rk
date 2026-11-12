@@ -136,7 +136,6 @@ public func apply(mutate world: World, name: string, cmd: Command) -> Outcome {
     }
 }
 
-const HELP: string = "Commands: look, n/s/e/w/u/d, take <item>, drop <item>, inventory, say <words>, quit."
 
 func go(mutate world: World, p: Link<Player>, here: Link<Room>, dir: Direction) -> Outcome {
     let exit = here.exit(dir) ?? return reply("You can't go {dir.name()}.")
