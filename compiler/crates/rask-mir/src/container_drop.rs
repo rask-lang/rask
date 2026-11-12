@@ -173,7 +173,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
     }
 }
 
-pub fn insert_container_drops(fns: &mut Vec<MirFunction>, copy_layouts: &crate::CopyLayouts) {
+pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // Before anything reads the MIR: an `own` capture of a refcounted handle
     // becomes a capture of a fresh reference to it (#1139).
     for func in fns.iter_mut() {
@@ -185,7 +185,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>, copy_layouts: &crate::
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let reach = ClosureReach::build(fns);
-    let kept = params_a_callee_keeps(fns, &targets, &reach, copy_layouts);
+    let kept = params_a_callee_keeps(fns, &targets, &reach);
     let interface_kept = interface_method_args_kept(fns, &kept);
     let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets, reach: &reach };
     let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
@@ -785,7 +785,6 @@ pub(crate) fn params_a_callee_keeps(
     fns: &[MirFunction],
     targets: &ClosureTargets,
     reach: &ClosureReach,
-    copy_layouts: &crate::CopyLayouts,
 ) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
@@ -793,6 +792,11 @@ pub(crate) fn params_a_callee_keeps(
         .iter()
         .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
         .collect();
+    // A method a vtable can hold is also called through `any Interface`,
+    // where the caller's box keeps owning the receiver and releases it
+    // (`interface_drop_owned`). Its `take self` is read off the body, as
+    // before modes were: one answer has to serve both kinds of call.
+    let behind_vtable: HashSet<&str> = vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()).collect();
 
     loop {
         let mut grew = false;
@@ -807,7 +811,8 @@ pub(crate) fn params_a_callee_keeps(
                 // a borrowed non-Copy one can't be given away (PM6), and a
                 // `mutate` slot the callee moves out of comes back refilled
                 // (PM7), the new value the caller's to release (#1885).
-                match func.param_modes.get(i) {
+                let mode = func.param_modes.get(i).filter(|_| !(i == 0 && behind_vtable.contains(func.name.as_str())));
+                match mode {
                     Some(ParamMode::Borrow | ParamMode::Mutate) => continue,
                     // Written `take`: the frame owns it from the call on, and
                     // releases what it doesn't hand on.

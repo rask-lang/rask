@@ -1218,13 +1218,6 @@ fn after_last_use(
                 if let Some(name) = pick(&st, v, &touched) {
                     out.push((bi, si, si + 1, name, v, st.guard.remove(&v)));
                     st.own.insert(v, false);
-                } else if let Some(name) = pick(&before, v, &touched) {
-                    // This statement wrote over the last name holding it, and
-                    // nothing read it first: a `mutate` parameter's slot
-                    // refilled outright, a `take` parameter replaced. Released
-                    // just before, under the name it still has there.
-                    out.push((bi, si, si, name, v, st.guard.remove(&v)));
-                    st.own.insert(v, false);
                 }
             }
         }

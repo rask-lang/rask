@@ -2329,11 +2329,10 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 self.load_folded(&folded)
-            } else if let Some(fnval) = self
-                .ctx
-                .function_value(expr.id)
-                .and_then(|copy| self.lower_fn_as_value(&copy))
-            {
+            } else if let Some(fnval) = self.ctx.function_value(expr.id).and_then(|copy| {
+                let modes = self.param_modes_of(expr);
+                self.lower_fn_as_value(&copy, modes)
+            }) {
                 // Not a variable: a function's name used as a value. A generic
                 // one names the copy monomorphization made for this use.
                 Ok(fnval)
@@ -7811,10 +7810,14 @@ impl<'a> MirLowerer<'a> {
     /// Which parameters of the function value `callee` is are `take`, from the
     /// checker's type for it. A call through it hands those arguments over.
     fn taken_params(&self, callee: &Expr) -> Vec<bool> {
-        match self.ctx.lookup_raw_type(callee.id).as_deref() {
-            Some(rask_types::Type::Fn { params, .. }) => {
-                params.iter().map(|p| p.mode == rask_ast::ty::ParamMode::Take).collect()
-            }
+        self.param_modes_of(callee).into_iter().map(|m| m == rask_ast::ty::ParamMode::Take).collect()
+    }
+
+    /// The parameter modes of the function value `expr` is, from the
+    /// checker's type for it.
+    pub(super) fn param_modes_of(&self, expr: &Expr) -> Vec<rask_ast::ty::ParamMode> {
+        match self.ctx.lookup_raw_type(expr.id).as_deref() {
+            Some(rask_types::Type::Fn { params, .. }) => params.iter().map(|p| p.mode).collect(),
             _ => Vec::new(),
         }
     }
