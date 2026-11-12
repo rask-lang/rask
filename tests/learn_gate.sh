@@ -137,6 +137,10 @@ os.remove(os.path.join(d, "output", "01-test-solved.out"))
 PY
 expect fail "a solution whose tests fail, with no chapter command to notice" "$d"
 
+d="$(broken unused)"
+printf '// SPDX-License-Identifier: (MIT OR Apache-2.0)\nfunc broken() -> i64 {\n    return "not a number"\n}\n' > "$d/mud/other.rk"
+expect fail "a broken file in the MUD that no exercise uses" "$d"
+
 if [ $self_fails -ne 0 ]; then
     echo "learn gate self-test: $self_fails failed"
     exit 1

@@ -22,7 +22,9 @@ this checks each:
    A committed exercise file that differs from what its files generate is
    stale, and so is one with no line in `exercises`. Every exercise file has
    to pass `rask check`, and the same files with no body replaced, which is
-   the solution, have to pass their tests on both backends.
+   the solution, have to pass their tests on both backends. So does every
+   package in the tutorial (mud/), whole, since the exercises use only some
+   of its files.
 
 2. Chapters read as raw Markdown, since offline that's all a reader has. So
    no `{{#include}}`: a block that shows a file says `<!-- from: path -->`
@@ -234,6 +236,28 @@ class Gate:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def packages(self):
+        """Every package in the tutorial passes its tests on both backends.
+
+        The exercises only compile the files they list, so without this the
+        rest of the MUD (the server, saving, the maze) is checked by nothing.
+        """
+        for dirpath, dirs, files in os.walk(self.learn):
+            dirs[:] = sorted(d for d in dirs if d not in ("build", "output"))
+            if "rask.toml" not in files:
+                continue
+            rel = os.path.relpath(dirpath, self.learn)
+            failed = False
+            for args in (["test"], ["test", "--interp"]):
+                r = subprocess.run([self.rask, *args, dirpath], capture_output=True, text=True, timeout=900)
+                if r.returncode != 0:
+                    last = [l for l in (r.stdout + r.stderr).split("\n") if l.strip()][-6:]
+                    self.fail(f"{rel}/ fails `rask {' '.join(args)}`:\n" + indent("\n".join(last)))
+                    failed = True
+                    break
+            if not failed:
+                self.ok += 1
+
     # ── 2 and 3. Chapters ─────────────────────────────────────────────────
 
     def chapters(self):
@@ -365,6 +389,7 @@ def main(argv):
         return 2
     gate = Gate(args[0], args[1], update)
     gate.exercises()
+    gate.packages()
     gate.run_chapters()
     for f in gate.fails:
         print(f"FAIL: {f}")
