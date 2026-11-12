@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Many players at once: a task per connection, a channel per player for what
+// others say, and one world they all share.
+
+import net
+import net.TcpConnection
+import net.TcpListener
+import io.BufferedReader
+import io.IoError
+import async.{Handles, Receiver, Sender}
+import sync.{Atomic, MemoryOrder, Shared}
+import time
+import time.Duration
+
+// What each player hears, by name. A player's session holds the other end.
+type alias Inboxes = Shared<Map<string, Sender<string>>>
+
+// Players connected right now, for the greeting.
+const ONLINE: Atomic<i64> = Atomic<i64>.new(0)
+
+public func serve(addr: string) -> void or IoError {
+    let listener = try net.tcp_listen(addr)
+    println("Listening on {addr}.")
+    using Multitasking, ThreadPool {
+        mut world = default_world()
+        let tunnel = world.room("Tunnel")!
+        add_maze(mutate world, carve(30, 30, 7), tunnel)
+        try run(listener, Shared.new(world), 0)
+    }
+}
+
+// Takes `sessions` connections, then waits for them to end. 0 takes them
+// forever. Spawns its tasks in the caller's `using Multitasking`.
+public func run(take listener: TcpListener, shared: Shared<World>, sessions: u64) -> void or IoError {
+    ensure listener.close()
+    let inboxes: Inboxes = Shared.new(Map.new())
+    let tick_world = shared.clone()
+    let tick_inboxes = inboxes.clone()
+    let ticker = spawn { tick_forever(tick_world, tick_inboxes) }
+    ensure ticker.cancel()
+    mut players = Handles<void>.new()
+    ensure players.join_all()
+    mut accepted: u64 = 0
+    while sessions == 0 || accepted < sessions {
+        let conn = try listener.accept()
+        accepted += 1
+        let w = shared.clone()
+        let i = inboxes.clone()
+        players.add(spawn { session(conn, w, i) })
+    }
+}
+
+// Every few seconds the monsters move, and whoever is near hears it.
+func tick_forever(world: Shared<World>, inboxes: Inboxes) {
+    mut step: u64 = 0
+    while !cancelled() {
+        let _ = time.sleep(Duration.millis(2000))
+        let heard = with world.write() as w: tick(mutate w, step)
+        deliver(inboxes, heard)
+        step += 1
+    }
+}
+
+func deliver(inboxes: Inboxes, heard: Vec<Heard>) {
+    with inboxes.read() as boxes {
+        for h in heard {
+            if boxes.contains(h.to) {
+                // Workaround: should be `try_send`, dropping a line to a
+                // player whose inbox is full. `try_send` frees what it sends
+                // natively (#1898).
+                let _ = boxes[h.to].send("{h.text}\n")
+            }
+        }
+    }
+}
+
+// One connection, from the name prompt to the goodbye.
+func session(take conn: TcpConnection, world: Shared<World>, inboxes: Inboxes) {
+    ensure conn.close()
+    let _ = conn.write_text("What is your name? ")
+
+    // Reading the socket waits, and so does reading the inbox. A task of its
+    // own turns socket lines into a channel, so one `select` waits on both.
+    let (typed, from_socket) = Channel<string?>.buffered(8)
+    let socket = conn.clone()
+    let reader = spawn { read_lines(socket, typed) }
+    ensure reader.cancel()
+    let (name, hello) = join_game(conn, from_socket, world) ?? return
+    let (to_me, inbox) = Channel<string>.buffered(64)
+    inboxes.write().insert(name, to_me)
+    ONLINE.fetch_add(1, MemoryOrder.Relaxed)
+
+    // However this ends, the player leaves the world and nobody writes to
+    // their inbox again. A dropped connection ends it the same way `quit` does.
+    ensure goodbye(world, inboxes, name)
+    deliver(inboxes, hello.heard)
+    let _ = conn.write_text("{ONLINE.load(MemoryOrder.Relaxed)} online.\n{hello.reply}\n")
+
+    loop {
+        let more = select {
+            from_socket -> line: handle(conn, world, inboxes, name, line),
+            inbox -> text: write(conn, text),
+        }!
+        if !more {
+            break
+        }
+    }
+}
+
+// Asks until the player gives a name nobody in the game has, and enters
+// them under it. Checking and entering under one lock is what keeps two
+// connections from both getting the same name. `none` if they leave first.
+func join_game(conn: TcpConnection, from_socket: Receiver<string?>, world: Shared<World>) -> (string, Outcome)? {
+    loop {
+        let typed = from_socket.receive() catch _ => return none
+        let name = (typed ?? return none).trim().to_string()
+        let hello = with world.write() as w: enter(mutate w, name, START) catch e => {
+            if !write(conn, "{e.message()} What is your name? ") {
+                return none
+            }
+            continue
+        }
+        return (name, hello)
+    }
+}
+
+// One line from the player. False when the session should end.
+func handle(conn: TcpConnection, world: Shared<World>, inboxes: Inboxes, name: string, line: string?) -> bool {
+    let text = line ?? return false
+    if text.trim() == "quit" {
+        return false
+    }
+    let out = with world.write() as w: respond(mutate w, name, text)
+    deliver(inboxes, out.heard)
+    return write(conn, "{out.reply}\n")
+}
+
+// False once the player can no longer be reached.
+func write(conn: TcpConnection, text: string) -> bool {
+    conn.write_text(text) catch _ => return false
+    return true
+}
+
+// `none` once the connection has nothing more to say.
+func read_lines(take socket: TcpConnection, typed: Sender<string?>) {
+    let lines = BufferedReader.new(socket)
+    while !cancelled() {
+        let line = lines.read_line() catch _ => break
+        if typed.send(line) is SendError {
+            break
+        }
+    }
+    let _ = typed.send(none)
+    let _ = lines.take().close()
+}
+
+func goodbye(world: Shared<World>, inboxes: Inboxes, name: string) {
+    let _ = inboxes.write().remove(name)
+    ONLINE.fetch_sub(1, MemoryOrder.Relaxed)
+    let bye = with world.write() as w: leave(deleting w, name)
+    deliver(inboxes, bye.heard)
+}

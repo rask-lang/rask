@@ -96,7 +96,8 @@ pub(crate) fn show_diagnostics(
             }
         }
         Format::Json => {
-            let report = json::to_json_report(diagnostics, source, file, phase);
+            let sources = sources_for(&[(file.to_string(), source)]);
+            let report = json::to_json_report(diagnostics, &sources, file, phase);
             println!("{}", json::to_json_string(&report));
         }
     }
@@ -112,6 +113,14 @@ pub(crate) fn display_pipeline_output<T>(
     source_files: &[(std::path::PathBuf, String)],
     format: Format,
 ) {
+    // Built once, and only when there's a JSON report to place spans in.
+    let sources = (matches!(format, Format::Json) && !output.diagnostics.is_empty()).then(|| {
+        let named: Vec<(String, &str)> = source_files
+            .iter()
+            .map(|(p, text)| (p.to_string_lossy().into_owned(), text.as_str()))
+            .collect();
+        sources_for(&named)
+    });
     for d in &output.diagnostics {
         match format {
             Format::Human => {
@@ -125,10 +134,10 @@ pub(crate) fn display_pipeline_output<T>(
             }
             Format::Json => {
                 // For JSON, emit each diagnostic individually for now
-                if let Some((path, source)) = source_files.first() {
+                if let (Some((path, _)), Some(sources)) = (source_files.first(), &sources) {
                     let report = json::to_json_report(
                         std::slice::from_ref(d),
-                        source,
+                        sources,
                         &path.to_string_lossy(),
                         "check",
                     );
