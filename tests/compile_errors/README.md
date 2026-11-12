@@ -104,6 +104,7 @@ go down.
 | [numbers_where_they_dont_fit.rk](numbers_where_they_dont_fit.rk) | A float literal in integer arithmetic (`x += 1.5`, E0401), `for i in 5` (E0827), and a range of strings (E0945) |
 | [static_method_and_unknown_annotation.rk](static_method_and_unknown_annotation.rk) | A static method called through a value (E0946), and an annotation nothing declares, such as the typo `@resouce` (E0854) |
 | [self_through_a_type.rk](self_through_a_type.rk) | A method that takes `self` called through a type, `Meters.show()` or `T.show()` (E0961), and a function without `self` called on a value of a type parameter (E0946). Through a type parameter, `T.zero()` is how a bound's function without `self` is called (GF7) |
+| [type_param_named_like_type.rk](type_param_named_like_type.rk) | A declared type parameter reusing the name of a type the program declares (E0962, PC4): the interpreter read it as the parameter and native as the type (#1913). A stdlib type's name stays fine |
 | [values_that_go_nowhere.rk](values_that_go_nowhere.rk) | `let a = if c: 1` with no `else` (E0947), `?.` on a plain struct, `[0; -1]`, type arguments on a non-generic function (E0885), and `discard` twice |
 | [assign_to_a_name_that_isnt_a_variable.rk](assign_to_a_name_that_isnt_a_variable.rk) | `f = g` on a function and `Color.Red = …` on a variant (E0916) |
 | [tuple_match_exhaustiveness.rk](tuple_match_exhaustiveness.rk) | A `match` on a tuple missing a combination of its parts (E0340), with the missing one named |

@@ -1312,6 +1312,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.gradual/PC4: `func f<Meters>()` when the program declares a
+    /// `Meters`.
+    #[error("type parameter `{name}` has the name of a type this program declares")]
+    TypeParamNamedLikeType {
+        name: String,
+        span: Span,
+    },
+
     /// A method that takes `self`, called on a type: `Meters.show()`,
     /// `T.show()`.
     #[error("`{method}` takes `self`, called on the type `{ty}`")]
@@ -2061,6 +2069,7 @@ impl TypeError {
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }
             | InstanceCallOnType { .. }
+            | TypeParamNamedLikeType { .. }
             | RepeatedBinding { .. } => {}
         }
     }
