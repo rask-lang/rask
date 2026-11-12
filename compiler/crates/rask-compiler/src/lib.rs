@@ -772,6 +772,10 @@ fn expand_templates(
         return Ok(None);
     }
     let mut layout_decls = decls.to_vec();
+    // A `test` or `benchmark` block reaches instances as much as `main` does,
+    // so they're walked as the runner's entries are.
+    runners::extract_tests(&mut layout_decls, None);
+    runners::extract_benchmarks(&mut layout_decls, None);
     let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
     typed.rewrite_checked_nodes(&mut stdlib);
     layout_decls.extend(stdlib);
@@ -1078,108 +1082,145 @@ fn check_package_scoped(
         );
     }
 
-    // --- Resolve ---
-    // With the stdlib's own bodies, same as the single-file path. The type
-    // check below always includes them, so leaving them out here meant every
-    // name inside them arrived unresolved: a package — any package, even an
-    // empty one — reported 161 "undefined name" errors for the stdlib's
-    // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
-    // (#203).
-    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_package_with_stdlib(
-        &pkg_ctx.all_decls,
-        &pkg_ctx.registry,
-        pkg_ctx.root_id,
-        &stdlib_bodies,
-    ) {
-        Ok(r) => r,
-        Err(errors) => {
-            for e in &errors {
-                // A dependency's private helper is no longer in the program's
-                // namespace at all, so resolve reports it as a name that
-                // doesn't exist. It does exist — the package just kept it —
-                // and saying so is the difference between "check the spelling"
-                // and "this isn't part of that library's surface".
-                match private_declaration_named(e, &private_elsewhere) {
-                    Some(d) => diags.push(d),
-                    None => diags.push(e.to_diagnostic()),
+    // Templates (ctrl.comptime/CT72), as in the single-file path: check, write
+    // out the template instances reached, check again until none are new.
+    let templates: Vec<Decl> = pkg_ctx.all_decls.clone();
+    let mut copies: Vec<Decl> = Vec::new();
+    let mut operator_calls = desugared.operator_calls.clone();
+    let mut expanded: HashSet<String> = HashSet::new();
+    let mut next_template_id = rask_template::TEMPLATE_ID_BASE;
+    let mut instances: Vec<(Span, String)> = Vec::new();
+    let round_start = diags.len();
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (mut typed, ownership_result) = loop {
+        diags.truncate(round_start);
+        pkg_ctx.all_decls = templates.clone();
+        pkg_ctx.all_decls.extend(copies.iter().cloned());
+        // --- Resolve ---
+        // With the stdlib's own bodies, same as the single-file path. The type
+        // check below always includes them, so leaving them out here meant every
+        // name inside them arrived unresolved: a package — any package, even an
+        // empty one — reported 161 "undefined name" errors for the stdlib's
+        // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
+        // (#203).
+        let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        let resolved = match rask_resolve::resolve_package_with_stdlib(
+            &pkg_ctx.all_decls,
+            &pkg_ctx.registry,
+            pkg_ctx.root_id,
+            &stdlib_bodies,
+        ) {
+            Ok(r) => r,
+            Err(errors) => {
+                for e in &errors {
+                    // A dependency's private helper is no longer in the program's
+                    // namespace at all, so resolve reports it as a name that
+                    // doesn't exist. It does exist — the package just kept it —
+                    // and saying so is the difference between "check the spelling"
+                    // and "this isn't part of that library's surface".
+                    match private_declaration_named(e, &private_elsewhere) {
+                        Some(d) => diags.push(d),
+                        None => diags.push(e.to_diagnostic()),
+                    }
+                }
+                return PipelineOutput::fail_with_sources(diags, source_files);
+            }
+        };
+
+        // --- A dependency's internals are not the program's to name ---
+        //
+        // Merging every declaration is what lets a package call its own private
+        // helpers (#1100); it also puts those helpers in the program's namespace,
+        // where nothing else would object. The use sites are here, so the check is
+        // here: a resolution that reaches a name another package kept to itself,
+        // from a file that isn't that package's.
+        if !private_elsewhere.is_empty() {
+            let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
+            for pkg in pkg_ctx.registry.packages() {
+                for f in &pkg.files {
+                    file_owner.insert(f.file_id, pkg.id);
                 }
             }
-            return PipelineOutput::fail_with_sources(diags, source_files);
+            let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
+            rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
+                where_used.insert(e.id, e.span);
+            });
+
+            for (node, sym_id) in &resolved.resolutions {
+                let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
+                let base = &sym.name;
+                // The symbol has to *be* one of those private declarations. Matching
+                // the name alone flagged a program's own `helper` the moment some
+                // dependency also had a private `helper`.
+                let Some((owner, owner_name, decl_span)) = private_elsewhere
+                    .get(base)
+                    .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
+                else {
+                    continue;
+                };
+                let Some(use_span) = where_used.get(node) else { continue };
+                if file_owner.get(&use_span.file_id) == Some(owner) {
+                    continue;
+                }
+                diags.push(
+                    Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
+                        .with_code("E0877")
+                        .with_primary(*use_span, format!("`{}` can't be named from here", base))
+                        .with_secondary(*decl_span, format!("declared here, without `public`"))
+                        .with_help(format!(
+                            "mark it `public func {}` (or `public struct`, …) in `{}` if it \
+                             is meant to be part of that package's API",
+                            base, owner_name
+                        )),
+                );
+            }
+            if diags.iter().any(|d| d.severity == Severity::Error) {
+                return PipelineOutput::fail_with_sources(diags, source_files);
+            }
+        }
+
+        // --- Typecheck (lenient — always returns TypedProgram + errors) ---
+        let (mut typed, type_errors) =
+            rask_check::typecheck_with_stdlib_lenient(
+                resolved,
+                &mut pkg_ctx.all_decls,
+                &stdlib_decls,
+                &operator_calls,
+            );
+        for e in &type_errors {
+            diags.push(e.to_diagnostic());
+        }
+
+        // --- Ownership (non-blocking) ---
+        let ownership_result =
+            rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
+        for e in &ownership_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+        if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
+            break (typed, ownership_result);
+        }
+        match expand_templates(&templates, &pkg_ctx.all_decls, &typed, &mut expanded, &mut next_template_id) {
+            Ok(Some(round)) if !round.decls.is_empty() => {
+                let from: HashMap<NodeId, Vec<NodeId>> =
+                    round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
+                        m.entry(*old).or_default().push(*new);
+                        m
+                    });
+                let carried: Vec<NodeId> =
+                    operator_calls.iter().flat_map(|id| from.get(id).into_iter().flatten().copied()).collect();
+                operator_calls.extend(carried);
+                copies.extend(round.decls);
+                instances.extend(round.instances);
+            }
+            Ok(_) => break (typed, ownership_result),
+            Err(errors) => {
+                diags.extend(errors);
+                break (typed, ownership_result);
+            }
         }
     };
-
-    // --- A dependency's internals are not the program's to name ---
-    //
-    // Merging every declaration is what lets a package call its own private
-    // helpers (#1100); it also puts those helpers in the program's namespace,
-    // where nothing else would object. The use sites are here, so the check is
-    // here: a resolution that reaches a name another package kept to itself,
-    // from a file that isn't that package's.
-    if !private_elsewhere.is_empty() {
-        let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
-        for pkg in pkg_ctx.registry.packages() {
-            for f in &pkg.files {
-                file_owner.insert(f.file_id, pkg.id);
-            }
-        }
-        let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
-        rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
-            where_used.insert(e.id, e.span);
-        });
-
-        for (node, sym_id) in &resolved.resolutions {
-            let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
-            let base = &sym.name;
-            // The symbol has to *be* one of those private declarations. Matching
-            // the name alone flagged a program's own `helper` the moment some
-            // dependency also had a private `helper`.
-            let Some((owner, owner_name, decl_span)) = private_elsewhere
-                .get(base)
-                .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
-            else {
-                continue;
-            };
-            let Some(use_span) = where_used.get(node) else { continue };
-            if file_owner.get(&use_span.file_id) == Some(owner) {
-                continue;
-            }
-            diags.push(
-                Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
-                    .with_code("E0877")
-                    .with_primary(*use_span, format!("`{}` can't be named from here", base))
-                    .with_secondary(*decl_span, format!("declared here, without `public`"))
-                    .with_help(format!(
-                        "mark it `public func {}` (or `public struct`, …) in `{}` if it \
-                         is meant to be part of that package's API",
-                        base, owner_name
-                    )),
-            );
-        }
-        if diags.iter().any(|d| d.severity == Severity::Error) {
-            return PipelineOutput::fail_with_sources(diags, source_files);
-        }
-    }
-
-    // --- Typecheck (lenient — always returns TypedProgram + errors) ---
-    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (mut typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
-            resolved,
-            &mut pkg_ctx.all_decls,
-            &stdlib_decls,
-            &desugared.operator_calls,
-        );
-    for e in &type_errors {
-        diags.push(e.to_diagnostic());
-    }
-
-    // --- Ownership (non-blocking) ---
-    let ownership_result =
-        rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
-    for e in &ownership_result.errors {
-        diags.push(e.to_diagnostic());
-    }
+    name_template_instances(&mut diags[round_start..], &instances);
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read

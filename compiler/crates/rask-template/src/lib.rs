@@ -414,13 +414,17 @@ fn decide_comptime_ifs(stmts: &mut [Stmt]) {
     impl Rewrite for Decide {
         fn body(&mut self, b: &mut Vec<Stmt>) {
             for stmt in b.iter_mut() {
-                let StmtKind::Expr(e) = &stmt.kind else { continue };
-                let ExprKind::Comptime { body } = &e.kind else { continue };
+                // `comptime if` as a statement, or as an expression statement.
+                let body = match &stmt.kind {
+                    StmtKind::Comptime(body) => body,
+                    StmtKind::Expr(Expr { kind: ExprKind::Comptime { body }, .. }) => body,
+                    _ => continue,
+                };
                 let Some((cond, then_branch, else_branch)) = rask_ast::comptime_if::parts(body) else { continue };
                 let Some(chosen) = rask_ast::comptime_if::choose(cond, then_branch, else_branch, &mut |_| None) else {
                     continue;
                 };
-                let block = Expr { id: e.id, kind: ExprKind::Block(chosen.to_vec()), span: e.span };
+                let block = Expr { id: stmt.id, kind: ExprKind::Block(chosen.to_vec()), span: stmt.span };
                 stmt.kind = StmtKind::Expr(block);
             }
         }
