@@ -222,7 +222,9 @@ pub fn cmd_test_specs(path: Option<&str>) {
         }
     }
 
-    if summary.failed > 0 {
+    // Native is what ships, so a native failure fails the run as an
+    // interpreter one does, unless the file says it may.
+    if summary.failed > 0 || summary.native_failed > 0 {
         process::exit(1);
     }
 }
@@ -337,6 +339,9 @@ fn report_rk(rk_result: &rask_spec_test::RkTestResult, summary: &mut rask_spec_t
         (Some(p), Some(t)) if p == t && t > 0 => {
             format!("  native: {}/{} {}", p, t, "ok".green())
         }
+        (Some(p), Some(t)) if rk_result.native_may_fail.is_some() => {
+            format!("  native: {}/{} {}", p, t, "allowed to fail".yellow())
+        }
         (Some(p), Some(t)) => {
             format!("  native: {}/{} {}", p, t, "FAIL".red().bold())
         }
@@ -360,7 +365,11 @@ fn report_rk(rk_result: &rask_spec_test::RkTestResult, summary: &mut rask_spec_t
     if let (Some(np), Some(nt)) = (rk_result.native_passed, rk_result.native_total) {
         summary.native_total += nt;
         summary.native_passed += np;
-        summary.native_failed += nt - np;
+        if rk_result.native_may_fail.is_none() {
+            summary.native_failed += nt - np;
+        } else if np < nt {
+            println!("       {} native may fail here: {}", "note:".yellow(), rk_result.native_may_fail.as_deref().unwrap_or(""));
+        }
     }
 
 }

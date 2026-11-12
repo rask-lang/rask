@@ -640,6 +640,9 @@ pub struct RkTestResult {
     pub native_passed: Option<usize>,
     pub native_total: Option<usize>,
     pub native_failures: Vec<String>,
+    /// Why the file's native run is allowed to fail, from its
+    /// `// test-specs: native may fail …` line.
+    pub native_may_fail: Option<String>,
 }
 
 impl RkTestResult {
@@ -647,6 +650,9 @@ impl RkTestResult {
         self.interp_passed == self.interp_total && self.interp_total > 0
     }
     pub fn native_ok(&self) -> bool {
+        if self.native_may_fail.is_some() {
+            return true;
+        }
         match (self.native_passed, self.native_total) {
             (Some(p), Some(t)) => p == t && t > 0,
             _ => true, // Not run
@@ -656,6 +662,7 @@ impl RkTestResult {
 
 /// Run a `.rk` file through both interpreter and native test runners.
 pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig) -> RkTestResult {
+    let native_may_fail = crate::extract::native_may_fail(source);
     let (ip, it, ifails) = run_rk_tests_interp(source);
 
     let (np, nt, nfails) = if let Some(binary) = &config.rask_binary {
@@ -673,6 +680,7 @@ pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig
         native_passed: np,
         native_total: nt,
         native_failures: nfails,
+        native_may_fail,
     }
 }
 
@@ -694,6 +702,7 @@ pub fn run_rk_package(root: &std::path::Path, rask_binary: &std::path::Path) -> 
         native_passed: Some(np),
         native_total: Some(nt),
         native_failures: nfails,
+        native_may_fail: None,
     }
 }
 
