@@ -1,2 +1,2 @@
 # A small tutorial the learn gate checks itself against.
-01-hello.rk: greet.rk
+01-hello.rk: mud/greet.rk

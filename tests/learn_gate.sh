@@ -124,6 +124,19 @@ d="$(broken twice)"
 printf '01-hello.rk: greet.rk\n' >> "$d/exercises"
 expect fail "an exercise listed twice" "$d"
 
+d="$(broken solution)"
+sed -i 's/^    return "Hello, {name}!"$/    return "Hi, {name}!"/' "$d/mud/greet.rk"
+python3 - "$d" <<'PY'
+import os, sys
+d = sys.argv[1]
+p = os.path.join(d, "01-hello.md")
+s = open(p).read()
+s = s[:s.index("The finished program passes:")] + s[s.index("Installing isn't run"):]
+open(p, "w").write(s)
+os.remove(os.path.join(d, "output", "01-test-solved.out"))
+PY
+expect fail "a solution whose tests fail, with no chapter command to notice" "$d"
+
 if [ $self_fails -ne 0 ]; then
     echo "learn gate self-test: $self_fails failed"
     exit 1
