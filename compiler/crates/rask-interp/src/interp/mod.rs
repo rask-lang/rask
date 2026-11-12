@@ -407,6 +407,38 @@ impl Interpreter {
         rask_check::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
 
+    /// The generic frame for `Type.f(…)` written at `call`: the call's own type
+    /// arguments, and what a written `Wrap<i64>` gives the `extend Wrap<U>`
+    /// block `f` is declared in. A function there without `self` reads `U`
+    /// as much as a method does: `U.zero()` (type.generics/GF6, GF7).
+    pub(crate) fn static_call_generics(
+        &self,
+        call: rask_ast::NodeId,
+        object: &rask_ast::expr::Expr,
+        method: &str,
+    ) -> GenericFrame {
+        let written = object.written_type_args();
+        let (Some(name), false) = (object.name(), written.is_empty()) else {
+            return self.call_generics(call);
+        };
+        let args: Option<Vec<rask_types::GenericArg>> = written
+            .iter()
+            .map(|t| {
+                rask_check::resolve_type_expr(&self.resolve_type_param(t), &self.types)
+                    .ok()
+                    .map(|ty| rask_types::GenericArg::Type(Box::new(ty)))
+            })
+            .collect();
+        let Some(args) = args else { return self.call_generics(call) };
+        let recv = rask_types::Type::UnresolvedGeneric { name: name.to_string(), args };
+        let mut frame: HashMap<String, rask_types::Type> =
+            self.receiver_type_params(&recv, method).into_iter().collect();
+        if let Some(own) = self.call_generics(call) {
+            frame.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        (!frame.is_empty()).then(|| Arc::new(frame))
+    }
+
     /// The generic frame for a call written at `call` with no receiver.
     pub(crate) fn call_generics(&self, call: rask_ast::NodeId) -> GenericFrame {
         self.generic_frame_for_call(call, None)

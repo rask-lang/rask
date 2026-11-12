@@ -1345,7 +1345,7 @@ impl Interpreter {
                             let is_module = ModuleKind::from_name(name).is_some();
                             if is_static && has_body && !is_module {
                                 let (arg_vals, places) = self.eval_call_args(args)?;
-                                let generics = self.call_generics(expr.id);
+                                let generics = self.static_call_generics(expr.id, object, method);
                                 let callee = method_fn.name.clone();
                                 self.lend_places(&callee, places);
                                 let result = self.call_function(method_fn, arg_vals, generics);

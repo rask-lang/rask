@@ -67,3 +67,30 @@ test "through another generic function" {
     assert third<Doubled>() == "d4"
     assert third<Named>() == "item number 2, long enough to live on the heap"
 }
+
+interface Zero {
+    func zero() -> Self
+}
+
+i64 implements Zero {
+    func zero() -> i64 {
+        return 7
+    }
+}
+
+struct Wrap<U: Zero> {
+    item: U
+}
+
+// A function of a generic type with no `self` still has the type's own
+// parameters: `Wrap<i64>.make()` runs with `U = i64` (GF6, GF7).
+extend Wrap<U> {
+    func make() -> Wrap<U> {
+        return Wrap(item: U.zero())
+    }
+}
+
+test "a generic type's own parameter, in a function without self" {
+    let w = Wrap<i64>.make()
+    assert w.item == 7
+}
