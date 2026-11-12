@@ -32,6 +32,6 @@ func main() {
         let f = w.inner_keep()
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }

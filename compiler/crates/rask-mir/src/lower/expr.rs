@@ -1734,7 +1734,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Task block — its body goes to the runtime as a carrying closure.
-            ExprKind::Spawn { target, body, .. } => self.lower_spawn(expr, *target, body),
+            ExprKind::Spawn { target, args, body, .. } => self.lower_spawn(expr, *target, args, body),
 
             // Cast
             ExprKind::Cast { expr: inner, ty } => self.lower_cast(expr.id, inner, ty),
@@ -2540,7 +2540,7 @@ impl<'a> MirLowerer<'a> {
                     let lowered = self.lower_closure_expecting(
                         params, ret_ty.as_ref(), body,
                         carries, &expected, Some(a.expr.id),
-                        false,
+                        super::closures::TaskRole::NotTask,
                     )?;
                     let (op, mir_ty) = lowered;
                     self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
@@ -5900,7 +5900,7 @@ impl<'a> MirLowerer<'a> {
                                         params, ret_ty.as_ref(), body,
                                         carries, &expected,
                                         Some(arg.expr.id),
-                                        false,
+                                        super::closures::TaskRole::NotTask,
                                     )?;
                                     let (op, mir_ty) = lowered;
                                     self.wrap_closure_arg(
@@ -5954,8 +5954,8 @@ impl<'a> MirLowerer<'a> {
                                     .first()
                                     .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                                     .map(|ty| {
-                                        let head = self.head_name(&ty);
-                                        crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                                        let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                                        crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                                     })
                                     .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
@@ -6248,7 +6248,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 let carries = self.closure_carries(Some(arg.expr.id));
                 let (op, mir_ty) = self.lower_closure_expecting(
-                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), false,
+                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), super::closures::TaskRole::NotTask,
                 )?;
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
@@ -6430,8 +6430,8 @@ impl<'a> MirLowerer<'a> {
                 .first()
                 .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                 .map(|ty| {
-                    let head = self.head_name(&ty);
-                    crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                    let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                    crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                 })
                 .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));

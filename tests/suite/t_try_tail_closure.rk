@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure or task block whose last expression is `try f()` ends with the
+// error, or hands back the value as the success side (rask-lang/rask#1875).
+// The block's type is `T or E`; it used to stay open, and under `spawn` the
+// native program crashed.
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func parse(s: string) -> i64 or Bad {
+    if s == "bad" {
+        return Bad(why: "bad input")
+    }
+    return 7
+}
+
+func run_task(s: string) -> i64 or Bad {
+    using Multitasking {
+        let h = spawn { try parse(s) }
+        return h.join()!
+    }
+}
+
+test "a closure ending in try is T or E" {
+    let f = |s: string| try parse(s)
+    let good = f("ok")
+    let bad = f("bad")
+    assert good is i64
+    if bad is Bad as e {
+        assert e.why == "bad input"
+    } else {
+        assert false
+    }
+}
+
+test "a task block ending in try is T or E" {
+    if run_task("bad") is Bad as e {
+        assert e.why == "bad input"
+    } else {
+        assert false
+    }
+    if run_task("ok") is i64 as n {
+        assert n == 7
+    } else {
+        assert false
+    }
+}

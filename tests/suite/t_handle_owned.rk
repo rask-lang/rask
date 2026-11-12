@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A handle that frees itself (`@handle(release: …)`) is freed wherever it
+// lives: in a Vec or Map, in an optional or a tuple, in a `Shared` box, and
+// when a closure captured it after it came out of a `T or E` (#1887). The leak
+// gate runs this file, which is where a missed release shows.
+
+import random.Random
+import sync.Atomic
+import sync.MemoryOrder
+import sync.Shared
+
+func maybe_rng(seed: u64) -> Random? {
+    if seed == 0 {
+        return none
+    }
+    return Random.from_seed(seed)
+}
+
+func counter_pair(n: i64) -> (Atomic<i64>, i64) {
+    return (Atomic.new(n), n * 2)
+}
+
+test "handles in a Vec and a Map are freed with it" {
+    mut rngs: Vec<Random> = Vec.new()
+    for i in 0..3 {
+        rngs.push(Random.from_seed(i.to<u64>()!))
+    }
+    assert rngs.len() == 3
+    mut counters: Map<string, Atomic<i64>> = Map.new()
+    counters.insert("a", Atomic.new(1))
+    counters.insert("b", Atomic.new(2))
+    assert counters.len() == 2
+}
+
+test "a handle in an optional or a tuple is freed with it" {
+    let r = maybe_rng(7)
+    assert r is Random
+    let (a, n) = counter_pair(4)
+    assert a.load(MemoryOrder.SeqCst) == 4
+    assert n == 8
+}
+
+test "a handle in a Shared box is freed with the box" {
+    let box = Shared.new(Atomic.new(3))
+    with box.read() as a {
+        assert a.load(MemoryOrder.SeqCst) == 3
+    }
+}
+
+test "a cstring captured after an unwrap is freed once" {
+    let c = "abc".to_cstring()!
+    let k = || c.decode() catch e => ""
+    assert k() == "abc"
+}
+
+struct Oops {
+    n: i64
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "oops {self.n}"
+    }
+}
+
+func numbers(n: i64) -> Vec<i64> or Oops {
+    if n < 0 {
+        return Oops(n: n)
+    }
+    if n > 100 {
+        return numbers(n - 1)
+    }
+    mut v: Vec<i64> = Vec.new()
+    v.push(n)
+    return v
+}
+
+test "a Vec captured after an unwrap is freed once" {
+    let v = numbers(3)!
+    let k = || v.len()
+    assert k() == 1
+}

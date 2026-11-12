@@ -27,11 +27,26 @@ pub fn tuple_offsets(fields: &[MirType]) -> Vec<u32> {
 
 /// Which container a handle points at. What frees it is codegen's to name;
 /// this is the vocabulary both ends share.
+///
+/// `Handle` is any other runtime handle that frees itself: its type declares
+/// `@handle(release: "…")` (`Random`, `Atomic<T>`, `Staged<T>`, `cstring`),
+/// and the declared release is all there is to know about freeing it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContainerKind {
     Vec,
     Map,
     Rack,
+    Handle(&'static str),
+}
+
+impl ContainerKind {
+    /// A self-freeing handle by its declared release, if `release` is one.
+    pub fn handle(release: &str) -> Option<ContainerKind> {
+        rask_stdlib::handles::declared_releases()
+            .into_iter()
+            .find(|r| *r == release)
+            .map(ContainerKind::Handle)
+    }
 }
 
 impl MirType {

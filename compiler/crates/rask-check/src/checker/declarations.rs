@@ -2497,6 +2497,9 @@ impl TypeChecker {
                 if m != "clone" && self.compares_through_field(id) {
                     continue;
                 }
+                if m == "clone" && self.frees_itself(id) {
+                    continue;
+                }
                 candidates.push((id, m, shape.clone()));
             }
         }
@@ -2514,6 +2517,14 @@ impl TypeChecker {
             }
             set = keep;
         }
+    }
+
+    /// A handle that frees itself is a pointer to state it owns, with no
+    /// fields to copy: a copied pointer would leave two owners to free one
+    /// block. It clones only by declaring `clone`, and so does anything
+    /// holding one.
+    fn frees_itself(&self, id: rask_types::TypeId) -> bool {
+        self.types.get(id).and_then(|d| d.runtime_handle()).is_some_and(|h| h.release.is_some())
     }
 
     /// type.reads-as/RA6: comparing a value is reading it, so a type that
@@ -2581,7 +2592,7 @@ impl TypeChecker {
             let reads = self.compares_through_field(id);
             let eq_ok = !reads && self.parts_derive(&shape, "eq");
             let hash_ok = !reads && self.parts_derive(&shape, "hash");
-            let clone_ok = self.parts_derive(&shape, "clone");
+            let clone_ok = !self.frees_itself(id) && self.parts_derive(&shape, "clone");
             let cmp_ok = !reads && self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();

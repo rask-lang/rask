@@ -14,6 +14,7 @@ impl fmt::Display for MirType {
             MirType::Container(crate::ContainerKind::Vec) => write!(f, "vec"),
             MirType::Container(crate::ContainerKind::Map) => write!(f, "map"),
             MirType::Container(crate::ContainerKind::Rack) => write!(f, "rack"),
+            MirType::Container(crate::ContainerKind::Handle(release)) => write!(f, "handle<{release}>"),
             MirType::Bool => write!(f, "bool"),
             MirType::I8 => write!(f, "i8"),
             MirType::I16 => write!(f, "i16"),

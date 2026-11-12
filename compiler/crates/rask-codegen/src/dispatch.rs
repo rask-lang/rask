@@ -680,11 +680,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
 
-        // ── Rng operations ────────────────────────────────────────
-        StdlibEntry::simple("Random_free", "rask_rng_free", &[types::I64], None, false),
-
         // ── Releases the drop pass emits ────────────────────────────
-        StdlibEntry::simple("cstring_free", "rask_cstring_free", &[types::I64], None, false),
         // Not a method anyone writes: `build` consumes the builder, and this is
         // the release the drop pass emits for a path that never builds.
         StdlibEntry::simple("StringBuilder_free", "rask_string_builder_free", &[types::I64], None, false),
@@ -768,7 +764,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         // `ThreadPool.spawn { … }` and `Thread.spawn { … }`: see the green
         // task's entry below for the arguments.
-        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64, types::I8], Some(types::I64), true),
         StdlibEntry::simple("rask_thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: spawn/join/detach ──────────────────────────
@@ -1020,7 +1016,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
     entries.push(atomic("Atomic_take", "rask_atomic_into_inner", &[types::I64], Some(types::I64)));
     // The ordinary drop. `into_inner` frees too and hands the value out with
     // it; this is for an atomic that just goes out of scope.
-    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_free", &[types::I64], None, false));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
@@ -1102,6 +1097,14 @@ pub fn stdlib_entries() -> &'static [StdlibEntry] {
             .map(|r| r.unwrap_or_else(|e| panic!("{e}")))
             .collect();
         entries.extend(internal_entries());
+        // A handle's declared release, called by its own symbol when the frame
+        // frees one (`@handle(release: "…")`): the handle's word in, nothing
+        // back.
+        for release in rask_stdlib::handles::declared_releases() {
+            if !entries.iter().any(|e| e.mir_name == release) {
+                entries.push(StdlibEntry::simple(release, release, &[types::I64], None, false));
+            }
+        }
         entries
     })
 }
