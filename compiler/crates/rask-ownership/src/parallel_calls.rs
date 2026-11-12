@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Function values a callee runs in parallel, checked where they're passed
-//! (conc.fork/FK8).
+//! (conc.async/B4).
 //!
-//! `func both(f: func(), g: func()) { fork { f() } and { g() } }` is fine on
-//! its own. What makes it a race is the call: `both(h, h)` with an `h` that
-//! writes what it captured runs one closure on two threads, and `both(|| n +=
-//! 1, || print(n))` writes and reads `n` at once. Inside `both` nothing can
-//! tell, so each function gets a summary of the parameter pairs it may use
-//! at the same time, and at every call the two arguments of each pair are
-//! checked as the two blocks of a fork would be: the same conflicts (FK3),
-//! the same one-block values (FK7), the same rules for a shared rack (RK16).
+//! `func both(f: func(), g: func()) { let h = ThreadPool.spawn { f() }  g()
+//! h.join()! }` is fine on its own. What makes it a race is the call:
+//! `both(t, t)` with a `t` that writes what it captured runs one closure on
+//! two threads, and `both(|| n += 1, || print(n))` writes and reads `n` at
+//! once. Inside `both` nothing can tell, so each function gets a summary of
+//! the parameter pairs it may use at the same time, and at every call the
+//! two arguments of each pair are checked as a borrowing task and the code
+//! beside it would be: the same conflicts (B2), the same one-side values
+//! (B3), the same rules for a shared rack (RK16).
 //!
-//! A pair is a function-typed parameter one block names and any parameter
-//! another block names, itself included. "Block" covers a fork's blocks and
-//! the arguments of a call that may run them at once, so a function that
-//! hands its parameters on, bare or inside a closure, takes the pair on. A
-//! call through a function value nothing here can read may run its function
-//! arguments at once, so it counts as one.
+//! A pair is a function-typed parameter one side names and any parameter the
+//! other side names, itself included. A side is a borrowing task or the code
+//! before its join, or an argument of a call that may run them at once, so a
+//! function that hands its parameters on, bare or inside a closure, takes the
+//! pair on. A call through a function value nothing here can read may run its
+//! function arguments at once, so it counts as one.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -46,9 +47,9 @@ pub(crate) struct ParallelUse {
 
 pub(crate) type ParallelUses = HashMap<Key, ParallelUse>;
 
-/// A node id no expression has: the wrappers built to check an argument as a
-/// fork block have no type of their own to look up.
-const SYNTHETIC: NodeId = NodeId(u32::MAX);
+/// A node id no expression has: the wrappers built to check an argument, or
+/// the code beside a task, as one side have no type of their own to look up.
+pub(crate) const SYNTHETIC: NodeId = NodeId(u32::MAX);
 
 impl<'a> OwnershipChecker<'a> {
     /// The function a callee expression names: a declared function, or a
@@ -174,6 +175,9 @@ impl<'a> OwnershipChecker<'a> {
                 locals.insert(name.clone(), init);
             } else if let Some(k) = self.fn_key(init) {
                 fns.insert(name.clone(), k);
+            } else if matches!(init.kind, ExprKind::Ident(_)) {
+                // `let g = f`: `g` names whatever `f` names.
+                locals.insert(name.clone(), init);
             }
         };
         let mut seen_stmts: std::collections::HashSet<*const Stmt> = std::collections::HashSet::new();
@@ -251,15 +255,6 @@ impl<'a> OwnershipChecker<'a> {
         body.each(&mut |e| {
             let mut groups: Vec<(&Expr, &Expr)> = Vec::new();
             match &e.kind {
-                ExprKind::Fork { sides } => {
-                    for (i, a) in sides.iter().enumerate() {
-                        for (j, b) in sides.iter().enumerate() {
-                            if i != j {
-                                groups.push((a, b));
-                            }
-                        }
-                    }
-                }
                 ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
                     let found = self.parallel_effects(e, &at);
                     groups.extend(found.pairs);
@@ -283,6 +278,24 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
         });
+        // A task that borrows the frame runs beside the code up to its join
+        // (conc.async/S5), the same as two blocks that may run at once.
+        let windows = match body {
+            Body::Stmts(stmts) => crate::borrowed_tasks::all_windows(stmts),
+            Body::Expr(Expr { kind: ExprKind::Block(stmts), .. }) => crate::borrowed_tasks::all_windows(stmts),
+            Body::Expr(_) => Vec::new(),
+        };
+        for w in &windows {
+            let beside = crate::borrowed_tasks::beside(w, SYNTHETIC);
+            for (a, b) in [(w.body, &beside), (&beside, w.body)] {
+                let (here, there) = (named_in(a), named_in(b));
+                for p in here.iter().filter(|p| fn_params.contains(*p)) {
+                    for q in &there {
+                        pairs.insert((p.clone(), q.clone()));
+                    }
+                }
+            }
+        }
         ParallelUse { params: params.iter().map(|p| p.name.clone()).collect(), fn_params, pairs, calls }
     }
 
@@ -400,10 +413,10 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// An argument as the fork block it may run as. A closure is its own body;
+    /// An argument as the side it may run as. A closure is its own body;
     /// a closure bound to a name is the literal it was bound to; anything else
     /// is a block that uses it, writing it when it goes to `mutate`.
-    fn as_fork_block(&self, arg: &Expr, mode: ArgMode) -> Expr {
+    fn as_side(&self, arg: &Expr, mode: ArgMode) -> Expr {
         match &arg.kind {
             ExprKind::Closure { .. } => return arg.clone(),
             ExprKind::Ident(name) => {
@@ -430,8 +443,8 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// FK8 at one call: each pair the callee may run at once, checked as two
-    /// fork blocks. What that finds is reported at the call.
+    /// B4 at one call: each pair the callee may run at once, checked as two
+    /// sides. What that finds is reported at the call.
     pub(crate) fn check_parallel_args(&mut self, call: &Expr) {
         let args: &[CallArg] = match &call.kind {
             ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => args,
@@ -472,9 +485,9 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(a, b)| (a.clone(), mode_of(a), b.clone(), mode_of(b)))
             .collect();
         for (a, a_mode, b, b_mode) in pairs {
-            let sides = [self.as_fork_block(&a, a_mode), self.as_fork_block(&b, b_mode)];
+            let sides = [self.as_side(&a, a_mode), self.as_side(&b, b_mode)];
             let before = self.errors.len();
-            self.check_fork_sides(&sides);
+            self.check_parallel_sides(&sides);
             let found: Vec<OwnershipError> = self.errors.split_off(before);
             if let Some(first) = found.into_iter().next() {
                 let what = first.kind.to_string();
@@ -487,7 +500,7 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// FK8 for every call in a body, once the body has been walked and its
+    /// B4 for every call in a body, once the body has been walked and its
     /// closures are known.
     pub(crate) fn check_parallel_calls(&mut self, body: &[Stmt]) {
         let mut calls: Vec<Expr> = Vec::new();

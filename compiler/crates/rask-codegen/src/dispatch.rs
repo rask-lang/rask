@@ -764,7 +764,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         // `ThreadPool.spawn { … }` and `Thread.spawn { … }`: see the green
         // task's entry below for the arguments.
-        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64, types::I8], Some(types::I64), true),
         StdlibEntry::simple("rask_thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: spawn/join/detach ──────────────────────────

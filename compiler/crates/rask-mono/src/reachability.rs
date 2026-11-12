@@ -1557,11 +1557,6 @@ impl<'a> Monomorphizer<'a> {
             ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => {
                 self.visit_expr(body);
             }
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.visit_expr(side);
-                }
-            }
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
                 if let TypeExpr::Any(interface) = ty {

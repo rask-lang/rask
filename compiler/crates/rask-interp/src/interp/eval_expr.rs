@@ -2526,41 +2526,31 @@ impl Interpreter {
 
             // A task block: build its body as the carrying closure it is
             // underneath, and hand that to the task.
-            ExprKind::Spawn { target, body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // A task that borrows its frame (conc.async/S5) runs right
+                // here, now. The checker made sure nothing beside it touches
+                // what it writes, so running it first gives the answer every
+                // schedule gives, and the interpreter is the reference.
+                if !self.escaping_closures.contains(&body.id) {
+                    return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+                // `requires_pool: false` with no pool runs here too (S2).
+                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
+                    let requires = match args.first() {
+                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                        None => true,
+                    };
+                    if !requires {
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
                     rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),
                     rask_ast::expr::SpawnTarget::Pool => self.spawn_pool_task(closure, body),
                 };
                 started.map_err(|e| RuntimeDiagnostic::new(e, expr.span))
-            }
-
-            // A fork's blocks run one after another, in written order: the
-            // schedule every fork may fall back to (conc.fork/FK5), so it's the
-            // reference. A block that panics doesn't stop the later ones, and
-            // the first panic is raised once they're all done (FK6), the same
-            // as when they run side by side.
-            ExprKind::Fork { sides } => {
-                let mut values = Vec::with_capacity(sides.len());
-                let mut first_panic: Option<RuntimeDiagnostic> = None;
-                for side in sides {
-                    let closure = self.eval_expr(side)?;
-                    self.failed_call_span = None;
-                    match self.call_closure(closure, Vec::new(), Vec::new()) {
-                        Ok(v) => values.push(v),
-                        Err(e) if e.is_panic() => {
-                            let at = self.failed_call_span.take().unwrap_or(side.span);
-                            first_panic.get_or_insert(RuntimeDiagnostic::new(e, at));
-                            values.push(Value::Unit);
-                        }
-                        Err(e) => return Err(RuntimeDiagnostic::new(e, side.span)),
-                    }
-                }
-                if let Some(panic) = first_panic {
-                    return Err(panic);
-                }
-                Ok(Value::Tuple(Arc::new(values)))
             }
 
             ExprKind::Cast { expr, ty } => {

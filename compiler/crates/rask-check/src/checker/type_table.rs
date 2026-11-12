@@ -17,7 +17,7 @@ use rask_types::{GenericArg, Type, TypeId, TypeVarId};
 pub enum TaskBound {
     LocalBox,
     Link,
-    /// Only ever answered by `fork_bound` and `holds_rack`.
+    /// Only ever answered by `side_bound` and `holds_rack`.
     Rack,
 }
 
@@ -26,8 +26,8 @@ pub enum TaskBound {
 enum BoundMode {
     /// May it go to another task: links and `Local` boxes, not racks.
     Task,
-    /// May two fork blocks name it: racks too.
-    Fork,
+    /// May a borrowing task and the code beside it both name it: racks too.
+    Side,
     /// Does storing it record a link with a rack.
     Store,
     /// Does it hold a rack.
@@ -1872,12 +1872,13 @@ impl TypeTable {
         self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Task)
     }
 
-    /// What keeps a value inside one block of a fork (conc.fork/FK7): what
-    /// keeps it on its task, and a rack as well. A rack isn't task-bound,
-    /// since moving it takes its links along; two fork blocks *borrowing* one
-    /// would both write its edge index whenever either stores a link.
-    pub fn fork_bound(&self, ty: &Type) -> Option<TaskBound> {
-        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Fork)
+    /// What keeps a value on one side of a borrowing task (conc.async/B3):
+    /// what keeps it on its task, and a rack as well. A rack isn't
+    /// task-bound, since moving it takes its links along; two sides
+    /// *borrowing* one would both write its edge index whenever either stores
+    /// a link.
+    pub fn side_bound(&self, ty: &Type) -> Option<TaskBound> {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Side)
     }
 
     /// Whether storing a value of this type records a link with a rack: it is
@@ -1948,13 +1949,13 @@ impl TypeTable {
     /// the nodes they point at, which is how `snapshot()` hands a graph over.
     fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>, mode: BoundMode) -> Option<TaskBound> {
         if let Some(args) = self.shared_args(ty) {
-            if matches!(mode, BoundMode::Task | BoundMode::Fork) && self.shared_strategy_name(args) == "Local" {
+            if matches!(mode, BoundMode::Task | BoundMode::Side) && self.shared_strategy_name(args) == "Local" {
                 return Some(TaskBound::LocalBox);
             }
         }
         let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
             "Link" => (mode != BoundMode::Racks).then_some(TaskBound::Link),
-            "Rack" => matches!(mode, BoundMode::Fork | BoundMode::Racks).then_some(TaskBound::Rack),
+            "Rack" => matches!(mode, BoundMode::Side | BoundMode::Racks).then_some(TaskBound::Rack),
             // A buffer's links aren't edges, and it can't delete anything; it
             // still may not cross to another task, where its rack isn't.
             "Staged" if mode != BoundMode::Task => None,

@@ -234,16 +234,10 @@ pub enum ExprKind {
         /// `Thread` / `ThreadPool` as written, so the name resolves like any
         /// other use of the type. `None` for a green task.
         receiver: Option<Box<Expr>>,
+        /// Written between the name and the block:
+        /// `ThreadPool.spawn(requires_pool: false) { … }`.
+        args: Vec<CallArg>,
         body: Box<Expr>,
-    },
-    /// `fork { … } and { … }` (conc.fork/FK1): every side runs, maybe in
-    /// parallel, and the expression is the tuple of their values.
-    ///
-    /// Each side is a parameterless `Closure` the parser builds around its
-    /// block, as for `Spawn`, but one that stays in its frame and so points at
-    /// what it names (FK2).
-    Fork {
-        sides: Vec<Expr>,
     },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
     Cast {
@@ -806,7 +800,6 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::WithAs { .. } => "WithAs",
         ExprKind::Closure { .. } => "Closure",
         ExprKind::Spawn { .. } => "Spawn",
-        ExprKind::Fork { .. } => "Fork",
         ExprKind::Cast { .. } => "Cast",
         ExprKind::Convert { .. } => "Convert",
         ExprKind::Unsafe { .. } => "Unsafe",

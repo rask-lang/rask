@@ -1,0 +1,167 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task joined in the block that spawned it borrows from the frame and runs
+// beside the code before its join, so the borrow rules hold between the two
+// (conc.async/B2, E0960): a place one side writes, the other may not touch. A
+// `Local` box, or a function value from a field or a container, may be named
+// on one side only (B3, E0961). A function value a parameter brings is
+// checked where the function is called (B4, E0964). A rack or its links may
+// be shared by sides that only read it (mem.racks/RK16, E0962). The tasks at
+// the end are the legal shapes and must compile.
+
+import memory.Rack
+import memory.Link
+import thread.ThreadPool
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Node {
+    hp: i64
+    next: Link<Node>?
+}
+
+struct Holder {
+    f: func()
+}
+
+func bump(mutate n: i64) {
+    n += 1
+}
+
+func bumped(mutate n: i64) -> i64 {
+    n += 1
+    return n
+}
+
+func eat(take v: Vec<i64>) -> usize {
+    return v.len()
+}
+
+func run_it(f: func()) {
+    f()
+}
+
+// Runs `f` and `g` at once. Fine on its own: each call is checked for what it
+// passes (B4).
+func both(f: func(), g: func()) {
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    g()
+    h.join()!
+}
+
+func through_a_field(h: Holder) {
+    // ERROR: reached through a field, the same closure twice [E0961]
+    let t = ThreadPool.spawn(requires_pool: false) { (h.f)() }
+    (h.f)()
+    t.join()!
+}
+
+func main() {
+    mut count = 0
+    // ERROR: written by the task, read beside it [E0960]
+    let h1 = ThreadPool.spawn(requires_pool: false) { count += 1 }
+    println("{count * 2}")
+    h1.join()!
+
+    mut p = Point(x: 1, y: 2)
+    // ERROR: the same field on both sides [E0960]
+    let h2 = ThreadPool.spawn(requires_pool: false) { p.x = 5 }
+    println("{p.x + 1}")
+    h2.join()!
+    // ERROR: the whole value overlaps each field [E0960]
+    let h3 = ThreadPool.spawn(requires_pool: false) { p = Point(x: 0, y: 0) }
+    println("{p.y}")
+    h3.join()!
+
+    mut v = Vec.from([1, 2])
+    // ERROR: `push` writes the vector the other side reads [E0960]
+    let h4 = ThreadPool.spawn(requires_pool: false) { v.push(3) }
+    println("{v.len()}")
+    h4.join()!
+    // ERROR: two `mutate` arguments [E0960]
+    let h5 = ThreadPool.spawn(requires_pool: false) { bump(mutate count) }
+    bump(mutate count)
+    h5.join()!
+
+    // ERROR: a write inside a loop is still a write [E0960]
+    let h6 = ThreadPool.spawn(requires_pool: false) {
+        for i in 0..3 {
+            count += 1
+        }
+    }
+    println("{count}")
+    h6.join()!
+    // ERROR: `e` writes the element of `v` it is bound to [E0960]
+    let h7 = ThreadPool.spawn(requires_pool: false) {
+        with v[0] as e {
+            e += 1
+        }
+    }
+    println("{v.len()}")
+    h7.join()!
+    // ERROR: two tasks beside each other write and read `count` [E0960]
+    let h8 = ThreadPool.spawn(requires_pool: false) { count += 1 }
+    let h9 = ThreadPool.spawn(requires_pool: false) { count }
+    h8.join()!
+    h9.join()!
+
+    let w = Vec.from([1, 2])
+    // ERROR: giving `w` away beside a task that reads it [E0960]
+    let h14 = ThreadPool.spawn(requires_pool: false) { w.len() }
+    println("{eat(w)}")
+    h14.join()!
+    // ERROR: the left operand runs before the join, and writes what the task reads [E0960]
+    let h15 = ThreadPool.spawn(requires_pool: false) { count + 1 }
+    let r15 = bumped(mutate count) + h15.join()!
+    println("{r15}")
+    mut pulses = 0
+    let pulse = || { pulses += 1 }
+    // ERROR: a writing closure handed to a function on both sides [E0960]
+    let h16 = ThreadPool.spawn(requires_pool: false) { run_it(pulse) }
+    run_it(pulse)
+    h16.join()!
+
+    let tick = || { count += 1 }
+    // ERROR: one closure that writes `count`, run twice at once [E0964]
+    both(tick, tick)
+    // ERROR: one writes `count` while the other reads it [E0964]
+    both(tick, || { println("{count}") })
+
+    mut r = Rack.new()
+    let n1 = r.insert(Node(hp: 1, next: none))
+    let n2 = r.insert(Node(hp: 2, next: none))
+    // ERROR: `n1` and `n2` may name the same node, and the task writes it [E0962]
+    let h10 = ThreadPool.spawn(requires_pool: false) { n1.hp = 5 }
+    println("{n2.hp}")
+    h10.join()!
+
+    // Separate fields, reads of a shared value, two sides only reading the
+    // graph (mem.racks/RK16), closures over different variables run at once,
+    // and a handle that leaves the block, which carries copies instead.
+    mut other = 0
+    both(|| { other += 1 }, || { println("{p.x}") })
+    let h11 = ThreadPool.spawn(requires_pool: false) { n1.hp }
+    println("{n2.hp}")
+    h11.join()!
+    let h12 = ThreadPool.spawn(requires_pool: false) { p.x = v.len().to<i64>()! }
+    p.y = v.len().to<i64>()!
+    h12.join()!
+    let h13 = ThreadPool.spawn(requires_pool: false) { n1.hp + n2.hp }
+    println("{v.len()}")
+    println("{h13.join()!}")
+    println("{count}")
+}
+
+func moved_by_the_task() {
+    let fresh = Vec.from([1, 2, 3])
+    mut slot = Vec.from([9])
+    let h = ThreadPool.spawn(requires_pool: false) {
+        slot = fresh
+        slot.len()
+    }
+    println("{h.join()!}")
+    // ERROR: the task consumed `fresh`, so it took it [E0800]
+    println("{fresh.len()}")
+}

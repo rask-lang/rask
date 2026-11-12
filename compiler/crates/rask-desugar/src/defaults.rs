@@ -338,9 +338,9 @@ impl DefaultDesugarer {
                 self.desugar_expr(count);
             }
             ExprKind::Closure { body, .. } => self.desugar_expr(body),
-            ExprKind::Spawn { body, .. } => self.desugar_expr(body),
-            ExprKind::Fork { sides } => {
-                for side in sides { self.desugar_expr(side); }
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args { self.desugar_expr(&mut a.expr); }
+                self.desugar_expr(body);
             }
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.desugar_expr(&mut b.source); }

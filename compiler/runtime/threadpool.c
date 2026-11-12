@@ -33,11 +33,8 @@ typedef struct PoolJob {
     RaskTaskFn      func;
     void           *env;
     RaskTask       *task;
-    RaskForkSide   *fork;   // a fork block instead of a task, when set
     struct PoolJob *next;
 } PoolJob;
-
-static void fork_side_run_queued(RaskForkSide *side);
 
 static struct {
     pthread_t       *workers;
@@ -80,12 +77,11 @@ static void pool_worker_loop(void) {
 
         if (!job) continue;
 
-        if (job->fork) {
-            fork_side_run_queued(job->fork);
-            rask_free(job);
-            continue;
+        // Its joiner may have taken it back and run it already.
+        if (rask_task_pool_claim(job->task)) {
+            rask_task_mark_on_pool(job->task);
+            rask_task_run_body(job->task, job->func, job->env);
         }
-        rask_task_run_body(job->task, job->func, job->env);
         rask_task_release(job->task);   // the worker's ref
         rask_free(job);
     }
@@ -212,19 +208,29 @@ void rask_threadpool_shutdown(void) {
     pthread_mutex_destroy(&g_pool.lock);
 }
 
-// ThreadPool.spawn. Outside a `using ThreadPool` block there is no pool, so
-// this falls back to a dedicated thread rather than enqueueing into a queue
-// nothing drains.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
-    if (!g_pool.started) {
-        return rask_closure_spawn(closure_ptr, result_owned);
-    }
-
+// ThreadPool.spawn (conc.async/S2). Outside a `using ThreadPool` block there
+// is no pool. A spawn that said `requires_pool: false` runs right here, now:
+// it may run beside what follows, and running it first is one of the orders
+// it may run in. Any other falls back to a dedicated thread rather than
+// enqueueing into a queue nothing drains.
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
+    if (!g_pool.started) {
+        if (requires_pool) {
+            return rask_closure_spawn(closure_ptr, result_owned);
+        }
+        RaskTask *task = rask_task_new();
+        rask_task_adopt_closure(task, closure_ptr, result_owned);
+        rask_task_run_inline(task, func, env);
+        rask_task_release(task);   // the runner's ref; the handle keeps one
+        return task;
+    }
+
     RaskTask *task = rask_task_new();
     rask_task_adopt_closure(task, closure_ptr, result_owned);
+    rask_task_pool_queue(task, func, env);
 
     PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
     *job = (PoolJob){
@@ -235,106 +241,4 @@ RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     };
     enqueue(job);
     return task;
-}
-
-// ─── Fork (conc.fork) ──────────────────────────────────────
-//
-// A fork block borrows from the forking frame, so the frame can't go on until
-// the block is done (FK1). The block goes on the ordinary queue; whoever gets
-// to it first runs it: a worker that dequeues it, or the forking thread when
-// it comes to join it and finds it still unclaimed. Taking it back is what
-// keeps nested forks from deadlocking a small pool: a thread only ever waits
-// for a block another thread is already running, and that one finishes.
-
-typedef void (*RaskForkThunk)(void *closure, void *out);
-
-enum { FORK_QUEUED, FORK_CLAIMED, FORK_DONE };
-
-struct RaskForkSide {
-    RaskForkThunk    thunk;
-    void            *closure;
-    void            *out;
-    atomic_int       state;
-    atomic_int       refs;    // the joiner's, plus the queue's while queued
-    RaskCaughtPanic *panic;
-    pthread_mutex_t  lock;
-    pthread_cond_t   done;
-};
-
-static void fork_side_release(RaskForkSide *side) {
-    if (atomic_fetch_sub_explicit(&side->refs, 1, memory_order_acq_rel) == 1) {
-        pthread_cond_destroy(&side->done);
-        pthread_mutex_destroy(&side->lock);
-        rask_free(side);
-    }
-}
-
-static int fork_side_claim(RaskForkSide *side) {
-    int expected = FORK_QUEUED;
-    return atomic_compare_exchange_strong_explicit(
-        &side->state, &expected, FORK_CLAIMED, memory_order_acq_rel, memory_order_acquire);
-}
-
-// A worker took the job off the queue. The joiner may have run it already.
-static void fork_side_run_queued(RaskForkSide *side) {
-    if (fork_side_claim(side)) {
-        side->panic = rask_panic_catch(side->thunk, side->closure, side->out);
-        pthread_mutex_lock(&side->lock);
-        atomic_store_explicit(&side->state, FORK_DONE, memory_order_release);
-        rask_task_cond_broadcast(&side->done);
-        pthread_mutex_unlock(&side->lock);
-    }
-    fork_side_release(side);
-}
-
-RaskForkSide *rask_fork_start(void *thunk, void *closure, void *out) {
-    RaskForkSide *side = (RaskForkSide *)rask_alloc(sizeof(RaskForkSide));
-    side->thunk = (RaskForkThunk)thunk;
-    side->closure = closure;
-    side->out = out;
-    side->panic = NULL;
-    atomic_init(&side->state, FORK_QUEUED);
-    pthread_mutex_init(&side->lock, NULL);
-    pthread_cond_init(&side->done, NULL);
-    // No pool: nothing to hand it to. The join runs it, in written order (FK5).
-    if (!g_pool.started) {
-        atomic_init(&side->refs, 1);
-        return side;
-    }
-    atomic_init(&side->refs, 2);
-    PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
-    *job = (PoolJob){ .fork = side };
-    enqueue(job);
-    return side;
-}
-
-RaskCaughtPanic *rask_fork_inline(void *thunk, void *closure, void *out) {
-    return rask_panic_catch((RaskForkThunk)thunk, closure, out);
-}
-
-// The first panic in written order wins (FK6); a later one is dropped.
-static RaskCaughtPanic *fork_first(RaskCaughtPanic *first, RaskCaughtPanic *next) {
-    if (!first) return next;
-    rask_panic_discard(next);
-    return first;
-}
-
-RaskCaughtPanic *rask_fork_join(RaskForkSide *side, RaskCaughtPanic *first) {
-    RaskCaughtPanic *caught;
-    if (fork_side_claim(side)) {
-        caught = rask_panic_catch(side->thunk, side->closure, side->out);
-    } else {
-        pthread_mutex_lock(&side->lock);
-        while (atomic_load_explicit(&side->state, memory_order_acquire) != FORK_DONE) {
-            rask_task_cond_wait(&side->done, &side->lock, "a fork block");
-        }
-        pthread_mutex_unlock(&side->lock);
-        caught = side->panic;
-    }
-    fork_side_release(side);
-    return fork_first(first, caught);
-}
-
-void rask_fork_end(RaskCaughtPanic *first) {
-    if (first) rask_panic_resume(first);
 }

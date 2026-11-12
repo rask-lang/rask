@@ -73,8 +73,9 @@ extend Rack<T> {
     public func corresponding(self, link: Link<T>) -> Link<T>? {}
 
     /// An empty buffer of structural changes for this rack (mem.racks/RK17).
-    /// Fork blocks that only read the rack record their inserts, deletes and
-    /// relinks in one each; `apply` makes them, after the join.
+    /// A task and the code beside it that only read the rack record their
+    /// inserts, deletes and relinks in one each; `apply` makes them, after
+    /// the join.
     @native("rask_rack_staged")
     public func staged(self) -> Staged<T> {}
 
@@ -90,8 +91,8 @@ extend Rack<T> {
 /// Structural changes to a `Rack<T>`, recorded now and made by `rack.apply`.
 ///
 /// The links it holds aren't edges: nothing records them, so nothing nulls
-/// them. That is what lets a fork block record changes while other blocks read
-/// the rack, and `apply` refusing a buffer the rack has outlived is what keeps
+/// them. That is what lets one side record changes while the other reads the
+/// rack, and `apply` refusing a buffer the rack has outlived is what keeps
 /// it sound (mem.racks/RK21).
 @handle(release: "rask_staged_free")
 public struct Staged<T> { }

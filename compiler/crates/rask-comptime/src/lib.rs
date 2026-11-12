@@ -1706,7 +1706,7 @@ impl ComptimeInterpreter {
             }
 
             // A task needs a runtime, which compile time doesn't have (CT7).
-            ExprKind::Spawn { .. } | ExprKind::Fork { .. } => {
+            ExprKind::Spawn { .. } => {
                 return Err(ComptimeError::ConcurrencyNotAllowed);
             }
 

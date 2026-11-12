@@ -4102,7 +4102,6 @@ impl<'a> MirLowerer<'a> {
             | ExprKind::Unsafe { body }
             | ExprKind::Comptime { body } => bodies.push(body),
             ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => kids.push(body),
-            ExprKind::Fork { sides } => kids.extend(sides.iter()),
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 kids.push(condition);
                 kids.extend(message.iter().map(|m| m.as_ref()));
@@ -6075,11 +6074,6 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(body, &inner_bound, seen, free);
             }
             ExprKind::Spawn { body, .. } => self.walk_free_vars(body, bound, seen, free),
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.walk_free_vars(side, bound, seen, free);
-                }
-            }
             ExprKind::Try { expr: inner } | ExprKind::Take { place: inner } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }

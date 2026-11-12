@@ -33,7 +33,9 @@ pub fn detect(
         .iter()
         .any(|k| effects.get(k).is_some_and(|e| e.async_));
     let imports = crate::sources::ImportedNames::from_decls(decls);
+    let borrowing_joins = crate::borrowing_joins(decls);
     let mut ctx = WarnContext {
+        borrowing_joins: &borrowing_joins,
         effects,
         targets,
         imports: &imports,
@@ -99,6 +101,9 @@ fn is_root_fn(f: &FnDecl) -> bool {
 }
 
 struct WarnContext<'a> {
+    /// Joins of tasks that borrow their frame: they wait for the task beside
+    /// them, whose body is checked where it is spawned.
+    borrowing_joins: &'a HashSet<rask_ast::NodeId>,
     effects: &'a EffectMap,
     /// The checker's name for each method call it resolved.
     targets: &'a MethodTargets,
@@ -292,7 +297,11 @@ impl<'a> WarnContext<'a> {
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
-                let names = crate::method_callees(expr.id, object, method, self.targets, self.imports);
+                let names = if self.borrowing_joins.contains(&expr.id) {
+                    Vec::new()
+                } else {
+                    crate::method_callees(expr.id, object, method, self.targets, self.imports)
+                };
                 for name in &names {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
                 }
@@ -398,11 +407,6 @@ impl<'a> WarnContext<'a> {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.check_expr(side, warnings);
-                }
-            }
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);
@@ -573,7 +577,7 @@ mod tests {
         };
         Expr {
             id: NodeId(0),
-            kind: ExprKind::Spawn { target, receiver: None, body: Box::new(body) },
+            kind: ExprKind::Spawn { target, receiver: None, args: Vec::new(), body: Box::new(body) },
             span: sp(),
         }
     }

@@ -1,0 +1,163 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// conc.async/B1–B6: a task joined in the block that spawned it points at what
+// it names, and runs beside the code before its join. Every test runs with
+// and without a pool; `requires_pool: false` runs the task on the spot when
+// there is none, and the answer has to be the same.
+
+import thread.ThreadPool
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func parse(s: string) -> i64 or Bad {
+    if s == "bad" {
+        return Bad(why: "bad input")
+    }
+    return 7
+}
+
+func sum_range(lo: i64, hi: i64) -> i64 {
+    mut total = 0
+    for i in lo..hi {
+        total += i
+    }
+    return total
+}
+
+func fib(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    if n < 12 {
+        return fib(n - 1) + fib(n - 2)
+    }
+    let h = ThreadPool.spawn(requires_pool: false) { fib(n - 1) }
+    let b = fib(n - 2)
+    return h.join()! + b
+}
+
+test "conc.async/B1 a joined task reads the frame and hands back its value" {
+    let v = Vec.from([1, 2, 3, 4])
+    let h = ThreadPool.spawn(requires_pool: false) { sum_range(0, 100) + v[0] }
+    let b = sum_range(100, 200) + v[3]
+    assert h.join()! == 4951
+    assert b == 14954
+    using ThreadPool(workers: 2) {
+        let h2 = ThreadPool.spawn { v.len() }
+        assert h2.join()! == 4
+    }
+}
+
+test "conc.async/B1 a joined task writes through to the frame" {
+    mut p = Point(x: 1, y: 2)
+    mut log: Vec<string> = Vec.new()
+    let h = ThreadPool.spawn(requires_pool: false) { p.x = 10 }
+    p.y = 20
+    log.push("beside")
+    h.join()!
+    assert p.x == 10 && p.y == 20
+    assert log.len() == 1
+    using ThreadPool(workers: 3) {
+        let hx = ThreadPool.spawn { p.x += 1 }
+        let hy = ThreadPool.spawn { p.y += 1 }
+        hx.join()!
+        hy.join()!
+    }
+    assert p.x == 11 && p.y == 21
+}
+
+test "conc.async/S7 try ends the task with the error" {
+    let h1 = ThreadPool.spawn(requires_pool: false) { try parse("ok") }
+    let h2 = ThreadPool.spawn(requires_pool: false) { try parse("bad") }
+    let r1 = h1.join()!
+    let r2 = h2.join()!
+    assert r1 is i64
+    if r2 is Bad as e {
+        assert e.why == "bad input"
+    } else {
+        assert false
+    }
+}
+
+test "conc.async/B6 recursive spawn and join on a small pool" {
+    let alone = fib(20)
+    using ThreadPool(workers: 2) {
+        assert fib(20) == alone
+    }
+    assert alone == 6765
+}
+
+test "conc.async/B1 a task hands back what it built" {
+    let h = ThreadPool.spawn(requires_pool: false) { Vec.from([1, 2, 3]) }
+    let s = "built"
+    let v = h.join()!
+    assert v.len() == 3
+    assert s == "built"
+}
+
+test "conc.async/B5 a panic in a task is its join's error" {
+    let h = ThreadPool.spawn(requires_pool: false) {
+        panic("inside")
+        1
+    }
+    let r = h.join()
+    assert r is JoinError
+}
+
+func both(f: func(), g: func()) {
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    g()
+    h.join()!
+}
+
+func in_turn(f: func(), g: func()) {
+    f()
+    g()
+}
+
+func apply2(r: func(func(), func()), a: func()) {
+    r(a, a)
+}
+
+test "conc.async/B4 a function that runs its arguments at once" {
+    mut a = 0
+    mut b = 0
+    both(|| { a += 1 }, || { b += 2 })
+    assert a == 1 && b == 2
+    using ThreadPool(workers: 2) {
+        both(|| { a += 10 }, || { b += 20 })
+    }
+    assert a == 11 && b == 22
+}
+
+test "conc.async/B4 a function value is checked as what the caller passes" {
+    mut n = 0
+    apply2(in_turn, || { n += 1 })
+    assert n == 2
+}
+
+struct Wrap {
+    v: Vec<i64>
+}
+
+test "conc.async/B1 a task that consumes what it names takes its captures" {
+    let fresh = Vec.from([1, 2, 3])
+    let h = ThreadPool.spawn(requires_pool: false) {
+        let w = Wrap(v: fresh)
+        w.v.len()
+    }
+    assert h.join()! == 3
+}
+

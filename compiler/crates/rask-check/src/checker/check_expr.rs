@@ -2201,7 +2201,26 @@ impl TypeChecker {
 
             // A task block. Its value is the task's result, so the expression
             // is a `Handle` of whatever the block produces (conc.async/H5).
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
+                // `ThreadPool.spawn(requires_pool: false) { … }` (conc.async/S2):
+                // one flag, and only on the pool form.
+                let takes_flag = matches!(target, rask_ast::expr::SpawnTarget::Pool);
+                for (i, a) in args.iter().enumerate() {
+                    let ok_label = a.name.as_deref().is_none_or(|l| l == "requires_pool");
+                    if !takes_flag || !ok_label || i > 0 {
+                        self.errors.push(TypeError::ArgPlacement {
+                            callee: target.spelling().to_string(),
+                            problem: super::errors::ArgProblem::UnknownLabel(
+                                a.name.clone().unwrap_or_else(|| "_".to_string()),
+                            ),
+                            params: Some(if takes_flag { vec!["requires_pool".to_string()] } else { Vec::new() }),
+                            span: a.expr.span,
+                        });
+                        continue;
+                    }
+                    let ty = self.infer_expr(&a.expr);
+                    self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, ty, a.expr.span));
+                }
                 // What the block captures, and whether any of it may not cross
                 // to another task, is the ownership pass's to answer: it knows
                 // each closure's captures (`check_task_crossing`).
@@ -2215,23 +2234,6 @@ impl TypeChecker {
                     Some(base) => Type::Generic { base, args },
                     None => Type::UnresolvedGeneric { name: "Handle".to_string(), args },
                 }
-            }
-
-            // A fork's value is the tuple of its blocks' values (conc.fork/FK1).
-            // Each block is a closure that runs once, so its value is that
-            // closure's result.
-            ExprKind::Fork { sides } => {
-                let elems = sides
-                    .iter()
-                    .map(|side| {
-                        let side_ty = self.infer_expr(side);
-                        match self.ctx.apply(&side_ty) {
-                            Type::Fn { ret, .. } => *ret,
-                            _ => self.ctx.fresh_var(),
-                        }
-                    })
-                    .collect();
-                Type::Tuple(elems)
             }
 
             ExprKind::Cast { expr: inner, ty } => {
@@ -7854,7 +7856,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
     fn in_expr(expr: &Expr) -> bool {
         match &expr.kind {
             // A nested closure's `return` is its own.
-            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Fork { .. } => false,
+            ExprKind::Closure { .. } | ExprKind::Spawn { .. } => false,
             ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
                 in_stmts(body)
             }

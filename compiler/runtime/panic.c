@@ -308,7 +308,7 @@ void rask_access_pop(int64_t handle) {
 }
 
 // Down to the handler's floor: a handler nested inside a frame that holds a
-// lock (a fork block, rask_panic_catch) must leave that lock held, since the
+// lock (a task run in place, rask_panic_catch) must leave that lock held, since the
 // frame is still running and still inside its `with`.
 void rask_access_release_all(void) {
     HeldAccess *floor = panic_ctx.active ? (HeldAccess *)panic_ctx.access_floor : NULL;
@@ -542,7 +542,7 @@ _Noreturn void rask_panic_fmt(const char *fmt, ...) {
     rask_panic(buf);
 }
 
-// ─── Catching a panic in place (conc.fork/FK6) ─────────────
+// ─── Catching a panic in place ─────────────────────────────
 
 // Run `fn(a, b)` under a handler of its own, on this thread. A panic inside
 // unwinds the frames `fn` pushed and releases the access it took, and no
@@ -565,30 +565,6 @@ RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b) 
     }
     panic_ctx = saved;
     return caught;
-}
-
-// Raise a caught panic again, here, as if it started here: the same unwind and
-// the same report a panic from this frame would give.
-_Noreturn void rask_panic_resume(RaskCaughtPanic *caught) {
-    char buf[RASK_PANIC_MSG_MAX];
-    snprintf(buf, sizeof(buf), "%s", caught->message);
-    int located = caught->located;
-    free(caught->message);
-    free(caught);
-
-    rask_print_unlock_all();
-    rask_access_release_all();
-    rask_unwind_for_panic();
-
-    if (panic_ctx.active) {
-        panic_ctx.message = strdup(buf);
-        panic_ctx.located = located;
-        panic_ctx.active = 0;
-        longjmp(panic_ctx.buf, 1);
-    }
-    fprintf(stderr, located ? "panic at %s\n" : "panic: %s\n", buf);
-    print_backtrace();
-    exit(101);
 }
 
 void rask_panic_discard(RaskCaughtPanic *caught) {

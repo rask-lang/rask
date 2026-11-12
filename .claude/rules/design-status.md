@@ -24,7 +24,7 @@ concrete reason.
 | Operators | Resolved on the ordered pair of operand types, against the interfaces in `stdlib/ops.rk` | [operator-resolution.md](../../specs/types/operator-resolution.md) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](../../specs/types/error-types.md) |
 | Panics | Task-kill + unwind, ensures run, locks release without poisoning, opt-in `staged()` | [panics.md](../../specs/control/panics.md) |
-| Concurrency | `spawn { }` task blocks (run once, may consume captures)/join/detach, channels, no function coloring | [concurrency/](../../specs/concurrency/) |
+| Concurrency | `spawn { }` task blocks (run once, may consume captures)/join/detach, channels, no function coloring. A task joined where it was spawned borrows from the frame (fork-join without a new construct) | [concurrency/](../../specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](../../specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](../../specs/memory/unsafe.md) |
 | Rust interop | compile_rust() in build scripts, C ABI, cbindgen | [build.md](../../specs/structure/build.md) |

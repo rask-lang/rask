@@ -1296,13 +1296,12 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
-// A panic caught where it happened, to be raised again later (conc.fork/FK6).
+// A panic caught where it happened: a task run in place keeps it as its result.
 typedef struct RaskCaughtPanic {
     char *message;   // malloc'd
     int   located;   // the message starts with `file:line: `
 } RaskCaughtPanic;
 RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b);
-_Noreturn void   rask_panic_resume(RaskCaughtPanic *caught);
 void             rask_panic_discard(RaskCaughtPanic *caught);
 
 // Task ids (ctrl.panic/F1) — used internally by thread.c/green.c to prefix
@@ -1456,18 +1455,19 @@ void rask_threadpool_shutdown(void);
 
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
-
-// `fork { … } and { … }` (conc.fork). A block is `thunk(closure, out)`.
-// Blocks after the first go through `start`, which queues one on the pool, or
-// only records it when there is no pool; the forking thread runs the first
-// with `inline`, then `join`s the rest in written order. Each returns the
-// first panic so far (NULL if none), and `end` raises it.
-typedef struct RaskForkSide RaskForkSide;
-RaskForkSide    *rask_fork_start(void *thunk, void *closure, void *out);
-RaskCaughtPanic *rask_fork_inline(void *thunk, void *closure, void *out);
-RaskCaughtPanic *rask_fork_join(RaskForkSide *side, RaskCaughtPanic *first);
-void             rask_fork_end(RaskCaughtPanic *first);
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool);
+// A pooled job not yet started; whoever claims it first runs it.
+void      rask_task_pool_queue(RaskTask *t, RaskTaskFn func, void *env);
+int       rask_task_pool_claim(RaskTask *t);
+// Its body runs on a pool worker (conc.async/B6).
+void      rask_task_mark_on_pool(RaskTask *t);
+// Run a task's body on this thread, now, catching its panic as its result.
+void      rask_task_run_inline(RaskTask *t, RaskTaskFn func, void *env);
+// A task block joined in the frame that spawned it (conc.async/S5): its
+// closure points into the frame, and a panic before its join waits for it.
+// `target` is 0 for `spawn`, 1 for `Thread.spawn`, 2 for `ThreadPool.spawn`.
+RaskTask *rask_task_spawn_borrowed(int64_t target, void *closure_ptr, int64_t result_owned,
+                                   int8_t requires_pool);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

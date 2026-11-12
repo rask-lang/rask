@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// mem.racks/RK16–RK21: fork blocks that read one rack and record structural
-// changes in `Staged` buffers, applied after the join in key order, deletes
-// last.
+// mem.racks/RK16–RK21: tasks that borrow their frame, and the code beside
+// them, read one rack and record structural changes in `Staged` buffers,
+// applied after the join in key order, deletes last.
 
 import memory.Rack
 import memory.Link
 import memory.Staged
+import thread.ThreadPool
 
 struct Entity {
     id: u64
@@ -67,25 +68,29 @@ test "mem.racks/RK19 deletes land last; relinks to dying nodes are skipped" {
     assert describe(world) == "4 a:10->- c:5->a e:1->- d:7->c"
 }
 
-test "mem.racks/RK16 blocks share a rack for reading" {
+test "mem.racks/RK16 a task and the code beside it share a rack for reading" {
     mut world: Rack<Entity> = Rack.new()
     for i in 0..200 {
         let hp = (i % 5).to<i64>()! - 1
         world.insert(Entity(id: i.to<u64>()!, name: "n", health: hp, target: none))
     }
-    let (a, b, sum) = fork { decide(world, 0, 100) } and { decide(world, 100, 200) } and { total(world) }
+    let ha = ThreadPool.spawn(requires_pool: false) { decide(world, 0, 100) }
+    let hb = ThreadPool.spawn(requires_pool: false) { decide(world, 100, 200) }
+    let sum = total(world)
+    mut ops = ha.join()!
+    ops.append(hb.join()!)
     assert sum == 200
-    mut ops = a
-    ops.append(b)
     assert ops.len() == 80
     world.apply(ops)
     assert world.len() == 120
 
     using ThreadPool(workers: 3) {
-        let (c, d, s2) = fork { decide(world, 0, 100) } and { decide(world, 100, 200) } and { total(world) }
+        let hc = ThreadPool.spawn { decide(world, 0, 100) }
+        let hd = ThreadPool.spawn { decide(world, 100, 200) }
+        let s2 = total(world)
+        mut more = hc.join()!
+        more.append(hd.join()!)
         assert s2 == 240
-        mut more = c
-        more.append(d)
         assert more.len() == 0
         world.apply(more)
     }

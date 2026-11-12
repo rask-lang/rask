@@ -279,7 +279,7 @@ impl<'a> MirLowerer<'a> {
         carries: bool,
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, false)
+        self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, TaskRole::NotTask)
     }
 
     /// A function value where C wants a function pointer (CB1, CB2): the
@@ -308,7 +308,7 @@ impl<'a> MirLowerer<'a> {
                     )));
                 }
                 self.c_callback = true;
-                self.lower_closure_expecting(params, ret_ty.as_ref(), body, false, &[], Some(expr.id), false)
+                self.lower_closure_expecting(params, ret_ty.as_ref(), body, false, &[], Some(expr.id), TaskRole::NotTask)
             }
             _ => Err(LoweringError::InvalidConstruct(
                 "only a named `extern \"C\"` function or a closure literal can be handed to C as a function pointer".to_string(),
@@ -335,8 +335,9 @@ impl<'a> MirLowerer<'a> {
         carries: bool,
         expected_param_tys: &[MirType],
         closure_id: Option<NodeId>,
-        for_spawn: bool,
+        task: TaskRole,
     ) -> Result<TypedOperand, LoweringError> {
+        let for_spawn = task != TaskRole::NotTask;
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
 
@@ -361,13 +362,20 @@ impl<'a> MirLowerer<'a> {
         // Borrowing is safe here because a borrowing closure is never heap
         // allocated (`heap: carries`, step 5) and so cannot outlive the frame
         // it points into.
-        let by_ref = !carries && !for_spawn;
+        //
+        // A task that borrows its frame (conc.async/S5) points as well, and
+        // its block lives in the frame like any closure that stays: the join
+        // comes before the frame ends, and a panic before the join waits for
+        // it (`rask_task_spawn_borrowed`).
+        let by_ref = (!carries && !for_spawn) || task == TaskRole::Borrowing;
         // The environment slot holds a pointer for a borrow, and the value
         // itself otherwise — but for a carrying closure the value in the slot
         // *is* the variable, so the body has to write back into it rather than
         // into a loaded copy. A task's copy is its own and dies with it, so
         // there is nothing to write back to.
-        let capture_access = if for_spawn {
+        let capture_access = if task == TaskRole::Borrowing {
+            crate::CaptureAccess::Borrowed
+        } else if for_spawn {
             crate::CaptureAccess::Taken
         } else if carries {
             crate::CaptureAccess::Owned
@@ -475,14 +483,15 @@ impl<'a> MirLowerer<'a> {
         for (i, (name, _outer_id, ty, _)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            if capture_access.is_addressed() {
+            let access = capture_access;
+            if access.is_addressed() {
                 addressed_captures.insert(local_id);
             }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id.expect("a C callback captures nothing"),
                 offset: cap.offset,
-                access: capture_access,
+                access,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
@@ -940,6 +949,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         expr: &Expr,
         target: rask_ast::expr::SpawnTarget,
+        args: &[rask_ast::expr::CallArg],
         body: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let rask_ast::expr::ExprKind::Closure { params, ret_ty, body: block } = &body.kind else {
@@ -950,15 +960,17 @@ impl<'a> MirLowerer<'a> {
         // A closure value the block captures carries what it captured out of
         // sight of the checker. One holding a link or a `Local` box would hand
         // it to the task, so each is asked before the task starts (#1356).
-        for local in self.captured_closure_values(block, params) {
+        let borrows = !self.ctx.escaping_closures.contains(&body.id);
+        for local in self.captured_closure_values(block, params).into_iter().filter(|_| !borrows) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("rask_closure_refuse_crossing".to_string()),
                 args: vec![MirOperand::Local(local)],
             }));
         }
+        let role = if borrows { TaskRole::Borrowing } else { TaskRole::Carrying };
         let (task, _) = self.lower_closure_expecting(
-            params, ret_ty.as_ref(), block, true, &[], Some(body.id), true,
+            params, ret_ty.as_ref(), block, !borrows, &[], Some(body.id), role,
         )?;
         let boxes_result = self.spawn_result_boxed;
         let entry = match target {
@@ -966,139 +978,38 @@ impl<'a> MirLowerer<'a> {
             rask_ast::expr::SpawnTarget::Thread => crate::TASK_ENTRIES[1],
             rask_ast::expr::SpawnTarget::Pool => crate::TASK_ENTRIES[2],
         };
+        // `ThreadPool.spawn(requires_pool: false)`: with no pool, the task
+        // runs right here (conc.async/S2). Written or not, the pool takes
+        // the flag.
+        let requires_pool = match args.first() {
+            Some(a) => self.lower_expr(&a.expr)?.0,
+            None => MirOperand::Constant(crate::operand::MirConst::Bool(true)),
+        };
+        let boxes = MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result)));
+        let (func, call_args) = if borrows {
+            // The block points into this frame and lives in it; the task
+            // doesn't own it, and a panic before the join waits for it.
+            let which = match target {
+                rask_ast::expr::SpawnTarget::Green => 0,
+                rask_ast::expr::SpawnTarget::Thread => 1,
+                rask_ast::expr::SpawnTarget::Pool => 2,
+            };
+            let which = MirOperand::Constant(crate::operand::MirConst::Int(which));
+            (FunctionRef::runtime("rask_task_spawn_borrowed".to_string()), vec![which, task, boxes, requires_pool])
+        } else if target == rask_ast::expr::SpawnTarget::Pool {
+            (FunctionRef::internal(entry.to_string()), vec![task, boxes, requires_pool])
+        } else {
+            (FunctionRef::internal(entry.to_string()), vec![task, boxes])
+        };
         let handle_ty = self.lookup_expr_type(expr).unwrap_or(MirType::Ptr);
         let handle = self.builder.alloc_temp(handle_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(handle),
-            func: FunctionRef::internal(entry.to_string()),
-            args: vec![
-                task,
-                MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result))),
-            ],
-        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call { dst: Some(handle), func, args: call_args }));
+        // The handle reaches into the block, and the block into the frame,
+        // until the join: what it points at stays alive while the handle is.
+        if borrows {
+            self.builder.mark_points_into_args(handle);
+        }
         Ok((MirOperand::Local(handle), handle_ty))
-    }
-
-    /// `fork { … } and { … }` (conc.fork).
-    ///
-    /// Each block is lowered as a closure that points at its captures (FK2):
-    /// the frame doesn't return until every block has finished, so the
-    /// pointers stay good. Every block gets a thunk that calls it and stores
-    /// its value at that block's offset in the result tuple, so the runtime
-    /// only ever moves `(thunk, closure, out)` triples and never needs to know
-    /// a result type.
-    ///
-    /// Blocks after the first are handed to the runtime first; then this
-    /// thread runs the first block itself and joins the rest in written order.
-    /// With no pool, "handing over" only records the block and the join runs
-    /// it, so the blocks run in written order (FK5). The first panic in
-    /// written order is raised once all have finished (FK6).
-    pub(super) fn lower_fork(&mut self, expr: &Expr, sides: &[Expr]) -> Result<TypedOperand, LoweringError> {
-        let elems = match self.ctx.lookup_node_type(expr.id) {
-            Some(MirType::Tuple(elems)) if elems.len() == sides.len() => elems,
-            _ => {
-                return Err(LoweringError::InvalidConstruct(
-                    "a fork's type is the tuple of its blocks' values".to_string(),
-                ))
-            }
-        };
-        // Each block's value lands in a local of its own, written through its
-        // address by the thunk. The tuple is built from them after the join
-        // with ordinary stores, so the passes that track what each value owns
-        // see where every one of them went.
-        //
-        // Each starts empty. A block that panics never writes its slot, and
-        // the tuple is built (and armed for the unwind) before the panic is
-        // raised again, so the values the other blocks returned are released
-        // with it and the empty slot releases nothing.
-        let slots: Vec<LocalId> = elems.iter().map(|ty| self.builder.alloc_temp(ty.clone())).collect();
-        for (slot, ty) in slots.iter().zip(&elems) {
-            if ty.passed_by_address() {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: *slot }));
-            } else if !matches!(ty, MirType::F32 | MirType::F64 | MirType::Void) && ty.size() > 0 {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: *slot,
-                    rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(0))),
-                }));
-            }
-        }
-
-        // (thunk address, closure, out pointer) per block.
-        let mut parts: Vec<(LocalId, MirOperand, LocalId)> = Vec::with_capacity(sides.len());
-        for (k, side) in sides.iter().enumerate() {
-            let rask_ast::expr::ExprKind::Closure { params, ret_ty, body: block } = &side.kind else {
-                return Err(LoweringError::InvalidConstruct(
-                    "a fork block is the closure the parser builds".to_string(),
-                ));
-            };
-            // The name `lower_closure_expecting` gives this block's closure,
-            // read before it lowers the body: a fork or closure inside the
-            // block takes numbers of its own.
-            let closure_name = self.next_closure_name();
-            let (closure, _) = self.lower_closure_expecting(
-                params, ret_ty.as_ref(), block, false, &[], Some(side.id), false,
-            )?;
-            let thunk_name = self.synthesize_fork_thunk(&closure_name, &elems[k]);
-            let thunk = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: thunk,
-                rvalue: MirRValue::FuncAddr(thunk_name),
-            }));
-            let out = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: out,
-                rvalue: MirRValue::Ref(slots[k]),
-            }));
-            parts.push((thunk, closure, out));
-        }
-
-        let mut handles = Vec::with_capacity(sides.len() - 1);
-        for (thunk, closure, out) in parts.iter().skip(1) {
-            let h = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(h),
-                func: FunctionRef::runtime("rask_fork_start".to_string()),
-                args: vec![MirOperand::Local(*thunk), closure.clone(), MirOperand::Local(*out)],
-            }));
-            handles.push(h);
-        }
-        let panic = self.builder.alloc_temp(MirType::Ptr);
-        let (thunk, closure, out) = &parts[0];
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(panic),
-            func: FunctionRef::runtime("rask_fork_inline".to_string()),
-            args: vec![MirOperand::Local(*thunk), closure.clone(), MirOperand::Local(*out)],
-        }));
-        for h in handles {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(panic),
-                func: FunctionRef::runtime("rask_fork_join".to_string()),
-                args: vec![MirOperand::Local(h), MirOperand::Local(panic)],
-            }));
-        }
-
-        let tuple_ty = MirType::Tuple(elems.clone());
-        let result = self.builder.alloc_temp(tuple_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result }));
-        let offsets = crate::types::tuple_offsets(&elems);
-        for (k, ty) in elems.iter().enumerate() {
-            if ty.size() == 0 {
-                continue;
-            }
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: result,
-                offset: offsets[k],
-                value: MirOperand::Local(slots[k]),
-                store_size: ty.size(),
-                field: None,
-            }));
-        }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::runtime("rask_fork_end".to_string()),
-            args: vec![MirOperand::Local(panic)],
-        }));
-        Ok((MirOperand::Local(result), tuple_ty))
     }
 
     /// The name the next closure `lower_closure_expecting` builds will get.
@@ -1106,47 +1017,6 @@ impl<'a> MirLowerer<'a> {
         format!("{}__closure_{}", self.parent_name, self.closure_counter)
     }
 
-    /// `thunk(closure, out)`: call the block's closure and store its value at
-    /// `out`. The one shape the runtime calls a fork block through.
-    fn synthesize_fork_thunk(&mut self, closure_name: &str, ret: &MirType) -> String {
-        let thunk_name = format!("{closure_name}__fork");
-        let mut b = BlockBuilder::new(thunk_name.clone(), MirType::Void);
-        let closure = b.add_param("__closure".to_string(), MirType::Ptr);
-        let out = b.add_param("__out".to_string(), MirType::Ptr);
-        if *ret == MirType::Void || ret.size() == 0 {
-            b.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
-                dst: None,
-                closure,
-                args: Vec::new(),
-                taken: Vec::new(),
-            }));
-        } else {
-            let value = b.alloc_local("__value".to_string(), ret.clone());
-            b.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
-                dst: Some(value),
-                closure,
-                args: Vec::new(),
-                taken: Vec::new(),
-            }));
-            b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: out,
-                offset: 0,
-                value: MirOperand::Local(value),
-                store_size: ret.size(),
-                field: None,
-            }));
-        }
-        b.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
-        self.func_sigs.insert(thunk_name.clone(), super::FuncSig {
-            ret_ty: MirType::Void,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
-        self.synthesized_functions.push(b.finish());
-        thunk_name
-    }
 
     /// The locals a task block captures that hold a function value, by the
     /// checker's type of the name where the block uses it.
@@ -1250,4 +1120,15 @@ impl<'a> MirLowerer<'a> {
             _ => false,
         }
     }
+}
+
+/// Whether a closure being lowered is a task's body, and if so how it holds
+/// what it names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskRole {
+    NotTask,
+    /// Takes copies; the task may outlive the frame (conc.async/S5).
+    Carrying,
+    /// Points into a frame that joins it before it ends.
+    Borrowing,
 }

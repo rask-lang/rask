@@ -2866,16 +2866,14 @@ impl Resolver {
                 self.resolve_expr(body);
                 self.scopes.pop();
             }
-            ExprKind::Spawn { receiver, body, .. } => {
+            ExprKind::Spawn { receiver, args, body, .. } => {
                 if let Some(r) = receiver {
                     self.resolve_expr(r);
                 }
-                self.resolve_expr(body);
-            }
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.resolve_expr(side);
+                for a in args {
+                    self.resolve_expr(&a.expr);
                 }
+                self.resolve_expr(body);
             }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);

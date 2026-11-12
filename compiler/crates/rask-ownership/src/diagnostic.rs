@@ -829,27 +829,27 @@ impl ToDiagnostic for crate::OwnershipError {
                          reads; a counter both need can be an `Atomic`",
                     )
                     .with_why(
-                        "the function runs these in different fork blocks, which may be on \
-                         different threads. A closure that writes what it captured, run \
-                         beside something that touches the same thing (itself included), \
-                         is a data race [conc.fork/FK8]",
+                        "the function runs one of these in a task and the other beside it, \
+                         which may be on different threads. A closure that writes what it \
+                         captured, run beside something that touches the same thing (itself \
+                         included), is a data race [conc.async/B4]",
                     )
             }
             SharedGraphWrite { what } => {
-                Diagnostic::error("a fork block that shares a rack with another block changes it".to_string())
+                Diagnostic::error("a task that shares a rack with the code beside it changes it".to_string())
                     .with_code("E0962")
                     .with_primary(self.span, what.clone())
                     .with_fix(
                         "record the change instead and make it after the join: \
                          `let ops = rack.staged()`, `ops.delete(key, n)` or \
-                         `ops.relink(key, n, to, f)` in the block, return `ops`, then \
+                         `ops.relink(key, n, to, f)` in the task, return `ops`, then \
                          `rack.apply(ops)`",
                     )
                     .with_why(
-                        "several blocks read this rack at the same time. Writing a node \
-                         changes what another block is reading, and storing a link \
-                         anywhere records it with the rack, which every other block's \
-                         stores write too [mem.racks/RK16]",
+                        "the task and the code before its join read this rack at the same \
+                         time. Writing a node changes what the other side is reading, and \
+                         storing a link anywhere records it with the rack, which the other \
+                         side's stores write too [mem.racks/RK16]",
                     )
             }
             StagedFnHoldsLink => {
@@ -866,52 +866,53 @@ impl ToDiagnostic for crate::OwnershipError {
                          function captured is one nothing checks [mem.racks/RK20]",
                     )
             }
-            ForkConflict { name, other_writes, other_span } => {
+            SideConflict { name, other_writes, other_span } => {
                 let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
-                Diagnostic::error(format!("two fork blocks touch `{}`, and one of them writes it", name))
+                Diagnostic::error(format!("a task and the code before its join both touch `{}`, and one writes it", name))
                     .with_code("E0960")
                     .with_primary(self.span, "written here")
                     .with_secondary(*other_span, other)
                     .with_fix(
-                        "give each block its own variable and combine the results after the \
-                         fork: `let (a, b) = fork { … } and { … }`. A counter both blocks \
-                         bump can be an `Atomic` instead",
+                        "give the task its own variable and combine the results after the \
+                         join: `let h = ThreadPool.spawn { left(v) }`, `let b = right(v)`, \
+                         `h.join()! + b`. A counter both sides bump can be an `Atomic` instead",
                     )
                     .with_why(
-                        "the blocks may run at the same time, so a write in one and any use \
-                         in another is a data race. Reading the same thing from every block \
-                         is fine, and so are separate fields of one value [conc.fork/FK3]",
+                        "the task may run at the same time as the code before its join, so a \
+                         write on one side and any use on the other is a data race. Reading \
+                         the same thing on both is fine, and so are separate fields of one \
+                         value [conc.async/B2]",
                     )
             }
-            ForkTaskBound { name, other, other_span, function_value: true } => {
-                Diagnostic::error("two fork blocks call function values that may be the same closure".to_string())
+            SideTaskBound { name, other, other_span, function_value: true } => {
+                Diagnostic::error("a task and the code beside it call function values that may be the same closure".to_string())
                     .with_code("E0961")
-                    .with_primary(self.span, format!("`{}` is used in this block", name))
-                    .with_secondary(*other_span, format!("and `{}` in this one", other))
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
                     .with_fix(
-                        "call them from one block, or take them as parameters, so each \
-                         call of this function is checked for what it passes",
+                        "call them on one side, or take them as parameters, so each call \
+                         of this function is checked for what it passes",
                     )
                     .with_why(
                         "a function value from a field, a container or a call may be a copy \
                          of another, and nothing here says whether it writes what it \
-                         captured [conc.fork/FK7]",
+                         captured [conc.async/B3]",
                     )
             }
-            ForkTaskBound { name, other, other_span, .. } => {
-                Diagnostic::error("two fork blocks name a value that has to stay on one thread".to_string())
+            SideTaskBound { name, other, other_span, .. } => {
+                Diagnostic::error("a task and the code beside it both name a value that has to stay on one thread".to_string())
                     .with_code("E0961")
-                    .with_primary(self.span, format!("`{}` is used in this block", name))
-                    .with_secondary(*other_span, format!("and `{}` in this one", other))
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
                     .with_fix(
-                        "use the `Local` box, or the function value, in one block only; a \
-                         box both blocks need can be `Shared.new(…)`, which locks",
+                        "use the `Local` box, or the function value, on one side only; a \
+                         box both sides need can be `Shared.new(…)`, which locks",
                     )
                     .with_why(
                         "a `Local` box takes no lock, and a function value the checker \
                          can't see into may touch the same graph or box the other block \
-                         uses. Inside one block that's one thread at a time; across two \
-                         it's a race [conc.fork/FK7]",
+                         uses. On one side that's one thread at a time; across both it's a \
+                         race [conc.async/B3]",
                     )
             }
             LinkSent { name, ty, bare_link } => {

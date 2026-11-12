@@ -180,6 +180,37 @@ pub(crate) fn decl_keys(decls: &[Decl]) -> Vec<String> {
     keys
 }
 
+/// The `h.join()` calls that join a pooled task borrowing its frame
+/// (conc.async/B1). The join runs the task itself if no worker has started it
+/// (B6), so what the join does is what the task does, and the task's body is
+/// already counted where it is spawned. A green task's or a thread's join
+/// still waits.
+pub(crate) fn borrowing_joins(decls: &[Decl]) -> std::collections::HashSet<rask_ast::NodeId> {
+    use rask_ast::decl::DeclKind;
+    let mut out = std::collections::HashSet::new();
+    let mut add = |body: &[rask_ast::stmt::Stmt]| {
+        out.extend(
+            rask_ast::tasks::all_windows(body)
+                .iter()
+                .filter(|w| matches!(w.spawn.kind, rask_ast::expr::ExprKind::Spawn { target: rask_ast::expr::SpawnTarget::Pool, .. }))
+                .map(|w| w.join_call.id),
+        );
+    };
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => add(&f.body),
+            DeclKind::Struct(s) => s.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Enum(e) => e.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Impl(i) => i.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Interface(t) => t.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Test(t) => add(&t.body),
+            DeclKind::Benchmark(b) => add(&b.body),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The effect-map key for a method declared in `extend Target`.
 pub(crate) fn method_key(target: &TypeExpr, method: &str) -> String {
     let ty = target.name().unwrap_or_else(|| target.to_string());

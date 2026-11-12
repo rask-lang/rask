@@ -982,6 +982,34 @@ impl Interpreter {
         Ok((child, body, wraps_ok))
     }
 
+    /// Run a task's body on this thread, now, and hand back a handle whose
+    /// join gives what it ended with: a task that borrows its frame, or a
+    /// `requires_pool: false` spawn with no pool.
+    pub(crate) fn run_task_in_place(&mut self, closure: Value) -> Result<Value, RuntimeError> {
+        let Value::Closure { body, captured_env, generics, wraps_ok, .. } = closure else {
+            return Err(RuntimeError::TypeError(format!(
+                "a task block evaluated to {}",
+                closure.type_name()
+            )));
+        };
+        let mut named = std::collections::HashSet::new();
+        rask_ast::visit::walk_expr(&body, &mut |e| {
+            if let rask_ast::expr::ExprKind::Ident(n) = &e.kind {
+                named.insert(n.clone());
+            }
+        });
+        let child = self.spawn_child(captured_env, &generics, &named);
+        let ended = run_task_body(child, body, wraps_ok);
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let join_handle = crate::spawn_interp_thread(move || ended)?;
+        Ok(self.hand_out_handle(join_handle, cancel))
+    }
+
+    /// Inside a `using ThreadPool` block.
+    pub(crate) fn in_thread_pool(&self) -> bool {
+        matches!(self.env.get("__thread_pool"), Some(Value::ThreadPool(_)))
+    }
+
     /// Start an OS thread (`Thread.spawn { … }`).
     pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         let (child, body, wraps_ok) = self.task_from_closure("Thread.spawn", closure, block)?;

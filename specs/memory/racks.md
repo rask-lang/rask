@@ -183,20 +183,21 @@ drop a dying node's own outgoing edges and both drop the records of a container
 that gets replaced wholesale. Neither used to, in different places, and the
 counters are how that was found (rask-lang/rask#983).
 
-## Changing a graph from parallel blocks
+## Changing a graph from parallel tasks
 
-Following an edge and reading a node's fields write nothing, so several
-`fork` blocks may read one rack at the same time. What they can't do is change
-its structure there: an insert, a delete or a link write touches nodes other
-blocks are reading. So the blocks decide, a `Staged<T>` buffer records the
-decision, and the rack applies it after the join, on one thread.
+Following an edge and reading a node's fields write nothing, so a task that
+borrows its frame (`conc.async/B1`) and the code beside it may read one rack
+at the same time. What they can't do is change its structure there: an
+insert, a delete or a link write touches nodes the other side is reading. So
+each side decides, a `Staged<T>` buffer records the decision, and the rack
+applies it after the join, on one thread.
 
 <!-- test: skip -->
 ```rask
 func tick(mutate world: Rack<Entity>) {
-    let (a, b) = fork { decide(world, 0, 1000) } and { decide(world, 1000, 2000) }
-    mut ops = a
-    ops.append(b)
+    let h = ThreadPool.spawn(requires_pool: false) { decide(world, 0, 1000) }
+    mut ops = decide(world, 1000, 2000)
+    ops.append(h.join()!)
     world.apply(ops)
 }
 
@@ -213,15 +214,15 @@ func decide(world: Rack<Entity>, lo: u64, hi: u64) -> Staged<Entity> {
 
 | Rule | Description |
 |------|-------------|
-| **RK16: Blocks may share a graph for reading** | Several blocks of a fork may name one rack, its links and values holding them (relaxing `conc.fork/FK7`), as long as none of them writes through one and none stores a link anywhere except a `Staged<T>` buffer (E0962). A write is a node field, an insert, a delete, or a `mutate` use of a rack or a link. A store is putting a link in a field, a `Vec`, a `Map` or a struct held in a local, in the block or in anything it calls, or handing one back as the block's value. `for n in rack.nodes()` is a read. A `Local` box still goes in one block |
-| **RK17: A buffer records, the rack doesn't change** | `rack.staged()` makes an empty `Staged<T>` for that rack. `ops.delete(key, n)`, `ops.insert(key, node)` and `ops.relink(key, n, to, f)` record a change and do nothing else. Until it applies, a node queued for deletion is an ordinary node: every block reads it as before |
-| **RK18: Apply runs in key order** | `rack.apply(ops)` sorts the buffer by `key` (a `u64` the caller picks, such as an entity id) and runs it in that order. Equal keys keep the order they were recorded in, and `ops.append(other)` puts `other`'s after. So the result depends on the keys, not on how the work was split across blocks |
+| **RK16: A task and its frame may share a graph for reading** | A borrowing task and the code before its join may both name one rack, its links and values holding them (relaxing `conc.async/B3`), as long as neither writes through one and neither stores a link anywhere except a `Staged<T>` buffer (E0962). A write is a node field, an insert, a delete, or a `mutate` use of a rack or a link. A store is putting a link in a field, a `Vec`, a `Map` or a struct held in a local, in the code or in anything it calls, or handing one back as the task's value. `for n in rack.nodes()` is a read. A `Local` box still goes on one side |
+| **RK17: A buffer records, the rack doesn't change** | `rack.staged()` makes an empty `Staged<T>` for that rack. `ops.delete(key, n)`, `ops.insert(key, node)` and `ops.relink(key, n, to, f)` record a change and do nothing else. Until it applies, a node queued for deletion is an ordinary node: both sides read it as before |
+| **RK18: Apply runs in key order** | `rack.apply(ops)` sorts the buffer by `key` (a `u64` the caller picks, such as an entity id) and runs it in that order. Equal keys keep the order they were recorded in, and `ops.append(other)` puts `other`'s after. So the result depends on the keys, not on how the work was split across tasks |
 | **RK19: Deletes land last** | Inserts and relinks run first, in key order; then every queued delete runs, in key order. Deleting a node twice is deleting it once. A relink whose node or target is queued for deletion is skipped. An inserted node that links to a node being deleted ends with that link `none`, by the ordinary RK3 fixup. No insert in an apply reuses a slot the same apply frees |
 | **RK20: A relink brings its links as arguments** | `ops.relink(key, n, to, f)` calls `f(mutate node, to)` at apply. `f` may not capture a link or a `Local` box (E0963): `n` and `to` are the only links it sees, and both are checked first |
 | **RK21: A buffer belongs to its rack as it was** | Applying a buffer to a rack other than the one that made it, or after that rack has deleted anything since, panics. The buffer's links were taken from the rack as it stood, and a delete since may have freed what they name |
 
 The buffer's links aren't edges: no record is kept for them, so nothing nulls
-them. That is what lets blocks record changes while other blocks read, and
+them. That is what lets one side record changes while the other reads, and
 RK21 is what keeps it sound.
 
 ### Why deletes land last
@@ -299,15 +300,16 @@ WHY: a link is the address of its node, so `<` answers from wherever the
 ```
 
 ```
-ERROR [mem.racks/RK16]: a fork block that shares a rack with another block changes it
+ERROR [mem.racks/RK16]: a task that shares a rack with the code beside it changes it
    |
- 3 |  fork { e.health = 0 } and { total(world) }
-   |         ^^^^^^^^ this writes through a link or a rack
+ 3 |  let h = ThreadPool.spawn { e.health = 0 }
+   |                             ^^^^^^^^ this writes through a link or a rack
+ 4 |  let n = total(world)
    |
 FIX: record the change and make it after the join: `ops.delete(key, e)` in
-     the block, then `world.apply(ops)`
-WHY: several blocks read this rack at the same time, so a write in one
-     changes what another is reading.
+     the task, then `world.apply(ops)`
+WHY: both sides read this rack at the same time, so a write on one changes
+     what the other is reading.
 ```
 
 ```

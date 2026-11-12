@@ -29,6 +29,6 @@ func main() {
         let f = apply(hold, Vec<Link<Node>>.new())
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }

@@ -12,6 +12,7 @@ mod field_reuse;
 mod replaces;
 mod link_stores;
 mod parallel_calls;
+mod borrowed_tasks;
 mod diagnostic;
 mod resize;
 mod pointers;
@@ -62,6 +63,11 @@ pub struct OwnershipResult {
     /// lent parameters of that frame. The environment holds the caller's
     /// value without owning it, so lowering marks those slots never to free.
     pub lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// conc.async/B1: tasks joined where they were spawned whose block turned
+    /// out to consume something it names, by `Spawn` node. Such a task takes
+    /// its captures the way any task does; `check_ownership` runs again with
+    /// these left out of the borrowing ones.
+    pub consuming_tasks: HashSet<rask_ast::NodeId>,
     /// The source expressions of `for` loops over links whose body can't
     /// delete anything, so lowering walks the list without recording it with
     /// its rack or keeping a cursor (mem.racks/RK16).
@@ -114,8 +120,9 @@ struct ForMutateInfo {
 }
 
 /// Ownership and borrow checker.
-/// One read or write a fork block makes of a place it doesn't own.
-struct ForkAccess {
+/// One read or write one side of a parallel pair makes of a place it
+/// doesn't own.
+struct SideAccess {
     root: String,
     path: Vec<String>,
     write: bool,
@@ -360,9 +367,9 @@ pub struct OwnershipChecker<'a> {
     /// closure that arrives through a parameter or a call has no body to read.
     closure_literals: HashMap<String, Expr>,
     /// Names bound to a declared function (`let g = add_one`). A function
-    /// captures nothing, so a fork may call one from every block.
+    /// captures nothing, so both sides of a borrowing task may call one.
     named_fn_values: HashMap<String, replaces::Key>,
-    /// How many times each name in this body is bound or assigned. FK8 checks
+    /// How many times each name in this body is bound or assigned. B4 checks
     /// a body's calls after walking it, when these maps hold each name's last
     /// binding, so a name bound more than once is followed by none of them.
     fn_name_bindings: HashMap<String, u32>,
@@ -370,6 +377,13 @@ pub struct OwnershipChecker<'a> {
     /// A task block runs once, so unlike a closure it may consume what it
     /// captures (conc.async/S6).
     task_bodies: HashSet<rask_ast::NodeId>,
+    /// Task blocks that borrow their frame: joined in the block that spawned
+    /// them, before anything else touches the handle (`borrowed_tasks`).
+    borrowing_spawns: HashSet<rask_ast::NodeId>,
+    /// The closure nodes of those tasks' blocks, and the spawn of each.
+    borrowing_bodies: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
+    /// Names in the body being checked that hold a borrowing task's handle.
+    borrowed_handles: HashSet<String>,
     /// CM1: closure literals that outlive the frame that built them, so they
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
@@ -381,7 +395,7 @@ pub struct OwnershipChecker<'a> {
     replaces: replaces::Replaces,
     /// Whether each function may store a link (mem.racks/RK16).
     link_stores: link_stores::LinkStores,
-    /// Parameter pairs each function may use at the same time (conc.fork/FK8).
+    /// Parameter pairs each function may use at the same time (conc.async/B4).
     parallel_uses: parallel_calls::ParallelUses,
     /// The parameters of the function being checked, in order, and where
     /// each is declared: a name refers to one only when it resolves there.
@@ -400,6 +414,11 @@ pub struct OwnershipChecker<'a> {
     task_bound_closures: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::lent_captures`.
     lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// See `OwnershipResult::consuming_tasks`.
+    consuming_tasks: HashSet<rask_ast::NodeId>,
+    /// Spawns made to take their captures because an earlier run found them
+    /// consuming (`consuming_tasks`).
+    carrying_tasks: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::generic_closure_captures`.
     generic_closure_captures: HashMap<rask_ast::NodeId, Vec<(String, Type)>>,
     /// The type parameters the body being walked can name: its own and its
@@ -652,12 +671,17 @@ impl<'a> OwnershipChecker<'a> {
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
             task_bodies: HashSet::new(),
+            borrowing_spawns: HashSet::new(),
+            borrowing_bodies: HashMap::new(),
+            borrowed_handles: HashSet::new(),
             closure_literals: HashMap::new(),
             named_fn_values: HashMap::new(),
             fn_name_bindings: HashMap::new(),
             escaping_closures: HashSet::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
+            consuming_tasks: HashSet::new(),
+            carrying_tasks: HashSet::new(),
             generic_closure_captures: HashMap::new(),
             fn_resizes: HashMap::new(),
             replaces: HashMap::new(),
@@ -933,6 +957,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bound_closures: self.task_bound_closures,
             generic_closure_captures: self.generic_closure_captures,
             lent_captures: self.lent_captures,
+            consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
         }
     }
@@ -1556,6 +1581,7 @@ impl<'a> OwnershipChecker<'a> {
         // Keyed by name too, so an `f` in one body would otherwise answer for
         // the next body's `f`.
         self.closure_literals.clear();
+        self.borrowed_handles.clear();
         self.named_fn_values.clear();
         self.fn_name_bindings.clear();
         self.mutable_captures.clear();
@@ -1779,6 +1805,22 @@ impl<'a> OwnershipChecker<'a> {
         self.check_block_body(stmts);
         self.shadowed_holds = shadowed_on_entry;
         self.parts = parts_on_entry;
+        if self.instance.is_none() {
+            self.check_borrowing_tasks(stmts);
+        }
+    }
+
+    /// conc.async/S5: a task that borrows this frame runs beside the code up
+    /// to its join, so the two are held to what two blocks that may run at
+    /// once are: no place one writes is touched by the other.
+    fn check_borrowing_tasks(&mut self, stmts: &[Stmt]) {
+        for w in borrowed_tasks::windows(stmts) {
+            if !self.borrowing_spawns.contains(&w.spawn.id) {
+                continue;
+            }
+            let sides = [w.body.clone(), borrowed_tasks::beside(&w, parallel_calls::SYNTHETIC)];
+            self.check_parallel_sides(&sides);
+        }
     }
 
     fn check_block_body(&mut self, stmts: &[Stmt]) {
@@ -2679,6 +2721,9 @@ impl<'a> OwnershipChecker<'a> {
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
                 }
+                if self.borrowing_spawns.contains(&init.id) {
+                    self.borrowed_handles.insert(name.clone());
+                }
                 self.note_named_fn_value(name, init);
                 // Track resource types. The annotation and the initializer are
                 // both asked: an annotation the name table can't place — a
@@ -2762,6 +2807,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.inherit_frame_limit(std::slice::from_ref(name), init, self.current_block);
                 if matches!(init.kind, ExprKind::Closure { .. }) {
                     self.closure_literals.insert(name.clone(), init.clone());
+                }
+                if self.borrowing_spawns.contains(&init.id) {
+                    self.borrowed_handles.insert(name.clone());
                 }
                 self.note_named_fn_value(name, init);
                 // Track resource types. The annotation and the initializer are
@@ -3800,6 +3848,9 @@ impl<'a> OwnershipChecker<'a> {
             // goes through the closure rules as a closure handed to a `take`
             // would — carrying its captures (CM1) — except that it runs once
             // and so may consume them (`task_bodies`).
+            ExprKind::Spawn { body, .. } if self.borrowing_spawns.contains(&expr.id) => {
+                self.check_expr(body);
+            }
             ExprKind::Spawn { body, .. } => {
                 self.check_expr(body);
                 self.check_spawn_lost_writes(body);
@@ -3819,18 +3870,6 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_spawn_lost_writes(&closure);
                 }
             }
-            // A fork's blocks are closures that stay in this frame, so each
-            // points at what it names (conc.fork/FK2). What's new is that they
-            // may run at the same time, so the borrows have to hold *between*
-            // them too.
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.check_expr(side);
-                }
-                if self.instance.is_none() {
-                    self.check_fork_sides(sides);
-                }
-            }
             ExprKind::Closure { params, body, .. } => {
                 // CM1: a closure that outlives its frame carries its captures;
                 // one that doesn't points at them. Worked out in
@@ -3839,6 +3878,10 @@ impl<'a> OwnershipChecker<'a> {
                 // told.
                 let carries = self.closure_carries_captures(expr.id);
                 let is_task = self.task_bodies.contains(&expr.id);
+                // A task block that borrows its frame (conc.async/B1) points at
+                // what it names, and runs once: what it consumes is moved in at
+                // the spawn, the rest stays the frame's.
+                let borrows_frame = self.borrowing_bodies.contains_key(&expr.id);
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -4094,19 +4137,27 @@ impl<'a> OwnershipChecker<'a> {
                 // A task block owns what it carried in: it runs once, so giving
                 // a capture away there is giving it away once.
                 let saved_borrowed_captures = std::mem::take(&mut self.borrowed_captures);
+                // A borrowing task's resource captures are tracked like a
+                // task's, so a consume or an `ensure` in it is seen; one it
+                // leaves alone goes back to the frame, which still owes it, and
+                // needs nothing committed inside the task.
+                let saved_borrowed_handles = self.borrowed_handles.clone();
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    if is_task {
+                    if is_task || borrows_frame {
                         let ty = self.binding_types.get(name).cloned();
                         self.register_resource_binding(name, ty.as_ref());
                         self.resource_acquired_at.insert(name.clone(), expr.span);
+                        if borrows_frame {
+                            self.borrowed_handles.insert(name.clone());
+                        }
                     } else {
                         self.borrowed_captures.insert(name.clone(), expr.span);
                     }
                 }
                 for name in &captures {
                     if !resource_captures.contains(name) {
-                        if !is_task && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
+                        if !is_task && !borrows_frame && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
                             self.borrowed_captures.insert(name.clone(), expr.span);
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
@@ -4146,10 +4197,43 @@ impl<'a> OwnershipChecker<'a> {
                     self.mutate_params = in_scope_mutate;
                 }
 
+                if borrows_frame {
+                    for name in &resource_captures {
+                        let used_up = self.ensure_registered.contains(name)
+                            || matches!(
+                                self.bindings.get(name),
+                                Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. })
+                            );
+                        if !used_up {
+                            self.resource_bindings.remove(name);
+                        }
+                    }
+                }
                 // Check resource consumption at closure exit
-                self.check_resource_consumption_in_closure(expr.span, is_task);
+                self.check_resource_consumption_in_closure(expr.span, is_task || borrows_frame);
+
+                // What a borrowing task gave away, on any path through it.
+                // Handing one back as the task's value moves it too.
+                let taken: Vec<String> = if borrows_frame {
+                    let handed_back = self.handed_back_captures(body, &captures);
+                    captures
+                        .iter()
+                        .filter(|n| {
+                            handed_back.contains(*n)
+                                || self.ensure_registered.contains(*n)
+                                || matches!(
+                                    self.bindings.get(*n),
+                                    Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. } | BindingState::Discarded { .. })
+                                )
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
                 // Restore outer scope
+                self.borrowed_handles = saved_borrowed_handles;
                 self.bindings = saved_bindings;
                 self.borrows = saved_borrows;
                 self.resource_bindings = saved_resources;
@@ -4165,6 +4249,13 @@ impl<'a> OwnershipChecker<'a> {
                 if carries {
                     for name in &resource_captures {
                         self.resource_bindings.remove(name);
+                    }
+                }
+                // A borrowing task that gave something it names away has to
+                // take its captures instead; the run that follows treats it so.
+                if !taken.is_empty() {
+                    if let Some(spawn) = self.borrowing_bodies.get(&expr.id) {
+                        self.consuming_tasks.insert(*spawn);
                     }
                 }
             }
@@ -6697,12 +6788,52 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// The captures a block hands back whole as its value: the tail
+    /// expression or a `return`, a captured name or a field path under one
+    /// that doesn't copy. The value leaves with the task's result.
+    fn handed_back_captures(&self, body: &Expr, captures: &[String]) -> HashSet<String> {
+        let mut out = HashSet::new();
+        let mut note = |v: &Expr| {
+            if matches!(v.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                && self.node_ty(&v.id).is_some_and(|t| !self.is_copy(t))
+            {
+                if let Some((root, _)) = Self::side_place(v) {
+                    if captures.contains(&root) {
+                        out.insert(root);
+                    }
+                }
+            }
+        };
+        let ExprKind::Block(stmts) = &body.kind else {
+            note(body);
+            return out;
+        };
+        if let Some(Stmt { kind: StmtKind::Expr(v), .. }) = stmts.last() {
+            note(v);
+        }
+        rask_ast::visit::walk_expr(body, &mut |e| {
+            for st in Self::own_stmts(e) {
+                if let StmtKind::Return(Some(v)) = &st.kind {
+                    note(v);
+                }
+            }
+        });
+        out
+    }
+
     fn escapes_in_body(&mut self, body: &[Stmt]) {
         let mut named: HashMap<String, Vec<rask_ast::NodeId>> = HashMap::new();
         self.escapes_in_stmts(body, &mut named);
     }
 
     fn escapes_in_stmts(&mut self, body: &[Stmt], named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
+        for w in borrowed_tasks::windows(body) {
+            if self.carrying_tasks.contains(&w.spawn.id) {
+                continue;
+            }
+            self.borrowing_spawns.insert(w.spawn.id);
+            self.borrowing_bodies.insert(w.body.id, w.spawn.id);
+        }
         for stmt in body {
             self.escapes_in_stmt(stmt, named);
         }
@@ -6819,6 +6950,13 @@ impl<'a> OwnershipChecker<'a> {
                     self.escapes_in_stmts(body, named);
                     false
                 }
+                // A task joined in this block before anything else touches its
+                // handle can't outlive the frame, so it points at what it names
+                // like a closure that stays (conc.async/S5).
+                ExprKind::Spawn { body, .. } if self.borrowing_spawns.contains(&e.id) => {
+                    self.escapes_in_expr(body, named);
+                    false
+                }
                 // A task block's body is kept by the task, so it outlives this
                 // frame and carries what it captures.
                 ExprKind::Spawn { body, .. } => {
@@ -6850,6 +6988,16 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     let mut inner = HashMap::new();
                     self.escapes_in_expr(body, &mut inner);
+                    // The body's value leaves it the way a `return` does: a
+                    // closure that ends `{ let f = || …; f }` hands `f` out.
+                    match &body.kind {
+                        ExprKind::Block(stmts) => {
+                            if let Some(Stmt { kind: StmtKind::Expr(v), .. }) = stmts.last() {
+                                self.mark_escaping(v, &mut inner);
+                            }
+                        }
+                        _ => self.mark_escaping(body, &mut inner),
+                    }
                     false
                 }
                 _ => true,
@@ -7416,15 +7564,15 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Block(stmts) => {
                 self.collect_free_vars_body_inner(stmts, locals, out, projections);
             }
+            // A task's block names what it names, wherever it runs.
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args { self.collect_free_vars_inner(&a.expr, locals, out, projections); }
+                self.collect_free_vars_inner(body, locals, out, projections);
+            }
             ExprKind::Closure { params, body, .. } => {
                 let mut inner_locals = locals.clone();
                 for p in params { inner_locals.insert(p.name.clone()); }
                 self.collect_free_vars_inner(body, &inner_locals, out, projections);
-            }
-            ExprKind::Fork { sides } => {
-                for side in sides {
-                    self.collect_free_vars_inner(side, locals, out, projections);
-                }
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.collect_free_vars_inner(scrutinee, locals, out, projections);
@@ -7607,13 +7755,15 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    // ---- conc.fork: blocks that may run at the same time ----
+    // ---- conc.async/B2–B4: code that may run at the same time ----
 
-    /// FK3 and FK7 across a fork's blocks.
-    fn check_fork_sides(&mut self, sides: &[Expr]) {
-        let accesses: Vec<Vec<ForkAccess>> = sides.iter().map(|s| self.fork_side_accesses(s)).collect();
+    /// B2 and B3 across pieces of code that may run at the same time: a
+    /// borrowing task and the code before its join, or two arguments a
+    /// callee may run at once.
+    fn check_parallel_sides(&mut self, sides: &[Expr]) {
+        let accesses: Vec<Vec<SideAccess>> = sides.iter().map(|s| self.side_accesses(s)).collect();
 
-        // FK3: one block's write against anything another block does to an
+        // B2: one block's write against anything another block does to an
         // overlapping place.
         let mut reported: HashSet<String> = HashSet::new();
         for i in 0..accesses.len() {
@@ -7635,7 +7785,7 @@ impl<'a> OwnershipChecker<'a> {
                     if let Some(other) = hit {
                         reported.insert(w.root.clone());
                         self.errors.push(OwnershipError {
-                            kind: OwnershipErrorKind::ForkConflict {
+                            kind: OwnershipErrorKind::SideConflict {
                                 name: Self::path_text(&w.root, &w.path),
                                 other_writes: other.write,
                                 other_span: other.span,
@@ -7647,7 +7797,7 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
 
-        // FK7: whatever must stay on one thread, in one block only. A rack
+        // B3: whatever must stay on one thread, in one block only. A rack
         // and its links are the exception when every block naming one only
         // reads it (mem.racks/RK16): those blocks are checked as readers.
         let mut first_exclusive: Option<(String, Span, bool)> = None;
@@ -7663,7 +7813,7 @@ impl<'a> OwnershipChecker<'a> {
             for name in &captures {
                 let Some(at) = Self::first_use(body, name) else { continue };
                 let Some(ty) = self.node_ty(&at.id) else { continue };
-                match self.program.types.fork_bound(ty) {
+                match self.program.types.side_bound(ty) {
                     Some(rask_check::TaskBound::LocalBox) if exclusive.is_none() => {
                         exclusive = Some((name.clone(), at.span, false));
                     }
@@ -7705,7 +7855,7 @@ impl<'a> OwnershipChecker<'a> {
             };
             if let Some((other, other_span, other_fn)) = clash {
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ForkTaskBound {
+                    kind: OwnershipErrorKind::SideTaskBound {
                         name,
                         other,
                         other_span,
@@ -7747,7 +7897,7 @@ impl<'a> OwnershipChecker<'a> {
     fn fn_value_in_view(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Closure { .. } | ExprKind::GenericName { .. } => true,
-            // A parameter is checked where the function is called (FK8).
+            // A parameter is checked where the function is called (B4).
             ExprKind::Ident(name) => {
                 self.fn_key(e).is_some()
                     || self.closure_literals.contains_key(name)
@@ -7783,25 +7933,25 @@ impl<'a> OwnershipChecker<'a> {
         found
     }
 
-    /// Every place a fork block reads or writes that it doesn't declare
+    /// Every place one side reads or writes that it doesn't declare
     /// itself, by root name and field path. A closure value the block calls is
     /// expanded into what its body does, since that runs in the block too.
-    fn fork_side_accesses(&self, side: &Expr) -> Vec<ForkAccess> {
+    fn side_accesses(&self, side: &Expr) -> Vec<SideAccess> {
         let ExprKind::Closure { params, body, .. } = &side.kind else { return Vec::new() };
         let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
         let mut out = Vec::new();
-        self.collect_fork_accesses(body, &locals, &mut out, 0);
+        self.collect_side_accesses(body, &locals, &mut out, 0);
         out
     }
 
-    fn collect_fork_accesses(&self, body: &Expr, locals: &HashSet<String>, out: &mut Vec<ForkAccess>, depth: u32) {
+    fn collect_side_accesses(&self, body: &Expr, locals: &HashSet<String>, out: &mut Vec<SideAccess>, depth: u32) {
         let mut captures = Vec::new();
         self.collect_free_vars_with_projections(body, locals, &mut captures, &mut HashMap::new());
         let captured: HashSet<&String> = captures.iter().collect();
-        let push = |place: &Expr, write: bool, out: &mut Vec<ForkAccess>| {
-            if let Some((root, path)) = Self::fork_place(place) {
+        let push = |place: &Expr, write: bool, out: &mut Vec<SideAccess>| {
+            if let Some((root, path)) = Self::side_place(place) {
                 if captured.contains(&root) {
-                    out.push(ForkAccess { root, path, write, span: place.span });
+                    out.push(SideAccess { root, path, write, span: place.span });
                 }
             }
         };
@@ -7817,6 +7967,13 @@ impl<'a> OwnershipChecker<'a> {
                         match &stmt.kind {
                             StmtKind::Assign { target, .. } => push(target, true, out),
                             StmtKind::For { mutate: true, iter, .. } => push(iter, true, out),
+                            // A move into a new binding gives the value away.
+                            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
+                                if matches!(init.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+                                    && self.node_ty(&init.id).is_some_and(|t| !self.is_copy(t)) =>
+                            {
+                                push(init, true, out)
+                            }
                             _ => {}
                         }
                     }
@@ -7825,20 +7982,37 @@ impl<'a> OwnershipChecker<'a> {
                     if self.is_mutate_self_method(object, method) || self.is_take_self_method(object, method) {
                         push(object, true, out);
                     }
-                    for a in args {
-                        if matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                    // Giving a value away is the last write to it: the other
+                    // side may be reading it as it goes.
+                    let modes = self.method_param_modes(e.id, object, method);
+                    for (i, a) in args.iter().enumerate() {
+                        let takes = modes.as_ref().and_then(|m| m.get(i)) == Some(&ParamMode::Take);
+                        if takes || matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
                             push(&a.expr, true, out);
+                        }
+                        // A closure handed on may be called there.
+                        if let ExprKind::Ident(name) = &a.expr.kind {
+                            if captured.contains(name) && self.closure_literals.contains_key(name) {
+                                called.push(name.clone());
+                            }
                         }
                     }
                 }
                 ExprKind::Call { func, args } => {
-                    for a in args {
-                        if matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                    let takes = self.callee_take_params(func);
+                    for (i, a) in args.iter().enumerate() {
+                        let gives = takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false);
+                        if gives || matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
                             push(&a.expr, true, out);
+                        }
+                        if let ExprKind::Ident(name) = &a.expr.kind {
+                            if captured.contains(name) && self.closure_literals.contains_key(name) {
+                                called.push(name.clone());
+                            }
                         }
                     }
                     // A parameter's callers are checked for what they pass
-                    // (FK8).
+                    // (B4).
                     if let ExprKind::Ident(name) = &func.kind {
                         if captured.contains(name) && !self.is_param_ref(func) {
                             called.push(name.clone());
@@ -7864,13 +8038,13 @@ impl<'a> OwnershipChecker<'a> {
             }
             // The outermost place is the read; its parts aren't read apart
             // from it. An index's subscript is still its own read.
-            if let Some((root, path)) = Self::fork_place(e) {
+            if let Some((root, path)) = Self::side_place(e) {
                 if captured.contains(&root) {
-                    out.push(ForkAccess { root, path, write: false, span: e.span });
+                    out.push(SideAccess { root, path, write: false, span: e.span });
                 }
                 if let ExprKind::Index { index, .. } = &e.kind {
                     let mut inner = Vec::new();
-                    self.collect_fork_accesses(index, locals, &mut inner, depth);
+                    self.collect_side_accesses(index, locals, &mut inner, depth);
                     out.extend(inner);
                 }
                 return false;
@@ -7882,7 +8056,7 @@ impl<'a> OwnershipChecker<'a> {
         // whatever it captured, so calling it counts as writing it.
         for name in called {
             // A declared function captures nothing; a parameter's callers are
-            // checked for what they pass (FK8).
+            // checked for what they pass (B4).
             if self.named_fn_values.contains_key(&name) {
                 continue;
             }
@@ -7891,15 +8065,15 @@ impl<'a> OwnershipChecker<'a> {
                     if let ExprKind::Closure { params, body: inner, .. } = &lit.kind {
                         let inner_locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                         let mut inner_out = Vec::new();
-                        self.collect_fork_accesses(inner, &inner_locals, &mut inner_out, depth + 1);
+                        self.collect_side_accesses(inner, &inner_locals, &mut inner_out, depth + 1);
                         let at = Self::first_use(body, &name).map(|e| e.span).unwrap_or(body.span);
-                        out.extend(inner_out.into_iter().map(|a| ForkAccess { span: at, ..a }));
+                        out.extend(inner_out.into_iter().map(|a| SideAccess { span: at, ..a }));
                     }
                 }
                 Some(_) => {}
                 None => {
                     if let Some(at) = Self::first_use(body, &name) {
-                        out.push(ForkAccess { root: name.clone(), path: Vec::new(), write: true, span: at.span });
+                        out.push(SideAccess { root: name.clone(), path: Vec::new(), write: true, span: at.span });
                     }
                 }
             }
@@ -7910,7 +8084,7 @@ impl<'a> OwnershipChecker<'a> {
     /// to it, call a `mutate self` method on it, or hand it to a `mutate`
     /// parameter.
     fn body_writes_name(&self, body: &[Stmt], name: &str) -> bool {
-        let rooted = |e: &Expr| Self::fork_place(e).is_some_and(|(root, _)| root == name);
+        let rooted = |e: &Expr| Self::side_place(e).is_some_and(|(root, _)| root == name);
         let mode_writes = |a: &rask_ast::expr::CallArg| {
             matches!(a.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) && rooted(&a.expr)
         };
@@ -7996,15 +8170,15 @@ impl<'a> OwnershipChecker<'a> {
     /// The root name and field path of a place: `p` → `(p, [])`, `p.a.b` →
     /// `(p, [a, b])`. An index stands for the whole container, since nothing
     /// here can tell two subscripts apart.
-    fn fork_place(expr: &Expr) -> Option<(String, Vec<String>)> {
+    fn side_place(expr: &Expr) -> Option<(String, Vec<String>)> {
         match &expr.kind {
             ExprKind::Ident(name) => Some((name.clone(), Vec::new())),
             ExprKind::Field { object, field } | ExprKind::OptionalField { object, field } => {
-                let (root, mut path) = Self::fork_place(object)?;
+                let (root, mut path) = Self::side_place(object)?;
                 path.push(field.clone());
                 Some((root, path))
             }
-            ExprKind::Index { object, .. } => Self::fork_place(object),
+            ExprKind::Index { object, .. } => Self::side_place(object),
             _ => None,
         }
     }
@@ -8516,6 +8690,12 @@ impl<'a> OwnershipChecker<'a> {
             // has no window to commit in (mem.linear/L7). What `self` holds is
             // still owed by the end — L1 covers that.
             if name == "self" {
+                continue;
+            }
+            // A task borrowing this frame needs no `ensure`: a panic before
+            // its join waits for it already (conc.async/S5), and an `ensure`
+            // would be a second use of the handle.
+            if self.borrowed_handles.contains(name) {
                 continue;
             }
             if !self.exit_reported.insert(format!("commit:{}", name)) {
@@ -9972,8 +10152,25 @@ impl<'a> OwnershipChecker<'a> {
 
 /// Run ownership analysis on a typed program.
 pub fn check_ownership(program: &TypedProgram, decls: &[Decl]) -> OwnershipResult {
-    let checker = OwnershipChecker::new(program);
-    checker.check(decls)
+    let mut carrying = HashSet::new();
+    loop {
+        let mut checker = OwnershipChecker::new(program);
+        checker.carrying_tasks = carrying.clone();
+        let result = checker.check(decls);
+        if !grow_carrying(&mut carrying, &result) {
+            return result;
+        }
+    }
+}
+
+/// conc.async/B1: a task joined where it was spawned borrows its frame unless
+/// its block consumes something it names. Which ones do is the analysis's own
+/// answer, so a run that finds one is run again with it taking its captures.
+/// Each round only adds, so this ends.
+fn grow_carrying(carrying: &mut HashSet<rask_ast::NodeId>, result: &OwnershipResult) -> bool {
+    let before = carrying.len();
+    carrying.extend(result.consuming_tasks.iter().copied());
+    carrying.len() != before
 }
 
 /// Ownership analysis that can also read the stdlib's parameter modes.
@@ -9982,8 +10179,15 @@ pub fn check_ownership_with_stdlib(
     decls: &[Decl],
     stdlib_decls: &[Decl],
 ) -> OwnershipResult {
-    let checker = OwnershipChecker::new(program);
-    let mut result = checker.check_with_signatures(decls, stdlib_decls);
+    let mut carrying = HashSet::new();
+    let mut result = loop {
+        let mut checker = OwnershipChecker::new(program);
+        checker.carrying_tasks = carrying.clone();
+        let result = checker.check_with_signatures(decls, stdlib_decls);
+        if !grow_carrying(&mut carrying, &result) {
+            break result;
+        }
+    };
     // The stdlib's bodies are lowered like the program's, so lowering needs
     // their returns' moves too. They aren't checked for errors here — only
     // walked for this.
@@ -10199,3 +10403,4 @@ fn is_type_param_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }
+

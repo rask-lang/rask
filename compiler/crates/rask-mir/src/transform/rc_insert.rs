@@ -626,9 +626,11 @@ fn insert_aggregate_release(
                         })
                 }
                 MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } => {
-                    (crate::own_names::returns_a_view(&fref.name, own)
-                        && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r)))
-                    .then_some(*dst)
+                    let views_receiver = crate::own_names::returns_a_view(&fref.name, own)
+                        && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r));
+                    let points_into = fref.points_into_args
+                        && args.iter().filter_map(uses::operand_local).any(|a| tracked.contains(&a));
+                    (views_receiver || points_into).then_some(*dst)
                 }
                 MirStmtKind::Store { addr, value, .. } => uses::operand_local(value)
                     .filter(|v| tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr))
@@ -857,6 +859,15 @@ fn insert_aggregate_release(
                             match args.first().and_then(uses::operand_local).filter(|r| is_tracked(r)) {
                                 Some(recv) => ev.push(ownership::Event::View { dst, base: recv }),
                                 None => ev.push(ownership::Event::Other(dst)),
+                            }
+                        } else if fref.points_into_args
+                            && args.iter().filter_map(uses::operand_local).any(|a| is_tracked(&a))
+                        {
+                            // The result points into its arguments, so it keeps
+                            // them needed for as long as it is in use: a pointer
+                            // out of `as_ptr`, a borrowing task's handle.
+                            for a in args.iter().filter_map(uses::operand_local).filter(|a| is_tracked(a)) {
+                                ev.push(ownership::Event::View { dst, base: a });
                             }
                         } else if aggregates.contains(&dst) {
                             ev.push(ownership::Event::Make(dst));

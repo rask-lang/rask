@@ -1354,11 +1354,11 @@ void *rask_rack_corresponding(const RaskRack *r, const void *link) {
 
 // ─── Staged structural mutation (mem.racks/RK16–RK21) ─────────────────────
 //
-// Fork blocks that share a rack only read it; each records the structural
-// changes it decides on in a buffer of its own, and the rack makes them after
-// the join, on one thread. A buffer's links are plain words with no edge
-// record, so nothing nulls them: recording one writes nothing another block
-// can see. That is safe because the rack can't lose a node while the buffer
+// A task and the code beside it that share a rack only read it; each records
+// the structural changes it decides on in a buffer of its own, and the rack
+// makes them after the join, on one thread. A buffer's links are plain words
+// with no edge record, so nothing nulls them: recording one writes nothing
+// the other side can see. That is safe because the rack can't lose a node while the buffer
 // waits, and `apply` refuses a buffer it has (RK21).
 
 enum { STAGED_DELETE, STAGED_INSERT, STAGED_RELINK };

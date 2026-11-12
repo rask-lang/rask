@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Fork blocks that share a rack for reading (mem.racks/RK16).
+//! A borrowing task and the code beside it sharing a rack for reading
+//! (mem.racks/RK16).
 //!
 //! Following a link and reading a node write nothing, so several blocks may
 //! read one rack at once. Two things do write the rack's shared state, and
@@ -557,7 +558,8 @@ impl<'a> OwnershipChecker<'a> {
         quiet
     }
 
-    /// RK16: one block of a fork whose blocks share a graph. It may read
+    /// RK16: one side of a borrowing task and the code beside it, sharing a
+    /// graph with the other. It may read
     /// anything; it may not write through a link or a rack, and may not store
     /// a link anywhere but a `Staged` buffer.
     pub(crate) fn check_shared_graph_block(&mut self, side: &Expr) {

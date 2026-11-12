@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A function that may run two of its arguments at once is checked where it
-// is called: the two arguments are held to what two fork blocks would be
-// (conc.fork/FK8, E0964). That covers a closure that writes what it captured
+// is called: the two arguments are held to what a borrowing task and the
+// code beside it would be (conc.async/B4, E0964). That covers a closure that writes what it captured
 // passed twice, a writer beside a reader, a `Local` box reaching two threads,
 // and a rack written while another argument reads it. A local closure named
 // like a parameter is not that parameter. A call through a function-typed
@@ -11,6 +11,7 @@
 import memory.Rack
 import memory.Link
 import sync.Shared
+import thread.ThreadPool
 
 struct Node {
     hp: i64
@@ -18,7 +19,9 @@ struct Node {
 }
 
 func both(f: func(), g: func()) {
-    fork { f() } and { g() }
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    g()
+    h.join()!
 }
 
 func twice(x: func()) {
@@ -28,6 +31,13 @@ func twice(x: func()) {
 
 func apply2(r: func(func(), func()), a: func()) {
     r(a, a)
+}
+
+func aliased(f: func()) {
+    let g = f
+    let h = ThreadPool.spawn(requires_pool: false) { g() }
+    f()
+    h.join()!
 }
 
 func in_turn(f: func(), g: func()) {
@@ -47,7 +57,9 @@ func shadowed(f: func(), k: i64) {
     mut n = k
     let f = || { n += 1 }
     // ERROR: the local `f` is a closure that writes `n`, not the parameter [E0960]
-    fork { f() } and { f() }
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    f()
+    h.join()!
 }
 
 func main() {
@@ -57,7 +69,9 @@ func main() {
     both(tick, tick)
     // ERROR: through a closure wrapping the parameter [E0964]
     twice(tick)
-    // ERROR: through a function value that may fork its arguments [E0964]
+    // ERROR: through a name bound to the parameter [E0964]
+    aliased(tick)
+    // ERROR: through a function value that may run its arguments at once [E0964]
     apply2(both, tick)
     // Fine: `in_turn` runs them one after the other.
     apply2(in_turn, tick)

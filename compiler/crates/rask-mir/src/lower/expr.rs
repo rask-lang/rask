@@ -1734,8 +1734,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Task block — its body goes to the runtime as a carrying closure.
-            ExprKind::Spawn { target, body, .. } => self.lower_spawn(expr, *target, body),
-            ExprKind::Fork { sides } => self.lower_fork(expr, sides),
+            ExprKind::Spawn { target, args, body, .. } => self.lower_spawn(expr, *target, args, body),
 
             // Cast
             ExprKind::Cast { expr: inner, ty } => self.lower_cast(expr.id, inner, ty),
@@ -2541,7 +2540,7 @@ impl<'a> MirLowerer<'a> {
                     let lowered = self.lower_closure_expecting(
                         params, ret_ty.as_ref(), body,
                         carries, &expected, Some(a.expr.id),
-                        false,
+                        super::closures::TaskRole::NotTask,
                     )?;
                     let (op, mir_ty) = lowered;
                     self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
@@ -5901,7 +5900,7 @@ impl<'a> MirLowerer<'a> {
                                         params, ret_ty.as_ref(), body,
                                         carries, &expected,
                                         Some(arg.expr.id),
-                                        false,
+                                        super::closures::TaskRole::NotTask,
                                     )?;
                                     let (op, mir_ty) = lowered;
                                     self.wrap_closure_arg(
@@ -6249,7 +6248,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 let carries = self.closure_carries(Some(arg.expr.id));
                 let (op, mir_ty) = self.lower_closure_expecting(
-                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), false,
+                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), super::closures::TaskRole::NotTask,
                 )?;
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {

@@ -243,11 +243,6 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
         ExprKind::Closure { body, .. } | ExprKind::Spawn { body, .. } => {
             check_expr_for_large_unsafe(body, source, max, diags);
         }
-        ExprKind::Fork { sides } => {
-            for side in sides {
-                check_expr_for_large_unsafe(side, source, max, diags);
-            }
-        }
         _ => {}
     }
 }
