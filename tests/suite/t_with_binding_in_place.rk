@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `with` or `for mutate` binding is the element where it sits (#1922), so
+// whatever reaches it by address reaches the element.
+//
+// Two ways that went wrong natively when the binding stopped being a copy:
+// - `bump(mutate x)` on a scalar binding passed the address of a spilled copy
+//   of the binding's pointer, so the callee's write vanished. A closure's
+//   by-reference capture had always done the same.
+// - An element holding a link was treated as a struct of this frame's: zeroed
+//   on entry (through a null address) and forgotten at return.
+
+import memory.Link
+import memory.Rack
+
+func bump(mutate n: i64) {
+    n = n + 1
+}
+
+func flip(mutate b: bool) {
+    b = !b
+}
+
+func halve(mutate f: f64) {
+    f = f / 2.0
+}
+
+test "a scalar binding passed as mutate is written" {
+    mut v: Vec<i64> = [5, 6]
+    with v[0] as x {
+        bump(mutate x)
+    }
+    for mutate x in v {
+        bump(mutate x)
+    }
+    v.modify(1, |mutate x: i64| {
+        bump(mutate x)
+    })
+    assert v[0] == 7
+    assert v[1] == 8
+}
+
+test "a map value passed as mutate is written" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("k", 1)
+    with m["k"] as x {
+        bump(mutate x)
+    }
+    for mutate (k, x) in m {
+        bump(mutate x)
+    }
+    assert m["k"] == 3
+}
+
+test "narrow and float bindings passed as mutate are written" {
+    mut bs: Vec<bool> = [false]
+    for mutate b in bs {
+        flip(mutate b)
+    }
+    mut fs: Vec<f64> = [3.0]
+    with fs[0] as f {
+        halve(mutate f)
+    }
+    assert bs[0]
+    assert fs[0] == 1.5
+}
+
+test "a captured variable passed as mutate is written" {
+    mut x = 5
+    let c = || { bump(mutate x) }
+    c()
+    assert x == 6
+}
+
+struct Leaf {
+    id: i32
+}
+
+struct Edge {
+    weight: i32
+    to: Link<Leaf>?
+}
+
+func to_id(e: Edge) -> i32 {
+    if e.to? as l {
+        return l.id
+    }
+    return -1
+}
+
+test "replacing an element that holds a link records the new edge" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut v: Vec<Edge> = Vec.new()
+    v.push(Edge(weight: 1, to: none))
+    v.push(Edge(weight: 1, to: none))
+    with v[0] as e {
+        e = Edge(weight: 10, to: a)
+    }
+    for mutate e in v {
+        if e.to is none {
+            e = Edge(weight: 20, to: b)
+        }
+    }
+    assert to_id(v[0]) == 1
+    assert to_id(v[1]) == 2
+    leaves.delete(b)
+    assert to_id(v[0]) == 1
+    assert to_id(v[1]) == -1
+}

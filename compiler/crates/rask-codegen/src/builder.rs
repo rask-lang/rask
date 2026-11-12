@@ -2381,8 +2381,14 @@ impl<'a> FunctionBuilder<'a> {
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only
                 // right for a local nothing writes through — which is why a
-                // captured scalar's writes used to vanish (#1038).
-                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
+                // captured scalar's writes used to vanish (#1038). A borrowed
+                // one (a by-reference capture, a `with` element) holds the
+                // address of storage elsewhere: `bump(mutate x)` on it has to
+                // write there, not into a spilled copy of the pointer.
+                if is_aggregate
+                    || ctx.stack_slot_map.contains_key(local_id)
+                    || ctx.addr_taken.borrowed.contains(local_id)
+                {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address
