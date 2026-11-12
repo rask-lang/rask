@@ -6,7 +6,10 @@
 // panic in between released the copy as if the frame owned it, and the
 // collection's own release then freed what the copy pointed at a second time:
 // natively, the test runner that caught the panic crashed on the next test.
-// Writes made before the panic are kept, as with any `with`.
+// Here the panic comes from a call that gets inlined, and the write-back runs
+// before it, so the writes are kept. A field replaced before a panic that
+// unwinds from a call that isn't inlined still frees the old value twice
+// (#1922).
 
 import sync.Shared
 
