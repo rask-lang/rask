@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic function with comptime control is written out as a plain
+// function per instance and checked like one (ctrl.comptime/CT72, #1919).
+// Before, the body was checked once with `v.(f.name)` typed as nothing, so a
+// generic call fed from a field never learned its type.
+import std.reflect
+
+struct Point {
+    x: i64
+    y: i64
+    label: string
+}
+
+annotation @unit {
+    name: string
+}
+
+struct Reading {
+    id: i64
+    @unit(name: "kelvin")
+    temp: f64
+}
+
+func show<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name}={v.(f.name)};"
+    }
+    return out
+}
+
+func units<T>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        comptime if f.has<unit>() {
+            out = "{out}{f.name}:{f.get<unit>().name};"
+        }
+    }
+    return out
+}
+
+struct World {
+    pos: Vec<Pos>
+    vel: Vec<Vel>
+}
+
+interface Component {
+    func load(w: World, i: usize) -> Self
+    func store(self, mutate w: World, i: usize)
+}
+
+struct Pos {
+    x: f64
+}
+
+struct Vel {
+    x: f64
+}
+
+Pos implements Component {
+    func load(w: World, i: usize) -> Pos {
+        return w.pos[i]
+    }
+    func store(self, mutate w: World, i: usize) {
+        w.pos[i] = self
+    }
+}
+
+Vel implements Component {
+    func load(w: World, i: usize) -> Vel {
+        return w.vel[i]
+    }
+    func store(self, mutate w: World, i: usize) {
+        w.vel[i] = self
+    }
+}
+
+struct Moving {
+    p: Pos
+    v: Vel
+}
+
+extend Moving {
+    func blank() -> Moving {
+        return Moving(p: Pos(x: 0.0), v: Vel(x: 0.0))
+    }
+}
+
+func load<T: Component>(w: World, i: usize) -> T {
+    return T.load(w, i)
+}
+
+// Each field's `load` call takes its `T` from the field: `load<Pos>`, then
+// `load<Vel>`. Checked once, nothing said which.
+func gather<Q>(mutate q: Q, w: World, i: usize) {
+    comptime for f in reflect.fields<Q>() {
+        q.(f.name) = load(w, i)
+    }
+}
+
+func scatter<Q>(q: Q, mutate w: World, i: usize) {
+    comptime for f in reflect.fields<Q>() {
+        q.(f.name).store(mutate w, i)
+    }
+}
+
+func drift(mutate m: Moving) {
+    m.p.x += m.v.x
+}
+
+// A generic function reaching a template: the instance is settled here.
+func shown_twice<T>(v: T) -> string {
+    return "{show(v)}{show(v)}"
+}
+
+test "a field read through the loop, string fields included" {
+    assert show(Point(x: 1, y: 2, label: "a label long enough for the heap")) == "x=1;y=2;label=a label long enough for the heap;"
+}
+
+test "an annotation read on the field that has it" {
+    assert units<Reading>() == "temp:kelvin;"
+}
+
+test "a generic call takes its type from the field" {
+    mut w = World(pos: [Pos(x: 1.0), Pos(x: 10.0)], vel: [Vel(x: 2.0), Vel(x: 3.0)])
+    for i in 0..w.pos.len() {
+        mut q = Moving.blank()
+        gather(mutate q, w, i)
+        drift(mutate q)
+        scatter(q, mutate w, i)
+    }
+    assert w.pos[0].x == 3.0
+    assert w.pos[1].x == 13.0
+}
+
+test "two instances, and one reached through a generic function" {
+    assert show(Reading(id: 7, temp: 1.5)) == "id=7;temp=1.5;"
+    assert shown_twice(Pos(x: 2.0)) == "x=2;x=2;"
+}

@@ -854,6 +854,13 @@ impl TypeChecker {
             }
             ExprKind::MethodCall { .. } => "a method call",
             ExprKind::Call { .. } => "a function call",
+            // In a template, a field the loop names is a place like any
+            // other: the copy writes it `q.p` (ctrl.comptime/CT72).
+            ExprKind::DynamicField { .. }
+                if !self.comptime_for_bindings.is_empty() && !self.types.type_params_in_scope().is_empty() =>
+            {
+                return
+            }
             ExprKind::DynamicField { .. } => "a comptime field access",
             ExprKind::OptionalField { .. } => "an optional field access",
             ExprKind::Int { .. }

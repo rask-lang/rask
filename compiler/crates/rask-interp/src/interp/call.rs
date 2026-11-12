@@ -78,6 +78,12 @@ impl Interpreter {
         args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeDiagnostic> {
+        // A template at these type arguments is the copy written out for them
+        // (`rask-template`, ctrl.comptime/CT72): the same function native
+        // compiles.
+        if let Some(copy) = self.template_copy(func, generics.as_deref()) {
+            return self.call_function(&copy, args, None);
+        }
         if crate::stack_nearly_exhausted() {
             if crate::stack_segments_exhausted() {
                 return Err(RuntimeDiagnostic::new(
@@ -621,3 +627,20 @@ pub(crate) fn option_depth(value: &Value) -> usize {
     }
 }
 
+impl Interpreter {
+    /// The plain function a template instance was written out as, by the
+    /// name monomorphization gives the instance.
+    fn template_copy(&self, func: &FnDecl, generics: Option<&std::collections::HashMap<String, rask_types::Type>>) -> Option<FnDecl> {
+        if func.type_params.is_empty() {
+            return None;
+        }
+        let frame = generics?;
+        let bindings: Option<Vec<rask_types::TypeBinding>> = func
+            .type_params
+            .iter()
+            .map(|tp| frame.get(&tp.name).map(|t| rask_types::TypeBinding::new(tp.name.clone(), t.clone())))
+            .collect();
+        let name = rask_mono::mangle_name(&func.name, &bindings?, Some(&self.types));
+        self.functions.get(&name).cloned()
+    }
+}

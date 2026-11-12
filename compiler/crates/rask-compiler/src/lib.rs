@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rask_ast::decl::{Decl, DeclKind};
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod emit;
@@ -598,33 +598,49 @@ fn check_loaded_scoped(
         );
     }
 
-    // --- Resolve (blocking — need ResolvedProgram) ---
-    // Resolved alongside the program: the stdlib's own bodies are compiled
-    // into every program, so their names have to bind for anything downstream
-    // to know what a call inside them refers to (#425).
-    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib(
-        &parse_result.decls,
-        &stdlib_bodies,
-    ) {
-        Ok(r) => r,
-        Err(errors) => {
-            for e in &errors {
-                diags.push(e.to_diagnostic());
+    // Templates (ctrl.comptime/CT72): a generic function with comptime control
+    // is checked as written once, then written out as a plain function per
+    // instance the program reaches, and the program checked again with the
+    // copies in, until a round adds none (`rask-template`). A program with no
+    // template goes round once.
+    let templates: Vec<Decl> = parse_result.decls.clone();
+    let mut copies: Vec<Decl> = Vec::new();
+    let mut operator_calls = desugared.operator_calls.clone();
+    let mut expanded: HashSet<String> = HashSet::new();
+    let mut next_template_id = rask_template::TEMPLATE_ID_BASE;
+    let mut instances: Vec<(Span, String)> = Vec::new();
+    let round_start = diags.len();
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (mut typed, ownership_result) = loop {
+        diags.truncate(round_start);
+        parse_result.decls = templates.clone();
+        parse_result.decls.extend(copies.iter().cloned());
+        // --- Resolve (blocking — need ResolvedProgram) ---
+        // Resolved alongside the program: the stdlib's own bodies are compiled
+        // into every program, so their names have to bind for anything downstream
+        // to know what a call inside them refers to (#425).
+        let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        let resolved = match rask_resolve::resolve_with_stdlib(
+            &parse_result.decls,
+            &stdlib_bodies,
+        ) {
+            Ok(r) => r,
+            Err(errors) => {
+                for e in &errors {
+                    diags.push(e.to_diagnostic());
+                }
+                return PipelineOutput::fail_with_sources(diags, source_files);
             }
-            return PipelineOutput::fail_with_sources(diags, source_files);
-        }
     };
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
-    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
         rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
-            &desugared.operator_calls,
+            &operator_calls,
         );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -636,6 +652,29 @@ fn check_loaded_scoped(
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
+    if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
+        break (typed, ownership_result);
+    }
+    match expand_templates(&templates, &parse_result.decls, &typed, &mut expanded, &mut next_template_id) {
+        Ok(Some(round)) if !round.decls.is_empty() => {
+            let from: HashMap<NodeId, Vec<NodeId>> = round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
+                m.entry(*old).or_default().push(*new);
+                m
+            });
+            let carried: Vec<NodeId> =
+                operator_calls.iter().flat_map(|id| from.get(id).into_iter().flatten().copied()).collect();
+            operator_calls.extend(carried);
+            copies.extend(round.decls);
+            instances.extend(round.instances);
+        }
+        Ok(_) => break (typed, ownership_result),
+        Err(errors) => {
+            diags.extend(errors);
+            break (typed, ownership_result);
+        }
+    }
+    };
+    name_template_instances(&mut diags[round_start..], &instances);
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
@@ -699,6 +738,58 @@ fn check_loaded_scoped(
     )
 }
 
+
+/// An error inside a template is an error in the copies written out from it
+/// (CT72): say which instances those are, since the template's text is what
+/// the error points at.
+fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)]) {
+    for d in diags.iter_mut().filter(|d| matches!(d.severity, Severity::Error)) {
+        let Some(at) = d.labels.first().map(|l| l.span) else { continue };
+        let names: Vec<&str> = instances
+            .iter()
+            .filter(|(t, _)| t.file_id == at.file_id && t.start <= at.start && at.end <= t.end)
+            .map(|(_, n)| n.as_str())
+            .collect();
+        if !names.is_empty() {
+            let list = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
+            *d = d.clone().with_note(format!("in this template written out as {list} (ctrl.comptime/CT72)"));
+        }
+    }
+}
+
+/// One round of template expansion: the instances of a template this checked
+/// program reaches and hasn't written out yet, as plain functions. `None`
+/// when the program declares no template, so it pays nothing.
+fn expand_templates(
+    templates: &[Decl],
+    decls: &[Decl],
+    typed: &rask_check::TypedProgram,
+    done: &mut HashSet<String>,
+    next_id: &mut u32,
+) -> Result<Option<rask_template::Expansion>, Vec<Diagnostic>> {
+    let any = templates.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if rask_template::is_template(f)));
+    if !any {
+        return Ok(None);
+    }
+    let mut layout_decls = decls.to_vec();
+    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    typed.rewrite_checked_nodes(&mut stdlib);
+    layout_decls.extend(stdlib);
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
+        // Monomorphization reports its own failures where the program is built.
+        return Ok(None);
+    };
+    rask_template::expand_round(templates, typed, &mono, done, next_id).map(Some).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|e| {
+                Diagnostic::error(e.message)
+                    .with_code("E0963")
+                    .with_primary(e.span, "while writing out this template for an instance")
+            })
+            .collect()
+    })
+}
 
 /// CT1: a comptime initializer that overflows or divides by zero is a compile
 /// error, so `rask check` has to run the fold to answer "does this compile".
