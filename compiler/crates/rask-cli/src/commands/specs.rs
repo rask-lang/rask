@@ -75,11 +75,14 @@ pub fn cmd_test_specs(path: Option<&str>) {
     for rk_path in &rk_files {
         // A file in a package runs with the rest of it, once per package.
         if let Some(root) = package_root(rk_path) {
-            if !packages_run.insert(root.clone()) {
+            if !packages_run.insert(root.clone()) || !package_has_tests(&root) {
                 continue;
             }
-            let Some(binary) = &config.rask_binary else { continue };
             println!("{}", output::file_path(&root.display().to_string()));
+            let Some(binary) = &config.rask_binary else {
+                println!("  {} skipped: a package runs through the rask binary, and there isn't one\n", "warn".yellow().bold());
+                continue;
+            };
             let rk_result = run_rk_package(&root, binary);
             report_rk(&rk_result, &mut summary);
             if !rk_result.interp_ok() || !rk_result.native_ok() {
@@ -219,7 +222,9 @@ pub fn cmd_test_specs(path: Option<&str>) {
         }
     }
 
-    if summary.failed > 0 {
+    // Native is what ships, so a native failure fails the run as an
+    // interpreter one does.
+    if summary.failed > 0 || summary.native_failed > 0 {
         process::exit(1);
     }
 }
@@ -366,4 +371,15 @@ fn report_rk(rk_result: &rask_spec_test::RkTestResult, summary: &mut rask_spec_t
 /// `rask.toml`.
 fn package_root(path: &Path) -> Option<PathBuf> {
     path.ancestors().skip(1).find(|d| d.join("rask.toml").is_file()).map(Path::to_path_buf)
+}
+
+/// Whether any file of the package at `root` has a `test` block. A package
+/// with none is skipped, as a lone file with none is.
+fn package_has_tests(root: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(root) else { return false };
+    entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "rk"))
+        .any(|p| fs::read_to_string(&p).is_ok_and(|c| rask_spec_test::has_rk_tests(&c)))
 }

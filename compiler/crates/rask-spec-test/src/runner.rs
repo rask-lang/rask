@@ -699,7 +699,8 @@ pub fn run_rk_package(root: &std::path::Path, rask_binary: &std::path::Path) -> 
 
 /// `(passed, total, failures)` from `rask test [--interp] <root>`, read off
 /// its summary line (`15 tests, 14 passed, 0 failed, 1 skipped`). A skipped
-/// test counts as neither.
+/// test counts as neither. A run that exits non-zero passed nothing, whatever
+/// its summary says.
 fn run_package_tests(
     root: &std::path::Path,
     rask_binary: &std::path::Path,
@@ -729,6 +730,14 @@ fn run_package_tests(
         .map(|l| l.to_string())
         .collect();
     match summary {
+        // A run can print a clean summary and still fail after it: a false
+        // claim, a leak check, a crash on the way out. The exit code decides.
+        Some(_) if !output.status.success() => {
+            let mut failures = failures;
+            failures.push(format!("rask test exited {} after its summary", output.status.code().unwrap_or(-1)));
+            let total = summary.and_then(|l| count(l, "tests")).unwrap_or(1).max(1);
+            (0, total, failures)
+        }
         Some(line) => {
             let passed = count(line, "passed").unwrap_or(0);
             let failed = count(line, "failed").unwrap_or(0);
