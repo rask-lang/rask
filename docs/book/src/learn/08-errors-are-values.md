@@ -150,7 +150,7 @@ For anything a caller could deal with, hand it back with `try`.
 `text[0..i]` is the part of `text` from position 0 up to `i`, without copying anything. It
 can't outlive the line it's on, because it points into `text`, so a piece that's kept goes
 through `.to_string()` (or another method that makes a new string, like `to_lowercase`).
-`index_of` answers a `u64?`, since there might not be a space.
+`index_of` answers a `usize?`, since there might not be a space.
 
 ## Exercise
 

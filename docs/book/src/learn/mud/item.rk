@@ -8,7 +8,7 @@ public struct Item {
 
 // exercise 07: Where the item called `name` sits in `items`, or none if
 // it isn't there.
-public func find_item(items: Vec<Item>, name: string) -> u64? {
+public func find_item(items: Vec<Item>, name: string) -> usize? {
     for i in 0..items.len() {
         if items[i].name == name {
             return i

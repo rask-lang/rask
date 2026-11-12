@@ -55,7 +55,7 @@ public struct Room {
     public name: string
     public description: string
     public items: Vec<Item>
-    public exits: Map<Direction, u64>
+    public exits: Map<Direction, usize>
 }
 ```
 

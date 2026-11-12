@@ -157,7 +157,7 @@ copies the number in, and the caller still has it.
 
 <!-- from: early/world.rk -->
 ```rask
-    public func add_room(mutate self, name: string, description: string) -> u64 {
+    public func add_room(mutate self, name: string, description: string) -> usize {
 ```
 
 and the call says nothing:

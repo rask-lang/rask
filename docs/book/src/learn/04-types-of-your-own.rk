@@ -75,7 +75,7 @@ public struct Item {
 
 // exercise 07: Where the item called `name` sits in `items`, or none if
 // it isn't there.
-public func find_item(items: Vec<Item>, name: string) -> u64? {
+public func find_item(items: Vec<Item>, name: string) -> usize? {
     for i in 0..items.len() {
         if items[i].name == name {
             return i
@@ -199,12 +199,12 @@ public struct Room {
     public name: string
     public description: string
     public items: Vec<Item>
-    public exits: Map<Direction, u64>
+    public exits: Map<Direction, usize>
 }
 
 public struct World {
     public rooms: Vec<Room>
-    public here: u64
+    public here: usize
     public carried: Vec<Item>
 }
 
@@ -215,13 +215,13 @@ extend World {
 
     // exercise 06: Add a room with nothing in it and no way out, and answer
     // its place in `rooms`, which is how an exit will name it.
-    public func add_room(mutate self, name: string, description: string) -> u64 {
+    public func add_room(mutate self, name: string, description: string) -> usize {
         self.rooms.push(Room(name, description, items: Vec.new(), exits: Map.new()))
         return self.rooms.len() - 1
     }
 
     // Both ways: going `dir` from `a` reaches `b`, and the opposite way leads back.
-    public func connect(mutate self, a: u64, dir: Direction, b: u64) -> void {
+    public func connect(mutate self, a: usize, dir: Direction, b: usize) -> void {
         self.rooms[a].exits[dir] = b
         self.rooms[b].exits[dir.opposite()] = a
     }

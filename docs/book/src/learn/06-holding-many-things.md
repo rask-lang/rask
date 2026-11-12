@@ -11,7 +11,7 @@ The world keeps its rooms in a `Vec`:
 ```rask
 public struct World {
     public rooms: Vec<Room>
-    public here: u64
+    public here: usize
     public carried: Vec<Item>
 }
 ```
@@ -21,8 +21,10 @@ are, and `rooms.push(room)` adds one at the end. A room's place in the list does
 change once it's there, so the game names a room by its place: `here` is where the player
 stands, and an exit stores the place of the room it leads to.
 
-Positions and lengths are `u64`. There are no negative positions, and `len()` never
-needs checking for below zero.
+Positions and lengths are `usize`, a whole number as wide as the machine's addresses.
+There are no negative positions, so `len()` never needs checking for below zero. A
+`usize` goes into a `u64` as it is; the other way round can lose values on a smaller
+machine, so it's written as a conversion.
 
 Building the world starts from an empty one:
 
@@ -40,7 +42,7 @@ A room's exits are a `Map` from a direction to the place of the room that way:
 
 <!-- from: early/world.rk -->
 ```rask
-    public exits: Map<Direction, u64>
+    public exits: Map<Direction, usize>
 ```
 
 Joining two rooms writes an entry into each:
@@ -48,7 +50,7 @@ Joining two rooms writes an entry into each:
 <!-- from: early/world.rk -->
 ```rask
     // Both ways: going `dir` from `a` reaches `b`, and the opposite way leads back.
-    public func connect(mutate self, a: u64, dir: Direction, b: u64) -> void {
+    public func connect(mutate self, a: usize, dir: Direction, b: usize) -> void {
         self.rooms[a].exits[dir] = b
         self.rooms[b].exits[dir.opposite()] = a
     }
@@ -127,7 +129,7 @@ world and answers where it went:
 ```rask
     // exercise 06: Add a room with nothing in it and no way out, and answer
     // its place in `rooms`, which is how an exit will name it.
-    public func add_room(mutate self, name: string, description: string) -> u64 {
+    public func add_room(mutate self, name: string, description: string) -> usize {
         todo()
     }
 ```

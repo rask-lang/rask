@@ -25,9 +25,9 @@ Hello, Rask!
 function called `main`.
 
 `let name = "Rask"` gives a value a name. `println` prints a line, and a string can hold
-values in braces: `"{name}"` is replaced by whatever `name` holds. That's the only way to
-build a string out of pieces. There's no `+` for strings, so a string that came from
-several places always shows all of them in one place.
+values in braces: `"{name}"` is replaced by whatever `name` holds. That's how values go
+into a string. There's no `+` for strings, so a string put together from several values
+shows all of them in one place.
 
 ## Names that change
 

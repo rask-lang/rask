@@ -76,6 +76,7 @@ class Gate:
         self.fails = []
         self.ok = 0
         self.marked = 0
+        self.solved = {}
 
     def fail(self, msg):
         self.fails.append(msg)
@@ -218,7 +219,17 @@ class Gate:
                 self.ok += 1
 
     def solution_passes(self, name, number, modules):
-        """The exercise's files as they are, the solution, pass on both backends."""
+        """The exercise's files as they are, the solution, pass on both backends.
+
+        Exercises made of the same files share one solution, run once.
+        """
+        key = tuple(modules)
+        if key in self.solved:
+            return self.solved[key]
+        self.solved[key] = self.run_solution(name, number, modules)
+        return self.solved[key]
+
+    def run_solution(self, name, number, modules):
         text = self.generate(number, modules, solved=True)
         work = tempfile.mkdtemp(prefix="learn_solution_")
         try:

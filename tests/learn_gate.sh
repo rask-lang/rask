@@ -134,8 +134,10 @@ s = open(p).read()
 s = s[:s.index("The finished program passes:")] + s[s.index("Installing isn't run"):]
 open(p, "w").write(s)
 os.remove(os.path.join(d, "output", "01-test-solved.out"))
+# Not a package any more, so only the solution check runs these tests.
+os.remove(os.path.join(d, "mud", "rask.toml"))
 PY
-expect fail "a solution whose tests fail, with no chapter command to notice" "$d"
+expect fail "a solution whose tests fail, with no chapter command or package test to notice" "$d"
 
 d="$(broken unused)"
 printf '// SPDX-License-Identifier: (MIT OR Apache-2.0)\nfunc broken() -> i64 {\n    return "not a number"\n}\n' > "$d/mud/other.rk"

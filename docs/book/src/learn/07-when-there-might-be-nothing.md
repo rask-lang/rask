@@ -101,8 +101,8 @@ looks for it, and if it isn't on the floor there's nothing more to do:
         let i = find_item(room.items, thing) ?? return "There's no {thing} here."
 ```
 
-`find_item` answers `u64?`: the item's place in the list, or `none`. After that line,
-`i` is a plain `u64`, because the only way past it is with an item found. `?? break` and
+`find_item` answers `usize?`: the item's place in the list, or `none`. After that line,
+`i` is a plain `usize`, because the only way past it is with an item found. `?? break` and
 `?? continue` leave a loop the same way.
 
 ## Exercise
@@ -114,12 +114,12 @@ the line above calls:
 ```rask
 // exercise 07: Where the item called `name` sits in `items`, or none if
 // it isn't there.
-public func find_item(items: Vec<Item>, name: string) -> u64? {
+public func find_item(items: Vec<Item>, name: string) -> usize? {
     todo()
 }
 ```
 
-`return i` hands back a `u64` where a `u64?` goes, the same as passing a plain `Item` did
+`return i` hands back a `usize` where a `usize?` goes, the same as passing a plain `Item` did
 above, and `return none` says it isn't there.
 
 `go` walks the player through an exit:
@@ -133,7 +133,7 @@ public func go(mutate world: World, dir: Direction) -> string {
 }
 ```
 
-`room.exits.get(dir)` is the place of the room that way, as a `u64?`. When there's no
+`room.exits.get(dir)` is the place of the room that way, as a `usize?`. When there's no
 exit, answer `You can't go west.` with the direction's name. When there is, set
 `world.here` to it and answer with `describe(world)`.
 
