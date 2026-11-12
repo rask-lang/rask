@@ -529,21 +529,6 @@ impl TypeChecker {
         });
     }
 
-    /// PC4: a declared type parameter doesn't reuse the name of a type the
-    /// program declares. Which of the two a body meant would depend on what
-    /// else is in scope, and the backends read it differently (#1913). A
-    /// stdlib type's name is fine: the parameter wins over those (#915), and
-    /// the program never wrote them.
-    pub(super) fn reject_type_params_named_like_types(&mut self, params: &[rask_ast::decl::TypeParam], span: Span) {
-        for tp in params {
-            let Some(id) = self.types.get_type_id(&tp.name) else { continue };
-            if self.types.declared_by_stdlib(id) {
-                continue;
-            }
-            self.errors.push(TypeError::TypeParamNamedLikeType { name: tp.name.clone(), span });
-        }
-    }
-
     fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span, namespace: bool) {
         // A type starts with a capital, which is what makes `Name(…)` read as
         // building one and `name(…)` as a call. A struct with no fields is a
@@ -2920,7 +2905,6 @@ impl TypeChecker {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
-                self.reject_type_params_named_like_types(&s.type_params, decl.span);
                 // PC2: field types must name declared types (single letters
                 // stay auto-generic, matching function signatures).
                 //
@@ -2952,7 +2936,6 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Enum(e) => {
-                self.reject_type_params_named_like_types(&e.type_params, decl.span);
                 // PC2: variant payload types must name declared types
                 let owner = self.types.get_type_id(&e.name);
                 let payloads: Vec<_> = e

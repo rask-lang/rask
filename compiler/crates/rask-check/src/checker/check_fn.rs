@@ -87,7 +87,6 @@ impl TypeChecker {
     /// rather than pushing inline because the scope has to come back off on
     /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
-        self.reject_type_params_named_like_types(&f.type_params, f.span);
         let declared: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
         let implied: Vec<String> = rask_ast::type_params::signature_type_param_names(f)
             .into_iter()

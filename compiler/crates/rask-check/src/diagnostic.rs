@@ -2830,13 +2830,6 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
             }
-            TypeParamNamedLikeType { name, span } => {
-                Diagnostic::error(format!("type parameter `{}` has the name of a type this program declares", name))
-                    .with_code("E0962")
-                    .with_primary(*span, format!("`{}` here could mean the parameter or the type", name))
-                    .with_fix(format!("give the parameter a name of its own, like `{}Of` or a single letter", name))
-                    .with_why("a signature should mean the same thing whatever else is declared, and a parameter sharing a type's name doesn't [type.gradual/PC4]")
-            }
             InstanceCallOnType { ty, method, span } => {
                 Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
                     .with_code("E0961")
