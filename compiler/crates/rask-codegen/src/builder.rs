@@ -1304,6 +1304,21 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
+            // The variable holds the slot's address, as a borrowed capture's
+            // does: `addr_taken` has made every read and write of the local go
+            // through it, and the local has no slot of its own.
+            MirStmtKind::BindPlace { dst, addr } => {
+                let addr_val = builder.use_var(*ctx.var_map.get(addr)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace address variable not found".to_string()
+                    ))?);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr_val);
+            }
+
             MirStmtKind::ClosureDrop { closure, .. } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -2366,8 +2381,14 @@ impl<'a> FunctionBuilder<'a> {
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only
                 // right for a local nothing writes through — which is why a
-                // captured scalar's writes used to vanish (#1038).
-                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
+                // captured scalar's writes used to vanish (#1038). A borrowed
+                // one (a by-reference capture, a `with` element) holds the
+                // address of storage elsewhere: `bump(mutate x)` on it has to
+                // write there, not into a spilled copy of the pointer.
+                if is_aggregate
+                    || ctx.stack_slot_map.contains_key(local_id)
+                    || ctx.addr_taken.borrowed.contains(local_id)
+                {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address

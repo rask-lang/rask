@@ -124,6 +124,25 @@ d="$(broken twice)"
 printf '01-hello.rk: greet.rk\n' >> "$d/exercises"
 expect fail "an exercise listed twice" "$d"
 
+d="$(broken solution)"
+sed -i 's/^    return "Hello, {name}!"$/    return "Hi, {name}!"/' "$d/mud/greet.rk"
+python3 - "$d" <<'PY'
+import os, sys
+d = sys.argv[1]
+p = os.path.join(d, "01-hello.md")
+s = open(p).read()
+s = s[:s.index("The finished program passes:")] + s[s.index("Installing isn't run"):]
+open(p, "w").write(s)
+os.remove(os.path.join(d, "output", "01-test-solved.out"))
+# Not a package any more, so only the solution check runs these tests.
+os.remove(os.path.join(d, "mud", "rask.toml"))
+PY
+expect fail "a solution whose tests fail, with no chapter command or package test to notice" "$d"
+
+d="$(broken unused)"
+printf '// SPDX-License-Identifier: (MIT OR Apache-2.0)\nfunc broken() -> i64 {\n    return "not a number"\n}\n' > "$d/mud/other.rk"
+expect fail "a broken file in the MUD that no exercise uses" "$d"
+
 if [ $self_fails -ne 0 ]; then
     echo "learn gate self-test: $self_fails failed"
     exit 1

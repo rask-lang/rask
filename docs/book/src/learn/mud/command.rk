@@ -30,6 +30,8 @@ extend ParseError {
     }
 }
 
+public const HELP: string = "Commands: look, n/s/e/w/u/d, take <item>, drop <item>, inventory, say <words>, quit."
+
 // The first word is the verb and the rest, if any, is what it acts on.
 public func parse(line: string) -> Command or ParseError {
     let text = line.trim().to_string()
@@ -60,6 +62,7 @@ public func parse(line: string) -> Command or ParseError {
     return cmd
 }
 
+// exercise 08: The direction `word` names, or why it doesn't name one.
 func direction(word: string) -> Direction or ParseError {
     if word.is_empty() {
         return ParseError.MissingObject("go")
@@ -68,6 +71,7 @@ func direction(word: string) -> Direction or ParseError {
     return d
 }
 
+// exercise 08: What `verb` acts on, or an error when nothing follows it.
 func object(verb: string, rest: string) -> string or ParseError {
     if rest.is_empty() {
         return ParseError.MissingObject(verb)

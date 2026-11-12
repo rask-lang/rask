@@ -388,7 +388,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::LoadCapture { dst, env_ptr, .. } => {
+        MirStmtKind::LoadCapture { dst, env_ptr, .. } | MirStmtKind::BindPlace { dst, addr: env_ptr } => {
             *env_ptr = current_version(*env_ptr, version_stack, num_orig_locals);
             let orig = dst.0 as usize;
             if orig < num_orig_locals {

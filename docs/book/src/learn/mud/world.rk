@@ -4,56 +4,6 @@
 import memory.Rack
 import memory.Link
 
-public enum Direction {
-    North
-    South
-    East
-    West
-    Up
-    Down
-}
-
-extend Direction {
-    public func parse(word: string) -> Direction? {
-        return match word {
-            "n" | "north" => Direction.North,
-            "s" | "south" => Direction.South,
-            "e" | "east" => Direction.East,
-            "w" | "west" => Direction.West,
-            "u" | "up" => Direction.Up,
-            "d" | "down" => Direction.Down,
-            _ => none,
-        }
-    }
-
-    public func name(self) -> string {
-        return match self {
-            Direction.North => "north",
-            Direction.South => "south",
-            Direction.East => "east",
-            Direction.West => "west",
-            Direction.Up => "up",
-            Direction.Down => "down",
-        }
-    }
-
-    public func opposite(self) -> Direction {
-        return match self {
-            Direction.North => Direction.South,
-            Direction.South => Direction.North,
-            Direction.East => Direction.West,
-            Direction.West => Direction.East,
-            Direction.Up => Direction.Down,
-            Direction.Down => Direction.Up,
-        }
-    }
-}
-
-public struct Item {
-    public name: string
-    public description: string
-}
-
 // An exit stays when the room it led to is gone: `to` reads `none` from then on.
 public struct Exit {
     public dir: Direction
@@ -161,14 +111,4 @@ extend Room {
         }
         return none
     }
-}
-
-// Where an item named `name` sits in `items`, if it does.
-public func find_item(items: Vec<Item>, name: string) -> u64? {
-    for i in 0..items.len() {
-        if items[i].name == name {
-            return i
-        }
-    }
-    return none
 }

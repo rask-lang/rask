@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The rules, for one player.
+
+// exercise 05: Answer each command: look describes the room, a direction
+// walks, take and drop move an item, and so on down the list.
+public func apply(mutate world: World, cmd: Command) -> string {
+    return match cmd {
+        Command.Look => describe(world),
+        Command.Go(dir) => go(mutate world, dir),
+        Command.Take(thing) => pick_up(mutate world, thing),
+        Command.Drop(thing) => put_down(mutate world, thing),
+        Command.Inventory => inventory(world),
+        Command.Say(words) => "You say \"{words}\"",
+        Command.Help => HELP,
+        Command.Quit => "Goodbye.",
+    }
+}
+
+// The room's name, its description, what's in it and the ways out.
+public func describe(world: World) -> string {
+    with world.rooms[world.here] as room {
+        mut text = "{room.name}\n{room.description}"
+        for item in room.items {
+            text = "{text}\nThere is a {item.name} here."
+        }
+        mut exits: Vec<string> = Vec.new()
+        for dir in DIRECTIONS {
+            if room.exits.contains(dir) {
+                exits.push(dir.name())
+            }
+        }
+        if exits.is_empty() {
+            return "{text}\nThere is no way out."
+        }
+        return "{text}\nExits: {exits.join(", ")}."
+    }
+}
+
+// exercise 07: Walk `dir` from here, and describe where that leads. If there's
+// no exit that way, say so and stay put.
+public func go(mutate world: World, dir: Direction) -> string {
+    let to = world.rooms[world.here].exits.get(dir) ?? return "You can't go {dir.name()}."
+    world.here = to
+    return describe(world)
+}
+
+// exercise 09: Move the item called `thing` off the floor and into what the
+// player carries. It leaves the room: an item is only ever in one place.
+public func pick_up(mutate world: World, thing: string) -> string {
+    with world.rooms[world.here] as room {
+        let i = find_item(room.items, thing) ?? return "There's no {thing} here."
+        world.carried.push(room.items.remove(i))
+    }
+    return "You take the {thing}."
+}
+
+// exercise 09: The other way: from what the player carries onto the floor.
+public func put_down(mutate world: World, thing: string) -> string {
+    let i = find_item(world.carried, thing) ?? return "You don't have a {thing}."
+    world.rooms[world.here].items.push(world.carried.remove(i))
+    return "You drop the {thing}."
+}
+
+// exercise 06: List what the player carries, or say there's nothing.
+public func inventory(world: World) -> string {
+    if world.carried.is_empty() {
+        return "You carry nothing."
+    }
+    mut names: Vec<string> = Vec.new()
+    for item in world.carried {
+        names.push(item.name)
+    }
+    return "You carry {names.join(", ")}."
+}

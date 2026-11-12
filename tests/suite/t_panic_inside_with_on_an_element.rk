@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A panic inside `with v[i] as x` leaves the collection whole for whoever
+// catches it, with every write made before the panic in it.
+//
+// `with` used to copy the element's bytes out and write them back at the end.
+// A panic in between skipped the write-back: the copy's writes were lost, and
+// a field replaced in the copy had already released the value the slot still
+// pointed at, so the collection freed it a second time. The binding names the
+// slot itself now, so there is nothing to put back (#1922).
+
+import sync.Shared
+
+struct Room {
+    name: string
+    items: Vec<string>
+}
+
+func risky(n: i64) -> i64 {
+    if n > 0 {
+        panic("boom")
+    }
+    return n
+}
+
+func fill(rooms: Shared<Vec<Room>>, n: i64) {
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room.items.push("a key, in a string long enough to allocate")
+            room.name = "the courtyard, a name long enough to allocate"
+            let k = risky(n)
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+test "a panic inside with leaves the element for the next reader" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { fill(other, 1) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].items.len() == 2
+        assert rs[0].name == "the courtyard, a name long enough to allocate"
+    }
+}
+
+test "the next test runs" {
+    mut rooms: Vec<Room> = [Room(name: "hall", items: Vec.new())]
+    with rooms[0] as room {
+        room.items.push("coin")
+    }
+    assert rooms[0].items.len() == 1
+}
+
+// Replacing the whole element releases the old one, and the new one goes
+// back into the slot. The first version of this fix wrote the old one back
+// instead of releasing it, and leaked it.
+test "replacing the whole element releases the old one" {
+    mut rooms: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    with rooms[0] as room {
+        room = Room(name: "the courtyard, a name long enough to allocate", items: ["a key, long enough to allocate"])
+    }
+    for mutate r in rooms {
+        r = Room(name: "the hall, a name long enough to allocate", items: Vec.new())
+    }
+    assert rooms[0].name == "the hall, a name long enough to allocate"
+    assert rooms[0].items.len() == 0
+}
+
+enum Failed {
+    Always
+}
+
+func fails(n: i64) -> i64 or Failed {
+    if n > 0 {
+        return Failed.Always
+    }
+    return n
+}
+
+func force(rooms: Shared<Vec<Room>>, n: i64) {
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room.items.push("a key, in a string long enough to allocate")
+            let k = fails(n)!
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+// `!` panics a few blocks after the one where the element is last used.
+test "a panic from ! inside with leaves the element whole" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { force(other, 1) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].items.len() == 2
+    }
+}
+
+func risky_index(v: Vec<i64>, n: i64) -> i64 {
+    return v[n]
+}
+
+func rename(rooms: Shared<Vec<Room>>, n: i64) {
+    let idx: Vec<i64> = [1, 2, 3]
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room.name = "the courtyard, a name long enough to allocate"
+            let k = risky_index(idx, n)
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+// The panic comes out of a call that isn't inlined, after a field was
+// replaced.
+test "a field replaced before a panic stays replaced" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { rename(other, 10) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].name == "the courtyard, a name long enough to allocate"
+        assert rs[0].items.len() == 1
+    }
+}
+
+func replace(rooms: Shared<Vec<Room>>, n: i64) {
+    with rooms.write() as rs {
+        with rs[0] as room {
+            room = Room(name: "replaced, a name long enough to allocate", items: ["a key, long enough to allocate"])
+            if n > 0 {
+                panic("boom")
+            }
+        }
+    }
+}
+
+test "a whole element replaced before a panic stays replaced" {
+    let first: Vec<Room> = [Room(name: "the gate, a name long enough to allocate", items: ["a lamp, long enough to allocate"])]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { replace(other, 1) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].name == "replaced, a name long enough to allocate"
+        assert rs[0].items[0] == "a key, long enough to allocate"
+    }
+}
+
+func rename_all(rooms: Shared<Vec<Room>>, n: i64) {
+    let idx: Vec<i64> = [1, 2, 3]
+    with rooms.write() as rs {
+        for mutate r in rs {
+            r.name = "renamed, a name long enough to allocate"
+            let k = risky_index(idx, n)
+            r.items.push("not reached {k}")
+        }
+    }
+}
+
+test "a for mutate body that panics keeps what it wrote" {
+    let first: Vec<Room> = [
+        Room(name: "the gate, a name long enough to allocate", items: Vec.new()),
+        Room(name: "the hall, a name long enough to allocate", items: Vec.new()),
+    ]
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { rename_all(other, 10) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs[0].name == "renamed, a name long enough to allocate"
+        assert rs[1].name == "the hall, a name long enough to allocate"
+    }
+}
+
+func rename_entry(rooms: Shared<Map<string, Room>>, n: i64) {
+    let idx: Vec<i64> = [1, 2, 3]
+    with rooms.write() as rs {
+        with rs["gate"] as room {
+            room.name = "the courtyard, a name long enough to allocate"
+            let k = risky_index(idx, n)
+            room.items.push("not reached {k}")
+        }
+    }
+}
+
+test "a map value written before a panic stays written" {
+    mut first: Map<string, Room> = Map.new()
+    first["gate"] = Room(name: "the gate, a name long enough to allocate", items: Vec.new())
+    let rooms = Shared.new(first)
+    using Multitasking {
+        let other = rooms.clone()
+        let h = spawn { rename_entry(other, 10) }
+        assert h.join() is JoinError
+    }
+    with rooms.read() as rs {
+        assert rs["gate"].name == "the courtyard, a name long enough to allocate"
+    }
+}
