@@ -787,6 +787,26 @@ impl Interpreter {
     /// Read off the generic frame, which holds the checker's types for the
     /// call. It used to be guessed from the argument values, so `T = i32`
     /// read as `i64` because every integer value looks alike (#699, #968).
+    /// `T` in `T.zero()`, written as the type the running body has for it:
+    /// `Meters`, or `Box<i64>` as a generic name. `None` when `object` is
+    /// anything else: a value, or a name no frame binds.
+    pub(crate) fn type_param_receiver(&self, object: &rask_ast::expr::Expr) -> Option<rask_ast::expr::Expr> {
+        let rask_ast::expr::ExprKind::Ident(name) = &object.kind else { return None };
+        if self.env.get(name).is_some() {
+            return None;
+        }
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref())?;
+        frame.get(name)?;
+        let concrete = self.resolve_type_param(&TypeExpr::named(name.clone()));
+        let base = concrete.last_segment()?.to_string();
+        let kind = if concrete.args().is_empty() {
+            rask_ast::expr::ExprKind::Ident(base)
+        } else {
+            rask_ast::expr::ExprKind::GenericName { name: base, type_args: concrete.args().to_vec() }
+        };
+        Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
+    }
+
     pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         ty.substitute(&|name| {

@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a method that takes `self`, called through a type; and through a
+// type parameter, which way a function goes has to match its `self` too
+// (type.generics/GF7).
+//
+// `Meters.show()` for a `show(self)` type-checked clean and had no value to
+// hand the method.
+
+interface Zero {
+    func zero() -> Self
+    func show(self) -> string
+}
+
+struct Meters {
+    v: f64
+}
+
+Meters implements Zero {
+    func zero() -> Meters {
+        return Meters(v: 0.0)
+    }
+    func show(self) -> string {
+        return "{self.v}m"
+    }
+}
+
+func shown<T: Zero>() -> string {
+    // ERROR: `show` takes `self`, so it runs on a value [E0961]
+    return T.show()
+}
+
+func remade<T: Zero>(t: T) -> T {
+    // ERROR: `zero` takes no `self`; call it on `T` [E0946]
+    return t.zero()
+}
+
+func main() {
+    // ERROR: `show` takes `self`, called on the type [E0961]
+    println(Meters.show())
+
+    // FIX: a function without `self` through the type, a method on a value
+    let m = Meters.zero()
+    println(m.show())
+}

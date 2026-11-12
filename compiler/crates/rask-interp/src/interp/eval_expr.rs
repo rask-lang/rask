@@ -1218,6 +1218,16 @@ impl Interpreter {
                     }
                     None => object,
                 };
+                // GF7: `T.zero()` on a type parameter is the same call on the
+                // type the running body was instantiated with.
+                let instantiated;
+                let object = match self.type_param_receiver(object) {
+                    Some(concrete) => {
+                        instantiated = concrete;
+                        &instantiated
+                    }
+                    None => object,
+                };
                 if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One

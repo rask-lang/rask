@@ -1894,6 +1894,17 @@ impl TypeChecker {
             });
         };
 
+        // GF7: through the type, `T.zero()`, only a function without `self`;
+        // through a value, only a method with one.
+        let on_type = call_node.is_some_and(|n| self.type_param_static_calls.contains(&n));
+        let is_static = matches!(sig.self_param, rask_types::SelfParam::None);
+        if on_type && !is_static {
+            return Err(TypeError::InstanceCallOnType { ty: param, method, span });
+        }
+        if !on_type && is_static {
+            return Err(TypeError::StaticCallOnValue { ty: param, method, span });
+        }
+
         // The bound is only in scope while this body is checked, so the
         // labels' names are taken from it now.
         if let Some(node) = call_node {

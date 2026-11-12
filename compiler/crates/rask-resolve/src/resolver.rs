@@ -2564,7 +2564,14 @@ impl Resolver {
                         }
                     }
                 }
-                self.resolve_expr(object);
+                // `T.zero()`: a function the bounds on `T` require, called on
+                // the type parameter itself (`type.generics/GF7`). The name is
+                // a type here, so it has no value to resolve.
+                let names_type_param = matches!(&object.kind, ExprKind::Ident(n)
+                    if self.is_type_param(n) && self.scopes.lookup(n).is_none());
+                if !names_type_param {
+                    self.resolve_expr(object);
+                }
                 for arg in args {
                     self.resolve_expr(&arg.expr);
                 }

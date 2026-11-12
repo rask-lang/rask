@@ -563,6 +563,9 @@ pub struct TypeChecker {
     /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
     /// is the case worth catching (#1090).
     pub(super) pending_comptime_field_names: Vec<(Type, rask_ast::Span)>,
+    /// Calls written on a type parameter itself, `T.zero()` (`type.generics/GF7`),
+    /// so the bound's signature can be held to taking no `self`.
+    pub(super) type_param_static_calls: std::collections::HashSet<rask_ast::NodeId>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
@@ -777,6 +780,7 @@ impl TypeChecker {
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
             pending_comptime_field_names: Vec::new(),
+            type_param_static_calls: std::collections::HashSet::new(),
             deferred_methods: Vec::new(),
             deferred_fields: Vec::new(),
             pending_index: Vec::new(),

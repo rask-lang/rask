@@ -2830,6 +2830,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
             }
+            InstanceCallOnType { ty, method, span } => {
+                Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
+                    .with_code("E0961")
+                    .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
+                    .with_fix(format!("call it on a value: `value.{}(…)`", method))
+                    .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")
+            }
             IfWithoutElseValue { found, span } => {
                 Diagnostic::error("an `if` without `else` has no value".to_string())
                     .with_code("E0947")

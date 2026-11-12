@@ -1312,6 +1312,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A method that takes `self`, called on a type: `Meters.show()`,
+    /// `T.show()`.
+    #[error("`{method}` takes `self`, called on the type `{ty}`")]
+    InstanceCallOnType {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// ctrl.flow/CF7: an `if` with no `else`, used for a value.
     #[error("an `if` without `else` has no value")]
     IfWithoutElseValue {
@@ -2051,6 +2060,7 @@ impl TypeError {
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }
+            | InstanceCallOnType { .. }
             | RepeatedBinding { .. } => {}
         }
     }

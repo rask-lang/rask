@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `T.make(n)` calls a function `T`'s bound requires on the type parameter
+// itself (type.generics/GF7). The resolver read `T` as an undefined value, and
+// the interpreter had no type to call it on.
+
+interface Make {
+    func make(n: i64) -> Self
+    func show(self) -> string
+}
+
+struct Doubled {
+    n: i64
+}
+
+Doubled implements Make {
+    func make(n: i64) -> Doubled {
+        return Doubled(n: n * 2)
+    }
+    func show(self) -> string {
+        return "d{self.n}"
+    }
+}
+
+struct Named {
+    s: string
+}
+
+Named implements Make {
+    func make(n: i64) -> Named {
+        return Named(s: "item number {n}, long enough to live on the heap")
+    }
+    func show(self) -> string {
+        return self.s
+    }
+}
+
+func fresh<T: Make>() -> T {
+    return T.make(0)
+}
+
+func many<T: Make>(k: i64) -> Vec<T> {
+    mut out: Vec<T> = Vec.new()
+    for i in 0..k {
+        out.push(T.make(i))
+    }
+    return out
+}
+
+// Instantiated from another generic body, `T` is that body's argument.
+func third<T: Make>() -> string {
+    let v: Vec<T> = many(3)
+    return v[2].show()
+}
+
+test "the type argument picks the function" {
+    let d: Doubled = fresh()
+    assert d.show() == "d0"
+    assert fresh<Named>().show() == "item number 0, long enough to live on the heap"
+}
+
+test "with arguments, in a loop" {
+    let v: Vec<Doubled> = many(3)
+    assert v[2].show() == "d4"
+}
+
+test "through another generic function" {
+    assert third<Doubled>() == "d4"
+    assert third<Named>() == "item number 2, long enough to live on the heap"
+}
