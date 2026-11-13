@@ -887,7 +887,7 @@ impl Hasher {
                 }
                 self.hash_expr(body);
             }
-            ExprKind::Spawn { target, receiver, body } => {
+            ExprKind::Spawn { target, receiver, args, body } => {
                 self.feed_tag(104);
                 self.feed_u8(*target as u8);
                 if let Some(r) = receiver {
@@ -896,6 +896,7 @@ impl Hasher {
                 } else {
                     self.feed_bool(false);
                 }
+                self.hash_call_args(args);
                 self.hash_expr(body);
             }
             ExprKind::Cast { expr, ty } => {

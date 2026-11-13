@@ -4022,7 +4022,7 @@ impl Parser {
 
                 // `spawn { … }` — a task block (conc.async/S1).
                 if name == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
-                    return self.parse_spawn_block(SpawnTarget::Green, None, start);
+                    return self.parse_spawn_block(SpawnTarget::Green, None, Vec::new(), start);
                 }
 
                 // Labeled loop/for/while expression: `label: loop { ... }`
@@ -4591,6 +4591,7 @@ impl Parser {
         &mut self,
         target: SpawnTarget,
         receiver: Option<Box<Expr>>,
+        args: Vec<CallArg>,
         start: usize,
     ) -> Result<Expr, ParseError> {
         let block_start = self.current().span.start;
@@ -4612,7 +4613,7 @@ impl Parser {
         };
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::Spawn { target, receiver, body: Box::new(body) },
+            kind: ExprKind::Spawn { target, receiver, args, body: Box::new(body) },
             span: self.span(start, end),
         })
     }
@@ -4720,15 +4721,27 @@ impl Parser {
 
                 let field = self.expect_ident_or_keyword()?;
 
-                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3).
-                if field == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3),
+                // and with arguments before the block:
+                // `ThreadPool.spawn(requires_pool: false) { … }`.
+                if field == "spawn"
+                    && self.allow_brace_expr
+                    && (self.check(&TokenKind::LBrace) || self.parens_then_brace())
+                {
                     let target = match Self::name_path(&lhs).as_deref() {
                         Some([.., last]) if last == "Thread" => Some(SpawnTarget::Thread),
                         Some([.., last]) if last == "ThreadPool" => Some(SpawnTarget::Pool),
                         _ => None,
                     };
                     if let Some(target) = target {
-                        return self.parse_spawn_block(target, Some(Box::new(lhs)), start);
+                        let args = if self.match_token(&TokenKind::LParen) {
+                            let args = self.parse_args()?;
+                            self.expect(&TokenKind::RParen)?;
+                            args
+                        } else {
+                            Vec::new()
+                        };
+                        return self.parse_spawn_block(target, Some(Box::new(lhs)), args, start);
                     }
                 }
 
@@ -4851,6 +4864,31 @@ impl Parser {
 
             _ => Ok(lhs),
         }
+    }
+
+    /// A parenthesized group at the current token with `{` right after it:
+    /// the arguments of a task block rather than a call.
+    fn parens_then_brace(&self) -> bool {
+        if !self.check(&TokenKind::LParen) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::LBrace));
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 
     fn parse_args(&mut self) -> Result<Vec<CallArg>, ParseError> {

@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+enum ParseError {
+    UnknownVerb(string)
+}
+
+extend ParseError {
+    func message(self) -> string {
+        return "I don't know how to do that."
+    }
+}
+
+func parse(line: string) -> string or ParseError {
+    if line == "look" {
+        return line
+    }
+    return ParseError.UnknownVerb(line)
+}
+
+func main() {
+    let verb = parse("dance") catch "look"
+    println(verb)
+}

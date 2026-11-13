@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's functions can share a name with C's.
+//
+//     func write(conn: TcpConnection, text: string) -> bool { … }
+//
+// hung the first socket write natively. Every Rask function was a global
+// symbol under its own name, so the linker resolved the C runtime's call to
+// libc's `write(2)` to this function instead, which called the runtime's
+// write, which called this function, until the stack ran out. Only what C
+// calls by name is global now.
+
+import net
+import net.TcpConnection
+
+func write(conn: TcpConnection, text: string) -> bool {
+    conn.write_text(text) catch _ => return false
+    return true
+}
+
+func read(n: i64) -> i64 {
+    return n * 2
+}
+
+func close(n: i64) -> i64 {
+    return n + 1
+}
+
+test "a socket write reaches libc, not the program's write" {
+    let listener = net.tcp_listen("127.0.0.1:0")!
+    let client = net.tcp_connect(listener.local_addr())!
+    let server = listener.accept()!
+    assert write(client, "ping")
+    client.close()!
+    assert server.read_text()! == "ping"
+    server.close()!
+    listener.close()!
+}
+
+test "the program's own functions still answer to their names" {
+    assert read(21) == 42
+    assert close(1) == 2
+}

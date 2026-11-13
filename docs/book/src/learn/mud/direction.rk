@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The six ways out of a room.
+
+public enum Direction {
+    North
+    South
+    East
+    West
+    Up
+    Down
+}
+
+extend Direction {
+    public func parse(word: string) -> Direction? {
+        return match word {
+            "n" | "north" => Direction.North,
+            "s" | "south" => Direction.South,
+            "e" | "east" => Direction.East,
+            "w" | "west" => Direction.West,
+            "u" | "up" => Direction.Up,
+            "d" | "down" => Direction.Down,
+            _ => none,
+        }
+    }
+
+    public func name(self) -> string {
+        return match self {
+            Direction.North => "north",
+            Direction.South => "south",
+            Direction.East => "east",
+            Direction.West => "west",
+            Direction.Up => "up",
+            Direction.Down => "down",
+        }
+    }
+
+    // exercise 04: The way back: north for south, up for down, and so on.
+    public func opposite(self) -> Direction {
+        return match self {
+            Direction.North => Direction.South,
+            Direction.South => Direction.North,
+            Direction.East => Direction.West,
+            Direction.West => Direction.East,
+            Direction.Up => Direction.Down,
+            Direction.Down => Direction.Up,
+        }
+    }
+}
+
+// Every direction, in the order a room lists its exits.
+public const DIRECTIONS: Vec<Direction> = [
+    Direction.North
+    Direction.South
+    Direction.East
+    Direction.West
+    Direction.Up
+    Direction.Down
+]
+
+test "every direction leads back the way it came" {
+    for dir in DIRECTIONS {
+        assert dir.opposite() != dir
+        assert dir.opposite().opposite() == dir
+    }
+    assert Direction.North.opposite() == Direction.South
+    assert Direction.Up.opposite() == Direction.Down
+}

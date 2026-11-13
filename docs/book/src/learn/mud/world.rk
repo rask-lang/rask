@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The world: rooms joined by exits, the items lying in them, and who is where.
+
+import memory.Rack
+import memory.Link
+
+// An exit stays when the room it led to is gone: `to` reads `none` from then on.
+public struct Exit {
+    public dir: Direction
+    public to: Link<Room>?
+}
+
+public struct Room {
+    public name: string
+    public description: string
+    public items: Vec<Item>
+    public exits: Vec<Exit>
+}
+
+public struct Player {
+    public name: string
+    public at: Link<Room>?
+    public inventory: Vec<Item>
+}
+
+// Moves from room to room on its own, once a tick.
+public struct Monster {
+    public name: string
+    public at: Link<Room>?
+}
+
+public struct World {
+    public rooms: Rack<Room>
+    public players: Rack<Player>
+    public monsters: Rack<Monster>
+}
+
+extend World {
+    public func new() -> World {
+        return World(rooms: Rack.new(), players: Rack.new(), monsters: Rack.new())
+    }
+
+    public func add_room(mutate self, name: string, description: string) -> Link<Room> {
+        return self.rooms.insert(Room(name, description, items: Vec.new(), exits: Vec.new()))
+    }
+
+    // Both ways: going north from `a` reaches `b`, and south from `b` reaches `a`.
+    public func connect(mutate self, a: Link<Room>, dir: Direction, b: Link<Room>) -> void {
+        a.exits.push(Exit(dir, to: b))
+        b.exits.push(Exit(dir: dir.opposite(), to: a))
+    }
+
+    public func room(self, name: string) -> Link<Room>? {
+        for r in self.rooms.nodes() {
+            if r.name == name {
+                return r
+            }
+        }
+        return none
+    }
+
+    public func player(self, name: string) -> Link<Player>? {
+        for p in self.players.nodes() {
+            if p.name == name {
+                return p
+            }
+        }
+        return none
+    }
+
+    // Everyone in `room` but `except`, by name.
+    public func players_in(self, room: Link<Room>, except: string) -> Vec<string> {
+        mut names = Vec.new()
+        for p in self.players.nodes() {
+            if p.at? as r {
+                if r == room && p.name != except {
+                    names.push(p.name)
+                }
+            }
+        }
+        return names
+    }
+
+    // Deleting the room turns every exit into it into a dead end, and every
+    // player standing in it into nobody-knows-where; callers move them first.
+    public func collapse(deleting self, name: string) -> bool {
+        let r = self.room(name) ?? return false
+        self.rooms.delete(r)
+        return true
+    }
+
+    // How many items there are, wherever they are.
+    public func item_count(self) -> u64 {
+        mut n: u64 = 0
+        for r in self.rooms.nodes() {
+            n += r.items.len()
+        }
+        for p in self.players.nodes() {
+            n += p.inventory.len()
+        }
+        return n
+    }
+}
+
+extend Room {
+    public func exit(self, dir: Direction) -> Exit? {
+        for e in self.exits {
+            if e.dir == dir {
+                return e
+            }
+        }
+        return none
+    }
+}

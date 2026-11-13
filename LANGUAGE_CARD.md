@@ -190,7 +190,7 @@ a string and `entries` on a map are all things that look right and aren't.
 `repeat` `reverse` `substring` `char_count` `is_ascii` `to_string`
 `split` `split_whitespace` `lines` `chars` `char_indices` `bytes`
 `parse_int` `parse_float` `parse`
-`index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
+`index_of` / `last_index_of` (→ `usize?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
 
 **`bytes`** — `len` `is_empty` `starts_with` `ends_with` `contains` `index_of`
 `hash` `to_vec` `view`; `Vec<u8>.freeze()`
@@ -220,8 +220,9 @@ starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec
 (`type.sequence/SEQ48`). The chain allocates once, at the terminal
 (`type.sequence/SEQ41`).
 
-`.len()` answers `u64` everywhere. `as` won't narrow it to `i64` — that's
-`.to<i64>()!`, or keep the count unsigned.
+`.len()` answers `usize` everywhere, and so do indices. `usize` widens to
+`u64` on its own; `u64` to `usize`, and either to `i64`, is `.to<…>()!`, or
+keep the count unsigned.
 
 ## Types
 

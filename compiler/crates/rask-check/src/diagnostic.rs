@@ -2678,6 +2678,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
             }
+            CloneHandle { ty, handle, span } => {
+                let label = if ty == handle {
+                    format!("a `{}` owns state the runtime frees, and it can't be copied", ty)
+                } else {
+                    format!("this holds a `{}`, which owns state the runtime frees and can't be copied", handle)
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0965")
+                    .with_primary(*span, label)
+                    .with_fix("move it, or borrow it where a copy was wanted")
+                    .with_why("a clone copies the handle's pointer, and then both copies would free the same block")
+            }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
                     .with_code("E0918")

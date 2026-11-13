@@ -77,7 +77,11 @@ static void pool_worker_loop(void) {
 
         if (!job) continue;
 
-        rask_task_run_body(job->task, job->func, job->env);
+        // Its joiner may have taken it back and run it already.
+        if (rask_task_pool_claim(job->task)) {
+            rask_task_mark_on_pool(job->task);
+            rask_task_run_body(job->task, job->func, job->env);
+        }
         rask_task_release(job->task);   // the worker's ref
         rask_free(job);
     }
@@ -98,6 +102,19 @@ static void pool_worker_fiber(void *arg) {
     pool_worker_loop();
 }
 #endif
+
+static void enqueue(PoolJob *job) {
+    pthread_mutex_lock(&g_pool.lock);
+    if (g_pool.tail) {
+        g_pool.tail->next = job;
+        g_pool.tail = job;
+    } else {
+        g_pool.head = job;
+        g_pool.tail = job;
+    }
+    rask_task_cond_signal(&g_pool.work_ready);
+    pthread_mutex_unlock(&g_pool.lock);
+}
 
 // ─── Public API ────────────────────────────────────────────
 
@@ -191,19 +208,29 @@ void rask_threadpool_shutdown(void) {
     pthread_mutex_destroy(&g_pool.lock);
 }
 
-// ThreadPool.spawn. Outside a `using ThreadPool` block there is no pool, so
-// this falls back to a dedicated thread rather than enqueueing into a queue
-// nothing drains.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
-    if (!g_pool.started) {
-        return rask_closure_spawn(closure_ptr, result_owned);
-    }
-
+// ThreadPool.spawn (conc.async/S2). Outside a `using ThreadPool` block there
+// is no pool. A spawn that said `requires_pool: false` runs right here, now:
+// it may run beside what follows, and running it first is one of the orders
+// it may run in. Any other falls back to a dedicated thread rather than
+// enqueueing into a queue nothing drains.
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
+    if (!g_pool.started) {
+        if (requires_pool) {
+            return rask_closure_spawn(closure_ptr, result_owned);
+        }
+        RaskTask *task = rask_task_new();
+        rask_task_adopt_closure(task, closure_ptr, result_owned);
+        rask_task_run_inline(task, func, env);
+        rask_task_release(task);   // the runner's ref; the handle keeps one
+        return task;
+    }
+
     RaskTask *task = rask_task_new();
     rask_task_adopt_closure(task, closure_ptr, result_owned);
+    rask_task_pool_queue(task, func, env);
 
     PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
     *job = (PoolJob){
@@ -212,17 +239,6 @@ RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
         .task = task,
         .next = NULL,
     };
-
-    pthread_mutex_lock(&g_pool.lock);
-    if (g_pool.tail) {
-        g_pool.tail->next = job;
-        g_pool.tail = job;
-    } else {
-        g_pool.head = job;
-        g_pool.tail = job;
-    }
-    rask_task_cond_signal(&g_pool.work_ready);
-    pthread_mutex_unlock(&g_pool.lock);
-
+    enqueue(job);
     return task;
 }

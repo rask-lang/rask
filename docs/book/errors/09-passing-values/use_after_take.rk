@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Item {
+    name: string
+    description: string
+}
+
+struct World {
+    here: u64
+    carried: Vec<Item>
+}
+
+func go(mutate world: World, to: u64) {
+    world.here = to
+}
+
+func main() {
+    mut world = World(here: 0, carried: Vec.new())
+    let lamp = Item(name: "lamp", description: "A brass lamp.")
+    world.carried.push(lamp)
+    println(lamp.name)
+}

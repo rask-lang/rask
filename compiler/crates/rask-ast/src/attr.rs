@@ -100,6 +100,9 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
+    // The last argument is a node going into a rack's storage, so the call
+    // carries the node type's layout (mem.racks)
+    ("places_node", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),

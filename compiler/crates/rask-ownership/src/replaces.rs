@@ -162,7 +162,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The function a call's callee names, when it names a declared one. A
     /// local or a parameter of the same name is a closure, not that function.
-    fn fn_key(&self, func: &Expr) -> Option<Key> {
+    pub(crate) fn fn_key(&self, func: &Expr) -> Option<Key> {
         let ExprKind::Ident(name) = &func.kind else { return None };
         let sym = self.program.resolutions.get(&func.id)?;
         let is_fn = self

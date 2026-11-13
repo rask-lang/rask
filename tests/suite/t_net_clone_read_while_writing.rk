@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One task waits reading a connection while another writes through a clone
+// of it. The read is waiting for what the write sends.
+//
+// The interpreter held one lock across a blocking read, and `clone()` shares
+// that lock, so the write queued behind the read it was supposed to answer.
+// Native has no such lock and was always fine.
+
+import net
+import io.BufferedReader
+import time
+import time.Duration
+
+test "a read on one clone doesn't hold up a write on another" {
+    let listener = net.tcp_listen("127.0.0.1:0")!
+    let addr = listener.local_addr()
+    using Multitasking {
+        // Echoes one line back, upper-cased, then closes.
+        let echo = spawn {
+            let conn = listener.accept()!
+            let lines = BufferedReader.new(conn.clone())
+            let line = lines.read_line()!
+            conn.write_text("{line.to_uppercase()}\n")!
+            let _ = lines.take().close()
+            conn.close()!
+            listener.close()!
+        }
+        ensure echo.detach()
+
+        let conn = net.tcp_connect(addr)!
+        let reading = conn.clone()
+        let (got, answer) = Channel<string>.buffered(1)
+        let reader = spawn {
+            let lines = BufferedReader.new(reading)
+            got.send(lines.read_line()!)!
+            let _ = lines.take().close()
+        }
+        ensure reader.detach()
+
+        // Long enough for the reader to be waiting on the socket.
+        time.sleep(Duration.millis(100))!
+        conn.write_text("hello\n")!
+        assert answer.receive()! == "HELLO"
+        reader.join()!
+        echo.join()!
+        conn.close()!
+    }
+}

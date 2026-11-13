@@ -2309,13 +2309,16 @@ impl<'a> Printer<'a> {
                     _ => self.format_expr(body),
                 }
             }
-            ExprKind::Spawn { receiver, body, .. } => {
+            ExprKind::Spawn { receiver, args, body, .. } => {
                 match receiver {
                     Some(r) => {
                         self.format_expr(r);
                         self.emit(".spawn");
                     }
                     None => self.emit("spawn"),
+                }
+                if !args.is_empty() {
+                    self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
                 }
                 // The parser wraps the block in a closure node; only the
                 // block is source. Laid out the way a closure's block body is.

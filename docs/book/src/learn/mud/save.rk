@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Saving the world to a file and reading it back.
+//
+// A rack's links are addresses, which mean nothing in a file. So what gets
+// saved is a plain description: rooms by name, exits by the name they lead to.
+
+import fs
+import io.IoError
+import json
+import json.JsonError
+
+public struct ExitSpec {
+    public dir: string
+    public to: string
+}
+
+public struct RoomSpec {
+    public name: string
+    public description: string
+    public items: Vec<Item>
+    public exits: Vec<ExitSpec>
+}
+
+public struct MonsterSpec {
+    public name: string
+    public at: string
+}
+
+public struct WorldSpec {
+    public rooms: Vec<RoomSpec>
+    public monsters: Vec<MonsterSpec>
+}
+
+public enum LoadError {
+    Io(IoError)
+    Json(JsonError)
+    BadExit(string)
+}
+
+// Players aren't saved: they're whoever is connected.
+public func to_spec(world: World) -> WorldSpec {
+    mut rooms = Vec.new()
+    for r in world.rooms.nodes() {
+        mut exits = Vec.new()
+        for e in r.exits {
+            if e.to? as there {
+                exits.push(ExitSpec(dir: e.dir.name(), to: there.name))
+            }
+        }
+        rooms.push(RoomSpec(name: r.name, description: r.description, items: r.items.clone(), exits))
+    }
+    mut monsters = Vec.new()
+    for m in world.monsters.nodes() {
+        if m.at? as r {
+            monsters.push(MonsterSpec(name: m.name, at: r.name))
+        }
+    }
+    return WorldSpec(rooms, monsters)
+}
+
+// Rooms first, so every exit has somewhere to point when it's added.
+public func from_spec(spec: WorldSpec) -> World or LoadError {
+    mut world = World.new()
+    for rs in spec.rooms {
+        let r = world.add_room(rs.name, rs.description)
+        for item in rs.items {
+            r.items.push(item.clone())
+        }
+    }
+    for rs in spec.rooms {
+        let from = world.room(rs.name) ?? return LoadError.BadExit(rs.name)
+        for es in rs.exits {
+            let dir = Direction.parse(es.dir) ?? return LoadError.BadExit("{rs.name} {es.dir}")
+            let to = world.room(es.to) ?? return LoadError.BadExit("{rs.name} {es.dir} {es.to}")
+            from.exits.push(Exit(dir, to))
+        }
+    }
+    for ms in spec.monsters {
+        let at = world.room(ms.at) ?? return LoadError.BadExit(ms.at)
+        world.monsters.insert(Monster(name: ms.name, at))
+    }
+    return world
+}
+
+public func save(world: World, path: string) -> void or IoError {
+    let file = try fs.create_file(path)
+    ensure file.close()
+    try file.write_text(json.encode_pretty(to_spec(world)))
+}
+
+public func load(path: string) -> World or LoadError {
+    let text = fs.read_text(path) catch e => return LoadError.Io(e)
+    let spec = json.decode<WorldSpec>(text) catch e => return LoadError.Json(e)
+    return try from_spec(spec)
+}
+
+test "a saved world loads back the same" {
+    mut w = default_world()
+    let _ = script(mutate w, "ada", ["take lamp", "n", "drop lamp"])
+    let _ = leave(deleting w, "ada")
+    let path = "mud_test.save"
+    save(w, path)!
+    let back = load(path)!
+    fs.remove_file(path)!
+    assert json.encode(to_spec(back)) == json.encode(to_spec(w))
+    assert find_item(back.room("Courtyard")!.items, "lamp")?
+}
+
+test "a broken save says what's wrong" {
+    let path = "mud_broken.save"
+    fs.write_text(path, "{{\"rooms\": 3}}")!
+    let r = load(path)
+    fs.remove_file(path)!
+    assert r is LoadError.Json
+}
