@@ -416,6 +416,10 @@ pub fn expand_round(
     if errors.is_empty() {
         Ok(out)
     } else {
+        // One iteration per item, so one mistake in the body is found once
+        // per item.
+        let mut seen = HashSet::new();
+        errors.retain(|e| seen.insert((e.message.clone(), e.span)));
         Err(errors)
     }
 }
@@ -706,7 +710,19 @@ impl Unroll<'_, '_> {
         let StmtKind::ComptimeFor { binding, iter, body } = &stmt.kind else { return None };
         let ForBinding::Single(item) = binding else { return None };
         let items = match &iter.kind {
-            ExprKind::Array(elems) => elems.iter().cloned().map(Item::Value).collect(),
+            ExprKind::Array(elems) => {
+                // Each entry is written in where the item is named, so it has
+                // to be known while compiling, and naming it twice can't run
+                // anything twice (ctrl.comptime/CT51).
+                if let Some(e) = elems.iter().find(|e| !is_literal(e)) {
+                    self.ex.errors.push(ExpandError {
+                        message: "an array `comptime for` runs over is read while compiling, so each entry has to be a literal".to_string(),
+                        span: e.span,
+                    });
+                    return Some(Vec::new());
+                }
+                elems.iter().cloned().map(Item::Value).collect()
+            }
             ExprKind::MethodCall { object, method, type_args: Some(args), .. }
                 if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
                     && matches!(method.as_str(), "fields" | "params" | "variants") =>
@@ -792,19 +808,28 @@ impl Unroll<'_, '_> {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
             decide_comptime_ifs(&mut copy, self.ex.known);
-            // A read of an annotation the field lacks is an error only if
-            // the `comptime if` guarding it didn't drop it.
-            facts.report = true;
-            for s in &mut copy {
-                rewrite::rewrite_stmt(s, &mut facts);
-            }
-            self.ex.errors.extend(facts.errors);
             // `comptime for p in v.fields`: a variant's payload, written out
             // with the variant.
             if let Item::Variant(v) = it {
                 let payload: Vec<Item> = v.fields.iter().cloned().enumerate().map(|(i, f)| Item::Field(payload_fact(f), i)).collect();
                 rewrite::rewrite_body(&mut copy, &mut PayloadLoops { unroll: self, variant: item, payload: &payload });
             }
+            // What's left naming the item is an error: a read of an
+            // annotation the field lacks that no `comptime if` dropped, or
+            // the item used as a value.
+            let mut facts = ItemFacts {
+                item,
+                it,
+                types: &self.ex.typed.types,
+                typed: self.ex.typed,
+                loop_span: stmt.span,
+                report: true,
+                errors: Vec::new(),
+            };
+            for s in &mut copy {
+                rewrite::rewrite_stmt(s, &mut facts);
+            }
+            self.ex.errors.extend(facts.errors);
             // One block per iteration, so a `let` in the body is that
             // iteration's.
             out.push(Stmt {
@@ -814,6 +839,18 @@ impl Unroll<'_, '_> {
             });
         }
         out
+    }
+}
+
+/// A number, string, character or bool written out, a negative number
+/// included.
+fn is_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(_) | ExprKind::Char(_) | ExprKind::Bool(_) => true,
+        ExprKind::Unary { op: rask_ast::expr::UnaryOp::Neg, operand } => {
+            matches!(operand.kind, ExprKind::Int(..) | ExprKind::Float(..))
+        }
+        _ => false,
     }
 }
 
@@ -1009,6 +1046,17 @@ impl Rewrite for ItemFacts<'_> {
                 _ => None,
             },
             ExprKind::Field { object, field } if self.is_item(object) => self.property(field),
+            // The item alone, as a value: there isn't one at run time.
+            ExprKind::Ident(_) if self.report && !matches!(self.it, Item::Value(_)) && self.is_item(e) => {
+                self.errors.push(ExpandError {
+                    message: format!(
+                        "`{}` exists only while compiling; read one of its properties (`{}.name`, …) instead",
+                        self.item, self.item
+                    ),
+                    span: e.span,
+                });
+                None
+            }
             ExprKind::Field { object, field } => self.annotation_read(object, field),
             ExprKind::MethodCall { object, method, type_args: Some(args), .. } if self.is_item(object) => {
                 match (method.as_str(), self.it) {
