@@ -100,8 +100,13 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
 }
 
 /// A generic function whose body has comptime control to expand per instance.
+/// Generic counts a type parameter written without `<T>` (type.gradual/PC1).
 pub fn is_template(f: &FnDecl) -> bool {
-    !f.type_params.is_empty() && has_comptime_for(&f.body)
+    is_generic(f) && has_comptime_for(&f.body)
+}
+
+fn is_generic(f: &FnDecl) -> bool {
+    !rask_ast::type_params::signature_type_param_names(f).is_empty()
 }
 
 fn has_comptime_for(body: &[Stmt]) -> bool {
@@ -232,7 +237,7 @@ pub fn has_comptime_control(d: &Decl) -> bool {
 /// a function with no type parameters, or a test.
 fn in_place(d: &Decl) -> bool {
     match &d.kind {
-        DeclKind::Fn(f) => f.type_params.is_empty() && has_comptime_for(&f.body),
+        DeclKind::Fn(f) => !is_generic(f) && has_comptime_for(&f.body),
         DeclKind::Test(t) => has_comptime_for(&t.body),
         _ => method_sites(d).iter().any(|(target, m)| !is_method_template(target, m) && has_comptime_for(&m.body)),
     }
@@ -242,13 +247,14 @@ fn in_place(d: &Decl) -> bool {
 /// written: `Box<T>` for `extend Box<T>`, and for a type's own methods the
 /// type with its parameters.
 fn method_sites(d: &Decl) -> Vec<(TypeExpr, &FnDecl)> {
-    let own = |name: &str, params: &[rask_ast::decl::TypeParam]| {
-        TypeExpr::generic(name.to_string(), params.iter().map(|p| TypeExpr::named(p.name.clone())).collect())
+    use rask_ast::type_params::{enum_type_param_names, struct_type_param_names};
+    let own = |name: &str, params: Vec<String>| {
+        TypeExpr::generic(name.to_string(), params.into_iter().map(TypeExpr::named).collect())
     };
     match &d.kind {
         DeclKind::Impl(i) => i.methods.iter().map(|m| (i.target_ty.clone(), m)).collect(),
-        DeclKind::Struct(st) => st.methods.iter().map(|m| (own(&st.name, &st.type_params), m)).collect(),
-        DeclKind::Enum(e) => e.methods.iter().map(|m| (own(&e.name, &e.type_params), m)).collect(),
+        DeclKind::Struct(st) => st.methods.iter().map(|m| (own(&st.name, struct_type_param_names(st)), m)).collect(),
+        DeclKind::Enum(e) => e.methods.iter().map(|m| (own(&e.name, enum_type_param_names(e)), m)).collect(),
         _ => Vec::new(),
     }
 }
@@ -256,7 +262,14 @@ fn method_sites(d: &Decl) -> Vec<(TypeExpr, &FnDecl)> {
 /// A method with comptime control that is written out per instance: it, or
 /// the type its block is for, has type parameters.
 fn is_method_template(target: &TypeExpr, m: &FnDecl) -> bool {
-    (!m.type_params.is_empty() || !target.args().is_empty()) && has_comptime_for(&m.body)
+    (is_generic(m) || !target.args().is_empty()) && has_comptime_for(&m.body)
+}
+
+fn is_struct(types: &rask_check::TypeTable, ty: &Type) -> bool {
+    match ty {
+        Type::Named(id) | Type::Generic { base: id, .. } => matches!(types.get(*id), Some(TypeDef::Struct { .. })),
+        _ => false,
+    }
 }
 
 /// Where a template is: a free function, or a method with the type its block
@@ -328,7 +341,9 @@ pub fn expand_round(
         let shown = match site {
             Site::Free(_) => with_args(&generic.name, inst.type_args.iter().map(|b| label(b).source()).collect()),
             Site::Method { target, method, .. } => {
-                let own = |b: &&TypeBinding| method.type_params.iter().any(|p| p.name == b.param);
+                let receivers: Vec<String> =
+                    target.args().iter().filter_map(|a| a.bare_name().map(str::to_string)).collect();
+                let own = |b: &&TypeBinding| !receivers.contains(&b.param);
                 let receiver = target.substitute(&|n| {
                     inst.type_args.iter().find(|b| b.param == n && !own(b)).map(label)
                 });
@@ -337,7 +352,7 @@ pub fn expand_round(
             }
         };
         out.instances.push((template_span, shown));
-        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
+        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known, unrolled: 0 };
         let copy = match site {
             Site::Free(template) => ex.expand(template, &inst.name, &inst.type_args),
             Site::Method { target, method, block } => ex.expand_method(target, method, block, &inst.name, &inst.type_args),
@@ -358,11 +373,16 @@ pub fn expand_round(
     // can't be written out (a layout mono didn't make, because nothing
     // reaches the code) stays as written; nothing runs it.
     for decl in templates.iter().filter(|d| in_place(d)) {
-        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
+        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known, unrolled: 0 };
         let copy = ex.expand_in_place(decl);
+        if ex.unrolled == 0 && ex.errors.is_empty() {
+            continue;
+        }
         if ex.errors.is_empty() {
             out.copied_from.extend(ex.copied_from);
             out.replaced.push((decl.id, copy));
+        } else {
+            errors.extend(ex.errors);
         }
     }
     if errors.is_empty() {
@@ -379,6 +399,9 @@ struct Expander<'a> {
     copied_from: Vec<(NodeId, NodeId)>,
     errors: Vec<ExpandError>,
     known: &'a Known<'a>,
+    /// Loops written out: none means a body written out in place came back
+    /// as it was, every loop left for code nothing reaches.
+    unrolled: usize,
 }
 
 /// What a `comptime if` can read besides the loop item: the module's consts,
@@ -454,8 +477,8 @@ impl rask_check::reflect::ReflectDecls for TemplateDecls<'_> {
     }
     fn type_params(&self, name: &str) -> Vec<String> {
         match self.named(name).map(|d| &d.kind) {
-            Some(DeclKind::Struct(s)) => s.type_params.iter().map(|t| t.name.clone()).collect(),
-            Some(DeclKind::Enum(e)) => e.type_params.iter().map(|t| t.name.clone()).collect(),
+            Some(DeclKind::Struct(s)) => rask_ast::type_params::struct_type_param_names(s),
+            Some(DeclKind::Enum(e)) => rask_ast::type_params::enum_type_param_names(e),
             _ => Vec::new(),
         }
     }
@@ -708,6 +731,9 @@ impl Unroll<'_, '_> {
         } else {
             match field_facts(self.ex.typed, self.ex.mono, &checked) {
                 Some(fields) => fields.into_iter().enumerate().map(|(i, f)| Item::Field(f, i)).collect(),
+                // A struct with no layout: nothing the program runs reaches
+                // this code, so it stays as written.
+                None if self.lenient && is_struct(&self.ex.typed.types, &checked) => return None,
                 None => {
                     self.ex.errors.push(ExpandError {
                         message: format!("reflect.fields<{}>(): not a struct type", ty.source()),
@@ -748,6 +774,7 @@ impl Unroll<'_, '_> {
                 span: stmt.span,
             });
         }
+        self.ex.unrolled += 1;
         Some(out)
     }
 }
