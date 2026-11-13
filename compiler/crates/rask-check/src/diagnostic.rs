@@ -2832,7 +2832,7 @@ impl ToDiagnostic for crate::TypeError {
             }
             InstanceCallOnType { ty, method, span } => {
                 Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
-                    .with_code("E0961")
+                    .with_code("E0967")
                     .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
                     .with_fix(format!("call it on a value: `value.{}(…)`", method))
                     .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")
