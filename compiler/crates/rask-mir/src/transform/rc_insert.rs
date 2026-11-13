@@ -812,6 +812,7 @@ fn insert_aggregate_release(
         terminator_reads: Vec::new(),
         foreign: params.iter().copied().filter(|p| tracked.contains(p) && !owned_params.contains(p)).collect(),
         owned: owned_params.clone(),
+        caller_slots: held.iter().copied().filter(|p| tracked.contains(p)).collect(),
     };
 
     for block in &func.blocks {
@@ -1229,9 +1230,12 @@ fn insert_aggregate_release(
             }
         }
         // The caller gets its slot back with whatever the frame left in it.
+        // A path that never returns (a panic) leaves it to the caller too:
+        // the caller's own unwinding releases it, and a release here was a
+        // second free of the caller's value.
         let exits = matches!(
             block.terminator.kind,
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Unreachable
         );
         let handed_back: Vec<LocalId> =
             if exits { held.iter().copied().filter(|p| tracked.contains(p)).collect() } else { Vec::new() };
