@@ -195,6 +195,12 @@ FIX: Override in the root rask.toml:
 | **PR1: Built-in** | `debug` and `release` are built-in profiles |
 | **PR2: Inheritance** | Custom profiles inherit from another via `inherits` |
 
+**Not implemented.** Custom profiles are specified but not built. The manifest
+loader checks every key below, and then nothing reads them. `--profile <name>` only
+picks the output directory (`build/<name>/`), and the build is a release build only
+when the name is literally `release`. So `[profiles.embedded]` with
+`inherits = "release"` currently produces a debug build. Tracked in #1933.
+
 ```toml
 [profiles.embedded]
 inherits = "release"
@@ -408,7 +414,7 @@ All commands live under the `rask` binary. No separate tools.
 |---------|-------------|
 | `rask build` | Build current package (debug profile) |
 | `rask build --release` | Build with release profile |
-| `rask build --profile <name>` | Build with custom profile |
+| `rask build --profile <name>` | Build with custom profile (not implemented: only picks the output directory) |
 | `rask build --target <triple>` | Cross-compile |
 | `rask run [file] [-- args]` | Build and execute |
 | `rask test [filter]` | Build and run tests |
