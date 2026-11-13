@@ -7,14 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Cargo builds the bin for this test and says where it put it. Guessing from
+/// the test executable's directory broke when cargo moved test executables
+/// away from the bin's directory.
 fn rask_binary() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn fixture(name: &str) -> PathBuf {

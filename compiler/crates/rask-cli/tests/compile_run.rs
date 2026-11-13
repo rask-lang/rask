@@ -30,16 +30,11 @@ fn next_tmp_id() -> u64 {
     NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Cargo builds the bin for this test and says where it put it. Guessing from
+/// the test executable's directory broke when cargo moved test executables
+/// away from the bin's directory.
 fn rask_binary() -> PathBuf {
-    // cargo test builds into target/debug or target/release
-    let mut path = std::env::current_exe().unwrap();
-    // Walk up from the test binary to the target dir
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
