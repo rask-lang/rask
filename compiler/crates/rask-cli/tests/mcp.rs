@@ -10,13 +10,7 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Value};
 
 fn rask_binary() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
