@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // The sim showcase (rask-lang.dev/showcase/sim/). Two transfers out of one
-// account, run at the same time. Every touch of the balances holds the lock,
-// so there's no data race, and the test still fails: each transfer checks
-// the balance in one `with` block and debits it in another.
+// account at once. Every touch of the balances holds the lock, and the test
+// still fails: a transfer checks the balance and debits it in separate locks.
+// test-specs: native may fail: a plain run passes or fails by timing.
 import sync.Shared
 
 struct Bank {

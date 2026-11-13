@@ -33,6 +33,6 @@ func main() {
         let f = p.second()
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }

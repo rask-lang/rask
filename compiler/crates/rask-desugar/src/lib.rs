@@ -991,7 +991,10 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args {
+                    self.desugar_expr(&mut a.expr);
+                }
                 self.desugar_expr(body);
             }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {

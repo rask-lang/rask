@@ -5,6 +5,10 @@
 // leaves its task. What makes it safe to reach for is that reaching a second
 // task with one doesn't compile. The default (`Shared.new`, a read-write lock)
 // needs no such rule, which is why it's the default.
+//
+// A task joined in the block that spawned it borrows its frame and runs while
+// the frame waits (conc.async/B1, B3), so a `Local` box on its side only is
+// fine there. These detach theirs.
 
 import sync.Shared
 import sync.Local
@@ -15,7 +19,7 @@ func races() {
         let h = spawn {
             with counter.write() as c { c += 1 }   // ERROR: E0346
         }
-        let _ = h.join()
+        h.detach()
     }
 }
 
@@ -30,7 +34,7 @@ func hidden_in_a_field() {
         let h = spawn {
             with c.hits.write() as n { n += 1 }   // ERROR: E0346
         }
-        let _ = h.join()
+        h.detach()
     }
 }
 

@@ -47,6 +47,8 @@ pub fn infer_with_reach(
 struct Cx<'a> {
     targets: &'a MethodTargets,
     imports: &'a sources::ImportedNames,
+    /// Joins of tasks that borrow their frame (`crate::borrowing_joins`).
+    borrowing_joins: &'a HashSet<rask_ast::NodeId>,
 }
 
 struct InferPass<'t> {
@@ -198,7 +200,12 @@ impl<'t> InferPass<'t> {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        let cx = Cx { targets: self.targets, imports: &self.imports };
+        let borrowing_joins: HashSet<rask_ast::NodeId> = rask_ast::tasks::all_windows(body)
+            .iter()
+            .filter(|w| matches!(w.spawn.kind, ExprKind::Spawn { target: SpawnTarget::Pool, .. }))
+            .map(|w| w.join_call.id)
+            .collect();
+        let cx = Cx { targets: self.targets, imports: &self.imports, borrowing_joins: &borrowing_joins };
         classify_body(body, &mut direct, &mut callees, &cx);
 
         self.effects.insert(qname.to_string(), direct);
@@ -469,8 +476,10 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         ExprKind::MethodCall { object, method, args, .. } => {
             let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
             effects.union(sources::size_effects(effect));
-            for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
-                callees.insert(name);
+            if !t.borrowing_joins.contains(&expr.id) {
+                for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
+                    callees.insert(name);
+                }
             }
 
             classify_expr(object, effects, callees, t);
@@ -978,7 +987,7 @@ mod tests {
         };
         Expr {
             id: NodeId(0),
-            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, body: Box::new(body) },
+            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, args: Vec::new(), body: Box::new(body) },
             span: sp(),
         }
     }

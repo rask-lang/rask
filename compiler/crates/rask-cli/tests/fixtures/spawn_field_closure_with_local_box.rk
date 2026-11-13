@@ -18,6 +18,6 @@ func main() {
         println("before")
         let run = job.run
         let h = spawn { run() }
-        println("{h.join()!}")
+        h.detach()
     }
 }

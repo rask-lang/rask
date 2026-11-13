@@ -25,11 +25,13 @@ func eat(take v: Vec<i64>) -> u64 {
 func main() {
     using Multitasking {
         let c = Conn(id: 1)
-        // ERROR: the task only reads `c`, and nothing ever closes it [E0810]
+        // ERROR: the task only reads `c`, and nothing ever closes it [E0805]
         let t = spawn {
             return peek(c)
         }
-        println("{t.join()!}")
+        // Handed on, so the task carries `c` away; joined here it would
+        // borrow it, and `c` would be this frame's to close (conc.async/B1).
+        t.detach()
 
         // Fine: the task closes what it captured.
         let d = Conn(id: 2)

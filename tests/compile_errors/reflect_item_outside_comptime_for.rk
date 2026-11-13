@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // `has<A>()`, `get<A>()` and `is<T>()` on a reflect item are answered while a
-// `comptime for` unrolls (E0960). An ordinary `for` over the same Vec runs the
+// `comptime for` unrolls (E0966). An ordinary `for` over the same Vec runs the
 // body at run time, where native has no answer to give: these compiled and
 // then failed at codegen with "Function not found: FieldInfo_has_label".
 import std.reflect

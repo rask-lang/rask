@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function that may run two of its arguments at once is checked where it
+// is called: the two arguments are held to what a borrowing task and the
+// code beside it would be (conc.async/B4, E0964). That covers a closure that writes what it captured
+// passed twice, a writer beside a reader, a `Local` box reaching two threads,
+// and a rack written while another argument reads it. A local closure named
+// like a parameter is not that parameter. A call through a function-typed
+// parameter is followed to what each caller passes for it. The calls at the end
+// are legal.
+
+import memory.Rack
+import memory.Link
+import sync.Shared
+import thread.ThreadPool
+
+struct Node {
+    hp: i64
+    next: Link<Node>?
+}
+
+func both(f: func(), g: func()) {
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    g()
+    h.join()!
+}
+
+func twice(x: func()) {
+    let w = || { x() }
+    both(w, w)
+}
+
+func apply2(r: func(func(), func()), a: func()) {
+    r(a, a)
+}
+
+func aliased(f: func()) {
+    let g = f
+    let h = ThreadPool.spawn(requires_pool: false) { g() }
+    f()
+    h.join()!
+}
+
+func in_turn(f: func(), g: func()) {
+    f()
+    g()
+}
+
+func app(r: func(func(), func())) {
+    mut n = 0
+    let t = || { n += 1 }
+    // ERROR: `t` exists only here, so it's checked here: `r` may be `both` [E0964]
+    r(t, t)
+    println("{n}")
+}
+
+func shadowed(f: func(), k: i64) {
+    mut n = k
+    let f = || { n += 1 }
+    // ERROR: the local `f` is a closure that writes `n`, not the parameter [E0960]
+    let h = ThreadPool.spawn(requires_pool: false) { f() }
+    f()
+    h.join()!
+}
+
+func main() {
+    mut count = 0
+    let tick = || { count += 1 }
+    // ERROR: one closure that writes `count`, twice at once [E0964]
+    both(tick, tick)
+    // ERROR: through a closure wrapping the parameter [E0964]
+    twice(tick)
+    // ERROR: through a name bound to the parameter [E0964]
+    aliased(tick)
+    // ERROR: through a function value that may run its arguments at once [E0964]
+    apply2(both, tick)
+    // Fine: `in_turn` runs them one after the other.
+    apply2(in_turn, tick)
+    let fwd = |f: func(), g: func()| { both(f, g) }
+    // ERROR: through a closure literal that hands its arguments to `both` [E0964]
+    fwd(tick, tick)
+    mut pick = both
+    // ERROR: a name bound twice is followed by neither binding [E0964]
+    pick(tick, tick)
+    pick = in_turn
+    let b = both
+    // ERROR: through a name bound to the function [E0964]
+    b(tick, tick)
+
+    let box = Shared.local(0)
+    let peek = || {
+        with box.read() as v {
+            println("{v}")
+        }
+    }
+    // ERROR: a `Local` box read on two threads [E0964]
+    both(peek, peek)
+
+    mut r = Rack.new()
+    let a = r.insert(Node(hp: 1, next: none))
+    // ERROR: a node written while the other argument reads the rack [E0964]
+    both(|| { a.hp = 5 }, || { println("{r.len()}") })
+
+    // Closures over different variables, and a declared function.
+    mut other = 0
+    both(|| { other += 1 }, || { println("{a.hp}") })
+    both(main_helper, main_helper)
+    let seq = |f: func(), g: func()| { in_turn(f, g) }
+    seq(tick, tick)
+    app(in_turn)
+    println("{count}{other}")
+}
+
+func main_helper() {
+    println("helper")
+}
+
+test "a test block is checked too" {
+    mut n = 0
+    let bump = || { n += 1 }
+    // ERROR: the same race in a test [E0964]
+    both(bump, bump)
+}

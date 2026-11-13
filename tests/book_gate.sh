@@ -26,6 +26,11 @@
 #     carries; this gate is what stops a block from carrying none, or from
 #     carrying one too weak to catch an API that moved.
 #
+#     A block can instead carry `<!-- from: path -->`: it shows lines out of a
+#     file, and its text has to be a run of that file's lines, verbatim
+#     (tests/book_from.py). The tutorial uses this where other pages include,
+#     because its chapters have to read as raw Markdown in a clone.
+#
 #  2. Diagnostics. Chapters teach with real compiler errors, which means the
 #     error text is content and has to be pinned like any other output. Each
 #     docs/book/errors/<chapter>/<case>.rk is a program that MUST NOT compile;
@@ -111,6 +116,17 @@ else
 fi
 rm -f "$ROOT/.book_gate_includes"
 
+# ── 1b. Every `from:` block is a verbatim run of its file ─────────────────────
+
+from_out="$(find "$BOOK_SRC" "$WRITING_SRC" -name '*.md' -print0 | xargs -0 python3 "$ROOT/tests/book_from.py" 2>&1)"
+from_status=$?
+if [ -n "$from_out" ] || [ $from_status -ne 0 ]; then
+    printf '%s\n' "$from_out" | sed "s|$ROOT/||"
+    fails=$((fails + 1))
+else
+    ok=$((ok + 1))
+fi
+
 # ── 2. Every rask block is verified by something ──────────────────────────────
 #
 # An include is verified by whatever gate runs the program it points at. An
@@ -125,9 +141,11 @@ while IFS= read -r md; do
     # a compile/run marker on the line above the fence. Anything else is loose.
     loose=$(awk '
         /^<!-- test:/ { marker = $0; next }
+        /^<!-- from: *[^ ]+ *-->[ \t]*$/ { marker = $0; next }
         /^```rask/ {
             verified = 0
             if (marker ~ /test: *(compile|run|run-interp)/) verified = 1
+            if (marker ~ /^<!-- from:/) verified = 1
             infence = 1
             marker = ""
             next
@@ -137,6 +155,7 @@ while IFS= read -r md; do
         # only accepted form is an include of a pinned .out or a golden.
         /^```text/ {
             verified = 0
+            if (marker ~ /^<!-- from:/) verified = 1
             infence = 1
             marker = ""
             next
@@ -152,7 +171,7 @@ while IFS= read -r md; do
     ' "$md" 2>/dev/null)
 
     if [ "$loose" -gt 0 ]; then
-        echo "FAIL: $rel has $loose unverified block(s). Code: use {{#include}}, or mark it \`<!-- test: compile -->\` / \`<!-- test: run | output -->\`. Output: use {{#include}} of a pinned .out or a golden"
+        echo "FAIL: $rel has $loose unverified block(s). Code: use {{#include}} or \`<!-- from: path -->\`, or mark it \`<!-- test: compile -->\` / \`<!-- test: run | output -->\`. Output: {{#include}} or \`from:\` a pinned .out or a golden"
         fails=$((fails + 1))
     else
         ok=$((ok + 1))

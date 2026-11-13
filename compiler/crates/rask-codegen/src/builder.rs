@@ -329,11 +329,13 @@ enum HandAdapt {
 /// Which calls are adapted by hand, by MIR name. One list: it decides both
 /// that a call is adapted here and how.
 fn hand_adaptation(name: &str) -> Option<HandAdapt> {
+    if rask_stdlib::mir_metadata::lookup(name).is_some_and(|m| m.places_node) {
+        return Some(HandAdapt::RackInsert);
+    }
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
         "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "rask_link_guarded" => HandAdapt::LinkGuarded,
-        "Rack_insert" => HandAdapt::RackInsert,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
         | "Mutex_replace" => HandAdapt::BoxWrite,
@@ -1300,6 +1302,21 @@ impl<'a> FunctionBuilder<'a> {
                     let val = crate::closures::load_capture(builder, env_val, *offset, load_ty);
                     builder.def_var(*var, val);
                 }
+            }
+
+            // The variable holds the slot's address, as a borrowed capture's
+            // does: `addr_taken` has made every read and write of the local go
+            // through it, and the local has no slot of its own.
+            MirStmtKind::BindPlace { dst, addr } => {
+                let addr_val = builder.use_var(*ctx.var_map.get(addr)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace address variable not found".to_string()
+                    ))?);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr_val);
             }
 
             MirStmtKind::ClosureDrop { closure, .. } => {
@@ -2364,8 +2381,14 @@ impl<'a> FunctionBuilder<'a> {
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only
                 // right for a local nothing writes through — which is why a
-                // captured scalar's writes used to vanish (#1038).
-                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
+                // captured scalar's writes used to vanish (#1038). A borrowed
+                // one (a by-reference capture, a `with` element) holds the
+                // address of storage elsewhere: `bump(mutate x)` on it has to
+                // write there, not into a spilled copy of the pointer.
+                if is_aggregate
+                    || ctx.stack_slot_map.contains_key(local_id)
+                    || ctx.addr_taken.borrowed.contains(local_id)
+                {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address
@@ -7140,6 +7163,7 @@ impl<'a> FunctionBuilder<'a> {
             ContainerKind::Vec => "rask_vec_free",
             ContainerKind::Map => "rask_map_free",
             ContainerKind::Rack => "rask_rack_free",
+            ContainerKind::Handle(release) => release,
         }
     }
 
@@ -8272,11 +8296,14 @@ impl<'a> FunctionBuilder<'a> {
             // had no argument to read `T` off, so this is where the runtime
             // learns what it is holding (mem.racks).
             HandAdapt::RackInsert => {
-                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
-                if args.len() >= 2 && !is_struct {
-                    Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
+                // The node is the last argument: `Rack.insert(node)`,
+                // `Staged.insert(key, node)`.
+                let at = mir_args.len().saturating_sub(1);
+                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, at, ctx);
+                if args.len() > at && at > 0 && !is_struct {
+                    Self::spill_arg(builder, args, mir_args, at, ctx.locals);
                 }
-                let fields = Self::link_field_descriptor(mir_args, 1, ctx);
+                let fields = Self::link_field_descriptor(mir_args, at, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
                 args.push(builder.ins().iconst(types::I64, fields.len() as i64));
                 if fields.is_empty() {
@@ -8301,7 +8328,7 @@ impl<'a> FunctionBuilder<'a> {
                 //
                 // The runtime copies both on the first insert, so a stack slot
                 // is enough to hand them over.
-                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
+                let owned = Self::node_owned_descriptor(mir_args, at, ctx);
                 args.push(builder.ins().iconst(types::I64, owned.len() as i64));
                 if owned.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
@@ -8318,7 +8345,7 @@ impl<'a> FunctionBuilder<'a> {
                 // And its alignment, which an `@align(64)` node needs from the
                 // chunk it lands in.
                 let align = mir_args
-                    .get(1)
+                    .get(at)
                     .and_then(|op| Self::operand_mir_type(op, ctx.locals))
                     .map_or(0, |ty| ty.align() as i64);
                 args.push(builder.ins().iconst(types::I64, align));

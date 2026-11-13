@@ -9,9 +9,9 @@
 
 use serde::Serialize;
 
-use rask_ast::LineMap;
+use rask_ast::Span;
 
-use crate::{codes::ErrorCodeRegistry, Diagnostic, LabelStyle};
+use crate::{codes::ErrorCodeRegistry, source_map::{SourceFile, SourceMap}, Diagnostic, LabelStyle};
 
 /// A complete JSON diagnostic report for a compilation run.
 #[derive(Debug, Serialize)]
@@ -70,6 +70,9 @@ pub struct JsonDiagnostic {
 /// A source location with line/column (1-based).
 #[derive(Debug, Serialize)]
 pub struct SourceLocation {
+    /// The file the line and column count in. In a package that's often not
+    /// the report's `file`.
+    pub file: String,
     pub line: usize,
     pub column: usize,
     pub byte_offset: usize,
@@ -82,6 +85,8 @@ pub struct SourceLocation {
 pub struct JsonLabel {
     /// "primary" or "secondary".
     pub role: String,
+    /// The file this label's span is in.
+    pub file: String,
     /// Label message.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -120,14 +125,18 @@ pub struct JsonSpan {
 }
 
 /// Convert diagnostics to a structured JSON report.
+///
+/// Every span is placed through `sources` by its `file_id`. Counting a span
+/// from another file of the package against `file`'s text gave a line and
+/// column that pointed at nothing, with a source line from the wrong file.
+/// A span whose file isn't in the map gets no location.
 pub fn to_json_report(
     diagnostics: &[Diagnostic],
-    source: &str,
+    sources: &SourceMap,
     file: &str,
     phase: &str,
 ) -> DiagnosticReport {
     let registry = ErrorCodeRegistry::default();
-    let line_map = LineMap::new(source);
     let mut error_count = 0;
     let mut warning_count = 0;
 
@@ -139,7 +148,7 @@ pub fn to_json_report(
                 crate::Severity::Warning => warning_count += 1,
                 crate::Severity::Note => {}
             }
-            to_json_diagnostic(d, source, &line_map, &registry)
+            to_json_diagnostic(d, sources, &registry)
         })
         .collect();
 
@@ -154,10 +163,19 @@ pub fn to_json_report(
     }
 }
 
+/// Line and column of `offset` in `file`, 1-based.
+fn line_col(file: &SourceFile, offset: usize) -> (usize, usize) {
+    let (line, col) = file.line_map.offset_to_line_col(offset);
+    (line as usize, col as usize)
+}
+
+fn line_text(file: &SourceFile, line: usize) -> String {
+    file.line_map.line_text(&file.text, line as u32).unwrap_or("").to_string()
+}
+
 fn to_json_diagnostic(
     diag: &Diagnostic,
-    source: &str,
-    line_map: &LineMap,
+    sources: &SourceMap,
     registry: &ErrorCodeRegistry,
 ) -> JsonDiagnostic {
     let severity = match diag.severity {
@@ -171,71 +189,59 @@ fn to_json_diagnostic(
         .as_ref()
         .and_then(|c| registry.get(c))
         .map(|info| info.category.to_string());
+    let file_of = |span: &Span| sources.get(span.file_id);
 
-    // Primary location
     let location = diag
         .labels
         .iter()
         .find(|l| l.style == LabelStyle::Primary)
         .or(diag.labels.first())
-        .map(|l| {
-            let (line, col) = line_map.offset_to_line_col(l.span.start);
-            SourceLocation {
-                line: line as usize,
-                column: col as usize,
+        .and_then(|l| {
+            let file = file_of(&l.span)?;
+            let (line, column) = line_col(file, l.span.start);
+            Some(SourceLocation {
+                file: file.name.clone(),
+                line,
+                column,
                 byte_offset: l.span.start,
-                source_line: line_map.line_text(source, line).unwrap_or("").to_string(),
-            }
+                source_line: line_text(file, line),
+            })
         });
 
-    // Labels
     let labels = diag
         .labels
         .iter()
-        .map(|l| {
-            let (start_line, start_col) = line_map.offset_to_line_col(l.span.start);
-            let (end_line, end_col) = line_map.offset_to_line_col(l.span.end);
-            JsonLabel {
+        .filter_map(|l| {
+            let file = file_of(&l.span)?;
+            let (start_line, start_col) = line_col(file, l.span.start);
+            let (end_line, end_col) = line_col(file, l.span.end);
+            Some(JsonLabel {
                 role: match l.style {
                     LabelStyle::Primary => "primary".to_string(),
                     LabelStyle::Secondary => "secondary".to_string(),
                 },
+                file: file.name.clone(),
                 message: l.message.clone(),
-                start: LineCol {
-                    line: start_line as usize,
-                    column: start_col as usize,
-                    byte_offset: l.span.start,
-                },
-                end: LineCol {
-                    line: end_line as usize,
-                    column: end_col as usize,
-                    byte_offset: l.span.end,
-                },
-                source_line: line_map.line_text(source, start_line).unwrap_or("").to_string(),
-            }
+                start: LineCol { line: start_line, column: start_col, byte_offset: l.span.start },
+                end: LineCol { line: end_line, column: end_col, byte_offset: l.span.end },
+                source_line: line_text(file, start_line),
+            })
         })
         .collect();
 
-    // Suggestion
     let suggestion = diag.help.as_ref().and_then(|h| {
-        h.suggestion.as_ref().map(|s| {
-            let (line, col) = line_map.offset_to_line_col(s.span.start);
-            let col = col as usize;
-            let original_line = line_map.line_text(source, line).unwrap_or("");
-            let span_len = s.span.end.saturating_sub(s.span.start);
-            let prefix = &original_line[..col.saturating_sub(1).min(original_line.len())];
-            let suffix_start = (col - 1 + span_len).min(original_line.len());
-            let suffix = &original_line[suffix_start..];
-            let result_line = format!("{}{}{}", prefix, s.replacement, suffix);
-
-            JsonSuggestion {
-                span: JsonSpan {
-                    start: s.span.start,
-                    end: s.span.end,
-                },
-                replacement: s.replacement.clone(),
-                result_line,
-            }
+        let s = h.suggestion.as_ref()?;
+        let file = file_of(&s.span)?;
+        let (line, col) = line_col(file, s.span.start);
+        let original_line = line_text(file, line);
+        let span_len = s.span.end.saturating_sub(s.span.start);
+        let prefix = &original_line[..col.saturating_sub(1).min(original_line.len())];
+        let suffix_start = (col - 1 + span_len).min(original_line.len());
+        let suffix = &original_line[suffix_start..];
+        Some(JsonSuggestion {
+            span: JsonSpan { start: s.span.start, end: s.span.end },
+            replacement: s.replacement.clone(),
+            result_line: format!("{}{}{}", prefix, s.replacement, suffix),
         })
     });
 

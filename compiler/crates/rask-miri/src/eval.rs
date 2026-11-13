@@ -292,6 +292,13 @@ impl MiriEngine {
                 ));
             }
 
+            // Miri holds values, not addresses, so it has no slot to name.
+            MirStmtKind::BindPlace { .. } => {
+                return Err(MiriError::UnsupportedOperation(
+                    "binding a collection element in place is not available at compile time".to_string(),
+                ));
+            }
+
             // Closures — not in initial scope
             MirStmtKind::ClosureCreate { .. }
             | MirStmtKind::ClosureCall { .. }

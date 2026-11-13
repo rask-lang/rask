@@ -819,6 +819,102 @@ impl ToDiagnostic for crate::OwnershipError {
                          what makes it safe to reach for [conc.sync/SH7]",
                     )
             }
+            ParallelArgsConflict { what, other_span } => {
+                Diagnostic::error("these arguments may run at the same time, and they race".to_string())
+                    .with_code("E0964")
+                    .with_primary(self.span, what.clone())
+                    .with_secondary(*other_span, "may run while this one does")
+                    .with_fix(
+                        "pass closures that touch different variables, or one that only \
+                         reads; a counter both need can be an `Atomic`",
+                    )
+                    .with_why(
+                        "the function runs one of these in a task and the other beside it, \
+                         which may be on different threads. A closure that writes what it \
+                         captured, run beside something that touches the same thing (itself \
+                         included), is a data race [conc.async/B4]",
+                    )
+            }
+            SharedGraphWrite { what } => {
+                Diagnostic::error("a task that shares a rack with the code beside it changes it".to_string())
+                    .with_code("E0962")
+                    .with_primary(self.span, what.clone())
+                    .with_fix(
+                        "record the change instead and make it after the join: \
+                         `let ops = rack.staged()`, `ops.delete(key, n)` or \
+                         `ops.relink(key, n, to, f)` in the task, return `ops`, then \
+                         `rack.apply(ops)`",
+                    )
+                    .with_why(
+                        "the task and the code before its join read this rack at the same \
+                         time. Writing a node changes what the other side is reading, and \
+                         storing a link anywhere records it with the rack, which the other \
+                         side's stores write too [mem.racks/RK16]",
+                    )
+            }
+            StagedFnHoldsLink => {
+                Diagnostic::error("the function a `Staged` buffer keeps can't hold a link".to_string())
+                    .with_code("E0963")
+                    .with_primary(self.span, "this captures a link or a `Local` box")
+                    .with_fix(
+                        "pass the link as `to` and read it from the second parameter: \
+                         `ops.relink(key, n, to, |mutate n: T, to: Link<T>| n.next = to)`",
+                    )
+                    .with_why(
+                        "the buffer runs the function when it applies, after other deletes \
+                         may have run. It checks `n` and `to` are alive first; a link the \
+                         function captured is one nothing checks [mem.racks/RK20]",
+                    )
+            }
+            SideConflict { name, other_writes, other_span } => {
+                let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
+                Diagnostic::error(format!("a task and the code before its join both touch `{}`, and one writes it", name))
+                    .with_code("E0960")
+                    .with_primary(self.span, "written here")
+                    .with_secondary(*other_span, other)
+                    .with_fix(
+                        "give the task its own variable and combine the results after the \
+                         join: `let h = ThreadPool.spawn { left(v) }`, `let b = right(v)`, \
+                         `h.join()! + b`. A counter both sides bump can be an `Atomic` instead",
+                    )
+                    .with_why(
+                        "the task may run at the same time as the code before its join, so a \
+                         write on one side and any use on the other is a data race. Reading \
+                         the same thing on both is fine, and so are separate fields of one \
+                         value [conc.async/B2]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, function_value: true } => {
+                Diagnostic::error("a task and the code beside it call function values that may be the same closure".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "call them on one side, or take them as parameters, so each call \
+                         of this function is checked for what it passes",
+                    )
+                    .with_why(
+                        "a function value from a field, a container or a call may be a copy \
+                         of another, and nothing here says whether it writes what it \
+                         captured [conc.async/B3]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, .. } => {
+                Diagnostic::error("a task and the code beside it both name a value that has to stay on one thread".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "use the `Local` box, or the function value, on one side only; a \
+                         box both sides need can be `Shared.new(…)`, which locks",
+                    )
+                    .with_why(
+                        "a `Local` box takes no lock, and a function value the checker \
+                         can't see into may touch the same graph or box the other block \
+                         uses. On one side that's one thread at a time; across both it's a \
+                         race [conc.async/B3]",
+                    )
+            }
             LinkSent { name, ty, bare_link } => {
                 let label = if *bare_link {
                     format!("`{}` is a link into a rack", name)

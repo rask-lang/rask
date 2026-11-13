@@ -352,6 +352,46 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// conc.async/B4: two arguments a callee may use at the same time conflict.
+    #[error("these arguments may run at the same time: {what}")]
+    ParallelArgsConflict {
+        what: String,
+        other_span: Span,
+    },
+
+    /// mem.racks/RK16: a borrowing task, or the code beside it, shares a rack
+    /// with the other side and writes through a link or a rack, or stores a link.
+    #[error("a task that shares a rack with the code beside it changes it")]
+    SharedGraphWrite {
+        what: String,
+    },
+
+    /// mem.racks/RK20: a function a `Staged` buffer keeps captured a link or a
+    /// `Local` box.
+    #[error("the function a `Staged` buffer keeps can't hold a link")]
+    StagedFnHoldsLink,
+
+    /// conc.async/B2: a borrowing task, or the code before its join, writes a
+    /// place the other side touches.
+    #[error("a task and the code before its join both touch `{name}`, and one writes it")]
+    SideConflict {
+        name: String,
+        /// The other side writes it too, rather than only reading.
+        other_writes: bool,
+        other_span: Span,
+    },
+
+    /// conc.async/B3: a borrowing task and the code beside it each name
+    /// something that has to stay on one thread.
+    #[error("a task and the code beside it both name a value that has to stay on one thread")]
+    SideTaskBound {
+        name: String,
+        other: String,
+        other_span: Span,
+        /// One of them is a function value the checker can't see into.
+        function_value: bool,
+    },
+
     /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
     /// A link is a node's address; two tasks holding it would both write the
     /// node.

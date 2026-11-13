@@ -101,6 +101,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
             captures.iter().for_each(|c| f(Named::Local(c.local_id)));
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
+        MirStmtKind::BindPlace { addr, .. } => f(Named::Local(*addr)),
         MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
         MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
@@ -240,6 +241,7 @@ pub fn visit_stmt_use_locals_mut(
             }
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
+        MirStmtKind::BindPlace { addr, .. } => f(addr, UseKind::Value),
         MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
             f(closure, UseKind::Value)
         }
@@ -356,6 +358,7 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
         | MirStmtKind::Phi { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::BindPlace { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
         | MirStmtKind::InterfaceBox { dst, .. } => Some(*dst),
