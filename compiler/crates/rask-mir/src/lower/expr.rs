@@ -2926,22 +2926,6 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn lower_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Result<TypedOperand, LoweringError> {
-            // CT49: inside an unrolled `comptime for field in reflect.fields<T>()`
-            // body, `field` isn't a runtime value — it never got a local — so
-            // `field.name`/`field.serial_name`/... splice the loop's current
-            // FieldInfo directly instead of going through object lowering.
-            if let Some(name) = object.name() {
-                if let Some(op) = self.comptime_field_const(name, field) {
-                    return Ok(op);
-                }
-            }
-
-            // AN6/AN8: `field.get<A>().weight` — the attachment's value for
-            // one field, spliced. The annotation itself is never built.
-            if let Some(op) = self.comptime_annotation_const(expr, object, field)? {
-                return Ok(op);
-            }
-
             // Primitive type constants: i64.MAX, i32.MIN, etc.
             if let Some(name) = object.name() {
                 if let Some(val) = primitive_type_constant(name, field) {
@@ -4969,137 +4953,6 @@ impl<'a> MirLowerer<'a> {
     // comptime for (CT48–CT54)
     // =================================================================
 
-    /// `object.field` where `object` is an active `comptime for` binding —
-    /// splice the loop's current FieldInfo member as a constant. Returns
-    /// `None` for anything else (not that binding, or not a FieldInfo member),
-    /// so the caller falls through to ordinary field-access lowering.
-    pub(super) fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
-        let fc = match self.comptime_binding(object_name)? {
-            super::ComptimeItem::Field(fc) => fc.clone(),
-            super::ComptimeItem::Param(p) => return Self::comptime_param_const(p, field),
-        };
-        Some(match field {
-            "name" => (MirOperand::Constant(MirConst::String(fc.name)), MirType::Buffer),
-            "type_name" => (MirOperand::Constant(MirConst::String(fc.type_name)), MirType::Buffer),
-            "serial_name" => (MirOperand::Constant(MirConst::String(fc.serial_name)), MirType::Buffer),
-            "offset" => (MirOperand::Constant(MirConst::Int(fc.offset as i64)), MirType::U64),
-            "size" => (MirOperand::Constant(MirConst::Int(fc.size as i64)), MirType::U64),
-            "is_public" => (MirOperand::Constant(MirConst::Bool(fc.is_public)), MirType::Bool),
-            "is_skipped" => (MirOperand::Constant(MirConst::Bool(fc.is_skipped)), MirType::Bool),
-            "has_default" => (MirOperand::Constant(MirConst::Bool(fc.has_default)), MirType::Bool),
-            _ => return None,
-        })
-    }
-
-    /// The item an active `comptime for` binding of this name is bound to —
-    /// the innermost, so a nested loop's binding shadows an outer one. A
-    /// local of the same name declared inside the body (`for p in …`,
-    /// `let p = …`) shadows the binding: the loop removed any outer one.
-    pub(super) fn comptime_binding(&self, name: &str) -> Option<&super::ComptimeItem> {
-        if self.locals.contains_key(name) {
-            return None;
-        }
-        self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name).map(|(_, item)| item)
-    }
-
-    /// `param.<field>` for a `reflect.params<F>()` binding, spliced.
-    fn comptime_param_const(p: &rask_check::reflect::ParamFact, field: &str) -> Option<TypedOperand> {
-        use rask_ast::ty::ParamMode;
-        Some(match field {
-            "index" => (MirOperand::Constant(MirConst::Int(p.index as i64)), MirType::U64),
-            "type_name" => (MirOperand::Constant(MirConst::String(p.type_name.clone())), MirType::Buffer),
-            "is_mutate" => (MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Mutate)), MirType::Bool),
-            "is_take" => (MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Take)), MirType::Bool),
-            _ => return None,
-        })
-    }
-
-    /// `binding.has<A>()` where `binding` is an active `comptime for` binding —
-    /// answered at compile time from the field's attachments
-    /// (type.annotations/AN6). Returns `None` for anything else so the caller
-    /// falls through to ordinary method dispatch.
-    pub(super) fn comptime_field_method_const(
-        &mut self,
-        object: &Expr,
-        method: &str,
-        type_args: &Option<Vec<TypeExpr>>,
-    ) -> Option<TypedOperand> {
-        let object_name = object.name()?;
-        let answer = match (self.comptime_binding(object_name)?, method) {
-            (super::ComptimeItem::Field(fc), "has") => {
-                let annotation = type_args.as_ref()?.first()?.bare_name()?;
-                fc.attrs.iter().any(|attr| attr.is(annotation))
-            }
-            // `param.is<T>()`, T as this instance sees it.
-            (super::ComptimeItem::Param(p), "is") => {
-                let candidate = self.written_in_instance(type_args.as_ref()?.first()?);
-                rask_check::reflect::param_is(self.ctx.type_defs, &p.ty, &candidate)
-            }
-            _ => return None,
-        };
-        Some((MirOperand::Constant(MirConst::Bool(answer)), MirType::Bool))
-    }
-
-    /// `binding.get<A>().field` where `binding` is an active `comptime for`
-    /// binding — the attached annotation's value for `field`, spliced as a
-    /// constant (type.annotations/AN6). Nothing of the annotation reaches
-    /// MIR: there is no annotation value to build (AN8), only this projection.
-    ///
-    /// The attachment arrived complete — desugar filled the declared defaults
-    /// (`annotation_defaults`) — so this reads what's written and never looks
-    /// the declaration up. `Ok(None)` means "not this form", so the caller
-    /// falls through to ordinary field-access lowering; `Err` means it *was*
-    /// this form and something about it was wrong.
-    fn comptime_annotation_const(
-        &mut self,
-        _expr: &Expr,
-        object: &Expr,
-        field: &str,
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        let ExprKind::MethodCall { object: recv, method, type_args, .. } = &object.kind else {
-            return Ok(None);
-        };
-        if method != "get" {
-            return Ok(None);
-        }
-        let Some(binding) = recv.name() else { return Ok(None) };
-        let Some(annotation) = type_args.as_ref().and_then(|ta| ta.first()).and_then(TypeExpr::bare_name) else {
-            return Ok(None);
-        };
-        let Some(super::ComptimeItem::Field(fc)) = self.comptime_binding(binding) else {
-            return Ok(None);
-        };
-
-        let Some(attr) = fc.attrs.iter().find(|a| a.is(annotation)) else {
-            return Err(LoweringError::InvalidConstruct(format!(
-                "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
-                fc.name, annotation, field, binding, annotation
-            )));
-        };
-        let Some(value) = attr.arg(field) else {
-            return Err(LoweringError::InvalidConstruct(format!(
-                "`@{}` on `{}` has no field `{}`",
-                annotation, fc.name, field
-            )));
-        };
-        // The attachment says `3`, not whether that's an i64, a u8 or an
-        // f64 — the declaration does. Not the checker's type for this node:
-        // inference has nothing to pin `get<A>()`'s result to when the read
-        // feeds an interpolation, and it stayed an open type variable there.
-        let ty = self
-            .ctx
-            .annotation_field_type(annotation, field)
-            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
-                "`@{}` declares no field `{}`", annotation, field
-            )))?;
-        annotation_const(value, &ty)
-            .map(|c| Some((MirOperand::Constant(c), ty)))
-            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
-                "`@{}({}: {})` is not a constant this backend can splice",
-                annotation, field, value
-            )))
-    }
-
     /// Reject `value.(name)` where `name` isn't a field of `value`, when the
     /// struct is knowable here. Silent otherwise — an object whose type this
     /// pass can't pin down is lowered the way it always was.
@@ -5168,18 +5021,6 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // `field.name` inside an unrolled `comptime for` (CT49).
-            ExprKind::Field { object, field } => {
-                let Some(name) = object.name() else { return Ok(None) };
-                match (self.comptime_binding(name), field.as_str()) {
-                    (Some(super::ComptimeItem::Field(fc)), "name") => Some(fc.name.clone()),
-                    (Some(super::ComptimeItem::Field(fc)), "serial_name") => Some(fc.serial_name.clone()),
-                    (Some(super::ComptimeItem::Field(fc)), "type_name") => Some(fc.type_name.clone()),
-                    (Some(super::ComptimeItem::Param(p)), "type_name") => Some(p.type_name.clone()),
-                    _ => None,
-                }
-            }
-
             _ => None,
         })
     }
@@ -5218,11 +5059,6 @@ impl<'a> MirLowerer<'a> {
         if let Some(bare) = self.module_qualified_enum_receiver(object, method) {
             let receiver = Expr { id: object.id, span: object.span, kind: ExprKind::Ident(bare) };
             return self.lower_method_call(expr, &receiver, method, args, type_args);
-        }
-
-        // AN6: `field.has<A>()` on a comptime-for binding is a constant.
-        if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
-            return Ok(r);
         }
 
         // `from.make<T>()` in a generator: a `T` built like a claim's input

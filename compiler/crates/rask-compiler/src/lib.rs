@@ -31,7 +31,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use rask_ast::decl::{Decl, DeclKind};
-use rask_ast::{NodeId, Span};
+use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
 pub mod emit;
@@ -598,28 +598,24 @@ fn check_loaded_scoped(
         );
     }
 
-    // Templates (ctrl.comptime/CT72): a generic function with comptime control
+    // Templates (ctrl.comptime/CT50): a generic function with comptime control
     // is checked as written once, then written out as a plain function per
     // instance the program reaches, and the program checked again with the
     // copies in, until a round adds none (`rask-template`). A program with no
     // template goes round once.
-    let mut templates: Vec<Decl> = parse_result.decls.clone();
-    let mut copies: Vec<Decl> = Vec::new();
-    let mut operator_calls = desugared.operator_calls.clone();
-    let mut expanded: HashSet<String> = HashSet::new();
-    let mut next_template_id = rask_template::TEMPLATE_ID_BASE;
-    let mut instances: Vec<(Span, String)> = Vec::new();
+    let mut rounds = rask_template::Rounds::new(&parse_result.decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
-        parse_result.decls = templates.clone();
-        parse_result.decls.extend(copies.iter().cloned());
+        parse_result.decls = rounds.program();
         // --- Resolve (blocking — need ResolvedProgram) ---
         // Resolved alongside the program: the stdlib's own bodies are compiled
         // into every program, so their names have to bind for anything downstream
-        // to know what a call inside them refers to (#425).
-        let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        // to know what a call inside them refers to (#425). A copy of a stdlib
+        // template is one of those bodies.
+        let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        stdlib_bodies.extend(rounds.library_copies().iter().cloned());
         let resolved = match rask_resolve::resolve_with_stdlib(
             &parse_result.decls,
             &stdlib_bodies,
@@ -632,6 +628,7 @@ fn check_loaded_scoped(
                 return PipelineOutput::fail_with_sources(diags, source_files);
             }
     };
+    parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
@@ -640,7 +637,7 @@ fn check_loaded_scoped(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
-            &operator_calls,
+            &rounds.operator_calls,
         );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -655,31 +652,16 @@ fn check_loaded_scoped(
     if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
         break (typed, ownership_result);
     }
-    match expand_templates(&templates, &parse_result.decls, &typed, &mut expanded, &mut next_template_id) {
-        Ok(Some(round)) if !round.decls.is_empty() || !round.replaced.is_empty() => {
-            let from: HashMap<NodeId, Vec<NodeId>> = round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
-                m.entry(*old).or_default().push(*new);
-                m
-            });
-            let carried: Vec<NodeId> =
-                operator_calls.iter().flat_map(|id| from.get(id).into_iter().flatten().copied()).collect();
-            operator_calls.extend(carried);
-            copies.extend(round.decls);
-            instances.extend(round.instances);
-            for (was, now) in round.replaced {
-                if let Some(slot) = templates.iter_mut().find(|d| d.id == was) {
-                    *slot = now;
-                }
-            }
-        }
-        Ok(_) => break (typed, ownership_result),
+    match expand_templates(&mut rounds, &parse_result.decls, &typed) {
+        Ok(true) => {}
+        Ok(false) => break (typed, ownership_result),
         Err(errors) => {
             diags.extend(errors);
             break (typed, ownership_result);
         }
     }
     };
-    name_template_instances(&mut diags[round_start..], &instances);
+    name_template_instances(&mut diags[round_start..], &rounds.instances);
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
@@ -745,7 +727,7 @@ fn check_loaded_scoped(
 
 
 /// An error inside a template is an error in the copies written out from it
-/// (CT72): say which instances those are, since the template's text is what
+/// (CT50): say which instances those are, since the template's text is what
 /// the error points at.
 fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)]) {
     for d in diags.iter_mut().filter(|d| matches!(d.severity, Severity::Error)) {
@@ -757,7 +739,7 @@ fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)
             .collect();
         if !names.is_empty() {
             let list = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
-            *d = d.clone().with_note(format!("in this template written out as {list} (ctrl.comptime/CT72)"));
+            *d = d.clone().with_note(format!("in this template written out as {list} (ctrl.comptime/CT50)"));
         }
     }
 }
@@ -766,29 +748,26 @@ fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)
 /// program reaches and hasn't written out yet, as plain functions. `None`
 /// when the program declares no template, so it pays nothing.
 fn expand_templates(
-    templates: &[Decl],
+    rounds: &mut rask_template::Rounds,
     decls: &[Decl],
     typed: &rask_check::TypedProgram,
-    done: &mut HashSet<String>,
-    next_id: &mut u32,
-) -> Result<Option<rask_template::Expansion>, Vec<Diagnostic>> {
-    let any = templates.iter().any(rask_template::has_comptime_control);
-    if !any {
-        return Ok(None);
+) -> Result<bool, Vec<Diagnostic>> {
+    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    typed.rewrite_checked_nodes(&mut stdlib);
+    if !rounds.templates().iter().chain(&stdlib).any(rask_template::has_comptime_control) {
+        return Ok(false);
     }
     let mut layout_decls = decls.to_vec();
     // A `test` or `benchmark` block reaches instances as much as `main` does,
     // so they're walked as the runner's entries are.
     runners::extract_tests(&mut layout_decls, None);
     runners::extract_benchmarks(&mut layout_decls, None);
-    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
-    typed.rewrite_checked_nodes(&mut stdlib);
-    layout_decls.extend(stdlib);
+    layout_decls.extend(stdlib.iter().cloned());
     let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
         // Monomorphization reports its own failures where the program is built.
-        return Ok(None);
+        return Ok(false);
     };
-    rask_template::expand_round(templates, typed, &mono, done, next_id).map(Some).map_err(|errors| {
+    rounds.expand(&stdlib, typed, &mono).map_err(|errors| {
         errors
             .into_iter()
             .map(|e| {
@@ -1087,20 +1066,14 @@ fn check_package_scoped(
         );
     }
 
-    // Templates (ctrl.comptime/CT72), as in the single-file path: check, write
+    // Templates (ctrl.comptime/CT50), as in the single-file path: check, write
     // out the template instances reached, check again until none are new.
-    let mut templates: Vec<Decl> = pkg_ctx.all_decls.clone();
-    let mut copies: Vec<Decl> = Vec::new();
-    let mut operator_calls = desugared.operator_calls.clone();
-    let mut expanded: HashSet<String> = HashSet::new();
-    let mut next_template_id = rask_template::TEMPLATE_ID_BASE;
-    let mut instances: Vec<(Span, String)> = Vec::new();
+    let mut rounds = rask_template::Rounds::new(&pkg_ctx.all_decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
-        pkg_ctx.all_decls = templates.clone();
-        pkg_ctx.all_decls.extend(copies.iter().cloned());
+        pkg_ctx.all_decls = rounds.program();
         // --- Resolve ---
         // With the stdlib's own bodies, same as the single-file path. The type
         // check below always includes them, so leaving them out here meant every
@@ -1108,7 +1081,8 @@ fn check_package_scoped(
         // empty one — reported 161 "undefined name" errors for the stdlib's
         // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
         // (#203).
-        let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        stdlib_bodies.extend(rounds.library_copies().iter().cloned());
         let resolved = match rask_resolve::resolve_package_with_stdlib(
             &pkg_ctx.all_decls,
             &pkg_ctx.registry,
@@ -1184,13 +1158,15 @@ fn check_package_scoped(
             }
         }
 
+        pkg_ctx.all_decls.extend(rounds.library_copies().iter().cloned());
+
         // --- Typecheck (lenient — always returns TypedProgram + errors) ---
         let (mut typed, type_errors) =
             rask_check::typecheck_with_stdlib_lenient(
                 resolved,
                 &mut pkg_ctx.all_decls,
                 &stdlib_decls,
-                &operator_calls,
+                &rounds.operator_calls,
             );
         for e in &type_errors {
             diags.push(e.to_diagnostic());
@@ -1205,32 +1181,16 @@ fn check_package_scoped(
         if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
             break (typed, ownership_result);
         }
-        match expand_templates(&templates, &pkg_ctx.all_decls, &typed, &mut expanded, &mut next_template_id) {
-            Ok(Some(round)) if !round.decls.is_empty() || !round.replaced.is_empty() => {
-                let from: HashMap<NodeId, Vec<NodeId>> =
-                    round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
-                        m.entry(*old).or_default().push(*new);
-                        m
-                    });
-                let carried: Vec<NodeId> =
-                    operator_calls.iter().flat_map(|id| from.get(id).into_iter().flatten().copied()).collect();
-                operator_calls.extend(carried);
-                copies.extend(round.decls);
-                instances.extend(round.instances);
-                for (was, now) in round.replaced {
-                    if let Some(slot) = templates.iter_mut().find(|d| d.id == was) {
-                        *slot = now;
-                    }
-                }
-            }
-            Ok(_) => break (typed, ownership_result),
+        match expand_templates(&mut rounds, &pkg_ctx.all_decls, &typed) {
+            Ok(true) => {}
+            Ok(false) => break (typed, ownership_result),
             Err(errors) => {
                 diags.extend(errors);
                 break (typed, ownership_result);
             }
         }
     };
-    name_template_instances(&mut diags[round_start..], &instances);
+    name_template_instances(&mut diags[round_start..], &rounds.instances);
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read

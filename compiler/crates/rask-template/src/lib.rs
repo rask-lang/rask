@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Templates: a generic function whose body has comptime control, written out
-//! as a plain function for each instance the program uses (ctrl.comptime/CT72).
+//! as a plain function for each instance the program uses (ctrl.comptime/CT50).
 //!
 //! A `comptime for` over `reflect.fields<T>()` can't be checked once for every
 //! `T`: what `v.(f.name)` is, and so what a generic call fed from it infers,
@@ -34,8 +34,7 @@ use rask_types::{Type, TypeBinding, TypeDef};
 /// range (`rask_desugar::DESUGAR_ID_BASE` and the rest).
 pub const TEMPLATE_ID_BASE: u32 = 60_000_000;
 
-/// One field of a struct, as `reflect.fields<T>()` reports it. The same facts
-/// the backends unrolled with, so a copy says what they said.
+/// One field of a struct, as `reflect.fields<T>()` reports it.
 #[derive(Debug, Clone)]
 pub struct FieldFact {
     pub name: String,
@@ -136,15 +135,89 @@ pub struct ExpandError {
 #[derive(Default)]
 pub struct Expansion {
     pub decls: Vec<Decl>,
+    /// Copies of the stdlib's templates. They resolve as the stdlib's own
+    /// bodies do, where its private names and modules are in scope.
+    pub library_decls: Vec<Decl>,
     pub copied_from: Vec<(NodeId, NodeId)>,
     /// Each copy's template, by its span, and the instance it was written
     /// for as a reader would write it (`zero_all<Point>`): what an error
-    /// inside the copy names (CT72).
+    /// inside the copy names (CT50).
     pub instances: Vec<(Span, String)>,
     /// A function or test with comptime control and no type parameters,
     /// written out in its own place: the declaration it replaces, by id, and
     /// the replacement.
     pub replaced: Vec<(NodeId, Decl)>,
+}
+
+/// The driver's state across rounds: the program as written (with bodies
+/// written out in place swapped in), and every copy so far.
+pub struct Rounds {
+    templates: Vec<Decl>,
+    copies: Vec<Decl>,
+    library_copies: Vec<Decl>,
+    /// Desugaring's operator calls, the copies' included.
+    pub operator_calls: HashSet<NodeId>,
+    done: HashSet<String>,
+    next_id: u32,
+    /// Each copy's template and instance, for naming it in an error.
+    pub instances: Vec<(Span, String)>,
+}
+
+impl Rounds {
+    pub fn new(decls: &[Decl], operator_calls: HashSet<NodeId>) -> Self {
+        Rounds {
+            templates: decls.to_vec(),
+            copies: Vec::new(),
+            library_copies: Vec::new(),
+            operator_calls,
+            done: HashSet::new(),
+            next_id: TEMPLATE_ID_BASE,
+            instances: Vec::new(),
+        }
+    }
+
+    pub fn templates(&self) -> &[Decl] {
+        &self.templates
+    }
+
+    /// The program for this round: what was written, then the copies.
+    pub fn program(&self) -> Vec<Decl> {
+        self.templates.iter().chain(&self.copies).cloned().collect()
+    }
+
+    /// Copies of stdlib templates, resolved with the stdlib's bodies and
+    /// checked and compiled with the program.
+    pub fn library_copies(&self) -> &[Decl] {
+        &self.library_copies
+    }
+
+    /// Write out what this round's program reaches. `false` when nothing new
+    /// was added, so the round's check was the last.
+    pub fn expand(
+        &mut self,
+        library: &[Decl],
+        typed: &TypedProgram,
+        mono: &MonoProgram,
+    ) -> Result<bool, Vec<ExpandError>> {
+        let round = expand_round(&self.templates, library, typed, mono, &mut self.done, &mut self.next_id)?;
+        let changed = !round.decls.is_empty() || !round.library_decls.is_empty() || !round.replaced.is_empty();
+        let mut from: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for (old, new) in round.copied_from {
+            from.entry(old).or_default().push(new);
+        }
+        let carried: Vec<NodeId> =
+            self.operator_calls.iter().flat_map(|id| from.get(id).into_iter().flatten().copied()).collect();
+        self.operator_calls.extend(carried);
+        self.copies.extend(round.decls);
+        self.library_copies.extend(round.library_decls);
+        self.instances.extend(round.instances);
+        for (was, now) in round.replaced {
+            if let Some(slot) = self.templates.iter_mut().find(|d| d.id == was) {
+                *slot = now;
+            }
+        }
+        Ok(changed)
+    }
 }
 
 /// Whether a declaration has anything for this crate to write out: a
@@ -198,8 +271,12 @@ enum Site<'a> {
 /// `templates` are the declarations as desugaring left them, before checking
 /// changed them; `done` names the copies already made, by the instance's
 /// mangled name, which is also the copy's.
+/// `library` is the stdlib's declarations with their checked ids: its
+/// generic templates are written out for the program's instances too, and
+/// nothing of it is written out in place.
 pub fn expand_round(
     templates: &[Decl],
+    library: &[Decl],
     typed: &TypedProgram,
     mono: &MonoProgram,
     done: &mut HashSet<String>,
@@ -207,16 +284,17 @@ pub fn expand_round(
 ) -> Result<Expansion, Vec<ExpandError>> {
     // By the function's own id: a method sharing a template's name (`show`
     // on a generic type, `map` on a range) is some other function.
-    let mut by_id: HashMap<NodeId, Site> = HashMap::new();
-    for d in templates {
+    let mut by_id: HashMap<NodeId, (Site, bool)> = HashMap::new();
+    let program = templates.iter().map(|d| (d, false));
+    for (d, from_library) in program.chain(library.iter().map(|d| (d, true))) {
         match &d.kind {
             DeclKind::Fn(f) if is_template(f) => {
-                by_id.insert(f.id, Site::Free(d));
+                by_id.insert(f.id, (Site::Free(d), from_library));
             }
             _ => {
                 for (target, method) in method_sites(d) {
                     if is_method_template(&target, method) {
-                        by_id.insert(method.id, Site::Method { target, method, block: d });
+                        by_id.insert(method.id, (Site::Method { target, method, block: d }, from_library));
                     }
                 }
             }
@@ -230,7 +308,7 @@ pub fn expand_round(
             continue;
         }
         let DeclKind::Fn(generic) = &inst.body.kind else { continue };
-        let Some(site) = by_id.get(&generic.id) else { continue };
+        let Some((site, from_library)) = by_id.get(&generic.id) else { continue };
         let template_span = match site {
             Site::Free(d) => d.span,
             Site::Method { method, .. } => method.span,
@@ -270,11 +348,15 @@ pub fn expand_round(
             e
         }));
         out.copied_from.extend(ex.copied_from);
-        out.decls.push(copy);
+        if *from_library {
+            out.library_decls.push(copy);
+        } else {
+            out.decls.push(copy);
+        }
     }
     // Nothing to instantiate: the loop's type is already known. One that
-    // can't be written out yet (a layout mono didn't make, for code nothing
-    // reaches) stays as it is, for the backends' own unrolling.
+    // can't be written out (a layout mono didn't make, because nothing
+    // reaches the code) stays as written; nothing runs it.
     for decl in templates.iter().filter(|d| in_place(d)) {
         let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
         let copy = ex.expand_in_place(decl);
@@ -795,8 +877,8 @@ impl Rewrite for ItemFacts<'_> {
 }
 
 /// Each `comptime if` in `stmts` whose condition the written-in facts settle,
-/// replaced by its chosen branch. One that reads something else (a const) is
-/// left for the backends, which fold those as they always have.
+/// replaced by its chosen branch. One it can't settle is left for the
+/// backends, which fold a `comptime if` anywhere.
 fn decide_comptime_ifs(stmts: &mut [Stmt], known: &Known) {
     struct Decide<'a, 'b>(&'a Known<'b>);
     impl Rewrite for Decide<'_, '_> {

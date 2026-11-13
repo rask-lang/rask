@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// The component-system example from #1863, on templates (ctrl.comptime/CT72,
+// The component-system example from #1863, on templates (ctrl.comptime/CT50,
 // #1919): each field's `load(w, i)` takes `load<Pos>` or `load<Vel>` from the
 // field it fills. Checked once, nothing said which. `scatter` leaks the
 // world's vectors natively (#1927), which is why this is a file of its own.

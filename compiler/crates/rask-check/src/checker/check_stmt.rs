@@ -855,7 +855,7 @@ impl TypeChecker {
             ExprKind::MethodCall { .. } => "a method call",
             ExprKind::Call { .. } => "a function call",
             // Inside `comptime for`, a field the loop names is a place like
-            // any other: the written-out copy has `q.p` (ctrl.comptime/CT72).
+            // any other: the written-out copy has `q.p` (ctrl.comptime/CT50).
             ExprKind::DynamicField { .. } if !self.comptime_for_bindings.is_empty() => return,
             ExprKind::DynamicField { .. } => "a comptime field access",
             ExprKind::OptionalField { .. } => "an optional field access",

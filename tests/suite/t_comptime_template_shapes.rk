@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Shapes a template copy (ctrl.comptime/CT72, #1919) has to get right: a
+// Shapes a template copy (ctrl.comptime/CT50, #1919) has to get right: a
 // method sharing a template's name keeps its own body, a template reached
 // through a field waits for the round that knows the field's type, and a
 // `comptime if` reading a const or used as a value is decided per field.

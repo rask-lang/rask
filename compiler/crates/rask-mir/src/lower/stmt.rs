@@ -1663,13 +1663,11 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
-            // monomorphized function, mono has already substituted T to a
-            // concrete type on `reflect.fields<T>()` — that's what makes this
-            // "per instantiation" without a separate mono-side pass.
-            StmtKind::ComptimeFor { binding, iter, body } => {
-                self.lower_comptime_for(binding, iter, body)
-            }
+            // Every `comptime for` is written out before lowering, as a
+            // plain body per instance (`rask-template`, ctrl.comptime/CT50).
+            StmtKind::ComptimeFor { .. } => Err(LoweringError::InvalidConstruct(
+                "internal: a `comptime for` reached lowering without being written out".to_string(),
+            )),
         }
     }
 
@@ -1699,93 +1697,6 @@ impl<'a> MirLowerer<'a> {
         self.comptime_strings = saved;
         self.locals = saved_locals;
         result
-    }
-
-    /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
-    /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
-    /// and `value.(field.xxx)` inside the body splice as compile-time
-    /// constants (CT49) instead of going through normal local lookup.
-    fn lower_comptime_for(
-        &mut self,
-        binding: &ForBinding,
-        iter: &Expr,
-        body: &[Stmt],
-    ) -> Result<(), LoweringError> {
-        let name = match binding {
-            ForBinding::Single(name) => name.clone(),
-            ForBinding::Tuple(_) => {
-                return Err(LoweringError::InvalidConstruct(
-                    "comptime for requires a single binding — the iterable is a list of fields, not tuples".into(),
-                ));
-            }
-        };
-
-        let items = self.comptime_for_items(iter)?;
-
-        // The binding hides an outer local of the same name for the body, and
-        // a local the body declares under that name hides the binding
-        // (`comptime_binding`).
-        let outer = self.locals.remove(&name);
-        let mut result = Ok(());
-        for item in items {
-            self.comptime_for_bindings.push((name.clone(), item));
-            result = self.lower_body_scoped(body);
-            self.comptime_for_bindings.pop();
-            if result.is_err() {
-                break;
-            }
-        }
-        if let Some(outer) = outer {
-            self.locals.insert(name, outer);
-        }
-        result
-    }
-
-    /// CT51: the iterable must be comptime-known. Implemented so far —
-    /// matching the interpreter (rask-interp/src/stdlib/reflect.rs) — are
-    /// `reflect.fields<T>()` and `reflect.params<F>()`, the type argument
-    /// already concrete after mono substitution.
-    fn comptime_for_items(
-        &self,
-        iter: &Expr,
-    ) -> Result<Vec<super::ComptimeItem>, LoweringError> {
-        let unsupported = || {
-            LoweringError::InvalidConstruct(
-                "comptime for requires a comptime-known iterable: reflect.fields<T>() or reflect.params<F>()".into(),
-            )
-        };
-
-        let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
-            return Err(unsupported());
-        };
-        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") {
-            return Err(unsupported());
-        }
-        let type_args = self.checked_type_args(type_args);
-        let ty = type_args
-            .as_ref()
-            .and_then(|ta| ta.first())
-            .ok_or_else(unsupported)?;
-
-        match method.as_str() {
-            "fields" => Ok(self
-                .reflect_field_consts(ty)?
-                .into_iter()
-                .map(super::ComptimeItem::Field)
-                .collect()),
-            "params" => {
-                // The uninstantiated template is lowered too, with `F` still
-                // literal; it never runs (type.generics/G2), so it unrolls to
-                // nothing, as `fields` does.
-                if ty.bare_name().is_some_and(is_bare_type_param) {
-                    return Ok(Vec::new());
-                }
-                rask_check::reflect::params(self.ctx.type_defs, ty)
-                    .map(|ps| ps.into_iter().map(super::ComptimeItem::Param).collect())
-                    .map_err(LoweringError::InvalidConstruct)
-            }
-            _ => Err(unsupported()),
-        }
     }
 
     /// The declaration's type parameters paired with an instantiation's written
@@ -1923,18 +1834,6 @@ impl<'a> MirLowerer<'a> {
                     let type_args = self.checked_type_args(type_args);
                     self.try_lower_reflect_call(object, method, &type_args, args).ok()??
                 }
-                ExprKind::MethodCall { object, method, type_args, .. } => {
-                    let type_args = self.checked_type_args(type_args);
-                    self.comptime_field_method_const(object, method, &type_args)?
-                }
-                // `f.get<A>().x`: the attachment's written value.
-                ExprKind::Field { object, .. } if matches!(object.kind, ExprKind::MethodCall { .. }) => {
-                    let ExprKind::MethodCall { object: item, .. } = &object.kind else { return None };
-                    let name = item.name()?;
-                    let Some(super::ComptimeItem::Field(fc)) = self.comptime_binding(name) else { return None };
-                    return comptime_if::annotation_read(fact, name, &fc.attrs);
-                }
-                ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
                 _ => return None,
             };
             match answer.0 {

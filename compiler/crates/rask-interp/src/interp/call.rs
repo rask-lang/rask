@@ -79,7 +79,7 @@ impl Interpreter {
         generics: GenericFrame,
     ) -> Result<Value, RuntimeDiagnostic> {
         // A template at these type arguments is the copy written out for them
-        // (`rask-template`, ctrl.comptime/CT72): the same function native
+        // (`rask-template`, ctrl.comptime/CT50): the same function native
         // compiles.
         if let Some(copy) = self.template_copy(func, generics.as_deref()) {
             return self.call_function(&copy, args, None);

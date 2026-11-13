@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A generic function with comptime control is written out as a plain
-// function per instance and checked like one (ctrl.comptime/CT72, #1919).
+// function per instance and checked like one (ctrl.comptime/CT50, #1919).
 // Before, the body was checked once with `v.(f.name)` typed as nothing, so a
 // generic call fed from a field never learned its type.
 import std.reflect
