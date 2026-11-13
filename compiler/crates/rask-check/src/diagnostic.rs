@@ -1692,7 +1692,7 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error(format!(
                     "`{method}` on a `{info}` only answers inside a `comptime for` over it"
                 ))
-                    .with_code("E0960")
+                    .with_code("E0966")
                     .with_primary(*span, "this isn't a `comptime for` binding")
                     .with_fix(format!(
                         "loop with `comptime for x in {iterable}` and ask `x.{method}<…>()` on the binding"
