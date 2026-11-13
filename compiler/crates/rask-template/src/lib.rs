@@ -152,6 +152,18 @@ pub struct Expansion {
     /// written out in its own place: the declaration it replaces, by id, and
     /// the replacement.
     pub replaced: Vec<(NodeId, Decl)>,
+    /// Each copy's function, by id, with the template it was written out
+    /// from and the instance's arguments.
+    pub copies_of: Vec<(NodeId, CopyOf)>,
+}
+
+/// What a copy is: the template function's id, and the type arguments it
+/// was written out for. Another function can share the template's name (a
+/// method `dump` beside a free `dump`), so a caller finds the copy by these.
+#[derive(Debug, Clone)]
+pub struct CopyOf {
+    pub template: NodeId,
+    pub type_args: Vec<TypeBinding>,
 }
 
 /// The driver's state across rounds: the program as written (with bodies
@@ -166,6 +178,8 @@ pub struct Rounds {
     next_id: u32,
     /// Each copy's template and instance, for naming it in an error.
     pub instances: Vec<(Span, String)>,
+    /// Every copy's function, by id: which template, at which arguments.
+    pub copies_of: HashMap<NodeId, CopyOf>,
 }
 
 impl Rounds {
@@ -178,6 +192,7 @@ impl Rounds {
             done: HashSet::new(),
             next_id: TEMPLATE_ID_BASE,
             instances: Vec::new(),
+            copies_of: HashMap::new(),
         }
     }
 
@@ -216,6 +231,7 @@ impl Rounds {
         self.copies.extend(round.decls);
         self.library_copies.extend(round.library_decls);
         self.instances.extend(round.instances);
+        self.copies_of.extend(round.copies_of);
         for (was, now) in round.replaced {
             if let Some(slot) = self.templates.iter_mut().find(|d| d.id == was) {
                 *slot = now;
@@ -269,6 +285,15 @@ fn is_struct(types: &rask_check::TypeTable, ty: &Type) -> bool {
     match ty {
         Type::Named(id) | Type::Generic { base: id, .. } => matches!(types.get(*id), Some(TypeDef::Struct { .. })),
         _ => false,
+    }
+}
+
+/// A copy's one function: the function itself, or the method its block holds.
+fn copy_fn_id(copy: &Decl) -> Option<NodeId> {
+    match &copy.kind {
+        DeclKind::Fn(f) => Some(f.id),
+        DeclKind::Impl(i) => i.methods.first().map(|m| m.id),
+        _ => None,
     }
 }
 
@@ -363,6 +388,9 @@ pub fn expand_round(
             e
         }));
         out.copied_from.extend(ex.copied_from);
+        if let Some(copy_fn) = copy_fn_id(&copy) {
+            out.copies_of.push((copy_fn, CopyOf { template: generic.id, type_args: inst.type_args.clone() }));
+        }
         if *from_library {
             out.library_decls.push(copy);
         } else {
@@ -490,20 +518,37 @@ impl rask_check::reflect::ReflectDecls for TemplateDecls<'_> {
 impl Expander<'_> {
     fn expand_in_place(&mut self, decl: &Decl) -> Decl {
         let mut decl = decl.clone();
-        let none = HashMap::new();
-        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &HashMap::new(), written: &none, lenient: true });
-        let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
-        rewrite::rewrite_decl(&mut decl, &mut fresh);
-        decl.id = fresh.fresh(decl.id);
+        let concrete = HashMap::new();
+        // A block's plain methods only: a template beside them keeps its
+        // body and its id, which its copies are matched by.
+        let bodies: Vec<&mut Vec<Stmt>> = match &mut decl.kind {
+            DeclKind::Fn(f) => vec![&mut f.body],
+            DeclKind::Test(t) => vec![&mut t.body],
+            DeclKind::Impl(i) => {
+                let target = i.target_ty.clone();
+                i.methods.iter_mut().filter(|m| !is_method_template(&target, m)).map(|m| &mut m.body).collect()
+            }
+            DeclKind::Struct(st) => {
+                let target = TypeExpr::generic(
+                    st.name.clone(),
+                    rask_ast::type_params::struct_type_param_names(st).into_iter().map(TypeExpr::named).collect(),
+                );
+                st.methods.iter_mut().filter(|m| !is_method_template(&target, m)).map(|m| &mut m.body).collect()
+            }
+            DeclKind::Enum(e) => {
+                let target = TypeExpr::generic(
+                    e.name.clone(),
+                    rask_ast::type_params::enum_type_param_names(e).into_iter().map(TypeExpr::named).collect(),
+                );
+                e.methods.iter_mut().filter(|m| !is_method_template(&target, m)).map(|m| &mut m.body).collect()
+            }
+            _ => Vec::new(),
+        };
+        for body in bodies {
+            rewrite::rewrite_body(body, &mut Unroll { ex: self, concrete: &concrete, lenient: true });
+            rewrite::rewrite_body(body, &mut Fresh { next: self.next_id, copied_from: &mut self.copied_from });
+        }
         decl
-    }
-
-    /// Each instance argument as reflection spells it, by parameter.
-    fn labels(&self, type_args: &[TypeBinding]) -> Vec<(String, String)> {
-        type_args
-            .iter()
-            .map(|b| (b.param.clone(), rask_check::reflect::type_label(&self.typed.types, &b.ty).source()))
-            .collect()
     }
 
     fn written(&self, type_args: &[TypeBinding]) -> HashMap<String, TypeExpr> {
@@ -544,7 +589,6 @@ impl Expander<'_> {
         let mut copy = method.clone();
         copy.name = method_name;
         copy.type_params.clear();
-        copy.attrs.push(copy_marker(method.id, &self.labels(type_args)));
         let target = target.substitute(&|n| written.get(n).cloned());
         let mut decl = Decl {
             id: block.id,
@@ -561,7 +605,7 @@ impl Expander<'_> {
             }),
         };
         rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
-        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written, lenient: false });
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -582,52 +626,13 @@ impl Expander<'_> {
         let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
         f.name = name.to_string();
         f.type_params.clear();
-        f.attrs.push(copy_marker(f.id, &self.labels(type_args)));
         rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
-        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written, lenient: false });
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
         decl
     }
-}
-
-/// Marks a copy with the template it was written out from, by the template
-/// function's id: another function can share the template's name (a method
-/// `dump` beside a free `dump`), and a caller looking for the copy has to
-/// find this template's.
-pub const COPY_OF: &str = "template_copy_of";
-
-fn copy_marker(template: NodeId, args: &[(String, String)]) -> rask_ast::attr::Attr {
-    let lit = |kind| Expr { id: NodeId::DUMMY, kind, span: Span::new(0, 0) };
-    let mut out = vec![rask_ast::attr::AttrArg {
-        label: None,
-        value: AttrValue::Expr(lit(ExprKind::Int(template.0 as i128, None))),
-    }];
-    out.extend(args.iter().map(|(param, ty)| rask_ast::attr::AttrArg {
-        label: Some(param.clone()),
-        value: AttrValue::Expr(lit(ExprKind::String(ty.clone()))),
-    }));
-    rask_ast::attr::Attr::synthetic(COPY_OF, Some(out))
-}
-
-/// The template a copy was written out from, by its function's id, and the
-/// instance's arguments by parameter, as reflection spells them.
-pub fn copy_of(f: &FnDecl) -> Option<(NodeId, Vec<(String, String)>)> {
-    let attr = f.attrs.iter().find(|a| a.is(COPY_OF))?;
-    let args = attr.args.as_ref()?;
-    let id = match &args.first()?.value {
-        AttrValue::Expr(Expr { kind: ExprKind::Int(n, _), .. }) => NodeId(*n as u32),
-        _ => return None,
-    };
-    let bound = args[1..]
-        .iter()
-        .filter_map(|a| match (&a.label, &a.value) {
-            (Some(p), AttrValue::Expr(Expr { kind: ExprKind::String(t), .. })) => Some((p.clone(), t.clone())),
-            _ => None,
-        })
-        .collect();
-    Some((id, bound))
 }
 
 /// The instance's types where the template names its parameters: in written
@@ -675,7 +680,6 @@ fn name_expr(t: &TypeExpr) -> ExprKind {
 struct Unroll<'a, 'b> {
     ex: &'a mut Expander<'b>,
     concrete: &'a HashMap<String, Type>,
-    written: &'a HashMap<String, TypeExpr>,
     /// Writing a declaration out in place: a loop over a type it can't know
     /// (a generic method's `T` beside the plain one being written out) stays
     /// as written rather than failing the declaration.
@@ -701,51 +705,80 @@ impl Unroll<'_, '_> {
     fn unrolled(&mut self, stmt: &Stmt) -> Option<Vec<Stmt>> {
         let StmtKind::ComptimeFor { binding, iter, body } = &stmt.kind else { return None };
         let ForBinding::Single(item) = binding else { return None };
-        let ExprKind::MethodCall { object, method, type_args: Some(args), .. } = &iter.kind else {
-            return None;
-        };
-        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") || !matches!(method.as_str(), "fields" | "params") {
-            return None;
-        }
-        let ty = args.first()?;
-        let checked = match rask_check::resolve_type_expr(ty, &self.ex.typed.types) {
-            Ok(t) => t,
-            Err(_) if self.lenient => return None,
-            Err(_) => {
-                let _ = (self.concrete, self.written);
+        let items = match &iter.kind {
+            ExprKind::Array(elems) => elems.iter().cloned().map(Item::Value).collect(),
+            ExprKind::MethodCall { object, method, type_args: Some(args), .. }
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                    && matches!(method.as_str(), "fields" | "params" | "variants") =>
+            {
+                let ty = args.first()?;
+                // What the checker took the argument to be: the name alone
+                // can find another type (the stdlib's `Color`).
+                let checked = self
+                    .ex
+                    .typed
+                    .call_type_args
+                    .get(&iter.id)
+                    .and_then(|b| b.first())
+                    .map(|b| rask_check::substitute_type(&b.ty, self.concrete));
+                match self.reflected(method, ty, checked)? {
+                    Ok(items) => items,
+                    Err(message) => {
+                        self.ex.errors.push(ExpandError { message, span: iter.span });
+                        return Some(Vec::new());
+                    }
+                }
+            }
+            _ => {
                 self.ex.errors.push(ExpandError {
-                    message: format!("reflect.fields<{}>(): not a type this instance knows", ty.source()),
+                    message: "`comptime for` runs over `reflect.fields<T>()`, `reflect.params<F>()`, \
+                              `reflect.variants<T>()` or an array literal"
+                        .to_string(),
                     span: iter.span,
                 });
                 return Some(Vec::new());
             }
         };
-        let items: Vec<Item> = if method == "params" {
-            match rask_check::reflect::params(&self.ex.typed.types, ty) {
-                Ok(params) => params.into_iter().map(Item::Param).collect(),
-                Err(message) => {
-                    self.ex.errors.push(ExpandError { message, span: iter.span });
-                    return Some(Vec::new());
-                }
-            }
-        } else {
-            match field_facts(self.ex.typed, self.ex.mono, &checked) {
-                Some(fields) => fields.into_iter().enumerate().map(|(i, f)| Item::Field(f, i)).collect(),
+        let out = self.write_out(item, &items, body, stmt, iter.id);
+        self.ex.unrolled += 1;
+        Some(out)
+    }
+
+    /// The items `reflect.<method><ty>()` gives. `None` when the loop stays
+    /// as written: a type this body can't know yet, or a struct nothing
+    /// reaches.
+    fn reflected(&mut self, method: &str, ty: &TypeExpr, checked: Option<Type>) -> Option<Result<Vec<Item>, String>> {
+        let resolved = match checked {
+            Some(t) if !t.has_unsolved_var() && !t.contains(&|t| matches!(t, Type::Error | Type::UnresolvedNamed(_))) => Ok(t),
+            _ => rask_check::resolve_type_expr(ty, &self.ex.typed.types),
+        };
+        let checked = match resolved {
+            Ok(t) => t,
+            Err(_) if self.lenient => return None,
+            Err(_) => return Some(Err(format!("reflect.{method}<{}>(): not a type this instance knows", ty.source()))),
+        };
+        let types = &self.ex.typed.types;
+        Some(match method {
+            "params" => rask_check::reflect::params(types, ty).map(|ps| ps.into_iter().map(Item::Param).collect()),
+            "variants" => variant_facts(types, &checked)
+                .map(|vs| vs.into_iter().map(Item::Variant).collect())
+                .ok_or_else(|| format!("reflect.variants<{}>(): not an enum type", ty.source())),
+            _ => match field_facts(self.ex.typed, self.ex.mono, &checked) {
+                Some(fields) => Ok(fields.into_iter().enumerate().map(|(i, f)| Item::Field(f, i)).collect()),
                 // A struct with no layout: nothing the program runs reaches
                 // this code, so it stays as written.
-                None if self.lenient && is_struct(&self.ex.typed.types, &checked) => return None,
-                None => {
-                    self.ex.errors.push(ExpandError {
-                        message: format!("reflect.fields<{}>(): not a struct type", ty.source()),
-                        span: iter.span,
-                    });
-                    return Some(Vec::new());
-                }
-            }
-        };
+                None if self.lenient && is_struct(types, &checked) => return None,
+                None => Err(format!("reflect.fields<{}>(): not a struct type", ty.source())),
+            },
+        })
+    }
+
+    /// One block per item, the body with the item's facts written in and
+    /// its `comptime if`s decided.
+    fn write_out(&mut self, item: &str, items: &[Item], body: &[Stmt], stmt: &Stmt, iter_id: NodeId) -> Vec<Stmt> {
         let mut out = Vec::new();
-        for it in &items {
-            let mut copy = body.clone();
+        for it in items {
+            let mut copy = body.to_vec();
             let mut facts = ItemFacts {
                 item,
                 it,
@@ -766,23 +799,102 @@ impl Unroll<'_, '_> {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
             self.ex.errors.extend(facts.errors);
+            // `comptime for p in v.fields`: a variant's payload, written out
+            // with the variant.
+            if let Item::Variant(v) = it {
+                let payload: Vec<Item> = v.fields.iter().cloned().enumerate().map(|(i, f)| Item::Field(payload_fact(f), i)).collect();
+                rewrite::rewrite_body(&mut copy, &mut PayloadLoops { unroll: self, variant: item, payload: &payload });
+            }
             // One block per iteration, so a `let` in the body is that
             // iteration's.
             out.push(Stmt {
                 id: stmt.id,
-                kind: StmtKind::Expr(Expr { id: iter.id, kind: ExprKind::Block(copy), span: stmt.span }),
+                kind: StmtKind::Expr(Expr { id: iter_id, kind: ExprKind::Block(copy), span: stmt.span }),
                 span: stmt.span,
             });
         }
-        self.ex.unrolled += 1;
-        Some(out)
+        out
     }
+}
+
+/// `comptime for p in v.fields` inside one variant's iteration.
+struct PayloadLoops<'a, 'b, 'c> {
+    unroll: &'a mut Unroll<'b, 'c>,
+    variant: &'a str,
+    payload: &'a [Item],
+}
+
+impl Rewrite for PayloadLoops<'_, '_, '_> {
+    fn body(&mut self, b: &mut Vec<Stmt>) {
+        let mut out = Vec::with_capacity(b.len());
+        for stmt in b.drain(..) {
+            let StmtKind::ComptimeFor { binding: ForBinding::Single(item), iter, body } = &stmt.kind else {
+                out.push(stmt);
+                continue;
+            };
+            let over_payload = matches!(&iter.kind, ExprKind::Field { object, field }
+                if field == "fields" && matches!(&object.kind, ExprKind::Ident(n) if n == self.variant));
+            if !over_payload {
+                out.push(stmt);
+                continue;
+            }
+            let written = self.unroll.write_out(item, self.payload, body, &stmt, iter.id);
+            out.extend(written);
+        }
+        *b = out;
+    }
+}
+
+/// A payload field as a field of the variant: it has no visibility or wire
+/// annotations of its own.
+fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
+    FieldFact {
+        serial_name: p.name.clone(),
+        name: p.name,
+        type_name: p.type_name,
+        offset: p.offset,
+        size: p.size,
+        is_public: true,
+        is_skipped: false,
+        has_default: p.has_default,
+        attrs: Vec::new(),
+    }
+}
+
+/// An enum's variants, from the layout the checker's table gives it.
+fn variant_facts(types: &rask_check::TypeTable, ty: &Type) -> Option<Vec<rask_mono::reflect::VariantFact>> {
+    let (id, args): (_, Vec<Type>) = match ty {
+        Type::Named(id) => (*id, Vec::new()),
+        Type::Generic { base, args } => (
+            *base,
+            args.iter()
+                .filter_map(|a| match a {
+                    rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => return None,
+    };
+    let layout = types.enum_layout(id, &args)?;
+    let subst: Vec<(String, TypeExpr)> = match types.get(id) {
+        Some(TypeDef::Enum { type_params, .. }) if type_params.len() == args.len() => type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().map(|t| rask_check::reflect::type_label(types, t)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    Some(rask_mono::reflect::variant_facts(&layout, types, &subst))
 }
 
 /// What one iteration's item is: a field, with its position, or a parameter.
 enum Item {
     Field(FieldFact, usize),
     Param(rask_check::reflect::ParamFact),
+    Variant(rask_mono::reflect::VariantFact),
+    /// An array literal's entry, standing in for the item where it's named.
+    Value(Expr),
 }
 
 /// The loop item's facts written in, for one iteration.
@@ -815,6 +927,16 @@ impl ItemFacts<'_> {
     fn property(&self, field: &str) -> Option<ExprKind> {
         let (f, index) = match self.it {
             Item::Field(f, index) => (f, *index),
+            Item::Variant(v) => {
+                return Some(match field {
+                    "name" => ExprKind::String(v.name.clone()),
+                    "serial_name" => ExprKind::String(v.serial_name.clone()),
+                    "has_fields" => ExprKind::Bool(!v.fields.is_empty()),
+                    "field_count" => ExprKind::Int(v.fields.len() as i128, None),
+                    _ => return None,
+                });
+            }
+            Item::Value(_) => return None,
             Item::Param(p) => {
                 use rask_ast::ty::ParamMode;
                 return Some(match field {
@@ -874,6 +996,11 @@ impl ItemFacts<'_> {
 impl Rewrite for ItemFacts<'_> {
     fn expr(&mut self, e: &mut Expr) {
         let replaced = match &e.kind {
+            // An array's entry, where the loop names its item.
+            ExprKind::Ident(_) if matches!(self.it, Item::Value(_)) && self.is_item(e) => match self.it {
+                Item::Value(v) => Some(v.kind.clone()),
+                _ => None,
+            },
             // `v.(f.name)` is `v.p`.
             ExprKind::DynamicField { object, field_expr } => match (&field_expr.kind, self.it) {
                 (ExprKind::Field { object: item, field }, Item::Field(fact, _)) if self.is_item(item) && field == "name" => {

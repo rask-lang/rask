@@ -144,8 +144,8 @@ impl Interpreter {
                 _ => Vec::new(),
             };
             for f in fns {
-                if let Some((template, bound)) = rask_template::copy_of(f) {
-                    self.template_copies.entry(template).or_default().push((bound, f.clone()));
+                if let Some((template, bound)) = self.copies_of.get(&f.id) {
+                    self.template_copies.entry(*template).or_default().push((bound.clone(), f.clone()));
                 }
             }
         }

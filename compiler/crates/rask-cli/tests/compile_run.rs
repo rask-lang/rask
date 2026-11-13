@@ -31,15 +31,9 @@ fn next_tmp_id() -> u64 {
 }
 
 fn rask_binary() -> PathBuf {
-    // cargo test builds into target/debug or target/release
-    let mut path = std::env::current_exe().unwrap();
-    // Walk up from the test binary to the target dir
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
@@ -10131,4 +10125,51 @@ fn a_variant_inside_a_flat_option_result_tests_every_step() {
     let (native, code) = run_native("flat_option_variant_path.rk");
     assert_eq!(code, 0, "native: {native}");
     assert_eq!(native, expected, "native");
+}
+
+// ctrl.comptime/CT50: a template's copies are told apart by their instance's
+// types. The interpreter matched them by the types' printed names, which drop
+// the module, so `Item` and `helpers.Item` shared one copy.
+#[test]
+fn template_copies_for_types_sharing_a_name_stay_apart_on_both_backends() {
+    let expected = "a,b,c,\nid,tag,\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "template_package");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert!(stdout.ends_with(expected), "{}: {}", mode, stdout);
+    }
+}
+
+// ctrl.comptime/CT50: `rask run` on a file with a `test` block. Finding the
+// instances to write out swapped `main` for the test runner's, so nothing
+// `main` called was written out and the backends met a `comptime for`.
+#[test]
+fn a_template_reached_from_main_beside_a_test_block() {
+    const SRC: &str = r#"import std.reflect
+
+struct Reading {
+    id: i64
+    temp: f64
+}
+
+func show<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name};"
+    }
+    return out
+}
+
+func main() {
+    println(show(Reading(id: 1, temp: 2.5)))
+}
+
+test "t" {
+    assert true
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_run_source(SRC, interp);
+        assert!(out.contains("id;temp;"), "interp={interp}:\n{out}");
+    }
 }

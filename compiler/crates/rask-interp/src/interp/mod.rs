@@ -139,7 +139,10 @@ pub struct Interpreter {
     functions: HashMap<String, FnDecl>,
     /// Template copies (`rask-template`) by the template's id, each with the
     /// instance arguments it was written out for, as reflection spells them.
-    template_copies: HashMap<rask_ast::NodeId, Vec<(Vec<(String, String)>, FnDecl)>>,
+    template_copies: HashMap<rask_ast::NodeId, Vec<(Vec<rask_types::TypeBinding>, FnDecl)>>,
+    /// The checker's table of copies: copy function id → (template id, the
+    /// instance's arguments). `register_declarations` indexes it by template.
+    copies_of: HashMap<rask_ast::NodeId, (rask_ast::NodeId, Vec<rask_types::TypeBinding>)>,
     /// Each function declaration's key in `functions`.
     function_keys: HashMap<rask_ast::NodeId, String>,
     /// A name the checker resolved to a function → that function's
@@ -507,6 +510,7 @@ impl Interpreter {
             env: Environment::new(),
             functions: HashMap::new(),
             template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -556,6 +560,7 @@ impl Interpreter {
             env: Environment::new(),
             functions: HashMap::new(),
             template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -607,6 +612,7 @@ impl Interpreter {
             env: Environment::new(),
             functions: HashMap::new(),
             template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -748,6 +754,7 @@ impl Interpreter {
     /// instead.
     pub fn adopt_checker_tables(&mut self, typed: &rask_check::TypedProgram) {
         self.node_types = typed.node_types.clone();
+        self.copies_of = typed.template_copies.clone();
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();
         self.else_binding_types = typed.else_binding_types.clone();

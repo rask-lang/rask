@@ -635,11 +635,7 @@ impl Interpreter {
         let frame = generics?;
         copies
             .iter()
-            .find(|(bound, _)| {
-                bound.iter().all(|(param, label)| {
-                    frame.get(param).is_some_and(|t| rask_check::reflect::type_label(&self.types, t).source() == *label)
-                })
-            })
+            .find(|(bound, _)| bound.iter().all(|b| frame.get(&b.param) == Some(&b.ty)))
             .map(|(_, copy)| copy.clone())
     }
 }

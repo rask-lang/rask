@@ -632,7 +632,7 @@ fn check_loaded_scoped(
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
-    let (mut typed, type_errors) =
+    let (typed, type_errors) =
         rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
@@ -662,6 +662,8 @@ fn check_loaded_scoped(
     }
     };
     name_template_instances(&mut diags[round_start..], &rounds.instances);
+    typed.template_copies =
+        rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
@@ -757,11 +759,9 @@ fn expand_templates(
     if !rounds.templates().iter().chain(&stdlib).any(rask_template::has_comptime_control) {
         return Ok(false);
     }
-    let mut layout_decls = decls.to_vec();
     // A `test` or `benchmark` block reaches instances as much as `main` does,
-    // so they're walked as the runner's entries are.
-    runners::extract_tests(&mut layout_decls, None);
-    runners::extract_benchmarks(&mut layout_decls, None);
+    // so all of them are roots.
+    let mut layout_decls = runners::with_every_entry(decls);
     layout_decls.extend(stdlib.iter().cloned());
     let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
         // Monomorphization reports its own failures where the program is built.
@@ -1161,7 +1161,7 @@ fn check_package_scoped(
         pkg_ctx.all_decls.extend(rounds.library_copies().iter().cloned());
 
         // --- Typecheck (lenient — always returns TypedProgram + errors) ---
-        let (mut typed, type_errors) =
+        let (typed, type_errors) =
             rask_check::typecheck_with_stdlib_lenient(
                 resolved,
                 &mut pkg_ctx.all_decls,
@@ -1191,6 +1191,8 @@ fn check_package_scoped(
         }
     };
     name_template_instances(&mut diags[round_start..], &rounds.instances);
+    typed.template_copies =
+        rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read
