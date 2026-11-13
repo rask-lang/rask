@@ -44,7 +44,7 @@ The big decisions are made: the Decided table in `.claude/rules/design-status.md
 
 If something genuinely seems wrong, flag it once with a concrete reason — then drop it unless I bite. Keep critique pointed; no broad "have you considered" rounds on settled areas.
 
-For a question the specs genuinely don't answer, [specs/RULINGS.md](specs/RULINGS.md) has the six tests the existing rules fall out of. Rule from those instead of guessing.
+For a question the specs genuinely don't answer, [specs/RULINGS.md](specs/RULINGS.md) has the eight tests the existing rules fall out of. Rule from those instead of guessing.
 
 ### Nothing is stable — settled is not frozen
 
@@ -108,6 +108,10 @@ Hand any change to compiler, runtime or stdlib to the `skeptic` agent before
 pushing. Give it the issue or the goal, not your reasoning, and let it try to
 break the change. Fix what it confirms, or say in the recap why a finding is wrong.
 Skip it for docs-only and config-only changes.
+
+A spec change that adds a feature or changes a default goes to `design-skeptic`
+the same way. It judges the change against `specs/RULINGS.md` and reports what it
+costs the rest of the language. Typo and wording fixes skip it.
 
 At the end of a long session, `/retro` turns what went wrong into proposed edits
 to this file and the skills.
