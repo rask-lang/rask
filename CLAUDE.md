@@ -26,12 +26,13 @@ Long sessions bury the state under rolling summaries and check-in chatter. I rea
 
 - **No interim summaries.** Mid-task, speak only to ask a decision or report a blocker. Progress lives in commits.
 - **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. If the harness insists on output, one line: `#N: nothing new.` No "no reviews, rearming", no restated status.
-- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
-  1. **Decisions for me**: the judgment digest. The 2–4 most questionable calls, each with the problem in a sentence, what you picked, the alternative, and the few lines of code that embody it. Framed so I can answer in one word ("keep / wrong / show me more"). Empty is fine; say so.
+- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session, and keep it to about one phone screen. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
+  1. **Decisions for me**: only what I alone can decide (a spec question `specs/` doesn't answer, a change that makes the flagship example worse). Each with the problem in a sentence, what you'd pick, the alternative, and the few lines of code that embody it, so I can answer in one word. Usually empty; say so.
   2. **Status**: branch, PR link, CI on the head, what it's waiting on.
   3. **Done**: one line per change, with the commit. Say what broke and what now works, not which files moved.
-  4. **Decided along the way**: calls you made without asking and why, so I don't reopen them by accident.
-  5. **Left open**: filed issues, dead ends and what they taught, anything skipped.
+  4. **Decided along the way**: at most three calls I might otherwise reopen by accident, one line each.
+  5. **Left open**: unrelated bugs filed, dead ends and what they taught.
+- **Two questions are never for me.** "Quick fix or proper fix?": proper. "Now or in a follow-up?": now. One developer, no reviewers, everything merges to main, so a follow-up is the same work later with the context gone. If the recap would say "I patched it for now", you aren't done. Go back and finish instead of asking.
 - If state changes after a recap (review lands, CI goes red and you fix it), send a fresh full recap, not a delta.
 
 Prefer long term proper fixes over quick-fixes.
@@ -102,11 +103,32 @@ Messy is fine. A branch with eight fixes and two written-up dead ends beats thre
 fixes and a status report. If a fix trades one failure for a worse one, revert it
 and file what you learned — that's a finished piece of work, not a blocker.
 
-## Before you push
+## The main session routes, workers code
 
-Hand any change to compiler, runtime or stdlib to the `skeptic` agent before
-pushing. Give it the issue or the goal, not your reasoning, and let it try to
-break the change. Fix what it confirms, or say in the recap why a finding is wrong.
+The main session is long-lived and every turn re-sends all of it, so it stays
+small. It plans, hands out tasks, and keeps tabs on status and decisions. It does
+not write compiler, runtime or stdlib code, and it doesn't read whole files or
+build logs. That happens in `worker` agents (Sonnet), whose context is thrown
+away when they report. Docs and config edits the main session does itself.
+
+- **Brief a worker with** the issue or goal, the branch, what done means, and
+  what's already ruled out. Point at files; don't paste them.
+- **One worker at a time on a branch.** Independent tasks can run in parallel
+  with `isolation: "worktree"`.
+- **Hold the report to the bar.** A report that says workaround, "for now",
+  partial, deferred or follow-up goes back to the same worker (`SendMessage`)
+  with "finish it properly". Don't accept it and don't turn it into a question
+  for me.
+- **Escalate, don't take over.** A worker that fails the same task twice gets
+  rerun with `model: "opus"`. The main session still doesn't do it itself.
+- **CI and logs**: send a worker or fetch only the failing lines.
+
+## Before the PR is done
+
+Hand a change to compiler, runtime or stdlib to the `skeptic` agent (Opus) once
+per PR, when the branch is finished. Not per push. Give it the issue or the
+goal, not your reasoning, and let it try to break the change. What it confirms
+goes to a worker; say in the recap why a finding is wrong if you reject one.
 Skip it for docs-only and config-only changes.
 
 At the end of a long session, `/retro` turns what went wrong into proposed edits
