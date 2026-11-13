@@ -10171,6 +10171,8 @@ test "t" {
     for interp in [false, true] {
         let out = run_rask_run_source(SRC, interp);
         assert!(out.contains("id;temp;"), "interp={interp}:\n{out}");
+    }
+}
 
 // A `mutate` parameter is the caller's slot: when a panic unwinds out of the
 // callee, the caller's unwinding releases what's in it. The callee released
