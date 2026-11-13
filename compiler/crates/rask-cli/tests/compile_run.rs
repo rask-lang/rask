@@ -10171,5 +10171,48 @@ test "t" {
     for interp in [false, true] {
         let out = run_rask_run_source(SRC, interp);
         assert!(out.contains("id;temp;"), "interp={interp}:\n{out}");
+
+// A `mutate` parameter is the caller's slot: when a panic unwinds out of the
+// callee, the caller's unwinding releases what's in it. The callee released
+// it too, once just before the panic and once more from its own unwind
+// record, so the test runner died of a double free and the tests after the
+// panicking one never ran.
+#[test]
+fn a_panic_in_a_callee_leaves_its_mutate_argument_to_the_caller() {
+    const SRC: &str = r#"enum Direction {
+    North
+    South
+}
+
+func boom() -> i64 {
+    todo()
+}
+
+struct Room {
+    exits: Map<Direction, usize>
+}
+
+struct World {
+    rooms: Vec<Room>
+}
+
+func connect(mutate w: World, d: Direction) {
+    w.rooms[0].exits[d] = 1
+    let q = boom()
+}
+
+test "panics in the callee" {
+    mut w = World(rooms: Vec.new())
+    w.rooms.push(Room(exits: Map.new()))
+    connect(mutate w, Direction.North)
+}
+
+test "runs after it" {
+    assert 1 == 1
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_test_source(SRC, interp);
+        assert!(out.contains("2 tests, 1 passed, 1 failed"), "interp={interp}:\n{out}");
     }
 }

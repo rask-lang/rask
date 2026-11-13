@@ -160,6 +160,10 @@ pub struct Facts {
     pub foreign: Vec<LocalId>,
     /// Parameters that are ours on entry, because the caller gave them up.
     pub owned: Vec<LocalId>,
+    /// Owned names that are the caller's slot (a held `mutate` parameter).
+    /// What one holds is the caller's to release if a panic unwinds past
+    /// this frame, so the frame's unwind record never takes it.
+    pub caller_slots: Vec<LocalId>,
 }
 
 /// A release to insert, under `name`. `made` is the name the value was made
@@ -1563,7 +1567,7 @@ fn unwind_marks(
                 continue;
             }
             let holders = entry.holders(*v);
-            if holders.is_empty() {
+            if holders.is_empty() || holders.iter().any(|h| facts.caller_slots.contains(h)) {
                 continue;
             }
             let mut agreed: Option<Option<LocalId>> = None;
@@ -1643,7 +1647,10 @@ fn unwind_marks(
             }
             let owned: Vec<Value> = st.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v).collect();
             for v in owned {
-                if arm.contains_key(&v) || !armable(v, &read) {
+                if arm.contains_key(&v)
+                    || !armable(v, &read)
+                    || st.holders(v).iter().any(|h| facts.caller_slots.contains(h))
+                {
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &[]) {
