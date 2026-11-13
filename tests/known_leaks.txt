@@ -420,3 +420,4 @@
 
 t_http_client_loopback.rk   # 40 allocations — #1609 a server task answering a request leaks its headers Map
 t_destructure_part_handed_on.rk  # 2 allocations — #1902 a destructure retains the string part instead of moving it, and handing the other part on leaves the tuple unreleased
+t_comptime_template_components.rk  # 4 allocations — #1927 a method on a borrowed struct's field, passed a `mutate` parameter on, leaks the caller's vectors

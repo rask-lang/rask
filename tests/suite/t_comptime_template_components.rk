@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The component-system example from #1863, on templates (ctrl.comptime/CT72,
+// #1919): each field's `load(w, i)` takes `load<Pos>` or `load<Vel>` from the
+// field it fills. Checked once, nothing said which. `scatter` leaks the
+// world's vectors natively (#1927), which is why this is a file of its own.
+import std.reflect
+
+struct World {
+    pos: Vec<Pos>
+    vel: Vec<Vel>
+}
+
+interface Component {
+    func load(w: World, i: usize) -> Self
+    func store(self, mutate w: World, i: usize)
+}
+
+struct Pos {
+    x: f64
+}
+
+struct Vel {
+    x: f64
+}
+
+Pos implements Component {
+    func load(w: World, i: usize) -> Pos {
+        return w.pos[i]
+    }
+    func store(self, mutate w: World, i: usize) {
+        w.pos[i] = self
+    }
+}
+
+Vel implements Component {
+    func load(w: World, i: usize) -> Vel {
+        return w.vel[i]
+    }
+    func store(self, mutate w: World, i: usize) {
+        w.vel[i] = self
+    }
+}
+
+struct Moving {
+    p: Pos
+    v: Vel
+}
+
+extend Moving {
+    func blank() -> Moving {
+        return Moving(p: Pos(x: 0.0), v: Vel(x: 0.0))
+    }
+}
+
+func load<T: Component>(w: World, i: usize) -> T {
+    return T.load(w, i)
+}
+
+// Each field's `load` call takes its `T` from the field: `load<Pos>`, then
+// `load<Vel>`. Checked once, nothing said which.
+func gather<Q>(mutate q: Q, w: World, i: usize) {
+    comptime for f in reflect.fields<Q>() {
+        q.(f.name) = load(w, i)
+    }
+}
+
+func scatter<Q>(q: Q, mutate w: World, i: usize) {
+    comptime for f in reflect.fields<Q>() {
+        q.(f.name).store(mutate w, i)
+    }
+}
+
+func drift(mutate m: Moving) {
+    m.p.x += m.v.x
+}
+
+test "a generic call takes its type from the field" {
+    mut w = World(pos: [Pos(x: 1.0), Pos(x: 10.0)], vel: [Vel(x: 2.0), Vel(x: 3.0)])
+    for i in 0..w.pos.len() {
+        mut q = Moving.blank()
+        gather(mutate q, w, i)
+        drift(mutate q)
+        scatter(q, mutate w, i)
+    }
+    assert w.pos[0].x == 3.0
+    assert w.pos[1].x == 13.0
+}
