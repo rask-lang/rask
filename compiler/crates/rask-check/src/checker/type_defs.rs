@@ -625,6 +625,10 @@ pub struct TypedProgram {
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.
     pub field_reuses: std::collections::HashSet<NodeId>,
+    /// `for` loops over links whose body can't delete anything, by source
+    /// expression: lowering walks those without recording the list with its
+    /// rack (mem.racks/RK16). Written back by the ownership pass.
+    pub quiet_loops: std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
     pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,

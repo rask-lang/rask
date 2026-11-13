@@ -457,9 +457,12 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             }
             rewrite_expr(body, r);
         }
-        ExprKind::Spawn { receiver, body, .. } => {
+        ExprKind::Spawn { receiver, args, body, .. } => {
             if let Some(recv) = receiver {
                 rewrite_expr(recv, r);
+            }
+            for a in args {
+                rewrite_expr(&mut a.expr, r);
             }
             rewrite_expr(body, r);
         }

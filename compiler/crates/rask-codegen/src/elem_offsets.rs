@@ -55,6 +55,9 @@ const KIND_HEAP: i32 = runtime_abi::RASK_OWNED_HEAP as i32;
 const KIND_SELF: i32 = runtime_abi::RASK_OWNED_SELF as i32;
 /// A link inside the element, for the rack rather than for the free.
 const KIND_LINK: i32 = runtime_abi::RASK_OWNED_LINK as i32;
+/// A handle that frees itself through its type's `@handle(release: …)`. The
+/// offset bits carry the release's index above the byte offset.
+const KIND_HANDLE: i32 = runtime_abi::RASK_OWNED_HANDLE as i32;
 
 /// One interface-box entry at offset zero: what to hand `rask_owned_release` when
 /// the slot *is* the fat pointer, which is the shape of an interface-object field.
@@ -153,6 +156,15 @@ fn describe(
         // here.
         MirType::Container(ContainerKind::Vec) => out.push(entry(base, KIND_VEC)),
         MirType::Container(ContainerKind::Map) => out.push(entry(base, KIND_MAP)),
+        MirType::Container(ContainerKind::Handle(release)) => {
+            let index = runtime_abi::handle_release_index(release)? as i32;
+            let mask = runtime_abi::RASK_OWNED_HANDLE_OFFSET_MASK as i32;
+            let shift = runtime_abi::RASK_OWNED_HANDLE_INDEX_SHIFT as u32;
+            if base & !mask != 0 || (index << shift) & !(runtime_abi::RASK_OWNED_OFFSET_MASK as i32) != 0 {
+                return None;
+            }
+            out.push(entry(base | (index << shift), KIND_HANDLE));
+        }
         // The element *is* the pointer, so there is nothing to flatten: one
         // entry saying what kind of block it names.
         MirType::FuncPtr(_) => out.push(entry(base, KIND_CLOSURE)),

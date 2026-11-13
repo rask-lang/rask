@@ -25,7 +25,7 @@ Meters implements Zero {
 }
 
 func shown<T: Zero>() -> string {
-    // ERROR: `show` takes `self`, so it runs on a value [E0961]
+    // ERROR: `show` takes `self`, so it runs on a value [E0967]
     return T.show()
 }
 
@@ -35,7 +35,7 @@ func remade<T: Zero>(t: T) -> T {
 }
 
 func main() {
-    // ERROR: `show` takes `self`, called on the type [E0961]
+    // ERROR: `show` takes `self`, called on the type [E0967]
     println(Meters.show())
 
     // FIX: a function without `self` through the type, a method on a value

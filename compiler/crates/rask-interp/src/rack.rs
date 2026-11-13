@@ -770,6 +770,7 @@ pub fn delete_node(
         // node through the rack.
         guard.slots[idx] = None;
         guard.free_list.push(idx as u32);
+        guard.epoch += 1;
         guard.slot_of.remove(&node_key(node));
         guard.len -= 1;
         let holders = guard.take_incoming(node);

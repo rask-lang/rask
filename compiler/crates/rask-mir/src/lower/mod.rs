@@ -254,9 +254,6 @@ struct LoopContext {
     /// ensure_stack depth when loop started — loop-scoped ensures
     /// are stack[ensure_depth..] and must run on break/continue/iteration-end.
     ensure_depth: usize,
-    /// `pending_write_backs` depth when the loop's body started. The ones above
-    /// it were opened inside the body and are owed on `break`/`continue`.
-    writeback_depth: usize,
 }
 
 /// One wrapper layer of a type, as seen by `coerce_into_wrapper`.
@@ -437,6 +434,7 @@ impl<'a> MirContext<'a> {
             escaping_closures: &records.escaping_closures,
             lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
+            quiet_loops: &records.quiet_loops,
             return_moves: &records.return_moves,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
@@ -643,6 +641,9 @@ pub struct MirContext<'a> {
     /// Assignments whose new value takes the old one: the slot's old value is
     /// the new one's now, so nothing is released before the write (ownership).
     pub field_reuses: &'a std::collections::HashSet<NodeId>,
+    /// `for` loops over links that no delete can reach, by source expression
+    /// (ownership): walked without recording the list or keeping a cursor.
+    pub quiet_loops: &'a std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (ownership). A `for` body over a sequence returns from inside a
     /// closure, and the frame learns from this what left on that exit.
@@ -987,6 +988,7 @@ impl<'a> MirContext<'a> {
             escaping_closures: &EMPTY_ESCAPING,
             lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
+            quiet_loops: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
@@ -1628,9 +1630,17 @@ impl<'a> MirContext<'a> {
         if mir != MirType::Ptr {
             return mir;
         }
-        match crate::ContainerKind::of(ty, self.type_names) {
-            Some(kind) => MirType::Container(kind),
-            None => mir,
+        if let Some(kind) = crate::ContainerKind::of(ty, self.type_names) {
+            return MirType::Container(kind);
+        }
+        // A handle that frees itself, by its declaration's release.
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => self
+                .handle_releases
+                .get(id)
+                .and_then(|r| crate::ContainerKind::handle(r))
+                .map_or(mir, MirType::Container),
+            _ => mir,
         }
     }
 
@@ -2098,10 +2108,11 @@ pub struct MirLowerer<'a> {
     /// The closure being lowered is a C function pointer (CB2): compiled with
     /// no environment, entered the C way, and handed back as its address.
     c_callback: bool,
-    /// Inside a closure body: the locals that hold a capture's address
-    /// rather than a copy of it. A whole-value write to one replaces what
-    /// the creating frame (or the environment) holds.
-    pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
+    /// Locals that hold an address rather than a value: a capture reached
+    /// by address inside a closure body, or a collection element bound in
+    /// place (`BindPlace`). A whole-value write to one replaces what the
+    /// storage holds, so the old value is released there.
+    pub(crate) addressed_locals: std::collections::HashSet<LocalId>,
     /// While a `for` body over a sequence is lowered: the names of the loop's
     /// variables a `return` in it moved (`MirContext::return_moves`).
     pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
@@ -2134,12 +2145,11 @@ pub struct MirLowerer<'a> {
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     /// When set, `return expr` inside an inlined closure body assigns to the
     /// target local and jumps to the continuation block instead of emitting
-    /// MirTerminator::Return.  Used by fold/reduce/etc. The third part is
-    /// `pending_write_backs` depth when the body started. The fourth is the
+    /// MirTerminator::Return.  Used by fold/reduce/etc. The third part is the
     /// enclosing function's return type when the body is a `for` over a
     /// sequence: its `return` answers for that function, so the value is
     /// shaped for that function's return type before it is stored.
-    inline_return_target: Option<(LocalId, BlockId, usize, Option<MirType>)>,
+    inline_return_target: Option<(LocalId, BlockId, Option<MirType>)>,
     /// The type a `return` inside the inlined body stored, when one fired.
     ///
     /// Doubles as "the body already stored its result and terminated". Without
@@ -2151,18 +2161,6 @@ pub struct MirLowerer<'a> {
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
     ensure_stack: Vec<BlockId>,
-    /// Elements copied out of a collection that go back in when the body that
-    /// holds them ends, innermost last: a `for mutate` binding, a `with v[i]`
-    /// binding.
-    ///
-    /// The normal end of the body writes each one back. Any other way out has
-    /// to as well, or the body's changes are lost: `return item` from a `for
-    /// mutate` handed back the new value and left the collection unchanged
-    /// (#650), and `return`, `continue` or a labelled `break` out of a `with`
-    /// block did the same. Every function exit drains all of these, the same
-    /// way it drains `ensure_stack`; a `break` or `continue` drains the ones
-    /// opened inside the loop it leaves.
-    pending_write_backs: Vec<PendingWriteBack>,
     /// Collection elements lent to something that writes through them, waiting
     /// for the call to be emitted so the borrow can be released.
     ///
@@ -2720,33 +2718,28 @@ impl<'a> MirLowerer<'a> {
         Some(prefix.as_str().trim().to_string())
     }
 
-    /// Write every open element binding back into its collection, innermost
-    /// first. For every function exit.
-    pub(crate) fn emit_all_write_backs(&mut self) {
-        self.emit_write_backs_above(0);
-    }
-
-    /// Write back the element bindings opened above `depth`, innermost first.
-    /// For a `break` or `continue`, which leaves the bodies opened inside the
-    /// loop it targets.
-    pub(crate) fn emit_write_backs_above(&mut self, depth: usize) {
-        let pending = self.pending_write_backs.get(depth..).unwrap_or(&[]).to_vec();
-        for wb in pending.iter().rev() {
-            self.emit_write_back(wb);
-        }
-    }
-
-    /// LP13: a Vec element goes back by index, a Map value by key.
-    ///
-    /// Not `Vec_set`/`Map_set`: those replace the slot and release what it
-    /// held, and here what it held is the binding being put back.
-    pub(crate) fn emit_write_back(&mut self, wb: &PendingWriteBack) {
-        let func = if wb.map { "Map_write_back" } else { "Vec_write_back" };
+    /// The address of `collection[at]`: a Vec element by index, a Map value
+    /// by key. Panics the way `v[i]` and `m[k]` do when there's no such
+    /// element.
+    pub(crate) fn emit_element_slot(&mut self, collection: MirOperand, at: MirOperand, map: bool) -> LocalId {
+        let slot = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal(func.to_string()),
-            args: vec![wb.collection.clone(), wb.at.clone(), MirOperand::Local(wb.value)],
+            dst: Some(slot),
+            func: FunctionRef::internal(if map { "Map_slot" } else { "Vec_slot" }.to_string()),
+            args: vec![collection, at],
         }));
+        slot
+    }
+
+    /// Bind `local` to the element `collection[at]` where it sits, for a
+    /// `with` or `for mutate` binding. Writes through it are writes to the
+    /// element, and nothing needs putting back: the binding owns nothing, so
+    /// leaving the body by any route, a panic included, leaves the collection
+    /// whole.
+    pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) {
+        let slot = self.emit_element_slot(collection, at, map);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr: slot }));
+        self.addressed_locals.insert(local);
     }
 
     /// Hand an `Ordering` back as its tag when the function is declared to
@@ -2780,7 +2773,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn return_ty(&self) -> MirType {
         self.inline_return_target
             .as_ref()
-            .and_then(|t| t.3.clone())
+            .and_then(|t| t.2.clone())
             .unwrap_or_else(|| self.builder.ret_ty().clone())
     }
 
@@ -2788,26 +2781,24 @@ impl<'a> MirLowerer<'a> {
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
     /// (twice), and the implicit tail — and each one has to run the same exits:
-    /// pending `for mutate` writebacks, then the ensure chain.
+    /// the ensure chain.
     ///
     /// In a `for` over a sequence the value goes where the body's `return`
     /// statements put theirs, and the yield stops with the flag raised. A plain
     /// `Return` there answered the yield instead: `try` in the loop body ended
     /// the loop and the function carried on as if it had succeeded.
     pub(crate) fn terminate_return(&mut self, value: Option<MirOperand>) {
-        if let Some((dst, cont, writeback_depth, Some(_))) = self.inline_return_target.clone() {
+        if let Some((dst, cont, Some(_))) = self.inline_return_target.clone() {
             if let Some(val) = value {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst,
                     rvalue: MirRValue::Use(val),
                 }));
             }
-            self.emit_write_backs_above(writeback_depth);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont }));
             return;
         }
         let value = self.ordering_return_as_tag(value);
-        self.emit_all_write_backs();
         if self.ensure_stack.is_empty() {
             self.builder
                 .terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
@@ -4794,7 +4785,7 @@ impl<'a> MirLowerer<'a> {
             closure_counter: 0,
             spawn_result_boxed: false,
             c_callback: false,
-            addressed_captures: std::collections::HashSet::new(),
+            addressed_locals: std::collections::HashSet::new(),
             seq_moved_names: None,
             parent_name: func_name,
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
@@ -4805,7 +4796,6 @@ impl<'a> MirLowerer<'a> {
             inline_return_target: None,
             inline_return_taken: None,
             ensure_stack: Vec::new(),
-            pending_write_backs: Vec::new(),
             elem_writebacks: Vec::new(),
             take_self_methods,
             take_param_positions,
@@ -6737,20 +6727,6 @@ fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirTyp
     }
 }
 
-/// What it takes to put an element binding back where it came from.
-#[derive(Debug, Clone)]
-pub(crate) struct PendingWriteBack {
-    /// The Vec or Map the element was read out of.
-    pub(crate) collection: MirOperand,
-    /// The index for a Vec, the key for a Map.
-    pub(crate) at: MirOperand,
-    /// The binding holding the element, or a Map entry's value. Read out with
-    /// `Vec_lend`/`Map_lend`, so the frame owns it until the write-back.
-    pub(crate) value: LocalId,
-    /// A Map writes back by key.
-    pub(crate) map: bool,
-}
-
 /// Something owed to a `mutate` argument once its call has been emitted.
 pub(crate) enum ElemWriteback {
     /// An element borrowed out of a collection, waiting to be released.
@@ -7887,6 +7863,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -7988,6 +7965,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8096,6 +8074,7 @@ mod tests {
             escaping_closures: &empty_escaping,
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
+            quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,

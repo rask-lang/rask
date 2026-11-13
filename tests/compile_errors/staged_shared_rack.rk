@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task that borrows its frame and the code before its join may share a rack
+// only to read it (mem.racks/RK16, E0962): no write through a link or a rack,
+// and no link stored anywhere but a `Staged` buffer, in the task or in a
+// function it calls. A relink function may not capture a link of its own
+// (RK20, E0963). The tasks at the end are the legal shapes and must compile.
+
+import memory.Rack
+import memory.Link
+import memory.Staged
+import thread.ThreadPool
+
+struct Entity {
+    id: u64
+    health: i64
+    target: Link<Entity>?
+}
+
+struct Pair {
+    a: Link<Entity>?
+    n: i64
+}
+
+func count(world: Rack<Entity>) -> usize {
+    return world.len()
+}
+
+func collect(world: Rack<Entity>) -> usize {
+    mut out: Vec<Link<Entity>> = Vec.new()
+    for e in world.nodes() {
+        out.push(e)
+    }
+    return out.len()
+}
+
+func keep<T>(take x: T) -> usize {
+    mut v: Vec<T> = Vec.new()
+    v.push(x)
+    return v.len()
+}
+
+func stash(l: Link<Entity>) -> usize {
+    mut v: Vec<Link<Entity>> = Vec.new()
+    v.push(l)
+    return v.len()
+}
+
+func run(f: func(Link<Entity>) -> usize, l: Link<Entity>) -> usize {
+    return f(l)
+}
+
+func main() {
+    mut world: Rack<Entity> = Rack.new()
+    let a = world.insert(Entity(id: 1, health: 1, target: none))
+    // ERROR: writes a node the other side reads [E0962]
+    let h1 = ThreadPool.spawn(requires_pool: false) { a.health = 5 }
+    println("{count(world)}")
+    h1.join()!
+    let h2 = ThreadPool.spawn(requires_pool: false) {
+        // ERROR: a local vector of links is recorded with the rack [E0962]
+        mut v: Vec<Link<Entity>> = Vec.new()
+        v.push(a)
+    }
+    println("{count(world)}")
+    h2.join()!
+    // ERROR: so it is in a function the task calls [E0962]
+    let h3 = ThreadPool.spawn(requires_pool: false) { collect(world) }
+    println("{count(world)}")
+    println("{h3.join()!}")
+    let h4 = ThreadPool.spawn(requires_pool: false) {
+        // ERROR: a struct holding a link [E0962]
+        let p = Pair(a: a, n: 1)
+        p.n
+    }
+    println("{count(world)}")
+    println("{h4.join()!}")
+    // ERROR: a generic function stores what it's given, here a link [E0962]
+    let h5 = ThreadPool.spawn(requires_pool: false) { keep(a) }
+    println("{count(world)}")
+    println("{h5.join()!}")
+    // ERROR: and so may a function handed one that stores [E0962]
+    let h6 = ThreadPool.spawn(requires_pool: false) { run(stash, a) }
+    println("{count(world)}")
+    println("{h6.join()!}")
+    // ERROR: handing a link back to the frame [E0962]
+    let h7 = ThreadPool.spawn(requires_pool: false) { a }
+    let y = count(world)
+    let x = h7.join()!
+
+    mut ops = world.staged()
+    // ERROR: the relink function captured `a` [E0963]
+    ops.relink(1, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = a })
+    let grab = |mutate n: Entity, to: Link<Entity>| { n.target = a }
+    // ERROR: bound to a name first, the same [E0963]
+    ops.relink(2, a, a, grab)
+    ops.relink(3, a, a, |mutate n: Entity, to: Link<Entity>| { n.target = to })
+
+    // The same generic function given a number stores no link.
+    let h8 = ThreadPool.spawn(requires_pool: false) { keep(a.health) }
+    let n = count(world)
+    let k = h8.join()!
+    // Reads, a local link, and changes recorded in a buffer.
+    let h9 = ThreadPool.spawn(requires_pool: false) {
+        mut o = world.staged()
+        let t = a
+        for e in world.nodes() {
+            if e.health > 0 {
+                o.delete(e.id, e)
+            }
+        }
+        o.insert(9, Entity(id: 9, health: 1, target: t))
+        o
+    }
+    let c = count(world)
+    world.apply(h9.join()!)
+    println("{y}{c}{k}{n}")
+}

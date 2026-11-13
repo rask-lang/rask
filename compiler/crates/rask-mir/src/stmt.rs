@@ -117,6 +117,15 @@ pub enum MirStmtKind {
         offset: u32,
         access: CaptureAccess,
     },
+    /// `dst` names the storage at `addr`, which this frame doesn't own: a
+    /// collection element bound by `with v[i] as x` or `for mutate`. Reads and
+    /// writes of `dst` go through the address, the way a by-reference
+    /// capture's do, and nothing here frees it. Binding a copy instead and
+    /// writing it back at the end lost every write a panic interrupted (#1922).
+    BindPlace {
+        dst: LocalId,
+        addr: LocalId,
+    },
     /// Free a heap-allocated closure. `made` is the `ClosureCreate` that built
     /// it, when one did: the closure is freed under whichever name still holds
     /// it, and passes that free what it captured need the create. A label, not

@@ -253,7 +253,7 @@ A function type has no parameter names, so `index` tells parameters apart. Neith
 
 `is<T>()` asks whether the parameter's type is exactly `T`: `is<Pos>()` is false for a `Pos?`. The mode isn't part of the question. Types reach comptime code only as type arguments (`ctrl.comptime/CT66`), which is why this is a method taking `T` rather than a type stored in the struct.
 
-`is<T>()`, like `FieldInfo`'s `has<A>()` and `get<A>()`, is answered while a `comptime for` unrolls, so it's only callable on that loop's binding. On anything else — an ordinary `for` over the same `Vec`, an element held in a variable — it's a compile error (E0960). The plain fields read anywhere.
+`is<T>()`, like `FieldInfo`'s `has<A>()` and `get<A>()`, is answered while a `comptime for` unrolls, so it's only callable on that loop's binding. On anything else — an ordinary `for` over the same `Vec`, an element held in a variable — it's a compile error (E0966). The plain fields read anywhere.
 
 <!-- test: skip -->
 ```rask
@@ -311,7 +311,7 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | `methods<T>()` on a generic instantiation | R5 | Only the methods whose `extend` header and `where` clause T meets |
 | `interfaces<T>()` with derived conformances | — | Not listed; `implements` answers |
 | `params<F>()` on a non-function type | — | Compile error |
-| `is<T>()` / `has<A>()` / `get<A>()` outside a `comptime for` over the item | R1 | Compile error (E0960) |
+| `is<T>()` / `has<A>()` / `get<A>()` outside a `comptime for` over the item | R1 | Compile error (E0966) |
 
 ---
 

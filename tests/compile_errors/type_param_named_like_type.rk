@@ -17,7 +17,7 @@ Meters implements Val {
     }
 }
 
-// ERROR: `Meters` is a type this program declares [E0962]
+// ERROR: `Meters` is a type this program declares [E0968]
 func named<Meters: Val>(m: Meters) -> i64 {
     return m.val()
 }

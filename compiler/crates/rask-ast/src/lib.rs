@@ -7,6 +7,7 @@
 pub mod span;
 pub mod call;
 pub mod token;
+pub mod tasks;
 pub mod expr;
 pub mod stmt;
 pub mod decl;

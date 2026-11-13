@@ -290,7 +290,7 @@ impl<'a> MirLowerer<'a> {
         carries: bool,
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, false)
+        self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, TaskRole::NotTask)
     }
 
     /// A function value where C wants a function pointer (CB1, CB2): the
@@ -319,7 +319,7 @@ impl<'a> MirLowerer<'a> {
                     )));
                 }
                 self.c_callback = true;
-                self.lower_closure_expecting(params, ret_ty.as_ref(), body, false, &[], Some(expr.id), false)
+                self.lower_closure_expecting(params, ret_ty.as_ref(), body, false, &[], Some(expr.id), TaskRole::NotTask)
             }
             _ => Err(LoweringError::InvalidConstruct(
                 "only a named `extern \"C\"` function or a closure literal can be handed to C as a function pointer".to_string(),
@@ -346,13 +346,14 @@ impl<'a> MirLowerer<'a> {
         carries: bool,
         expected_param_tys: &[MirType],
         closure_id: Option<NodeId>,
-        for_spawn: bool,
+        task: TaskRole,
     ) -> Result<TypedOperand, LoweringError> {
+        let for_spawn = task != TaskRole::NotTask;
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
 
         // 2. Generate unique name for the closure function
-        let closure_name = format!("{}__closure_{}", self.parent_name, self.closure_counter);
+        let closure_name = self.next_closure_name();
         self.closure_counter += 1;
 
         // 3. Build the closure environment layout.
@@ -372,13 +373,20 @@ impl<'a> MirLowerer<'a> {
         // Borrowing is safe here because a borrowing closure is never heap
         // allocated (`heap: carries`, step 5) and so cannot outlive the frame
         // it points into.
-        let by_ref = !carries && !for_spawn;
+        //
+        // A task that borrows its frame (conc.async/S5) points as well, and
+        // its block lives in the frame like any closure that stays: the join
+        // comes before the frame ends, and a panic before the join waits for
+        // it (`rask_task_spawn_borrowed`).
+        let by_ref = (!carries && !for_spawn) || task == TaskRole::Borrowing;
         // The environment slot holds a pointer for a borrow, and the value
         // itself otherwise — but for a carrying closure the value in the slot
         // *is* the variable, so the body has to write back into it rather than
         // into a loaded copy. A task's copy is its own and dies with it, so
         // there is nothing to write back to.
-        let capture_access = if for_spawn {
+        let capture_access = if task == TaskRole::Borrowing {
+            crate::CaptureAccess::Borrowed
+        } else if for_spawn {
             crate::CaptureAccess::Taken
         } else if carries {
             crate::CaptureAccess::Owned
@@ -482,18 +490,19 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Emit LoadCapture for each free variable
-        let mut addressed_captures = std::collections::HashSet::new();
+        let mut addressed_locals = std::collections::HashSet::new();
         for (i, (name, _outer_id, ty, _)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            if capture_access.is_addressed() {
-                addressed_captures.insert(local_id);
+            let access = capture_access;
+            if access.is_addressed() {
+                addressed_locals.insert(local_id);
             }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id.expect("a C callback captures nothing"),
                 offset: cap.offset,
-                access: capture_access,
+                access,
             }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
@@ -502,13 +511,16 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
-            let saved_captures = std::mem::replace(&mut self.addressed_captures, addressed_captures);
+            let saved_captures = std::mem::replace(&mut self.addressed_locals, addressed_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
             // would drain it here, branching to block ids this function does
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+            // A closure is its own frame with its own return, so a `try` in it
+            // leaves the closure even when the closure sits in a `test` block.
+            let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
@@ -538,9 +550,10 @@ impl<'a> MirLowerer<'a> {
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
-            self.addressed_captures = saved_captures;
+            self.addressed_locals = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
+            self.in_test_body = saved_in_test;
             self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
@@ -754,7 +767,7 @@ impl<'a> MirLowerer<'a> {
         let mut inner_flag = None;
         let mut inner_value = None;
         // The body reaches the loop's variables by address, like any borrowing
-        // closure (`addressed_captures`).
+        // closure (`addressed_locals`).
         let mut body_captures = std::collections::HashSet::new();
         for (i, (name, outer_id, ty, _)) in free_vars.iter().enumerate() {
             let dst = yb.alloc_local(name.clone(), ty.clone());
@@ -785,7 +798,7 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
-            let saved_captures = std::mem::replace(&mut self.addressed_captures, body_captures);
+            let saved_captures = std::mem::replace(&mut self.addressed_locals, body_captures);
             let saved_moved = std::mem::replace(&mut self.seq_moved_names, Some(Default::default()));
             let saved_loops = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
@@ -794,8 +807,6 @@ impl<'a> MirLowerer<'a> {
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
             let saved_inline = self.inline_return_target.take();
-            // Element write-backs are the enclosing function's for the same reason.
-            let saved_write_backs = std::mem::take(&mut self.pending_write_backs);
 
             // `break` and `continue` in the body are this loop's, and this loop
             // is one call of the yield.
@@ -805,14 +816,13 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: None,
                 ensure_depth: self.ensure_stack.len(),
-                writeback_depth: self.pending_write_backs.len(),
             });
             // `return v` assigns to the captured value local and jumps to the
             // block that raises the flag. Writing the local *is* a store through
             // the capture pointer — `transform::addr_taken` rewrites it.
             self.inline_return_target = inner_value
                 .or(inner_flag)
-                .map(|dst| (dst, nonlocal_block, 0, Some(outer_ret.clone())));
+                .map(|dst| (dst, nonlocal_block, Some(outer_ret.clone())));
 
             // `for (k, v) in seq` — read the names off the item, the same way
             // the index loop reads them off a Map entry. Has to happen with the
@@ -845,11 +855,10 @@ impl<'a> MirLowerer<'a> {
 
             self.loop_stack = saved_loops;
             self.ensure_stack = saved_ensure_stack;
-            self.pending_write_backs = saved_write_backs;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
-            self.addressed_captures = saved_captures;
+            self.addressed_locals = saved_captures;
             let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
             // A `return` in a loop nested in another loop's body leaves that
             // body too, so what it moved is moved there as well.
@@ -953,6 +962,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         expr: &Expr,
         target: rask_ast::expr::SpawnTarget,
+        args: &[rask_ast::expr::CallArg],
         body: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let rask_ast::expr::ExprKind::Closure { params, ret_ty, body: block } = &body.kind else {
@@ -963,15 +973,17 @@ impl<'a> MirLowerer<'a> {
         // A closure value the block captures carries what it captured out of
         // sight of the checker. One holding a link or a `Local` box would hand
         // it to the task, so each is asked before the task starts (#1356).
-        for local in self.captured_closure_values(block, params) {
+        let borrows = !self.ctx.escaping_closures.contains(&body.id);
+        for local in self.captured_closure_values(block, params).into_iter().filter(|_| !borrows) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("rask_closure_refuse_crossing".to_string()),
                 args: vec![MirOperand::Local(local)],
             }));
         }
+        let role = if borrows { TaskRole::Borrowing } else { TaskRole::Carrying };
         let (task, _) = self.lower_closure_expecting(
-            params, ret_ty.as_ref(), block, true, &[], Some(body.id), true,
+            params, ret_ty.as_ref(), block, !borrows, &[], Some(body.id), role,
         )?;
         let boxes_result = self.spawn_result_boxed;
         let entry = match target {
@@ -979,18 +991,45 @@ impl<'a> MirLowerer<'a> {
             rask_ast::expr::SpawnTarget::Thread => crate::TASK_ENTRIES[1],
             rask_ast::expr::SpawnTarget::Pool => crate::TASK_ENTRIES[2],
         };
+        // `ThreadPool.spawn(requires_pool: false)`: with no pool, the task
+        // runs right here (conc.async/S2). Written or not, the pool takes
+        // the flag.
+        let requires_pool = match args.first() {
+            Some(a) => self.lower_expr(&a.expr)?.0,
+            None => MirOperand::Constant(crate::operand::MirConst::Bool(true)),
+        };
+        let boxes = MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result)));
+        let (func, call_args) = if borrows {
+            // The block points into this frame and lives in it; the task
+            // doesn't own it, and a panic before the join waits for it.
+            let which = match target {
+                rask_ast::expr::SpawnTarget::Green => 0,
+                rask_ast::expr::SpawnTarget::Thread => 1,
+                rask_ast::expr::SpawnTarget::Pool => 2,
+            };
+            let which = MirOperand::Constant(crate::operand::MirConst::Int(which));
+            (FunctionRef::runtime("rask_task_spawn_borrowed".to_string()), vec![which, task, boxes, requires_pool])
+        } else if target == rask_ast::expr::SpawnTarget::Pool {
+            (FunctionRef::internal(entry.to_string()), vec![task, boxes, requires_pool])
+        } else {
+            (FunctionRef::internal(entry.to_string()), vec![task, boxes])
+        };
         let handle_ty = self.lookup_expr_type(expr).unwrap_or(MirType::Ptr);
         let handle = self.builder.alloc_temp(handle_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(handle),
-            func: FunctionRef::internal(entry.to_string()),
-            args: vec![
-                task,
-                MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result))),
-            ],
-        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call { dst: Some(handle), func, args: call_args }));
+        // The handle reaches into the block, and the block into the frame,
+        // until the join: what it points at stays alive while the handle is.
+        if borrows {
+            self.builder.mark_points_into_args(handle);
+        }
         Ok((MirOperand::Local(handle), handle_ty))
     }
+
+    /// The name the next closure `lower_closure_expecting` builds will get.
+    fn next_closure_name(&self) -> String {
+        format!("{}__closure_{}", self.parent_name, self.closure_counter)
+    }
+
 
     /// The locals a task block captures that hold a function value, by the
     /// checker's type of the name where the block uses it.
@@ -1094,4 +1133,15 @@ impl<'a> MirLowerer<'a> {
             _ => false,
         }
     }
+}
+
+/// Whether a closure being lowered is a task's body, and if so how it holds
+/// what it names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum TaskRole {
+    NotTask,
+    /// Takes copies; the task may outlive the frame (conc.async/S5).
+    Carrying,
+    /// Points into a frame that joins it before it ends.
+    Borrowing,
 }

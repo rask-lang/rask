@@ -4725,7 +4725,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // location, so the report named whatever line last had: none at all, or
     // an earlier spawn that succeeded.
     for (fixture, line) in [
-        ("spawn_returned_closure_with_link.rk", 21),
+        ("spawn_returned_closure_with_link.rk", 23),
         ("spawn_field_closure_with_local_box.rk", 20),
     ] {
         for mode in ["--interp", "--native"] {

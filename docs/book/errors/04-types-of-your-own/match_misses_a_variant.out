@@ -1,0 +1,7 @@
+error[E0340]: non-exhaustive match: missing Up
+  --> docs/book/errors/04-types-of-your-own/match_misses_a_variant.rk:9:12
+    |
+  9 |     return match dir {
+    |            ^^^^^^^^^^^ missing variants: Up
+    = fix: add the missing variants or a wildcard `_` arm
+    = why: match expressions must cover all possible values

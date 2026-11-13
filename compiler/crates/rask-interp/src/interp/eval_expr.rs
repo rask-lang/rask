@@ -2564,8 +2564,25 @@ impl Interpreter {
 
             // A task block: build its body as the carrying closure it is
             // underneath, and hand that to the task.
-            ExprKind::Spawn { target, body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // A task that borrows its frame (conc.async/S5) runs right
+                // here, now. The checker made sure nothing beside it touches
+                // what it writes, so running it first gives the answer every
+                // schedule gives, and the interpreter is the reference.
+                if !self.escaping_closures.contains(&body.id) {
+                    return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+                // `requires_pool: false` with no pool runs here too (S2).
+                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
+                    let requires = match args.first() {
+                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                        None => true,
+                    };
+                    if !requires {
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
                     rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),

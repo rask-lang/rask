@@ -640,6 +640,9 @@ pub struct RkTestResult {
     pub native_passed: Option<usize>,
     pub native_total: Option<usize>,
     pub native_failures: Vec<String>,
+    /// Why the file's native run is allowed to fail, from its
+    /// `// test-specs: native may fail …` line.
+    pub native_may_fail: Option<String>,
 }
 
 impl RkTestResult {
@@ -647,6 +650,9 @@ impl RkTestResult {
         self.interp_passed == self.interp_total && self.interp_total > 0
     }
     pub fn native_ok(&self) -> bool {
+        if self.native_may_fail.is_some() {
+            return true;
+        }
         match (self.native_passed, self.native_total) {
             (Some(p), Some(t)) => p == t && t > 0,
             _ => true, // Not run
@@ -656,6 +662,7 @@ impl RkTestResult {
 
 /// Run a `.rk` file through both interpreter and native test runners.
 pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig) -> RkTestResult {
+    let native_may_fail = crate::extract::native_may_fail(source);
     let (ip, it, ifails) = run_rk_tests_interp(source);
 
     let (np, nt, nfails) = if let Some(binary) = &config.rask_binary {
@@ -673,6 +680,87 @@ pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig
         native_passed: np,
         native_total: nt,
         native_failures: nfails,
+        native_may_fail,
+    }
+}
+
+/// A package's tests, run once as the package on both backends.
+///
+/// A file in a package isn't a program on its own: it uses what its sibling
+/// files declare. Run file by file, the interpreter couldn't find those
+/// names, and the native runner reported a fifteen-test package as one
+/// passing test. Both runs go through the `rask` binary, which loads the
+/// whole package.
+pub fn run_rk_package(root: &std::path::Path, rask_binary: &std::path::Path) -> RkTestResult {
+    let (ip, it, ifails) = run_package_tests(root, rask_binary, true);
+    let (np, nt, nfails) = run_package_tests(root, rask_binary, false);
+    RkTestResult {
+        path: root.to_path_buf(),
+        interp_passed: ip,
+        interp_total: it,
+        interp_failures: ifails,
+        native_passed: Some(np),
+        native_total: Some(nt),
+        native_failures: nfails,
+        native_may_fail: None,
+    }
+}
+
+/// `(passed, total, failures)` from `rask test [--interp] <root>`, read off
+/// its summary line (`15 tests, 14 passed, 0 failed, 1 skipped`). A skipped
+/// test counts as neither. A run that exits non-zero passed nothing, whatever
+/// its summary says.
+fn run_package_tests(
+    root: &std::path::Path,
+    rask_binary: &std::path::Path,
+    interp: bool,
+) -> (usize, usize, Vec<String>) {
+    let mut cmd = std::process::Command::new(rask_binary);
+    cmd.arg("test");
+    if interp {
+        cmd.arg("--interp");
+    }
+    let output = match cmd.arg(root).output() {
+        Ok(o) => o,
+        Err(e) => return (0, 1, vec![format!("failed to run rask binary: {}", e)]),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).collect();
+    let count = |line: &str, word: &str| -> Option<usize> {
+        let words: Vec<&str> = line.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()).collect();
+        words.windows(2).find(|w| w[1] == word).and_then(|w| w[0].parse().ok())
+    };
+    let summary = lines.iter().rev().find(|l| l.contains(" tests,") && l.contains(" passed"));
+    let failures: Vec<String> = lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with('\u{2717}'))
+        .map(|l| l.to_string())
+        .collect();
+    match summary {
+        // A run can print a clean summary and still fail after it: a false
+        // claim, a leak check, a crash on the way out. The exit code decides.
+        Some(_) if !output.status.success() => {
+            let mut failures = failures;
+            failures.push(format!("rask test exited {} after its summary", output.status.code().unwrap_or(-1)));
+            let total = summary.and_then(|l| count(l, "tests")).unwrap_or(1).max(1);
+            (0, total, failures)
+        }
+        Some(line) => {
+            let passed = count(line, "passed").unwrap_or(0);
+            let failed = count(line, "failed").unwrap_or(0);
+            (passed, passed + failed, failures)
+        }
+        None => {
+            let preview: String = stderr
+                .lines()
+                .filter(|l| l.starts_with("error"))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("; ");
+            (0, 1, vec![format!("package test run failed (exit {}): {}", output.status.code().unwrap_or(-1), preview)])
+        }
     }
 }
 

@@ -564,7 +564,7 @@ pub fn type_params_named_like_types(
         for tp in params.iter().filter(|tp| types.contains(&tp.name)) {
             out.push(
                 rask_diagnostics::Diagnostic::error(format!("type parameter `{}` has the name of a type in scope", tp.name))
-                    .with_code("E0962")
+                    .with_code("E0968")
                     .with_primary(span, format!("`{}` here could mean the parameter or the type", tp.name))
                     .with_fix(format!("give the parameter a name of its own, like `{}Of` or a single letter", tp.name))
                     .with_why("a signature should mean the same thing whatever else is declared, and a parameter sharing a type's name doesn't [type.gradual/PC4]"),

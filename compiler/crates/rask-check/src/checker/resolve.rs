@@ -891,6 +891,15 @@ impl TypeChecker {
 
         if method == "clone" && args.is_empty() {
             let progress = self.unify(&ty, &ret, span)?;
+            let settled = self.ctx.apply(&ty);
+            if let Some(handle) = self.types.uncloneable_handle(&settled) {
+                self.errors.push(TypeError::CloneHandle {
+                    ty: self.types.resolve_type_names(&settled).to_string(),
+                    handle: self.types.resolve_type_names(&handle).to_string(),
+                    span,
+                });
+                return Ok(progress);
+            }
             // A clone's result is its receiver's type, so unifying settles both.
             // But this arm answers before the `Var` handling further down, which
             // is what normally files a deferred constraint and records the

@@ -1147,6 +1147,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `clone` on a value holding a handle that frees itself and has no
+    /// `clone` of its own: the copy would be a second owner of one block.
+    #[error("`{ty}` can't be cloned — `{handle}` has no `clone`")]
+    CloneHandle {
+        ty: String,
+        /// The handle inside, or the value itself.
+        handle: String,
+        span: Span,
+    },
+
     /// conc.sync/SH9: `take` on a `Shared` whose payload isn't linear.
     #[error("`take` is for a `Shared` holding a value consumed exactly once")]
     TakeFromSharedBox {
@@ -2039,6 +2049,7 @@ impl TypeError {
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
+            | CloneHandle { .. }
             | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }

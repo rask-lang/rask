@@ -30,16 +30,26 @@ pub fn forget_local_links(functions: &mut [MirFunction]) {
 }
 
 fn forget_in(func: &mut MirFunction) {
-    let params: BTreeSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     // A parameter's storage is the caller's (a `mutate` struct) or lives as
-    // long as the caller's copy; the caller forgets its own.
+    // long as the caller's copy; the caller forgets its own. An element bound
+    // where it sits (`BindPlace`) is the collection's, whose records follow
+    // the element: zeroing or forgetting it here would clear the collection.
+    let elsewhere: BTreeSet<LocalId> = func
+        .params
+        .iter()
+        .map(|p| p.id)
+        .chain(func.blocks.iter().flat_map(|b| b.statements.iter()).filter_map(|st| match &st.kind {
+            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+            _ => None,
+        }))
+        .collect();
     let registered = |name: &str| -> BTreeSet<LocalId> {
         func.blocks
             .iter()
             .flat_map(|b| b.statements.iter())
             .filter_map(|st| match &st.kind {
                 MirStmtKind::Call { func: f, args, .. } if f.name == name => match args.first() {
-                    Some(MirOperand::Local(id)) if !params.contains(id) => Some(*id),
+                    Some(MirOperand::Local(id)) if !elsewhere.contains(id) => Some(*id),
                     _ => None,
                 },
                 _ => None,
@@ -55,7 +65,7 @@ fn forget_in(func: &mut MirFunction) {
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
             MirStmtKind::Call { func: f, args, .. } if f.name == GUARDED => match (args.first(), args.get(1)) {
-                (Some(MirOperand::Local(a)), Some(MirOperand::Local(v))) if a == v && !params.contains(a) => Some(*a),
+                (Some(MirOperand::Local(a)), Some(MirOperand::Local(v))) if a == v && !elsewhere.contains(a) => Some(*a),
                 _ => None,
             },
             _ => None,

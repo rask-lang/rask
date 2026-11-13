@@ -1692,7 +1692,7 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error(format!(
                     "`{method}` on a `{info}` only answers inside a `comptime for` over it"
                 ))
-                    .with_code("E0960")
+                    .with_code("E0966")
                     .with_primary(*span, "this isn't a `comptime for` binding")
                     .with_fix(format!(
                         "loop with `comptime for x in {iterable}` and ask `x.{method}<…>()` on the binding"
@@ -2678,6 +2678,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
             }
+            CloneHandle { ty, handle, span } => {
+                let label = if ty == handle {
+                    format!("a `{}` owns state the runtime frees, and it can't be copied", ty)
+                } else {
+                    format!("this holds a `{}`, which owns state the runtime frees and can't be copied", handle)
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0965")
+                    .with_primary(*span, label)
+                    .with_fix("move it, or borrow it where a copy was wanted")
+                    .with_why("a clone copies the handle's pointer, and then both copies would free the same block")
+            }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
                     .with_code("E0918")
@@ -2832,7 +2844,7 @@ impl ToDiagnostic for crate::TypeError {
             }
             InstanceCallOnType { ty, method, span } => {
                 Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
-                    .with_code("E0961")
+                    .with_code("E0967")
                     .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
                     .with_fix(format!("call it on a value: `value.{}(…)`", method))
                     .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")

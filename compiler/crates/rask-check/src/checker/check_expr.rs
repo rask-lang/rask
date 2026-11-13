@@ -2150,6 +2150,20 @@ impl TypeChecker {
                             self.ctx.default_var_to(id, Type::Never);
                         }
                     }
+                } else if self.tail_fills_error_slot(&inferred_ret, &closure_return_type) {
+                    // A `try` in the body made the return `T or E` (GC7), and
+                    // the body's own value is the `T`. That's a `return v`
+                    // through the success side, so it coerces the way one
+                    // would. Unified instead, `i64` met `? or E`, failed in
+                    // silence, and left `?` open: `|| try parse(s)` was "type
+                    // is still open", and the same block under `spawn` crashed.
+                    self.coerce_into_node(
+                        CoercionSite::Return,
+                        inferred_ret.clone(),
+                        closure_return_type.clone(),
+                        Some(body.id),
+                        body.span,
+                    );
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -2187,7 +2201,26 @@ impl TypeChecker {
 
             // A task block. Its value is the task's result, so the expression
             // is a `Handle` of whatever the block produces (conc.async/H5).
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
+                // `ThreadPool.spawn(requires_pool: false) { … }` (conc.async/S2):
+                // one flag, and only on the pool form.
+                let takes_flag = matches!(target, rask_ast::expr::SpawnTarget::Pool);
+                for (i, a) in args.iter().enumerate() {
+                    let ok_label = a.name.as_deref().is_none_or(|l| l == "requires_pool");
+                    if !takes_flag || !ok_label || i > 0 {
+                        self.errors.push(TypeError::ArgPlacement {
+                            callee: target.spelling().to_string(),
+                            problem: super::errors::ArgProblem::UnknownLabel(
+                                a.name.clone().unwrap_or_else(|| "_".to_string()),
+                            ),
+                            params: Some(if takes_flag { vec!["requires_pool".to_string()] } else { Vec::new() }),
+                            span: a.expr.span,
+                        });
+                        continue;
+                    }
+                    let ty = self.infer_expr(&a.expr);
+                    self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, ty, a.expr.span));
+                }
                 // What the block captures, and whether any of it may not cross
                 // to another task, is the ownership pass's to answer: it knows
                 // each closure's captures (`check_task_crossing`).
@@ -8282,4 +8315,19 @@ struct ArmReach {
     closed_by: Option<String>,
     /// Variants tested by a bare, unguarded arm.
     tags: std::collections::HashSet<String>,
+}
+
+impl TypeChecker {
+    /// The body of a closure with no written return type has a settled value
+    /// that isn't a `T or E`, while its return type has become one.
+    fn tail_fills_error_slot(&self, body_ty: &Type, ret: &Type) -> bool {
+        let ret = self.ctx.apply(ret);
+        if !matches!(&ret, Type::Result { err, .. } if !matches!(**err, Type::None)) {
+            return false;
+        }
+        !matches!(
+            self.ctx.apply(body_ty),
+            Type::Result { .. } | Type::Var(_) | Type::Never | Type::Error
+        )
+    }
 }
