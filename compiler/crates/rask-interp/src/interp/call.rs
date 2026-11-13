@@ -628,20 +628,18 @@ pub(crate) fn option_depth(value: &Value) -> usize {
 }
 
 impl Interpreter {
-    /// The plain function a template instance was written out as, by the
-    /// name monomorphization gives the instance.
+    /// The plain function a template instance was written out as: the copy
+    /// of `func` whose instance arguments are what this call's frame binds.
     fn template_copy(&self, func: &FnDecl, generics: Option<&std::collections::HashMap<String, rask_types::Type>>) -> Option<FnDecl> {
-        if func.type_params.is_empty() {
-            return None;
-        }
+        let copies = self.template_copies.get(&func.id)?;
         let frame = generics?;
-        let bindings: Option<Vec<rask_types::TypeBinding>> = func
-            .type_params
+        copies
             .iter()
-            .map(|tp| frame.get(&tp.name).map(|t| rask_types::TypeBinding::new(tp.name.clone(), t.clone())))
-            .collect();
-        let name = rask_mono::mangle_name(&func.name, &bindings?, Some(&self.types));
-        // This template's copy, not one of another function sharing its name.
-        self.functions.get(&name).filter(|copy| rask_template::copy_of(copy) == Some(func.id)).cloned()
+            .find(|(bound, _)| {
+                bound.iter().all(|(param, label)| {
+                    frame.get(param).is_some_and(|t| rask_check::reflect::type_label(&self.types, t).source() == *label)
+                })
+            })
+            .map(|(_, copy)| copy.clone())
     }
 }

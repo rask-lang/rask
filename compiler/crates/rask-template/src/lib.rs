@@ -150,7 +150,9 @@ pub struct Expansion {
 /// Whether a declaration has anything for this crate to write out: a
 /// template, or a body written out in its own place.
 pub fn has_comptime_control(d: &Decl) -> bool {
-    matches!(&d.kind, DeclKind::Fn(f) if is_template(f)) || in_place(d)
+    matches!(&d.kind, DeclKind::Fn(f) if is_template(f))
+        || method_sites(d).iter().any(|(t, m)| is_method_template(t, m))
+        || in_place(d)
 }
 
 /// A body with comptime control the program can write out where it stands:
@@ -159,8 +161,36 @@ fn in_place(d: &Decl) -> bool {
     match &d.kind {
         DeclKind::Fn(f) => f.type_params.is_empty() && has_comptime_for(&f.body),
         DeclKind::Test(t) => has_comptime_for(&t.body),
-        _ => false,
+        _ => method_sites(d).iter().any(|(target, m)| !is_method_template(target, m) && has_comptime_for(&m.body)),
     }
+}
+
+/// The methods a declaration holds, each with the type its block is for as
+/// written: `Box<T>` for `extend Box<T>`, and for a type's own methods the
+/// type with its parameters.
+fn method_sites(d: &Decl) -> Vec<(TypeExpr, &FnDecl)> {
+    let own = |name: &str, params: &[rask_ast::decl::TypeParam]| {
+        TypeExpr::generic(name.to_string(), params.iter().map(|p| TypeExpr::named(p.name.clone())).collect())
+    };
+    match &d.kind {
+        DeclKind::Impl(i) => i.methods.iter().map(|m| (i.target_ty.clone(), m)).collect(),
+        DeclKind::Struct(st) => st.methods.iter().map(|m| (own(&st.name, &st.type_params), m)).collect(),
+        DeclKind::Enum(e) => e.methods.iter().map(|m| (own(&e.name, &e.type_params), m)).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A method with comptime control that is written out per instance: it, or
+/// the type its block is for, has type parameters.
+fn is_method_template(target: &TypeExpr, m: &FnDecl) -> bool {
+    (!m.type_params.is_empty() || !target.args().is_empty()) && has_comptime_for(&m.body)
+}
+
+/// Where a template is: a free function, or a method with the type its block
+/// is for.
+enum Site<'a> {
+    Free(&'a Decl),
+    Method { target: TypeExpr, method: &'a FnDecl, block: &'a Decl },
 }
 
 /// Write out each reachable template instance not written out yet.
@@ -177,13 +207,21 @@ pub fn expand_round(
 ) -> Result<Expansion, Vec<ExpandError>> {
     // By the function's own id: a method sharing a template's name (`show`
     // on a generic type, `map` on a range) is some other function.
-    let by_id: HashMap<NodeId, &Decl> = templates
-        .iter()
-        .filter_map(|d| match &d.kind {
-            DeclKind::Fn(f) if is_template(f) => Some((f.id, d)),
-            _ => None,
-        })
-        .collect();
+    let mut by_id: HashMap<NodeId, Site> = HashMap::new();
+    for d in templates {
+        match &d.kind {
+            DeclKind::Fn(f) if is_template(f) => {
+                by_id.insert(f.id, Site::Free(d));
+            }
+            _ => {
+                for (target, method) in method_sites(d) {
+                    if is_method_template(&target, method) {
+                        by_id.insert(method.id, Site::Method { target, method, block: d });
+                    }
+                }
+            }
+        }
+    }
     let mut out = Expansion::default();
     let mut errors = Vec::new();
     let known = Known::new(templates, typed);
@@ -192,7 +230,11 @@ pub fn expand_round(
             continue;
         }
         let DeclKind::Fn(generic) = &inst.body.kind else { continue };
-        let Some(template) = by_id.get(&generic.id) else { continue };
+        let Some(site) = by_id.get(&generic.id) else { continue };
+        let template_span = match site {
+            Site::Free(d) => d.span,
+            Site::Method { method, .. } => method.span,
+        };
         // An argument not settled yet (`count<_>`, reached through a field
         // the first round couldn't type) waits for the round whose copy
         // names it.
@@ -200,14 +242,28 @@ pub fn expand_round(
             continue;
         }
         done.insert(inst.name.clone());
-        let shown: Vec<String> = inst
-            .type_args
-            .iter()
-            .map(|b| rask_check::reflect::type_label(&typed.types, &b.ty).source())
-            .collect();
-        out.instances.push((template.span, format!("{}<{}>", generic.name, shown.join(", "))));
+        let label = |b: &TypeBinding| rask_check::reflect::type_label(&typed.types, &b.ty);
+        let with_args = |name: &str, args: Vec<String>| {
+            if args.is_empty() { name.to_string() } else { format!("{name}<{}>", args.join(", ")) }
+        };
+        // `show<Point>`; a method as `Box<Point>.names` or `Holder.dump<Point>`.
+        let shown = match site {
+            Site::Free(_) => with_args(&generic.name, inst.type_args.iter().map(|b| label(b).source()).collect()),
+            Site::Method { target, method, .. } => {
+                let own = |b: &&TypeBinding| method.type_params.iter().any(|p| p.name == b.param);
+                let receiver = target.substitute(&|n| {
+                    inst.type_args.iter().find(|b| b.param == n && !own(b)).map(label)
+                });
+                let args = inst.type_args.iter().filter(own).map(|b| label(b).source()).collect();
+                format!("{receiver}.{}", with_args(&method.name, args))
+            }
+        };
+        out.instances.push((template_span, shown));
         let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
-        let copy = ex.expand(template, &inst.name, &inst.type_args);
+        let copy = match site {
+            Site::Free(template) => ex.expand(template, &inst.name, &inst.type_args),
+            Site::Method { target, method, block } => ex.expand_method(target, method, block, &inst.name, &inst.type_args),
+        };
         let shown_instance = out.instances.last().map(|(_, n)| n.clone()).unwrap_or_default();
         errors.extend(ex.errors.into_iter().map(|mut e| {
             e.message = format!("{} (writing out `{}`)", e.message, shown_instance);
@@ -330,7 +386,77 @@ impl Expander<'_> {
     fn expand_in_place(&mut self, decl: &Decl) -> Decl {
         let mut decl = decl.clone();
         let none = HashMap::new();
-        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &HashMap::new(), written: &none });
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &HashMap::new(), written: &none, lenient: true });
+        let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
+        rewrite::rewrite_decl(&mut decl, &mut fresh);
+        decl.id = fresh.fresh(decl.id);
+        decl
+    }
+
+    /// Each instance argument as reflection spells it, by parameter.
+    fn labels(&self, type_args: &[TypeBinding]) -> Vec<(String, String)> {
+        type_args
+            .iter()
+            .map(|b| (b.param.clone(), rask_check::reflect::type_label(&self.typed.types, &b.ty).source()))
+            .collect()
+    }
+
+    fn written(&self, type_args: &[TypeBinding]) -> HashMap<String, TypeExpr> {
+        let types = &self.typed.types;
+        type_args
+            .iter()
+            .map(|b| {
+                let named = rask_mono::Monomorphizer::nameable_type(&b.ty, types).unwrap_or_else(|| b.ty.clone());
+                (b.param.clone(), named.to_type_expr())
+            })
+            .collect()
+    }
+
+    /// A method's copy: a block of its own for the instance's receiver,
+    /// holding the one method, named so its symbol is the instance's
+    /// (`Box_names$Pair` → `names$Pair` in `extend Box<Pair>`).
+    fn expand_method(
+        &mut self,
+        target: &TypeExpr,
+        method: &FnDecl,
+        block: &Decl,
+        name: &str,
+        type_args: &[TypeBinding],
+    ) -> Decl {
+        let written = self.written(type_args);
+        let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
+        let base = target.last_segment().unwrap_or_default();
+        let method_name = match name.strip_prefix(&format!("{base}_")) {
+            Some(rest) => rest.to_string(),
+            None => {
+                self.errors.push(ExpandError {
+                    message: format!("`{name}` isn't named for a method of `{base}`"),
+                    span: method.span,
+                });
+                name.to_string()
+            }
+        };
+        let mut copy = method.clone();
+        copy.name = method_name;
+        copy.type_params.clear();
+        copy.attrs.push(copy_marker(method.id, &self.labels(type_args)));
+        let target = target.substitute(&|n| written.get(n).cloned());
+        let mut decl = Decl {
+            id: block.id,
+            span: block.span,
+            kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
+                interface: None,
+                target_ty: target,
+                methods: vec![copy],
+                is_unsafe: false,
+                is_pub: false,
+                where_bounds: Vec::new(),
+                assoc_bindings: Vec::new(),
+                doc: None,
+            }),
+        };
+        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written, lenient: false });
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -351,9 +477,9 @@ impl Expander<'_> {
         let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
         f.name = name.to_string();
         f.type_params.clear();
-        f.attrs.push(copy_marker(f.id));
+        f.attrs.push(copy_marker(f.id, &self.labels(type_args)));
         rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
-        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written, lenient: false });
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -367,21 +493,36 @@ impl Expander<'_> {
 /// find this template's.
 pub const COPY_OF: &str = "template_copy_of";
 
-fn copy_marker(template: NodeId) -> rask_ast::attr::Attr {
-    let id = Expr { id: NodeId::DUMMY, kind: ExprKind::Int(template.0 as i128, None), span: Span::new(0, 0) };
-    rask_ast::attr::Attr::synthetic(
-        COPY_OF,
-        Some(vec![rask_ast::attr::AttrArg { label: None, value: AttrValue::Expr(id) }]),
-    )
+fn copy_marker(template: NodeId, args: &[(String, String)]) -> rask_ast::attr::Attr {
+    let lit = |kind| Expr { id: NodeId::DUMMY, kind, span: Span::new(0, 0) };
+    let mut out = vec![rask_ast::attr::AttrArg {
+        label: None,
+        value: AttrValue::Expr(lit(ExprKind::Int(template.0 as i128, None))),
+    }];
+    out.extend(args.iter().map(|(param, ty)| rask_ast::attr::AttrArg {
+        label: Some(param.clone()),
+        value: AttrValue::Expr(lit(ExprKind::String(ty.clone()))),
+    }));
+    rask_ast::attr::Attr::synthetic(COPY_OF, Some(out))
 }
 
-/// The template a copy was written out from, by its function's id.
-pub fn copy_of(f: &FnDecl) -> Option<NodeId> {
+/// The template a copy was written out from, by its function's id, and the
+/// instance's arguments by parameter, as reflection spells them.
+pub fn copy_of(f: &FnDecl) -> Option<(NodeId, Vec<(String, String)>)> {
     let attr = f.attrs.iter().find(|a| a.is(COPY_OF))?;
-    match &attr.args.as_ref()?.first()?.value {
-        AttrValue::Expr(Expr { kind: ExprKind::Int(n, _), .. }) => Some(NodeId(*n as u32)),
-        _ => None,
-    }
+    let args = attr.args.as_ref()?;
+    let id = match &args.first()?.value {
+        AttrValue::Expr(Expr { kind: ExprKind::Int(n, _), .. }) => NodeId(*n as u32),
+        _ => return None,
+    };
+    let bound = args[1..]
+        .iter()
+        .filter_map(|a| match (&a.label, &a.value) {
+            (Some(p), AttrValue::Expr(Expr { kind: ExprKind::String(t), .. })) => Some((p.clone(), t.clone())),
+            _ => None,
+        })
+        .collect();
+    Some((id, bound))
 }
 
 /// The instance's types where the template names its parameters: in written
@@ -430,6 +571,10 @@ struct Unroll<'a, 'b> {
     ex: &'a mut Expander<'b>,
     concrete: &'a HashMap<String, Type>,
     written: &'a HashMap<String, TypeExpr>,
+    /// Writing a declaration out in place: a loop over a type it can't know
+    /// (a generic method's `T` beside the plain one being written out) stays
+    /// as written rather than failing the declaration.
+    lenient: bool,
 }
 
 impl Rewrite for Unroll<'_, '_> {
@@ -460,6 +605,7 @@ impl Unroll<'_, '_> {
         let ty = args.first()?;
         let checked = match rask_check::resolve_type_expr(ty, &self.ex.typed.types) {
             Ok(t) => t,
+            Err(_) if self.lenient => return None,
             Err(_) => {
                 let _ = (self.concrete, self.written);
                 self.ex.errors.push(ExpandError {
@@ -498,13 +644,20 @@ impl Unroll<'_, '_> {
                 types: &self.ex.typed.types,
                 typed: self.ex.typed,
                 loop_span: stmt.span,
+                report: false,
                 errors: Vec::new(),
             };
             for s in &mut copy {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
-            self.ex.errors.extend(facts.errors);
             decide_comptime_ifs(&mut copy, self.ex.known);
+            // A read of an annotation the field lacks is an error only if
+            // the `comptime if` guarding it didn't drop it.
+            facts.report = true;
+            for s in &mut copy {
+                rewrite::rewrite_stmt(s, &mut facts);
+            }
+            self.ex.errors.extend(facts.errors);
             // One block per iteration, so a `let` in the body is that
             // iteration's.
             out.push(Stmt {
@@ -532,6 +685,9 @@ struct ItemFacts<'a> {
     /// The loop's own span, which the resolver gave its binding: a name that
     /// resolves elsewhere (an inner `for p in …`) is some other `p`.
     loop_span: Span,
+    /// Report reads of an annotation the field doesn't carry; off until the
+    /// `comptime if`s are decided.
+    report: bool,
     errors: Vec<ExpandError>,
 }
 
@@ -586,6 +742,9 @@ impl ItemFacts<'_> {
         let annotation = args.first()?.bare_name()?;
         let Item::Field(fact, _) = self.it else { return None };
         let Some(attr) = fact.attrs.iter().find(|a| a.is(annotation)) else {
+            if !self.report {
+                return None;
+            }
             self.errors.push(ExpandError {
                 message: format!(
                     "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
