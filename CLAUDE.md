@@ -26,13 +26,18 @@ Long sessions bury the state under rolling summaries and check-in chatter. I rea
 
 - **No interim summaries.** Mid-task, speak only to ask a decision or report a blocker. Progress lives in commits.
 - **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. If the harness insists on output, one line: `#N: nothing new.` No "no reviews, rearming", no restated status.
-- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session, and keep it to about one phone screen. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
-  1. **Decisions for me**: only what I alone can decide (a spec question `specs/` doesn't answer, a change that makes the flagship example worse). Each with the problem in a sentence, what you'd pick, the alternative, and the few lines of code that embody it, so I can answer in one word. Usually empty; say so.
-  2. **Status**: branch, PR link, CI on the head, what it's waiting on.
-  3. **Done**: one line per change, with the commit. Say what broke and what now works, not which files moved.
-  4. **Decided along the way**: at most three calls I might otherwise reopen by accident, one line each.
-  5. **Left open**: unrelated bugs filed, dead ends and what they taught.
-- **Two questions are never for me.** "Quick fix or proper fix?": proper. "Now or in a follow-up?": now. One developer, no reviewers, everything merges to main, so a follow-up is the same work later with the context gone. If the recap would say "I patched it for now", you aren't done. Go back and finish instead of asking.
+- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Two parts, nothing else:
+  1. **Decisions for me**: the new ones only, the ones I alone can make (a spec question `specs/` doesn't answer, a change that makes the flagship example worse). Each with the problem in a sentence, what you'd pick and why, the alternative, and the few lines of code that embody it, so I can answer in one word. Usually empty; say so.
+  2. **Status**: one line. Branch, PR link, CI on the head, what it's waiting on.
+
+  What got done, what you decided on your own and what you filed live in commits and issues. I don't read them in chat, so don't write them there.
+- **Three questions are never for me.**
+  - "Quick fix or proper fix?" Proper.
+  - "Now or in a follow-up?" Now. One developer, no reviewers, everything merges to main, so a follow-up is the same work later with the context gone.
+  - "I did the smaller thing; the alternative is a bigger change." Do the bigger change. I say yes to it nearly every time, so asking only costs a round trip.
+
+  If the recap would say "I patched it for now", you aren't done. Go back and finish.
+- **Working out the proper solution is your job, not a question.** When I get asked "A or B?" I mostly ask back "which is proper?", get an answer, and say "do that". Skip the loop: read `specs/` and `specs/RULINGS.md`, decide which is proper, do it. A decision reaches me only after that, when what's left is what I want the language to be and no spec says.
 - If state changes after a recap (review lands, CI goes red and you fix it), send a fresh full recap, not a delta.
 
 Prefer long term proper fixes over quick-fixes.
@@ -116,9 +121,9 @@ away when they report. Docs and config edits the main session does itself.
 - **One worker at a time on a branch.** Independent tasks can run in parallel
   with `isolation: "worktree"`.
 - **Hold the report to the bar.** A report that says workaround, "for now",
-  partial, deferred or follow-up goes back to the same worker (`SendMessage`)
-  with "finish it properly". Don't accept it and don't turn it into a question
-  for me.
+  partial, deferred, follow-up or "the alternative is a bigger change" goes
+  back to the same worker (`SendMessage`) with "finish it properly". Don't
+  accept it and don't turn it into a question for me.
 - **Escalate, don't take over.** A worker that fails the same task twice gets
   rerun with `model: "opus"`. The main session still doesn't do it itself.
 - **CI and logs**: send a worker or fetch only the failing lines.
@@ -128,7 +133,7 @@ away when they report. Docs and config edits the main session does itself.
 Hand a change to compiler, runtime or stdlib to the `skeptic` agent (Opus) once
 per PR, when the branch is finished. Not per push. Give it the issue or the
 goal, not your reasoning, and let it try to break the change. What it confirms
-goes to a worker; say in the recap why a finding is wrong if you reject one.
+goes to a worker; a finding you reject gets one line under Status saying why.
 Skip it for docs-only and config-only changes.
 
 At the end of a long session, `/retro` turns what went wrong into proposed edits
