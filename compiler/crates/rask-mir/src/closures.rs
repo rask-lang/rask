@@ -922,6 +922,7 @@ fn closure_facts(
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| is(p)).collect(),
         owned: Vec::new(),
+        caller_slots: Vec::new(),
     };
     for (bi, block) in func.blocks.iter().enumerate() {
         let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());

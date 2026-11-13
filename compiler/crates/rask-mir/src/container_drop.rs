@@ -1914,6 +1914,7 @@ fn container_facts(
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| is(p) && !owned.contains(p)).collect(),
         owned: func.params.iter().map(|p| p.id).filter(|p| is(p) && owned.contains(p)).collect(),
+        caller_slots: Vec::new(),
     };
     // The first name each wrapper's payload was read into. See the `Field`
     // arm below.
