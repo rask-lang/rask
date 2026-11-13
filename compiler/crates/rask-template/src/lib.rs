@@ -141,6 +141,26 @@ pub struct Expansion {
     /// for as a reader would write it (`zero_all<Point>`): what an error
     /// inside the copy names (CT72).
     pub instances: Vec<(Span, String)>,
+    /// A function or test with comptime control and no type parameters,
+    /// written out in its own place: the declaration it replaces, by id, and
+    /// the replacement.
+    pub replaced: Vec<(NodeId, Decl)>,
+}
+
+/// Whether a declaration has anything for this crate to write out: a
+/// template, or a body written out in its own place.
+pub fn has_comptime_control(d: &Decl) -> bool {
+    matches!(&d.kind, DeclKind::Fn(f) if is_template(f)) || in_place(d)
+}
+
+/// A body with comptime control the program can write out where it stands:
+/// a function with no type parameters, or a test.
+fn in_place(d: &Decl) -> bool {
+    match &d.kind {
+        DeclKind::Fn(f) => f.type_params.is_empty() && has_comptime_for(&f.body),
+        DeclKind::Test(t) => has_comptime_for(&t.body),
+        _ => false,
+    }
 }
 
 /// Write out each reachable template instance not written out yet.
@@ -164,6 +184,7 @@ pub fn expand_round(
         .collect();
     let mut out = Expansion::default();
     let mut errors = Vec::new();
+    let known = Known::new(templates, typed);
     for inst in &mono.functions {
         if inst.type_args.is_empty() || done.contains(&inst.name) {
             continue;
@@ -177,11 +198,22 @@ pub fn expand_round(
             .map(|b| rask_check::reflect::type_label(&typed.types, &b.ty).source())
             .collect();
         out.instances.push((template.span, format!("{}<{}>", generic.name, shown.join(", "))));
-        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new() };
+        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
         let copy = ex.expand(template, &inst.name, &inst.type_args);
         errors.extend(ex.errors);
         out.copied_from.extend(ex.copied_from);
         out.decls.push(copy);
+    }
+    // Nothing to instantiate: the loop's type is already known. One that
+    // can't be written out yet (a layout mono didn't make, for code nothing
+    // reaches) stays as it is, for the backends' own unrolling.
+    for decl in templates.iter().filter(|d| in_place(d)) {
+        let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
+        let copy = ex.expand_in_place(decl);
+        if ex.errors.is_empty() {
+            out.copied_from.extend(ex.copied_from);
+            out.replaced.push((decl.id, copy));
+        }
     }
     if errors.is_empty() {
         Ok(out)
@@ -196,9 +228,103 @@ struct Expander<'a> {
     next_id: &'a mut u32,
     copied_from: Vec<(NodeId, NodeId)>,
     errors: Vec<ExpandError>,
+    known: &'a Known<'a>,
+}
+
+/// What a `comptime if` can read besides the loop item: the module's consts,
+/// and a reflect question with one answer (`reflect.name_of<string>()`).
+struct Known<'a> {
+    consts: HashMap<String, rask_ast::comptime_if::Fact>,
+    decls: TemplateDecls<'a>,
+}
+
+impl<'a> Known<'a> {
+    fn new(templates: &'a [Decl], typed: &'a TypedProgram) -> Self {
+        let consts = rask_ast::comptime_if::const_facts(templates.iter().filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some((c.name.as_str(), &c.init, c.ty.as_ref().and_then(|t| t.bare_name()))),
+            _ => None,
+        }));
+        Known { consts, decls: TemplateDecls { decls: templates, typed } }
+    }
+
+    fn fact(&self, e: &Expr) -> Option<rask_ast::comptime_if::Fact> {
+        use rask_ast::comptime_if::Fact;
+        use rask_check::reflect::ReflectAnswer;
+        match &e.kind {
+            ExprKind::Ident(n) => self.consts.get(n).cloned(),
+            ExprKind::MethodCall { object, method, type_args: Some(args), .. }
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") =>
+            {
+                match rask_check::reflect::answer(method, args.first()?, &self.decls) {
+                    ReflectAnswer::Bool(b) => Some(Fact::Bool(b)),
+                    ReflectAnswer::Int(n) => Some(Fact::Int(n as i128, None)),
+                    ReflectAnswer::Str(s) => Some(Fact::Str(s)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The program's declarations, as reflection asks about them.
+struct TemplateDecls<'a> {
+    decls: &'a [Decl],
+    typed: &'a TypedProgram,
+}
+
+impl TemplateDecls<'_> {
+    fn named(&self, name: &str) -> Option<&Decl> {
+        self.decls.iter().find(|d| d.name() == Some(name))
+    }
+}
+
+impl rask_check::reflect::ReflectDecls for TemplateDecls<'_> {
+    fn declares_struct(&self, name: &str) -> bool {
+        matches!(self.named(name).map(|d| &d.kind), Some(DeclKind::Struct(_)))
+    }
+    fn declares_enum(&self, name: &str) -> bool {
+        matches!(self.named(name).map(|d| &d.kind), Some(DeclKind::Enum(_)))
+    }
+    fn is_resource(&self, name: &str) -> bool {
+        match self.named(name).map(|d| &d.kind) {
+            Some(DeclKind::Struct(s)) => s.attrs.iter().any(|a| a.is("resource")),
+            Some(DeclKind::Enum(e)) => e.attrs.iter().any(|a| a.is("resource")),
+            _ => false,
+        }
+    }
+    fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {
+        match self.named(name).map(|d| &d.kind) {
+            Some(DeclKind::Struct(s)) => Some(s.fields.iter().map(|f| f.ty.clone()).collect()),
+            Some(DeclKind::Enum(e)) => {
+                Some(e.variants.iter().flat_map(|v| v.fields.iter().map(|f| f.ty.clone())).collect())
+            }
+            _ => None,
+        }
+    }
+    fn type_params(&self, name: &str) -> Vec<String> {
+        match self.named(name).map(|d| &d.kind) {
+            Some(DeclKind::Struct(s)) => s.type_params.iter().map(|t| t.name.clone()).collect(),
+            Some(DeclKind::Enum(e)) => e.type_params.iter().map(|t| t.name.clone()).collect(),
+            _ => Vec::new(),
+        }
+    }
+    fn type_table(&self) -> &rask_check::TypeTable {
+        &self.typed.types
+    }
 }
 
 impl Expander<'_> {
+    fn expand_in_place(&mut self, decl: &Decl) -> Decl {
+        let mut decl = decl.clone();
+        let none = HashMap::new();
+        rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &HashMap::new(), written: &none });
+        let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
+        rewrite::rewrite_decl(&mut decl, &mut fresh);
+        decl.id = fresh.fresh(decl.id);
+        decl
+    }
+
     fn expand(&mut self, template: &Decl, name: &str, type_args: &[TypeBinding]) -> Decl {
         let mut decl = template.clone();
         let DeclKind::Fn(f) = &mut decl.kind else { unreachable!("templates are functions") };
@@ -334,7 +460,7 @@ impl Unroll<'_, '_> {
             for s in &mut copy {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
-            decide_comptime_ifs(&mut copy);
+            decide_comptime_ifs(&mut copy, self.ex.known);
             // One block per iteration, so a `let` in the body is that
             // iteration's.
             out.push(Stmt {
@@ -456,9 +582,9 @@ impl Rewrite for ItemFacts<'_> {
 /// Each `comptime if` in `stmts` whose condition the written-in facts settle,
 /// replaced by its chosen branch. One that reads something else (a const) is
 /// left for the backends, which fold those as they always have.
-fn decide_comptime_ifs(stmts: &mut [Stmt]) {
-    struct Decide;
-    impl Rewrite for Decide {
+fn decide_comptime_ifs(stmts: &mut [Stmt], known: &Known) {
+    struct Decide<'a, 'b>(&'a Known<'b>);
+    impl Rewrite for Decide<'_, '_> {
         fn body(&mut self, b: &mut Vec<Stmt>) {
             for stmt in b.iter_mut() {
                 // `comptime if` as a statement, or as an expression statement.
@@ -468,7 +594,8 @@ fn decide_comptime_ifs(stmts: &mut [Stmt]) {
                     _ => continue,
                 };
                 let Some((cond, then_branch, else_branch)) = rask_ast::comptime_if::parts(body) else { continue };
-                let Some(chosen) = rask_ast::comptime_if::choose(cond, then_branch, else_branch, &mut |_| None) else {
+                let known = self.0;
+                let Some(chosen) = rask_ast::comptime_if::choose(cond, then_branch, else_branch, &mut |e| known.fact(e)) else {
                     continue;
                 };
                 let block = Expr { id: stmt.id, kind: ExprKind::Block(chosen.to_vec()), span: stmt.span };
@@ -476,7 +603,7 @@ fn decide_comptime_ifs(stmts: &mut [Stmt]) {
             }
         }
     }
-    let mut d = Decide;
+    let mut d = Decide(known);
     let mut wrapper = stmts.to_vec();
     d.body(&mut wrapper);
     for s in &mut wrapper {

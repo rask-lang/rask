@@ -603,7 +603,7 @@ fn check_loaded_scoped(
     // instance the program reaches, and the program checked again with the
     // copies in, until a round adds none (`rask-template`). A program with no
     // template goes round once.
-    let templates: Vec<Decl> = parse_result.decls.clone();
+    let mut templates: Vec<Decl> = parse_result.decls.clone();
     let mut copies: Vec<Decl> = Vec::new();
     let mut operator_calls = desugared.operator_calls.clone();
     let mut expanded: HashSet<String> = HashSet::new();
@@ -656,7 +656,7 @@ fn check_loaded_scoped(
         break (typed, ownership_result);
     }
     match expand_templates(&templates, &parse_result.decls, &typed, &mut expanded, &mut next_template_id) {
-        Ok(Some(round)) if !round.decls.is_empty() => {
+        Ok(Some(round)) if !round.decls.is_empty() || !round.replaced.is_empty() => {
             let from: HashMap<NodeId, Vec<NodeId>> = round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
                 m.entry(*old).or_default().push(*new);
                 m
@@ -666,6 +666,11 @@ fn check_loaded_scoped(
             operator_calls.extend(carried);
             copies.extend(round.decls);
             instances.extend(round.instances);
+            for (was, now) in round.replaced {
+                if let Some(slot) = templates.iter_mut().find(|d| d.id == was) {
+                    *slot = now;
+                }
+            }
         }
         Ok(_) => break (typed, ownership_result),
         Err(errors) => {
@@ -767,7 +772,7 @@ fn expand_templates(
     done: &mut HashSet<String>,
     next_id: &mut u32,
 ) -> Result<Option<rask_template::Expansion>, Vec<Diagnostic>> {
-    let any = templates.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if rask_template::is_template(f)));
+    let any = templates.iter().any(rask_template::has_comptime_control);
     if !any {
         return Ok(None);
     }
@@ -1084,7 +1089,7 @@ fn check_package_scoped(
 
     // Templates (ctrl.comptime/CT72), as in the single-file path: check, write
     // out the template instances reached, check again until none are new.
-    let templates: Vec<Decl> = pkg_ctx.all_decls.clone();
+    let mut templates: Vec<Decl> = pkg_ctx.all_decls.clone();
     let mut copies: Vec<Decl> = Vec::new();
     let mut operator_calls = desugared.operator_calls.clone();
     let mut expanded: HashSet<String> = HashSet::new();
@@ -1201,7 +1206,7 @@ fn check_package_scoped(
             break (typed, ownership_result);
         }
         match expand_templates(&templates, &pkg_ctx.all_decls, &typed, &mut expanded, &mut next_template_id) {
-            Ok(Some(round)) if !round.decls.is_empty() => {
+            Ok(Some(round)) if !round.decls.is_empty() || !round.replaced.is_empty() => {
                 let from: HashMap<NodeId, Vec<NodeId>> =
                     round.copied_from.iter().fold(HashMap::new(), |mut m, (old, new)| {
                         m.entry(*old).or_default().push(*new);
@@ -1212,6 +1217,11 @@ fn check_package_scoped(
                 operator_calls.extend(carried);
                 copies.extend(round.decls);
                 instances.extend(round.instances);
+                for (was, now) in round.replaced {
+                    if let Some(slot) = templates.iter_mut().find(|d| d.id == was) {
+                        *slot = now;
+                    }
+                }
             }
             Ok(_) => break (typed, ownership_result),
             Err(errors) => {
