@@ -2120,6 +2120,8 @@ impl Resolver {
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
+                } else if value.is_some() && self.scopes.innermost_loop_is_comptime() {
+                    self.errors.push(ResolveError::break_value_from_comptime_for(stmt.span));
                 }
                 match value {
                     // `break x` reads either way, and the parser picks the value
@@ -2248,7 +2250,7 @@ impl Resolver {
                 self.resolve_expr(iter);
                 // A loop for `break` and `continue`: they act on the
                 // comptime loop (ctrl.comptime/CT70).
-                self.scopes.push(ScopeKind::Loop { label: None });
+                self.scopes.push(ScopeKind::ComptimeLoop);
                 let names = match binding {
                     ForBinding::Single(name) => vec![name.clone()],
                     ForBinding::Tuple(names) => names.clone(),

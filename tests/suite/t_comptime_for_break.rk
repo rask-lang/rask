@@ -79,3 +79,20 @@ test "both in one body, without a type parameter" {
     }
     assert out == "b"
 }
+
+test "in a comptime block, where the loop is evaluated while compiling" {
+    let k = comptime {
+        mut n = 0
+        comptime for x in [1, 2, 3, 4] {
+            if x == 2 {
+                continue
+            }
+            if x == 4 {
+                break
+            }
+            n += x
+        }
+        n
+    }
+    assert k == 4
+}
