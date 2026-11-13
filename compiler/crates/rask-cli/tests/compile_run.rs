@@ -31,15 +31,9 @@ fn next_tmp_id() -> u64 {
 }
 
 fn rask_binary() -> PathBuf {
-    // cargo test builds into target/debug or target/release
-    let mut path = std::env::current_exe().unwrap();
-    // Walk up from the test binary to the target dir
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
