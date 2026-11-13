@@ -1042,6 +1042,17 @@ fn map_order_seed() -> u64 {
     *SEED
 }
 
+/// Every bit of the result depends on every bit of `x` (splitmix64's
+/// finalizer). Sorting by `hash ^ seed` alone kept most of the hashes' own
+/// order: a seed only flips the bits where keys first differ, so eight keys
+/// came out in about sixteen orders, and five runs agreeing was a coin toss
+/// away from happening.
+fn scramble(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
 /// A Map's entries in seeded hash order — what every user-observable Map
 /// operation (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`)
 /// iterates instead of the insertion-ordered backing store. Stable for a
@@ -1050,7 +1061,7 @@ fn map_order_seed() -> u64 {
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
     let seed = map_order_seed();
     let mut entries: Vec<(u64, Value, Value)> = map.iter()
-        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .map(|(k, v)| (scramble(k.hash ^ seed), k.value.clone(), v.clone()))
         .collect();
     entries.sort_by_key(|(order, _, _)| *order);
     entries.into_iter().map(|(_, k, v)| (k, v)).collect()
