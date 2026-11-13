@@ -1218,6 +1218,16 @@ impl Interpreter {
                     }
                     None => object,
                 };
+                // GF7: `T.zero()` on a type parameter is the same call on the
+                // type the running body was instantiated with.
+                let instantiated;
+                let object = match self.type_param_receiver(object) {
+                    Some(concrete) => {
+                        instantiated = concrete;
+                        &instantiated
+                    }
+                    None => object,
+                };
                 if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One
@@ -1335,7 +1345,7 @@ impl Interpreter {
                             let is_module = ModuleKind::from_name(name).is_some();
                             if is_static && has_body && !is_module {
                                 let (arg_vals, places) = self.eval_call_args(args)?;
-                                let generics = self.call_generics(expr.id);
+                                let generics = self.static_call_generics(expr.id, object, method);
                                 let callee = method_fn.name.clone();
                                 self.lend_places(&callee, places);
                                 let result = self.call_function(method_fn, arg_vals, generics);

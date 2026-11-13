@@ -534,3 +534,62 @@ pub fn unqualify_diagnostics(
         }
     }
 }
+
+/// The types a package's own declarations name, as written.
+pub fn declared_type_names(decls: &[Decl]) -> std::collections::HashSet<String> {
+    decls
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Interface(_) | DeclKind::TypeAlias(_) | DeclKind::Union(_)
+            )
+        })
+        .filter_map(|d| d.name().map(str::to_string))
+        .collect()
+}
+
+/// type.gradual/PC4: a type parameter written in `<…>` that reuses the name
+/// of a type in scope where it's written — one of `types`, the package's own
+/// or what it imports. Judged per package, before its names are qualified,
+/// so a dependency answers to its own names and never to the app's (#1913).
+/// A stdlib type isn't in `types`: the parameter wins over those (#915).
+pub fn type_params_named_like_types(
+    decls: &[Decl],
+    types: &std::collections::HashSet<String>,
+) -> Vec<rask_diagnostics::Diagnostic> {
+    use rask_ast::decl::{FnDecl, TypeParam};
+    let mut out = Vec::new();
+    let mut check = |params: &[TypeParam], span: rask_ast::Span| {
+        for tp in params.iter().filter(|tp| types.contains(&tp.name)) {
+            out.push(
+                rask_diagnostics::Diagnostic::error(format!("type parameter `{}` has the name of a type in scope", tp.name))
+                    .with_code("E0968")
+                    .with_primary(span, format!("`{}` here could mean the parameter or the type", tp.name))
+                    .with_fix(format!("give the parameter a name of its own, like `{}Of` or a single letter", tp.name))
+                    .with_why("a signature should mean the same thing whatever else is declared, and a parameter sharing a type's name doesn't [type.gradual/PC4]"),
+            );
+        }
+    };
+    let mut methods = |fns: &[FnDecl], check: &mut dyn FnMut(&[TypeParam], rask_ast::Span)| {
+        for f in fns {
+            check(&f.type_params, f.span);
+        }
+    };
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => check(&f.type_params, f.span),
+            DeclKind::Struct(s) => {
+                check(&s.type_params, decl.span);
+                methods(&s.methods, &mut check);
+            }
+            DeclKind::Enum(e) => {
+                check(&e.type_params, decl.span);
+                methods(&e.methods, &mut check);
+            }
+            DeclKind::Impl(i) => methods(&i.methods, &mut check),
+            _ => {}
+        }
+    }
+    out
+}

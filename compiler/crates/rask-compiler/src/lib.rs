@@ -576,6 +576,12 @@ fn check_loaded_scoped(
 
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
+    // PC4: a declared type parameter against the file's own types.
+    diags.extend(package_scope::type_params_named_like_types(
+        &parse_result.decls,
+        &package_scope::declared_type_names(&parse_result.decls),
+    ));
+
     // --- Build configuration into `comptime` code (CC1) ---
     rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
@@ -826,6 +832,11 @@ fn check_package_scoped(
     let index = rask_resolve::ImportIndex::new(&pkg_ctx.registry, pkg_ctx.root_id);
     // A sub-package's `main` is the entry point only when the root has none,
     // as in a `src/` layout. Otherwise it's an ordinary name of its package.
+    // PC4 against the root package's own types.
+    diags.extend(package_scope::type_params_named_like_types(
+        &pkg_ctx.all_decls,
+        &package_scope::declared_type_names(&pkg_ctx.all_decls),
+    ));
     let root_has_entry = pkg_ctx.all_decls.iter().any(|d| {
         matches!(&d.kind, DeclKind::Fn(f) if f.name == "main" || f.attrs.iter().any(|a| a.is("entry")))
     });
@@ -850,6 +861,9 @@ fn check_package_scoped(
             suffix = format!("{}{}", base, n);
         }
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
+        // PC4 against the package's own types, while they still have the
+        // names its code writes.
+        diags.extend(package_scope::type_params_named_like_types(&decls, &package_scope::declared_type_names(&decls)));
         let written: Vec<(String, Span)> = decls
             .iter()
             .filter(|d| !is_public_decl(d))
@@ -880,11 +894,19 @@ fn check_package_scoped(
             .iter()
             .flat_map(|(_, decls)| package_scope::annotation_names(decls))
             .collect();
+        // Every dependency's types, as qualified: an unqualified import of one
+        // of these is a type in the importer's scope (PC4).
+        let dependency_types: std::collections::HashSet<String> =
+            merged.iter().flat_map(|(_, decls)| package_scope::declared_type_names(decls)).collect();
+        let imported_types = |imported: &HashMap<String, String>| -> std::collections::HashSet<String> {
+            imported.iter().filter(|(_, q)| dependency_types.contains(*q)).map(|(n, _)| n.clone()).collect()
+        };
         let root_scope = package_scope::ImportScope { exports, index: &index, importer: None, private: &private };
         let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
             package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_scope);
+        diags.extend(package_scope::type_params_named_like_types(&pkg_ctx.all_decls, &imported_types(&imported)));
         package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
         diags.extend(
@@ -897,6 +919,7 @@ fn check_package_scoped(
             let visible = visible_packages(decls, &scope);
             package_scope::qualify_references(decls, &visible, &annotations);
             let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);
+            diags.extend(package_scope::type_params_named_like_types(decls, &imported_types(&imported)));
             package_scope::qualify_imported_names(decls, &imported, &annotations);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
             diags.extend(

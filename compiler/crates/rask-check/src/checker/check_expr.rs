@@ -4114,7 +4114,11 @@ impl TypeChecker {
         let on_value = Self::root_ident_name(object).is_some_and(|root| {
             self.lookup_local(&root).is_some() && self.types.module_named(&root).is_none()
         }) || !matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. });
-        self.note_method_call(call_id, span, on_value);
+        let on_type = matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. })
+            && object.name().is_some_and(|n| {
+                self.lookup_local(n).is_none() && self.types.get_type_id(n).is_some()
+            });
+        self.note_method_call(call_id, span, on_value, on_type);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
@@ -4214,6 +4218,26 @@ impl TypeChecker {
                     });
                     return ret_ty;
                 }
+            }
+        }
+
+        // GF7: `T.zero()` calls a function `T`'s bounds require on the type
+        // parameter itself. Resolved like a method on a `T` value: through the
+        // bounds here, and per instance once `T` is known.
+        if let ExprKind::Ident(name) = &object.kind {
+            if self.lookup_local(name).is_none() && self.types.is_type_param_in_scope(name) {
+                self.type_param_static_calls.insert(call_id);
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let ret_ty = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedNamed(name.clone()),
+                    method: method.to_string(),
+                    args: arg_types,
+                    ret: ret_ty.clone(),
+                    span,
+                    call_node: Some(call_id),
+                });
+                return ret_ty;
             }
         }
 
