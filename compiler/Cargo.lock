@@ -1519,6 +1519,7 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
+ "rask-template",
  "rask-types",
  "thiserror",
  "unicode-normalization",

@@ -175,10 +175,12 @@ pub fn expand_round(
     done: &mut HashSet<String>,
     next_id: &mut u32,
 ) -> Result<Expansion, Vec<ExpandError>> {
-    let by_name: HashMap<&str, &Decl> = templates
+    // By the function's own id: a method sharing a template's name (`show`
+    // on a generic type, `map` on a range) is some other function.
+    let by_id: HashMap<NodeId, &Decl> = templates
         .iter()
         .filter_map(|d| match &d.kind {
-            DeclKind::Fn(f) if is_template(f) => Some((f.name.as_str(), d)),
+            DeclKind::Fn(f) if is_template(f) => Some((f.id, d)),
             _ => None,
         })
         .collect();
@@ -190,7 +192,13 @@ pub fn expand_round(
             continue;
         }
         let DeclKind::Fn(generic) = &inst.body.kind else { continue };
-        let Some(template) = by_name.get(generic.name.as_str()) else { continue };
+        let Some(template) = by_id.get(&generic.id) else { continue };
+        // An argument not settled yet (`count<_>`, reached through a field
+        // the first round couldn't type) waits for the round whose copy
+        // names it.
+        if inst.type_args.iter().any(|b| b.ty.has_unsolved_var() || b.ty.contains(&|t| matches!(t, Type::Error))) {
+            continue;
+        }
         done.insert(inst.name.clone());
         let shown: Vec<String> = inst
             .type_args
@@ -200,7 +208,11 @@ pub fn expand_round(
         out.instances.push((template.span, format!("{}<{}>", generic.name, shown.join(", "))));
         let mut ex = Expander { typed, mono, next_id, copied_from: Vec::new(), errors: Vec::new(), known: &known };
         let copy = ex.expand(template, &inst.name, &inst.type_args);
-        errors.extend(ex.errors);
+        let shown_instance = out.instances.last().map(|(_, n)| n.clone()).unwrap_or_default();
+        errors.extend(ex.errors.into_iter().map(|mut e| {
+            e.message = format!("{} (writing out `{}`)", e.message, shown_instance);
+            e
+        }));
         out.copied_from.extend(ex.copied_from);
         out.decls.push(copy);
     }
@@ -339,12 +351,36 @@ impl Expander<'_> {
         let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
         f.name = name.to_string();
         f.type_params.clear();
+        f.attrs.push(copy_marker(f.id));
         rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
         rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, written: &written });
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
         decl
+    }
+}
+
+/// Marks a copy with the template it was written out from, by the template
+/// function's id: another function can share the template's name (a method
+/// `dump` beside a free `dump`), and a caller looking for the copy has to
+/// find this template's.
+pub const COPY_OF: &str = "template_copy_of";
+
+fn copy_marker(template: NodeId) -> rask_ast::attr::Attr {
+    let id = Expr { id: NodeId::DUMMY, kind: ExprKind::Int(template.0 as i128, None), span: Span::new(0, 0) };
+    rask_ast::attr::Attr::synthetic(
+        COPY_OF,
+        Some(vec![rask_ast::attr::AttrArg { label: None, value: AttrValue::Expr(id) }]),
+    )
+}
+
+/// The template a copy was written out from, by its function's id.
+pub fn copy_of(f: &FnDecl) -> Option<NodeId> {
+    let attr = f.attrs.iter().find(|a| a.is(COPY_OF))?;
+    match &attr.args.as_ref()?.first()?.value {
+        AttrValue::Expr(Expr { kind: ExprKind::Int(n, _), .. }) => Some(NodeId(*n as u32)),
+        _ => None,
     }
 }
 
@@ -604,12 +640,31 @@ fn decide_comptime_ifs(stmts: &mut [Stmt], known: &Known) {
         }
     }
     let mut d = Decide(known);
+    for s in stmts.iter_mut() {
+        rewrite::rewrite_stmt(s, &mut DecideValue(known));
+    }
     let mut wrapper = stmts.to_vec();
     d.body(&mut wrapper);
     for s in &mut wrapper {
         rewrite::rewrite_stmt(s, &mut d);
     }
     stmts.clone_from_slice(&wrapper);
+}
+
+/// `comptime if` used as a value (`let s = comptime if c { a } else { b }`):
+/// the chosen branch, as a block giving its value.
+struct DecideValue<'a, 'b>(&'a Known<'b>);
+
+impl Rewrite for DecideValue<'_, '_> {
+    fn expr(&mut self, e: &mut Expr) {
+        let ExprKind::Comptime { body } = &e.kind else { return };
+        let Some((cond, then_branch, else_branch)) = rask_ast::comptime_if::parts(body) else { return };
+        let known = self.0;
+        let Some(chosen) = rask_ast::comptime_if::choose(cond, then_branch, else_branch, &mut |x| known.fact(x)) else {
+            return;
+        };
+        e.kind = ExprKind::Block(chosen.to_vec());
+    }
 }
 
 /// Fresh ids for every node of the copy, each remembered against the one it

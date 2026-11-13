@@ -856,8 +856,12 @@ impl TypeChecker {
             ExprKind::Call { .. } => "a function call",
             // In a template, a field the loop names is a place like any
             // other: the copy writes it `q.p` (ctrl.comptime/CT72).
+            // Only a free generic function is a template yet; a method of
+            // a generic type still goes to the backends as written.
             ExprKind::DynamicField { .. }
-                if !self.comptime_for_bindings.is_empty() && !self.types.type_params_in_scope().is_empty() =>
+                if !self.comptime_for_bindings.is_empty()
+                    && !self.types.type_params_in_scope().is_empty()
+                    && self.current_self_type.is_none() =>
             {
                 return
             }

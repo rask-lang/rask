@@ -17,6 +17,7 @@ rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-mono = { path = "../rask-mono" }
+rask-template = { path = "../rask-template" }
 indexmap = "2"
 thiserror.workspace = true
 # Text units (std.strings/U1-U5). The interpreter is the reference, so it uses
