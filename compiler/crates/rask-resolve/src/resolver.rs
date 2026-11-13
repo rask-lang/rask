@@ -2246,7 +2246,9 @@ impl Resolver {
             }
             StmtKind::ComptimeFor { binding, iter, body } => {
                 self.resolve_expr(iter);
-                self.scopes.push(ScopeKind::Block);
+                // A loop for `break` and `continue`: they act on the
+                // comptime loop (ctrl.comptime/CT70).
+                self.scopes.push(ScopeKind::Loop { label: None });
                 let names = match binding {
                     ForBinding::Single(name) => vec![name.clone()],
                     ForBinding::Tuple(names) => names.clone(),

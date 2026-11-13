@@ -88,6 +88,7 @@ func print_fields<T>(value: T) {
 | **CT52: No branch quota** | `comptime for` unrolling doesn't count against the backwards branch quota (CT35). The quota applies to comptime *interpreter* execution, not monomorphization-time unrolling |
 | **CT53: Field name must be comptime** | The expression in `value.(expr)` must be comptime-known: a string literal, a `comptime { … }` block, a `let` bound to either, or a `comptime for` binding's `.name`. Anything else — a call, an `if`, a `mut` — is a compile error |
 | **CT54: Field must exist** | Compile error if the comptime string doesn't match any field on the value's type |
+| **CT70: `break` and `continue`** | In a `comptime for` body, outside any loop of its own, `break` stops the comptime loop: the items after it don't run. `continue` ends the current item's code and goes on to the next. A condition on either is a runtime one, so the unrolled code keeps the jumps |
 
 Primary use case: serialization format libraries. See `std.encoding` for the full pattern.
 

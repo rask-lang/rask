@@ -793,7 +793,17 @@ impl Unroll<'_, '_> {
     /// its `comptime if`s decided.
     fn write_out(&mut self, item: &str, items: &[Item], body: &[Stmt], stmt: &Stmt, iter_id: NodeId) -> Vec<Stmt> {
         let mut out = Vec::new();
-        for it in items {
+        // `break` and `continue` act on the comptime loop (CT70): the items
+        // go inside a loop that runs once, labelled for `break`, and an item
+        // with a `continue` inside one of its own.
+        let whole = format!("comptime_for_{}", stmt.id.0);
+        let mut any_break = false;
+        let jump = |label: &str| Stmt {
+            id: stmt.id,
+            kind: StmtKind::Break { label: Some(label.to_string()), value: None },
+            span: stmt.span,
+        };
+        for (index, it) in items.iter().enumerate() {
             let mut copy = body.to_vec();
             let mut facts = ItemFacts {
                 item,
@@ -830,13 +840,25 @@ impl Unroll<'_, '_> {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
             self.ex.errors.extend(facts.errors);
-            // One block per iteration, so a `let` in the body is that
-            // iteration's.
-            out.push(Stmt {
-                id: stmt.id,
-                kind: StmtKind::Expr(Expr { id: iter_id, kind: ExprKind::Block(copy), span: stmt.span }),
-                span: stmt.span,
-            });
+            let this = format!("{whole}_{index}");
+            let mut jumps = Jumps { whole: &whole, this: &this, broke: false, continued: false };
+            for s in &mut copy {
+                rewrite::rewrite_stmt(s, &mut jumps);
+            }
+            any_break |= jumps.broke;
+            let kind = if jumps.continued {
+                copy.push(jump(&this));
+                StmtKind::Loop { label: Some(this), body: copy }
+            } else {
+                // One block per iteration, so a `let` in the body is that
+                // iteration's.
+                StmtKind::Expr(Expr { id: iter_id, kind: ExprKind::Block(copy), span: stmt.span })
+            };
+            out.push(Stmt { id: stmt.id, kind, span: stmt.span });
+        }
+        if any_break {
+            out.push(jump(&whole));
+            out = vec![Stmt { id: stmt.id, kind: StmtKind::Loop { label: Some(whole), body: out }, span: stmt.span }];
         }
         out
     }
@@ -851,6 +873,42 @@ fn is_literal(e: &Expr) -> bool {
             matches!(operand.kind, ExprKind::Int(..) | ExprKind::Float(..))
         }
         _ => false,
+    }
+}
+
+/// An item's `break` and `continue`, the ones no loop inside the body
+/// claims, pointed at the labels the written-out loop has.
+struct Jumps<'a> {
+    whole: &'a str,
+    this: &'a str,
+    broke: bool,
+    continued: bool,
+}
+
+impl Rewrite for Jumps<'_> {
+    fn stmt(&mut self, s: &mut Stmt) -> bool {
+        match &mut s.kind {
+            StmtKind::Break { label: label @ None, value: None } => {
+                *label = Some(self.whole.to_string());
+                self.broke = true;
+                false
+            }
+            StmtKind::Continue(None) => {
+                s.kind = StmtKind::Break { label: Some(self.this.to_string()), value: None };
+                self.continued = true;
+                false
+            }
+            StmtKind::While { .. }
+            | StmtKind::WhileLet { .. }
+            | StmtKind::Loop { .. }
+            | StmtKind::For { .. }
+            | StmtKind::ComptimeFor { .. } => false,
+            _ => true,
+        }
+    }
+
+    fn descend(&mut self, e: &Expr) -> bool {
+        !matches!(e.kind, ExprKind::Loop { .. } | ExprKind::Closure { .. })
     }
 }
 
