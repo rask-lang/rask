@@ -492,10 +492,18 @@ impl Unroll<'_, '_> {
         let mut out = Vec::new();
         for it in &items {
             let mut copy = body.clone();
-            let mut facts = ItemFacts { item, it, types: &self.ex.typed.types, typed: self.ex.typed, loop_span: stmt.span };
+            let mut facts = ItemFacts {
+                item,
+                it,
+                types: &self.ex.typed.types,
+                typed: self.ex.typed,
+                loop_span: stmt.span,
+                errors: Vec::new(),
+            };
             for s in &mut copy {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
+            self.ex.errors.extend(facts.errors);
             decide_comptime_ifs(&mut copy, self.ex.known);
             // One block per iteration, so a `let` in the body is that
             // iteration's.
@@ -524,6 +532,7 @@ struct ItemFacts<'a> {
     /// The loop's own span, which the resolver gave its binding: a name that
     /// resolves elsewhere (an inner `for p in …`) is some other `p`.
     loop_span: Span,
+    errors: Vec<ExpandError>,
 }
 
 impl ItemFacts<'_> {
@@ -566,15 +575,26 @@ impl ItemFacts<'_> {
         })
     }
 
-    /// `f.get<A>().x`: what the attachment says `x` is.
-    fn annotation_read(&self, call: &Expr, field: &str) -> Option<ExprKind> {
+    /// `f.get<A>().x`: what the attachment says `x` is. A field with no `@A`
+    /// has nothing to read, and only a `comptime if` drops the read for it
+    /// (type.annotations/AN6).
+    fn annotation_read(&mut self, call: &Expr, field: &str) -> Option<ExprKind> {
         let ExprKind::MethodCall { object, method, type_args: Some(args), .. } = &call.kind else { return None };
         if method != "get" || !self.is_item(object) {
             return None;
         }
         let annotation = args.first()?.bare_name()?;
         let Item::Field(fact, _) = self.it else { return None };
-        let attr = fact.attrs.iter().find(|a| a.is(annotation))?;
+        let Some(attr) = fact.attrs.iter().find(|a| a.is(annotation)) else {
+            self.errors.push(ExpandError {
+                message: format!(
+                    "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
+                    fact.name, annotation, field, self.item, annotation
+                ),
+                span: call.span,
+            });
+            return None;
+        };
         let arg = attr.args.as_ref()?.iter().find(|a| a.label.as_deref() == Some(field))?;
         match &arg.value {
             AttrValue::Expr(e) => Some(e.kind.clone()),
