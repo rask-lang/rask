@@ -292,7 +292,7 @@ impl Unroll<'_, '_> {
         let ExprKind::MethodCall { object, method, type_args: Some(args), .. } = &iter.kind else {
             return None;
         };
-        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") || method != "fields" {
+        if !matches!(&object.kind, ExprKind::Ident(n) if n == "reflect") || !matches!(method.as_str(), "fields" | "params") {
             return None;
         }
         let ty = args.first()?;
@@ -307,17 +307,30 @@ impl Unroll<'_, '_> {
                 return Some(Vec::new());
             }
         };
-        let Some(fields) = field_facts(self.ex.typed, self.ex.mono, &checked) else {
-            self.ex.errors.push(ExpandError {
-                message: format!("reflect.fields<{}>(): not a struct type", ty.source()),
-                span: iter.span,
-            });
-            return Some(Vec::new());
+        let items: Vec<Item> = if method == "params" {
+            match rask_check::reflect::params(&self.ex.typed.types, ty) {
+                Ok(params) => params.into_iter().map(Item::Param).collect(),
+                Err(message) => {
+                    self.ex.errors.push(ExpandError { message, span: iter.span });
+                    return Some(Vec::new());
+                }
+            }
+        } else {
+            match field_facts(self.ex.typed, self.ex.mono, &checked) {
+                Some(fields) => fields.into_iter().enumerate().map(|(i, f)| Item::Field(f, i)).collect(),
+                None => {
+                    self.ex.errors.push(ExpandError {
+                        message: format!("reflect.fields<{}>(): not a struct type", ty.source()),
+                        span: iter.span,
+                    });
+                    return Some(Vec::new());
+                }
+            }
         };
         let mut out = Vec::new();
-        for (index, fact) in fields.iter().enumerate() {
+        for it in &items {
             let mut copy = body.clone();
-            let mut facts = ItemFacts { item, fact, index };
+            let mut facts = ItemFacts { item, it, types: &self.ex.typed.types, typed: self.ex.typed, loop_span: stmt.span };
             for s in &mut copy {
                 rewrite::rewrite_stmt(s, &mut facts);
             }
@@ -334,22 +347,49 @@ impl Unroll<'_, '_> {
     }
 }
 
-/// The loop item's facts written in, for one field.
+/// What one iteration's item is: a field, with its position, or a parameter.
+enum Item {
+    Field(FieldFact, usize),
+    Param(rask_check::reflect::ParamFact),
+}
+
+/// The loop item's facts written in, for one iteration.
 struct ItemFacts<'a> {
     item: &'a str,
-    fact: &'a FieldFact,
-    index: usize,
+    it: &'a Item,
+    types: &'a rask_check::TypeTable,
+    typed: &'a TypedProgram,
+    /// The loop's own span, which the resolver gave its binding: a name that
+    /// resolves elsewhere (an inner `for p in …`) is some other `p`.
+    loop_span: Span,
 }
 
 impl ItemFacts<'_> {
     fn is_item(&self, e: &Expr) -> bool {
-        matches!(&e.kind, ExprKind::Ident(n) if n == self.item)
+        if !matches!(&e.kind, ExprKind::Ident(n) if n == self.item) {
+            return false;
+        }
+        match self.typed.resolutions.get(&e.id).and_then(|sym| self.typed.symbols.get(*sym)) {
+            Some(sym) => sym.span == self.loop_span,
+            None => true,
+        }
     }
 
-    /// `f.name`, `f.offset`, … as the literal it is for this field.
-    fn property(&self, field: &str, span: Span, id: NodeId) -> Option<ExprKind> {
-        let f = self.fact;
-        let _ = (span, id);
+    /// `f.name`, `f.offset`, `p.is_mutate`, … as the literal it is here.
+    fn property(&self, field: &str) -> Option<ExprKind> {
+        let (f, index) = match self.it {
+            Item::Field(f, index) => (f, *index),
+            Item::Param(p) => {
+                use rask_ast::ty::ParamMode;
+                return Some(match field {
+                    "index" => ExprKind::Int(p.index as i128, Some(IntSuffix::Usize)),
+                    "type_name" => ExprKind::String(p.type_name.clone()),
+                    "is_mutate" => ExprKind::Bool(p.mode == ParamMode::Mutate),
+                    "is_take" => ExprKind::Bool(p.mode == ParamMode::Take),
+                    _ => return None,
+                });
+            }
+        };
         Some(match field {
             "name" => ExprKind::String(f.name.clone()),
             "type_name" => ExprKind::String(f.type_name.clone()),
@@ -359,7 +399,7 @@ impl ItemFacts<'_> {
             "is_public" => ExprKind::Bool(f.is_public),
             "is_skipped" => ExprKind::Bool(f.is_skipped),
             "has_default" => ExprKind::Bool(f.has_default),
-            "index" => ExprKind::Int(self.index as i128, Some(IntSuffix::Usize)),
+            "index" => ExprKind::Int(index as i128, Some(IntSuffix::Usize)),
             _ => return None,
         })
     }
@@ -371,7 +411,8 @@ impl ItemFacts<'_> {
             return None;
         }
         let annotation = args.first()?.bare_name()?;
-        let attr = self.fact.attrs.iter().find(|a| a.is(annotation))?;
+        let Item::Field(fact, _) = self.it else { return None };
+        let attr = fact.attrs.iter().find(|a| a.is(annotation))?;
         let arg = attr.args.as_ref()?.iter().find(|a| a.label.as_deref() == Some(field))?;
         match &arg.value {
             AttrValue::Expr(e) => Some(e.kind.clone()),
@@ -384,19 +425,25 @@ impl Rewrite for ItemFacts<'_> {
     fn expr(&mut self, e: &mut Expr) {
         let replaced = match &e.kind {
             // `v.(f.name)` is `v.p`.
-            ExprKind::DynamicField { object, field_expr } => match &field_expr.kind {
-                ExprKind::Field { object: item, field } if self.is_item(item) && field == "name" => {
-                    Some(ExprKind::Field { object: object.clone(), field: self.fact.name.clone() })
+            ExprKind::DynamicField { object, field_expr } => match (&field_expr.kind, self.it) {
+                (ExprKind::Field { object: item, field }, Item::Field(fact, _)) if self.is_item(item) && field == "name" => {
+                    Some(ExprKind::Field { object: object.clone(), field: fact.name.clone() })
                 }
                 _ => None,
             },
-            ExprKind::Field { object, field } if self.is_item(object) => self.property(field, e.span, e.id),
+            ExprKind::Field { object, field } if self.is_item(object) => self.property(field),
             ExprKind::Field { object, field } => self.annotation_read(object, field),
-            ExprKind::MethodCall { object, method, type_args: Some(args), .. }
-                if self.is_item(object) && method == "has" =>
-            {
-                let annotation = args.first().and_then(TypeExpr::bare_name);
-                annotation.map(|a| ExprKind::Bool(self.fact.attrs.iter().any(|attr| attr.is(a))))
+            ExprKind::MethodCall { object, method, type_args: Some(args), .. } if self.is_item(object) => {
+                match (method.as_str(), self.it) {
+                    ("has", Item::Field(fact, _)) => {
+                        let annotation = args.first().and_then(TypeExpr::bare_name);
+                        annotation.map(|a| ExprKind::Bool(fact.attrs.iter().any(|attr| attr.is(a))))
+                    }
+                    ("is", Item::Param(p)) => {
+                        args.first().map(|t| ExprKind::Bool(rask_check::reflect::param_is(self.types, &p.ty, t)))
+                    }
+                    _ => None,
+                }
             }
             _ => None,
         };
