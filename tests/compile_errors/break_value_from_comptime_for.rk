@@ -11,7 +11,7 @@ struct Row {
 
 func main() {
     comptime for f in reflect.fields<Row>() {
-        // ERROR: `break` with a value out of a `comptime for` [E0964]
+        // ERROR: `break` with a value out of a `comptime for` [E0970]
         break 5
     }
 }

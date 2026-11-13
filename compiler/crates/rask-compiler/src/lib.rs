@@ -772,7 +772,7 @@ fn expand_templates(
             .into_iter()
             .map(|e| {
                 Diagnostic::error(e.message)
-                    .with_code("E0963")
+                    .with_code("E0969")
                     .with_primary(e.span, "while writing out this template for an instance")
             })
             .collect()
