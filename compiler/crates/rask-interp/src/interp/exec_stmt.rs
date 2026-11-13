@@ -523,67 +523,12 @@ impl Interpreter {
                 result
             }
 
-            // CT48: comptime for — in the interpreter, runs like a regular for loop
-            StmtKind::ComptimeFor { binding, iter, body, .. } => {
-                let loop_label: Option<&str> = None;
-                let iter_val = self.eval_expr(iter)?;
-                match iter_val {
-                    Value::Vec(v) => {
-                        let items: Vec<Value> = v.lock().unwrap().items.clone();
-                        // Every iteration first: native rejects the program
-                        // before any of it runs, so none of it runs here either.
-                        for item in &items {
-                            if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
-                                if s.lock().unwrap().name == "FieldInfo" {
-                                    let attrs = self.field_info_attrs(s);
-                                    let props = s.lock().unwrap().fields.clone();
-                                    let mut other = |e: &rask_ast::expr::Expr| self.comptime_if_fact(e);
-                                    if let Some((annotation, field, span)) =
-                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs, &props, &mut other)
-                                    {
-                                        let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
-                                        return Err(RuntimeDiagnostic::new(
-                                            RuntimeError::Generic(format!(
-                                                "`{}` has no `@{annotation}` to read{field} from — guard the read with `comptime if {name}.has<{annotation}>()`",
-                                                super::eval_expr::field_info_name(s),
-                                            )),
-                                            span,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                        for item in items {
-                            self.env.push_scope();
-                            self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            self.env.pop_scope();
-                        }
-                        Ok(Value::Unit)
-                    }
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "comptime for requires a Vec iterable, got {}",
-                            iter_val.type_name()
-                        )),
-                        stmt.span,
-                    )),
-                }
-            }
+            // Every `comptime for` is written out before the program runs, as
+            // a plain body per instance (`rask-template`, ctrl.comptime/CT50).
+            StmtKind::ComptimeFor { .. } => Err(RuntimeDiagnostic::new(
+                RuntimeError::Generic("internal: a `comptime for` reached the interpreter without being written out".into()),
+                stmt.span,
+            )),
 
         }
     }
@@ -849,39 +794,4 @@ fn value_option_depth(value: &Value) -> usize {
 
 
 impl Interpreter {
-    /// A fact a `comptime if` in a `comptime for` may compare against, other
-    /// than the item's own: a module const whose value folds, or a
-    /// `reflect.*()` call that answers with one value. The same ones native
-    /// folds (`try_eval_comptime_if_locally`).
-    pub(super) fn comptime_if_fact(&mut self, expr: &rask_ast::expr::Expr) -> Option<rask_ast::comptime_if::Fact> {
-        use rask_ast::comptime_if::Fact;
-        use rask_ast::expr::ExprKind;
-        match &expr.kind {
-            // The const, unless something in scope shadows it: the name's
-            // current value has to be the const's.
-            ExprKind::Ident(name) => {
-                let fact = self.const_facts.get(name)?.clone();
-                let same = match (self.env.get(name)?, &fact) {
-                    (Value::Bool(b), Fact::Bool(c)) => b == *c,
-                    (Value::Int(n, _), Fact::Int(m, _)) => n as i128 == *m,
-                    (Value::Float(x, _), Fact::Float(y)) => x == *y,
-                    (Value::String(s), Fact::Str(t)) => *s.lock().unwrap() == *t,
-                    _ => false,
-                };
-                same.then_some(fact)
-            }
-            ExprKind::MethodCall { object, method, .. }
-                if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
-                    && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
-            {
-                match self.eval_expr(expr).ok()? {
-                    Value::Bool(b) => Some(Fact::Bool(b)),
-                    Value::Int(n, k) => Some(Fact::Int(n as i128, k.fact_range())),
-                    Value::String(s) => Some(Fact::Str(s.lock().unwrap().clone())),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
 }

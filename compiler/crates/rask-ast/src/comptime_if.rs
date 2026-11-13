@@ -249,19 +249,3 @@ fn in_range(n: i128, range: Option<(i128, i128)>) -> Option<Fact> {
     let (lo, hi) = range.unwrap_or((i64::MIN as i128, i64::MAX as i128));
     (lo..=hi).contains(&n).then_some(Fact::Int(n, range))
 }
-
-/// `item.get<A>().field` as a fact: the attachment's written value, when
-/// it's a literal. `attrs` are the item's attachments.
-pub fn annotation_read(expr: &Expr, binding: &str, attrs: &[crate::attr::Attr]) -> Option<Fact> {
-    let ExprKind::Field { object, field } = &expr.kind else { return None };
-    let ExprKind::MethodCall { object: item, method, type_args, .. } = &object.kind else { return None };
-    if method != "get" || item.name() != Some(binding) {
-        return None;
-    }
-    let annotation = type_args.as_ref()?.first()?.bare_name()?;
-    let attr = attrs.iter().find(|a| a.is(annotation))?;
-    match attr.arg(field)? {
-        crate::attr::AttrValue::Expr(e) => literal(e),
-        crate::attr::AttrValue::RuleName(_) => None,
-    }
-}

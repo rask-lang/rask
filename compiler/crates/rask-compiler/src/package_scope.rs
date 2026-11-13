@@ -571,7 +571,7 @@ pub fn type_params_named_like_types(
             );
         }
     };
-    let mut methods = |fns: &[FnDecl], check: &mut dyn FnMut(&[TypeParam], rask_ast::Span)| {
+    let methods = |fns: &[FnDecl], check: &mut dyn FnMut(&[TypeParam], rask_ast::Span)| {
         for f in fns {
             check(&f.type_params, f.span);
         }

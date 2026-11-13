@@ -712,6 +712,10 @@ pub struct TypedProgram {
     /// Declarations the checker wrote and checked (`checker/derive.rs`).
     /// `attach_derived` moves them into the program.
     pub derived_decls: Vec<rask_ast::decl::Decl>,
+    /// Template copies (`rask-template`): each copy's function, by id, with
+    /// the template's function id and the instance's type arguments. Set by
+    /// the driver once the last round is checked.
+    pub template_copies: HashMap<NodeId, (NodeId, Vec<TypeBinding>)>,
     /// Method calls on a wrapper (`==`, `.clone()`) that go through the
     /// function written for its type: call node → (callee node, function
     /// name). Applied by `attach_derived`.

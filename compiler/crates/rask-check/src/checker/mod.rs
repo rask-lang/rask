@@ -1340,6 +1340,7 @@ impl TypeChecker {
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,
+            template_copies: HashMap::new(),
             wrapper_calls: self.wrapper_calls,
             copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,

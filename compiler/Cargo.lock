@@ -1441,6 +1441,7 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
+ "rask-template",
  "rask-types",
 ]
 
@@ -1710,6 +1711,17 @@ dependencies = [
  "rask-desugar",
  "rask-lexer",
  "rask-parser",
+ "rask-types",
+]
+
+[[package]]
+name = "rask-template"
+version = "0.6.0"
+dependencies = [
+ "rask-ast",
+ "rask-check",
+ "rask-layout",
+ "rask-mono",
  "rask-types",
 ]
 

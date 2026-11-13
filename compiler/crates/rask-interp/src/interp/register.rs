@@ -138,6 +138,19 @@ impl Interpreter {
         self.type_decls = decls.to_vec();
 
         for decl in decls {
+            let fns: Vec<&FnDecl> = match &decl.kind {
+                DeclKind::Fn(f) => vec![f],
+                DeclKind::Impl(i) => i.methods.iter().collect(),
+                _ => Vec::new(),
+            };
+            for f in fns {
+                if let Some((template, bound)) = self.copies_of.get(&f.id) {
+                    self.template_copies.entry(*template).or_default().push((bound.clone(), f.clone()));
+                }
+            }
+        }
+
+        for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     if f.attrs.iter().any(|a| a.is("entry")) {

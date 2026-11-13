@@ -1128,6 +1128,7 @@ mod tests {
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),
+            template_copies: HashMap::new(),
             wrapper_calls: std::collections::HashMap::new(),
             copied_clones: std::collections::HashSet::new(),
             sequence_coercions: std::collections::HashMap::new(),

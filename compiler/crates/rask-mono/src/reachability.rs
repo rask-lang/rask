@@ -1195,6 +1195,12 @@ impl<'a> Monomorphizer<'a> {
 
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
+        // A template instance written out as a plain function of its own
+        // (`rask-template`) is that function: `gather$Moving`, not `gather`
+        // at `Moving`, and `Box_names$Pair` for a method (ctrl.comptime/CT50).
+        if !type_args.is_empty() && (self.fn_table.contains_key(&key) || self.method_table.contains_key(&key)) {
+            return self.enqueue(key, Vec::new());
+        }
         if self.seen.contains_key(&key) {
             return;
         }
