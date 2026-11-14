@@ -23,6 +23,6 @@ func main() {
         let f = keep(Vec<Link<Node>>.new())
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }

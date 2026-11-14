@@ -46,6 +46,14 @@ pub trait Rewrite {
     /// Every function and method, before its parts — for a rewriter that gives
     /// a copy its own identity.
     fn func(&mut self, _f: &mut FnDecl) {}
+    /// Every statement, before its parts; `false` leaves its parts unwalked.
+    fn stmt(&mut self, _s: &mut Stmt) -> bool {
+        true
+    }
+    /// Whether to walk into an expression's parts, asked after `expr`.
+    fn descend(&mut self, _e: &Expr) -> bool {
+        true
+    }
 }
 
 /// The attribute, then the expressions among its values: `@default(Color.Red)`
@@ -211,6 +219,9 @@ pub fn rewrite_body(body: &mut Vec<Stmt>, r: &mut impl Rewrite) {
 
 /// Every expression, pattern and type in one statement.
 pub fn rewrite_stmt(stmt: &mut Stmt, r: &mut impl Rewrite) {
+    if !r.stmt(stmt) {
+        return;
+    }
     match &mut stmt.kind {
         StmtKind::Expr(e) => rewrite_expr(e, r),
 
@@ -264,6 +275,9 @@ pub fn rewrite_stmt(stmt: &mut Stmt, r: &mut impl Rewrite) {
 /// Every expression in `expr` and below it, outermost first.
 pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
     r.expr(expr);
+    if !r.descend(expr) {
+        return;
+    }
     match &mut expr.kind {
         // Leaves. `Ident` is one for the walk and not for the rewriter — the
         // callback above has already seen it.
@@ -443,9 +457,12 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             }
             rewrite_expr(body, r);
         }
-        ExprKind::Spawn { receiver, body, .. } => {
+        ExprKind::Spawn { receiver, args, body, .. } => {
             if let Some(recv) = receiver {
                 rewrite_expr(recv, r);
+            }
+            for a in args {
+                rewrite_expr(&mut a.expr, r);
             }
             rewrite_expr(body, r);
         }

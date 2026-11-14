@@ -1,0 +1,20 @@
+=== Testing 08-errors-are-values.rk ===
+
+  ✓ every direction leads back the way it came (0ms)
+  ✓ finding an item by name (0ms)
+  ✗ a direction alone is a move
+      08-errors-are-values.rk:167: not yet implemented
+  ✗ the object keeps its case and inner spaces
+      08-errors-are-values.rk:172: not yet implemented
+  ✗ what can go wrong is a value
+      08-errors-are-values.rk:172: not yet implemented
+  ✓ the game starts at the gate (0ms)
+  ✓ walking to the hall (0ms)
+  ✓ a dead end and a typo (0ms)
+  ✗ picking something up moves it
+      08-errors-are-values.rk:172: not yet implemented
+  ✗ putting it down somewhere else
+      08-errors-are-values.rk:172: not yet implemented
+
+──────────────────────────────────────────────────
+10 tests, 5 passed, 5 failed (0ms)

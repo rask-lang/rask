@@ -234,6 +234,9 @@ pub enum ExprKind {
         /// `Thread` / `ThreadPool` as written, so the name resolves like any
         /// other use of the type. `None` for a green task.
         receiver: Option<Box<Expr>>,
+        /// Written between the name and the block:
+        /// `ThreadPool.spawn(requires_pool: false) { … }`.
+        args: Vec<CallArg>,
         body: Box<Expr>,
     },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).

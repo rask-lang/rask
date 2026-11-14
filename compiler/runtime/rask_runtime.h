@@ -272,6 +272,9 @@ static inline int rask_owned_guard(const char *elem, const int32_t *entries, int
 // entry decides whether the entries after it apply, so the walk has to be able
 // to skip and cannot be a loop over the single-entry calls above.
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+// Free a handle through its stdlib type's declared release, by its index in
+// `RASK_HANDLE_RELEASES`. Null handles and unknown indexes do nothing.
+void rask_handle_release(int64_t index, void *handle);
 
 // A `Heap<T>` field: releases what the block holds and then frees the block.
 // `entries` describe a `T`, so a `RASK_OWNED_SELF` inside them restarts against
@@ -332,7 +335,6 @@ void    *rask_vec_borrow_elem(RaskVec *v, int64_t index);
 void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
-void     rask_vec_write_back(RaskVec *v, int64_t index, const void *elem);
 void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
@@ -588,6 +590,7 @@ int64_t     rask_string_first_nul(const RaskStr *s);
 int64_t     rask_cstring_from_string(const RaskStr *s);
 int64_t     rask_cstring_as_ptr(int64_t cs);
 void        rask_cstring_free(int64_t cs);
+void        rask_atomic_free(int64_t ptr);
 RaskVec    *rask_cstring_bytes(int64_t cs);
 void        rask_panic_str(const RaskStr *msg);
 void        rask_panic_str_at(const char *file, int32_t line, int32_t col,
@@ -750,7 +753,6 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or
 // NULL if the key was fresh. Good until the next insert on this map.
 void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
-void     rask_map_write_back(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
@@ -804,6 +806,20 @@ static inline int rask_link_is_none(const void *p) {
 }
 
 RaskRack *rask_rack_new(void);
+
+// A rack's structural changes, recorded now and made by `rask_rack_apply`
+// (mem.racks/RK16–RK21).
+typedef struct RaskStaged RaskStaged;
+RaskStaged *rask_rack_staged(RaskRack *r);
+void        rask_rack_apply(RaskRack *r, RaskStaged *s);
+void        rask_staged_delete(RaskStaged *s, uint64_t key, void *node);
+void        rask_staged_insert(RaskStaged *s, uint64_t key, const void *value, int64_t elem_size,
+                               int64_t field_count, const int32_t *fields,
+                               int64_t owned_count, const int32_t *owned, int64_t elem_align);
+void        rask_staged_relink(RaskStaged *s, uint64_t key, void *node, void *to, void *closure);
+void        rask_staged_append(RaskStaged *s, RaskStaged *other);
+int64_t     rask_staged_len(const RaskStaged *s);
+void        rask_staged_free(RaskStaged *s);
 void      rask_rack_free(RaskRack *r);
 int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);
@@ -1278,6 +1294,14 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
+// A panic caught where it happened: a task run in place keeps it as its result.
+typedef struct RaskCaughtPanic {
+    char *message;   // malloc'd
+    int   located;   // the message starts with `file:line: `
+} RaskCaughtPanic;
+RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b);
+void             rask_panic_discard(RaskCaughtPanic *caught);
+
 // Task ids (ctrl.panic/F1) — used internally by thread.c/green.c to prefix
 // panic output with "task N" while a runtime task is executing.
 int64_t rask_next_task_id(void);
@@ -1429,7 +1453,19 @@ void rask_threadpool_shutdown(void);
 
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool);
+// A pooled job not yet started; whoever claims it first runs it.
+void      rask_task_pool_queue(RaskTask *t, RaskTaskFn func, void *env);
+int       rask_task_pool_claim(RaskTask *t);
+// Its body runs on a pool worker (conc.async/B6).
+void      rask_task_mark_on_pool(RaskTask *t);
+// Run a task's body on this thread, now, catching its panic as its result.
+void      rask_task_run_inline(RaskTask *t, RaskTaskFn func, void *env);
+// A task block joined in the frame that spawned it (conc.async/S5): its
+// closure points into the frame, and a panic before its join waits for it.
+// `target` is 0 for `spawn`, 1 for `Thread.spawn`, 2 for `ThreadPool.spawn`.
+RaskTask *rask_task_spawn_borrowed(int64_t target, void *closure_ptr, int64_t result_owned,
+                                   int8_t requires_pool);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

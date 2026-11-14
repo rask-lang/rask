@@ -34,6 +34,22 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// The range a `comptime if` holds arithmetic on this value to
+    /// (`rask_ast::comptime_if::Fact`). `Untyped` is an `i64`.
+    pub fn fact_range(self) -> Option<(i128, i128)> {
+        use rask_ast::comptime_if::int_range;
+        match self {
+            IntKind::I8 => int_range("i8"),
+            IntKind::I16 => int_range("i16"),
+            IntKind::I32 => int_range("i32"),
+            IntKind::I64 | IntKind::Untyped => None,
+            IntKind::U8 => int_range("u8"),
+            IntKind::U16 => int_range("u16"),
+            IntKind::U32 => int_range("u32"),
+            IntKind::U64 => int_range("u64"),
+        }
+    }
+
     /// P2: what `usize` is on this target — pointer-sized. The width comes
     /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
     pub fn usize_kind() -> IntKind {
@@ -432,6 +448,32 @@ pub struct RackData {
     /// caller still holds into the equivalent node over here.
     pub origin_id: Option<u32>,
     pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
+    /// Bumped by every node that leaves. A `Staged` buffer remembers it, and
+    /// one the rack has deleted past can't apply (mem.racks/RK21).
+    pub epoch: u64,
+}
+
+/// A `Staged<T>` buffer: structural changes recorded now and made by
+/// `rack.apply` (mem.racks/RK17). Its links are the nodes themselves, with no
+/// backlink recorded, so no delete fixup reaches them.
+#[derive(Debug)]
+pub struct StagedData {
+    pub rack_id: u32,
+    pub epoch: u64,
+    pub ops: Vec<StagedOp>,
+}
+
+#[derive(Debug)]
+pub struct StagedOp {
+    pub key: u64,
+    pub kind: StagedKind,
+}
+
+#[derive(Debug)]
+pub enum StagedKind {
+    Delete(Arc<Mutex<StructData>>),
+    Insert(Value),
+    Relink { node: Arc<Mutex<StructData>>, to: Arc<Mutex<StructData>>, f: Value },
 }
 
 impl RackData {
@@ -445,6 +487,7 @@ impl RackData {
             slot_of: HashMap::new(),
             origin_id: None,
             origin: HashMap::new(),
+            epoch: 0,
         }
     }
 
@@ -999,6 +1042,17 @@ fn map_order_seed() -> u64 {
     *SEED
 }
 
+/// Every bit of the result depends on every bit of `x` (splitmix64's
+/// finalizer). Sorting by `hash ^ seed` alone kept most of the hashes' own
+/// order: a seed only flips the bits where keys first differ, so eight keys
+/// came out in about sixteen orders, and five runs agreeing was a coin toss
+/// away from happening.
+fn scramble(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
 /// A Map's entries in seeded hash order — what every user-observable Map
 /// operation (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`)
 /// iterates instead of the insertion-ordered backing store. Stable for a
@@ -1007,7 +1061,7 @@ fn map_order_seed() -> u64 {
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
     let seed = map_order_seed();
     let mut entries: Vec<(u64, Value, Value)> = map.iter()
-        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .map(|(k, v)| (scramble(k.hash ^ seed), k.value.clone(), v.clone()))
         .collect();
     entries.sort_by_key(|(order, _, _)| *order);
     entries.into_iter().map(|(_, k, v)| (k, v)).collect()
@@ -1173,10 +1227,16 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// A checked type held by reflection metadata, hidden behind a `__` key
+    /// so `param.is<T>()` compares types rather than their spellings. Never
+    /// reaches user code (ctrl.comptime/CT66).
+    ReflectedType(Arc<rask_types::Type>),
     /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
     Cell(Arc<Mutex<Value>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
     Rack(Arc<Mutex<RackData>>),
+    /// Structural changes to a rack, waiting for `rack.apply`.
+    Staged(Arc<Mutex<StagedData>>),
     /// Link — one edge to a node. Holds the node pointer directly, so following
     /// it is a deref with no generation check and no rack lookup. `rack_id`
     /// only names the owning rack for structural ops and for delete's fixup.
@@ -1462,9 +1522,10 @@ impl Value {
             Value::Closure { .. } => "closure",
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
-            Value::Type(_) => "type",
+            Value::Type(_) | Value::ReflectedType(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
+            Value::Staged(_) => "Staged",
             Value::Link { .. } => "Link",
             Value::Handle(_) => "Handle",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
@@ -1779,6 +1840,7 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::ReflectedType(ty) => write!(f, "<type {}>", ty),
             Value::Cell(c) => {
                 let inner = c.lock().unwrap();
                 write!(f, "Cell({})", inner)
@@ -1787,6 +1849,7 @@ impl fmt::Display for Value {
                 let rack = s.lock().unwrap();
                 write!(f, "<Rack len={}>", rack.len)
             }
+            Value::Staged(s) => write!(f, "<Staged len={}>", s.lock().unwrap().ops.len()),
             // Print the node, not the address — a link is the node, as far as
             // reading it goes.
             Value::Link { node, .. } => {

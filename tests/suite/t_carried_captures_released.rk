@@ -315,3 +315,11 @@ test "a Copy half of a struct carried while the frame keeps the rest" {
 }
 
 func main() {}
+
+test "a Copy half bound for a closure that points at it leaves the whole released" {
+    let p = Pair(left: Line(text: heap("left")), right: Line(text: heap("right")))
+    let half = p.left
+    let f = || half.text.len()
+    assert f() == 37
+    assert p.right.text.len() == 38
+}

@@ -667,6 +667,20 @@ impl Interpreter {
                     });
                 Ok(option_value(found))
             }
+            "staged" => {
+                let rack = s.lock().unwrap();
+                Ok(Value::Staged(Arc::new(Mutex::new(crate::value::StagedData {
+                    rack_id: rack.rack_id,
+                    epoch: rack.epoch,
+                    ops: Vec::new(),
+                }))))
+            }
+            "apply" => {
+                let Some(Value::Staged(ops)) = args.into_iter().next() else {
+                    return Err(RuntimeError::TypeError("rack.apply() expects a Staged buffer".to_string()));
+                };
+                self.apply_staged(s, &ops)
+            }
             // Every node dies, so every edge pointing into this rack must be
             // nulled. Truncating the slots would leave root edges and
             // cross-rack edges pointing at freed nodes — the one thing the
@@ -687,6 +701,151 @@ impl Interpreter {
                 method
             ))),
         }
+    }
+
+    /// `Staged<T>` methods: each records a change and does nothing else
+    /// (mem.racks/RK17).
+    pub(crate) fn call_staged_method(
+        &mut self,
+        s: &Arc<Mutex<crate::value::StagedData>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        use crate::value::{StagedKind, StagedOp};
+        let key = |args: &[Value]| -> Result<u64, RuntimeError> {
+            args.first()
+                .ok_or_else(|| RuntimeError::TypeError("Staged: missing key".to_string()))?
+                .as_u64()
+                .map_err(RuntimeError::TypeError)
+        };
+        let node_at = |args: &[Value], i: usize| -> Result<Arc<Mutex<StructData>>, RuntimeError> {
+            args.get(i).and_then(link_node).ok_or_else(|| {
+                RuntimeError::TypeError(format!("Staged.{method}() expects a Link"))
+            })
+        };
+        match method {
+            "delete" => {
+                let op = StagedOp { key: key(&args)?, kind: StagedKind::Delete(node_at(&args, 1)?) };
+                s.lock().unwrap().ops.push(op);
+                Ok(Value::Unit)
+            }
+            "insert" => {
+                let k = key(&args)?;
+                let value = args.into_iter().nth(1).unwrap_or(Value::Unit);
+                s.lock().unwrap().ops.push(StagedOp { key: k, kind: StagedKind::Insert(value) });
+                Ok(Value::Unit)
+            }
+            "relink" => {
+                let k = key(&args)?;
+                let node = node_at(&args, 1)?;
+                let to = node_at(&args, 2)?;
+                let f = args.into_iter().nth(3).unwrap_or(Value::Unit);
+                // The compiler refuses a literal that captured a link (E0963);
+                // this is the closure value it couldn't see into.
+                if matches!(f, Value::Closure { task_bound: true, .. }) {
+                    return Err(RuntimeError::Panic(
+                        "relink: the function captured a link or a `Local` box. Pass the link it \
+                         needs as `to`, which the apply checks [mem.racks/RK20]"
+                            .to_string(),
+                    ));
+                }
+                s.lock().unwrap().ops.push(StagedOp { key: k, kind: StagedKind::Relink { node, to, f } });
+                Ok(Value::Unit)
+            }
+            "append" => {
+                let Some(Value::Staged(other)) = args.into_iter().next() else {
+                    return Err(RuntimeError::TypeError("Staged.append() expects a Staged buffer".to_string()));
+                };
+                if Arc::ptr_eq(s, &other) {
+                    return Ok(Value::Unit);
+                }
+                let (rack_id, epoch, ops) = {
+                    let mut o = other.lock().unwrap();
+                    (o.rack_id, o.epoch, std::mem::take(&mut o.ops))
+                };
+                let mut me = s.lock().unwrap();
+                if rack_id != me.rack_id {
+                    return Err(RuntimeError::Panic(
+                        "append: the two buffers were made for different racks [mem.racks/RK21]".to_string(),
+                    ));
+                }
+                // The older of the two answers for both.
+                me.epoch = me.epoch.min(epoch);
+                me.ops.extend(ops);
+                Ok(Value::Unit)
+            }
+            "len" => Ok(Value::int(s.lock().unwrap().ops.len() as i64)),
+            _ => Err(RuntimeError::NoSuchMethod { ty: "Staged".to_string(), method: method.to_string() }),
+        }
+    }
+
+    /// `rack.apply(ops)` (mem.racks/RK18, RK19): sort by key, keeping the
+    /// recorded order for equal keys; inserts and relinks in that order; then
+    /// every delete. The deletes wait so that no slot this apply frees is
+    /// reused by it, no relink meets a half-deleted node, and an inserted
+    /// node's link to a dying one is nulled by the ordinary fixup.
+    fn apply_staged(
+        &mut self,
+        rack: &Arc<Mutex<RackData>>,
+        ops: &Arc<Mutex<crate::value::StagedData>>,
+    ) -> Result<Value, RuntimeError> {
+        use crate::value::StagedKind;
+        let (rack_id, epoch) = {
+            let r = rack.lock().unwrap();
+            (r.rack_id, r.epoch)
+        };
+        let mut recorded = {
+            let mut o = ops.lock().unwrap();
+            if o.rack_id != rack_id {
+                return Err(RuntimeError::Panic(
+                    "apply: this buffer was made for a different rack [mem.racks/RK21]".to_string(),
+                ));
+            }
+            if o.epoch != epoch {
+                return Err(RuntimeError::Panic(
+                    "apply: the rack deleted nodes after this buffer was made, so a link it holds \
+                     may name a freed node. Make the buffer after the last delete, or apply it \
+                     first [mem.racks/RK21]"
+                        .to_string(),
+                ));
+            }
+            std::mem::take(&mut o.ops)
+        };
+        // A stable sort keeps recording order among equal keys.
+        recorded.sort_by_key(|op| op.key);
+        let contains = |node: &Arc<Mutex<StructData>>| rack.lock().unwrap().index_of(node).is_some();
+        let doomed: std::collections::HashSet<usize> = recorded
+            .iter()
+            .filter_map(|op| match &op.kind {
+                StagedKind::Delete(n) if contains(n) => Some(crate::value::node_key(n)),
+                _ => None,
+            })
+            .collect();
+        let mut deletes = Vec::new();
+        for op in recorded {
+            match op.kind {
+                StagedKind::Insert(value) => {
+                    self.call_rack_method(rack, "insert", vec![value])?;
+                }
+                StagedKind::Relink { node, to, f } => {
+                    let alive = |n: &Arc<Mutex<StructData>>| {
+                        contains(n) && !doomed.contains(&crate::value::node_key(n))
+                    };
+                    if alive(&node) && alive(&to) {
+                        let place = crate::env::Slot::Var(Arc::new(Mutex::new(Value::Struct(Arc::clone(&node)))));
+                        let to = Value::Link { rack_id, node: to };
+                        self.call_closure(f, vec![Value::Struct(node), to.clone()], vec![Some(place), None])?;
+                    }
+                }
+                StagedKind::Delete(node) => deletes.push(node),
+            }
+        }
+        for node in deletes {
+            if contains(&node) {
+                crate::rack::delete_node(rack, &node);
+            }
+        }
+        Ok(Value::Unit)
     }
 
     /// `Link<T>` methods. Deliberately almost empty: a link's whole interface

@@ -101,6 +101,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
             captures.iter().for_each(|c| f(Named::Local(c.local_id)));
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
+        MirStmtKind::BindPlace { addr, .. } => f(Named::Local(*addr)),
         MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
         MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
@@ -120,7 +121,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(Named::Local(*local)),
+        | MirStmtKind::RcIncContents { local, .. } => f(Named::Local(*local)),
         MirStmtKind::ReleaseSlot { addr, .. } => f(Named::Local(*addr)),
         // Bookkeeping: an arm copies the value into the frame's unwind record
         // and nothing reads it there but a panic. Counted as a read, every
@@ -240,6 +241,7 @@ pub fn visit_stmt_use_locals_mut(
             }
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
+        MirStmtKind::BindPlace { addr, .. } => f(addr, UseKind::Value),
         MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
             f(closure, UseKind::Value)
         }
@@ -261,7 +263,7 @@ pub fn visit_stmt_use_locals_mut(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(local, UseKind::Value),
+        | MirStmtKind::RcIncContents { local, .. } => f(local, UseKind::Value),
         // The variable's storage: a `mutate` parameter's pointer, or a local a
         // closure reaches by address, which `addr_taken` keeps in memory. The
         // release reads what that storage holds, so loading the local first
@@ -356,6 +358,7 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
         | MirStmtKind::Phi { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::BindPlace { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
         | MirStmtKind::InterfaceBox { dst, .. } => Some(*dst),

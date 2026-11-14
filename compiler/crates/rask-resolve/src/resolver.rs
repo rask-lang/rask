@@ -803,7 +803,7 @@ impl Resolver {
                                     is_deleting: p.is_deleting,
                                 },
                                 p.ty.clone(),
-                                Span::new(0, 0),
+                                p.name_span,
                                 false,
                             )
                         })
@@ -1963,7 +1963,9 @@ impl Resolver {
                     is_deleting: param.is_deleting,
                 },
                 param.ty.clone(),
-                Span::new(0, 0),
+                // Where it's declared: a later pass tells a parameter from a
+                // local of the same name by it.
+                param.name_span,
                 false,
             );
             if let Err(e) = self.scopes.define(param.name.clone(), param_sym, Span::new(0, 0)) {
@@ -2120,6 +2122,8 @@ impl Resolver {
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
+                } else if value.is_some() && self.scopes.innermost_loop_is_comptime() {
+                    self.errors.push(ResolveError::break_value_from_comptime_for(stmt.span));
                 }
                 match value {
                     // `break x` reads either way, and the parser picks the value
@@ -2246,7 +2250,9 @@ impl Resolver {
             }
             StmtKind::ComptimeFor { binding, iter, body } => {
                 self.resolve_expr(iter);
-                self.scopes.push(ScopeKind::Block);
+                // A loop for `break` and `continue`: they act on the
+                // comptime loop (ctrl.comptime/CT70).
+                self.scopes.push(ScopeKind::ComptimeLoop);
                 let names = match binding {
                     ForBinding::Single(name) => vec![name.clone()],
                     ForBinding::Tuple(names) => names.clone(),
@@ -2564,7 +2570,14 @@ impl Resolver {
                         }
                     }
                 }
-                self.resolve_expr(object);
+                // `T.zero()`: a function the bounds on `T` require, called on
+                // the type parameter itself (`type.generics/GF7`). The name is
+                // a type here, so it has no value to resolve.
+                let names_type_param = matches!(&object.kind, ExprKind::Ident(n)
+                    if self.is_type_param(n) && self.scopes.lookup(n).is_none());
+                if !names_type_param {
+                    self.resolve_expr(object);
+                }
                 for arg in args {
                     self.resolve_expr(&arg.expr);
                 }
@@ -2854,7 +2867,7 @@ impl Resolver {
                                     is_deleting: false,
                         },
                         param.ty.clone(),
-                        expr.span,
+                        param.name_span,
                         false,
                     );
                     if let Err(e) = self.scopes.define(param.name.clone(), sym_id, expr.span) {
@@ -2864,9 +2877,12 @@ impl Resolver {
                 self.resolve_expr(body);
                 self.scopes.pop();
             }
-            ExprKind::Spawn { receiver, body, .. } => {
+            ExprKind::Spawn { receiver, args, body, .. } => {
                 if let Some(r) = receiver {
                     self.resolve_expr(r);
+                }
+                for a in args {
+                    self.resolve_expr(&a.expr);
                 }
                 self.resolve_expr(body);
             }

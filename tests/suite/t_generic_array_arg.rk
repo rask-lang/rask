@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic struct instantiated with a fixed-size array (#1869). The array had
+// no spelling in a layout key or a mangled name, so `Box<[i64; 3]>` got no
+// layout of its own and natively the build stopped with "field `v` holds 24
+// bytes but its slot is 8". Its methods shared the one-word body as well.
+
+struct Box<T> {
+    v: T
+    n: i64
+}
+
+extend Box<T> {
+    func first(self) -> T {
+        return self.v
+    }
+}
+
+func count<T>(b: Box<T>) -> i64 {
+    return b.n
+}
+
+test "a struct holding an array by type parameter" {
+    let b = Box(v: [1, 2, 3], n: 4)
+    assert b.n == 4
+    assert b.v[2] == 3
+    assert count(b) == 4
+}
+
+test "two lengths are two instantiations" {
+    let three = Box(v: [1, 2, 3], n: 3)
+    let four = Box(v: [7, 8, 9, 10], n: 4)
+    assert three.first()[2] == 3
+    assert four.first()[3] == 10
+    assert count(four) == 4
+}
+
+test "an array of strings" {
+    let s = Box(v: ["a", "b"], n: 1)
+    assert s.first()[1] == "b"
+}

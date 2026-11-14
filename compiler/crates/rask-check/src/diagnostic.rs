@@ -1687,6 +1687,23 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help(format!("`{}` works on a `T?` or a `T or E`; a plain value needs none of it", op))
             }
 
+            ReflectItemNotUnrolled { info, method, span } => {
+                let iterable = if *info == "ParamInfo" { "reflect.params<F>()" } else { "reflect.fields<T>()" };
+                Diagnostic::error(format!(
+                    "`{method}` on a `{info}` only answers inside a `comptime for` over it"
+                ))
+                    .with_code("E0966")
+                    .with_primary(*span, "this isn't a `comptime for` binding")
+                    .with_fix(format!(
+                        "loop with `comptime for x in {iterable}` and ask `x.{method}<…>()` on the binding"
+                    ))
+                    .with_why(
+                        "the answer is worked out while the compiler unrolls the loop, one \
+                         copy of the body per item; a value kept past that has no answer \
+                         left in it [std.reflect/R1]",
+                    )
+            }
+
             DynamicFieldNameNotComptime { span } => {
                 Diagnostic::error("the field name in `value.(…)` isn\'t known at compile time")
                     .with_code("E0385")
@@ -2661,6 +2678,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
             }
+            CloneHandle { ty, handle, span } => {
+                let label = if ty == handle {
+                    format!("a `{}` owns state the runtime frees, and it can't be copied", ty)
+                } else {
+                    format!("this holds a `{}`, which owns state the runtime frees and can't be copied", handle)
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0965")
+                    .with_primary(*span, label)
+                    .with_fix("move it, or borrow it where a copy was wanted")
+                    .with_why("a clone copies the handle's pointer, and then both copies would free the same block")
+            }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
                     .with_code("E0918")
@@ -2812,6 +2841,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, format!("`{}` takes no `self`", method))
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
+            }
+            InstanceCallOnType { ty, method, span } => {
+                Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
+                    .with_code("E0967")
+                    .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
+                    .with_fix(format!("call it on a value: `value.{}(…)`", method))
+                    .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")
             }
             IfWithoutElseValue { found, span } => {
                 Diagnostic::error("an `if` without `else` has no value".to_string())

@@ -891,6 +891,15 @@ impl TypeChecker {
 
         if method == "clone" && args.is_empty() {
             let progress = self.unify(&ty, &ret, span)?;
+            let settled = self.ctx.apply(&ty);
+            if let Some(handle) = self.types.uncloneable_handle(&settled) {
+                self.errors.push(TypeError::CloneHandle {
+                    ty: self.types.resolve_type_names(&settled).to_string(),
+                    handle: self.types.resolve_type_names(&handle).to_string(),
+                    span,
+                });
+                return Ok(progress);
+            }
             // A clone's result is its receiver's type, so unifying settles both.
             // But this arm answers before the `Var` handling further down, which
             // is what normally files a deferred constraint and records the
@@ -1893,6 +1902,17 @@ impl TypeChecker {
                 span,
             });
         };
+
+        // GF7: through the type, `T.zero()`, only a function without `self`;
+        // through a value, only a method with one.
+        let on_type = call_node.is_some_and(|n| self.type_param_static_calls.contains(&n));
+        let is_static = matches!(sig.self_param, rask_types::SelfParam::None);
+        if on_type && !is_static {
+            return Err(TypeError::InstanceCallOnType { ty: param, method, span });
+        }
+        if !on_type && is_static {
+            return Err(TypeError::StaticCallOnValue { ty: param, method, span });
+        }
 
         // The bound is only in scope while this body is checked, so the
         // labels' names are taken from it now.

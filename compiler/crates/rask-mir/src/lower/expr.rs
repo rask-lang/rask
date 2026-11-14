@@ -1734,7 +1734,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Task block — its body goes to the runtime as a carrying closure.
-            ExprKind::Spawn { target, body, .. } => self.lower_spawn(expr, *target, body),
+            ExprKind::Spawn { target, args, body, .. } => self.lower_spawn(expr, *target, args, body),
 
             // Cast
             ExprKind::Cast { expr: inner, ty } => self.lower_cast(expr.id, inner, ty),
@@ -2233,7 +2233,6 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: Some(result_local),
                 ensure_depth,
-                writeback_depth: self.pending_write_backs.len(),
             });
 
             for stmt in body {
@@ -2329,11 +2328,10 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 self.load_folded(&folded)
-            } else if let Some(fnval) = self
-                .ctx
-                .function_value(expr.id)
-                .and_then(|copy| self.lower_fn_as_value(&copy))
-            {
+            } else if let Some(fnval) = self.ctx.function_value(expr.id).and_then(|copy| {
+                let modes = self.param_modes_of(expr);
+                self.lower_fn_as_value(&copy, modes)
+            }) {
                 // Not a variable: a function's name used as a value. A generic
                 // one names the copy monomorphization made for this use.
                 Ok(fnval)
@@ -2540,7 +2538,7 @@ impl<'a> MirLowerer<'a> {
                     let lowered = self.lower_closure_expecting(
                         params, ret_ty.as_ref(), body,
                         carries, &expected, Some(a.expr.id),
-                        false,
+                        super::closures::TaskRole::NotTask,
                     )?;
                     let (op, mir_ty) = lowered;
                     self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
@@ -2927,22 +2925,6 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn lower_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Result<TypedOperand, LoweringError> {
-            // CT49: inside an unrolled `comptime for field in reflect.fields<T>()`
-            // body, `field` isn't a runtime value — it never got a local — so
-            // `field.name`/`field.serial_name`/... splice the loop's current
-            // FieldInfo directly instead of going through object lowering.
-            if let Some(name) = object.name() {
-                if let Some(op) = self.comptime_field_const(name, field) {
-                    return Ok(op);
-                }
-            }
-
-            // AN6/AN8: `field.get<A>().weight` — the attachment's value for
-            // one field, spliced. The annotation itself is never built.
-            if let Some(op) = self.comptime_annotation_const(expr, object, field)? {
-                return Ok(op);
-            }
-
             // Primitive type constants: i64.MAX, i32.MIN, etc.
             if let Some(name) = object.name() {
                 if let Some(val) = primitive_type_constant(name, field) {
@@ -4713,17 +4695,12 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Default: simple alias binding (Vec/Map element, ...)
-            // A `with v[i]` / `with m[k]` binding is a copy of the element, so
-            // it goes back into the collection when the body ends — normally or
-            // by `return`, `try`, `break` or `continue`. Without that, changes
-            // made through the binding are lost.
-            let writeback_mark = self.pending_write_backs.len();
+            // A `with v[i]` / `with m[k]` binding names the element where it
+            // sits, so a write through it is a write to the element.
             for binding in bindings {
                 // Reached through a field (`self.items[0]`) just as much as by
-                // bare name — the element is copied out either way. It is lent
-                // (`Vec_lend`/`Map_lend`): the binding holds the slot's own
-                // references until the write-back hands them back.
-                let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
+                // bare name.
+                let element = if let ExprKind::Index { object, index } = &binding.source.kind {
                     let map = match self.index_object_base(object).as_deref() {
                         Some("Vec") => Some(false),
                         Some("Map") => Some(true),
@@ -4741,44 +4718,24 @@ impl<'a> MirLowerer<'a> {
                     None
                 };
 
-                let (val, val_ty) = match &coll_writeback_info {
-                    Some((obj_op, idx_op, map, elem_ty)) => {
-                        let lent = self.builder.alloc_temp(elem_ty.clone());
-                        let lend = if *map { "Map_lend" } else { "Vec_lend" };
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: Some(lent),
-                            func: FunctionRef::internal(lend.to_string()),
-                            args: vec![obj_op.clone(), idx_op.clone()],
-                        }));
-                        (MirOperand::Local(lent), elem_ty.clone())
+                match element {
+                    Some((collection, at, map, elem_ty)) => {
+                        let local = self.builder.alloc_local(binding.name.clone(), elem_ty.clone());
+                        self.locals.insert(binding.name.clone(), (local, elem_ty));
+                        self.bind_element_in_place(local, collection, at, map);
                     }
-                    None => self.lower_expr(&binding.source)?,
-                };
-                let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: local,
-                    rvalue: MirRValue::Use(val),
-                }));
-
-                if let Some((collection, at, map, _)) = coll_writeback_info {
-                    self.pending_write_backs.push(super::PendingWriteBack {
-                        collection,
-                        at,
-                        value: local,
-                        map,
-                    });
+                    None => {
+                        let (val, val_ty) = self.lower_expr(&binding.source)?;
+                        let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
+                        self.locals.insert(binding.name.clone(), (local, val_ty));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Use(val),
+                        }));
+                    }
                 }
             }
-            let result = self.lower_block(body);
-            // The body's own end: write back, innermost first.
-            let opened = self.pending_write_backs.split_off(writeback_mark);
-            if self.builder.current_block_unterminated() {
-                for wb in opened.iter().rev() {
-                    self.emit_write_back(wb);
-                }
-            }
-            result
+            self.lower_block(body)
         }
 
     fn lower_assert(&mut self, condition: &Expr, message: Option<&Expr>) -> Result<TypedOperand, LoweringError> {
@@ -4970,117 +4927,6 @@ impl<'a> MirLowerer<'a> {
     // comptime for (CT48–CT54)
     // =================================================================
 
-    /// `object.field` where `object` is an active `comptime for` binding —
-    /// splice the loop's current FieldInfo member as a constant. Returns
-    /// `None` for anything else (not that binding, or not a FieldInfo member),
-    /// so the caller falls through to ordinary field-access lowering.
-    pub(super) fn comptime_field_const(&mut self, object_name: &str, field: &str) -> Option<TypedOperand> {
-        let fc = self
-            .comptime_for_bindings
-            .iter()
-            .rev()
-            .find(|(name, _)| name == object_name)?
-            .1
-            .clone();
-        Some(match field {
-            "name" => (MirOperand::Constant(MirConst::String(fc.name)), MirType::Buffer),
-            "type_name" => (MirOperand::Constant(MirConst::String(fc.type_name)), MirType::Buffer),
-            "serial_name" => (MirOperand::Constant(MirConst::String(fc.serial_name)), MirType::Buffer),
-            "offset" => (MirOperand::Constant(MirConst::Int(fc.offset as i64)), MirType::U64),
-            "size" => (MirOperand::Constant(MirConst::Int(fc.size as i64)), MirType::U64),
-            "is_public" => (MirOperand::Constant(MirConst::Bool(fc.is_public)), MirType::Bool),
-            "is_skipped" => (MirOperand::Constant(MirConst::Bool(fc.is_skipped)), MirType::Bool),
-            "has_default" => (MirOperand::Constant(MirConst::Bool(fc.has_default)), MirType::Bool),
-            _ => return None,
-        })
-    }
-
-    /// `binding.has<A>()` where `binding` is an active `comptime for` binding —
-    /// answered at compile time from the field's attachments
-    /// (type.annotations/AN6). Returns `None` for anything else so the caller
-    /// falls through to ordinary method dispatch.
-    pub(super) fn comptime_field_method_const(
-        &mut self,
-        object: &Expr,
-        method: &str,
-        type_args: &Option<Vec<TypeExpr>>,
-    ) -> Option<TypedOperand> {
-        let Some(object_name) = object.name() else { return None };
-        if method != "has" {
-            return None;
-        }
-        let annotation = type_args.as_ref()?.first()?.bare_name()?;
-        let fc = &self
-            .comptime_for_bindings
-            .iter()
-            .rev()
-            .find(|(name, _)| name == object_name)?
-            .1;
-        let has = fc.attrs.iter().any(|attr| attr.is(annotation));
-        Some((MirOperand::Constant(MirConst::Bool(has)), MirType::Bool))
-    }
-
-    /// `binding.get<A>().field` where `binding` is an active `comptime for`
-    /// binding — the attached annotation's value for `field`, spliced as a
-    /// constant (type.annotations/AN6). Nothing of the annotation reaches
-    /// MIR: there is no annotation value to build (AN8), only this projection.
-    ///
-    /// The attachment arrived complete — desugar filled the declared defaults
-    /// (`annotation_defaults`) — so this reads what's written and never looks
-    /// the declaration up. `Ok(None)` means "not this form", so the caller
-    /// falls through to ordinary field-access lowering; `Err` means it *was*
-    /// this form and something about it was wrong.
-    fn comptime_annotation_const(
-        &mut self,
-        _expr: &Expr,
-        object: &Expr,
-        field: &str,
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        let ExprKind::MethodCall { object: recv, method, type_args, .. } = &object.kind else {
-            return Ok(None);
-        };
-        if method != "get" {
-            return Ok(None);
-        }
-        let Some(binding) = recv.name() else { return Ok(None) };
-        let Some(annotation) = type_args.as_ref().and_then(|ta| ta.first()).and_then(TypeExpr::bare_name) else {
-            return Ok(None);
-        };
-        let Some((_, fc)) = self.comptime_for_bindings.iter().rev().find(|(n, _)| n == binding)
-        else {
-            return Ok(None);
-        };
-
-        let Some(attr) = fc.attrs.iter().find(|a| a.is(annotation)) else {
-            return Err(LoweringError::InvalidConstruct(format!(
-                "`{}` has no `@{}` to read `{}` from — guard the read with `comptime if {}.has<{}>()`",
-                fc.name, annotation, field, binding, annotation
-            )));
-        };
-        let Some(value) = attr.arg(field) else {
-            return Err(LoweringError::InvalidConstruct(format!(
-                "`@{}` on `{}` has no field `{}`",
-                annotation, fc.name, field
-            )));
-        };
-        // The attachment says `3`, not whether that's an i64, a u8 or an
-        // f64 — the declaration does. Not the checker's type for this node:
-        // inference has nothing to pin `get<A>()`'s result to when the read
-        // feeds an interpolation, and it stayed an open type variable there.
-        let ty = self
-            .ctx
-            .annotation_field_type(annotation, field)
-            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
-                "`@{}` declares no field `{}`", annotation, field
-            )))?;
-        annotation_const(value, &ty)
-            .map(|c| Some((MirOperand::Constant(c), ty)))
-            .ok_or_else(|| LoweringError::InvalidConstruct(format!(
-                "`@{}({}: {})` is not a constant this backend can splice",
-                annotation, field, value
-            )))
-    }
-
     /// Reject `value.(name)` where `name` isn't a field of `value`, when the
     /// struct is knowable here. Silent otherwise — an object whose type this
     /// pass can't pin down is lowered the way it always was.
@@ -5149,22 +4995,6 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // `field.name` inside an unrolled `comptime for` (CT49).
-            ExprKind::Field { object, field } => {
-                let Some(name) = object.name() else { return Ok(None) };
-                let Some((_, fc)) =
-                    self.comptime_for_bindings.iter().rev().find(|(n, _)| n == name)
-                else {
-                    return Ok(None);
-                };
-                match field.as_str() {
-                    "name" => Some(fc.name.clone()),
-                    "serial_name" => Some(fc.serial_name.clone()),
-                    "type_name" => Some(fc.type_name.clone()),
-                    _ => None,
-                }
-            }
-
             _ => None,
         })
     }
@@ -5203,11 +5033,6 @@ impl<'a> MirLowerer<'a> {
         if let Some(bare) = self.module_qualified_enum_receiver(object, method) {
             let receiver = Expr { id: object.id, span: object.span, kind: ExprKind::Ident(bare) };
             return self.lower_method_call(expr, &receiver, method, args, type_args);
-        }
-
-        // AN6: `field.has<A>()` on a comptime-for binding is a constant.
-        if let Some(r) = self.comptime_field_method_const(object, method, type_args) {
-            return Ok(r);
         }
 
         // `from.make<T>()` in a generator: a `T` built like a claim's input
@@ -5900,7 +5725,7 @@ impl<'a> MirLowerer<'a> {
                                         params, ret_ty.as_ref(), body,
                                         carries, &expected,
                                         Some(arg.expr.id),
-                                        false,
+                                        super::closures::TaskRole::NotTask,
                                     )?;
                                     let (op, mir_ty) = lowered;
                                     self.wrap_closure_arg(
@@ -5954,8 +5779,8 @@ impl<'a> MirLowerer<'a> {
                                     .first()
                                     .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                                     .map(|ty| {
-                                        let head = self.head_name(&ty);
-                                        crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                                        let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                                        crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                                     })
                                     .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
@@ -6248,7 +6073,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 let carries = self.closure_carries(Some(arg.expr.id));
                 let (op, mir_ty) = self.lower_closure_expecting(
-                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), false,
+                    params, ret_ty.as_ref(), body, carries, &expected, Some(arg.expr.id), super::closures::TaskRole::NotTask,
                 )?;
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
@@ -6430,8 +6255,8 @@ impl<'a> MirLowerer<'a> {
                 .first()
                 .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
                 .map(|ty| {
-                    let head = self.head_name(&ty);
-                    crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                    let is_box = self.head_name(&ty).as_deref() == Some("Shared");
+                    crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
                 })
                 .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));
@@ -6453,9 +6278,9 @@ impl<'a> MirLowerer<'a> {
         // the slot holds). `all_args[0]` is the receiver.
         let slot_args: &[(usize, usize)] = match qualified_name.as_str() {
             "Vec_push" | "Vec_try_push" | "Vec_remove_item" | "Vec_contains" => &[(0, 0)],
-            "Vec_replace" | "Vec_insert" | "Vec_write_back" => &[(1, 0)],
-            "Map_insert" | "Map_set" | "Map_write_back" => &[(0, 0), (1, 1)],
-            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_lend"
+            "Vec_replace" | "Vec_insert" => &[(1, 0)],
+            "Map_insert" | "Map_set" => &[(0, 0), (1, 1)],
+            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_slot"
             | "Map_borrow_elem" => &[(0, 0)],
             "Sender_send" | "Sender_try_send" | "Rack_insert" => &[(0, 0)],
             "Shared_set" | "Shared_replace" | "Mutex_set" | "Mutex_replace" | "Cell_set"
@@ -6708,12 +6533,11 @@ impl<'a> MirLowerer<'a> {
         } else {
             None
         }.unwrap_or_else(|| self
-            // Qualified first. `Type_method` names exactly one function;
-            // the bare method name is whatever else in the program shares it,
-            // so consulting it first let an unrelated `join` answer for
-            // `Handle_join`.
+            // `Type_method` names exactly one function. The bare method name is
+            // whatever free function shares it, so it is never asked: when the
+            // stub's return names `T`, a program's own `func join(n) -> i64`
+            // typed `h.join()` as an `i64` and the `!` after it segfaulted.
             .sig_ret_ty(&qualified_name)
-            .or_else(|| self.sig_ret_ty(&method))
             .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
 
         // A method on a generic type is lowered once, so its signature says `T`
@@ -7375,7 +7199,7 @@ impl<'a> MirLowerer<'a> {
     /// The answers come from `rask_check::reflect` so the interpreter folds the
     /// same ones. Where neither backend can answer — anything needing layout —
     /// it says so instead of picking a number.
-    fn try_lower_reflect_call(
+    pub(super) fn try_lower_reflect_call(
         &mut self,
         object: &Expr,
         method: &str,
@@ -7795,10 +7619,14 @@ impl<'a> MirLowerer<'a> {
     /// Which parameters of the function value `callee` is are `take`, from the
     /// checker's type for it. A call through it hands those arguments over.
     fn taken_params(&self, callee: &Expr) -> Vec<bool> {
-        match self.ctx.lookup_raw_type(callee.id).as_deref() {
-            Some(rask_types::Type::Fn { params, .. }) => {
-                params.iter().map(|p| p.mode == rask_ast::ty::ParamMode::Take).collect()
-            }
+        self.param_modes_of(callee).into_iter().map(|m| m == rask_ast::ty::ParamMode::Take).collect()
+    }
+
+    /// The parameter modes of the function value `expr` is, from the
+    /// checker's type for it.
+    pub(super) fn param_modes_of(&self, expr: &Expr) -> Vec<rask_ast::ty::ParamMode> {
+        match self.ctx.lookup_raw_type(expr.id).as_deref() {
+            Some(rask_types::Type::Fn { params, .. }) => params.iter().map(|p| p.mode).collect(),
             _ => Vec::new(),
         }
     }
@@ -10615,7 +10443,7 @@ impl<'a> MirLowerer<'a> {
         use rask_check::reflect;
         if !matches!(
             method,
-            "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants"
+            "methods" | "has_method" | "has_field" | "interfaces" | "implements" | "variants" | "params"
         ) {
             return Ok(None);
         }
@@ -10642,6 +10470,22 @@ impl<'a> MirLowerer<'a> {
                     })
                     .collect();
                 self.lower_info_vec(rask_types::LangItem::MethodInfo, rows)?
+            }
+            "params" => {
+                use rask_ast::ty::ParamMode;
+                let rows = reflect::params(types, ty)
+                    .map_err(refused)?
+                    .into_iter()
+                    .map(|p| {
+                        vec![
+                            ("index", MirOperand::Constant(MirConst::Int(p.index as i64))),
+                            ("type_name", MirOperand::Constant(MirConst::String(p.type_name))),
+                            ("is_mutate", MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Mutate))),
+                            ("is_take", MirOperand::Constant(MirConst::Bool(p.mode == ParamMode::Take))),
+                        ]
+                    })
+                    .collect();
+                self.lower_info_vec(rask_types::LangItem::ParamInfo, rows)?
             }
             "has_method" => {
                 let names: Vec<String> =
@@ -10892,7 +10736,7 @@ impl<'a> MirLowerer<'a> {
                     field: None,
                 }));
             }
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result, for_hand_off: false }));
             return (MirOperand::Local(result), kept_ty);
         }
         // A narrower element is a scalar and owns nothing.

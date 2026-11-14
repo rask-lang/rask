@@ -1,0 +1,9 @@
+error[E0404]: `take` on `u64` takes nothing — a Copy value is copied, not given
+  --> docs/book/errors/09-passing-values/take_on_copy.rk:6:40
+    |
+  6 | func walk_to(mutate world: World, take room: u64) {
+    |                                        ^^^^ `room` is a `u64`, and the caller keeps theirs
+    = fix: drop the keyword: `room: u64`
+    = why: a mode marker is read at the call site to know what happens to the
+          argument, so one that says the wrong thing is worse than none
+          [mem.parameters/PM6c]

@@ -115,6 +115,8 @@ pub struct StdlibMethodMeta {
     /// Declared `@moves_out`: the result is an element taken out of the
     /// receiver, now the caller's.
     pub moves_out: bool,
+    /// `@places_node`: the last argument is a node bound for a rack.
+    pub places_node: bool,
 }
 
 /// Cached metadata derived from StubRegistry.
@@ -172,6 +174,7 @@ fn build_cache() -> MetadataCache {
                 take_self: method.take_self,
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
                 moves_out: method.effects.moves_out,
+                places_node: method.effects.places_node,
             });
         }
     }
@@ -189,6 +192,7 @@ fn build_cache() -> MetadataCache {
             take_self: false,
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
             moves_out: func.effects.moves_out,
+            places_node: func.effects.places_node,
         });
     }
 
@@ -289,22 +293,6 @@ enum Internal {
     /// Not a method at all — a static constructor, a raw pointer. No receiver
     /// to borrow, nothing kept, nothing pointed into.
     NoReceiver,
-    /// An element read out of its slot to be written back later by the
-    /// matching `WritesBack` — `with v[i] as e`, `for mutate e in v`,
-    /// `v[i].field = x`.
-    ///
-    /// The frame holds the slot's own references in between, so what comes
-    /// back is the frame's like a fresh value: a body that replaces the
-    /// binding releases the old one, and the write-back hands the binding's
-    /// references back to the slot. Borrows its receiver, keeps nothing.
-    /// Answering "a view" instead is what took a reference too many for a
-    /// `with` over a string element (#1431) and released nothing a `for
-    /// mutate` body replaced.
-    LendsElement,
-    /// Puts back what `LendsElement` took out: the slot keeps the last
-    /// argument and releases nothing. Borrows its receiver and only reads the
-    /// index or key.
-    WritesBack,
 }
 
 /// Every name MIR mints that looks like a stdlib method but isn't one.
@@ -330,6 +318,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_index", Internal::SameAs("Vec_get")),
     ("Vec_borrow_elem", Internal::SameAs("Vec_get")),
     ("Map_borrow_elem", Internal::SameAs("Map_get")),
+    // The address of an element, for a `with` or `for mutate` binding or a
+    // field write that works on the element where it sits (`BindPlace`).
+    ("Vec_slot", Internal::SameAs("Vec_get")),
+    ("Map_slot", Internal::SameAs("Map_get")),
 
     // A `with` block on a `Shared`: three strategies, one declared accessor.
     ("Cell_acquire", Internal::SameAs("Shared_read")),
@@ -358,11 +350,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
     ("Map_set", Internal::SameAs("Map_insert")),
 
-    // ── Take an element out for a body, and put it back ──────────
-    // Putting a `with` binding back is not `v[i] = x`: the binding *is* what
-    // the slot held, so there is nothing to release. It has its own spelling
-    // rather than being recognised after the fact.
-    ("Vec_lend", Internal::LendsElement),
     // `for x in v.take_all()` moves each element out of the vector `take_all`
     // returned: a `remove` that zeroes the slot instead of shifting.
     ("Vec_move_out", Internal::SameAs("Vec_remove")),
@@ -370,9 +357,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // field's value, handed to the binding. Argument zero is the field's
     // address, borrowed; nothing in the slot is released.
     ("Field_take", Internal::SameAs("Vec_remove")),
-    ("Map_lend", Internal::LendsElement),
-    ("Vec_write_back", Internal::WritesBack),
-    ("Map_write_back", Internal::WritesBack),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
@@ -449,13 +433,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_free", Internal::ConsumesReceiver),
     ("Map_free", Internal::ConsumesReceiver),
     ("Rack_free", Internal::ConsumesReceiver),
-    ("Random_free", Internal::ConsumesReceiver),
-
-
-    // ── `Atomic<T>` ─────────────────────────────────────────────
-    // stdlib/sync.rk declares its methods. The release is the one spelling it
-    // doesn't: the frame frees an atomic nobody consumed.
-    ("Atomic_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
     // is gone as far as this frame is concerned, and the storage goes with it
     // if nobody else holds one (#1099).
@@ -475,7 +452,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // it — a cstring is released by going out of scope, never by a call the
     // user writes — so this is the only place its name appears beside the
     // `CTORS` line that emits it (#949).
-    ("cstring_free", Internal::ConsumesReceiver),
     // The free for an array receiver's view (`rask_vec_view`), emitted by the
     // drop pass from its `CTORS` line.
     ("Vec_free_view", Internal::ConsumesReceiver),
@@ -529,9 +505,7 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::SameAs(decl)) => return lookup(decl),
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
-        | Some(Internal::NoReceiver)
-        | Some(Internal::LendsElement)
-        | Some(Internal::WritesBack) => return None,
+        | Some(Internal::NoReceiver) => return None,
         None => {}
     }
     // A generic method reaches MIR with its type argument welded on —
@@ -707,9 +681,6 @@ mod internal_spelling_tests {
 /// counts the receiver as argument zero, so a declared parameter sits one
 /// further along on a method.
 pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
-    if let Some(index) = written_back_at(qualified_name) {
-        return arg_index == index;
-    }
     // One answer to "does the caller still own it", from `argument_mode`. This
     // used to read the declaration itself and skip `RUNTIME_FUNCTIONS`, so a
     // body whose only use of a parameter was `rask_free(p)` read as borrowing
@@ -813,14 +784,6 @@ fn number_rendering_spelling(base: &str) -> Option<Internal> {
     known.then_some(Internal::FreshFromReceiver)
 }
 
-/// For a write-back, the position of the value it hands to the slot:
-/// `(collection, index or key, value)`.
-pub fn written_back_at(qualified_name: &str) -> Option<usize> {
-    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-    let base = head.split('$').next().unwrap_or(head);
-    matches!(internal_spelling(base), Some(Internal::WritesBack)).then_some(2)
-}
-
 /// Runtime functions lowering calls by their own names, with no stdlib
 /// declaration behind them: which arguments each gives away, by position. The
 /// rest it only reads.
@@ -864,6 +827,19 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     ("rask_closure_refuse_crossing", &[]),
 ];
 
+/// The release of the handle a stdlib call hands back, when its declared
+/// return type is a handle that frees itself (`@handle(release: "…")`) and
+/// isn't a container, whose free also walks its elements: `Random.new()`,
+/// `Rack.staged()`, `Atomic.new(v)`. The caller owns what comes back.
+pub fn fresh_handle_release(qualified_name: &str) -> Option<&'static str> {
+    let meta = declared(qualified_name)?;
+    let head = meta.ret_ty.last_segment()?;
+    if matches!(head, "Vec" | "Map" | "Rack") {
+        return None;
+    }
+    crate::handles::declared_release(head)
+}
+
 /// What a call does with the argument at `arg_index`, by its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgMode {
@@ -905,10 +881,7 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
     }
     match internal_spelling(base)? {
         Internal::SameAs(_) => None,
-        Internal::FreshFromReceiver | Internal::NoReceiver | Internal::LendsElement => {
-            Some(ArgMode::Lent)
-        }
-        Internal::WritesBack => Some(mode(Some(arg_index) == written_back_at(base))),
+        Internal::FreshFromReceiver | Internal::NoReceiver => Some(ArgMode::Lent),
         // A free gives argument zero away.
         Internal::ConsumesReceiver => Some(mode(arg_index == 0)),
     }
@@ -927,12 +900,11 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
 ///
-/// `rask_closure_refuse_crossing` is the check a task block makes of each
-/// closure value it captures: it reads the closure's header and hands it back.
+/// A runtime function in `RUNTIME_FUNCTIONS` that gives nothing away keeps
+/// nothing either, so it answers from that list rather than from this one.
 const BORROWS_ITS_CALLBACK: &[&str] = &[
     "Vec_sort_by",
     "Vec_sort_by_keys",
-    "rask_closure_refuse_crossing",
 ];
 
 /// Does this call use its callback up before returning?
@@ -940,6 +912,7 @@ pub fn borrows_its_callback(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     BORROWS_ITS_CALLBACK.contains(&base)
+        || RUNTIME_FUNCTIONS.iter().any(|(n, gives)| *n == base && gives.is_empty())
 }
 
 /// Does this call take its receiver away — a `take self` method, or one of the
@@ -977,7 +950,7 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     let base = head.split('$').next().unwrap_or(head);
     matches!(
         internal_spelling(base),
-        Some(Internal::FreshFromReceiver | Internal::LendsElement | Internal::WritesBack)
+        Some(Internal::FreshFromReceiver)
     )
 }
 

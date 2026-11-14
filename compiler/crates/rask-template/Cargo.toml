@@ -1,0 +1,12 @@
+[package]
+name = "rask-template"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+rask-layout = { path = "../rask-layout" }
+rask-check = { path = "../rask-check" }
+rask-mono = { path = "../rask-mono" }

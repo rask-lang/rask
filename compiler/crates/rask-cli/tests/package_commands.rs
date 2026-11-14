@@ -798,3 +798,22 @@ fn migrate_refuses_a_manifest_that_does_not_load() {
     assert!(run.stderr.contains("package.version"), "{:?}", run);
     assert_eq!(dir.read("rask.toml"), broken);
 }
+
+// `check --json` on one file of a package places an error in another file
+// in that file. It counted every span against the named file's text, so an
+// error on line 3 of `b.rk` came out as line 5 of `a.rk`, quoting a line of
+// `a.rk` that had nothing wrong with it.
+#[test]
+fn check_json_places_an_error_in_the_file_it_is_in() {
+    let tmp = TempDir::new("json_file");
+    let dir = tmp.path();
+    write_package(dir, "json_file");
+    fs::write(dir.join("a.rk"), "func a_one() -> i64 {\n    return 1\n}\n\nfunc a_two() -> i64 {\n    return 2\n}\n").unwrap();
+    fs::write(dir.join("b.rk"), "func main() {\n    println(\"{a_one()}\")\n    println(\"{missing()}\")\n}\n").unwrap();
+    let run = rask(dir, &["check", "--json", "a.rk"]);
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).expect("one JSON report");
+    let location = &report["diagnostics"][0]["location"];
+    assert!(location["file"].as_str().unwrap().ends_with("b.rk"), "{location}");
+    assert_eq!(location["line"], 3, "{location}");
+    assert_eq!(location["source_line"], "    println(\"{missing()}\")", "{location}");
+}

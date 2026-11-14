@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A big maze under the cellar, carved one row per thread-pool job.
+//
+// The game doesn't need this: a few hundred rooms take no time on one core.
+// It's here to show the thread pool doing work that is all computing and no
+// waiting, which is the work it is for.
+
+import memory.Link
+import async.Handles
+import thread.ThreadPool
+
+// One row of the maze: which cells open to the east, and which to the south.
+public struct MazeRow {
+    public east: Vec<bool>
+    public south: Vec<bool>
+}
+
+// Each cell opens east or south, never both, picked by where it is. Every
+// cell then has one way towards the top-left corner, so the maze is one
+// piece with no loops.
+func carve_row(y: u64, width: u64, height: u64, seed: u64) -> MazeRow {
+    mut east = Vec.new()
+    mut south = Vec.new()
+    for x in 0..width {
+        let last_col = x == width - 1
+        let last_row = y == height - 1
+        let coin = ((x * 7919) ^ (y * 104729) ^ seed) % 2 == 0
+        let go_east = !last_col && (last_row || coin)
+        east.push(go_east)
+        south.push(!last_row && !go_east)
+    }
+    return MazeRow(east, south)
+}
+
+// Runs in the caller's `using ThreadPool`.
+public func carve(width: u64, height: u64, seed: u64) -> Vec<MazeRow> {
+    mut jobs = Handles<MazeRow>.new()
+    ensure jobs.detach()
+    for y in 0..height {
+        jobs.add(ThreadPool.spawn { carve_row(y, width, height, seed) })
+    }
+    mut rows = Vec.new()
+    for r in jobs.join_all() {
+        rows.push(r!)
+    }
+    return rows
+}
+
+// Rooms only exist on this side: the jobs above hand back plain rows, and a
+// rack is built here from them, since a link can't cross between threads.
+public func add_maze(mutate world: World, rows: Vec<MazeRow>, below: Link<Room>) -> void {
+    let height = rows.len()
+    if height == 0 {
+        return
+    }
+    let width = rows[0].east.len()
+    mut cells: Vec<Link<Room>> = Vec.new()
+    for y in 0..height {
+        for x in 0..width {
+            cells.push(world.add_room("Maze {x},{y}", "Damp stone passages, all alike."))
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let here = cells[y * width + x]
+            if rows[y].east[x] {
+                world.connect(here, Direction.East, cells[y * width + x + 1])
+            }
+            if rows[y].south[x] {
+                world.connect(here, Direction.South, cells[(y + 1) * width + x])
+            }
+        }
+    }
+    world.connect(below, Direction.Down, cells[0])
+}
+
+test "every room of the maze can be reached from its entrance" {
+    mut w = default_world()
+    using ThreadPool {
+        let rows = carve(12, 9, 42)
+        add_maze(mutate w, rows, w.room("Tunnel")!)
+    }
+    // Walk from the first cell along every open exit.
+    mut seen: Set<string> = Set.new()
+    mut to_visit: Vec<Link<Room>> = [w.room("Maze 0,0")!]
+    while to_visit.pop()? as r {
+        if !seen.insert(r.name) {
+            continue
+        }
+        for e in r.exits {
+            if e.to? as next {
+                if next.name.starts_with("Maze") {
+                    to_visit.push(next)
+                }
+            }
+        }
+    }
+    assert seen.len() == 12 * 9
+}

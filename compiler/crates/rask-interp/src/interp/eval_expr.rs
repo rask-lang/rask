@@ -1228,6 +1228,16 @@ impl Interpreter {
                     }
                     None => object,
                 };
+                // GF7: `T.zero()` on a type parameter is the same call on the
+                // type the running body was instantiated with.
+                let instantiated;
+                let object = match self.type_param_receiver(object) {
+                    Some(concrete) => {
+                        instantiated = concrete;
+                        &instantiated
+                    }
+                    None => object,
+                };
                 if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One
@@ -1345,7 +1355,7 @@ impl Interpreter {
                             let is_module = ModuleKind::from_name(name).is_some();
                             if is_static && has_body && !is_module {
                                 let (arg_vals, places) = self.eval_call_args(args)?;
-                                let generics = self.call_generics(expr.id);
+                                let generics = self.static_call_generics(expr.id, object, method);
                                 let callee = method_fn.name.clone();
                                 self.lend_places(&callee, places);
                                 let result = self.call_function(method_fn, arg_vals, generics);
@@ -1507,6 +1517,34 @@ impl Interpreter {
                             };
                             return Ok(self.annotation_record(&annotation, &attr.clone()));
                         }
+                    }
+                }
+
+                // `param.is<T>()` on a reflect ParamInfo: the parameter's
+                // checked type against T, as native folds it.
+                if let Value::Struct(s) = &receiver {
+                    let param_ty = {
+                        let guard = s.lock().unwrap();
+                        match (guard.name.as_str(), guard.fields.get("__type")) {
+                            ("ParamInfo", Some(Value::ReflectedType(t))) => Some(t.clone()),
+                            _ => None,
+                        }
+                    };
+                    if let (Some(param_ty), true) = (param_ty, method == "is") {
+                        let Some(candidate) = type_args.as_ref().and_then(|ta| ta.first()) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(
+                                    "`param.is<T>()` needs the type it's asking about".into(),
+                                ),
+                                expr.span,
+                            ));
+                        };
+                        let candidate = self.resolve_type_param(candidate);
+                        return Ok(Value::Bool(rask_check::reflect::param_is(
+                            &self.types,
+                            &param_ty,
+                            &candidate,
+                        )));
                     }
                 }
 
@@ -2536,8 +2574,25 @@ impl Interpreter {
 
             // A task block: build its body as the carrying closure it is
             // underneath, and hand that to the task.
-            ExprKind::Spawn { target, body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // A task that borrows its frame (conc.async/S5) runs right
+                // here, now. The checker made sure nothing beside it touches
+                // what it writes, so running it first gives the answer every
+                // schedule gives, and the interpreter is the reference.
+                if !self.escaping_closures.contains(&body.id) {
+                    return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+                // `requires_pool: false` with no pool runs here too (S2).
+                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
+                    let requires = match args.first() {
+                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                        None => true,
+                    };
+                    if !requires {
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
                     rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),
@@ -3313,93 +3368,6 @@ pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
         Some(Value::String(text)) => text.lock().unwrap().clone(),
         _ => "field".to_string(),
     }
-}
-
-/// AN6: a `get<A>()` read that one iteration of a `comptime for` keeps, on an
-/// item that doesn't carry `A`. The annotation, the field read off it, and
-/// where.
-///
-/// Native unrolls the loop, drops the branch each `comptime if` rules out and
-/// rejects any read left over, whether or not anything would reach it at run
-/// time. The interpreter walks the loop instead, so a plain `if f.has<A>()`
-/// kept it from ever arriving at the read and the program ran here and failed
-/// to build natively (#1291). Asking before the iteration runs gives the same
-/// answer as unrolling: `comptime if` decides with the same rules
-/// (`rask_ast::comptime_if`), and every other statement is kept.
-pub(super) fn unguarded_annotation_read(
-    body: &[rask_ast::stmt::Stmt],
-    binding: &str,
-    attrs: &[rask_ast::attr::Attr],
-) -> Option<(String, Option<String>, rask_ast::Span)> {
-    use rask_ast::comptime_if;
-    use rask_ast::stmt::{Stmt, StmtKind};
-    use rask_ast::visit::{visit_body, Visit};
-    use rask_ast::Span;
-
-    struct Reads<'b> {
-        binding: &'b str,
-        attrs: &'b [rask_ast::attr::Attr],
-        found: Option<(String, Option<String>, Span)>,
-    }
-
-    /// `binding.<method><A>()`: the annotation it names.
-    fn names_annotation<'e>(expr: &'e Expr, binding: &str, want: &str) -> Option<&'e str> {
-        let ExprKind::MethodCall { object, method, type_args, .. } = &expr.kind else {
-            return None;
-        };
-        if method != want || object.name() != Some(binding) {
-            return None;
-        }
-        type_args.as_ref()?.first()?.bare_name()
-    }
-
-    fn carries(attrs: &[rask_ast::attr::Attr], annotation: &str) -> bool {
-        attrs.iter().any(|a| a.is(annotation))
-    }
-
-    impl<'a> Visit<'a> for Reads<'_> {
-        fn stmt(&mut self, stmt: &'a Stmt) -> bool {
-            if self.found.is_some() {
-                return false;
-            }
-            let StmtKind::Comptime(stmts) = &stmt.kind else { return true };
-            let Some((cond, then_branch, else_branch)) = comptime_if::parts(stmts) else {
-                return true;
-            };
-            let (binding, attrs) = (self.binding, self.attrs);
-            let taken = comptime_if::decide(cond, &mut |call| {
-                names_annotation(call, binding, "has").map(|a| carries(attrs, a))
-            });
-            match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
-                Some(kept) => {
-                    visit_body(kept, self);
-                    false
-                }
-                None => true,
-            }
-        }
-
-        fn expr(&mut self, expr: &'a Expr) -> bool {
-            if self.found.is_some() {
-                return false;
-            }
-            let (call, field) = match &expr.kind {
-                ExprKind::Field { object, field } => (&**object, Some(field.clone())),
-                _ => (expr, None),
-            };
-            if let Some(annotation) = names_annotation(call, self.binding, "get") {
-                if !carries(self.attrs, annotation) {
-                    self.found = Some((annotation.to_string(), field, expr.span));
-                }
-                return false;
-            }
-            true
-        }
-    }
-
-    let mut reads = Reads { binding, attrs, found: None };
-    visit_body(body, &mut reads);
-    reads.found
 }
 
 impl Interpreter {

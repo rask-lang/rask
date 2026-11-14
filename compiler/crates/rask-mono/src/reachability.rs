@@ -879,6 +879,12 @@ impl<'a> Monomorphizer<'a> {
                     ret: Box::new(Self::nameable_type(ret, types)?),
                 })
             }
+            // `Box<[i64; 3]>.first()` returns 24 bytes; a shared body sized
+            // for a word read past the value.
+            Type::Array { elem, len } => Some(Type::Array {
+                elem: Box::new(Self::nameable_type(elem, types)?),
+                len: *len,
+            }),
             Type::None | Type::Unit => Some(ty.clone()),
             _ => None,
         }
@@ -1189,6 +1195,12 @@ impl<'a> Monomorphizer<'a> {
 
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
+        // A template instance written out as a plain function of its own
+        // (`rask-template`) is that function: `gather$Moving`, not `gather`
+        // at `Moving`, and `Box_names$Pair` for a method (ctrl.comptime/CT50).
+        if !type_args.is_empty() && (self.fn_table.contains_key(&key) || self.method_table.contains_key(&key)) {
+            return self.enqueue(key, Vec::new());
+        }
         if self.seen.contains_key(&key) {
             return;
         }

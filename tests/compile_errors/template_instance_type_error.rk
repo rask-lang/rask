@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a template whose copy for one instance doesn't type-check
+// (ctrl.comptime/CT50). The body was checked once with `v.(f.name)` typed as
+// nothing, so writing an integer into a string field compiled.
+import std.reflect
+
+struct Point {
+    x: i64
+    label: string
+}
+
+func zero_all<T>(mutate v: T) {
+    comptime for f in reflect.fields<T>() {
+        // ERROR: `label` is a `string` in `zero_all<Point>` [E0308]
+        v.(f.name) = 0
+    }
+}
+
+func main() {
+    mut p = Point(x: 1, label: "a")
+    zero_all(mutate p)
+    println("{p.x}")
+}

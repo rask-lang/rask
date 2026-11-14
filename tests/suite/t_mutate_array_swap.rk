@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A swap through two `mutate` arrays. Natively `let t = a` bound the caller's
+// slot rather than copying it, so `a = b` changed what `t` read and the swap
+// gave `b, b` (#1877). It still leaks: the caller never releases a parameter
+// its callee moved out of and refilled (#1885), tracked in known_leaks.txt.
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func swap(mutate a: [string; 2], mutate b: [string; 2]) {
+    let t = a
+    a = b
+    b = t
+}
+
+test "swapping two mutate arrays through a local" {
+    mut a = [mk(3), mk(4)]
+    mut b = [mk(5), mk(6)]
+    swap(mutate a, mutate b)
+    assert a[0] == mk(5)
+    assert b[1] == mk(4)
+}

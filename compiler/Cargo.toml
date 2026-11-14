@@ -12,6 +12,7 @@ members = [
     "crates/rask-comptime",
     "crates/rask-ownership",
     "crates/rask-mono",
+    "crates/rask-template",
     "crates/rask-mir",
     "crates/rask-miri",
     "crates/rask-codegen",

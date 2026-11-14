@@ -2150,6 +2150,20 @@ impl TypeChecker {
                             self.ctx.default_var_to(id, Type::Never);
                         }
                     }
+                } else if self.tail_fills_error_slot(&inferred_ret, &closure_return_type) {
+                    // A `try` in the body made the return `T or E` (GC7), and
+                    // the body's own value is the `T`. That's a `return v`
+                    // through the success side, so it coerces the way one
+                    // would. Unified instead, `i64` met `? or E`, failed in
+                    // silence, and left `?` open: `|| try parse(s)` was "type
+                    // is still open", and the same block under `spawn` crashed.
+                    self.coerce_into_node(
+                        CoercionSite::Return,
+                        inferred_ret.clone(),
+                        closure_return_type.clone(),
+                        Some(body.id),
+                        body.span,
+                    );
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
@@ -2187,7 +2201,26 @@ impl TypeChecker {
 
             // A task block. Its value is the task's result, so the expression
             // is a `Handle` of whatever the block produces (conc.async/H5).
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
+                // `ThreadPool.spawn(requires_pool: false) { … }` (conc.async/S2):
+                // one flag, and only on the pool form.
+                let takes_flag = matches!(target, rask_ast::expr::SpawnTarget::Pool);
+                for (i, a) in args.iter().enumerate() {
+                    let ok_label = a.name.as_deref().is_none_or(|l| l == "requires_pool");
+                    if !takes_flag || !ok_label || i > 0 {
+                        self.errors.push(TypeError::ArgPlacement {
+                            callee: target.spelling().to_string(),
+                            problem: super::errors::ArgProblem::UnknownLabel(
+                                a.name.clone().unwrap_or_else(|| "_".to_string()),
+                            ),
+                            params: Some(if takes_flag { vec!["requires_pool".to_string()] } else { Vec::new() }),
+                            span: a.expr.span,
+                        });
+                        continue;
+                    }
+                    let ty = self.infer_expr(&a.expr);
+                    self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, ty, a.expr.span));
+                }
                 // What the block captures, and whether any of it may not cross
                 // to another task, is the ownership pass's to answer: it knows
                 // each closure's captures (`check_task_crossing`).
@@ -4081,7 +4114,11 @@ impl TypeChecker {
         let on_value = Self::root_ident_name(object).is_some_and(|root| {
             self.lookup_local(&root).is_some() && self.types.module_named(&root).is_none()
         }) || !matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. });
-        self.note_method_call(call_id, span, on_value);
+        let on_type = matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. })
+            && object.name().is_some_and(|n| {
+                self.lookup_local(n).is_none() && self.types.get_type_id(n).is_some()
+            });
+        self.note_method_call(call_id, span, on_value, on_type);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
@@ -4181,6 +4218,26 @@ impl TypeChecker {
                     });
                     return ret_ty;
                 }
+            }
+        }
+
+        // GF7: `T.zero()` calls a function `T`'s bounds require on the type
+        // parameter itself. Resolved like a method on a `T` value: through the
+        // bounds here, and per instance once `T` is known.
+        if let ExprKind::Ident(name) = &object.kind {
+            if self.lookup_local(name).is_none() && self.types.is_type_param_in_scope(name) {
+                self.type_param_static_calls.insert(call_id);
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let ret_ty = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedNamed(name.clone()),
+                    method: method.to_string(),
+                    args: arg_types,
+                    ret: ret_ty.clone(),
+                    span,
+                    call_node: Some(call_id),
+                });
+                return ret_ty;
             }
         }
 
@@ -4494,6 +4551,9 @@ impl TypeChecker {
         }
 
         let obj_ty_raw = self.infer_expr(object);
+        if matches!(method, "has" | "is") {
+            self.check_unrolled_reflect_item(object, &obj_ty_raw, method, span);
+        }
         // A mutating method on a field or element of a binding mutates the
         // binding: `b.items.push(2)` on a `let b`, `v[0].bump()` on a
         // read-only parameter. Only a bare receiver was checked, so a `let`
@@ -5345,13 +5405,20 @@ impl TypeChecker {
     /// names the annotation instead of blaming a missing method on a value that
     /// was never going to exist.
     fn annotation_projection_type(&mut self, object: &Expr, field: &str, span: Span) -> Option<Type> {
-        let ExprKind::MethodCall { method, type_args, .. } = &object.kind else { return None };
+        let ExprKind::MethodCall { object: item, method, type_args, .. } = &object.kind else { return None };
         if method != "get" {
             return None;
         }
         let name = type_args.as_ref()?.first()?.bare_name()?.to_string();
         if !self.annotation_types.contains(&name) {
             return None;
+        }
+        let item_ty = match &item.kind {
+            ExprKind::Ident(n) => self.lookup_local(n),
+            _ => Some(self.infer_expr(item)),
+        };
+        if let Some(item_ty) = item_ty {
+            self.check_unrolled_reflect_item(item, &item_ty, method, object.span);
         }
         let id = match self.types.lookup(&name) {
             Some(Type::Named(id)) => id,
@@ -5410,6 +5477,39 @@ impl TypeChecker {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// `item.has<A>()`, `item.get<A>()` and `item.is<T>()` on a `FieldInfo`
+    /// or `ParamInfo` are answered while a `comptime for` unrolls: the item is
+    /// a fact about one iteration, not a value with the answer inside it. So
+    /// the receiver has to be an enclosing `comptime for` binding. Anywhere
+    /// else — an ordinary `for` over `reflect.fields<T>()`, a `Vec` element —
+    /// native has nothing to fold and the call has no body to run.
+    fn check_unrolled_reflect_item(&mut self, item: &Expr, item_ty: &Type, method: &str, span: Span) {
+        if let ExprKind::Ident(n) = &item.kind {
+            let defined_in = self.local_types.iter().rposition(|scope| scope.contains_key(n));
+            if defined_in.is_some_and(|d| self.comptime_for_bindings.contains(&(n.clone(), d))) {
+                return;
+            }
+        }
+        // The receiver's type is often still open here — an ordinary `for`
+        // over `reflect.fields<T>()` binds a variable solved later.
+        self.pending_reflect_items.push((item_ty.clone(), method.to_string(), span));
+    }
+
+    pub(super) fn check_reflect_items(&mut self) {
+        use rask_types::LangItem;
+        for (ty, method, span) in std::mem::take(&mut self.pending_reflect_items) {
+            let ty = self.ctx.apply(&ty);
+            let info = if self.types.is_lang(&ty, LangItem::FieldInfo) {
+                "FieldInfo"
+            } else if self.types.is_lang(&ty, LangItem::ParamInfo) {
+                "ParamInfo"
+            } else {
+                continue;
+            };
+            self.errors.push(TypeError::ReflectItemNotUnrolled { info, method, span });
         }
     }
 
@@ -8215,4 +8315,19 @@ struct ArmReach {
     closed_by: Option<String>,
     /// Variants tested by a bare, unguarded arm.
     tags: std::collections::HashSet<String>,
+}
+
+impl TypeChecker {
+    /// The body of a closure with no written return type has a settled value
+    /// that isn't a `T or E`, while its return type has become one.
+    fn tail_fills_error_slot(&self, body_ty: &Type, ret: &Type) -> bool {
+        let ret = self.ctx.apply(ret);
+        if !matches!(&ret, Type::Result { err, .. } if !matches!(**err, Type::None)) {
+            return false;
+        }
+        !matches!(
+            self.ctx.apply(body_ty),
+            Type::Result { .. } | Type::Var(_) | Type::Never | Type::Error
+        )
+    }
 }

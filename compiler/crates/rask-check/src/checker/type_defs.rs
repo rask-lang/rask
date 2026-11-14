@@ -625,6 +625,10 @@ pub struct TypedProgram {
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.
     pub field_reuses: std::collections::HashSet<NodeId>,
+    /// `for` loops over links whose body can't delete anything, by source
+    /// expression: lowering walks those without recording the list with its
+    /// rack (mem.racks/RK16). Written back by the ownership pass.
+    pub quiet_loops: std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
     pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,
@@ -708,6 +712,10 @@ pub struct TypedProgram {
     /// Declarations the checker wrote and checked (`checker/derive.rs`).
     /// `attach_derived` moves them into the program.
     pub derived_decls: Vec<rask_ast::decl::Decl>,
+    /// Template copies (`rask-template`): each copy's function, by id, with
+    /// the template's function id and the instance's type arguments. Set by
+    /// the driver once the last round is checked.
+    pub template_copies: HashMap<NodeId, (NodeId, Vec<TypeBinding>)>,
     /// Method calls on a wrapper (`==`, `.clone()`) that go through the
     /// function written for its type: call node → (callee node, function
     /// name). Applied by `attach_derived`.

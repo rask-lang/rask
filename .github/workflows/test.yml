@@ -6,6 +6,9 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  # The merge queue tests each PR merged onto the current main before it lands,
+  # so a PR doesn't have to be brought up to date by hand to merge.
+  merge_group:
   workflow_dispatch:
 
 # Ten jobs that all start at once, on twelve runners — gates-memcheck and
@@ -680,6 +683,15 @@ jobs:
     - name: Book gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/book_gate.sh
+
+    # The tutorial, against the compiler (#1889). Each chapter's exercise file
+    # is generated from the MUD it builds, and a stale one fails; every exercise
+    # file passes `rask check`; the shell commands in the chapters run in order
+    # and print what the page says they print. Then the gate is run on a broken
+    # copy of its own small tutorial for each thing it checks, to show it fails.
+    - name: Learn gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/learn_gate.sh
 
     # The opt-in Claude Code hook in editors/claude-code/ parses
     # `rask check --json`. Nothing else reads that output the same way, so a

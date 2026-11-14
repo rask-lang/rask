@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Shapes a template copy (ctrl.comptime/CT50, #1919) has to get right: a
+// method sharing a template's name keeps its own body, a template reached
+// through a field waits for the round that knows the field's type, and a
+// `comptime if` reading a const or used as a value is decided per field.
+import std.reflect
+
+const VERBOSE: bool = true
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+struct Outer {
+    id: i64
+    inner: Pair
+}
+
+struct Pt {
+    public x: i64
+    label: string
+}
+
+struct Holder {
+    tag: string
+}
+
+extend Holder {
+    func dump<T>(self, v: T) -> string {
+        mut out = "method[{self.tag}]:"
+        comptime for f in reflect.fields<T>() {
+            out = "{out}{f.name}={v.(f.name)};"
+        }
+        return out
+    }
+}
+
+func dump<T>(v: T) -> string {
+    mut out = "free:"
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name};"
+    }
+    return out
+}
+
+func count<T>(v: T) -> i64 {
+    mut n = 0
+    comptime for f in reflect.fields<T>() {
+        n += 1
+    }
+    return n
+}
+
+func nested<T>(v: T) -> i64 {
+    mut n = 0
+    comptime for f in reflect.fields<T>() {
+        comptime if f.type_name == "Pair" {
+            n += count(v.(f.name))
+        }
+    }
+    return n
+}
+
+func sum<T>(v: T) -> i64 {
+    mut n = 0
+    comptime for f in reflect.fields<T>() {
+        comptime if VERBOSE && f.type_name == "i64" {
+            n += v.(f.name)
+        }
+    }
+    return n
+}
+
+func vis<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        let s: string = comptime if f.is_public { "pub" } else { "priv" }
+        out = "{out}{s} "
+    }
+    return out
+}
+
+test "a method named like a template keeps its own body" {
+    assert Holder(tag: "h").dump(Pair(a: 1, b: 2)) == "method[h]:a=1;b=2;"
+    assert dump(Pair(a: 1, b: 2)) == "free:a;b;"
+}
+
+test "a template reached through a field" {
+    assert nested(Outer(id: 1, inner: Pair(a: 2, b: 3))) == 2
+}
+
+test "a condition reading a const drops the branch that doesn't apply" {
+    assert sum(Pt(x: 5, label: "a")) == 5
+}
+
+test "a comptime if used as a value" {
+    assert vis(Pt(x: 5, label: "a")) == "pub priv "
+}

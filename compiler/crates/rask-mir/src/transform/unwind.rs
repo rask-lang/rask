@@ -357,6 +357,7 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
         entry_block: check(0),
         is_extern_c: false,
         inline_hint: false,
+        param_modes: Vec::new(),
         source_file: func.source_file.clone(),
     })
 }

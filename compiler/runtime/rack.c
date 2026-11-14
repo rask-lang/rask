@@ -146,6 +146,10 @@ struct RaskRack {
     RaskRack *origin_rack;
     void    **origin_map;
     int64_t   origin_len;
+    // Bumped by every node that leaves: a `Staged` buffer remembers the value
+    // it was made at, and a buffer the rack has deleted past can't apply
+    // (mem.racks/RK21).
+    int64_t   epoch;
 };
 
 static uint32_t g_next_rack_id = 1;
@@ -1030,6 +1034,7 @@ static void release_slot(RaskRack *r, char *payload) {
     // node through the rack.
     if (index >= 0 && index < r->dir_cap) r->directory[index] = NULL;
     r->len--;
+    r->epoch++;
 
     forget_own_edges(r, payload);
     fix_incoming(r, payload);
@@ -1345,4 +1350,240 @@ void *rask_rack_corresponding(const RaskRack *r, const void *link) {
     if (n->slot_index < 0 || n->slot_index >= r->origin_len) return RASK_LINK_NONE;
     void *mapped = r->origin_map[n->slot_index];
     return mapped ? mapped : RASK_LINK_NONE;
+}
+
+// ─── Staged structural mutation (mem.racks/RK16–RK21) ─────────────────────
+//
+// A task and the code beside it that share a rack only read it; each records
+// the structural changes it decides on in a buffer of its own, and the rack
+// makes them after the join, on one thread. A buffer's links are plain words
+// with no edge record, so nothing nulls them: recording one writes nothing
+// the other side can see. That is safe because the rack can't lose a node while the buffer
+// waits, and `apply` refuses a buffer it has (RK21).
+
+enum { STAGED_DELETE, STAGED_INSERT, STAGED_RELINK };
+
+typedef struct StagedOp {
+    uint64_t key;
+    int64_t  seq;      // recording order: equal keys keep it (RK18)
+    int32_t  kind;
+    void    *node;     // delete, relink
+    void    *to;       // relink
+    void    *closure;  // relink: `f(mutate node, to)`, owned by the buffer
+    char    *value;    // insert: the node's bytes, owned by the buffer
+} StagedOp;
+
+struct RaskStaged {
+    RaskRack *rack;
+    int64_t   epoch;
+    StagedOp *ops;
+    int64_t   len;
+    int64_t   cap;
+    // The node type's layout, from the first insert, in the shape
+    // `rask_rack_insert` takes it.
+    int64_t   elem_size;
+    int64_t   elem_align;
+    int64_t   field_count;
+    int32_t  *fields;
+    int64_t   owned_count;
+    int32_t  *owned;
+};
+
+static StagedOp *staged_push(RaskStaged *s) {
+    if (s->len == s->cap) {
+        int64_t cap = s->cap ? s->cap * 2 : 8;
+        s->ops = (StagedOp *)rask_realloc(s->ops, s->cap * (int64_t)sizeof(StagedOp),
+                                          cap * (int64_t)sizeof(StagedOp));
+        s->cap = cap;
+    }
+    StagedOp *op = &s->ops[s->len];
+    *op = (StagedOp){ .seq = s->len };
+    s->len++;
+    return op;
+}
+
+RaskStaged *rask_rack_staged(RaskRack *r) {
+    RaskStaged *s = (RaskStaged *)rask_alloc(sizeof(RaskStaged));
+    *s = (RaskStaged){ .rack = r, .epoch = r ? r->epoch : 0 };
+    return s;
+}
+
+void rask_staged_delete(RaskStaged *s, uint64_t key, void *node) {
+    if (!s || rask_link_is_none(node)) return;
+    StagedOp *op = staged_push(s);
+    op->key = key;
+    op->kind = STAGED_DELETE;
+    op->node = node;
+}
+
+void rask_staged_insert(RaskStaged *s, uint64_t key, const void *value, int64_t elem_size,
+                        int64_t field_count, const int32_t *fields,
+                        int64_t owned_count, const int32_t *owned, int64_t elem_align) {
+    if (!s) return;
+    if (s->elem_size == 0) {
+        s->elem_size = elem_size;
+        s->elem_align = elem_align;
+        if (field_count > 0 && fields) {
+            s->fields = (int32_t *)rask_alloc(field_count * 2 * (int64_t)sizeof(int32_t));
+            memcpy(s->fields, fields, (size_t)field_count * 2 * sizeof(int32_t));
+            s->field_count = field_count;
+        }
+        if (owned_count > 0 && owned) {
+            s->owned = (int32_t *)rask_alloc(owned_count * (int64_t)sizeof(int32_t));
+            memcpy(s->owned, owned, (size_t)owned_count * sizeof(int32_t));
+            s->owned_count = owned_count;
+        }
+    }
+    StagedOp *op = staged_push(s);
+    op->key = key;
+    op->kind = STAGED_INSERT;
+    op->value = (char *)rask_alloc(elem_size > 0 ? elem_size : 1);
+    memcpy(op->value, value, (size_t)elem_size);
+}
+
+void rask_staged_relink(RaskStaged *s, uint64_t key, void *node, void *to, void *closure) {
+    if (!s) return;
+    // The compiler refuses a literal that captured a link (E0963); this is
+    // the closure value it couldn't see into.
+    if (rask_closure_task_bound(closure)) {
+        rask_closure_free(closure);
+        rask_panic("relink: the function captured a link or a `Local` box. Pass the "
+                   "link it needs as `to`, which the apply checks [mem.racks/RK20]");
+    }
+    StagedOp *op = staged_push(s);
+    op->key = key;
+    op->kind = STAGED_RELINK;
+    op->node = node;
+    op->to = to;
+    op->closure = closure;
+}
+
+int64_t rask_staged_len(const RaskStaged *s) {
+    return s ? s->len : 0;
+}
+
+static void staged_release_ops(RaskStaged *s, int64_t from) {
+    for (int64_t i = from; i < s->len; i++) {
+        StagedOp *op = &s->ops[i];
+        if (op->value) {
+            rask_owned_release_all(op->value, s->owned, s->owned_count);
+            rask_free(op->value);
+        }
+        if (op->closure) rask_closure_free(op->closure);
+        op->value = NULL;
+        op->closure = NULL;
+    }
+}
+
+static void staged_free_shell(RaskStaged *s) {
+    if (s->ops) rask_realloc(s->ops, s->cap * (int64_t)sizeof(StagedOp), 0);
+    if (s->fields) rask_free(s->fields);
+    if (s->owned) rask_free(s->owned);
+    rask_free(s);
+}
+
+void rask_staged_free(RaskStaged *s) {
+    if (!s) return;
+    staged_release_ops(s, 0);
+    staged_free_shell(s);
+}
+
+void rask_staged_append(RaskStaged *s, RaskStaged *other) {
+    if (!s || !other) return;
+    if (other->rack != s->rack) {
+        rask_staged_free(other);
+        rask_panic("append: the two buffers were made for different racks [mem.racks/RK21]");
+    }
+    // The older of the two answers for both: if either was made before a
+    // delete, the joined buffer can't apply either.
+    if (other->epoch < s->epoch) s->epoch = other->epoch;
+    if (s->elem_size == 0 && other->elem_size != 0) {
+        s->elem_size = other->elem_size;
+        s->elem_align = other->elem_align;
+        s->fields = other->fields;
+        s->field_count = other->field_count;
+        s->owned = other->owned;
+        s->owned_count = other->owned_count;
+        other->fields = NULL;
+        other->owned = NULL;
+    }
+    for (int64_t i = 0; i < other->len; i++) {
+        StagedOp *op = staged_push(s);
+        int64_t seq = op->seq;
+        *op = other->ops[i];
+        op->seq = seq;
+    }
+    other->len = 0;
+    staged_free_shell(other);
+}
+
+static int staged_op_cmp(const void *a, const void *b) {
+    const StagedOp *x = (const StagedOp *)a, *y = (const StagedOp *)b;
+    if (x->key != y->key) return x->key < y->key ? -1 : 1;
+    return (x->seq > y->seq) - (x->seq < y->seq);
+}
+
+static int ptr_cmp(const void *a, const void *b) {
+    uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+    return (x > y) - (x < y);
+}
+
+typedef void (*RaskRelinkFn)(void *env, void *node, void *to);
+
+// RK18, RK19: sort by key; inserts and relinks in that order; then every
+// delete. Holding the deletes back means no slot an apply frees is reused by
+// the same apply, a relink never meets a half-deleted node, and an inserted
+// node's link to a dying one is nulled by the ordinary fixup.
+void rask_rack_apply(RaskRack *r, RaskStaged *s) {
+    if (!r || !s) return;
+    if (s->rack != r) {
+        rask_staged_free(s);
+        rask_panic("apply: this buffer was made for a different rack [mem.racks/RK21]");
+    }
+    if (s->epoch != r->epoch) {
+        rask_staged_free(s);
+        rask_panic("apply: the rack deleted nodes after this buffer was made, so a link "
+                   "it holds may name a freed node. Make the buffer after the last "
+                   "delete, or apply it first [mem.racks/RK21]");
+    }
+    qsort(s->ops, (size_t)s->len, sizeof(StagedOp), staged_op_cmp);
+
+    int64_t doomed_len = 0;
+    void **doomed = (void **)rask_alloc((s->len > 0 ? s->len : 1) * (int64_t)sizeof(void *));
+    for (int64_t i = 0; i < s->len; i++) {
+        StagedOp *op = &s->ops[i];
+        if (op->kind == STAGED_DELETE && rask_rack_contains(r, op->node)) doomed[doomed_len++] = op->node;
+    }
+    qsort(doomed, (size_t)doomed_len, sizeof(void *), ptr_cmp);
+#define DOOMED(p) (bsearch(&(p), doomed, (size_t)doomed_len, sizeof(void *), ptr_cmp) != NULL)
+
+    for (int64_t i = 0; i < s->len; i++) {
+        StagedOp *op = &s->ops[i];
+        if (op->kind == STAGED_INSERT) {
+            rask_rack_insert(r, op->value, s->elem_size, s->field_count, s->fields,
+                             s->owned_count, s->owned, s->elem_align);
+            // The bytes moved into the node, and what they own with them.
+            rask_free(op->value);
+            op->value = NULL;
+        } else if (op->kind == STAGED_RELINK) {
+            void *closure = op->closure;
+            op->closure = NULL;
+            if (rask_rack_contains(r, op->node) && rask_rack_contains(r, op->to)
+                && !DOOMED(op->node) && !DOOMED(op->to)) {
+                RaskRelinkFn fn = *(RaskRelinkFn *)closure;
+                fn((char *)closure + 8, op->node, op->to);
+            }
+            rask_closure_free(closure);
+        }
+    }
+    for (int64_t i = 0; i < s->len; i++) {
+        StagedOp *op = &s->ops[i];
+        if (op->kind == STAGED_DELETE && rask_rack_contains(r, op->node)) {
+            if (stats_enabled()) g_deletes++;
+            release_slot(r, (char *)op->node);
+        }
+    }
+#undef DOOMED
+    rask_free(doomed);
+    staged_free_shell(s);
 }

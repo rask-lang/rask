@@ -170,6 +170,15 @@ pub struct TypeChecker {
     /// the header has was rewritten to its declaration before resolve, so a
     /// dotted type still under one names nothing.
     pub(super) c_namespaces: std::collections::HashSet<String>,
+    /// Bindings of the `comptime for` loops enclosing the code being checked.
+    /// `has<A>()`, `get<A>()` and `is<T>()` on a reflect item are answered
+    /// while the loop unrolls, so only these may ask them.
+    /// Each with the index of the scope that defines it in `local_types`, so
+    /// a name redeclared inside the body isn't mistaken for the binding.
+    pub(super) comptime_for_bindings: Vec<(String, usize)>,
+    /// `has`/`get`/`is` called on something that isn't such a binding, with
+    /// the receiver's type — an error once solving says it's a reflect item.
+    pub(super) pending_reflect_items: Vec<(Type, String, rask_ast::Span)>,
     /// Node ids typed while checking stdlib declarations. Only populated when
     /// the open-node census is switched on; see `tracing_open_nodes`.
     stdlib_typed_nodes: Option<std::collections::HashSet<NodeId>>,
@@ -554,6 +563,9 @@ pub struct TypeChecker {
     /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
     /// is the case worth catching (#1090).
     pub(super) pending_comptime_field_names: Vec<(Type, rask_ast::Span)>,
+    /// Calls written on a type parameter itself, `T.zero()` (`type.generics/GF7`),
+    /// so the bound's signature can be held to taking no `self`.
+    pub(super) type_param_static_calls: std::collections::HashSet<rask_ast::NodeId>,
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
@@ -671,6 +683,8 @@ impl TypeChecker {
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
             c_namespaces: std::collections::HashSet::new(),
+            comptime_for_bindings: Vec::new(),
+            pending_reflect_items: Vec::new(),
             stdlib_typed_nodes: None,
             symbol_types: HashMap::new(),
             errors: Vec::new(),
@@ -766,6 +780,7 @@ impl TypeChecker {
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
             pending_comptime_field_names: Vec::new(),
+            type_param_static_calls: std::collections::HashSet::new(),
             deferred_methods: Vec::new(),
             deferred_fields: Vec::new(),
             pending_index: Vec::new(),
@@ -1214,6 +1229,7 @@ impl TypeChecker {
 
         self.check_c_fn_pointers();
         self.check_variadic_args();
+        self.check_reflect_items();
         let unsafe_ops = self.unsafe_ops;
 
         let fn_sigs: HashMap<NodeId, rask_types::FnSignature> = self
@@ -1285,6 +1301,7 @@ impl TypeChecker {
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
+            quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
             // The ownership pass works these out; the driver writes them back.
             task_bound_closures: std::collections::HashSet::new(),
@@ -1323,6 +1340,7 @@ impl TypeChecker {
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,
+            template_copies: HashMap::new(),
             wrapper_calls: self.wrapper_calls,
             copied_clones: self.copied_clones,
             sequence_coercions: self.sequence_coercions,

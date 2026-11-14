@@ -108,6 +108,8 @@ pub struct NodeRecords {
     pub lent_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value takes the old one (ownership).
     pub field_reuses: HashSet<NodeId>,
+    /// Loops over links that no delete can reach (ownership).
+    pub quiet_loops: HashSet<NodeId>,
     /// The bindings each `return` moves (ownership).
     pub return_moves: HashMap<NodeId, Vec<String>>,
     /// Closure literals that may not reach another task (#1356).
@@ -127,6 +129,7 @@ impl NodeRecords {
             escaping_closures: typed.escaping_closures.clone(),
             lent_captures: typed.lent_captures.clone(),
             field_reuses: typed.field_reuses.clone(),
+            quiet_loops: typed.quiet_loops.clone(),
             return_moves: typed.return_moves.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
         }
@@ -682,6 +685,57 @@ fn inline_arg_size(ty: &Type, types: &rask_check::TypeTable, cache: &LayoutCache
     }
 }
 
+/// Close `reached` over what each instance holds by value. `Outer<string> {
+/// h: Holder<T> }` holds a `Holder<string>`, and when `Outer<string>` was
+/// only named — `reflect.fields<S>()` with `S = Outer<string>` — nothing
+/// else mentioned `Holder<string>`, so `h` was laid out as the shared
+/// one-word `Holder` and every offset after it was wrong.
+///
+/// Only instances held inline: those are what the outer layout needs, and an
+/// inline type can't contain itself, so the walk ends. Following boxed ones
+/// too would never end on polymorphic recursion (`Nest<T>` holding
+/// `Owned<Nest<Vec<T>>>`).
+fn held_inline_instances(types: &rask_check::TypeTable, reached: &mut Vec<(TypeId, Vec<Type>)>) {
+    fn inline(ty: &Type, out: &mut Vec<(TypeId, Vec<Type>)>) {
+        match ty {
+            Type::Generic { base, args } => {
+                let arg_tys = type_args_of(args);
+                if arg_tys.len() == args.len() {
+                    out.push((*base, arg_tys));
+                }
+            }
+            Type::Tuple(elems) => elems.iter().for_each(|e| inline(e, out)),
+            Type::Array { elem, .. } => inline(elem, out),
+            Type::Result { ok, err } => {
+                inline(ok, out);
+                inline(err, out);
+            }
+            _ => {}
+        }
+    }
+    let mut seen: HashSet<(TypeId, Vec<Type>)> = reached.iter().cloned().collect();
+    let mut next = 0;
+    while next < reached.len() {
+        let (base, args) = reached[next].clone();
+        next += 1;
+        let Some(def) = types.get(base) else { continue };
+        let params = def.type_params();
+        if params.len() != args.len() {
+            continue;
+        }
+        let subst: HashMap<String, Type> = params.iter().cloned().zip(args).collect();
+        let mut found = Vec::new();
+        for held in def.held_types() {
+            inline(&rask_check::substitute_type(held, &subst), &mut found);
+        }
+        for instance in found {
+            if seen.insert(instance.clone()) {
+                reached.push(instance);
+            }
+        }
+    }
+}
+
 /// Every generic declaration's instantiation this type mentions, at any
 /// depth. A compiler-provided generic (`Heap<T>`) has no declaration to lay
 /// out, so only its arguments are walked.
@@ -809,13 +863,21 @@ fn monomorphize_inner(
     // Every instantiation the program mentions: in an expression's type, as a
     // call's type argument, or as a field of a concrete type. A generic body's
     // expression types count at each of its instances.
+    //
+    // A call's type arguments count whether or not anything is built from
+    // them: `reflect.fields<Holder<string>>()` calls a native stub, so no
+    // instance of a generic function carries `Holder<string>`, and the field
+    // facts were read off the shared layout, where `t: T` is one word (#968).
     let instance_node_types: Vec<Type> = mono
         .results
         .iter()
         .filter(|f| !f.type_args.is_empty())
         .flat_map(|f| {
             let inst = Instance::new(&f.type_args, &f.projections, program);
-            reachability::body_nodes(&f.body).into_iter().filter_map(move |id| inst.node_type(id))
+            reachability::body_nodes(&f.body).into_iter().flat_map(move |id| {
+                let call_args = inst.call_type_args(id).unwrap_or_default().into_iter().map(|b| b.ty);
+                inst.node_type(id).into_iter().chain(call_args)
+            })
         })
         .collect();
     // A concrete function's expression types as the checker recorded them.
@@ -826,7 +888,10 @@ fn monomorphize_inner(
         .iter()
         .filter(|f| f.type_args.is_empty())
         .flat_map(|f| reachability::body_nodes(&f.body))
-        .filter_map(|id| program.node_types.get(&id))
+        .flat_map(|id| {
+            let call_args = program.call_type_args.get(&id).into_iter().flatten().map(|b| &b.ty);
+            program.node_types.get(&id).into_iter().chain(call_args)
+        })
         .collect();
     let mut reached: Vec<(TypeId, Vec<Type>)> = Vec::new();
     for ty in concrete_node_types
@@ -851,6 +916,7 @@ fn monomorphize_inner(
             }
         }
     }
+    held_inline_instances(&program.types, &mut reached);
 
     // Declared and instance layouts in one dependency order, the declared ones
     // shared with the interpreter so both backends read one set of offsets
@@ -1047,6 +1113,7 @@ mod tests {
             escaping_closures: std::collections::HashSet::new(),
             lent_captures: std::collections::HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
+            quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),
@@ -1061,6 +1128,7 @@ mod tests {
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),
+            template_copies: HashMap::new(),
             wrapper_calls: std::collections::HashMap::new(),
             copied_clones: std::collections::HashSet::new(),
             sequence_coercions: std::collections::HashMap::new(),

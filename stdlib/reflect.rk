@@ -52,6 +52,24 @@ public struct VariantInfo {
     public serial_name: string
 }
 
+/// One parameter of a function type. Returned by reflect.params<F>().
+/// A function type has no parameter names, so `index` tells them apart.
+/// Neither flag set means the parameter is borrowed.
+@lang(param_info)
+public struct ParamInfo {
+    public index: usize
+    public type_name: string
+    public is_mutate: bool
+    public is_take: bool
+}
+
+extend ParamInfo {
+    /// Whether the parameter's type is exactly T. Resolves at compile time
+    /// inside comptime for.
+    @native
+    public func is<T>(self) -> bool {}
+}
+
 // ─── Reflect Namespace ──────────────────────────────────────────
 
 struct reflect { }
@@ -100,4 +118,6 @@ extend reflect {
     public func interfaces<T>() -> Vec<string> {}
     @native
     public func variants<T>() -> Vec<VariantInfo> {}
+    @native
+    public func params<F>() -> Vec<ParamInfo> {}
 }
