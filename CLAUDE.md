@@ -111,10 +111,22 @@ and file what you learned — that's a finished piece of work, not a blocker.
 ## The main session routes, workers code
 
 The main session is long-lived and every turn re-sends all of it, so it stays
-small. It plans, hands out tasks, and keeps tabs on status and decisions. It does
-not write compiler, runtime or stdlib code, and it doesn't read whole files or
-build logs. That happens in agents, whose context is thrown away when they
-report. Docs and config edits the main session does itself.
+small. It plans, hands out tasks, and keeps tabs on status and decisions. Long
+reading (whole files, build logs, a bug hunt across passes) happens in agents,
+whose context is thrown away when they report.
+
+Delegating isn't free, so it's for work that would fill the main context. An
+agent starts cold: no shared cache, its own compiler rebuild, a brief to write
+and a report to check. On a small job that overhead is most of the cost, and
+the big model doing it directly is cheaper.
+
+- **Just do it** when the change is a few lines and you already know where:
+  flip a constant, fix a message, a one-function bug with an existing test
+  that covers it, any docs or config edit. Edit, run that test, commit. No
+  worker, no skeptic, no plan.
+- **Delegate** when finding the cause means reading a lot, or the change
+  spreads across passes. If a "just do it" job turns out bigger than it
+  looked, hand it to a worker with what you've learned so far.
 
 Three agents, each pinned to a model and an effort in `.claude/agents/`:
 
@@ -146,9 +158,8 @@ Why these, so nobody "tunes" them back (prices per million tokens, in/out):
   can tell a wrong answer from a right one (a design change across passes, a
   spec rewrite). Retrying on a bigger model only works when the failure shows.
   The main session still doesn't do it itself.
-- **Don't spawn for one command.** An agent starts cold: no shared cache, its
-  own rebuild. A lookup that is one call with a few lines of output the main
-  session runs directly.
+- **Don't spawn for one command.** A lookup that is one call with a few lines
+  of output the main session runs directly.
 - **Brief a worker with** the issue or goal, the branch, what done means, and
   what's already ruled out. Point at files; don't paste them.
 - **One worker at a time on a branch.** Independent tasks can run in parallel
@@ -163,10 +174,15 @@ Why these, so nobody "tunes" them back (prices per million tokens, in/out):
 ## Before the PR is done
 
 Hand a change to compiler, runtime or stdlib to the `skeptic` agent (Opus) once
-per PR, when the branch is finished. Not per push. Give it the issue or the
+per PR, when the branch is finished. Skip it for a "just do it" change. Not per push. Give it the issue or the
 goal, not your reasoning, and let it try to break the change. What it confirms
 goes to a worker; a finding you reject gets one line under Status saying why.
-Skip it for docs-only and config-only changes.
+Skip it for docs-only and config-only changes too.
+
+**Process is not the product.** A rule, gate or record earns its place by
+catching wrong code. One that only tracks the agent's own bookkeeping is cost.
+Don't add one without saying what bug it would have caught, and when one
+starts making simple tasks slow, say so in the recap so it can be cut.
 
 At the end of a long session, `/retro` turns what went wrong into proposed edits
 to this file and the skills.
