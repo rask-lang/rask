@@ -110,10 +110,12 @@ A turn costs the session's full context whether I typed it or an event did, and
 one that starts after an hour idle rebuilds the cache at 40 times the price of
 reading it. Most turns used to be events. So:
 
-- **Don't subscribe to PR activity, don't schedule check-ins.** Nobody else
-  reviews these PRs (0 of 107 since September had a review), so a failed check
-  is the only event worth a turn. After a push, set one `send_later` for when
-  CI should be done (20 minutes). When it fires, read the failed checks only:
+- **No PR subscriptions, no scheduled check-ins.** Nobody else reviews these
+  PRs (0 of 107 since September had a review), so a failed check is the only
+  event worth a turn. Opening a PR subscribes the session by itself: call
+  `unsubscribe_pr_activity` right after. After a push, set one `send_later`
+  for when CI should be done (20 minutes). When it fires, read the failed
+  checks only:
   none, end silently; some, fix them.
 - **Run an agent in the foreground when you'd only wait for it.** A background
   agent's report arrives as its own wake. Background is for when you have other
