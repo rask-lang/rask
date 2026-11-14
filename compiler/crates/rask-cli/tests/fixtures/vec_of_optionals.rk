@@ -29,8 +29,8 @@ func main() {
     // Indexing, not just iteration.
     println("[0]={xs[0] ?? -1} [1]={xs[1] ?? -1} [2]={xs[2] ?? -1}")
 
-    // set() writes an element slot too.
-    xs.set(1, 9)
+    // Index assignment writes an element slot too.
+    xs[1] = 9
     println("after set [1]={xs[1] ?? -1}")
 
     // Map values are the same position.

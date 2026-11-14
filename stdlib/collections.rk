@@ -111,6 +111,7 @@ extend Vec<T> {
     /// Remove and return the last element.
     @native("rask_vec_pop")
     @shrinks
+    @moves_out
     public func pop(mutate self) -> Option<T> {}
 
     /// Remove all elements.
@@ -138,6 +139,7 @@ extend Vec<T> {
     /// Remove and return the element at the given index.
     @native("rask_vec_remove_at", panics: true)
     @shrinks
+    @moves_out
     public func remove(mutate self, index: i64) -> T {}
 
     /// Remove and return the element at the given index by swapping in the
@@ -147,6 +149,7 @@ extend Vec<T> {
     /// halves, and writing it here means both backends run the same three
     /// lines. The index is checked by `swap`.
     @shrinks
+    @moves_out
     public func remove_unordered(mutate self, index: i64) -> T {
         let last = self.len().wrap<i64>() - 1
         if index != last {
@@ -446,10 +449,16 @@ extend Vec<T> {
     @copies_elements
     public func sum(self) -> T {}
 
-    /// Set element at index. Panics if out of bounds.
-    @native("rask_vec_set", panics: true)
-    @drops_elements
-    public func set(mutate self, index: i64, take value: T) {}
+    /// Put `value` at `index` and hand back what was there. Panics if out of
+    /// bounds.
+    ///
+    /// `v[i]` copies out only a Copy element (V1), so without this the one way
+    /// to take a non-Copy element out of the middle of a vector was `remove`,
+    /// which shifts everything behind it. `v[i] = x` is this call with the
+    /// old element dropped.
+    @native("rask_vec_replace", panics: true)
+    @moves_out
+    public func replace(mutate self, index: i64, take value: T) -> T {}
 
     /// Give back allocation past `to` elements — or past the current length,
     /// when that is larger. Left out, `shrink()` is shrink-to-fit.
@@ -684,11 +693,13 @@ extend Map<K, V> {
     /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
     @native("rask_map_insert_displaced")
     @grows
+    @moves_out
     public func insert(mutate self, take key: K, take value: V) -> Option<V> {}
 
     /// Remove a key and return its value.
     @native("rask_map_take")
     @shrinks
+    @moves_out
     public func remove(mutate self, key: K) -> Option<V> {}
 
     /// Remove all entries.
@@ -1049,5 +1060,234 @@ extend Set<T> {
 extend Set<T> where T: Equal {
     public func eq(self, other: Set<T>) -> bool {
         return self.entries == other.entries
+    }
+}
+
+/// A map that walks its entries in the order their keys were first inserted
+/// (determinism/D7a).
+///
+/// `Map`'s order is seeded per process on purpose, so code that leans on it
+/// breaks under test. Some state has an order that is part of what the program
+/// computes — a lockstep simulation walking its entity table every tick has to
+/// visit entries in the same order on every machine — and this is the type for
+/// it. Order comes from where an entry sits in `slots`, never from the hash, so
+/// the seeded `index` underneath changes nothing a program can observe.
+///
+/// Re-inserting a key that is present replaces the value and keeps the entry
+/// where it was. Removing leaves a hole in `slots` so nothing behind it moves;
+/// once holes outnumber live entries the slots are packed again, which keeps
+/// `remove` amortized O(1). When that happens depends only on the sequence of
+/// inserts and removes, so it's as deterministic as the order is.
+///
+/// Written in Rask over `Vec` and `Map`, like `Set`, so both backends run one
+/// source. The key is stored twice — once in its slot, once in the index —
+/// which is why insert clones it.
+public struct OrderedMap<K, V> {
+    slots: Vec<(K, V)?>
+    index: Map<K, usize>
+    holes: usize
+}
+
+// Below this many holes `remove` never packs, so a small map that churns one
+// entry doesn't rebuild itself on every other call.
+const ORDERED_MAP_PACK_MIN: usize = 16
+
+extend OrderedMap<K, V> {
+    /// Create a new empty map.
+    public func new() -> OrderedMap<K, V> {
+        return OrderedMap(slots: Vec.new(), index: Map.new(), holes: 0)
+    }
+
+    /// Number of entries.
+    public func len(self) -> usize {
+        return self.index.len()
+    }
+
+    /// True if the map holds no entries.
+    public func is_empty(self) -> bool {
+        return self.index.is_empty()
+    }
+
+    /// True if the map holds this key.
+    public func contains(self, key: K) -> bool {
+        return self.index.contains(key)
+    }
+
+    /// Read the value under `key` through a closure.
+    public func read(self, key: K, f: func(V) -> R) -> Option<R> {
+        if self.index.get(key)? as at {
+            if self.slots[at.wrap<i64>()]? as entry {
+                return f(entry.1)
+            }
+        }
+        return none
+    }
+
+    /// Modify the value under `key` through a closure.
+    ///
+    /// The entry comes out of its slot, `f` changes it, and it goes back. An
+    /// `as` binding on the slot would be a copy, so `f` would change nothing
+    /// (type.optionals/OPT19).
+    public func modify(mutate self, key: K, f: func(mutate V) -> R) -> Option<R> {
+        if self.index.get(key)? as at {
+            let i = at.wrap<i64>()
+            if self.slots.replace(i, none)? as entry {
+                mut taken = entry
+                let out = f(mutate taken.1)
+                self.slots[i] = taken
+                return out
+            }
+        }
+        return none
+    }
+
+    /// Remove a key and return its value. The entries behind it keep their
+    /// order.
+    @shrinks
+    public func remove(mutate self, key: K) -> Option<V> {
+        if self.index.remove(key)? as at {
+            let gone = self.slots.replace(at.wrap<i64>(), none)
+            self.holes = self.holes + 1
+            if self.holes >= ORDERED_MAP_PACK_MIN && self.holes > self.index.len() {
+                self.pack()
+            }
+            if gone? as entry {
+                let (_, value) = entry
+                return value
+            }
+        }
+        return none
+    }
+
+    /// Remove all entries.
+    @shrinks
+    public func clear(mutate self) -> void {
+        self.slots.clear()
+        self.index.clear()
+        self.holes = 0
+    }
+
+    /// The chain head (type.sequence/SEQ49): each entry as a `(key, value)`
+    /// pair, in insertion order. Every other sequence method on `OrderedMap`
+    /// is generated from this one.
+    public func as_sequence(self) -> Sequence<(K, V)> {
+        return |yield| {
+            for slot in self.slots {
+                if slot? as entry {
+                    if !yield(entry) {
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// The keys, in insertion order.
+    public func keys(self) -> Sequence<K> {
+        return |yield| {
+            for entry in self {
+                if !yield(entry.0) {
+                    return
+                }
+            }
+        }
+    }
+
+    /// The values, in the same order as `keys`.
+    @copies_elements
+    public func values(self) -> Sequence<V> {
+        return |yield| {
+            for entry in self {
+                if !yield(entry.1) {
+                    return
+                }
+            }
+        }
+    }
+
+    /// Close the holes left by `remove`, keeping order, and point the index at
+    /// the new positions.
+    func pack(mutate self) -> void {
+        mut live: Vec<(K, V)?> = Vec.with_capacity(self.index.len())
+        for slot in self.slots.take_all() {
+            if slot? as entry {
+                let to = live.len()
+                self.index.modify(entry.0, |mutate at: usize| { at = to })
+                live.push(entry)
+            }
+        }
+        self.slots = live
+        self.holes = 0
+    }
+}
+
+// The key goes in twice, once in its slot and once in the index.
+extend OrderedMap<K, V> where K: Cloneable {
+    /// Insert a key-value pair. Returns the old value if the key was present,
+    /// in which case the entry keeps its place in the order.
+    @grows
+    public func insert(mutate self, take key: K, take value: V) -> Option<V> {
+        if self.index.get(key)? as at {
+            if self.slots.replace(at.wrap<i64>(), (key, value))? as entry {
+                let (_, previous) = entry
+                return previous
+            }
+            return none
+        }
+        self.index.insert(key.clone(), self.slots.len())
+        self.slots.push((key, value))
+        return none
+    }
+}
+
+// `get` hands the value out, which only a Copy value survives: anything else
+// would be a second owner of what the slot still holds. `Map.get` is native
+// and lends instead; here the other values go through `read` or `get_clone`.
+extend OrderedMap<K, V> where V: Copy {
+    /// The value under `key`, or `none` when the key is absent.
+    public func get(self, key: K) -> Option<V> {
+        return self.read(key, |v| v)
+    }
+}
+
+extend OrderedMap<K, V> where V: Cloneable {
+    /// A clone of the value under `key`, or `none` when the key is absent.
+    public func get_clone(self, key: K) -> Option<V> {
+        return self.read(key, |v| v.clone())
+    }
+}
+
+extend OrderedMap<K, V> where K: Cloneable, V: Cloneable {
+    /// Clone the map, order included.
+    public func clone(self) -> OrderedMap<K, V> {
+        mut out: OrderedMap<K, V> = OrderedMap.new()
+        for (key, value) in self {
+            out.insert(key.clone(), value.clone())
+        }
+        return out
+    }
+}
+
+// Equal when they hold the same keys with equal values in the same order. The
+// order is what this type promises, so it counts — unlike `Map`'s (EQ4a).
+extend OrderedMap<K, V> where K: Equal, V: Equal {
+    public func eq(self, other: OrderedMap<K, V>) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        // Two cursors, each stepping over its own map's holes.
+        mut j = 0
+        for (key, value) in self {
+            while other.slots[j] is none {
+                j = j + 1
+            }
+            if other.slots[j]? as entry {
+                if entry.0 != key || entry.1 != value {
+                    return false
+                }
+            }
+            j = j + 1
+        }
+        return true
     }
 }

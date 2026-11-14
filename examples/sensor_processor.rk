@@ -65,7 +65,7 @@ struct TimingStats {
 
 extend TimingStats {
     func record(self, cycle_ns: i64, deadline_ns: i64) {
-        self.samples.set(self.sample_idx, cycle_ns)
+        self.samples[self.sample_idx] = cycle_ns
         self.sample_idx = (self.sample_idx + 1) % 256
 
         if self.sample_count < 256 {
@@ -160,9 +160,9 @@ struct ProcessorState {
 extend ProcessorState {
     func process_reading(self, sensor_id: i64, value: f64) {
         match sensor_id {
-            0 => self.temp_history.set(self.history_idx, value)
-            1 => self.pressure_history.set(self.history_idx, value)
-            2 => self.humidity_history.set(self.history_idx, value)
+            0 => self.temp_history[self.history_idx] = value
+            1 => self.pressure_history[self.history_idx] = value
+            2 => self.humidity_history[self.history_idx] = value
             _ => {}
         }
 

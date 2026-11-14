@@ -33,6 +33,10 @@ fn hosts() -> Vec<(TypeExpr, TypeExpr)> {
             TypeExpr::Tuple(vec![TypeExpr::named("K"), TypeExpr::named("V")]),
         ),
         (TypeExpr::generic("Set", vec![t()]), t()),
+        (
+            TypeExpr::generic("OrderedMap", vec![TypeExpr::named("K"), TypeExpr::named("V")]),
+            TypeExpr::Tuple(vec![TypeExpr::named("K"), TypeExpr::named("V")]),
+        ),
     ]
 }
 

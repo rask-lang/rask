@@ -30,7 +30,8 @@ Every source is listed here. A source not listed is a spec bug.
 | **D4: Task scheduling** | Green task interleaving | Sim runs one task at a time; task switch order drawn from the seed. Adversarial schedules (pathological interleavings) are a seed away, not a fluke |
 | **D5: Time** | `Instant`, `SystemTime`, timers, sleep | Virtual clock in sim, advanced by the scheduler. Already runtime-mediated |
 | **D6: Randomness** | `random` module | All generators derive from the sim seed |
-| **D7: Map iteration order** | Hash order | Seeded hash order, seed owned by the mode: production seeds per process (HashDoS mitigation; accidental order-dependence can't take root), sim derives the seed from the sim seed (replay-exact, and seed search varies the order so order-dependent code fails under test). No mode guarantees an observable order — code that needs one sorts explicitly. Insertion-ordered Map was considered and rejected: order-preserving removal costs O(n) or compaction pauses, and the index layer taxes every lookup |
+| **D7: Map iteration order** | Hash order | Seeded hash order, seed owned by the mode: production seeds per process (HashDoS mitigation; accidental order-dependence can't take root), sim derives the seed from the sim seed (replay-exact, and seed search varies the order so order-dependent code fails under test). No mode guarantees an observable order — code that needs one sorts explicitly, or uses `OrderedMap`. Making `Map` itself insertion-ordered was considered and rejected: order-preserving removal costs O(n) or compaction pauses, and the index layer taxes every lookup |
+| **D7a: Ordered map** | `OrderedMap` iteration | Insertion order, the same in every mode and on every machine. A separate type, so only code that asks for an order pays the index layer and the amortized compaction (`std.collections/OM1–OM3`) |
 | **D8: Container slot allocation** | Which slot an insert takes, and a handle's generation | Deterministic function of the operation sequence. This is what a round trip preserves (`mem.relocatable/NP1`) and what a node's slot number records (`mem.racks/RK12`) |
 | **D9: I/O** | Network, disk, file system | Sim substitutes simulated implementations behind the same stdlib surface. Fault injection (partitions, slow disks, torn writes) is driven by the seed |
 | **D10: External inputs** | Env, args, stdin, wall-clock start | Fixed or recorded as part of the sim scenario |
@@ -47,7 +48,6 @@ Every source is listed here. A source not listed is a spec bug.
 
 ## Open questions
 
-- **Ordered map type:** with D7 guaranteeing no order anywhere, programs that genuinely need insertion or sorted order have no dedicated type — sort-at-use covers most cases; decide whether an explicit `OrderedMap` earns a place in the stdlib when real programs ask for it.
 - **Record-replay in production:** capturing real inputs for after-the-fact replay is a heavier feature than sim and is not part of this contract yet.
 
 Panic interaction (formerly open here) is settled: panic point, message, and unwind order are deterministic and replay-stable — `ctrl.panic/PD1–PD3`.

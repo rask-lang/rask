@@ -521,7 +521,17 @@ impl Interpreter {
                 Ok(Located::Value(self.eval_expr(expr)?))
             }
             ExprKind::Field { object, field } => {
-                let base = self.locate(object)?.into_value();
+                let located = self.locate(object)?;
+                // `t.1` where `t` is a place: a place of its own, so
+                // `mutate t.1` writes `t` (#1819).
+                if let Located::Place(parent) = &located {
+                    if let Some(Value::Tuple(items)) = parent.get() {
+                        if let Some(i) = field.parse::<usize>().ok().filter(|i| *i < items.len()) {
+                            return Ok(Located::Place(Slot::TupleElem(Box::new(parent.clone()), i)));
+                        }
+                    }
+                }
+                let base = located.into_value();
                 let place = match &base {
                     Value::Struct(s) | Value::Link { node: s, .. }
                         if s.lock().unwrap().fields.contains_key(field) =>
@@ -1391,7 +1401,7 @@ impl Interpreter {
                 // element came back as an i64 that `?` refused to test.
                 if let Some((arg_index, type_arg_index)) = match (&receiver, method.as_str()) {
                     (Value::Vec(_), "push") => Some((0usize, 0usize)),
-                    (Value::Vec(_), "set") | (Value::Vec(_), "insert") => Some((1, 0)),
+                    (Value::Vec(_), "replace" | "insert") => Some((1, 0)),
                     (Value::Map(_), "insert") => Some((1, 1)),
                     _ => None,
                 } {

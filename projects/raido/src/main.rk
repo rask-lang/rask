@@ -8,7 +8,7 @@ func reg_get(regs: Vec<Value>, idx: i64) -> Value {
 }
 
 func reg_set(mutate regs: Vec<Value>, idx: i64, take val: Value) {
-    regs.set(idx, val)
+    regs[idx] = val
 }
 
 func code_get(code: Vec<u32>, idx: i64) -> u32 {

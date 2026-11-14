@@ -5271,7 +5271,7 @@ impl<'a> MirLowerer<'a> {
     /// built with `rask_vec_from_static`, which takes the elements over, so two
     /// calls on one `[string; 3]` made two vectors that each released all three
     /// strings at scope end. `rask_vec_view` keeps the element description —
-    /// `set` still has to release the value it overwrites — and its free gives
+    /// a write still has to release the value it overwrites — and its free gives
     /// back only the copy (#1405).
     fn array_receiver_as_vec(
         &mut self,
@@ -6278,7 +6278,7 @@ impl<'a> MirLowerer<'a> {
         // the slot holds). `all_args[0]` is the receiver.
         let slot_args: &[(usize, usize)] = match qualified_name.as_str() {
             "Vec_push" | "Vec_try_push" | "Vec_remove_item" | "Vec_contains" => &[(0, 0)],
-            "Vec_set" | "Vec_insert" => &[(1, 0)],
+            "Vec_replace" | "Vec_insert" => &[(1, 0)],
             "Map_insert" | "Map_set" => &[(0, 0), (1, 1)],
             "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_slot"
             | "Map_borrow_elem" => &[(0, 0)],
@@ -6345,7 +6345,7 @@ impl<'a> MirLowerer<'a> {
         // overwrote the option, and reading an element then took a tag out of a
         // bare slot. It crashed on three elements and not two, decided entirely
         // by which push came last.
-        if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set") {
+        if matches!(qualified_name.as_str(), "Vec_push" | "Vec_replace") {
             let declared = self.container_elem_mir_type(object.id, 0);
             if let Some(arg_ty) = declared.as_ref().or_else(|| arg_types.first()) {
                 if !matches!(arg_ty, MirType::I64) {
@@ -6864,14 +6864,14 @@ impl<'a> MirLowerer<'a> {
 
     /// The edge-registration call a container mutator needs, if its value is a
     /// link. `None` for everything else, which is almost every call.
-    fn container_edge_call(
+    pub(super) fn container_edge_call(
         &self,
         name: &str,
         args: &[MirOperand],
     ) -> Option<(&'static str, Vec<MirOperand>)> {
         let (value_index, func) = match name {
             "Vec_push" => (1, "rask_link_register_element"),
-            "Vec_set" | "Vec_insert_at" => (2, "rask_link_register_element"),
+            "Vec_replace" | "Vec_insert_at" => (2, "rask_link_register_element"),
             "Map_insert" => (2, "rask_link_register_entry"),
             _ => return None,
         };

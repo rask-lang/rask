@@ -226,7 +226,7 @@ extend Compiler {
         let instr = self.proto.code.get(idx)!
         let op = decode_opcode(instr)!
         let a = decode_a(instr)
-        self.proto.code.set(idx, encode_asbx(op, a as i64, offset) as u32)
+        self.proto.code[idx] = encode_asbx(op, a as i64, offset) as u32
     }
 
     func declare_local(self, name: string) -> i64 {

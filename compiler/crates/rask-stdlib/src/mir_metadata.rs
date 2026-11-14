@@ -112,6 +112,9 @@ pub struct StdlibMethodMeta {
     /// Which declared parameters are `take`, positionally. The receiver is not
     /// among them; see `keeps_argument` for the index shift.
     pub takes: Vec<bool>,
+    /// Declared `@moves_out`: the result is an element taken out of the
+    /// receiver, now the caller's.
+    pub moves_out: bool,
     /// `@places_node`: the last argument is a node bound for a rack.
     pub places_node: bool,
 }
@@ -170,6 +173,7 @@ fn build_cache() -> MetadataCache {
                 takes_self: method.takes_self,
                 take_self: method.take_self,
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
+                moves_out: method.effects.moves_out,
                 places_node: method.effects.places_node,
             });
         }
@@ -187,6 +191,7 @@ fn build_cache() -> MetadataCache {
             takes_self: false,
             take_self: false,
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
+            moves_out: func.effects.moves_out,
             places_node: func.effects.places_node,
         });
     }
@@ -689,6 +694,20 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
     }
 }
 
+/// Does this call take an element out of its receiver and hand it over?
+///
+/// `Vec.get` and `Vec.pop` are both `-> T?` on a container and no signature
+/// tells them apart: one hands back the buffer's own bytes, the other takes
+/// the element out. So the ones that transfer say so on their declaration
+/// (`@moves_out`). A name that resolves to no declaration answers no, and the
+/// caller releases nothing: a leak, where the other guess is a free of
+/// memory the container still holds. Internal spellings answer through the
+/// declaration they stand for, so `Mutex_replace` answers with
+/// `Shared.replace` and `Vec_move_out` with `Vec.remove`.
+pub fn transfers_out(qualified_name: &str) -> bool {
+    declared(qualified_name).is_some_and(|m| m.moves_out)
+}
+
 /// Does this call hand back a view into storage its receiver keeps owning?
 ///
 /// `Vec.get(self, index: i64) -> Option<T>` points into the vector's buffer:
@@ -697,52 +716,14 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
 /// parameters — the value came out of the receiver's storage rather than
 /// being made here. `Vec.len() -> usize` doesn't, and neither does
 /// `string.trim() -> string`, which builds a new one.
-/// Declared methods whose result *leaves* the receiver instead of pointing
-/// inside it.
-///
-/// `Vec.get` and `Vec.pop` are both `-> T?` on a container and no signature
-/// tells them apart: one hands back the buffer's own sixteen bytes, the other
-/// takes the element out and shortens the vector. So the ones that transfer are
-/// written down.
-///
-/// A list rather than a rule because the cost of being wrong is asymmetric in
-/// both directions: a name missing from here leaks whatever it handed out, and
-/// a name wrongly on it frees something the container still holds. `Map.insert`
-/// belongs here because it hands back the value it displaced.
-const TRANSFERS_OUT: &[&str] = &[
-    "Vec_pop",
-    "Vec_remove",
-    "Vec_remove_unordered",
-    "Vec_move_out",
-    "Field_take",
-    "Map_insert",
-    "Map_remove",
-    "Shared_replace",
-];
-
-/// On `TRANSFERS_OUT` by its own name or by the declaration it stands for, so
-/// `Mutex_replace` answers with `Shared_replace`.
-fn listed_as_transfer(qualified_name: &str) -> bool {
-    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
-    let base = head.split('$').next().unwrap_or(head);
-    TRANSFERS_OUT.contains(&base)
-        || declared(qualified_name).is_some_and(|m| TRANSFERS_OUT.contains(&m.qualified_name.as_str()))
-}
-
-/// Does this call take an element out of its receiver and hand it over?
-/// `TRANSFERS_OUT`, asked by name.
-pub fn transfers_out(qualified_name: &str) -> bool {
-    listed_as_transfer(qualified_name)
-}
-
 pub fn returns_a_view(qualified_name: &str) -> bool {
-    if listed_as_transfer(qualified_name) {
+    if transfers_out(qualified_name) {
         return false;
     }
     match declared(qualified_name) {
         // A `take self` method has no receiver left for the result to point
         // into — it consumed it, and what comes back is the caller's. That is
-        // a rule, where `TRANSFERS_OUT` above is a list, because the list is
+        // a rule, where `@moves_out` is per declaration, because that is
         // for `mutate self` methods that hand out storage they keep.
         //
         // `Handle.join(take self) -> T or JoinError` is what this was

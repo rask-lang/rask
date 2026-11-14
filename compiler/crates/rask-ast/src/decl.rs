@@ -240,6 +240,7 @@ impl FnDecl {
             shrinks: has("shrinks"),
             drops_elements: has("drops_elements"),
             copies_elements: has("copies_elements"),
+            moves_out: has("moves_out"),
             places_node: has("places_node"),
             blocks: has("blocks"),
             prints: has("prints"),
@@ -269,7 +270,7 @@ pub struct DeclaredEffects {
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
-    /// Drops elements without handing them back (`clear`, `set` over one).
+    /// Drops elements without handing them back (`clear`, `remove_where`).
     /// Refused on a container whose elements must be consumed
     /// (mem.resources/RC5).
     pub drops_elements: bool,
@@ -277,6 +278,11 @@ pub struct DeclaredEffects {
     /// a container whose elements must be consumed: a copy would be a second
     /// owner (RC5).
     pub copies_elements: bool,
+    /// Takes an element out of its receiver and hands it to the caller, who
+    /// now owns it (`pop`, `remove`, `replace`, and `Map.insert`'s displaced
+    /// value). Without it, a result typed by the receiver's own parameter is
+    /// a view the receiver still owns, and the caller frees nothing.
+    pub moves_out: bool,
     /// The last argument is a node bound for a rack's storage (`Rack.insert`,
     /// `Staged.insert`). The call carries the node type's layout with it: its
     /// size, where its links are and what it owns.

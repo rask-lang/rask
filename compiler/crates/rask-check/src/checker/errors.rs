@@ -1514,7 +1514,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// mem.resources/RC5: `clear`, `set`, `get` and the like on a `Vec` or
+    /// mem.resources/RC5: `clear`, `get` and the like on a `Vec` or
     /// `Map` whose elements must be consumed. `copies` is a copy out (`get`),
     /// otherwise a drop (`clear`).
     #[error("`{method}` would {} a `{elem}` in a `{container}`", if *copies { "copy" } else { "drop" })]
