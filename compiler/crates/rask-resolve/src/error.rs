@@ -72,6 +72,10 @@ impl ResolveError {
         }
     }
 
+    pub fn break_value_from_comptime_for(span: Span) -> Self {
+        Self { kind: ResolveErrorKind::BreakValueFromComptimeFor, span }
+    }
+
     pub fn invalid_continue(label: Option<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::InvalidContinue { label },
@@ -233,6 +237,10 @@ pub enum ResolveErrorKind {
 
     #[error("break outside of loop{}", label.as_ref().map(|l| format!(" (label: {})", l)).unwrap_or_default())]
     InvalidBreak { label: Option<String> },
+
+    /// `break value` whose loop is a `comptime for`, which has no value.
+    #[error("break with a value out of a comptime for")]
+    BreakValueFromComptimeFor,
 
     #[error("`{name}` is neither a variable to break with nor a label to break to")]
     UnknownBreakTarget { name: String, labels: Vec<String> },

@@ -137,6 +137,12 @@ pub struct Interpreter {
     /// function's name, except that a stdlib function sharing a name with a
     /// program one goes by `name~std` (#1706).
     functions: HashMap<String, FnDecl>,
+    /// Template copies (`rask-template`) by the template's id, each with the
+    /// instance arguments it was written out for, as reflection spells them.
+    template_copies: HashMap<rask_ast::NodeId, Vec<(Vec<rask_types::TypeBinding>, FnDecl)>>,
+    /// The checker's table of copies: copy function id → (template id, the
+    /// instance's arguments). `register_declarations` indexes it by template.
+    copies_of: HashMap<rask_ast::NodeId, (rask_ast::NodeId, Vec<rask_types::TypeBinding>)>,
     /// Each function declaration's key in `functions`.
     function_keys: HashMap<rask_ast::NodeId, String>,
     /// A name the checker resolved to a function → that function's
@@ -180,6 +186,10 @@ pub struct Interpreter {
     /// scope. Resolved through here before the static-call path reads the name
     /// (#998).
     pub(crate) transparent_aliases: HashMap<String, String>,
+    /// Module consts whose value folds (`comptime_if::const_facts`). A
+    /// `comptime if` in a `comptime for` can compare against one, as native
+    /// folds it.
+    pub(crate) const_facts: Arc<HashMap<String, rask_ast::comptime_if::Fact>>,
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
@@ -403,6 +413,38 @@ impl Interpreter {
         rask_check::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
 
+    /// The generic frame for `Type.f(…)` written at `call`: the call's own type
+    /// arguments, and what a written `Wrap<i64>` gives the `extend Wrap<U>`
+    /// block `f` is declared in. A function there without `self` reads `U`
+    /// as much as a method does: `U.zero()` (type.generics/GF6, GF7).
+    pub(crate) fn static_call_generics(
+        &self,
+        call: rask_ast::NodeId,
+        object: &rask_ast::expr::Expr,
+        method: &str,
+    ) -> GenericFrame {
+        let written = object.written_type_args();
+        let (Some(name), false) = (object.name(), written.is_empty()) else {
+            return self.call_generics(call);
+        };
+        let args: Option<Vec<rask_types::GenericArg>> = written
+            .iter()
+            .map(|t| {
+                rask_check::resolve_type_expr(&self.resolve_type_param(t), &self.types)
+                    .ok()
+                    .map(|ty| rask_types::GenericArg::Type(Box::new(ty)))
+            })
+            .collect();
+        let Some(args) = args else { return self.call_generics(call) };
+        let recv = rask_types::Type::UnresolvedGeneric { name: name.to_string(), args };
+        let mut frame: HashMap<String, rask_types::Type> =
+            self.receiver_type_params(&recv, method).into_iter().collect();
+        if let Some(own) = self.call_generics(call) {
+            frame.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        (!frame.is_empty()).then(|| Arc::new(frame))
+    }
+
     /// The generic frame for a call written at `call` with no receiver.
     pub(crate) fn call_generics(&self, call: rask_ast::NodeId) -> GenericFrame {
         self.generic_frame_for_call(call, None)
@@ -467,6 +509,8 @@ impl Interpreter {
         Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -479,6 +523,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
@@ -514,6 +559,8 @@ impl Interpreter {
         Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -526,6 +573,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
@@ -563,6 +611,8 @@ impl Interpreter {
         let interp = Self {
             env: Environment::new(),
             functions: HashMap::new(),
+            template_copies: HashMap::new(),
+            copies_of: HashMap::new(),
             function_keys: HashMap::new(),
             named_functions: HashMap::new(),
             enums: HashMap::new(),
@@ -575,6 +625,7 @@ impl Interpreter {
             methods: HashMap::new(),
             nominal_targets: HashMap::new(),
             transparent_aliases: HashMap::new(),
+            const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
@@ -703,6 +754,7 @@ impl Interpreter {
     /// instead.
     pub fn adopt_checker_tables(&mut self, typed: &rask_check::TypedProgram) {
         self.node_types = typed.node_types.clone();
+        self.copies_of = typed.template_copies.clone();
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();
         self.else_binding_types = typed.else_binding_types.clone();
@@ -780,13 +832,36 @@ impl Interpreter {
     /// Read off the generic frame, which holds the checker's types for the
     /// call. It used to be guessed from the argument values, so `T = i32`
     /// read as `i64` because every integer value looks alike (#699, #968).
+    /// `T` in `T.zero()`, written as the type the running body has for it:
+    /// `Meters`, or `Box<i64>` as a generic name. `None` when `object` is
+    /// anything else: a value, or a name no frame binds.
+    pub(crate) fn type_param_receiver(&self, object: &rask_ast::expr::Expr) -> Option<rask_ast::expr::Expr> {
+        let rask_ast::expr::ExprKind::Ident(name) = &object.kind else { return None };
+        if self.env.get(name).is_some() {
+            return None;
+        }
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref())?;
+        frame.get(name)?;
+        let concrete = self.resolve_type_param(&TypeExpr::named(name.clone()));
+        let base = concrete.last_segment()?.to_string();
+        let kind = if concrete.args().is_empty() {
+            rask_ast::expr::ExprKind::Ident(base)
+        } else {
+            rask_ast::expr::ExprKind::GenericName { name: base, type_args: concrete.args().to_vec() }
+        };
+        Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
+    }
+
     pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         ty.substitute(&|name| {
             let bound = frame?.get(name)?;
+            // A type `nameable_type` doesn't cover (an array, anywhere
+            // inside) still has to come out with its declared types named:
+            // the bare ids print as `<type#N>`, which nothing resolves.
             Some(
                 rask_mono::Monomorphizer::nameable_type(bound, &self.types)
-                    .unwrap_or_else(|| bound.clone())
+                    .unwrap_or_else(|| self.types.resolve_type_names(bound))
                     .to_type_expr(),
             )
         })
@@ -893,6 +968,7 @@ impl Interpreter {
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();
+        child.const_facts = self.const_facts.clone();
         child.call_type_args = self.call_type_args.clone();
         child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();

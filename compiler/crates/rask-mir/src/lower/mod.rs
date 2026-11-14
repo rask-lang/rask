@@ -2197,6 +2197,12 @@ pub struct MirLowerer<'a> {
     /// overflow before reaching main's first line (#463). Materializing at the
     /// use site keeps them out of functions that never mention them.
     pending_module_consts: HashMap<String, (Expr, Option<TypeExpr>)>,
+    /// Module consts whose value folds (`comptime_if::const_facts`), by name,
+    /// with the locals that hold the const itself — a literal one injected at
+    /// entry, a computed one loaded at its first use. The name means the
+    /// const while it names no local or one of those; any other local of
+    /// that name is a shadowing binding.
+    const_facts: HashMap<String, (Vec<LocalId>, rask_ast::comptime_if::Fact)>,
     /// Module-level consts that own a global slot, and the type stored there.
     /// A reference loads from the slot instead of re-running the initializer.
     const_slots: HashMap<String, MirType>,
@@ -2229,11 +2235,6 @@ pub struct MirLowerer<'a> {
     /// attaches to. Armed by `lower_try` and discharged by `lower_expr` when it
     /// reaches that step.
     pending_try_step: Option<(NodeId, NodeId)>,
-    /// Active `comptime for` loop-binding names and the field they're currently
-    /// bound to (innermost last, for nesting). `field` here isn't a runtime
-    /// value — `field.name`/`value.(field.name)` splice this directly instead
-    /// of going through the normal local/struct-layout lookup (CT48/CT49).
-    comptime_for_bindings: Vec<(String, ReflectFieldConst)>,
     /// Bindings in this body whose initializer folded to a compile-time string.
     /// `value.(name)` reads them so a field name can be given a name of its own
     /// (`let which = comptime { "y" }`) instead of being spelled inline (#930).
@@ -2390,6 +2391,14 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Idempotent: once emitted the const lives in `locals` like any other
     /// binding, so later references in the same function reuse it.
+    /// `local` holds the module const `name` itself, not a binding that
+    /// shadows it.
+    fn note_const_local(&mut self, name: &str, local: LocalId) {
+        if let Some((locals, _)) = self.const_facts.get_mut(name) {
+            locals.push(local);
+        }
+    }
+
     pub(crate) fn materialize_module_const(
         &mut self,
         name: &str,
@@ -2412,6 +2421,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(op),
         }));
         self.locals.insert(name.to_string(), (local_id, ty.clone()));
+        self.note_const_local(name, local_id);
         Ok(Some((local_id, ty)))
     }
 
@@ -2446,6 +2456,7 @@ impl<'a> MirLowerer<'a> {
             }));
         }
         self.locals.insert(name.to_string(), (local_id, ty.clone()));
+        self.note_const_local(name, local_id);
         (local_id, ty)
     }
 
@@ -4792,6 +4803,7 @@ impl<'a> MirLowerer<'a> {
             mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
+            const_facts: HashMap::new(),
             const_slots: HashMap::new(),
             const_init_target: const_init.map(|(n, _)| n.to_string()),
             collected_elem_types: HashMap::new(),
@@ -4799,7 +4811,6 @@ impl<'a> MirLowerer<'a> {
             catch_frames: Vec::new(),
             in_test_body: fn_decl.attrs.iter().any(|a| a.is("test_body")),
             pending_try_step: None,
-            comptime_for_bindings: Vec::new(),
             comptime_strings: HashMap::new(),
             ptr_blocks: HashMap::new(),
         };
@@ -4888,6 +4899,19 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        let module_consts = all_decls.iter().filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some((
+                c.name.as_str(),
+                &c.init,
+                c.ty.as_ref().and_then(|t| t.bare_name()),
+            )),
+            _ => None,
+        });
+        lowerer.const_facts = rask_ast::comptime_if::const_facts(module_consts)
+            .into_iter()
+            .map(|(name, fact)| (name, (Vec::new(), fact)))
+            .collect();
+
         // Inject module-level constants as locals so functions can reference them.
         // Literal consts are evaluated directly; complex initializers (constructor
         // calls, etc.) are lowered as regular expressions at function entry.
@@ -4903,6 +4927,7 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                    lowerer.note_const_local(&c.name, local_id);
                 } else if lowerer.ctx.folded.consts.contains_key(&c.name) {
                     // Folded at compile time: a reference reads the folded value
                     // (`load_folded`). Queueing the initializer as well
@@ -5028,6 +5053,19 @@ impl<'a> MirLowerer<'a> {
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
+        // By name: lowering can add parameters the declaration doesn't write.
+        main_fn.param_modes = main_fn
+            .params
+            .iter()
+            .map(|p| {
+                p.name
+                    .as_deref()
+                    .and_then(|n| fn_decl.params.iter().find(|d| d.name == n))
+                    .map_or(rask_ast::ty::ParamMode::Borrow, |d| {
+                        rask_ast::ty::ParamMode::from_flags(d.is_take, d.is_mutate)
+                    })
+            })
+            .collect();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {

@@ -36,6 +36,8 @@ pub struct PassContext {
     /// is last read: links elsewhere point into the rack, and those don't show
     /// up as reads of the name (#1587).
     pub rack_holders: HashSet<u32>,
+    /// Which struct and enum layouts are Copy (`CopyLayouts`).
+    pub copy_layouts: crate::CopyLayouts,
 }
 
 /// Convenience alias.
@@ -81,12 +83,17 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, HashSet::new())
+        self.run_with(fns, HashSet::new(), crate::CopyLayouts::default())
     }
 
     /// `run`, told which struct layouts hold a rack.
-    pub fn run_with(&self, fns: &mut Vec<MirFunction>, rack_holders: HashSet<u32>) -> PipelineResult {
-        let mut ctx = PassContext { rack_holders, ..PassContext::default() };
+    pub fn run_with(
+        &self,
+        fns: &mut Vec<MirFunction>,
+        rack_holders: HashSet<u32>,
+        copy_layouts: crate::CopyLayouts,
+    ) -> PipelineResult {
+        let mut ctx = PassContext { rack_holders, copy_layouts, ..PassContext::default() };
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -310,6 +317,7 @@ impl MirPass for StringRcInsertionPass {
                 &ctx.own_functions,
                 &closure_keeps,
                 &ctx.rack_holders,
+                &ctx.copy_layouts,
             ));
         }
         crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);

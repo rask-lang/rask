@@ -28,7 +28,11 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Returns `None` if the name isn't a known function, so the caller can
     /// report its own unresolved-variable error.
-    pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
+    pub(super) fn lower_fn_as_value(
+        &mut self,
+        name: &str,
+        modes: Vec<rask_ast::ty::ParamMode>,
+    ) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?.clone();
         let ret_ty = sig.ret_ty.clone();
         let param_tys = sig.param_tys.clone();
@@ -80,7 +84,14 @@ impl<'a> MirLowerer<'a> {
                 ret_vec_elem: None,
                 param_tys: Vec::new(),
             });
-            self.synthesized_functions.push(wb.finish());
+            // The function's own modes, after the environment: a `take`
+            // argument is the wrapper's to hand on or release, the same as
+            // the function's once its body is inlined here.
+            let mut wrapper = wb.finish();
+            if !modes.is_empty() {
+                wrapper.param_modes = std::iter::once(rask_ast::ty::ParamMode::Borrow).chain(modes).collect();
+            }
+            self.synthesized_functions.push(wrapper);
         }
 
         let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
@@ -557,6 +568,12 @@ impl<'a> MirLowerer<'a> {
 
         let mut closure_fn = closure_builder.finish();
         closure_fn.is_extern_c = c_abi;
+        // Same meaning as a declared function's; the environment is borrowed.
+        closure_fn.param_modes = env_param_id
+            .map(|_| rask_ast::ty::ParamMode::Borrow)
+            .into_iter()
+            .chain(params.iter().map(|p| rask_ast::ty::ParamMode::from_flags(p.is_take, p.is_mutate)))
+            .collect();
 
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
             ret_ty: closure_ret.clone(),

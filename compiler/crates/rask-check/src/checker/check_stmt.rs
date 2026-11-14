@@ -577,8 +577,12 @@ impl TypeChecker {
                 // type to dispatch a string method from or to infer a Vec's
                 // element from (#931).
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
+                let unrolled = self.comptime_for_bindings.len();
                 match binding {
-                    ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
+                    ForBinding::Single(name) => {
+                        self.define_local(name.clone(), elem_ty);
+                        self.comptime_for_bindings.push((name.clone(), self.local_types.len() - 1));
+                    }
                     ForBinding::Tuple(names) => {
                         let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
                         for (name, var) in names.iter().zip(vars) {
@@ -586,9 +590,14 @@ impl TypeChecker {
                         }
                     }
                 }
+                // The body's own scope, so a `let` there shadows the binding
+                // rather than overwriting it in place.
+                self.push_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
+                self.comptime_for_bindings.truncate(unrolled);
                 self.pop_scope();
             }
             StmtKind::MutTuple { patterns, init } | StmtKind::LetTuple { patterns, init } => {
@@ -845,6 +854,9 @@ impl TypeChecker {
             }
             ExprKind::MethodCall { .. } => "a method call",
             ExprKind::Call { .. } => "a function call",
+            // Inside `comptime for`, a field the loop names is a place like
+            // any other: the written-out copy has `q.p` (ctrl.comptime/CT50).
+            ExprKind::DynamicField { .. } if !self.comptime_for_bindings.is_empty() => return,
             ExprKind::DynamicField { .. } => "a comptime field access",
             ExprKind::OptionalField { .. } => "an optional field access",
             ExprKind::Int { .. }

@@ -59,6 +59,30 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     tests
 }
 
+/// The program with every `test` and `benchmark` block added as a function
+/// the runner would call, and `main` kept: what any entry reaches, for an
+/// analysis that isn't building one runner.
+pub fn with_every_entry(decls: &[Decl]) -> Vec<Decl> {
+    let mut runner = decls.to_vec();
+    extract_tests(&mut runner, None);
+    extract_benchmarks(&mut runner, None);
+    let entries: Vec<Decl> = runner
+        .into_iter()
+        .filter(|d| matches!(&d.kind, DeclKind::Fn(f) if f.attrs.iter().any(|a| a.is(rask_mono::RUNNER_ENTRY))))
+        .collect();
+    let entry_named = |name: &str| entries.iter().any(|e| matches!(&e.kind, DeclKind::Fn(f) if f.name == name));
+    let mut out: Vec<Decl> = decls
+        .iter()
+        .filter(|d| match &d.kind {
+            DeclKind::Fn(f) => !entry_named(&f.name),
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    out.extend(entries);
+    out
+}
+
 /// Marks a function the runner calls. Monomorphization takes each as a root
 /// (`rask_mono::RUNNER_ENTRY`); nothing in the program calls them.
 fn entry_marker() -> rask_ast::attr::Attr {

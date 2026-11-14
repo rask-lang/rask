@@ -76,6 +76,8 @@ These enable comptime type dispatch without string-comparing type names. Primary
 
 Everything here folds to a constant on both backends, and so does everything in the sections below.
 
+Every string that names a type — `name_of`, and `type_name` and `return_type_name` in the sections below — spells it the way source does (`i64 or Shape`, `Vec<Pos>?`) with the names the program declared. A type from another package is `Pos`, not the name the compiler merged it under, and a program type that shares a stdlib name is `ParseError`, not the compiler's symbol for it. The string names the type, not the spelling at the call: `Shared<i64>` is shorthand for `Shared<i64, Readers>`, and both read `Shared<i64, Readers>`, because one type has one name.
+
 `size_of` and `align_of` are the layout: the bytes the value occupies in memory, padding included (`compiler.layout`). That is the same size the 16-byte Copy threshold measures (`mem.value/VS1`), so `is_copy<T>()` is true exactly when `T` copies: `{ a: u8, b: i64 }` is 16 bytes and copies, a struct holding one of those plus a byte is 24 and moves. A generic instance has its own: `Pair<u8>` is 2 bytes.
 
 `is_resource` and `is_flat` needed no layout at all — they ask about the *declaration*, and a layout has dropped `@resource` and substituted its field types by the time it exists. Native reads the checker's type table and the interpreter reads its AST maps; one shared classifier turns either into the same answer. One case still reports: `is_flat<Boxed<i32>>()` on a generic type, because R5 wants the monomorphized type and the declaration's fields are written in its type parameters.
@@ -221,6 +223,55 @@ struct VariantInfo {
 
 A payload field is a `FieldInfo` like a struct field's, read from the same layout. A positional payload is named by its index (`_0`, `_1`). `offset` counts from the start of the enum value, the same origin a struct field's does, so it lands after the tag. A payload has no visibility or wire annotations of its own: `is_public` is true and `serial_name` is the field's name. A generic enum reports the instantiation: `Answer<string>`'s `Yes` holds a 16-byte `string` where `Answer<i64>`'s holds 8.
 
+## Function Parameters
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `params<F>()` | `-> Vec<ParamInfo>` | Each parameter of the function type `F`, in order (compile error if `F` isn't a function type) |
+
+<!-- surface -->
+```rask
+extend reflect {
+    func params<F>() -> Vec<ParamInfo>
+}
+
+struct ParamInfo {
+    index: usize
+    type_name: string
+    is_mutate: bool
+    is_take: bool
+}
+
+extend ParamInfo {
+    func is<T>(self) -> bool
+}
+```
+
+A function's value has a function type, and a parameter's mode is part of that type (`type.functions/FT1`), so `params` reads both off it. A named function reaches `F` through a type parameter: `schedule(drift)` makes `F` drift's type, `func(mutate Pos, Vel)`. A closure's type is a function type too and reflects the same way; its captures aren't parameters and don't appear. R5 holds: a generic function reflects the signature it was instantiated with.
+
+A function type has no parameter names, so `index` tells parameters apart. Neither flag set means the parameter is borrowed.
+
+`is<T>()` asks whether the parameter's type is exactly `T`: `is<Pos>()` is false for a `Pos?`. The mode isn't part of the question. Types reach comptime code only as type arguments (`ctrl.comptime/CT66`), which is why this is a method taking `T` rather than a type stored in the struct.
+
+`is<T>()`, like `FieldInfo`'s `has<A>()` and `get<A>()`, is answered while a `comptime for` unrolls, so it's only callable on that loop's binding. On anything else — an ordinary `for` over the same `Vec`, an element held in a variable — it's a compile error (E0966). The plain fields read anywhere.
+
+<!-- test: skip -->
+```rask
+func drift(mutate p: Pos, v: Vel) {
+    p.x += v.x
+}
+
+func schedule<F>(system: F) {
+    comptime for p in reflect.params<F>() {
+        comptime if p.is<Pos>() && p.is_mutate {
+            // drift writes Pos
+        }
+    }
+}
+```
+
+Generating a call to the function from its parameters — one argument per `ParamInfo` — needs a way to splice a list of arguments, which nothing provides yet.
+
 ## Error Messages
 
 ```
@@ -259,6 +310,8 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | `has_field<T>()` on a non-struct | — | `false` |
 | `methods<T>()` on a generic instantiation | R5 | Only the methods whose `extend` header and `where` clause T meets |
 | `interfaces<T>()` with derived conformances | — | Not listed; `implements` answers |
+| `params<F>()` on a non-function type | — | Compile error |
+| `is<T>()` / `has<A>()` / `get<A>()` outside a `comptime for` over the item | R1 | Compile error (E0966) |
 
 ---
 

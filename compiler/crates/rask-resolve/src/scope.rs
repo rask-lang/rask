@@ -21,6 +21,9 @@ pub enum ScopeKind {
     Block,
     /// Loop scope (for break/continue validation).
     Loop { label: Option<String> },
+    /// A `comptime for` body: a loop for `break` and `continue`, which
+    /// carry no value out of it (ctrl.comptime/CT70).
+    ComptimeLoop,
     /// Closure scope.
     Closure,
 }
@@ -116,6 +119,13 @@ impl ScopeTree {
         Ok(())
     }
 
+    /// Whether the loop an unlabelled `break` here leaves is a `comptime for`.
+    pub fn innermost_loop_is_comptime(&self) -> bool {
+        self.find_loop_scope(None)
+            .and_then(|id| self.scopes.get(id.0 as usize))
+            .is_some_and(|s| matches!(s.kind, ScopeKind::ComptimeLoop))
+    }
+
     /// Check if we're currently inside a loop.
     pub fn in_loop(&self) -> bool {
         self.find_loop_scope(None).is_some()
@@ -149,12 +159,10 @@ impl ScopeTree {
         let mut scope_id = Some(self.current);
         while let Some(id) = scope_id {
             if let Some(scope) = self.scopes.get(id.0 as usize) {
-                if let ScopeKind::Loop { label: loop_label } = &scope.kind {
-                    match (label, loop_label) {
-                        (None, _) => return Some(id), // Any loop matches
-                        (Some(l), Some(ll)) if l == ll => return Some(id),
-                        _ => {}
-                    }
+                match (&scope.kind, label) {
+                    (ScopeKind::Loop { .. } | ScopeKind::ComptimeLoop, None) => return Some(id), // Any loop matches
+                    (ScopeKind::Loop { label: Some(ll) }, Some(l)) if l == ll => return Some(id),
+                    _ => {}
                 }
                 // Stop at function boundaries for break/continue. A closure is
                 // one: its body runs when it's called, maybe after the loop

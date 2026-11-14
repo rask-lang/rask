@@ -13,6 +13,7 @@ pub enum LangItem {
     FieldInfo,
     MethodInfo,
     VariantInfo,
+    ParamInfo,
     JsonValue,
     Choices,
     /// `async.Handle<T>`, what a task block hands back.
@@ -27,6 +28,7 @@ impl LangItem {
             "field_info" => LangItem::FieldInfo,
             "method_info" => LangItem::MethodInfo,
             "variant_info" => LangItem::VariantInfo,
+            "param_info" => LangItem::ParamInfo,
             "json_value" => LangItem::JsonValue,
             "choices" => LangItem::Choices,
             "task_handle" => LangItem::TaskHandle,

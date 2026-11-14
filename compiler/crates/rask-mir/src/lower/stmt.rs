@@ -354,22 +354,29 @@ impl<'a> MirLowerer<'a> {
         }
         // A closure in a field is the aggregate's, released with it (#1253),
         // so writing a new one over it gives the old one back the same way.
-        // Left out, `p.run = || …` leaked the closure it replaced.
+        // Left out, `p.run = || …` leaked the closure it replaced. An array's
+        // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
+        // `[string; 2]` field leaked the strings it replaced.
         matches!(
             fty,
             MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::FuncPtr(_)
+                | MirType::Array { .. } | MirType::FuncPtr(_)
         )
         .then(|| fty.clone())
     }
 
     /// What writing over a variable reached through a pointer — a `mutate`
     /// parameter, a closure's capture — gives back: the value it held, which
-    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
-    /// a container. A scalar holds nothing to give back.
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
+    /// or an array, a string, a container. A scalar holds nothing to give
+    /// back.
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
+            matches!(
+                t,
+                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+                    | MirType::Buffer | MirType::Container(_)
+            )
         })
     }
 
@@ -773,6 +780,11 @@ impl<'a> MirLowerer<'a> {
                 // was dropped on the floor — native printed the old value back
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
+                // `p = p`, `s.f = s.f`: nothing changes, and releasing the
+                // slot before the store would free the value being stored.
+                if same_place(target, value) {
+                    return Ok(());
+                }
                 let (val_op, val_ty) = self.lower_expr(value)?;
                 self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
@@ -945,14 +957,33 @@ impl<'a> MirLowerer<'a> {
                             // records with them when they're freed. A field
                             // the new value took from the old one was zeroed by
                             // the take, so releasing the rest is safe too.
-                            let renew = in_place;
+                            //
+                            // A `mutate` aggregate that isn't Copy is the same:
+                            // the frame holds the caller's slot for the call
+                            // (`rc_insert::held_mutate_params`), so whether the
+                            // old value is still there to release — it may have
+                            // moved out on some paths — is the release pass's
+                            // to say (#1903).
+                            let held_param = assigns_through
+                                && scalar_mutate.is_none()
+                                && self.builder.is_param(local_id)
+                                && matches!(
+                                    dst_ty,
+                                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                                        | MirType::Array { .. } | MirType::Option(_) | MirType::Result { .. }
+                                )
+                                && !self
+                                    .ctx
+                                    .lookup_raw_type(target.id)
+                                    .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+                            let renew = in_place || held_param;
                             // `c = c` (or `c = { c }`): the value is the slot.
                             // Renewing would release it and then copy the
                             // released bytes back.
-                            if in_place && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
+                            if renew && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
                                 return Ok(());
                             }
-                            let replaced = if in_place {
+                            let replaced = if renew {
                                 None
                             } else if assigns_through {
                                 self.released_on_overwrite(target, reuses_old, &dst_ty)
@@ -1028,10 +1059,28 @@ impl<'a> MirLowerer<'a> {
                             if struct_assigned && self.ctx.mir_has_guarded_link(&dst_ty) {
                                 self.emit_link_guarded(MirOperand::Local(local_id), local_id, false);
                             }
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local_id,
-                                rvalue: MirRValue::Use(val_op),
-                            }));
+                            // `t = a` copies the array the way `let t = a`
+                            // does; aliased, `a = …` after it changed `t`.
+                            // The `ZeroAggregate` makes a new value in the
+                            // slot, so the release pass gives back the old one
+                            // while it is still the frame's.
+                            if !self.addressed_locals.contains(&local_id)
+                                && self.reads_caller_array_slot(value, &dst_ty)
+                            {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: local_id,
+                                    offset: 0,
+                                    value: val_op,
+                                    store_size: dst_ty.size(),
+                                    field: None,
+                                }));
+                            } else {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: local_id,
+                                    rvalue: MirRValue::Use(val_op),
+                                }));
+                            }
                             self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
@@ -1236,6 +1285,47 @@ impl<'a> MirLowerer<'a> {
                                     }
                                     let elem_ty = (**elem).clone();
                                     self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true);
+                                }
+                                // The element the slot is about to lose, as a
+                                // field store gives its old value back. Left
+                                // out, `a[0] = s` on a `[string; 2]` leaked the
+                                // string it replaced (#1884).
+                                //
+                                // Only an array that is a binding of its own.
+                                // Through a field (`s.v[1] = t`) the store lands
+                                // in a new SSA version of `s` while the frame
+                                // still releases the old one at its end, so the
+                                // old element would be released twice; that
+                                // case keeps leaking until #1884 is closed.
+                                let elem_ty = (**elem).clone();
+                                let own_binding = matches!(object.kind, ExprKind::Ident(_));
+                                if let Some(old) = self
+                                    .replaced_slot_type(target, reuses_old, &elem_ty)
+                                    .filter(|_| own_binding)
+                                {
+                                    let scaled = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: scaled,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Mul,
+                                            left: idx_op.clone(),
+                                            right: MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
+                                        },
+                                    }));
+                                    let at = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: at,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Add,
+                                            left: MirOperand::Local(base_id),
+                                            right: MirOperand::Local(scaled),
+                                        },
+                                    }));
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
+                                        addr: at,
+                                        offset: 0,
+                                        ty: old,
+                                    }));
                                 }
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
@@ -1556,13 +1646,11 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
-            // monomorphized function, mono has already substituted T to a
-            // concrete type on `reflect.fields<T>()` — that's what makes this
-            // "per instantiation" without a separate mono-side pass.
-            StmtKind::ComptimeFor { binding, iter, body } => {
-                self.lower_comptime_for(binding, iter, body)
-            }
+            // Every `comptime for` is written out before lowering, as a
+            // plain body per instance (`rask-template`, ctrl.comptime/CT50).
+            StmtKind::ComptimeFor { .. } => Err(LoweringError::InvalidConstruct(
+                "internal: a `comptime for` reached lowering without being written out".to_string(),
+            )),
         }
     }
 
@@ -1581,6 +1669,7 @@ impl<'a> MirLowerer<'a> {
     /// out, so the next one added gets it without anyone remembering to.
     fn lower_body_scoped(&mut self, body: &[Stmt]) -> Result<(), LoweringError> {
         let saved = self.comptime_strings.clone();
+        let saved_locals = self.locals.clone();
         let mut result = Ok(());
         for stmt in body {
             result = self.lower_stmt(stmt);
@@ -1589,68 +1678,8 @@ impl<'a> MirLowerer<'a> {
             }
         }
         self.comptime_strings = saved;
+        self.locals = saved_locals;
         result
-    }
-
-    /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
-    /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
-    /// and `value.(field.xxx)` inside the body splice as compile-time
-    /// constants (CT49) instead of going through normal local lookup.
-    fn lower_comptime_for(
-        &mut self,
-        binding: &ForBinding,
-        iter: &Expr,
-        body: &[Stmt],
-    ) -> Result<(), LoweringError> {
-        let name = match binding {
-            ForBinding::Single(name) => name.clone(),
-            ForBinding::Tuple(_) => {
-                return Err(LoweringError::InvalidConstruct(
-                    "comptime for requires a single binding — the iterable is a list of fields, not tuples".into(),
-                ));
-            }
-        };
-
-        let fields = self.reflect_fields_for(iter)?;
-
-        for field in fields {
-            self.comptime_for_bindings.push((name.clone(), field));
-            self.lower_body_scoped(body)?;
-            self.comptime_for_bindings.pop();
-        }
-        Ok(())
-    }
-
-    /// CT51: the iterable must be comptime-known. The only form implemented
-    /// so far — matching the interpreter (rask-interp/src/stdlib/reflect.rs)
-    /// — is `reflect.fields<T>()`, T already concrete after mono substitution.
-    fn reflect_fields_for(
-        &self,
-        iter: &Expr,
-    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
-        
-
-        let unsupported = || {
-            LoweringError::InvalidConstruct(
-                "comptime for requires a comptime-known iterable, e.g. reflect.fields<T>()".into(),
-            )
-        };
-
-        let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
-            return Err(unsupported());
-        };
-        let is_reflect_fields = method == "fields"
-            && matches!(&object.kind, ExprKind::Ident(n) if n == "reflect");
-        if !is_reflect_fields {
-            return Err(unsupported());
-        }
-        let type_args = self.checked_type_args(type_args);
-        let ty = type_args
-            .as_ref()
-            .and_then(|ta| ta.first())
-            .ok_or_else(unsupported)?;
-
-        self.reflect_field_consts(ty)
     }
 
     /// The declaration's type parameters paired with an instantiation's written
@@ -1716,15 +1745,28 @@ impl<'a> MirLowerer<'a> {
         let mut ordered: Vec<&rask_layout::FieldLayout> = layout.fields.iter().collect();
         ordered.sort_by_key(|fl| fl.decl_index);
 
+        // The type each field was declared with. A shared layout — which an
+        // instance keeps when its arguments fit it, `Holder<f64>` — holds a
+        // word where the declaration says `T`, and the name read off it was
+        // `i64`.
+        let declared_fields = match &checked {
+            Some(rask_types::Type::Named(id) | rask_types::Type::Generic { base: id, .. }) => {
+                match self.ctx.type_defs.get(*id) {
+                    Some(rask_types::TypeDef::Struct { fields, .. }) => Some(fields),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+
         Ok(ordered
             .into_iter()
             .map(|fl| {
-                let declared = self.ctx.type_defs.resolve_type_names(&fl.ty).to_type_expr();
-                let type_name = declared
-                    .substitute(&|name| {
-                        type_subst.iter().find(|(p, _)| p == name).map(|(_, a)| a.clone())
-                    })
-                    .to_string();
+                let declared = declared_fields
+                    .and_then(|fs| fs.iter().find(|(n, _)| *n == fl.name))
+                    .map_or(&fl.ty, |(_, t)| t);
+                let type_name =
+                    rask_check::reflect::substituted_label(self.ctx.type_defs, declared, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
@@ -1757,21 +1799,46 @@ impl<'a> MirLowerer<'a> {
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
         use rask_ast::comptime_if;
         let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
-        let taken = comptime_if::decide(cond, &mut |fact| {
+        comptime_if::choose(cond, then_branch, else_branch, &mut |fact| {
             let answer = match &fact.kind {
-                ExprKind::MethodCall { object, method, type_args, .. } => {
-                    let type_args = self.checked_type_args(type_args);
-                    self.comptime_field_method_const(object, method, &type_args)?
+                // A module const with a literal value.
+                ExprKind::Ident(name) => {
+                    let (own, fact) = self.const_facts.get(name)?;
+                    let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
+                    return still_the_const.then(|| fact.clone());
                 }
-                ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
+                // `reflect.name_of<T>()` and the other answers that are one
+                // constant. The list-valued ones build a vector, which a
+                // condition can't compare.
+                ExprKind::MethodCall { object, method, type_args, args }
+                    if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                        && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
+                {
+                    let type_args = self.checked_type_args(type_args);
+                    self.try_lower_reflect_call(object, method, &type_args, args).ok()??
+                }
                 _ => return None,
             };
             match answer.0 {
-                MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                MirOperand::Constant(MirConst::Bool(b)) => Some(comptime_if::Fact::Bool(b)),
+                MirOperand::Constant(MirConst::Int(n)) => {
+                    // A reflect property's own type (`offset` is a `usize`).
+                    let range = match &answer.1 {
+                        MirType::U8 => comptime_if::int_range("u8"),
+                        MirType::U16 => comptime_if::int_range("u16"),
+                        MirType::U32 => comptime_if::int_range("u32"),
+                        MirType::U64 => comptime_if::int_range("u64"),
+                        MirType::I8 => comptime_if::int_range("i8"),
+                        MirType::I16 => comptime_if::int_range("i16"),
+                        MirType::I32 => comptime_if::int_range("i32"),
+                        _ => None,
+                    };
+                    Some(comptime_if::Fact::Int(n as i128, range))
+                }
+                MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }
-        })?;
-        comptime_if::branch(taken, then_branch, else_branch)
+        })
     }
 
     /// Try to evaluate a `comptime if` block at compile time.
@@ -1789,7 +1856,31 @@ impl<'a> MirLowerer<'a> {
     /// The source can be a collection slot, a `with` or `for mutate` binding,
     /// a `mutate` parameter, a field, or a local of the frame's own; all of
     /// them keep their references and can drop them while the copy lives.
-    fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
+    /// Should `let t = init` copy an array out of a place into `t`'s own
+    /// slot? An array-to-array `Use` names the place's storage.
+    ///
+    /// A Copy array, from any place: `let t = s.one` then `s.one = …` changed
+    /// what `t` read. A whole `mutate` array parameter too, which is moved
+    /// out and refilled (`OwnershipResult::refills_after_move`). Not a non-Copy array
+    /// read out of a field or an element: unpaired with a refill that read
+    /// is a view of the slot (mem.borrowing/S1), and the checker stops it
+    /// being read once the slot is written over.
+    fn reads_caller_array_slot(&self, init: &Expr, ty: &MirType) -> bool {
+        if !matches!(ty, MirType::Array { .. }) {
+            return false;
+        }
+        let copy = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+        match &init.kind {
+            ExprKind::Ident(name) => copy || self.meta(name).is_some_and(|m| m.assigns_through),
+            ExprKind::Field { .. } | ExprKind::Index { .. } => copy,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
         if !self.reads_borrowed_storage(init) {
             return;
         }
@@ -1899,7 +1990,7 @@ impl<'a> MirLowerer<'a> {
             )
         );
         if aggregate {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local, for_hand_off: false }));
         }
     }
 
@@ -2003,10 +2094,27 @@ impl<'a> MirLowerer<'a> {
             rask_ast::coercion::CoercionSite::AnnotatedBinding,
             init_op, &inferred_ty, &var_ty,
         );
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: local_id,
-            rvalue: MirRValue::Use(init_op.clone()),
-        }));
+        // `let t = a`, `let t = s.one`, `let t = g[1]` on an array: an
+        // array-to-array `Use` names the place's storage (`for mutate` and
+        // `with` bind that way on purpose). A `let` is a value, so the bytes
+        // are copied into `t`'s own slot, and the RC pass gives the copy
+        // references of its own while the place lives on. Aliased, `a = b`
+        // changed what `t` read and a swap gave `b, b` (#1877).
+        if self.reads_caller_array_slot(init, &var_ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: local_id,
+                offset: 0,
+                value: init_op.clone(),
+                store_size: var_ty.size(),
+                field: None,
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local_id,
+                rvalue: MirRValue::Use(init_op.clone()),
+            }));
+        }
         self.retain_copy_of_place(local_id, init);
         // The struct may carry edges nothing has recorded — a literal writes its
         // fields before the value has anywhere to live, so there was no slot to
@@ -2618,7 +2726,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// For loop: counter-based while for ranges, iterator protocol otherwise.
+    ///
+    /// The loop binding is scoped to the loop. Each lowering below binds it
+    /// into `locals`, and without the restore it outlived the loop: a
+    /// `let p = "outer"` before `for p in [1, 2]` read `2` afterwards.
     fn lower_for(
+        &mut self,
+        label: Option<&str>,
+        binding: &ForBinding,
+        mutate: bool,
+        iter_expr: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let saved_locals = self.locals.clone();
+        let result = self.lower_for_unscoped(label, binding, mutate, iter_expr, body);
+        self.locals = saved_locals;
+        result
+    }
+
+    fn lower_for_unscoped(
         &mut self,
         label: Option<&str>,
         binding: &ForBinding,
@@ -3735,4 +3861,16 @@ pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
 /// lends, and nothing reads it as a receiver.
 pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
     !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
+}
+
+/// Do two expressions name the same place — the same binding and the same
+/// field path?
+fn same_place(a: &Expr, b: &Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(x), ExprKind::Ident(y)) => x == y,
+        (ExprKind::Field { object: oa, field: fa }, ExprKind::Field { object: ob, field: fb }) => {
+            fa == fb && same_place(oa, ob)
+        }
+        _ => false,
+    }
 }

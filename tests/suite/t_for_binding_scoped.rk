@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `for` loop's binding ends with the loop. Native bound it over the outer
+// variable of the same name and left it there, so `p` read `2` after the loop
+// where the interpreter read "outer".
+
+test "a for binding doesn't outlive its loop" {
+    let p = "outer"
+    mut seen = 0
+    for p in [1, 2] {
+        seen += p
+    }
+    assert seen == 3
+    assert p == "outer"
+}
+
+test "nor does a range loop's" {
+    let i = 100
+    mut sum = 0
+    for i in 0..3 {
+        sum += i
+    }
+    assert sum == 3
+    assert i == 100
+}

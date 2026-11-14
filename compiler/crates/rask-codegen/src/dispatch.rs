@@ -1458,6 +1458,7 @@ mod tests {
     const NATIVE_WITHOUT_A_DISPATCH_ROW: &[(&str, NoRow)] = &[
     ("FieldInfo.get",             Ok_("t_native_reach_reflect")),
     ("FieldInfo.has",             Ok_("t_native_reach_reflect")),
+    ("ParamInfo.is",              Ok_("t_reflect_params")),
     ("Map.modify",                Ok_("t_native_reach_map_math_json")),
     ("Map.modify_with_default",   Ok_("t_native_reach_map_math_json")),
     ("Map.read",                  Ok_("t_native_reach_map_math_json")),
@@ -1500,6 +1501,7 @@ mod tests {
     ("reflect.interfaces",        Ok_("t_native_reach_reflect")),
     ("reflect.methods",           Ok_("t_native_reach_reflect")),
     ("reflect.variants",          Ok_("t_native_reach_reflect")),
+    ("reflect.params",            Ok_("t_reflect_params")),
     ("reflect.is_enum",           Ok_("t_native_reach_reflect")),
     ("reflect.is_flat",           Ok_("t_native_reach_reflect")),
     ("reflect.is_float",          Ok_("t_native_reach_reflect")),
