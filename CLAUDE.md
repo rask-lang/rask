@@ -126,7 +126,7 @@ Three agents, each pinned to a model and an effort in `.claude/agents/`:
 
 Why these, so nobody "tunes" them back (prices per million tokens, in/out):
 
-- **Haiku ($0.10/$0.50) is fifty times cheaper than Sonnet only while its
+- **Haiku ($0.10/$0.50) is twenty times cheaper than Sonnet only while its
   prompt is under 100K tokens.** Past that the whole request costs five times
   as much. So the scout is capped at 100K, gets no CLAUDE.md and does short
   jobs. Anything with a long loop or a judgment in it is a worker's.
