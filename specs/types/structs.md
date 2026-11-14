@@ -136,6 +136,10 @@ renaming the field, since the method is the surface the specs name.
 | `take self` | Take | Consumes struct |
 | (no self) | Static | Associated function, no instance |
 
+A public method's mode is what it declares. A non-public method may write plain
+`self` and have the mode inferred from its body (`type.gradual/GC9`): a body that
+writes a field gets `mutate self`.
+
 <!-- test: parse -->
 ```rask
 struct Point {

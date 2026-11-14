@@ -103,6 +103,9 @@ whose context is thrown away when they report. Why each runs on what it does:
   stdlib, with the goal, not your reasoning. Not per push, not for a "just do
   it" change. What it confirms goes to a worker; a finding you reject gets a
   line under Status.
+- **`design-skeptic`** (Opus): once per spec change that adds a feature or
+  changes a default. It prices the change against [specs/RULINGS.md](specs/RULINGS.md)
+  and shows what it costs other features in code. Not for wording fixes.
 
 ## Every wake re-reads the whole session
 
