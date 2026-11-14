@@ -113,9 +113,42 @@ and file what you learned — that's a finished piece of work, not a blocker.
 The main session is long-lived and every turn re-sends all of it, so it stays
 small. It plans, hands out tasks, and keeps tabs on status and decisions. It does
 not write compiler, runtime or stdlib code, and it doesn't read whole files or
-build logs. That happens in `worker` agents (Sonnet), whose context is thrown
-away when they report. Docs and config edits the main session does itself.
+build logs. That happens in agents, whose context is thrown away when they
+report. Docs and config edits the main session does itself.
 
+Three agents, each pinned to a model and an effort in `.claude/agents/`:
+
+| Agent | Runs on | Gets |
+|-------|---------|------|
+| `scout` | Haiku 5.5, medium | Lookups with a checkable answer: the failing lines of a CI job, is main red too, does an issue exist, where is X defined, which tests of a run failed |
+| `worker` | Sonnet 5.5, high | All coding. Bug fixes, features, refactors |
+| `skeptic` | Opus 5.5, high | One adversarial review per finished PR |
+
+Why these, so nobody "tunes" them back (prices per million tokens, in/out):
+
+- **Haiku ($0.10/$0.50) is fifty times cheaper than Sonnet only while its
+  prompt is under 100K tokens.** Past that the whole request costs five times
+  as much. So the scout is capped at 100K, gets no CLAUDE.md and does short
+  jobs. Anything with a long loop or a judgment in it is a worker's.
+- **Sonnet ($2/$10) has no such step**, so a worker may read as much as the
+  task needs. It runs at `high` because at lower effort it is documented to
+  call a change done without running the check, which is the failure this
+  whole setup exists to stop. Not `xhigh`: for the hardest work the guidance
+  is to move up to Opus instead of pushing Sonnet harder.
+- **Opus ($4/$20) defaults to `medium`**, which is right for routine work and
+  wrong for the two places it's used here. Both are pinned to `high`: a review
+  runs once and a miss ships, and an escalated task already beat Sonnet twice.
+  `xhigh` and `max` stay off until a bug that `high` missed shows they'd have
+  caught it.
+
+- **Opus for coding, by rule** (pass `model: "opus", effort: "high"` to the
+  `worker`): a task a Sonnet worker failed twice, and a task with no test that
+  can tell a wrong answer from a right one (a design change across passes, a
+  spec rewrite). Retrying on a bigger model only works when the failure shows.
+  The main session still doesn't do it itself.
+- **Don't spawn for one command.** An agent starts cold: no shared cache, its
+  own rebuild. A lookup that is one call with a few lines of output the main
+  session runs directly.
 - **Brief a worker with** the issue or goal, the branch, what done means, and
   what's already ruled out. Point at files; don't paste them.
 - **One worker at a time on a branch.** Independent tasks can run in parallel
@@ -124,9 +157,8 @@ away when they report. Docs and config edits the main session does itself.
   partial, deferred, follow-up or "the alternative is a bigger change" goes
   back to the same worker (`SendMessage`) with "finish it properly". Don't
   accept it and don't turn it into a question for me.
-- **Escalate, don't take over.** A worker that fails the same task twice gets
-  rerun with `model: "opus"`. The main session still doesn't do it itself.
-- **CI and logs**: send a worker or fetch only the failing lines.
+- **CI and logs** go to a `scout`. What it finds goes to a worker if it needs
+  fixing.
 
 ## Before the PR is done
 

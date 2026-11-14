@@ -2,6 +2,7 @@
 name: skeptic
 description: Adversarial reviewer for a change to the Rask compiler, runtime or stdlib. Give it the goal or issue number and the branch; it tries to break the change and reports only what it could reproduce. Use once per PR, when the branch is finished.
 model: opus
+effort: high
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
 ---

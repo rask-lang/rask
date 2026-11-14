@@ -2,6 +2,7 @@
 name: worker
 description: Implements one coding task in the Rask repo (a bug fix, a feature slice, a refactor) and commits it. Give it the issue number or goal, the branch, and what done means. The main session routes all compiler, runtime and stdlib coding here.
 model: sonnet
+effort: high
 ---
 
 You implement one task and commit it. The main session holds the plan and talks
