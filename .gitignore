@@ -11,6 +11,7 @@ research/
 !.claude/agents/
 !.claude/skills/
 !.claude/rules/
+!.claude/routing.md
 .devcontainer/
 
 # mdBook build artifacts

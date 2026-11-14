@@ -24,8 +24,11 @@ sentence plus closing keywords (`Closes #N`; a plain `#N` for related issues).
 
 - **No interim summaries.** Mid-task, speak only to ask a decision or report a
   blocker.
-- **Quiet check-ins are silent.** An event that finds nothing new ends the turn
-  with no text, or one line: `#N: nothing new.`
+- **Quiet wakes are silent.** A wake that finds nothing to do ends the turn
+  with no text.
+- **New theme, new context.** When the work moves on (a PR merged, a different
+  issue or design question), end your message with `New theme: /compact` so I
+  compact before it starts.
 - **Recap** when you stop after substantial work, or when I say "recap". Two
   parts, nothing else:
   1. **Decisions for me**: new ones only, ones I alone can make (a spec question
@@ -82,8 +85,11 @@ whose context is thrown away when they report. Why each runs on what it does:
 `.claude/routing.md`.
 
 - **Just do it** when the change is a few lines and you know where: a
-  constant, a message, a one-function bug with an existing test, any docs or
-  config edit. Edit, run that test, commit. No agent, no skeptic, no plan.
+  constant, a message, a one-function bug with a test that fails before your
+  change, any docs or config edit. Edit, run that test, commit. No agent, no
+  skeptic, no plan. Not for ownership, MIR lowering, codegen or runtime memory:
+  those go to a worker and the skeptic however small (e8ea2956's first version
+  passed the existing tests and still freed twice; the skeptic caught it).
 - **`scout`** (Haiku): lookups with a checkable answer. Failing CI lines, is
   main red too, does an issue exist. Not for one command; run that yourself.
 - **`worker`** (Sonnet): coding that needs a lot of reading or spans passes.
@@ -97,6 +103,27 @@ whose context is thrown away when they report. Why each runs on what it does:
   stdlib, with the goal, not your reasoning. Not per push, not for a "just do
   it" change. What it confirms goes to a worker; a finding you reject gets a
   line under Status.
+
+## Every wake re-reads the whole session
+
+A turn costs the session's full context whether I typed it or an event did, and
+one that starts after an hour idle rebuilds the cache at 40 times the price of
+reading it. Most turns used to be events. So:
+
+- **No PR subscriptions, no scheduled check-ins.** Nobody else reviews these
+  PRs (0 of 107 since September had a review), so a failed check is the only
+  event worth a turn. Opening a PR subscribes the session by itself: call
+  `unsubscribe_pr_activity` right after. After a push, set one `send_later`
+  for when CI should be done (10 minutes). When it fires, read the failed
+  checks only: none, end silently; some, fix them.
+- **Run an agent in the foreground when you'd only wait for it.** A background
+  agent's report arrives as its own wake. Background is for when you have other
+  work meanwhile.
+- **A gate sweep is one command that reports once**, not a Monitor that wakes
+  the session per gate.
+- **Commit and push before ending a turn.** The cloud's stop hook re-prompts on
+  uncommitted, untracked or unpushed work, and each re-prompt is a full turn.
+  Scratch files go in `/tmp`.
 
 **Process is not the product.** A rule, gate or record earns its place by
 catching wrong code. Don't add one without saying what bug it would have
