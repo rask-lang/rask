@@ -100,6 +100,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         });
         assert_eq!(prog.functions().len(), 1);
@@ -138,6 +139,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         });
         prog.functions_mut()[0].name = "bar".to_string();

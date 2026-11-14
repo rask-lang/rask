@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "template_package"
+version = "0.1.0"
+description = "Template instances at two types sharing a name"
+license = "MIT OR Apache-2.0"

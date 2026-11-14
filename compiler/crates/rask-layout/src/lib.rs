@@ -1263,6 +1263,9 @@ fn type_arg_key(
             }
             format!("tup{}", parts.join("$"))
         }
+        // `[i64; 3]` and `[i64; 4]` are different instantiations, so the
+        // length is part of the key.
+        Type::Array { elem, len } => format!("arr{}${}", len, type_arg_key(elem, type_names)?),
         // A closure argument. The arity goes in the key because the parameters
         // and the return run together otherwise, and `func(i64, i64) -> void`
         // would key the same as `func(i64) -> func(i64) -> void`.

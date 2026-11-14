@@ -6,10 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Cargo builds the bin for this test and says where it put it. Guessing from
-/// the test executable's directory broke when cargo moved test executables
-/// away from the bin's directory.
 fn rask_binary() -> PathBuf {
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
     PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 

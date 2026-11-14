@@ -34,6 +34,22 @@ pub enum IntKind {
 }
 
 impl IntKind {
+    /// The range a `comptime if` holds arithmetic on this value to
+    /// (`rask_ast::comptime_if::Fact`). `Untyped` is an `i64`.
+    pub fn fact_range(self) -> Option<(i128, i128)> {
+        use rask_ast::comptime_if::int_range;
+        match self {
+            IntKind::I8 => int_range("i8"),
+            IntKind::I16 => int_range("i16"),
+            IntKind::I32 => int_range("i32"),
+            IntKind::I64 | IntKind::Untyped => None,
+            IntKind::U8 => int_range("u8"),
+            IntKind::U16 => int_range("u16"),
+            IntKind::U32 => int_range("u32"),
+            IntKind::U64 => int_range("u64"),
+        }
+    }
+
     /// P2: what `usize` is on this target — pointer-sized. The width comes
     /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
     pub fn usize_kind() -> IntKind {
@@ -1026,6 +1042,17 @@ fn map_order_seed() -> u64 {
     *SEED
 }
 
+/// Every bit of the result depends on every bit of `x` (splitmix64's
+/// finalizer). Sorting by `hash ^ seed` alone kept most of the hashes' own
+/// order: a seed only flips the bits where keys first differ, so eight keys
+/// came out in about sixteen orders, and five runs agreeing was a coin toss
+/// away from happening.
+fn scramble(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
 /// A Map's entries in seeded hash order — what every user-observable Map
 /// operation (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`)
 /// iterates instead of the insertion-ordered backing store. Stable for a
@@ -1034,7 +1061,7 @@ fn map_order_seed() -> u64 {
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
     let seed = map_order_seed();
     let mut entries: Vec<(u64, Value, Value)> = map.iter()
-        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .map(|(k, v)| (scramble(k.hash ^ seed), k.value.clone(), v.clone()))
         .collect();
     entries.sort_by_key(|(order, _, _)| *order);
     entries.into_iter().map(|(_, k, v)| (k, v)).collect()
@@ -1200,6 +1227,10 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// A checked type held by reflection metadata, hidden behind a `__` key
+    /// so `param.is<T>()` compares types rather than their spellings. Never
+    /// reaches user code (ctrl.comptime/CT66).
+    ReflectedType(Arc<rask_types::Type>),
     /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
     Cell(Arc<Mutex<Value>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
@@ -1491,7 +1522,7 @@ impl Value {
             Value::Closure { .. } => "closure",
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
-            Value::Type(_) => "type",
+            Value::Type(_) | Value::ReflectedType(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
             Value::Staged(_) => "Staged",
@@ -1809,6 +1840,7 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::ReflectedType(ty) => write!(f, "<type {}>", ty),
             Value::Cell(c) => {
                 let inner = c.lock().unwrap();
                 write!(f, "Cell({})", inner)

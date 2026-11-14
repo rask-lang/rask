@@ -842,10 +842,10 @@ impl ComptimeEnv {
 enum ControlFlow {
     /// Normal execution continues.
     Normal(ComptimeValue),
-    /// Break statement encountered.
-    Break(Option<ComptimeValue>),
-    /// Continue statement encountered.
-    Continue,
+    /// Break statement encountered: the loop it names, if any, and its value.
+    Break(Option<String>, Option<ComptimeValue>),
+    /// Continue statement encountered, with the loop it names.
+    Continue(Option<String>),
     /// Return statement encountered.
     Return(ComptimeValue),
 }
@@ -853,10 +853,33 @@ enum ControlFlow {
 impl ControlFlow {
     fn value(self) -> ComptimeValue {
         match self {
-            ControlFlow::Normal(v) | ControlFlow::Break(Some(v)) | ControlFlow::Return(v) => v,
-            ControlFlow::Break(None) | ControlFlow::Continue => ComptimeValue::Unit,
+            ControlFlow::Normal(v) | ControlFlow::Break(_, Some(v)) | ControlFlow::Return(v) => v,
+            ControlFlow::Break(_, None) | ControlFlow::Continue(_) => ComptimeValue::Unit,
         }
     }
+
+    /// What a loop labelled `own` does with what its body ended with.
+    fn in_loop(self, own: Option<&String>) -> LoopStep {
+        let mine = |label: &Option<String>| label.is_none() || label.as_ref() == own;
+        match self {
+            ControlFlow::Normal(_) => LoopStep::Next,
+            ControlFlow::Continue(label) if mine(&label) => LoopStep::Next,
+            ControlFlow::Break(label, value) if mine(&label) => LoopStep::Exit(value.unwrap_or(ComptimeValue::Unit)),
+            other => LoopStep::Leave(other),
+        }
+    }
+}
+
+/// One iteration's outcome for the loop running it.
+enum LoopStep {
+    Next,
+    /// Out of this loop, with its value.
+    Exit(ComptimeValue),
+    /// Out past this loop: a `return`, or a jump to a loop around it.
+    Leave(ControlFlow),
+}
+
+impl ControlFlow {
 
 }
 
@@ -1381,8 +1404,8 @@ impl ComptimeInterpreter {
         match self.eval_expr_cf(expr)? {
             ControlFlow::Normal(v) => Ok(v),
             ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
@@ -1891,8 +1914,8 @@ impl ComptimeInterpreter {
     pub fn eval_block_to_value(&mut self, stmts: &[Stmt]) -> ComptimeResult<ComptimeValue> {
         match self.eval_block(stmts)? {
             ControlFlow::Normal(v) | ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
@@ -1903,8 +1926,7 @@ impl ComptimeInterpreter {
             match self.eval_stmt(stmt)? {
                 ControlFlow::Normal(v) => last_value = v,
                 cf @ ControlFlow::Return(_) => return Ok(cf),
-                cf @ ControlFlow::Break(_) => return Ok(cf),
-                cf @ ControlFlow::Continue => return Ok(cf),
+                cf @ (ControlFlow::Break(..) | ControlFlow::Continue(_)) => return Ok(cf),
             }
         }
 
@@ -2093,25 +2115,17 @@ impl ComptimeInterpreter {
             }
 
             StmtKind::Break { label, value } => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled break".to_string()));
-                }
                 let val = if let Some(v) = value {
                     Some(self.eval_expr(v)?)
                 } else {
                     None
                 };
-                Ok(ControlFlow::Break(val))
+                Ok(ControlFlow::Break(label.clone(), val))
             }
 
-            StmtKind::Continue(label) => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled continue".to_string()));
-                }
-                Ok(ControlFlow::Continue)
-            }
+            StmtKind::Continue(label) => Ok(ControlFlow::Continue(label.clone())),
 
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { label, cond, body } => {
                 loop {
                     self.env.count_branch()?;
 
@@ -2126,13 +2140,13 @@ impl ComptimeInterpreter {
                     }
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2142,18 +2156,18 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::Loop { body, .. } => {
+            StmtKind::Loop { label, body } => {
                 loop {
                     self.env.count_branch()?;
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2162,7 +2176,7 @@ impl ComptimeInterpreter {
                 }
             }
 
-            StmtKind::For { binding, iter, body, .. } => {
+            StmtKind::For { label, binding, iter, body, .. } => {
                 let iter_val = self.eval_expr(iter)?;
                 let items = match iter_val {
                     ComptimeValue::Array(arr) => arr,
@@ -2189,13 +2203,13 @@ impl ComptimeInterpreter {
                         }
                     }
 
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2231,9 +2245,14 @@ impl ComptimeInterpreter {
                                     }
                                 }
                             }
-                            match self.eval_block(body)? {
-                                ControlFlow::Normal(_) => {}
-                                cf => {
+                            // `break` and `continue` act on this loop (CT70).
+                            match self.eval_block(body)?.in_loop(None) {
+                                LoopStep::Next => {}
+                                LoopStep::Exit(_) => {
+                                    self.env.pop_scope();
+                                    return Ok(ControlFlow::Normal(ComptimeValue::Unit));
+                                }
+                                LoopStep::Leave(cf) => {
                                     self.env.pop_scope();
                                     return Ok(cf);
                                 }

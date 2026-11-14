@@ -126,6 +126,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
 | **GF5: Methods too** | A method declares type parameters the same way a function does, and they're independent of the receiver's. `Holder<T>` can have `func other<U>(self, u: U) -> U` — `T` is fixed by the receiver, `U` is chosen per call |
 | **GF6: A type's bounds hold in its methods** | `struct Holder<T: Named>` means every method in `extend Holder<T>` may call `Named`'s methods on a `T`. The bound is declared on the type and only there; the `extend` header names the parameters by position and may rename them |
+| **GF7: Functions on the parameter itself** | `T.zero()` calls a function `T`'s bounds require and that takes no `self`: `interface Zero { func zero() -> Self }` lets `func fresh<T: Zero>() -> T { return T.zero() }`. Each instance calls its own type's function, as `Meters.zero()` would. Through a type, `T` or a concrete one, only a function without `self` is called; a method with `self` is called on a value (E0967), and a function without one through the type (E0946) |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -134,6 +135,12 @@ public func process<T: Hashable>(items: Vec<T>) { ... }
 // Private: bounds inferred from body
 func helper(item) { item.hash() }
 // Compiler infers: func helper<T: Hashable>(item: T)
+
+// GF7: a function the bound requires, called on the parameter
+interface Zero {
+    func zero() -> Self
+}
+func fresh<T: Zero>() -> T { return T.zero() }
 
 // GF5: a method's own parameters, alongside the receiver's
 extend Holder<T> {

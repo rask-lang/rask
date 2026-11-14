@@ -2608,7 +2608,7 @@ fn collect_element_offsets(
         for stmt in &block.statements {
             // A retained aggregate walks the list its type would describe a
             // container element by.
-            if let rask_mir::MirStmtKind::RcIncContents { local } = &stmt.kind {
+            if let rask_mir::MirStmtKind::RcIncContents { local, .. } = &stmt.kind {
                 let ty = mir_fn
                     .locals
                     .iter()

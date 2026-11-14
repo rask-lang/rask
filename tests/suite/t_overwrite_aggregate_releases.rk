@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writing arrays and tuples of strings over each other: fields, `mutate`
+// parameters, new values built from the old one's elements, element stores.
+// Each answer has to be right and nothing may read freed memory; the memcheck
+// gate runs this file under valgrind. A small Copy aggregate (`[string; 1]`)
+// copied into a literal used to share the old value's strings uncounted, and
+// an element store gave its string no reference of its own (#1876).
+//
+// It still leaks: an array written over a field or through `mutate` isn't
+// released, because releasing it is only safe once every copy of a Copy
+// aggregate takes its own references (#1876) and `let t = a` on a `mutate`
+// array copies (#1877). tests/known_leaks.txt holds the count.
+
+struct Slots {
+    v: [string; 2]
+}
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func reset(mutate v: [string; 2]) {
+    v = [mk(5), mk(6)]
+}
+
+func retuple(mutate t: (string, string)) {
+    t = (mk(7), mk(8))
+}
+
+test "an array written over a field" {
+    mut s = Slots(v: [mk(1), mk(2)])
+    s.v = [mk(3), mk(4)]
+    assert s.v[1] == mk(4)
+}
+
+test "an array and a tuple written through mutate" {
+    mut a = [mk(1), mk(2)]
+    reset(mutate a)
+    mut t = (mk(3), mk(4))
+    retuple(mutate t)
+    assert a[0] == mk(5)
+    assert t.1 == mk(8)
+}
+
+test "an array of scalars has nothing to give back" {
+    mut s = [1, 2, 3]
+    s = [4, 5, 6]
+    assert s[2] == 6
+}
+
+struct Grid {
+    g: [[string; 1]; 2]
+}
+
+test "a new array built from the old one's small elements" {
+    mut g = Grid(g: [[mk(1)], [mk(2)]])
+    g.g = [g.g[1], g.g[0]]
+    assert g.g[0][0] == mk(2)
+    assert g.g[1][0] == mk(1)
+}
+
+struct Halves {
+    t: ([string; 1], [string; 1])
+}
+
+test "a tuple swapped from its own halves" {
+    mut h = Halves(t: ([mk(3)], [mk(4)]))
+    h.t = (h.t.1, h.t.0)
+    assert h.t.0[0] == mk(4)
+    assert h.t.1[0] == mk(3)
+}
+
+struct One {
+    one: [string; 1]
+}
+
+test "a small array copied from one field to another" {
+    mut a = One(one: [mk(9)])
+    mut c = One(one: [mk(10)])
+    c.one = a.one
+    a.one = [mk(11)]
+    assert c.one[0] == mk(9)
+    assert a.one[0] == mk(11)
+}
+
+func rotate(mutate v: [[string; 1]; 2]) {
+    v = [v[1], v[0]]
+}
+
+test "rotating a mutate array from its own elements" {
+    mut v = [[mk(1)], [mk(2)]]
+    rotate(mutate v)
+    assert v[0][0] == mk(2)
+}
+
+func touch(mutate a: [string; 2]) {
+    a[0] = mk(9)
+}
+
+test "an element store through mutate reaches the caller and releases the old one" {
+    mut a = [mk(3), mk(4)]
+    touch(mutate a)
+    assert a[0] == mk(9)
+}
+
+test "an element store into a local array" {
+    mut a = [mk(3), mk(4)]
+    let s = mk(9)
+    a[0] = s
+    assert a[0] == mk(9)
+    assert s == mk(9)
+}

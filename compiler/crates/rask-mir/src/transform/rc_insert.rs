@@ -13,6 +13,7 @@
 //! See `comp.architecture/RC1-RC2` and `comp.string-refcount-elision`.
 
 use std::collections::{HashMap, HashSet};
+use rask_ast::ty::ParamMode;
 
 use crate::analysis::addr_alias::AddrAliases;
 use crate::analysis::cfg;
@@ -38,6 +39,7 @@ pub fn insert_rc_ops(
     own: &HashSet<String>,
     closure_keeps: &ClosureKeeps,
     rack_holders: &HashSet<u32>,
+    copy_layouts: &crate::CopyLayouts,
 ) -> Vec<CarriedSite> {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::Buffer);
 
@@ -50,7 +52,7 @@ pub fn insert_rc_ops(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::RcIncContents { local } => Some(*local),
+            MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
             _ => None,
         })
         .collect();
@@ -82,14 +84,14 @@ pub fn insert_rc_ops(
 
     // A copy of an aggregate read out of somebody else's storage, given to a
     // keeper, takes references of its own to what it holds.
-    retain_views_handed_over(func, kept, own, &owns_copy);
+    retain_views_handed_over(func, kept, own, &owns_copy, closure_keeps, copy_layouts);
 
     // And a Copy aggregate copied into a heap closure's environment.
     retain_copy_captures(func);
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps, rack_holders)
+    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps, rack_holders, copy_layouts)
 }
 
 /// One site that builds a heap closure, and the aggregate captures it handed
@@ -163,7 +165,7 @@ fn retain_copy_captures(func: &mut MirFunction) {
         }
         for (idx, local) in insertions.into_iter().rev() {
             let span = func.blocks[bi].statements[idx].span;
-            func.blocks[bi].statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
+            func.blocks[bi].statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));
         }
     }
 }
@@ -215,7 +217,10 @@ fn retain_views_handed_over(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
+    closure_keeps: &ClosureKeeps,
+    copy_layouts: &crate::CopyLayouts,
 ) {
+    let func_name = func.name.clone();
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
         .iter()
@@ -234,8 +239,21 @@ fn retain_views_handed_over(
     // Names that hold a view, grown to a fixed point through copies, parts
     // and joins. A join counts only when every way in is a view: retaining
     // one that might be the frame's own is a leak, and that is the side to
-    // err on.
+    // err on. Workaround: in a loop that leaks the fresh value on the other
+    // way in; retaining on the view's edge would make every join owned
+    // (#1904).
     let mut views: HashSet<LocalId> = HashSet::new();
+    // A parameter the caller didn't give up is the caller's storage: a
+    // borrowed or `mutate` one reaches a keeper only as a copy of a Copy
+    // value (or, `mutate`, moved out and refilled), and the caller still
+    // releases what it holds. Only a `take` parameter is the frame's to hand
+    // on. Without the reference, `h.one = a` in a callee and a `mutate`
+    // array pushed then refilled shared the caller's strings uncounted.
+    for (i, p) in func.params.iter().enumerate() {
+        if retains_what_it_hands_on(func, i, copy_layouts) {
+            views.insert(p.id);
+        }
+    }
     let mut changed = true;
     while changed {
         changed = false;
@@ -278,30 +296,137 @@ fn retain_views_handed_over(
             }
         }
     }
-    if views.is_empty() {
-        return;
-    }
     let hands_out_views = crate::own_names::returns_a_view(&func.name, own);
+    let live = liveness::analyze_phis_on_edges(func);
+    let aliases = AddrAliases::build(func);
+    // What each name was read out of or copied from: `_22 = _19.0` is part
+    // of `_19`. Handing a part to a keeper hands on the value it is part of,
+    // so the part is a copy while that value is still read afterwards
+    // (`c.one = a.one` then `a.one = …`).
+    // A join (`if c { a } else { s.one }`) has a source per way in.
+    let mut source_of: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+            | MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field { base: MirOperand::Local(src), .. }
+                    | MirRValue::ArrayIndex { base: MirOperand::Local(src), .. },
+            } if dst != src => {
+                source_of.entry(*dst).or_default().push(*src);
+            }
+            MirStmtKind::Phi { dst, args } => {
+                for (_, op) in args {
+                    if let Some(src) = uses::operand_local(op).filter(|s| s != dst) {
+                        source_of.entry(*dst).or_default().push(src);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     for block in &mut func.blocks {
         let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+        // A value the frame owns, handed to a keeper while the frame still
+        // reads it afterwards, is a Copy value copied there: the checker
+        // rejects any use of a non-Copy value after it moves. The keeper
+        // gets references of its own and the frame keeps its value
+        // (`insert_aggregate_release` reads the retain and doesn't count the
+        // hand-off as a move). `h.one = x` then `println(x[0])`.
+        let used_after = |si: usize, local: LocalId, stmts: &[MirStmt], term: &crate::MirTerminator| {
+            for later in &stmts[si + 1..] {
+                if aliases.stmt_reads(later, local) {
+                    return true;
+                }
+                if uses::stmt_def(later) == Some(local) {
+                    return false;
+                }
+            }
+            aliases.terminator_reads(term, local) || live.live_at_exit(block.id, local)
+        };
+        // `into` is the storage the value is going into, for a store: a value
+        // read out of that storage (`s.one = if c { … } else { s.one }`) is
+        // what the slot's release frees, so it has to be a copy.
+        let copies = |si: usize, v: LocalId, into: Option<LocalId>, stmts: &[MirStmt], term: &crate::MirTerminator| {
+            if views.contains(&v) {
+                return true;
+            }
+            // Only a Copy value: a part of a value moved out and refilled
+            // (`let old = self.log`) has its source read afterwards too.
+            if !is_aggregate(&v) || !ty_of.get(&v).is_some_and(|t| copy_layouts.is_copy(t)) {
+                return false;
+            }
+            // A copy with references of its own hands them on, unless the
+            // frame reads it again: then the keeper needs its own
+            // (`let q = items[0]; keep.push(q); println(q.s)`).
+            if owns_copy.contains(&v) {
+                return used_after(si, v, stmts, term);
+            }
+            // The value itself, or anything it was read out of, read again.
+            let mut seen: HashSet<LocalId> = HashSet::new();
+            let mut todo = vec![v];
+            while let Some(name) = todo.pop() {
+                if !seen.insert(name) || seen.len() > 64 {
+                    continue;
+                }
+                if into == Some(name) || used_after(si, name, stmts, term) {
+                    return true;
+                }
+                for src in source_of.get(&name).into_iter().flatten() {
+                    if !owns_copy.contains(src) {
+                        todo.push(*src);
+                    }
+                }
+            }
+            false
+        };
         for (si, stmt) in block.statements.iter().enumerate() {
             match &stmt.kind {
                 MirStmtKind::Call { func: fref, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if views.contains(&id) && call_keeps_arg(fref, i, kept) {
+                        if call_keeps_arg(fref, i, kept)
+                            && copies(si, id, None, &block.statements, &block.terminator)
+                        {
+                            insertions.push((si, id));
+                        }
+                    }
+                }
+                // The same through a closure value: a `take` argument the
+                // body keeps.
+                MirStmtKind::ClosureCall { closure, args, taken, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if taken.get(i) == Some(&true)
+                            && closure_keeps(&func_name, *closure, i, args.len())
+                            && copies(si, id, None, &block.statements, &block.terminator)
+                        {
                             insertions.push((si, id));
                         }
                     }
                 }
                 // Copied whole into memory that outlives the statement: a
-                // struct literal's field, an array slot.
-                MirStmtKind::Store { value: MirOperand::Local(v), .. }
-                | MirStmtKind::ArrayStore { value: MirOperand::Local(v), .. }
-                    if views.contains(v) && !store_is_narrow(stmt, &ty_of) =>
+                // struct literal's field, an array slot. Not into the slot it
+                // came from (`p = p`): that copies nothing.
+                MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
+                | MirStmtKind::ArrayStore { base: addr, value: MirOperand::Local(v), .. }
+                    if addr != v
+                        && !store_is_narrow(stmt, &ty_of)
+                        && lowering_copy_retain(&block.statements, si, owns_copy).is_none()
+                        && copies(si, *v, Some(*addr), &block.statements, &block.terminator) =>
                 {
-                    insertions.push((si, *v));
+                    // Before the release of the slot it is about to fill, if
+                    // the statement before gives that slot back: the value
+                    // can be what the slot held (`s.one = if c { s.one } else
+                    // { … }`), and retained after the release it was freed.
+                    let at = match (si.checked_sub(1).map(|p| &block.statements[p].kind), &stmt.kind) {
+                        (Some(MirStmtKind::ReleaseSlot { addr: ra, offset: ro, .. }), MirStmtKind::Store { addr, offset, .. })
+                            if ra == addr && ro == offset => si - 1,
+                        (Some(MirStmtKind::ReleaseSlot { .. }), MirStmtKind::ArrayStore { .. }) => si - 1,
+                        _ => si,
+                    };
+                    insertions.push((at, *v));
                 }
                 _ => {}
             }
@@ -318,7 +443,7 @@ fn retain_views_handed_over(
         }
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
-            block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
+            block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));
         }
     }
 }
@@ -371,8 +496,11 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // count. Without the inc, the dec at the local's last use freed
                 // a buffer the field still points at: `Body { error: "no route
                 // for {path}" }` printed whatever the next allocation put
-                // there (#501).
+                // there (#501). An array element is such a location too:
+                // `a[0] = s` on a `[string; 2]` left the slot holding a string
+                // the dec at `s`'s last use had freed.
                 MirStmtKind::Store { value: MirOperand::Local(src), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(src), .. }
                     if string_set.contains(src) =>
                 {
                     insertions.push((si, MirStmt::new(
@@ -455,6 +583,7 @@ fn insert_aggregate_release(
     owns_copy: &HashSet<LocalId>,
     closure_keeps: &ClosureKeeps,
     rack_holders: &HashSet<u32>,
+    copy_layouts: &crate::CopyLayouts,
 ) -> Vec<CarriedSite> {
     let mut sites = heap_create_sites(func);
     let func_name = func.name.clone();
@@ -656,6 +785,24 @@ fn insert_aggregate_release(
         })
         .collect();
     let params: Vec<LocalId> = func.params.iter().map(|p| p.id).collect();
+    // A parameter every caller gave up at the call (`params_a_callee_keeps`:
+    // one written `take`) is ours from entry, and released here unless it is
+    // handed on. Not in a function C may call, which hands over nothing.
+    let given_up = |i: usize| {
+        !func.is_extern_c && kept.get(&func_name).and_then(|v| v.get(i)).copied().unwrap_or(false)
+    };
+    // A `mutate` one that isn't Copy is the caller's slot, held by the frame
+    // for the call and handed back full at every exit (`held_mutate_params`).
+    // A move out of it is a hand-over like any other, and a refill makes a
+    // new value there, releasing the old one exactly when the frame still
+    // holds it: on every path, or under a drop flag on some (#1903).
+    let held = held_mutate_params(func, copy_layouts);
+    let owned_params: Vec<LocalId> = params
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| (given_up(*i) || held.contains(p)) && tracked.contains(p))
+        .map(|(_, p)| *p)
+        .collect();
     let mut facts = ownership::Facts {
         names: tracked.iter().copied().collect(),
         events: Vec::new(),
@@ -663,8 +810,9 @@ fn insert_aggregate_release(
         reads: Vec::new(),
         kills: Vec::new(),
         terminator_reads: Vec::new(),
-        foreign: params.iter().copied().filter(|p| tracked.contains(p)).collect(),
-        owned: Vec::new(),
+        foreign: params.iter().copied().filter(|p| tracked.contains(p) && !owned_params.contains(p)).collect(),
+        owned: owned_params.clone(),
+        caller_slots: held.iter().copied().filter(|p| tracked.contains(p)).collect(),
     };
 
     for block in &func.blocks {
@@ -686,10 +834,32 @@ fn insert_aggregate_release(
         // that reference, so the aggregate the closure was read out of still
         // holds its own and still has to release it.
         let mut retained: HashSet<LocalId> = HashSet::new();
-        for stmt in &block.statements {
+        // The locals the statements just before this one took references
+        // for: a run of retains, and a slot release between them and the
+        // store they are for (`retain_views_handed_over` puts the retain
+        // ahead of the release, so the value can be what the slot held).
+        //
+        // Not a retain lowering made (`owns_copy`): that one says the local
+        // owns a copy for its whole life, and the hand-off after it moves
+        // that copy on.
+        let mut just_retained: HashSet<LocalId> = HashSet::new();
+        // Copied by lowering (`lowering_copy_retain`): the retain's index,
+        // and the source, which has to stay alive until it.
+        let mut copy_reads: HashMap<usize, LocalId> = HashMap::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
             if let MirStmtKind::ClosureRetain { closure, .. } = &stmt.kind {
                 retained.insert(*closure);
             }
+            let retained_for_this: HashSet<LocalId> = match &stmt.kind {
+                MirStmtKind::RcIncContents { local, for_hand_off } => {
+                    if *for_hand_off {
+                        just_retained.insert(*local);
+                    }
+                    HashSet::new()
+                }
+                MirStmtKind::ReleaseSlot { .. } => HashSet::new(),
+                _ => std::mem::take(&mut just_retained),
+            };
             let replaces = match &stmt.kind {
                 MirStmtKind::ReleaseSlot { addr, offset, .. } => {
                     released_pending.insert((*addr, *offset));
@@ -773,6 +943,12 @@ fn insert_aggregate_release(
                         if !is_tracked(&id) || retained.contains(&id) {
                             continue;
                         }
+                        // Any argument retained right before the call
+                        // (`retain_views_handed_over`): the keeper got a copy
+                        // with references of its own.
+                        if retained_for_this.contains(&id) {
+                            continue;
+                        }
                         // What the callee does with it: from the body when this
                         // pass can read one (`kept`), from the declaration when
                         // it can't. Both sides refusing is how a `take self`
@@ -815,7 +991,13 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Store { addr, value, .. } => {
-                    if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
+                    let copied = lowering_copy_retain(&block.statements, si, owns_copy);
+                    if let (Some(at), Some(v)) = (copied, uses::operand_local(value)) {
+                        copy_reads.insert(at, v);
+                    }
+                    if let Some(v) = uses::operand_local(value).filter(|v| {
+                        is_tracked(v) && !retained.contains(v) && !retained_for_this.contains(v) && copied.is_none()
+                    }) {
                         if owns_copy.contains(addr) {
                             // A Copy value bound into a slot lowering retains
                             // (`retain_bound_copy`): the slot takes references
@@ -836,8 +1018,16 @@ fn insert_aggregate_release(
                             ev.push(ownership::Event::HandOver(v));
                         }
                     }
+                    // A held `mutate` parameter is the caller's slot: a store
+                    // writes into it and never starts a value of its own. Its
+                    // only new value is a refill's `ZeroAggregate`. Read as a
+                    // fill, a field store after a join that took a field out
+                    // on one way in made a new value there, and the old one
+                    // was released while the caller still held it.
+                    let into_slot = held.contains(addr);
                     if aggregates.contains(addr)
                         && !replaces
+                        && !into_slot
                         && !places.contains(addr)
                         && !store_is_narrow(stmt, &ty_of)
                     {
@@ -848,12 +1038,14 @@ fn insert_aggregate_release(
                     // value. `mut p = …; p.run = || …` stores into `p`'s new
                     // version, and releasing the struct under the old name
                     // freed the replaced closure a second time.
-                    if aggregates.contains(addr) && replaces {
+                    if aggregates.contains(addr) && (replaces || into_slot) {
                         ev.push(ownership::Event::WriteThrough(*addr));
                     }
                 }
                 MirStmtKind::ArrayStore { value, .. } => {
-                    if let Some(v) = uses::operand_local(value).filter(|v| !retained.contains(v)) {
+                    if let Some(v) = uses::operand_local(value)
+                        .filter(|v| !retained.contains(v) && !retained_for_this.contains(v))
+                    {
                         hand_over(&mut ev, v);
                     }
                 }
@@ -944,6 +1136,7 @@ fn insert_aggregate_release(
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if is_tracked(&id)
                             && !retained.contains(&id)
+                            && !retained_for_this.contains(&id)
                             && taken.get(i) == Some(&true)
                             && closure_keeps(&func_name, *closure, i, args.len())
                         {
@@ -966,7 +1159,8 @@ fn insert_aggregate_release(
                 }
                 // Retained by lowering: from here on the name holds references
                 // of its own, and is ours to release.
-                MirStmtKind::RcIncContents { local } if owns_copy.contains(local) && is_tracked(local) => {
+                MirStmtKind::RcIncContents { local, for_hand_off: false } if is_tracked(local) =>
+                {
                     ev.push(ownership::Event::Make(*local))
                 }
                 _ => {
@@ -1003,7 +1197,7 @@ fn insert_aggregate_release(
                             uses::operand_local(value) == Some(*name) || replaces
                         }
                         _ => uses::stmt_reads(stmt, *name),
-                    };
+                    } || copy_reads.get(&si) == Some(name);
                     if reads {
                         r.push(*name);
                     }
@@ -1035,13 +1229,24 @@ fn insert_aggregate_release(
                 term_ev.push(ownership::Event::HandOver(*id));
             }
         }
+        // The caller gets its slot back with whatever the frame left in it.
+        // A path that never returns (a panic) leaves it to the caller too:
+        // the caller's own unwinding releases it, and a release here was a
+        // second free of the caller's value.
+        let exits = matches!(
+            block.terminator.kind,
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Unreachable
+        );
+        let handed_back: Vec<LocalId> =
+            if exits { held.iter().copied().filter(|p| tracked.contains(p)).collect() } else { Vec::new() };
+        term_ev.extend(handed_back.iter().map(|p| ownership::Event::HandOver(*p)));
         facts.terminator_events.push(term_ev);
         facts.terminator_reads.push(
             facts
                 .names
                 .iter()
                 .copied()
-                .filter(|n| uses::terminator_reads(&block.terminator, *n))
+                .filter(|n| uses::terminator_reads(&block.terminator, *n) || handed_back.contains(n))
                 .collect(),
         );
     }
@@ -1948,6 +2153,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         }
     }
@@ -2010,9 +2216,10 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -2060,7 +2267,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2113,7 +2320,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2182,7 +2389,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2252,7 +2459,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2285,7 +2492,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2304,7 +2511,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2324,7 +2531,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2349,7 +2556,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2395,7 +2602,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2416,8 +2623,67 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
+}
+
+/// Whether `func` takes a reference of its own whenever it hands parameter
+/// `i` to a keeper, leaving the caller's untouched.
+///
+/// True of a borrowed or `mutate` Copy aggregate that may hold strings: the
+/// caller didn't give it up, so a callee that stores it stores a copy. The
+/// rc pass inserts those retains, and `params_a_callee_keeps` reads the
+/// same answer as "not kept", so the caller goes on releasing its own.
+pub(crate) fn retains_what_it_hands_on(func: &MirFunction, i: usize, copy_layouts: &crate::CopyLayouts) -> bool {
+    let Some(p) = func.params.get(i) else { return false };
+    matches!(func.param_modes.get(i), Some(ParamMode::Borrow | ParamMode::Mutate))
+        && (aggregate_may_hold_string(&p.ty) || matches!(p.ty, MirType::InterfaceObject { .. }))
+        && copy_layouts.is_copy(&p.ty)
+}
+
+/// The retain lowering placed after the store at `si`, when that store copies
+/// a value into a binding that owns its copy (`let w = s` on a Copy array):
+/// the store copies, the retain gives the copy references of its own, and
+/// the source is still its holder's to release.
+fn lowering_copy_retain(stmts: &[MirStmt], si: usize, owns_copy: &HashSet<LocalId>) -> Option<usize> {
+    let MirStmtKind::Store { addr, .. } = &stmts[si].kind else { return None };
+    if !owns_copy.contains(addr) {
+        return None;
+    }
+    for (j, later) in stmts.iter().enumerate().skip(si + 1) {
+        match &later.kind {
+            MirStmtKind::RcIncContents { local, for_hand_off: false } if local == addr => return Some(j),
+            MirStmtKind::UnwindArm { .. } | MirStmtKind::UnwindDisarm { .. } => {}
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The `mutate` parameters the frame holds for the call: aggregates that
+/// aren't Copy. Lowering writes a whole new value into one as a new value in
+/// the slot (`ZeroAggregate`, then the store), so the release pass decides
+/// what the old one was. A Copy one stays the caller's storage, read as a
+/// view (`retains_what_it_hands_on`).
+pub(crate) fn held_mutate_params(func: &MirFunction, copy_layouts: &crate::CopyLayouts) -> Vec<LocalId> {
+    func.params
+        .iter()
+        .zip(func.param_modes.iter())
+        .filter(|(p, mode)| {
+            **mode == ParamMode::Mutate
+                && matches!(
+                    p.ty,
+                    MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Array { .. }
+                        | MirType::Option(_)
+                        | MirType::Result { .. }
+                )
+                && !copy_layouts.is_copy(&p.ty)
+        })
+        .map(|(p, _)| p.id)
+        .collect()
 }
