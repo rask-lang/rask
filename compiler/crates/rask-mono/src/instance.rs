@@ -97,6 +97,19 @@ impl<'a> Instance<'a> {
                 body: *body,
             },
         };
+        // type.generics/GT7: a call through a bound naming a generic
+        // interface reaches whichever of this instance's conformances the
+        // bound names, filed under its own name when the type has several.
+        let callee = match (callee, self.typed.conformance_calls.get(&id)) {
+            (rask_check::Callee::Method { recv, method, package, body }, Some(call)) => {
+                let args: Option<Vec<Type>> = call.args.iter().map(|a| self.ty(a)).collect();
+                let method = args
+                    .and_then(|args| self.typed.types.conformance_method_for(&recv, &call.method, &args))
+                    .unwrap_or(method);
+                rask_check::Callee::Method { recv, method, package, body }
+            }
+            (callee, _) => callee,
+        };
         let Some((method, language_pair)) = self.operator(id) else { return Some(callee) };
         match callee {
             // The checker named the operator's method after the bound

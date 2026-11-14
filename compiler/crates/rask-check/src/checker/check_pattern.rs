@@ -454,6 +454,7 @@ impl TypeChecker {
             }
 
             PatternKind::Literal(expr) => {
+                self.pattern_literals.insert(expr.id);
                 let lit_ty = self.infer_expr(expr);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     scrutinee_ty.clone(),

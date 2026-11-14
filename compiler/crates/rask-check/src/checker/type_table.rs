@@ -91,6 +91,24 @@ pub(super) enum TypeOwner {
     Program,
 }
 
+/// GT7: one method of one conformance to a generic interface.
+#[derive(Debug, Clone)]
+pub struct ConformanceMethod {
+    /// The conformance's interface arguments as the header writes them
+    /// (defaults and `Self` filled in).
+    pub written: Vec<TypeExpr>,
+    /// The same, resolved once every type is registered, in terms of the
+    /// type's own parameters: `[T]` for `Boxed<T> implements Render<T>`.
+    pub args: Vec<Type>,
+    /// The method's parameter types, which is what a direct call picks by.
+    pub params: Vec<Type>,
+    /// The `implements` block.
+    pub decl: rask_ast::NodeId,
+    /// The name it's filed under, when the type has more than one
+    /// conformance of the interface supplying this method.
+    pub filed: Option<String>,
+}
+
 /// A transparent alias: what it stands for, and the type parameters that is
 /// written in when it is generic.
 #[derive(Debug, Clone)]
@@ -107,6 +125,10 @@ pub struct TypeTable {
     /// under (`extend Sequence<string>` and `extend Sequence<StringSlice>`
     /// each have a `join`).
     pub(super) filed_methods: HashMap<(TypeId, String), Vec<String>>,
+    /// GT7: each method a conformance to a generic interface supplies, by
+    /// (type, method as written), in declaration order. A type with two of
+    /// one interface gets each filed under a name of its own.
+    pub conformance_methods: HashMap<(TypeId, String), Vec<ConformanceMethod>>,
     /// User-defined types indexed by TypeId.
     pub(super) types: Vec<TypeDef>,
     /// Name to TypeId mapping, as seen from program code.
@@ -302,6 +324,7 @@ impl TypeTable {
             impl_method_packages: HashMap::new(),
             primitive_ids: HashMap::new(),
             filed_methods: HashMap::new(),
+            conformance_methods: HashMap::new(),
             builtin_methods: std::collections::HashSet::new(),
             conformers_by_pair: HashMap::new(),
         };
@@ -901,6 +924,70 @@ impl TypeTable {
         self.applied_key_for(iface, interface, self_name)
     }
 
+    /// type.generics/GT7: the applied arguments of a conformance to a generic
+    /// interface, defaults and `Self` filled in. `None` for an interface with
+    /// no type parameters, and for the operators, which file their own way
+    /// (`type.operator-resolution/OR4`).
+    pub fn generic_conformance_args(&self, interface: &TypeExpr, self_name: &str) -> Option<Vec<TypeExpr>> {
+        // A stdlib interface written bare (`FromLiteral<f64>`) has no program
+        // declaration to find; its arguments live on the stdlib's.
+        let iface = match self.written_interface_ident(interface) {
+            InterfaceIdent::Builtin(name) => self.stdlib_interface_ident(&name),
+            declared => declared,
+        };
+        let key = self.applied_key_for(iface, interface, self_name);
+        let base = self.interface_name(interface);
+        if rask_stdlib::operators::operator_interface_method(&base).is_some() || key.applied.args().is_empty() {
+            return None;
+        }
+        Some(key.applied.args().to_vec())
+    }
+
+    /// GT7: what a generic interface's own parameters stand for in a
+    /// reference to it: `F = Html` for `Render<Html>`. Empty for the
+    /// operators and for an interface with no parameters.
+    pub fn interface_param_bindings(&self, interface: &TypeExpr, self_name: &str) -> Vec<(String, Type)> {
+        let Some(args) = self.generic_conformance_args(interface, self_name) else { return Vec::new() };
+        let id = match self.written_interface_ident(interface) {
+            InterfaceIdent::Builtin(name) => self.stdlib_interface_ident(&name),
+            declared => declared,
+        };
+        let InterfaceIdent::Declared(id) = id else { return Vec::new() };
+        let Some(TypeDef::Interface { type_params, .. }) = self.get(id) else { return Vec::new() };
+        type_params
+            .iter()
+            .zip(&args)
+            .filter_map(|(p, a)| Some((p.name.clone(), super::resolve_type_expr(a, self).ok()?)))
+            .collect()
+    }
+
+    /// GT7: the filed method a call through a bound reaches. `recv` is the
+    /// concrete receiver and `bound_args` the bound's interface arguments,
+    /// concrete too: `Report` and `[Html]` for `T: Render<Html>`. `None` when
+    /// the receiver's method isn't filed, and the plain name is the answer.
+    pub fn conformance_method_for(&self, recv: &Type, method: &str, bound_args: &[Type]) -> Option<String> {
+        let (id, recv_args): (TypeId, &[rask_types::GenericArg]) = match recv {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args),
+            _ => return None,
+        };
+        let entries = self.conformance_methods.get(&(id, method.to_string()))?;
+        let params = self.get(id).map(|d| d.type_params().to_vec()).unwrap_or_default();
+        let subst: HashMap<&str, Type> = params
+            .iter()
+            .map(String::as_str)
+            .zip(recv_args.iter().filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            }))
+            .collect();
+        entries.iter().find_map(|e| {
+            let filed = e.filed.as_ref()?;
+            let args: Vec<Type> = e.args.iter().map(|a| super::TypeChecker::substitute_type_params(a, &subst)).collect();
+            (args.as_slice() == bound_args).then(|| filed.clone())
+        })
+    }
+
     /// `applied_conformance_key` for an interface already identified.
     pub fn applied_key_for(
         &self,
@@ -1457,6 +1544,40 @@ impl TypeTable {
             args: Vec::new(),
         };
         self.declares_conformance(type_id, &generate)
+    }
+
+    /// The stdlib's `FromLiteral<f64>` (`float`) or `FromLiteral<i64>`
+    /// (type.primitives/L9).
+    pub fn from_literal_interface(float: bool) -> TypeExpr {
+        let arg = if float { "f64" } else { "i64" };
+        TypeExpr::generic("FromLiteral", vec![TypeExpr::named(arg)])
+    }
+
+    /// Does the type build itself from a number literal through the stdlib's
+    /// `FromLiteral<f64>` (`float`) or `FromLiteral<i64>` (type.primitives/L9)?
+    pub fn builds_from_literal(&self, type_id: TypeId, float: bool) -> bool {
+        let iface = self.stdlib_interface_ident("FromLiteral");
+        self.declares_conformance_to(type_id, iface, &Self::from_literal_interface(float))
+    }
+
+    /// The conversion `FromLiteral` requires, read from its declaration in
+    /// stdlib/num.rk.
+    pub fn literal_conversion_method(&self) -> Option<&str> {
+        let InterfaceIdent::Declared(id) = self.stdlib_interface_ident("FromLiteral") else { return None };
+        match self.get(id)? {
+            TypeDef::Interface { methods, .. } => methods.first().map(|m| m.name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The method that builds a literal of `type_id` (L9): its
+    /// `FromLiteral<f64>` (`float`) or `FromLiteral<i64>` conformance's,
+    /// under the name it's filed under when the type has both (GT7).
+    pub fn literal_conversion_for(&self, type_id: TypeId, float: bool) -> Option<String> {
+        let plain = self.literal_conversion_method()?;
+        let arg = if float { Type::F64 } else { Type::I64 };
+        let recv = Type::Named(type_id);
+        Some(self.conformance_method_for(&recv, plain, &[arg]).unwrap_or_else(|| plain.to_string()))
     }
 
     /// Does the type conform to a *different* interface spelled `name`? A stdlib

@@ -31,5 +31,10 @@ unicode-width = "0.2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Compiles the runtime's math.c and CORE-MATH so both backends compute the
+# same float bits (build.rs).
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 rask-desugar = { path = "../rask-desugar" }

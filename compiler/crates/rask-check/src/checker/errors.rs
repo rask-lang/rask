@@ -1345,6 +1345,41 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.primitives/L9: a literal pattern on a type built from literals.
+    #[error("a literal can't be a pattern for `{ty}`")]
+    LiteralPatternOnBuiltType {
+        ty: String,
+        span: Span,
+    },
+
+    /// type.generics/GT7: more than one conformance's method takes the call.
+    #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
+    AmbiguousConformanceCall {
+        ty: String,
+        method: String,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// type.generics/GT7: no conformance's method takes these arguments.
+    #[error("no `{method}` on `{ty}` takes ({})", args.join(", "))]
+    NoConformanceTakes {
+        ty: String,
+        method: String,
+        args: Vec<String>,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// type.primitives/L9: a `FromLiteral`
+    /// conversion that isn't a `comptime func`.
+    #[error("`{ty}.{method}` builds literals, so it has to be a `comptime func`")]
+    LiteralConversionNotComptime {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// A struct or variant literal that gives one field two values.
     #[error("field `{field}` of `{ty}` is given twice")]
     FieldGivenTwice {
@@ -2068,6 +2103,10 @@ impl TypeError {
             | InvalidConvert { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
+            | LiteralConversionNotComptime { .. }
+            | NoConformanceTakes { .. }
+            | AmbiguousConformanceCall { .. }
+            | LiteralPatternOnBuiltType { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }

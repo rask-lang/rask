@@ -46,3 +46,16 @@ Saturating<T> implements Mul where T: Integer {
         return Saturating(self.value.saturating_mul(other.value))
     }
 }
+
+// A number type that builds itself from literals (type.primitives/L9). Not
+// in ops.rk: every interface there is an operator.
+
+/// A type a number literal can build (type.primitives/L9). `FromLiteral<f64>`
+/// takes float literals and `FromLiteral<i64>` integer ones: `let half: Fixed =
+/// 0.5` is `Fixed.from_literal(0.5)`, computed while compiling, so the binary
+/// holds the constant and no float. The conversion has to be a `comptime
+/// func`, and a literal it panics on is a compile error there. A type may
+/// take both kinds; the literal's kind picks the conformance (type.generics/GT7).
+public interface FromLiteral<T> {
+    func from_literal(value: T) -> Self
+}

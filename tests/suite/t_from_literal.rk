@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// type.primitives/L9 — a number type built from literals (#1682).
+//
+// Raido's 32.32 `Fixed`, taking `0.5` and `3` directly. The conversion runs
+// while compiling, so native code holds the bit pattern and no float; the
+// interpreter runs the same function and has to agree.
+
+struct Fixed {
+    raw: i64
+}
+
+const ONE: i64 = 4294967296
+
+extend Fixed {
+    func from_int(n: i64) -> Fixed {
+        return Fixed(raw: n * ONE)
+    }
+}
+
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
+        return Fixed(raw: (value * 4294967296.0).to_int())
+    }
+}
+
+Fixed implements FromLiteral<i64> {
+    // A conversion may call the type's other functions at compile time.
+    comptime func from_literal(value: i64) -> Fixed {
+        return Fixed.from_int(value)
+    }
+}
+
+Fixed implements Add {
+    func add(self, other: Fixed) -> Fixed {
+        return Fixed(raw: self.raw + other.raw)
+    }
+}
+
+// A primitive pair beside the `Fixed` one: `x * 3` is this, not `x * Fixed(3)`.
+Fixed implements Mul<i64> {
+    func mul(self, k: i64) -> Fixed {
+        return Fixed(raw: self.raw * k)
+    }
+}
+
+Fixed implements Mul {
+    func mul(self, other: Fixed) -> Fixed {
+        return Fixed(raw: (self.raw >> 16) * (other.raw >> 16))
+    }
+}
+
+Fixed implements Sub {
+    func sub(self, other: Fixed) -> Fixed {
+        return Fixed(raw: self.raw - other.raw)
+    }
+}
+
+const HALF: Fixed = 0.5
+
+func damped(x: Fixed, factor: Fixed = 0.25) -> i64 {
+    return x.raw + factor.raw
+}
+
+struct Spring {
+    stiffness: Fixed = 1.5
+}
+
+// A generic type takes literals through its declaration's conformance.
+struct Quantity<U> {
+    raw: i64
+}
+
+Quantity<U> implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Quantity<U> {
+        return Quantity(raw: (value * 1000.0).to_int())
+    }
+}
+
+struct Meters {
+    unused: i64
+}
+
+comptime func half_raw() -> i64 {
+    let h: Fixed = 0.5
+    return h.raw
+}
+
+struct Body {
+    mass: Fixed
+    speed: Fixed
+}
+
+func raw_of(x: Fixed) -> i64 {
+    return x.raw
+}
+
+test "L9 — an annotated binding" {
+    let half: Fixed = 0.5
+    assert half.raw == 2147483648
+    let neg: Fixed = -3.5
+    assert neg.raw == -15032385536
+}
+
+test "L9 — an integer literal through from_literal" {
+    let three: Fixed = 3
+    assert three.raw == 3 * ONE
+    let minus: Fixed = -2
+    assert minus.raw == -2 * ONE
+}
+
+test "L9 — parameter, field and collection element" {
+    assert raw_of(0.25) == 1073741824
+    let b = Body(mass: 2, speed: 1.5)
+    assert b.mass.raw == 2 * ONE
+    assert b.speed.raw == 6442450944
+    mut v: Vec<Fixed> = Vec.new()
+    v.push(0.75)
+    assert v[0].raw == 3221225472
+}
+
+test "L9 — under an operator, primitive pairs first" {
+    let a: Fixed = 1.5
+    let sum = a + 0.5
+    assert sum.raw == 2 * ONE
+    let tripled = a * 3
+    assert tripled.raw == 19327352832
+    let doubled = a * 2.0
+    assert doubled.raw == 3 * ONE
+}
+
+test "L9 — a const, a default argument and a field default" {
+    assert HALF.raw == 2147483648
+    let one: Fixed = 1
+    assert damped(one) == ONE + 1073741824
+    let s = Spring()
+    assert s.stiffness.raw == 6442450944
+}
+
+test "L9 — a literal on the left of an operator" {
+    let x: Fixed = 0.25
+    let rest = 1.0 - x
+    assert rest.raw == 3221225472
+}
+
+test "L9 — a generic type, and a literal inside comptime code" {
+    let d: Quantity<Meters> = 2.5
+    assert d.raw == 2500
+    let h = comptime half_raw()
+    assert h == 2147483648
+}
+
+test "L9 — inside a spawned task" {
+    using Multitasking {
+        let h = spawn {
+            let q: Fixed = 3.0
+            return q.raw
+        }
+        assert h.join()! == 3 * ONE
+    }
+}
+
+// A literal pattern can't match a built value (E0974); a guard compares with `==`.
+func classify(x: Fixed) -> i64 {
+    match x {
+        _ if x == 0 => return 100,
+        _ if x == 1.5 => return 200,
+        _ => return 1,
+    }
+}
+
+test "L9 — matching on a built value goes through a guard" {
+    assert classify(0) == 100
+    assert classify(1.5) == 200
+    assert classify(3) == 1
+}

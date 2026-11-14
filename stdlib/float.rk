@@ -30,7 +30,8 @@ extend f64 {
 // The float methods, written once for `f32` and `f64` (`WIDTH_FAMILIES` in
 // rask-stdlib) with `Self` as the width. Native codegen calls the libm or
 // `math.c` function named here at double width; an `f32` receiver is widened
-// on the way in and its answer rounded back.
+// on the way in and its answer rounded back. Only exact functions go to libm;
+// everything else is `math.c`'s, which is the same on every machine.
 //
 // The operators (`add`, `eq`, `compare`, …) aren't here: the compiler
 // registers those for every float and lowers them to instructions.
@@ -59,14 +60,14 @@ extend Float {
     @native("sqrt")
     public func sqrt(self) -> Self {}
 
-    @native("pow")
+    @native("math_pow")
     public func pow(self, exp: Self) -> Self {}
 
-    @native("pow")
+    @native("math_pow")
     public func powf(self, exp: Self) -> Self {}
 
-    /// The exponent reaches the call as a float: there is one `pow` in libm.
-    @native("pow")
+    /// The same correctly rounded `pow`, with the exponent as an integer.
+    @native("math_powi")
     public func powi(self, exp: i32) -> Self {}
 
     @native("math_sin")

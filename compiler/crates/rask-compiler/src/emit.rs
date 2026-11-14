@@ -556,7 +556,7 @@ fn module_const_names(decls: &[Decl]) -> Vec<String> {
 ///
 /// `type Id = u64 implements …` has no layout: it *is* a u64 with its own
 /// identity, so MIR treats it as transparent (#445).
-fn nominal_underlying(typed: &TypedProgram) -> HashMap<String, rask_types::Type> {
+pub(crate) fn nominal_underlying(typed: &TypedProgram) -> HashMap<String, rask_types::Type> {
     typed.types.iter()
         .filter_map(|def| match def {
             rask_types::TypeDef::NominalAlias { name, underlying, .. } => {

@@ -115,6 +115,39 @@ pub struct ModuleMethodSig {
 }
 
 
+/// type.generics/GT7: a call through a bound naming a generic interface's
+/// conformance. Which filed method that is depends on what the bound's
+/// parameter turns out to be, so the backends look it up per instantiation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConformanceCall {
+    /// The method as written.
+    pub method: String,
+    /// The bound's interface arguments, in the generic body's own terms.
+    pub args: Vec<Type>,
+}
+
+/// A literal built by its type's conformance (type.primitives/L9).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiteralConversion {
+    /// The type the literal builds.
+    pub ty: TypeId,
+    /// The literal's value, as the conversion's parameter takes it.
+    pub value: LiteralValue,
+    /// The conversion, as the stdlib's interface declares it.
+    pub method: String,
+    /// Where the literal is: a conversion that fails is an error here.
+    pub span: rask_ast::Span,
+}
+
+/// What a converted literal hands its conversion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LiteralValue {
+    /// For `FromLiteral<i64>`.
+    Int(i64),
+    /// For `FromLiteral<f64>`.
+    Float(f64),
+}
+
 impl TypedProgram {
     /// What a method call's declaration says it does (`@grows`, `@shrinks`,
     /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
@@ -557,6 +590,12 @@ pub struct TypedProgram {
     /// backends read the answer here rather than each deciding again from the
     /// receiver alone.
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
+    /// type.primitives/L9: number literals a type builds itself from, keyed by
+    /// the literal's node. `let half: Fixed = 0.5` is `Fixed.from_literal(0.5)`,
+    /// computed while compiling; the backends read the folded value.
+    pub literal_conversions: HashMap<NodeId, LiteralConversion>,
+    /// GT7: calls through a bound that names a generic interface.
+    pub conformance_calls: HashMap<NodeId, ConformanceCall>,
     /// TR5: implicit interface coercion sites. NodeId of expression → the
     /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,

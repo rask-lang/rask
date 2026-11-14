@@ -583,6 +583,8 @@ impl TypeChecker {
                         if let Type::Var(id) = var {
                             self.ctx.record_literal_int(id, *value);
                         }
+                        let bits = Self::int_literal_is_bit_pattern(*value, suffix);
+                        self.pending_literals.push((expr.id, PendingLiteral::Int(*value, bits), expr.span));
                         var
                     }
                 };
@@ -595,12 +597,15 @@ impl TypeChecker {
                 self.pending_int_literals.push((*value, bit_pattern, ty.clone(), expr.span));
                 ty
             }
-            ExprKind::Float(_, suffix) => {
+            ExprKind::Float(value, suffix) => {
                 use rask_ast::token::FloatSuffix;
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => self.ctx.fresh_literal_var(LiteralKind::Float),
+                    None => {
+                        self.pending_literals.push((expr.id, PendingLiteral::Float(*value), expr.span));
+                        self.ctx.fresh_literal_var(LiteralKind::Float)
+                    }
                 }
             }
             ExprKind::String(_) | ExprKind::StringInterp(_) => Type::String,
@@ -6952,6 +6957,65 @@ impl TypeChecker {
         }
     }
 
+    /// L9: the type a literal of `kind` builds when it lands in `ty`, and
+    /// whether through `FromLiteral<f64>`. An integer literal takes
+    /// `FromLiteral<i64>` first and `FromLiteral<f64>` otherwise, the way it
+    /// fills an `f64` slot; a float literal only `FromLiteral<f64>`.
+    pub(super) fn literal_builder(&self, kind: LiteralKind, ty: &Type) -> Option<(rask_types::TypeId, bool)> {
+        // A generic type's instance takes what its declaration does:
+        // `Quantity<Meters>` through `Quantity<U> implements FromLiteral<f64>`.
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return None };
+        if kind == LiteralKind::Integer && self.types.builds_from_literal(*id, false) {
+            return Some((*id, false));
+        }
+        self.types.builds_from_literal(*id, true).then_some((*id, true))
+    }
+
+    /// L9: every unsuffixed literal that settled on a type building itself
+    /// from literals is that type's conversion. Recorded for the fold and the
+    /// interpreter; an integer going through `FromLiteral<i64>` has to fit its
+    /// `i64` parameter.
+    pub(super) fn validate_pending_literals(&mut self) {
+        use super::type_defs::{LiteralConversion, LiteralValue};
+        for (node, literal, span) in std::mem::take(&mut self.pending_literals) {
+            let Some(ty) = self.node_types.get(&node).map(|t| self.ctx.apply(t)) else { continue };
+            let kind = match literal {
+                PendingLiteral::Int(..) => LiteralKind::Integer,
+                PendingLiteral::Float(_) => LiteralKind::Float,
+            };
+            let Some((id, float)) = self.literal_builder(kind, &ty) else { continue };
+            // A pattern switches on the literal's own bits, which aren't the
+            // built value's. A guard compares built values.
+            if self.pattern_literals.contains(&node) {
+                self.errors.push(TypeError::LiteralPatternOnBuiltType {
+                    ty: self.types.type_name(id),
+                    span,
+                });
+                continue;
+            }
+            let value = match literal {
+                PendingLiteral::Float(x) => LiteralValue::Float(x),
+                PendingLiteral::Int(v, _) if float => LiteralValue::Float(v as f64),
+                PendingLiteral::Int(v, bits) => match i64::try_from(v) {
+                    Ok(n) if !bits => LiteralValue::Int(n),
+                    _ => {
+                        let literal = if bits { (v as u128).to_string() } else { v.to_string() };
+                        self.errors.push(TypeError::IntLiteralOutOfRange {
+                            literal,
+                            ty: Type::I64,
+                            min: i64::MIN.to_string(),
+                            max: i64::MAX.to_string(),
+                            span,
+                        });
+                        continue;
+                    }
+                },
+            };
+            let Some(method) = self.types.literal_conversion_for(id, float) else { continue };
+            self.literal_conversions.insert(node, LiteralConversion { ty: id, value, method, span });
+        }
+    }
+
     /// Check every integer literal against the type it ended up with. Deferred
     /// to here because at the literal itself the type is usually still a var.
     ///
@@ -7811,7 +7875,7 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
 /// a 32-bit one. Conversions are about types and stay target-independent
 /// (`is_integer_widening`). The one place the checker asks the target.
-fn int_range(ty: &Type) -> Option<(i128, u128)> {
+pub(super) fn int_range(ty: &Type) -> Option<(i128, u128)> {
     Some(match prim_of(&ty.at_target_width())? {
         Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
         Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
@@ -8315,6 +8379,14 @@ struct ArmReach {
     closed_by: Option<String>,
     /// Variants tested by a bare, unguarded arm.
     tags: std::collections::HashSet<String>,
+}
+
+/// An unsuffixed literal, kept until its type is known (type.primitives/L9).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PendingLiteral {
+    /// The token's value, and whether it's a bit pattern above `i128::MAX`.
+    Int(i128, bool),
+    Float(f64),
 }
 
 impl TypeChecker {

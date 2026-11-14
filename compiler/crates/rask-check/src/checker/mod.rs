@@ -39,7 +39,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{CContext, Callee, TypedProgram, PlacedArg, receiver_name, ErasedError};
+pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name, ErasedError};
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -335,6 +335,14 @@ pub struct TypeChecker {
     pub(super) call_targets: HashMap<NodeId, type_defs::Callee>,
     /// OR1: operator calls a conformance answered, keyed by the call's NodeId.
     pub(super) operator_targets: HashMap<NodeId, operators::OperatorTarget>,
+    /// L9: literals built by their type's conformance.
+    pub(super) literal_conversions: HashMap<NodeId, type_defs::LiteralConversion>,
+    /// GT7: calls through a bound naming a generic interface.
+    pub(super) conformance_calls: HashMap<NodeId, type_defs::ConformanceCall>,
+    /// GT7: calls still waiting to learn which conformance they reach, by
+    /// span. One still here once deferred calls are done has nothing left to
+    /// decide it, and is reported.
+    pub(super) waiting_conformance_calls: HashMap<(u16, usize, usize), (String, String, Vec<String>, rask_ast::Span)>,
     /// OR1: method calls that were operators before desugaring rewrote them.
     ///
     /// `a * b` and `a.mul(b)` are one node kind by the time the checker sees
@@ -548,6 +556,12 @@ pub struct TypeChecker {
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
     pub(super) pending_int_literals: Vec<(i128, bool, Type, rask_ast::Span)>,
+    /// L9: every unsuffixed literal, for the ones that land in a type built
+    /// from literals.
+    pub(super) pending_literals: Vec<(NodeId, check_expr::PendingLiteral, rask_ast::Span)>,
+    /// Literals written as `match` patterns. One of a type built from
+    /// literals can't be switched on (L9).
+    pub(super) pattern_literals: std::collections::HashSet<NodeId>,
     /// D2: `discard` on a Copy type, checked after literal defaulting.
     /// `let n = 7` is an unsolved integer var while the body is walked, so
     /// asking at the statement missed the commonest spelling of the case.
@@ -725,6 +739,9 @@ impl TypeChecker {
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
             operator_targets: HashMap::new(),
+            literal_conversions: HashMap::new(),
+            conformance_calls: HashMap::new(),
+            waiting_conformance_calls: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
             fn_defaults: HashMap::new(),
@@ -777,6 +794,8 @@ impl TypeChecker {
             pending_transmutes: Vec::new(),
             pending_for_mutate: Vec::new(),
             pending_int_literals: Vec::new(),
+            pending_literals: Vec::new(),
+            pattern_literals: std::collections::HashSet::new(),
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
             pending_comptime_field_names: Vec::new(),
@@ -868,6 +887,7 @@ impl TypeChecker {
             })
             .collect();
         self.collect_type_declarations(decls);
+        self.file_conformance_methods();
         self.extern_c_fns = decls
             .iter()
             .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Fn(f) if f.abi.is_some()))
@@ -883,6 +903,7 @@ impl TypeChecker {
             })
             .collect();
         self.check_union_members(decls);
+        self.check_literal_conversions(decls);
         self.check_user_annotations(decls);
         self.check_allow_names(decls);
         self.check_bound_names(decls);
@@ -979,6 +1000,7 @@ impl TypeChecker {
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
+        self.validate_pending_literals();
 
         for (node, value, value_span, default_span, span) in std::mem::take(&mut self.pending_literal_coalesce) {
             self.errors.push(TypeError::CoalesceOnNonOptional {
@@ -1271,6 +1293,8 @@ impl TypeChecker {
             call_type_args,
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
+            literal_conversions: std::mem::take(&mut self.literal_conversions),
+            conformance_calls: std::mem::take(&mut self.conformance_calls),
             interface_coercions,
             erased_try_errors: std::mem::take(&mut self.erased_try_errors)
                 .into_iter()

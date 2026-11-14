@@ -387,6 +387,14 @@ impl TypeChecker {
             }
         }
         self.retry_deferred_fields();
+        // GT7: a call still unsure which conformance it reaches has nothing
+        // left to tell it. Dropping it would leave the plain name, which no
+        // longer names any body once the methods are filed.
+        let mut waiting: Vec<_> = std::mem::take(&mut self.waiting_conformance_calls).into_values().collect();
+        waiting.sort_by_key(|(_, _, _, span)| (span.file_id, span.start));
+        for (ty, method, candidates, span) in waiting {
+            self.errors.push(TypeError::AmbiguousConformanceCall { ty, method, candidates, span });
+        }
         // Anything still deferred has nothing left to wait for. Those were
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.
@@ -1757,6 +1765,12 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
                     // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {
@@ -1790,6 +1804,12 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
                     // Literal vars cannot implicitly coerce to nominal types
                     if let Type::Named(type_id) = other {
                         if let Some(name) = self.types.get_nominal_name(*type_id) {

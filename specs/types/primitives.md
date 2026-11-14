@@ -36,6 +36,7 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 | **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64`, then `i128` |
 | **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
 | **L8: Literal ceiling** | Digits past `u128::MAX` | `340282366920938463463374607431768211456` | Compile error |
+| **L9: Built by its type** | Unsuffixed literal in a slot of a type implementing `FromLiteral<i64>` or `FromLiteral<f64>` | `let half: Fixed = 0.5` | That type, built at compile time |
 
 L6 only moves the *default*. Context still wins, all the way up: `const x: i64 = 5`
 is an `i64`, and `const x: u128 = 100000000000000000000` is a `u128` even though the
@@ -49,6 +50,46 @@ type, so `i128::MIN` is the floor.
 L7 is the reason L6 exists. A literal that doesn't fit its type has to wrap, and
 nothing wraps silently here — `const b: u8 = 300` is an error, not `44`. Say
 what you mean with `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` (CV11–CV16).
+
+L9 is how a library number type (fixed point, units, money) takes literals. A
+literal that lands in a slot of such a type is a call to the type's conversion,
+run while compiling, so the binary holds the result and the conversion never runs:
+
+<!-- test: compile -->
+```rask
+struct Fixed {
+    raw: i64
+}
+
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
+        return Fixed(raw: (value * 4294967296.0).to_int())
+    }
+}
+
+func main() {
+    let half: Fixed = 0.5        // Fixed(raw: 2147483648), no float at run time
+    println("{half.raw}")
+}
+```
+
+- The conversion is a `comptime func` (E0971 otherwise). One that panics is a
+  compile error at the literal, the way L7 is for a primitive.
+- An integer literal goes through `FromLiteral<i64>` (so it has to fit an
+  `i64`), and through `FromLiteral<f64>` when the type has only that, the way
+  `1` fills an `f64`. A float literal only through `FromLiteral<f64>`. A type
+  may have both; the literal's kind picks the conformance (`type.generics/GT7`).
+- A suffix wins: `3.5f64` is an `f64` in any slot, and an `f64` isn't a `Fixed`.
+- A literal can't be a `match` pattern for such a type (E0974): a pattern
+  compares bits, and the built value's aren't the literal's. A guard compares
+  with `==`: `_ if x == 0 => …`.
+- The slot is wherever the literal's type is decided: an annotation, a
+  parameter or its default, a field or its default, a `const`, a collection
+  element, either side of an operator, code run at compile time. Under an
+  operator a primitive pair comes first: with `Fixed implements Mul<i64>` and
+  `Fixed implements Mul`, `x * 3` is the `i64` one and `x * 2.5` the `Fixed` one.
+- A generic type's instances take literals through its declaration's
+  conformance: `let d: Quantity<Meters> = 2.5`.
 
 ## Type Conversions
 

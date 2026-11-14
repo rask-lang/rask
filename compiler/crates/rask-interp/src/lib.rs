@@ -12,6 +12,7 @@ mod resource;
 mod interp;
 mod builtins;
 mod stdlib;
+mod float_math;
 pub mod build_context;
 
 /// Spawn a thread to run interpreted Rask code.

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a call or a conformance that two conformances could both
+// answer (type.generics/GT7, MN3)
+// Rejects: `feed(none)`, which fits `Feed<Html>`'s `feed(Html?)` and
+// `Feed<Json>`'s `feed(Json?)` alike (E0973), and `Boxed<T>` conforming to
+// `Render<T>` and `Render<Html>`, which meet at `Boxed<Html>` (E0889).
+
+interface Feed<K> {
+    func feed(self, k: K?) -> string
+}
+
+interface Render<F> {
+    func render(self, f: F) -> string
+}
+
+struct Html {
+    level: i64
+}
+
+struct Json {
+    pretty: bool
+}
+
+struct Sink {
+    n: i64
+}
+
+Sink implements Feed<Html> {
+    func feed(self, k: Html?) -> string {
+        return "html"
+    }
+}
+
+Sink implements Feed<Json> {
+    func feed(self, k: Json?) -> string {
+        return "json"
+    }
+}
+
+struct Boxed<T> {
+    inner: T
+}
+
+Boxed<T> implements Render<T> {
+    func render(self, f: T) -> string {
+        return "own"
+    }
+}
+
+// ERROR: E0889, `Render<T>` at `T = Html` is this one
+Boxed<T> implements Render<Html> {
+    func render(self, f: Html) -> string {
+        return "html"
+    }
+}
+
+func main() {
+    let s = Sink(n: 1)
+    // ERROR: E0973, `none` could be either
+    println(s.feed(none))
+}

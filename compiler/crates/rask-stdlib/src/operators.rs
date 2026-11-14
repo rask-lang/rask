@@ -136,11 +136,11 @@ pub fn filed_rhs(self_base: &str, interface_base: &str, rhs: Option<&str>) -> Op
 }
 
 /// The operator method a filed name stands for: `mul$f64` → `mul`.
+///
+/// Any conformance to a generic interface files this way (`from_literal$f64`,
+/// type.generics/GT7), so this strips the arguments off every filed name.
 pub fn method_display(name: &str) -> &str {
-    match name.split_once('$') {
-        Some((base, _)) if table().iter().any(|o| o.method == base) => base,
-        _ => name,
-    }
+    name.split_once('$').map_or(name, |(base, _)| base)
 }
 
 #[cfg(test)]
@@ -203,8 +203,8 @@ mod tests {
     fn the_suffix_comes_back_off_for_the_reader() {
         assert_eq!(method_display("mul$f64"), "mul");
         assert_eq!(method_display("mul"), "mul");
-        // Not an operator method: a `$` in some other name stays put.
-        assert_eq!(method_display("render$html"), "render$html");
+        // Any generic interface's conformance files this way (GT7).
+        assert_eq!(method_display("render$Html"), "render");
     }
 
     /// Desugaring picks the method names before the stdlib is parsed, so it

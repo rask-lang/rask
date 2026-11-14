@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type built from literals (type.primitives/L9)
+// Rejects: a conversion that isn't `comptime`, a literal pattern on a
+// literal-built type, an integer literal past the `i64` the conversion takes,
+// and a suffixed literal, which keeps its own type.
+
+struct Fixed {
+    raw: i64
+}
+
+Fixed implements FromLiteral<f64> {
+    comptime func from_literal(value: f64) -> Fixed {
+        if value.abs() >= 2147483648.0 {
+            panic("out of range for 32.32")
+        }
+        return Fixed(raw: (value * 4294967296.0).to_int())
+    }
+}
+
+struct Ticks {
+    n: i64
+}
+
+Ticks implements FromLiteral<i64> {
+    // ERROR: E0971, the conversion runs while compiling
+    func from_literal(value: i64) -> Ticks {
+        return Ticks(n: value)
+    }
+}
+
+// The method in a plain `extend` block is the same conversion.
+struct Count {
+    n: i64
+}
+
+extend Count {
+    // ERROR: E0971, wherever the method is written
+    func from_literal(value: i64) -> Count {
+        return Count(n: value)
+    }
+}
+
+Count implements FromLiteral<i64> {}
+
+// A pattern compares bits, and a built value's bits aren't the literal's.
+func classify(x: Fixed) -> i64 {
+    match x {
+        // ERROR: E0974, a guard compares with `==`
+        0 => return 1,
+        _ => return 0,
+    }
+}
+
+func main() {
+    // ERROR: E0825, the conversion takes an `i64`
+    let t: Ticks = 99999999999999999999
+    // ERROR: E0308, a suffix keeps the literal an `f64`
+    let s: Fixed = 3.5f64
+    println("{t.n} {s.raw}")
+}

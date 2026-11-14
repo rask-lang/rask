@@ -1505,6 +1505,7 @@ dependencies = [
 name = "rask-interp"
 version = "0.6.0"
 dependencies = [
+ "cc",
  "indexmap",
  "libc",
  "rask-ast",
