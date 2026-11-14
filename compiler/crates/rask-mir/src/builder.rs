@@ -35,6 +35,7 @@ impl BlockBuilder {
             entry_block,
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 

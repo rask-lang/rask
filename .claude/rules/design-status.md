@@ -1,6 +1,8 @@
 ---
 paths:
   - "specs/**"
+  - "ROADMAP.md"
+  - "TODO.md"
 ---
 
 # Design status
@@ -49,3 +51,34 @@ concrete reason.
 | Phase B fiber implementation | Decided: stackful fibers with mmap'd virtual stacks, pluggable reactor (io_uring/epoll/kqueue/IOCP), signal-based preemption. Still to prototype: `fiber_switch` assembly, safe-point instrumentation, reactor backends |
 
 See [TODO.md](../../TODO.md) for full list.
+
+## Goal and principles
+
+Systems language where **safety is invisible**. Eliminate abstraction tax, cover
+80%+ of real use cases. Non-negotiable: feel simple, not safe. Safety is a
+property, not an experience.
+
+Unifying thread: **safety through visibility.** Safety mechanisms are visible in
+source (explicit `ensure`, `mutate`, `take`, scoped `with`) rather than hidden in
+destructors, lifetime annotations, or effect types.
+
+1. **Transparency of cost.** Major costs visible (allocations, locks, I/O); small
+   ones (bounds checks) can be implicit.
+2. **Mechanical safety.** Data races, null derefs, dangling pointers and, in safe
+   code, leaks impossible by construction; deleting a rack node nulls every link
+   to it. `tests/leak_gate.sh` holds the implementation to the leak claim and
+   `tests/known_leaks.txt` lists where it doesn't yet.
+3. **Practical coverage.** Web services, CLI, data processing, embedded.
+4. **Ergonomic simplicity.** If Rask needs 3+ lines where Go needs 1, question
+   the design.
+5. **Information without enforcement.** Effects, captures and modes are metadata
+   for tooling, not type-system constraints. No function colouring.
+
+Full set: [CORE_DESIGN.md](../../specs/CORE_DESIGN.md). Scoring:
+[METRICS.md](../../specs/METRICS.md). Spec index: [specs/README.md](../../specs/README.md);
+IDs and citation format (`spec-id/rule-id`, e.g. `mem.ownership/O1`):
+[CONVENTIONS.md](../../specs/CONVENTIONS.md).
+
+Programs that must work naturally: an HTTP JSON API server, a grep clone, a text
+editor with undo, a game loop with entities, an embedded sensor processor. If
+Rask is longer or noisier than Go for core loops, fix the design.

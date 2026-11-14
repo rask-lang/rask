@@ -78,6 +78,12 @@ impl Interpreter {
         args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeDiagnostic> {
+        // A template at these type arguments is the copy written out for them
+        // (`rask-template`, ctrl.comptime/CT50): the same function native
+        // compiles.
+        if let Some(copy) = self.template_copy(func, generics.as_deref()) {
+            return self.call_function(&copy, args, None);
+        }
         if crate::stack_nearly_exhausted() {
             if crate::stack_segments_exhausted() {
                 return Err(RuntimeDiagnostic::new(
@@ -621,3 +627,15 @@ pub(crate) fn option_depth(value: &Value) -> usize {
     }
 }
 
+impl Interpreter {
+    /// The plain function a template instance was written out as: the copy
+    /// of `func` whose instance arguments are what this call's frame binds.
+    fn template_copy(&self, func: &FnDecl, generics: Option<&std::collections::HashMap<String, rask_types::Type>>) -> Option<FnDecl> {
+        let copies = self.template_copies.get(&func.id)?;
+        let frame = generics?;
+        copies
+            .iter()
+            .find(|(bound, _)| bound.iter().all(|b| frame.get(&b.param) == Some(&b.ty)))
+            .map(|(_, copy)| copy.clone())
+    }
+}

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn rask_binary() -> PathBuf {
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
     PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 

@@ -571,6 +571,57 @@ pub fn rack_holding_structs(fields: &FieldTypes) -> std::collections::HashSet<u3
     }
 }
 
+/// The struct and enum layouts that are Copy (mem.value/VS1): sixteen bytes
+/// or fewer as laid out, and every field Copy. A string is Copy (the
+/// compiler counts it); a container, a heap block, a closure or an interface
+/// object isn't. The release pass reads this to tell a Copy value copied
+/// into a keeper from a value moved into one.
+#[derive(Debug, Clone, Default)]
+pub struct CopyLayouts {
+    pub structs: std::collections::HashSet<u32>,
+    pub enums: std::collections::HashSet<u32>,
+}
+
+impl CopyLayouts {
+    pub fn from_fields(fields: &FieldTypes) -> CopyLayouts {
+        let mut copy = CopyLayouts::default();
+        loop {
+            let before = copy.structs.len() + copy.enums.len();
+            for (id, tys) in fields.structs.iter().enumerate() {
+                let id = id as u32;
+                if !copy.structs.contains(&id) && tys.iter().all(|t| copy.is_copy(t)) {
+                    copy.structs.insert(id);
+                }
+            }
+            for (id, variants) in fields.variants.iter().enumerate() {
+                let id = id as u32;
+                if !copy.enums.contains(&id) && variants.iter().flatten().all(|t| copy.is_copy(t)) {
+                    copy.enums.insert(id);
+                }
+            }
+            if copy.structs.len() + copy.enums.len() == before {
+                return copy;
+            }
+        }
+    }
+
+    /// Is a value of `ty` Copy?
+    pub fn is_copy(&self, ty: &MirType) -> bool {
+        if ty.size() > 16 {
+            return false;
+        }
+        match ty {
+            MirType::Container(_) | MirType::Heap(_) | MirType::FuncPtr(_) | MirType::InterfaceObject { .. } => false,
+            MirType::Struct(id) => self.structs.contains(&id.id),
+            MirType::Enum(id) => self.enums.contains(&id.id),
+            MirType::Tuple(parts) | MirType::Union(parts) => parts.iter().all(|p| self.is_copy(p)),
+            MirType::Array { elem, .. } | MirType::Option(elem) => self.is_copy(elem),
+            MirType::Result { ok, err } => self.is_copy(ok) && self.is_copy(err),
+            _ => true,
+        }
+    }
+}
+
 /// Every place a value of type `ty` holds an edge, offsets from the value's
 /// start.
 ///

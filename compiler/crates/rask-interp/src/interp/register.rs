@@ -138,6 +138,19 @@ impl Interpreter {
         self.type_decls = decls.to_vec();
 
         for decl in decls {
+            let fns: Vec<&FnDecl> = match &decl.kind {
+                DeclKind::Fn(f) => vec![f],
+                DeclKind::Impl(i) => i.methods.iter().collect(),
+                _ => Vec::new(),
+            };
+            for f in fns {
+                if let Some((template, bound)) = self.copies_of.get(&f.id) {
+                    self.template_copies.entry(*template).or_default().push((bound.clone(), f.clone()));
+                }
+            }
+        }
+
+        for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     if f.attrs.iter().any(|a| a.is("entry")) {
@@ -412,6 +425,15 @@ impl Interpreter {
         }
 
         // Evaluate top-level const declarations after builtins are registered
+        self.const_facts = std::sync::Arc::new(rask_ast::comptime_if::const_facts(
+            top_level_consts.iter().map(|c| {
+                (
+                    c.name.as_str(),
+                    &c.init,
+                    c.ty.as_ref().and_then(|t| t.bare_name()),
+                )
+            }),
+        ));
         for c in &top_level_consts {
             let value = self.eval_expr(&c.init)
                 .map_err(|diag| RuntimeError::Generic(format!("Error evaluating const {}: {}", c.name, diag.error)))?;

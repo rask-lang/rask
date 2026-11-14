@@ -309,6 +309,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         }
     }

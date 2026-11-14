@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A destructure moves every part out of the tuple. Handing one part to a
+// keeper used to free the rest twice when the slot was then refilled (#1876);
+// natively the string part still leaks (#1902).
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func destructure_then_refill(mutate t: (string, Vec<string>), mutate keep: Vec<Vec<string>>) -> string {
+    let (name, list) = t
+    keep.push(list)
+    t = (mk(5), Vec.new())
+    return name
+}
+
+test "a mutate tuple destructured, one part kept, then refilled" {
+    mut lists: Vec<Vec<string>> = Vec.new()
+    mut l: Vec<string> = Vec.new()
+    l.push(mk(10))
+    mut u = (mk(4), l)
+    let name = destructure_then_refill(mutate u, mutate lists)
+    assert name == mk(4)
+    assert u.0 == mk(5)
+    assert lists[0][0] == mk(10)
+}
+
+test "a local tuple destructured, one part kept" {
+    mut keep: Vec<Vec<string>> = Vec.new()
+    mut l: Vec<string> = Vec.new()
+    l.push(mk(10))
+    let t = (mk(1), l)
+    let (name, list) = t
+    keep.push(list)
+    assert name == mk(1)
+    assert keep[0][0] == mk(10)
+}

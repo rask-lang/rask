@@ -237,6 +237,21 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
             emptied.clear();
             continue;
         }
+        // `a = s.f` moves the field out as well as writing `a`. A whole
+        // binding moved out any way at all is the ownership checker's to
+        // report (`OwnershipResult::refills_after_move`): it tracks moves,
+        // where this only sees shapes.
+        let moved_by_assign = match &stmt.kind {
+            StmtKind::Assign { target, value, .. }
+                if matches!(value.kind, ExprKind::Field { .. })
+                    && place_path(value).is_some()
+                    && moves(value)
+                    && place_path(value) != place_path(target) =>
+            {
+                place_path(value).map(|p| (p, value.id))
+            }
+            _ => None,
+        };
         match &stmt.kind {
             StmtKind::Assign { target, .. } if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _)| *e == p)) => {
                 let place = place_path(target).unwrap_or_default();
@@ -246,7 +261,9 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                 }
             }
             StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
-                if matches!(init.kind, ExprKind::Field { .. }) && place_path(init).is_some() && moves(init) =>
+                if matches!(init.kind, ExprKind::Field { .. })
+                    && place_path(init).is_some()
+                    && moves(init) =>
             {
                 // A second read of the same field reads the emptied slot; the
                 // latest read is the one the refill pairs with.
@@ -271,6 +288,10 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                     })
                 });
             }
+        }
+        if let Some((place, read)) = moved_by_assign {
+            emptied.retain(|(p, _)| *p != place);
+            emptied.push((place, read));
         }
     }
     pairs

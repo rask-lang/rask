@@ -232,6 +232,10 @@ pub enum MirStmtKind {
     /// retains its elements.
     RcIncContents {
         local: LocalId,
+        /// Taken by the release pass for one hand-off: the keeper gets
+        /// these references. Without it, the binding owns its copy for
+        /// life (lowering's retain of a value copied out of a place).
+        for_hand_off: bool,
     },
     /// Release what a slot holds, just before something else is written over it.
     ///

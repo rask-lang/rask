@@ -1,6 +1,8 @@
 ---
 name: design-skeptic
 description: Adversarial reviewer for a change to the Rask language design (a spec under specs/, a new feature, a changed default). Give it the proposal or issue and the branch; it judges the change against specs/RULINGS.md and reports what the change costs the rest of the language. Use before pushing a spec change that adds or changes behaviour.
+model: opus
+effort: high
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
 ---
