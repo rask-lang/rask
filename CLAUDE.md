@@ -26,12 +26,18 @@ Long sessions bury the state under rolling summaries and check-in chatter. I rea
 
 - **No interim summaries.** Mid-task, speak only to ask a decision or report a blocker. Progress lives in commits.
 - **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. If the harness insists on output, one line: `#N: nothing new.` No "no reviews, rearming", no restated status.
-- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
-  1. **Decisions for me**: the judgment digest. The 2–4 most questionable calls, each with the problem in a sentence, what you picked, the alternative, and the few lines of code that embody it. Framed so I can answer in one word ("keep / wrong / show me more"). Empty is fine; say so.
-  2. **Status**: branch, PR link, CI on the head, what it's waiting on.
-  3. **Done**: one line per change, with the commit. Say what broke and what now works, not which files moved.
-  4. **Decided along the way**: calls you made without asking and why, so I don't reopen them by accident.
-  5. **Left open**: filed issues, dead ends and what they taught, anything skipped.
+- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Two parts, nothing else:
+  1. **Decisions for me**: the new ones only, the ones I alone can make (a spec question `specs/` doesn't answer, a change that makes the flagship example worse). Each with the problem in a sentence, what you'd pick and why, the alternative, and the few lines of code that embody it, so I can answer in one word. Usually empty; say so.
+  2. **Status**: one line. Branch, PR link, CI on the head, what it's waiting on.
+
+  What got done, what you decided on your own and what you filed live in commits and issues. I don't read them in chat, so don't write them there.
+- **Three questions are never for me.**
+  - "Quick fix or proper fix?" Proper.
+  - "Now or in a follow-up?" Now. One developer, no reviewers, everything merges to main, so a follow-up is the same work later with the context gone.
+  - "I did the smaller thing; the alternative is a bigger change." Do the bigger change. I say yes to it nearly every time, so asking only costs a round trip.
+
+  If the recap would say "I patched it for now", you aren't done. Go back and finish.
+- **Working out the proper solution is your job, not a question.** When I get asked "A or B?" I mostly ask back "which is proper?", get an answer, and say "do that". Skip the loop: read `specs/` and `specs/RULINGS.md`, decide which is proper, do it. A decision reaches me only after that, when what's left is what I want the language to be and no spec says.
 - If state changes after a recap (review lands, CI goes red and you fix it), send a fresh full recap, not a delta.
 
 Prefer long term proper fixes over quick-fixes.
@@ -102,12 +108,81 @@ Messy is fine. A branch with eight fixes and two written-up dead ends beats thre
 fixes and a status report. If a fix trades one failure for a worse one, revert it
 and file what you learned — that's a finished piece of work, not a blocker.
 
-## Before you push
+## The main session routes, workers code
 
-Hand any change to compiler, runtime or stdlib to the `skeptic` agent before
-pushing. Give it the issue or the goal, not your reasoning, and let it try to
-break the change. Fix what it confirms, or say in the recap why a finding is wrong.
-Skip it for docs-only and config-only changes.
+The main session is long-lived and every turn re-sends all of it, so it stays
+small. It plans, hands out tasks, and keeps tabs on status and decisions. Long
+reading (whole files, build logs, a bug hunt across passes) happens in agents,
+whose context is thrown away when they report.
+
+Delegating isn't free, so it's for work that would fill the main context. An
+agent starts cold: no shared cache, its own compiler rebuild, a brief to write
+and a report to check. On a small job that overhead is most of the cost, and
+the big model doing it directly is cheaper.
+
+- **Just do it** when the change is a few lines and you already know where:
+  flip a constant, fix a message, a one-function bug with an existing test
+  that covers it, any docs or config edit. Edit, run that test, commit. No
+  worker, no skeptic, no plan.
+- **Delegate** when finding the cause means reading a lot, or the change
+  spreads across passes. If a "just do it" job turns out bigger than it
+  looked, hand it to a worker with what you've learned so far.
+
+Three agents, each pinned to a model and an effort in `.claude/agents/`:
+
+| Agent | Runs on | Gets |
+|-------|---------|------|
+| `scout` | Haiku 5.5, medium | Lookups with a checkable answer: the failing lines of a CI job, is main red too, does an issue exist, where is X defined, which tests of a run failed |
+| `worker` | Sonnet 5.5, high | All coding. Bug fixes, features, refactors |
+| `skeptic` | Opus 5.5, high | One adversarial review per finished PR |
+
+Why these, so nobody "tunes" them back (prices per million tokens, in/out):
+
+- **Haiku ($0.10/$0.50) is twenty times cheaper than Sonnet only while its
+  prompt is under 100K tokens.** Past that the whole request costs five times
+  as much. So the scout is capped at 100K, gets no CLAUDE.md and does short
+  jobs. Anything with a long loop or a judgment in it is a worker's.
+- **Sonnet ($2/$10) has no such step**, so a worker may read as much as the
+  task needs. It runs at `high` because at lower effort it is documented to
+  call a change done without running the check, which is the failure this
+  whole setup exists to stop. Not `xhigh`: for the hardest work the guidance
+  is to move up to Opus instead of pushing Sonnet harder.
+- **Opus ($4/$20) defaults to `medium`**, which is right for routine work and
+  wrong for the two places it's used here. Both are pinned to `high`: a review
+  runs once and a miss ships, and an escalated task already beat Sonnet twice.
+  `xhigh` and `max` stay off until a bug that `high` missed shows they'd have
+  caught it.
+
+- **Opus for coding, by rule** (pass `model: "opus", effort: "high"` to the
+  `worker`): a task a Sonnet worker failed twice, and a task with no test that
+  can tell a wrong answer from a right one (a design change across passes, a
+  spec rewrite). Retrying on a bigger model only works when the failure shows.
+  The main session still doesn't do it itself.
+- **Don't spawn for one command.** A lookup that is one call with a few lines
+  of output the main session runs directly.
+- **Brief a worker with** the issue or goal, the branch, what done means, and
+  what's already ruled out. Point at files; don't paste them.
+- **One worker at a time on a branch.** Independent tasks can run in parallel
+  with `isolation: "worktree"`.
+- **Hold the report to the bar.** A report that says workaround, "for now",
+  partial, deferred, follow-up or "the alternative is a bigger change" goes
+  back to the same worker (`SendMessage`) with "finish it properly". Don't
+  accept it and don't turn it into a question for me.
+- **CI and logs** go to a `scout`. What it finds goes to a worker if it needs
+  fixing.
+
+## Before the PR is done
+
+Hand a change to compiler, runtime or stdlib to the `skeptic` agent (Opus) once
+per PR, when the branch is finished. Skip it for a "just do it" change. Not per push. Give it the issue or the
+goal, not your reasoning, and let it try to break the change. What it confirms
+goes to a worker; a finding you reject gets one line under Status saying why.
+Skip it for docs-only and config-only changes too.
+
+**Process is not the product.** A rule, gate or record earns its place by
+catching wrong code. One that only tracks the agent's own bookkeeping is cost.
+Don't add one without saying what bug it would have caught, and when one
+starts making simple tasks slow, say so in the recap so it can be cut.
 
 At the end of a long session, `/retro` turns what went wrong into proposed edits
 to this file and the skills.
