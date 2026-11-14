@@ -114,9 +114,8 @@ reading it. Most turns used to be events. So:
   PRs (0 of 107 since September had a review), so a failed check is the only
   event worth a turn. Opening a PR subscribes the session by itself: call
   `unsubscribe_pr_activity` right after. After a push, set one `send_later`
-  for when CI should be done (20 minutes). When it fires, read the failed
-  checks only:
-  none, end silently; some, fix them.
+  for when CI should be done (10 minutes). When it fires, read the failed
+  checks only: none, end silently; some, fix them.
 - **Run an agent in the foreground when you'd only wait for it.** A background
   agent's report arrives as its own wake. Background is for when you have other
   work meanwhile.
