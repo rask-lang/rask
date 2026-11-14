@@ -6,11 +6,11 @@
 
 Independent project. Deterministic scripting VM with static types and Rask-flavored syntax. Lives in this repo for now but is not part of Rask -- no dependency on the Rask compiler, runtime, or stdlib.
 
-Serializable state. Fixed-point arithmetic. Sandboxed -- the host controls all capabilities.
+Serializable state. Deterministic floats. Sandboxed -- the host controls all capabilities.
 
 Raido is also the verification engine for [Allgard's verifiable transforms](../allgard/README.md#verifiable-transforms). Two domains that both support Raido can mechanically verify each other's scripted transforms instead of relying on trust alone. See [Protocol Role](#protocol-role).
 
-**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Coroutines and function references serve game scripting. Features that help neither get cut.
+**Verification-first, scripting-capable.** Static types and pure-function defaults serve verification. Coroutines and closures serve game scripting. Features that help neither get cut.
 
 Two use case families, one VM:
 
@@ -33,7 +33,7 @@ Raido's differentiators vs Lua/WASM/JS:
 
 | Property | Raido | Lua | WASM | JS |
 |----------|-------|-----|------|----|
-| Deterministic | Yes (fixed-point) | No | Yes | No |
+| Deterministic | Yes (strict floats) | No | Yes | No |
 | Serializable state | Yes (built-in) | No | Manual | No |
 | Sandboxed | Yes (no I/O) | Partial | Yes | Partial |
 | Safe host interop | Yes (no unsafe) | No | No | No |
@@ -47,8 +47,8 @@ Example using Rask as the host language (any language with C FFI can host Raido)
 ```rask
 import raido
 
-const vm = raido.Vm.new(raido.Config(
-    arena_size: 256.kilobytes()
+let vm = raido.Vm.new(raido.Config(
+    memory_limit: 256.kilobytes()
     initial_fuel: 100_000
     max_call_depth: 256
 ))
@@ -58,58 +58,52 @@ ensure vm.close()
 vm.register_extern_struct("Enemy", raido.ExternStruct(
     fields: [
         raido.Field.int("health", get_health, set_health)
-        raido.Field.number("x", get_x, set_x)
-        raido.Field.number("y", get_y, set_y)
+        raido.Field.float("x", get_x, set_x)
+        raido.Field.float("y", get_y, set_y)
         raido.Field.string("name", get_name, null)  // readonly
     ]
 ))
 vm.register_extern_func("move_to", move_to_handler)
 
-const chunk = try vm.compile("script.rd", source)
+let chunk = try vm.compile("script.rd", source)
 try vm.load(chunk)  // fails if extern declarations don't match bindings
 
-const result = try vm.call("process", [raido.Value.int(42)])
+let result = try vm.call("process", [raido.Value.int(42)])
 
 // Serialize entire VM state
-const snapshot = vm.serialize()
+let snapshot = vm.serialize()
 
 // Restore later, possibly on a different machine
-const vm2 = raido.Vm.deserialize(snapshot)
+let vm2 = raido.Vm.deserialize(snapshot)
 ```
 
 ## Script Example
 
 ```raido
-struct Vec2 { x: number, y: number }
+struct Vec2 { x: float, y: float }
 
 extern struct Enemy {
     health: int
-    x: number
-    y: number
+    x: float
+    y: float
     readonly name: string
 }
 
 extern func move_to(entity: Enemy, target: Vec2)
 
 func chase(attacker: Enemy, target: Enemy) {
-    const dest = Vec2 { x: target.x, y: target.y }
+    let dest = Vec2 { x: target.x, y: target.y }
     move_to(attacker, dest)
 }
 
 func process(input: int) -> int {
-    const data = try transform(input)
+    let data = transform(input)
     return if data > threshold { data } else { 0 }
 }
 
-func transform(x: int) -> int or string {
-    if x < 0: error("negative input")
+func transform(x: int) -> int {
+    if x < 0 { error("negative input") }    // aborts the host's call; its changes roll back
     return x * scale + offset
-}
-
-// Error handling
-const result = process(42) catch e => {
-    log("failed: {e}")
-    0                       // last expression is the value — `result` is 0 on error
 }
 ```
 
@@ -119,19 +113,19 @@ const result = process(42) catch e => {
 |----------|--------|-----------|
 | Identity | Verification-first, scripting-capable | Static types serve verification. Coroutines serve scripting. |
 | Syntax | Typed Rask subset | Same feel as Rask. Type annotations on signatures, inference for locals. |
-| Types | Static, inferred locals | Catches errors at compile time. Eliminates runtime type checking. 8-byte values. |
+| Types | Static, inferred locals | Catches errors at compile time. No instruction dispatches on type; values carry a tag only for the collector and serialization. |
 | VM | Register-based | ~30% fewer dispatched instructions than stack-based. |
-| Numbers | Fixed-point 32.32 | Deterministic (integer math) + fast (hardware ALU). |
+| Numbers | `int` (i64) and `float` (f64) | The two every audience already knows. Floats follow a strict profile that gives the same bits on every machine. |
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
 | Sandbox | No I/O. Host provides all capabilities. | Safe to run untrusted code. |
 | Structs/enums | User-defined, fixed layout | Structured data is the primary data model for all consumers. |
 | Collections | `array<T>` + `map<K, V>` | Maps to Rask's Vec/Map. Homogeneous, typed. |
 | Host data | `extern struct` / `extern func` | Compile-time type checking. Type mismatch = load error, not runtime error. |
-| Functions | Function references (no closures) | No captured state, no arena allocation. Enables composition without verification hazard. |
+| Functions | Named functions and closures | A captured variable can't be reassigned, so closures carry no hidden shared state. |
 | Optionals | `T?` with `Some`/`None` | Compiler-enforced null safety. No nil. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
-| Errors | `try`/`else`, `error()` | Same syntax as Rask. No `pcall`. |
+| Errors | `error()` aborts the call | Every host call into a script is a transaction: a failure throws away what the call changed and the host logs it. No error types, `try` or `catch` to learn; absence is `T?`. |
 | Coroutines | `coroutine(f, args...)`, methods | Create/resume/yield. Method-based. Serializable. |
 | Stdlib | Core functions + built-in methods always present, `math`/`bit` opt-in | Collection/string methods are always available. Host controls math and bitwise access. |
 
@@ -154,7 +148,7 @@ const result = process(42) catch e => {
 
 | Spec | What it covers |
 |------|----------------|
-| [language/types.md](language/types.md) | Static type system, fixed-point numbers, structs, enums, optionals, function references |
+| [language/types.md](language/types.md) | Static type system, ints and floats, structs, enums, optionals, functions and closures |
 | [language/syntax.md](language/syntax.md) | Grammar, variables, functions, control flow, operators, declarations |
 | [language/coroutines.md](language/coroutines.md) | Cooperative multitasking |
 | [language/stdlib.md](language/stdlib.md) | Configurable built-in modules |
@@ -163,7 +157,7 @@ const result = process(42) catch e => {
 
 | Spec | What it covers |
 |------|----------------|
-| [vm/architecture.md](vm/architecture.md) | Register VM, arena, instruction set, serialization |
+| [vm/architecture.md](vm/architecture.md) | Register VM, heap, instruction set, serialization |
 | [vm/chunk-format.md](vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](vm/interop.md) | Host API, extern structs/funcs, scoped bindings, error propagation |
 
@@ -189,7 +183,7 @@ This turns Allgard's trust-based Proofs (Conservation Law 4) into independently 
 - **Privacy.** Re-execution requires sharing inputs. A domain proving it minted an asset correctly might not want to reveal its crafting formula, resource stockpile, or internal pricing. A ZK proof proves "this output came from this script" without revealing the inputs.
 - **Expensive scripts.** Galaxy generation, large physics simulations — scripts where re-execution is costly and many parties need to verify. The executor proves once, verifiers check cheaply.
 
-Raido's VM design is ZK-compatible by construction — the properties chosen for determinism (integer math, bounded execution, flat memory, static bytecode) are the same properties ZK circuits need. See [vm/architecture.md](vm/architecture.md#zk-proof-compatibility) for details. The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
+Chunks compiled under the provable profile use only `int` arithmetic, so with bounded execution, flat memory and static bytecode they have the properties ZK circuits need. Floats are too costly to prove, so a provable chunk can't use them. See [vm/architecture.md](vm/architecture.md#provable-profile). The ZK prover would be a separate backend sharing the bytecode format — ZK goes underneath the VM, not inside it.
 
 **What Raido provides:** deterministic execution, content-addressed identity (chunk format), versioned serialization, ZK-compatible architecture.
 
@@ -201,13 +195,13 @@ Capability negotiation happens at the Leden layer -- two domains agree "we both 
 
 | Question | Decision | Rationale |
 |----------|----------|-----------|
-| Fixed-point format | **32.32** | ~9.6 decimal digits of precision vs 48.16's ~4.8. Simulation shows 48.16 drifts badly in physics chains (2.6 error after 1000 damping frames vs 6e-5). The 2.1B integer ceiling is mitigated by `int` (i64) being a separate type -- use `int` for large values. |
-| Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop hosts opt into `frame_end()` for per-frame cleanup. No auto-grow -- hides allocation cost. |
+| Fractional numbers | **f64, strict profile** | Replaced 32.32 fixed point, which was strange to work with: a 2.1 billion ceiling, saturation instead of overflow, a CORDIC `sin`. IEEE basic operations are correctly rounded, so with no fused multiply-add, correctly rounded math functions and NaN or infinity made a runtime error, an f64 gives the same bits everywhere (rask-lang/rask#1683). Zero-knowledge proofs move to an `int`-only provable profile (vm/architecture.md). |
+| Memory | **Garbage-collected heap the script can't observe.** | Coroutines and closures keep data across ticks, which a reset-between-evaluations arena can't hold safely. Determinism comes from what the language exposes, not from when the collector runs: no finalizers, no weak references, nothing derived from addresses. The memory limit counts reachable data in a size every implementation computes the same way, and serialization walks the object graph in a fixed order, so both are identical on every machine. Values carry a 16-byte tag-and-payload so the collector needs no help from the compiler. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Host data model | **`extern struct` / `extern func`.** Script declares expected shapes, host binds at load time. | Compile-time type checking. Load-time mismatch detection. Replaces dynamic `host_ref` + vtable pattern. |
 | Type system | **Static.** Function signatures typed, locals inferred. | Runtime type errors are a divergence vector. Static types catch bugs before deployment -- critical when scripts are tradeable economic assets. |
-| Closures | **Cut.** Function references only. | Shared mutable upvalues are a verification hazard. NPC state lives in host entities, not captured variables. Function references cover the composition need. |
+| Closures | **Capture, but a captured variable can't be reassigned.** | Lua- and JS-style shared upvalues are hidden shared state. With reassignment ruled out, capturing a variable and capturing its value are the same thing, so closures read the way JS, Python and Lua programmers expect without that hazard. Shared changing state goes in a struct, visibly. |
 | Nil | **Cut.** `T?` optionals with `Some`/`None`. | Eliminates null-related runtime errors by construction. Same as Rask. |
 | Globals | **Cut.** No mutable global state. | Undermines statelessness between host calls. Script state lives in coroutine locals or host entities. |
 

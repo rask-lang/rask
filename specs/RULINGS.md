@@ -1,11 +1,11 @@
 <!-- id: rulings -->
 <!-- status: decided -->
-<!-- summary: The six tests that decide a question the specs don't answer yet -->
+<!-- summary: The eight tests that decide a question the specs don't answer yet -->
 <!-- depends: CORE_DESIGN.md -->
 
 # How to Rule on a New Question
 
-[CORE_DESIGN.md](CORE_DESIGN.md) says what Rask values. This page is the working version: six tests
+[CORE_DESIGN.md](CORE_DESIGN.md) says what Rask values. This page is the working version: eight tests
 that decide a case nobody has written a spec line for. Most existing rules fall
 out of them, which is the evidence they're the real ones — they were extracted
 from rulings already made, not invented up front.
@@ -39,6 +39,12 @@ chain (`type.errors/ER16a`), `read()` vs `write()` naming the discipline you too
 **Applying it:** if a proposal makes the meaning of a line depend on something
 the reader can't see in the line, it's out. A rule that inspects the argument's
 type to decide what the caller must write is the same error wearing a type.
+
+The same goes for the order a line is read in. Between two equally expressive
+spellings, pick the one that reads left to right without holding anything in
+your head. That's why `!x?` is an error (`type.optionals/OPT16`), why sequence
+adapters are methods that chain (`type.sequence`), and why terminal styling is a
+`Style` value rather than nested calls (`std.terminal/T1`).
 
 ## 3. Anything statically decidable is decided statically — never a runtime flag
 
@@ -105,13 +111,67 @@ guard — no lint needed, because the shape routes itself.
 **Applying it:** prefer deleting the support to adding the warning. See
 [canonical-patterns.md](canonical-patterns.md) for what counts as canonical.
 
-## Two habits that go with them
+## 7. A feature pays rent in the language, not in the compiler
+
+Compiler work is free: it's written once, and every program gets it. What isn't
+free is what a feature adds to the language: one more thing every reader has to
+know, every other feature has to interact with, and every tool (formatter, LSP,
+`rask api`, both backends) has to understand. A feature is judged by that, not
+by whether it's good in isolation.
+
+Generates: no macro system, because DSLs only work in tools that expand macros
+(`rejected-features.md`). No user-declarable Functor/Monad: `try` is the one
+monad that earned a keyword, and the next gets a specialisation only once it
+pays (`rejected-features.md`, Higher-Kinded Types). `Ok`/`Err`/`Some`/`None`
+deleted, which took the whole family of rebind forms with them.
+
+**Applying it:** count compiler effort as zero and language surface at full
+price. A proposal that saves the compiler work by adding a keyword or an
+annotation has the trade backwards. [DAY_ONE.md](DAY_ONE.md) is the budget for
+what a reader has to carry, and a feature that lands on it pays the most.
+
+## 8. The default is what most code does, so it has to be the right thing
+
+Most code never overrides a default, which makes a default a policy decision.
+The signature of a bad one is convenience where you write it and cost everywhere
+else. Null is the canonical example: one less thing to write at the
+declaration, paid for at every use.
+
+Generates: `let` and `mut` being the same length, because `const` against `mut`
+made the immutable binding the one that cost more to type
+(`rejected-features.md`, `const` for Local Bindings). The `Default` interface's
+removal: universal zeros let any type be built without anyone choosing its
+values, and declared field defaults replaced them (`type.structs/FD1`).
+Absence living in the type as `T?`, not in every reference.
+
+**Applying it:** ask who pays when the default is wrong, and how they find out.
+The lazy path and the correct path should be the same path. If the cheapest way
+to satisfy the checker is an escape hatch (a cast, a `todo()`, a discard), the
+checker is generating escape hatches, and the rule is what needs fixing.
+
+## Habits that go with them
 
 **Check the premise is constructible.** Before arguing about a proposed
 operation, check whether the thing it operates on can exist. "Should
 `Vec<T>.drain_into` handle linear `T`?" dissolves once you notice `Vec` can never
 hold a linear value at all (`mem.linear`, containers) — dropping it would have to
 consume each element, and there's no destructor to do that in.
+
+**Argue from consequences.** A ruling names a program it makes shorter, longer,
+or wrong, preferably one of the five validation programs in
+[METRICS.md](METRICS.md). "It's cleaner" is a preference and can't be
+settled. "This loop in the grep clone grows two lines" can.
+
+**The semantics can't wait on an analysis.** Compiler work that doesn't exist
+yet is fine to plan on; it's free once written. What a rule can't do is depend
+on an analysis that might not succeed. A program's meaning has to hold with every
+optimisation switched off, and an optimisation only makes it cheaper. String
+refcount elision is the model: the refcount is correct without it.
+
+**Keep the counterexample.** When a test turns out wrong, write down the case
+that broke it next to the test, the way test 5 keeps `L7`. A model of
+consequences is built from decisions whose outcome is known, and the reversed
+ones teach the most.
 
 **Nothing here is frozen.** These are the tests the rulings so far imply. A good
 argument that one of them is wrong changes the test, and then the rules it

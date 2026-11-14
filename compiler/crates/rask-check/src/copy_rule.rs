@@ -72,7 +72,13 @@ impl TypeTable {
 
     /// Is a value of this type copied rather than moved (mem.value/VS1)?
     pub fn is_copy(&self, ty: &Type) -> bool {
-        self.is_copy_with(ty, &|_| false)
+        self.is_copy_with(ty, &rask_layout::no_params, &|_| false)
+    }
+
+    /// `is_copy` while checking, where the scope says which names are type
+    /// parameters.
+    pub fn is_copy_in_scope(&self, ty: &Type) -> bool {
+        self.is_copy_with(ty, &|n| self.is_type_param_in_scope(n), &|_| false)
     }
 
     /// `is_copy`, with a say for type parameters: inside a generic body the
@@ -80,14 +86,24 @@ impl TypeTable {
     ///
     /// A type the rule can't place counts as a move: the safe direction for
     /// a move analysis.
-    pub fn is_copy_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> bool {
-        self.copy_verdict_with(ty, param_is_copy) == CopyVerdict::Copy
+    pub fn is_copy_with(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        self.copy_verdict_with(ty, is_param, param_is_copy) == CopyVerdict::Copy
     }
 
     /// The Copy rule, with "couldn't tell" kept apart from "moves". A check
     /// that rejects a program asks for `Move`: rejecting on an inference
     /// variable or a name nothing resolved would reject on a guess.
-    pub fn copy_verdict_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> CopyVerdict {
+    pub fn copy_verdict_with(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> CopyVerdict {
         use CopyVerdict::{Copy, Move, Unknown};
         // L1: a linear value is never Copy, whatever its size or its fields.
         // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
@@ -97,8 +113,8 @@ impl TypeTable {
         if self.is_linear_value(ty) {
             return Move;
         }
-        let verdict = |t: &Type| self.copy_verdict_with(t, param_is_copy);
-        let size = || self.copy_size(ty);
+        let verdict = |t: &Type| self.copy_verdict_with(t, is_param, param_is_copy);
+        let size = || self.copy_size(ty, is_param);
         match ty {
             Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => Copy,
@@ -125,7 +141,7 @@ impl TypeTable {
             // A non-generic runtime handle (`Random`, `File`, ...) declares no
             // fields, so the field rule below would call it a zero-byte Copy
             // and two names would free one block.
-            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => Move,
+            Type::Named(type_id) if self.is_handle(*type_id) => Move,
 
             // User-defined types: need to check size and fields
             Type::Named(type_id) => match self.get(*type_id) {
@@ -166,9 +182,8 @@ impl TypeTable {
             // up being at this instantiation — same rule as a non-generic
             // struct, just substituted first (W4).
             Type::Generic { base, args } => {
-                let base_name = self.type_name(*base);
-                if rask_stdlib::is_runtime_handle(&base_name) {
-                    return if base_name.as_str() == "Link" { Copy } else { Move };
+                if self.is_handle(*base) {
+                    return if self.type_name(*base) == "Link" { Copy } else { Move };
                 }
                 match self.get(*base) {
                     None => Unknown,

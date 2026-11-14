@@ -33,7 +33,9 @@ pub fn detect(
         .iter()
         .any(|k| effects.get(k).is_some_and(|e| e.async_));
     let imports = crate::sources::ImportedNames::from_decls(decls);
+    let borrowing_joins = crate::borrowing_joins(decls);
     let mut ctx = WarnContext {
+        borrowing_joins: &borrowing_joins,
         effects,
         targets,
         imports: &imports,
@@ -99,6 +101,9 @@ fn is_root_fn(f: &FnDecl) -> bool {
 }
 
 struct WarnContext<'a> {
+    /// Joins of tasks that borrow their frame: they wait for the task beside
+    /// them, whose body is checked where it is spawned.
+    borrowing_joins: &'a HashSet<rask_ast::NodeId>,
     effects: &'a EffectMap,
     /// The checker's name for each method call it resolved.
     targets: &'a MethodTargets,
@@ -292,7 +297,11 @@ impl<'a> WarnContext<'a> {
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
-                let names = crate::method_callees(expr.id, object, method, self.targets, self.imports);
+                let names = if self.borrowing_joins.contains(&expr.id) {
+                    Vec::new()
+                } else {
+                    crate::method_callees(expr.id, object, method, self.targets, self.imports)
+                };
                 for name in &names {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
                 }
@@ -568,7 +577,7 @@ mod tests {
         };
         Expr {
             id: NodeId(0),
-            kind: ExprKind::Spawn { target, receiver: None, body: Box::new(body) },
+            kind: ExprKind::Spawn { target, receiver: None, args: Vec::new(), body: Box::new(body) },
             span: sp(),
         }
     }
@@ -587,6 +596,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],
@@ -848,7 +858,7 @@ mod tests {
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -870,7 +880,7 @@ mod tests {
             expr_stmt(task_spawn(vec![])),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
@@ -892,7 +902,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -906,7 +916,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &[]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &rask_stdlib::StubRegistry::typecheck_decls(), &Default::default(), &Default::default(), &[]);
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

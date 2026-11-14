@@ -23,7 +23,7 @@ pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 
@@ -401,6 +401,11 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
+        // An injected method is a copy (an interface default) or a parse of
+        // its own (a template): either way its id isn't its own yet.
+        if self.renumber {
+            f.id = self.fresh_id();
+        }
         // A default is copied into each call that leaves it out, after this
         // pass. Left as written, `n: i64 = 2 * 3` reached every call with a
         // raw `*` in it, which nothing past desugar has to understand.
@@ -479,6 +484,7 @@ impl Desugarer {
         };
         let body = vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }];
         FnDecl {
+            id: self.fresh_id(),
             name,
             type_params: vec![],
             params: vec![],
@@ -522,17 +528,17 @@ impl Desugarer {
                 vec![]
             } else {
                 variant.fields.iter().map(|f| {
-                    Pattern::Ident(f.name.clone())
+                    Pattern::new(self.fresh_id(), PatternKind::Ident(f.name.clone()))
                 }).collect()
             };
 
             let pattern = if variant.fields.is_empty() {
-                Pattern::Ident(variant.name.clone())
+                Pattern::new(self.fresh_id(), PatternKind::Ident(variant.name.clone()))
             } else {
-                Pattern::Constructor {
+                Pattern::new(self.fresh_id(), PatternKind::Constructor {
                     name: variant.name.clone(),
                     fields: field_patterns,
-                }
+                })
             };
 
             let body_expr = match template {
@@ -583,6 +589,7 @@ impl Desugarer {
         };
 
         Some(FnDecl {
+            id: self.fresh_id(),
             name: "message".to_string(),
             type_params: vec![],
             params: vec![Param {
@@ -984,7 +991,10 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args {
+                    self.desugar_expr(&mut a.expr);
+                }
                 self.desugar_expr(body);
             }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {

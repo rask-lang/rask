@@ -2,7 +2,7 @@
 //! Expression type inference and specific type checks.
 
 use rask_ast::coercion::CoercionSite;
-use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern};
+use rask_ast::expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
@@ -16,6 +16,11 @@ use super::TypeChecker;
 
 use rask_types::{FnParam, GenericArg, Type};
 use rask_ast::ty::ParamMode;
+
+
+/// A `_` standing in for a whole column of a tuple's coverage rows. Only ever
+/// compared, never stored or looked up, so it needs no id of its own.
+static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard };
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
@@ -1540,7 +1545,13 @@ impl TypeChecker {
                         Type::UnresolvedNamed(name.clone())
                     }
                 } else {
-                    Type::UnresolvedNamed(name.clone())
+                    // No type of that name. Left unresolved, the literal got as
+                    // far as lowering and failed there with an internal error.
+                    self.errors.push(TypeError::UndefinedName { name: name.clone(), span: expr.span });
+                    for field_init in fields {
+                        self.infer_expr(&field_init.value);
+                    }
+                    Type::Error
                 }
                 };
                 // `..base` supplies the fields nobody listed, so it has to be
@@ -2096,10 +2107,17 @@ impl TypeChecker {
                 // fact instead, a body of type `void` met `void or E` as a
                 // mismatch, so a consumer that can't fail couldn't fill a slot
                 // whose error type was generic.
-                let expected_ret = if declared_ret.is_none() {
-                    self.closure_return_expectations.remove(&expr.id)
-                } else {
-                    None
+                //
+                // A written return type is that declaration. Read only after the
+                // body was checked, a `try` in the body met an open return type
+                // and couldn't tell its error was being erased into `any I`, so
+                // nothing boxed it.
+                let declared_ty = declared_ret
+                    .as_ref()
+                    .map(|declared| self.resolve_written(declared, expr.span).unwrap_or(Type::Error));
+                let expected_ret = match &declared_ty {
+                    Some(declared) => Some(declared.clone()),
+                    None => self.closure_return_expectations.remove(&expr.id),
                 };
                 let closure_return_type = expected_ret.clone().unwrap_or_else(|| self.ctx.fresh_var());
                 self.current_return_type = Some(closure_return_type.clone());
@@ -2137,18 +2155,26 @@ impl TypeChecker {
                             self.ctx.default_var_to(id, Type::Never);
                         }
                     }
+                } else if self.tail_fills_error_slot(&inferred_ret, &closure_return_type) {
+                    // A `try` in the body made the return `T or E` (GC7), and
+                    // the body's own value is the `T`. That's a `return v`
+                    // through the success side, so it coerces the way one
+                    // would. Unified instead, `i64` met `? or E`, failed in
+                    // silence, and left `?` open: `|| try parse(s)` was "type
+                    // is still open", and the same block under `spawn` crashed.
+                    self.coerce_into_node(
+                        CoercionSite::Return,
+                        inferred_ret.clone(),
+                        closure_return_type.clone(),
+                        Some(body.id),
+                        body.span,
+                    );
                 } else {
                     let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
                 }
 
-                // Check declared return type if present
-                let ret_ty = if let Some(declared) = declared_ret {
-                    let expected_ret = self.resolve_written(declared, expr.span)
-                        .unwrap_or(Type::Error);
-                    if let Err(err) = self.unify(&closure_return_type, &expected_ret, expr.span) {
-                        self.errors.push(err);
-                    }
-                    expected_ret
+                let ret_ty = if let Some(declared) = declared_ty {
+                    declared
                 } else {
                     // A body that diverges returns nothing, so no constraint
                     // reaches the return variable: `spawn { panic("boom") }`
@@ -2180,7 +2206,26 @@ impl TypeChecker {
 
             // A task block. Its value is the task's result, so the expression
             // is a `Handle` of whatever the block produces (conc.async/H5).
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
+                // `ThreadPool.spawn(requires_pool: false) { … }` (conc.async/S2):
+                // one flag, and only on the pool form.
+                let takes_flag = matches!(target, rask_ast::expr::SpawnTarget::Pool);
+                for (i, a) in args.iter().enumerate() {
+                    let ok_label = a.name.as_deref().is_none_or(|l| l == "requires_pool");
+                    if !takes_flag || !ok_label || i > 0 {
+                        self.errors.push(TypeError::ArgPlacement {
+                            callee: target.spelling().to_string(),
+                            problem: super::errors::ArgProblem::UnknownLabel(
+                                a.name.clone().unwrap_or_else(|| "_".to_string()),
+                            ),
+                            params: Some(if takes_flag { vec!["requires_pool".to_string()] } else { Vec::new() }),
+                            span: a.expr.span,
+                        });
+                        continue;
+                    }
+                    let ty = self.infer_expr(&a.expr);
+                    self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, ty, a.expr.span));
+                }
                 // What the block captures, and whether any of it may not cross
                 // to another task, is the ownership pass's to answer: it knows
                 // each closure's captures (`check_task_crossing`).
@@ -3042,7 +3087,8 @@ impl TypeChecker {
                 let target = self.ctx.fresh_var();
                 let mut sources = args.iter().map(|arg| self.infer_expr(&arg.expr)).collect::<Vec<_>>();
                 if sources.len() == 1 {
-                    self.pending_transmutes.push((sources.remove(0), target.clone(), span));
+                    let params = self.types.type_params_in_scope();
+                    self.pending_transmutes.push((sources.remove(0), target.clone(), span, params));
                 }
                 return target;
             }
@@ -3122,7 +3168,7 @@ impl TypeChecker {
         }
 
         // PP4: a C function-like macro, typed per call from its arguments.
-        // Named bare or through a package (`pa.F`).
+        // `pa.F(x)` arrives bare: package references are rewritten first.
         {
                 let def = self
                 .resolved
@@ -4073,7 +4119,11 @@ impl TypeChecker {
         let on_value = Self::root_ident_name(object).is_some_and(|root| {
             self.lookup_local(&root).is_some() && self.types.module_named(&root).is_none()
         }) || !matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. });
-        self.note_method_call(call_id, span, on_value);
+        let on_type = matches!(object.kind, ExprKind::Ident(_) | ExprKind::GenericName { .. })
+            && object.name().is_some_and(|n| {
+                self.lookup_local(n).is_none() && self.types.get_type_id(n).is_some()
+            });
+        self.note_method_call(call_id, span, on_value, on_type);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
@@ -4114,19 +4164,6 @@ impl TypeChecker {
         // that answer different types fought over it — `libpkg.twice(21)` then
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
-        // PP4: a C macro another package declares, `pa.F(x)`. An extern
-        // keeps its name across packages, as a C symbol does.
-        let through_package = self
-            .resolved
-            .resolutions
-            .get(&object.id)
-            .and_then(|&sym| self.resolved.symbols.get(sym))
-            .is_some_and(|sym| matches!(sym.kind, SymbolKind::ExternalPackage { .. }));
-        let macro_def = if through_package { self.c_macros.get(method).cloned() } else { None };
-        if let Some(def) = macro_def {
-            return self.check_c_macro_call(call_id, &def, args, span);
-        }
-
         if let Some(ret) = self.check_package_call(call_id, object, args, span) {
             return ret;
         }
@@ -4154,6 +4191,7 @@ impl TypeChecker {
                         recv: Type::UnresolvedNamed(module.to_string()),
                         method: method.to_string(),
                         package: None,
+                        body: self.types.builtin_modules.get_method(module, method).and_then(|m| m.body),
                     },
                 );
                 return self.check_module_method(module, method, args, type_args, span);
@@ -4185,6 +4223,26 @@ impl TypeChecker {
                     });
                     return ret_ty;
                 }
+            }
+        }
+
+        // GF7: `T.zero()` calls a function `T`'s bounds require on the type
+        // parameter itself. Resolved like a method on a `T` value: through the
+        // bounds here, and per instance once `T` is known.
+        if let ExprKind::Ident(name) = &object.kind {
+            if self.lookup_local(name).is_none() && self.types.is_type_param_in_scope(name) {
+                self.type_param_static_calls.insert(call_id);
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let ret_ty = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedNamed(name.clone()),
+                    method: method.to_string(),
+                    args: arg_types,
+                    ret: ret_ty.clone(),
+                    span,
+                    call_node: Some(call_id),
+                });
+                return ret_ty;
             }
         }
 
@@ -4401,7 +4459,7 @@ impl TypeChecker {
             .name()
             .and_then(|n| self.lookup_local(n))
             .map(|t| self.resolve_named(&self.ctx.apply(&t)))
-            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy(&t));
+            .is_none_or(|t| matches!(t, Type::Var(_)) || self.types.is_copy_in_scope(&t));
         if let Some(var_name) = object.name().filter(|_| !recv_copy) {
             if self.method_mutates_self(var_name, method) {
                 if let Some(recv_path) = Self::access_path(object) {
@@ -4498,6 +4556,9 @@ impl TypeChecker {
         }
 
         let obj_ty_raw = self.infer_expr(object);
+        if matches!(method, "has" | "is") {
+            self.check_unrolled_reflect_item(object, &obj_ty_raw, method, span);
+        }
         // A mutating method on a field or element of a binding mutates the
         // binding: `b.items.push(2)` on a `let b`, `v[0].bump()` on a
         // read-only parameter. Only a bare receiver was checked, so a `let`
@@ -4679,6 +4740,7 @@ impl TypeChecker {
                         recv: resolved_obj.clone(),
                         method: method.to_string(),
                         package: None,
+                        body: None,
                     },
                 );
                 return ret;
@@ -4894,6 +4956,7 @@ impl TypeChecker {
                     recv: Type::UnresolvedNamed(module.to_string()),
                     method: function.to_string(),
                     package: None,
+                    body: self.types.builtin_modules.get_method(module, function).and_then(|m| m.body),
                 },
             );
             let type_args = (!type_args.is_empty()).then_some(type_args);
@@ -5249,7 +5312,12 @@ impl TypeChecker {
     ) {
         let src = self.ctx.apply(err);
         let target = self.ctx.apply(ret_err);
-        if matches!(src, Type::Var(_)) && self.wrap_candidate(&target) {
+        // An error type still open would be settled by the target itself:
+        // unified with `any Error`, a `parse<i64>()`'s error became the box
+        // instead of the `ParseError` going into one, and nothing boxed it.
+        // Wait for the call to say what it is, as for an enum to wrap it in.
+        let erasing = matches!(target, Type::InterfaceObject { .. });
+        if matches!(src, Type::Var(_)) && (erasing || self.wrap_candidate(&target)) {
             self.pending_try_errors.push((node, src, target, span));
             return;
         }
@@ -5265,6 +5333,15 @@ impl TypeChecker {
             let inner_err = self.fmt_ty(&self.ctx.apply(src));
             let outer_err = self.fmt_ty(&self.ctx.apply(target));
             self.errors.push(TypeError::TryErrorMismatch { inner_err, outer_err, span });
+            return;
+        }
+        // ER32: a concrete error leaving into `any I` is boxed there.
+        if let Type::InterfaceObject { interface_name, decl } = self.ctx.apply(target) {
+            let error = self.ctx.apply(src);
+            if !matches!(error, Type::InterfaceObject { .. }) {
+                let interface = self.types.interface_symbol(&interface_name, decl);
+                self.erased_try_errors.insert(node, super::type_defs::ErasedError { error, interface });
+            }
         }
     }
 
@@ -5309,7 +5386,7 @@ impl TypeChecker {
                 let enum_name = self.fmt_ty(&target);
                 self.error_wraps.insert(
                     node,
-                    rask_types::ErrorWrap { enum_name, variant: variants[0].clone() },
+                    rask_types::ErrorWrap { enum_ty: target.clone(), enum_name, variant: variants[0].clone() },
                 );
                 true
             }
@@ -5333,13 +5410,20 @@ impl TypeChecker {
     /// names the annotation instead of blaming a missing method on a value that
     /// was never going to exist.
     fn annotation_projection_type(&mut self, object: &Expr, field: &str, span: Span) -> Option<Type> {
-        let ExprKind::MethodCall { method, type_args, .. } = &object.kind else { return None };
+        let ExprKind::MethodCall { object: item, method, type_args, .. } = &object.kind else { return None };
         if method != "get" {
             return None;
         }
         let name = type_args.as_ref()?.first()?.bare_name()?.to_string();
         if !self.annotation_types.contains(&name) {
             return None;
+        }
+        let item_ty = match &item.kind {
+            ExprKind::Ident(n) => self.lookup_local(n),
+            _ => Some(self.infer_expr(item)),
+        };
+        if let Some(item_ty) = item_ty {
+            self.check_unrolled_reflect_item(item, &item_ty, method, object.span);
         }
         let id = match self.types.lookup(&name) {
             Some(Type::Named(id)) => id,
@@ -5398,6 +5482,39 @@ impl TypeChecker {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// `item.has<A>()`, `item.get<A>()` and `item.is<T>()` on a `FieldInfo`
+    /// or `ParamInfo` are answered while a `comptime for` unrolls: the item is
+    /// a fact about one iteration, not a value with the answer inside it. So
+    /// the receiver has to be an enclosing `comptime for` binding. Anywhere
+    /// else — an ordinary `for` over `reflect.fields<T>()`, a `Vec` element —
+    /// native has nothing to fold and the call has no body to run.
+    fn check_unrolled_reflect_item(&mut self, item: &Expr, item_ty: &Type, method: &str, span: Span) {
+        if let ExprKind::Ident(n) = &item.kind {
+            let defined_in = self.local_types.iter().rposition(|scope| scope.contains_key(n));
+            if defined_in.is_some_and(|d| self.comptime_for_bindings.contains(&(n.clone(), d))) {
+                return;
+            }
+        }
+        // The receiver's type is often still open here — an ordinary `for`
+        // over `reflect.fields<T>()` binds a variable solved later.
+        self.pending_reflect_items.push((item_ty.clone(), method.to_string(), span));
+    }
+
+    pub(super) fn check_reflect_items(&mut self) {
+        use rask_types::LangItem;
+        for (ty, method, span) in std::mem::take(&mut self.pending_reflect_items) {
+            let ty = self.ctx.apply(&ty);
+            let info = if self.types.is_lang(&ty, LangItem::FieldInfo) {
+                "FieldInfo"
+            } else if self.types.is_lang(&ty, LangItem::ParamInfo) {
+                "ParamInfo"
+            } else {
+                continue;
+            };
+            self.errors.push(TypeError::ReflectItemNotUnrolled { info, method, span });
         }
     }
 
@@ -5899,14 +6016,14 @@ impl TypeChecker {
         if let Type::Tuple(parts) = &resolved {
             let rows: Vec<Vec<&Pattern>> = arms
                 .iter()
-                .flat_map(|a| match &a.pattern {
-                    Pattern::Or(alts) => alts.iter().collect::<Vec<_>>(),
-                    p => vec![p],
+                .flat_map(|a| match &a.pattern.kind {
+                    PatternKind::Or(alts) => alts.iter().collect::<Vec<_>>(),
+                    _ => vec![&a.pattern],
                 })
-                .filter_map(|p| match p {
-                    Pattern::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
-                    Pattern::Wildcard | Pattern::Ident(_) if !matches!(p, Pattern::Ident(n) if n.contains('.')) => {
-                        Some(vec![&Pattern::Wildcard; parts.len()])
+                .filter_map(|p| match &p.kind {
+                    PatternKind::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
+                    PatternKind::Wildcard | PatternKind::Ident(_) if !matches!(&p.kind, PatternKind::Ident(n) if n.contains('.')) => {
+                        Some(vec![&WILDCARD; parts.len()])
                     }
                     _ => None,
                 })
@@ -6042,9 +6159,9 @@ impl TypeChecker {
     /// `_`. A literal, a range and a constructor all test, so none of them
     /// closes the match on their own.
     fn collect_open_pattern(pattern: &Pattern, has_wildcard: &mut bool) {
-        match pattern {
-            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
-            Pattern::Or(alts) => {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Ident(_) => *has_wildcard = true,
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     Self::collect_open_pattern(alt, has_wildcard);
                 }
@@ -6077,9 +6194,9 @@ impl TypeChecker {
         value_ty: &Type,
         span: Span,
     ) {
-        let name = match pattern {
-            Pattern::Wildcard => "_".to_string(),
-            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
+        let name = match &pattern.kind {
+            PatternKind::Wildcard => "_".to_string(),
+            PatternKind::Ident(n) if bindings.iter().any(|(b, _)| b == n) => n.clone(),
             _ => return,
         };
         let ty = self.ctx.apply(value_ty);
@@ -6114,12 +6231,12 @@ impl TypeChecker {
         if arm.guard.is_some() {
             return;
         }
-        match &arm.pattern {
-            Pattern::Wildcard => reach.closed_by = Some("_".to_string()),
-            Pattern::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
+        match &arm.pattern.kind {
+            PatternKind::Wildcard => reach.closed_by = Some("_".to_string()),
+            PatternKind::Ident(n) if bindings.iter().any(|(b, _)| b == n) => {
                 reach.closed_by = Some(n.clone());
             }
-            Pattern::Ident(n) => {
+            PatternKind::Ident(n) => {
                 let tag = n.rsplit('.').next().unwrap_or(n).to_string();
                 if !reach.tags.insert(tag) {
                     self.errors.push(TypeError::UnreachableArm { earlier: n.clone(), span });
@@ -6142,13 +6259,13 @@ impl TypeChecker {
         // part the same as `_` does: `(Pt(x, y), true)`.
         let is_struct = matches!(first, Type::Named(id) | Type::Generic { base: id, .. }
             if matches!(self.types.get(*id), Some(TypeDef::Struct { .. })));
-        let binds_only = |p: &Pattern| matches!(p, Pattern::Wildcard)
-            || matches!(p, Pattern::Ident(n) if !n.contains('.'));
-        let wild = |p: &Pattern| match p {
-            Pattern::Wildcard => true,
-            Pattern::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
-            Pattern::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
-            Pattern::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
+        let binds_only = |p: &Pattern| matches!(&p.kind, PatternKind::Wildcard)
+            || matches!(&p.kind, PatternKind::Ident(n) if !n.contains('.'));
+        let wild = |p: &Pattern| match &p.kind {
+            PatternKind::Wildcard => true,
+            PatternKind::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
+            PatternKind::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
+            PatternKind::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
             _ => false,
         };
         // A nested tuple's parts are columns of their own, so `((true, _), _)`
@@ -6157,10 +6274,10 @@ impl TypeChecker {
             let n = inner.len();
             let expanded: Vec<Vec<&Pattern>> = rows
                 .iter()
-                .filter_map(|r| match r[0] {
-                    Pattern::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
-                    p if wild(p) => Some(
-                        std::iter::repeat(&Pattern::Wildcard).take(n).chain(r[1..].iter().copied()).collect(),
+                .filter_map(|r| match &r[0].kind {
+                    PatternKind::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
+                    _ if wild(r[0]) => Some(
+                        std::iter::repeat(&WILDCARD).take(n).chain(r[1..].iter().copied()).collect(),
                     ),
                     _ => None,
                 })
@@ -6185,12 +6302,12 @@ impl TypeChecker {
             _ => None,
         };
         let tests = |p: &Pattern, value: &str| -> bool {
-            match p {
-                Pattern::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
-                Pattern::Ident(n) => n.rsplit('.').next() == Some(value),
-                Pattern::Constructor { name, fields } => {
+            match &p.kind {
+                PatternKind::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
+                PatternKind::Ident(n) => n.rsplit('.').next() == Some(value),
+                PatternKind::Constructor { name, fields } => {
                     name.rsplit('.').next() == Some(value)
-                        && fields.iter().all(|f| matches!(f, Pattern::Wildcard) || matches!(f, Pattern::Ident(n) if !n.contains('.')))
+                        && fields.iter().all(|f| matches!(&f.kind, PatternKind::Wildcard) || matches!(&f.kind, PatternKind::Ident(n) if !n.contains('.')))
                 }
                 _ => false,
             }
@@ -6233,14 +6350,14 @@ impl TypeChecker {
     }
 
     fn collect_bool_pattern(pattern: &Pattern, seen: &mut [bool; 2], has_wildcard: &mut bool) {
-        match pattern {
-            Pattern::Wildcard | Pattern::Ident(_) => *has_wildcard = true,
-            Pattern::Literal(expr) => {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Ident(_) => *has_wildcard = true,
+            PatternKind::Literal(expr) => {
                 if let ExprKind::Bool(b) = expr.kind {
                     seen[b as usize] = true;
                 }
             }
-            Pattern::Or(alts) => {
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     Self::collect_bool_pattern(alt, seen, has_wildcard);
                 }
@@ -6264,9 +6381,9 @@ impl TypeChecker {
                 }
             }
         };
-        match pattern {
-            Pattern::Wildcard => *has_wildcard = true,
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => *has_wildcard = true,
+            PatternKind::Ident(name) => {
                 if name.contains('.') {
                     // `Fault.Timeout`: a fieldless variant, not a binding. It
                     // used to read as a catch-all, so one such arm made any
@@ -6279,13 +6396,13 @@ impl TypeChecker {
                     *has_wildcard = true;
                 }
             }
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::TypePat { ty, .. } => {
                 if let Some(i) = self.branch_named(ty, leaves) {
                     covered[i] = true;
                 }
             }
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
-            Pattern::Or(alts) => {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => hit(name),
+            PatternKind::Or(alts) => {
                 for alt in alts {
                     self.collect_result_covered(alt, leaves, covered, variants_hit, has_wildcard);
                 }
@@ -6301,9 +6418,9 @@ impl TypeChecker {
         has_wildcard: &mut bool,
         enum_variants: &[String],
     ) {
-        match pattern {
-            Pattern::Wildcard => *has_wildcard = true,
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => *has_wildcard = true,
+            PatternKind::Ident(name) => {
                 // Bare identifier matching an enum variant name is a variant match,
                 // not a catch-all binding
                 if enum_variants.contains(name) {
@@ -6316,18 +6433,18 @@ impl TypeChecker {
                     *has_wildcard = true;
                 }
             }
-            Pattern::Constructor { name, .. } => {
+            PatternKind::Constructor { name, .. } => {
                 // Qualified names like "Enum.Variant" — extract the variant part
                 let variant = name.rsplit('.').next().unwrap_or(name);
                 covered.insert(variant.to_string());
             }
             // Struct-style variant pattern `Enum.Variant { field, .. }` —
             // same coverage semantics as Constructor.
-            Pattern::Struct { name, .. } => {
+            PatternKind::Struct { name, .. } => {
                 let variant = name.rsplit('.').next().unwrap_or(name);
                 covered.insert(variant.to_string());
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     self.collect_covered_variants(p, covered, has_wildcard, enum_variants);
                 }
@@ -6952,7 +7069,8 @@ impl TypeChecker {
     /// value out with, so padding counts. A side naming a type parameter has
     /// no size until it's instantiated; MIR lowering judges that one.
     pub(super) fn settle_transmutes(&mut self) {
-        for (from, to, span) in std::mem::take(&mut self.pending_transmutes) {
+        for (from, to, span, params) in std::mem::take(&mut self.pending_transmutes) {
+            let is_param = |n: &str| params.iter().any(|p| p == n);
             let from = self.ctx.apply(&from);
             let to = self.ctx.apply(&to);
             if matches!(from, Type::Error) || matches!(to, Type::Error) {
@@ -6962,7 +7080,7 @@ impl TypeChecker {
                 self.errors.push(TypeError::TransmuteNeedsTarget { from, span });
                 continue;
             }
-            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from), self.types.size_align(&to)) else {
+            let (Some((from_size, _)), Some((to_size, _))) = (self.types.size_align(&from, &is_param), self.types.size_align(&to, &is_param)) else {
                 continue;
             };
             if from_size != to_size {
@@ -8269,4 +8387,19 @@ pub(crate) enum PendingLiteral {
     /// The token's value, and whether it's a bit pattern above `i128::MAX`.
     Int(i128, bool),
     Float(f64),
+}
+
+impl TypeChecker {
+    /// The body of a closure with no written return type has a settled value
+    /// that isn't a `T or E`, while its return type has become one.
+    fn tail_fills_error_slot(&self, body_ty: &Type, ret: &Type) -> bool {
+        let ret = self.ctx.apply(ret);
+        if !matches!(&ret, Type::Result { err, .. } if !matches!(**err, Type::None)) {
+            return false;
+        }
+        !matches!(
+            self.ctx.apply(body_ty),
+            Type::Result { .. } | Type::Var(_) | Type::Never | Type::Error
+        )
+    }
 }

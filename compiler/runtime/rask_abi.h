@@ -83,6 +83,10 @@
 // Another box: freed through its own header (#1302).
 #define RASK_BOX_PAYLOAD_BOX 4
 
+// A handle that frees itself: the kind is this plus the handle's index
+// in `RASK_HANDLE_RELEASES`.
+#define RASK_BOX_PAYLOAD_HANDLE_BASE 16
+
 // An owned-entry word: the byte offset in the low 28 bits, the kind in
 // the top 4.
 #define RASK_OWNED_KIND_SHIFT 28
@@ -99,6 +103,18 @@
 
 // The value here is described by the list being walked, from its start.
 #define RASK_OWNED_SELF 7
+
+// A link inside the element: owns nothing, but the rack has to find it
+// to null it when its node is deleted (`Vec<Cursor>`, #1804).
+#define RASK_OWNED_LINK 8
+
+// A handle that frees itself (`@handle(release: …)`). The entry's offset
+// bits hold two things: the byte offset below
+// `RASK_OWNED_HANDLE_INDEX_SHIFT`, and above it the handle's index in
+// `RASK_HANDLE_RELEASES`.
+#define RASK_OWNED_HANDLE 9
+#define RASK_OWNED_HANDLE_INDEX_SHIFT 20
+#define RASK_OWNED_HANDLE_OFFSET_MASK 1048575
 
 // Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
 // value's size and alignment, which size an interface box's block, and
@@ -188,5 +204,16 @@
 #define RASK_CHAN_FULL (-2)
 #define RASK_CHAN_EMPTY (-3)
 #define RASK_CHAN_CANCELLED (-4)
+
+// Every stdlib handle's declared release, in index order: what a
+// `RASK_OWNED_HANDLE` entry or a handle box payload calls.
+#define RASK_HANDLE_RELEASES(X) \
+    X(rask_atomic_free) \
+    X(rask_cstring_free) \
+    X(rask_map_free) \
+    X(rask_rack_free) \
+    X(rask_rng_free) \
+    X(rask_staged_free) \
+    X(rask_vec_free)
 
 #endif

@@ -388,7 +388,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::LoadCapture { dst, env_ptr, .. } => {
+        MirStmtKind::LoadCapture { dst, env_ptr, .. } | MirStmtKind::BindPlace { dst, addr: env_ptr } => {
             *env_ptr = current_version(*env_ptr, version_stack, num_orig_locals);
             let orig = dst.0 as usize;
             if orig < num_orig_locals {
@@ -464,7 +464,7 @@ fn rename_stmt(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => {
+        | MirStmtKind::RcIncContents { local, .. } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
         MirStmtKind::ZeroAggregate { local: addr }
@@ -808,6 +808,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         }
     }
@@ -996,6 +997,7 @@ mod tests {
             entry_block: block(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
         construct(&mut func);

@@ -9,7 +9,7 @@ rask-types = { path = "../rask-types" }
 rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 rask-stdlib = { path = "../rask-stdlib" }
+rask-resolve = { path = "../rask-resolve" }
 
 [dev-dependencies]
 rask-parser = { path = "../rask-parser" }
-rask-resolve = { path = "../rask-resolve" }

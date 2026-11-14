@@ -478,6 +478,27 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            TakenFieldRead { path, name, taken_at } => {
+                Diagnostic::error(format!("`{}` read while `{}` has it", path, name))
+                    .with_code("E0959")
+                    .with_primary(self.span, format!("`{}` is empty until it's refilled", path))
+                    .with_secondary(*taken_at, format!("moved into `{}` here", name))
+                    .with_fix(format!("read `{}` instead, or move this after the refill of `{}`", name, path))
+                    .with_why("`let old = p.f` followed by a refill of `p.f` in the same block is a move: from the read to the refill the field holds nothing, and what it held is the new binding's [mem.borrowing/S1, mem.parameters/PM7]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at } => {
+                Diagnostic::error(format!("`{}` written over while `{}` views it", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this replaces `{}`, freeing what `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views `{}` until its block ends", name, path))
+                    .with_fix(format!(
+                        "use `{}.clone()` to keep a copy, or refill straight after `let {} = {}` with no `return`, `break`, `continue` or `try` in between, which makes the read a move",
+                        path, name, path
+                    ))
+                    .with_why("a field read is a view of storage the struct still holds, valid until its block ends, and the source can't be replaced while it's held: that frees what the view reads. `let old = p.f` followed by `p.f = …` is a move only when the refill always runs [mem.borrowing/S1, S5]".to_string())
+            }
+
             MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
                 let label = if *maybe {
                     format!("`{}` is given away on some paths here and not replaced", name)
@@ -796,6 +817,102 @@ impl ToDiagnostic for crate::OwnershipError {
                         "`Local` takes no lock at all, so two tasks touching it would \
                          race. It is the opt-out, not the default, and this error is \
                          what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+            ParallelArgsConflict { what, other_span } => {
+                Diagnostic::error("these arguments may run at the same time, and they race".to_string())
+                    .with_code("E0964")
+                    .with_primary(self.span, what.clone())
+                    .with_secondary(*other_span, "may run while this one does")
+                    .with_fix(
+                        "pass closures that touch different variables, or one that only \
+                         reads; a counter both need can be an `Atomic`",
+                    )
+                    .with_why(
+                        "the function runs one of these in a task and the other beside it, \
+                         which may be on different threads. A closure that writes what it \
+                         captured, run beside something that touches the same thing (itself \
+                         included), is a data race [conc.async/B4]",
+                    )
+            }
+            SharedGraphWrite { what } => {
+                Diagnostic::error("a task that shares a rack with the code beside it changes it".to_string())
+                    .with_code("E0962")
+                    .with_primary(self.span, what.clone())
+                    .with_fix(
+                        "record the change instead and make it after the join: \
+                         `let ops = rack.staged()`, `ops.delete(key, n)` or \
+                         `ops.relink(key, n, to, f)` in the task, return `ops`, then \
+                         `rack.apply(ops)`",
+                    )
+                    .with_why(
+                        "the task and the code before its join read this rack at the same \
+                         time. Writing a node changes what the other side is reading, and \
+                         storing a link anywhere records it with the rack, which the other \
+                         side's stores write too [mem.racks/RK16]",
+                    )
+            }
+            StagedFnHoldsLink => {
+                Diagnostic::error("the function a `Staged` buffer keeps can't hold a link".to_string())
+                    .with_code("E0963")
+                    .with_primary(self.span, "this captures a link or a `Local` box")
+                    .with_fix(
+                        "pass the link as `to` and read it from the second parameter: \
+                         `ops.relink(key, n, to, |mutate n: T, to: Link<T>| n.next = to)`",
+                    )
+                    .with_why(
+                        "the buffer runs the function when it applies, after other deletes \
+                         may have run. It checks `n` and `to` are alive first; a link the \
+                         function captured is one nothing checks [mem.racks/RK20]",
+                    )
+            }
+            SideConflict { name, other_writes, other_span } => {
+                let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
+                Diagnostic::error(format!("a task and the code before its join both touch `{}`, and one writes it", name))
+                    .with_code("E0960")
+                    .with_primary(self.span, "written here")
+                    .with_secondary(*other_span, other)
+                    .with_fix(
+                        "give the task its own variable and combine the results after the \
+                         join: `let h = ThreadPool.spawn { left(v) }`, `let b = right(v)`, \
+                         `h.join()! + b`. A counter both sides bump can be an `Atomic` instead",
+                    )
+                    .with_why(
+                        "the task may run at the same time as the code before its join, so a \
+                         write on one side and any use on the other is a data race. Reading \
+                         the same thing on both is fine, and so are separate fields of one \
+                         value [conc.async/B2]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, function_value: true } => {
+                Diagnostic::error("a task and the code beside it call function values that may be the same closure".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "call them on one side, or take them as parameters, so each call \
+                         of this function is checked for what it passes",
+                    )
+                    .with_why(
+                        "a function value from a field, a container or a call may be a copy \
+                         of another, and nothing here says whether it writes what it \
+                         captured [conc.async/B3]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, .. } => {
+                Diagnostic::error("a task and the code beside it both name a value that has to stay on one thread".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "use the `Local` box, or the function value, on one side only; a \
+                         box both sides need can be `Shared.new(…)`, which locks",
+                    )
+                    .with_why(
+                        "a `Local` box takes no lock, and a function value the checker \
+                         can't see into may touch the same graph or box the other block \
+                         uses. On one side that's one thread at a time; across both it's a \
+                         race [conc.async/B3]",
                     )
             }
             LinkSent { name, ty, bare_link } => {
@@ -1126,6 +1243,53 @@ impl ToDiagnostic for crate::OwnershipError {
                     "matching a borrowed value doesn't take it apart — the caller still holds `{}`, `{}` included, so giving `{}` away would leave them holding something that's gone. [mem.parameters/PM1, mem.linear/L1]",
                     from, name, name
                 ))
+            }
+
+            GiveAwayHeldPart { name, from, bound_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` still holds it",
+                    name, from
+                ))
+                .with_code("E0956")
+                .with_primary(self.span, label)
+                .with_secondary(*bound_at, format!("`{}` reads the box where `{}` keeps it", name, from))
+                .with_fix(format!(
+                    "use `{}` where it is and let its owner free it; to move it out, \
+                     empty the slot first: `take {}`",
+                    name, from
+                ))
+                .with_why(
+                    "a box stored in a field belongs to what holds the field, and its \
+                     release frees the box. Reading it back out with `? as` or a \
+                     pattern is a borrow, so giving it away here would free it a \
+                     second time [mem.heap/HP3, mem.linear/L5]"
+                        .to_string(),
+                )
+            }
+
+            PartOwnerChanged { owner, operation, part, from, part_at } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` while `{}` reads a box inside it",
+                    operation, owner, part
+                ))
+                .with_code("E0957")
+                .with_primary(self.span, format!("`{}` goes with this, and `{}` still reads it", from, part))
+                .with_secondary(*part_at, format!("`{}` reads `{}` from here to the end of its block", part, from))
+                .with_fix(format!(
+                    "finish with `{}` first: do this after the block that bound it",
+                    part
+                ))
+                .with_why(
+                    "a box read back out of its holder is a borrow, and the holder \
+                     frees it. Giving the holder away or replacing the box while \
+                     the borrow is live would leave it reading freed memory \
+                     [mem.heap/HP3, mem.borrowing/S1]"
+                        .to_string(),
+                )
             }
 
             ConsumeLoopItem { name, from, loop_at, sink } => {

@@ -22,7 +22,7 @@ struct Ticks {
 }
 
 Ticks implements FromLiteral<i64> {
-    // ERROR: E0955, the conversion runs while compiling
+    // ERROR: E0971, the conversion runs while compiling
     func from_literal(value: i64) -> Ticks {
         return Ticks(n: value)
     }
@@ -34,7 +34,7 @@ struct Count {
 }
 
 extend Count {
-    // ERROR: E0955, wherever the method is written
+    // ERROR: E0971, wherever the method is written
     func from_literal(value: i64) -> Count {
         return Count(n: value)
     }
@@ -45,7 +45,7 @@ Count implements FromLiteral<i64> {}
 // A pattern compares bits, and a built value's bits aren't the literal's.
 func classify(x: Fixed) -> i64 {
     match x {
-        // ERROR: E0958, a guard compares with `==`
+        // ERROR: E0974, a guard compares with `==`
         0 => return 1,
         _ => return 0,
     }

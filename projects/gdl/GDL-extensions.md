@@ -93,9 +93,9 @@ Inputs (read-only):
 Input	Available to	Description
 entity.properties	Entity scripts	All properties on this entity
 region.properties	All scripts	Region-level properties (time_of_day, weather, physics.*)
-time.delta	All scripts	Seconds since last frame (fixed-point)
-time.elapsed	All scripts	Seconds since script started (fixed-point)
-time.wall	All scripts	Wall-clock time from domain (fixed-point seconds since epoch)
+time.delta	All scripts	Seconds since last frame (float)
+time.elapsed	All scripts	Seconds since script started (float)
+time.wall	All scripts	Wall-clock time from domain (float seconds since epoch)
 
 Scripts cannot read other entities, call affordances, access the network, or mutate authoritative state. They read properties the server sends and produce derived visual/audio/physics state.
 
@@ -110,13 +110,13 @@ Raido's host function mechanism lets the client expose performance-critical oper
 Standard host functions that GDL clients SHOULD provide to scripts:
 
 Function	Signature	Purpose
-noise_2d(x, y, seed)	(number, number, int) → number	2D simplex/perlin noise (deterministic, fixed-point)
-noise_3d(x, y, z, seed)	(number, number, number, int) → number	3D noise
-distance(x1, y1, x2, y2)	(number, number, number, number) → number	2D distance
-distance_3d(x1, y1, z1, x2, y2, z2)	(number × 6) → number	3D distance
-lerp(a, b, t)	(number, number, number) → number	Linear interpolation
-clamp(v, min, max)	(number, number, number) → number	Clamp value to range
-random(seed)	(int) → number	Deterministic PRNG (0.0–1.0)
+noise_2d(x, y, seed)	(float, float, int) → float	2D simplex/perlin noise (deterministic)
+noise_3d(x, y, z, seed)	(float, float, float, int) → float	3D noise
+distance(x1, y1, x2, y2)	(float, float, float, float) → float	2D distance
+distance_3d(x1, y1, z1, x2, y2, z2)	(float × 6) → float	3D distance
+lerp(a, b, t)	(float, float, float) → float	Linear interpolation
+clamp(v, min, max)	(float, float, float) → float	Clamp value to range
+random(seed)	(int) → float	Deterministic PRNG (0.0–1.0)
 
 These are the math primitives that scripts need but shouldn't implement in interpreted bytecode. The client runs them at native speed. They're all deterministic — same inputs, same output — so they don't break the verification guarantee.
 

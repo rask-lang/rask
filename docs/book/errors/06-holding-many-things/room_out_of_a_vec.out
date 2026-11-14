@@ -1,0 +1,12 @@
+error[E0871]: `Room` isn't Copy, so `room` would be a second name for the same element
+  --> docs/book/errors/06-holding-many-things/room_out_of_a_vec.rk:10:16
+    |
+ 10 |     let room = rooms[0]
+    |                ^^^^^^^^ this element stays owned by `rooms`
+    = fix: scope the access — `with rooms[…] as room { … }` — or ask for a
+          separate value with `.clone()`
+    = why: indexing hands the element back where it lives rather than copying it
+          out, so a binding of a non-Copy element is a second name for storage
+          the collection still owns — a write through either one is a write
+          through both. A Copy element is copied and has no such tie
+          [mem.borrowing/E4]

@@ -205,16 +205,22 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
 
     let mut written: HashMap<String, HashSet<usize>> = HashMap::new();
 
-    // Seed with direct stores through a parameter.
+    // Seed with direct stores through a parameter. An element store is one:
+    // `a[0] = x` on a `mutate a: [string; 2]` writes the caller's array, and
+    // inlined onto a copy of it the caller never saw the write.
     for f in fns {
         let mut set = HashSet::new();
         let alias = param_aliases(f);
         for b in &f.blocks {
             for s in &b.statements {
-                if let MirStmtKind::Store { addr, .. } = &s.kind {
-                    if let Some(&i) = alias.get(addr) {
-                        set.insert(i);
-                    }
+                let written = match &s.kind {
+                    MirStmtKind::Store { addr, .. } => Some(addr),
+                    MirStmtKind::ArrayStore { base, .. } => Some(base),
+                    MirStmtKind::ZeroAggregate { local } => Some(local),
+                    _ => None,
+                };
+                if let Some(&i) = written.and_then(|w| alias.get(w)) {
+                    set.insert(i);
                 }
             }
         }
@@ -765,6 +771,10 @@ fn remap_stmt(
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
             taken: taken.clone(),
         },
+        MirStmtKind::BindPlace { dst, addr } => MirStmtKind::BindPlace {
+            dst: local_map.get(dst).copied().unwrap_or(*dst),
+            addr: local_map.get(addr).copied().unwrap_or(*addr),
+        },
         MirStmtKind::LoadCapture {
             dst,
             env_ptr,
@@ -854,8 +864,9 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
-        MirStmtKind::RcIncContents { local } => MirStmtKind::RcIncContents {
+        MirStmtKind::RcIncContents { local, for_hand_off } => MirStmtKind::RcIncContents {
             local: local_map.get(local).copied().unwrap_or(*local),
+            for_hand_off: *for_hand_off,
         },
         MirStmtKind::ZeroAggregate { local } => MirStmtKind::ZeroAggregate {
             local: local_map.get(local).copied().unwrap_or(*local),
@@ -1173,6 +1184,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
 
         }
@@ -1201,6 +1213,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
 
         }
@@ -1268,6 +1281,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
         let caller = MirFunction {
@@ -1287,6 +1301,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1356,6 +1371,7 @@ mod tests {
                 entry_block: BlockId(0),
                 is_extern_c: false,
                 inline_hint: false,
+                param_modes: Vec::new(),
                 source_file: None,
     
             },
@@ -1390,6 +1406,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         }
     }
@@ -1439,6 +1456,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
 
         }];

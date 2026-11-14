@@ -22,18 +22,18 @@
 //! one a function *could* have, and if a program declares it the collision is
 //! an ordinary duplicate declaration, reported by name.
 //!
-//! Only a dependency is qualified. A subdirectory of the program is also a
-//! package by modules/PO1, and its declarations are merged the same way — but
-//! it shares the program's namespace, because `func main()` in `src/main.rk`
-//! is one of those and renaming it leaves the program without an entry point.
-//! Giving a nested package its own scope is PO3 and a separate step.
+//! A subdirectory of the program is a package too (modules/PO1, PO3), and is
+//! qualified the same way, by its path from the root: `pa/sub`'s `f` is
+//! `f_pa_sub`. What something outside the program calls by name keeps it: a
+//! C symbol, a function with a foreign ABI, and the entry point when a
+//! sub-package holds it (`src/main.rk`).
 
 use std::collections::HashMap;
 
 use rask_ast::ty::TypeExpr;
 
 use rask_ast::decl::{Decl, DeclKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
 use rask_ast::qualify;
 use rask_ast::rewrite::{self, Rewrite};
 
@@ -55,18 +55,56 @@ pub fn qualified(pkg: &str, name: &str) -> String {
 /// Returns the original name of each declaration against its new one, so the
 /// resolver's export table and the consumer's own references can be pointed at
 /// the same place.
-pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, String> {
+///
+/// A name something outside the program calls keeps it, and is in the map as
+/// itself, so `pkg.name` still reaches it: a function with a foreign ABI,
+/// which C calls, and, in one of the project's own packages, the entry point
+/// (`main`, or `@entry`). A `src/` layout puts `main` in a sub-package.
+///
+/// An extern is the package's own like a function, `labs_pkg`, and links to
+/// the C symbol its `@c_name` keeps (#1754). A C macro is no symbol at all:
+/// it's `pkg.F`, a dotted name no Rask declaration can take, so the
+/// program's own `F_pkg` can't meet it.
+pub fn qualify_declarations(decls: &mut [Decl], pkg: &str, keeps_entry: bool) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
+    let mut kept: HashMap<String, String> = HashMap::new();
     for decl in decls.iter() {
+        match &decl.kind {
+            DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => {
+                map.insert(e.name.clone(), format!("{}.{}", pkg, e.name));
+                continue;
+            }
+            DeclKind::Extern(e) => {
+                map.insert(e.name.clone(), qualified(pkg, &e.name));
+                continue;
+            }
+            DeclKind::Fn(f) => {
+                let entry = f.name == "main" || f.attrs.iter().any(|a| a.is("entry"));
+                if f.abi.is_some() || (keeps_entry && entry) {
+                    kept.insert(f.name.clone(), f.name.clone());
+                    continue;
+                }
+            }
+            _ => {}
+        }
         if let Some(name) = decl.name().map(str::to_string) {
             map.insert(name.clone(), qualified(pkg, &name));
         }
     }
     if map.is_empty() {
+        map.extend(kept);
         return map;
     }
 
     qualify::qualify_in_place(decls, &map);
+    for decl in decls.iter_mut() {
+        let DeclKind::Extern(e) = &mut decl.kind else { continue };
+        let Some(q) = map.get(&e.name) else { continue };
+        if rask_ast::attr::c_name(&e.attrs).is_none() {
+            e.attrs.push(c_name_attr(&e.name));
+        }
+        e.name = q.clone();
+    }
     // An attachment of the package's own annotation names it too. Only those:
     // `@rename` must stay `@rename` whatever the package calls a function.
     let annotations: HashMap<String, String> = map
@@ -75,7 +113,19 @@ pub fn qualify_declarations(decls: &mut [Decl], pkg: &str) -> HashMap<String, St
         .map(|(n, q)| (n.clone(), q.clone()))
         .collect();
     rename_attachments(decls, &annotations);
+    map.extend(kept);
     map
+}
+
+/// `@c_name("name")`.
+fn c_name_attr(name: &str) -> rask_ast::attr::Attr {
+    let spelling = Expr {
+        id: rask_ast::NodeId::DUMMY,
+        kind: ExprKind::String(name.to_string()),
+        span: rask_ast::Span::new(0, 0),
+    };
+    let arg = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::Expr(spelling) };
+    rask_ast::attr::Attr::synthetic("c_name", Some(vec![arg]))
 }
 
 /// The qualified names of every annotation in `decls`, for the two
@@ -133,6 +183,28 @@ pub fn qualify_references(
     rewrite::rewrite_decls(decls, &mut r);
 }
 
+/// What an import path names, from one package: `ImportIndex`'s answer, the
+/// resolver's too, as a key in `exports`.
+pub struct ImportScope<'a> {
+    pub exports: &'a HashMap<String, HashMap<String, String>>,
+    pub index: &'a rask_resolve::ImportIndex,
+    /// The importing package.
+    pub importer: Option<rask_resolve::PackageId>,
+    /// The qualified names a package keeps to itself, which `import pa.*`
+    /// leaves out.
+    pub private: &'a std::collections::HashSet<String>,
+}
+
+impl ImportScope<'_> {
+    /// The package an import path names, as its key in `exports`, and how
+    /// many of the path's segments that takes.
+    pub fn package(&self, path: &[String]) -> Option<(String, usize)> {
+        let (id, n) = self.index.package(path, self.importer)?;
+        let key = self.index.key(id)?;
+        self.exports.contains_key(key).then(|| (key.to_string(), n))
+    }
+}
+
 /// Names brought in unqualified by `import pkg.Name` (modules/IM4, IM5).
 ///
 /// Those *are* bare in the program, and mean the dependency's declaration.
@@ -144,8 +216,9 @@ pub fn qualify_references(
 /// names are left alone and named in `shadowed`, for the caller to report.
 pub fn unqualified_imports(
     decls: &[Decl],
-    exports: &HashMap<String, HashMap<String, String>>,
+    scope: &ImportScope,
 ) -> (HashMap<String, String>, Vec<ShadowedImport>) {
+    let exports = scope.exports;
     let mut out = HashMap::new();
     let mut clashes = Vec::new();
     let declared: HashMap<String, rask_ast::Span> = decls
@@ -154,18 +227,21 @@ pub fn unqualified_imports(
         .collect();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        if import.path.len() < 2 {
+        let Some((pkg, len)) = scope.package(&import.path) else { continue };
+        // `import pa` binds the package, not its names; `import pa.*` all of
+        // them.
+        if len == import.path.len() && !import.is_glob {
             continue;
         }
-        let pkg = &import.path[0];
-        let Some(map) = exports.get(pkg) else { continue };
+        let pkg = &pkg;
+        let map = &exports[pkg];
         // `import pkg.*` brings in everything the package exports; the
         // grouped form `import pkg.{A, B}` parses into one declaration per
         // name, so the path's tail is the whole list either way.
         let wanted: Vec<String> = if import.is_glob {
-            map.keys().cloned().collect()
+            map.iter().filter(|(_, q)| !scope.private.contains(*q)).map(|(n, _)| n.clone()).collect()
         } else {
-            import.path[1..].to_vec()
+            import.path[len..].to_vec()
         };
         for name in wanted {
             let Some(q) = map.get(&name) else { continue };
@@ -328,20 +404,28 @@ impl Rewrite for ReferenceQualifier<'_> {
         if let Some(kind) = replacement {
             e.kind = kind;
         }
+        // `libpkg.Cat { … }`.
+        if let ExprKind::StructLit { name, .. } = &mut e.kind {
+            if let Some((pkg, member)) = name.split_once('.') {
+                if let Some(q) = self.resolve(pkg, member) {
+                    *name = q.clone();
+                }
+            }
+        }
     }
 
     fn pattern(&mut self, p: &mut Pattern) {
-        let name = match p {
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
+        let name = match &mut p.kind {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => name,
             // A fieldless `libpkg.Colour.Red` parses as an identifier pattern.
-            Pattern::Ident(name) if name.contains('.') => name,
-            Pattern::Wildcard
-            | Pattern::Ident(_)
-            | Pattern::Literal(_)
-            | Pattern::Tuple(_)
-            | Pattern::Or(_)
-            | Pattern::Range { .. }
-            | Pattern::TypePat { .. } => return,
+            PatternKind::Ident(name) if name.contains('.') => name,
+            PatternKind::Wildcard
+            | PatternKind::Ident(_)
+            | PatternKind::Literal(_)
+            | PatternKind::Tuple(_)
+            | PatternKind::Or(_)
+            | PatternKind::Range { .. }
+            | PatternKind::TypePat { .. } => return,
         };
         // `libpkg.Colour.Red` — package, enum, variant.
         let parts: Vec<&str> = name.split('.').collect();
@@ -449,4 +533,63 @@ pub fn unqualify_diagnostics(
             rewrite(w);
         }
     }
+}
+
+/// The types a package's own declarations name, as written.
+pub fn declared_type_names(decls: &[Decl]) -> std::collections::HashSet<String> {
+    decls
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Interface(_) | DeclKind::TypeAlias(_) | DeclKind::Union(_)
+            )
+        })
+        .filter_map(|d| d.name().map(str::to_string))
+        .collect()
+}
+
+/// type.gradual/PC4: a type parameter written in `<…>` that reuses the name
+/// of a type in scope where it's written — one of `types`, the package's own
+/// or what it imports. Judged per package, before its names are qualified,
+/// so a dependency answers to its own names and never to the app's (#1913).
+/// A stdlib type isn't in `types`: the parameter wins over those (#915).
+pub fn type_params_named_like_types(
+    decls: &[Decl],
+    types: &std::collections::HashSet<String>,
+) -> Vec<rask_diagnostics::Diagnostic> {
+    use rask_ast::decl::{FnDecl, TypeParam};
+    let mut out = Vec::new();
+    let mut check = |params: &[TypeParam], span: rask_ast::Span| {
+        for tp in params.iter().filter(|tp| types.contains(&tp.name)) {
+            out.push(
+                rask_diagnostics::Diagnostic::error(format!("type parameter `{}` has the name of a type in scope", tp.name))
+                    .with_code("E0968")
+                    .with_primary(span, format!("`{}` here could mean the parameter or the type", tp.name))
+                    .with_fix(format!("give the parameter a name of its own, like `{}Of` or a single letter", tp.name))
+                    .with_why("a signature should mean the same thing whatever else is declared, and a parameter sharing a type's name doesn't [type.gradual/PC4]"),
+            );
+        }
+    };
+    let methods = |fns: &[FnDecl], check: &mut dyn FnMut(&[TypeParam], rask_ast::Span)| {
+        for f in fns {
+            check(&f.type_params, f.span);
+        }
+    };
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => check(&f.type_params, f.span),
+            DeclKind::Struct(s) => {
+                check(&s.type_params, decl.span);
+                methods(&s.methods, &mut check);
+            }
+            DeclKind::Enum(e) => {
+                check(&e.type_params, decl.span);
+                methods(&e.methods, &mut check);
+            }
+            DeclKind::Impl(i) => methods(&i.methods, &mut check),
+            _ => {}
+        }
+    }
+    out
 }

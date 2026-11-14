@@ -140,6 +140,12 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("`break` can only exit loop constructs")
             }
 
+            BreakValueFromComptimeFor => Diagnostic::error("`break` with a value out of a `comptime for`")
+                .with_code("E0970")
+                .with_primary(self.span, "a `comptime for` has no value to give")
+                .with_fix("write `break` alone to stop the comptime loop, and set a variable before it for the value")
+                .with_why("the loop is written out once per item before the program runs; `break` skips the items after it, and there is nothing for a value to become (ctrl.comptime/CT70)"),
+
             UnknownBreakTarget { name, labels } => {
                 let mut d = Diagnostic::error(format!(
                     "`{name}` is neither a variable to break with nor a label to break to"

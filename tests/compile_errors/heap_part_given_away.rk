@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: giving away a `Heap` read back out of the aggregate that holds it
+//
+// Spec: mem.heap (reading one back out is a borrow; HP3), mem.linear (L5)
+//
+// `if (*first).next? as n` and `match *l { Cons(_, rest) => … }` read a box
+// the aggregate still holds, and the aggregate's release frees it. Handing
+// `n` or `rest` to `drop`, a `take` parameter or a `return` freed it a second
+// time: each of these compiled and natively aborted with a double free.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import memory.Heap
+
+struct Step {
+    public label: string
+    public next: Heap<Step>?
+}
+
+enum List {
+    Cons(i64, Heap<List>)
+    Nil
+}
+
+// --- `? as` through a `Heap`, then dropped ---
+func bad_drop_through_deref() {
+    let second = Heap(Step(label: "b", next: none))
+    let first = Heap(Step(label: "a", next: second))
+    ensure drop(first)
+    if (*first).next? as n {
+        // ERROR: cannot give away `n` — `(*first).next` still holds it [E0956]
+        drop(n)
+    }
+}
+
+// --- `? as` on a local's field, handed to a binding that would own it ---
+func bad_rebind_field() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0956]
+        let m = n
+        println(m.label)
+    }
+}
+
+// --- returned out of an owned parameter's field ---
+func bad_return(take s: Step) -> Heap<Step>? {
+    if s.next? as n {
+        // ERROR: cannot give away `n` — `s.next` still holds it [E0956]
+        return n
+    }
+    drop(s)
+    return none
+}
+
+// --- a pattern reads the same way ---
+func bad_drop_matched() {
+    let l = Heap(List.Cons(1, Heap(List.Nil)))
+    ensure drop(l)
+    match *l {
+        // ERROR: cannot give away `rest` — `*l` still holds it [E0956]
+        List.Cons(_, rest) => drop(rest),
+        List.Nil => {},
+    }
+}
+
+// --- `Heap<T>?` matched out of an enum is the enum's too ---
+enum Chain {
+    Link(string, Heap<Chain>?)
+    End
+}
+
+func bad_drop_nested_optional() {
+    let tail: Heap<Chain>? = Heap(Chain.End)
+    let l = Heap(Chain.Link("a", tail))
+    ensure drop(l)
+    match *l {
+        Chain.Link(_, next) => {
+            if next? as n {
+                // ERROR: cannot give away `n` — `next` still holds it [E0956]
+                drop(n)
+            }
+        },
+        Chain.End => {},
+    }
+}
+
+// --- the holder freed while the part still reads it ---
+func bad_owner_dropped() {
+    let first = Heap(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    if (*first).next? as n {
+        // ERROR: cannot give away `first` while `n` reads a box inside it [E0957]
+        drop(first)
+        println("{(*n).label}")
+    } else {
+        drop(first)
+    }
+}
+
+// --- the box replaced under it ---
+func bad_slot_replaced() {
+    mut s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        // ERROR: cannot replace `s.next` while `n` reads a box inside it [E0957]
+        s.next = Heap(Step(label: "c", next: none))
+        println("{(*n).label}")
+    }
+}
+
+// --- carried off in a closure that outlives the holder ---
+func bad_closure_carries_part() -> Vec<func() -> string> {
+    let l = Heap(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    ensure drop(l)
+    mut out: Vec<func() -> string> = Vec.new()
+    if (*l).next? as n {
+        // ERROR: cannot give away `n` — `(*l).next` still holds it [E0956]
+        out.push(|| (*n).label)
+    }
+    return out
+}
+
+func eat(take s: Step) {
+    drop(s)
+}
+
+// --- a newer `n` hides the part's name, not the part ---
+func bad_owner_given_under_shadow() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        match 1 {
+            // ERROR: cannot give away `s` while `n` reads a box inside it [E0957]
+            n => eat(s),
+        }
+        println(n.label)
+    }
+}
+
+// --- writing a `for mutate` item writes the collection ---
+func bad_item_replaced() {
+    mut xs: Vec<Step> = Vec.new()
+    xs.push(Step(label: "a", next: Heap(Step(label: "b", next: none))))
+    if xs[0].next? as n {
+        for mutate x in xs {
+            // ERROR: cannot replace `x` while `n` reads a box inside it [E0957]
+            x = Step(label: "c", next: none)
+        }
+        println(n.label)
+    }
+}
+
+// --- `cur = *next` takes over only the part it reads ---
+struct Twig {
+    public label: string
+    public a: Heap<Twig>?
+    public b: Heap<Twig>?
+}
+
+func bad_walk_drops_sibling() {
+    mut p = Twig(label: "p", a: Heap(Twig(label: "a", a: none, b: none)), b: Heap(Twig(label: "b", a: none, b: none)))
+    if p.b? as y {
+        if p.a? as x {
+            // ERROR: cannot replace `p` while `y` reads a box inside it [E0957]
+            p = *x
+            println(y.label)
+        }
+    }
+}
+
+// --- a walk into one element doesn't excuse replacing another ---
+func bad_walk_other_element() {
+    mut xs: Vec<Step> = Vec.new()
+    xs.push(Step(label: "a", next: none))
+    xs.push(Step(label: "b", next: Heap(Step(label: "c", next: none))))
+    if xs[1].next? as n {
+        // ERROR: cannot replace `xs[…]` while `n` reads a box inside it [E0957]
+        xs[0] = *n
+    }
+}
+
+// --- after the walk, `n` read a box that went with the old value ---
+func bad_part_after_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if cur.next? as n {
+        cur = *n
+        // ERROR: use of moved value: `n` [E0800]
+        println(n.label)
+    }
+}
+
+// --- the holder carried off by a closure ---
+func bad_holder_captured() -> func() -> string {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        println(n.label)
+        // ERROR: cannot move `s` while `n` reads a box inside it [E0957]
+        return || s.label
+    }
+    return || "none"
+}
+
+// --- what is fine: reading it where it is ---
+func good_read() {
+    let second = Heap(Step(label: "b", next: none))
+    let first = Heap(Step(label: "a", next: second))
+    ensure drop(first)
+    if (*first).next? as n {
+        println("{(*n).label}")
+    }
+}
+
+// --- and a bare optional local still gives its payload away ---
+func good_local_moves() {
+    let o: Heap<Step>? = Heap(Step(label: "c", next: none))
+    if o? as h {
+        drop(h)
+    }
+}
+
+// --- and a new `n` inside the branch is a new value, not the part ---
+func good_name_reused() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        println(n.label)
+        let f = |take n: Heap<Step>| drop(n)
+        f(Heap(Step(label: "c", next: none)))
+        let n = Heap(Step(label: "d", next: none))
+        drop(n)
+    }
+}
+
+// --- a new `s` is a new value, not the holder ---
+func good_holder_name_reused() {
+    let s = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    if s.next? as n {
+        let s = Step(label: "c", next: none)
+        eat(s)
+        println(n.label)
+    }
+}
+
+// --- and the walk itself: the box moves into the new `cur` ---
+func good_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: none)))
+    loop {
+        println(cur.label)
+        if cur.next? as n {
+            cur = *n
+        } else {
+            break
+        }
+    }
+}
+
+// --- a walk ends its part, so the next step is free to change `cur` ---
+func good_two_step_walk() {
+    mut cur = Step(label: "a", next: Heap(Step(label: "b", next: Heap(Step(label: "c", next: none)))))
+    if cur.next? as n {
+        cur = *n
+        if cur.next? as m {
+            cur = *m
+        }
+    }
+    eat(cur)
+}
+
+func main() {}

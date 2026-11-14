@@ -7,6 +7,7 @@
 // ─── Info Types ─────────────────────────────────────────────────
 
 /// Metadata for a single struct field. Returned by reflect.fields<T>().
+@lang(field_info)
 public struct FieldInfo {
     public name: string
     public type_name: string
@@ -33,6 +34,7 @@ extend FieldInfo {
 }
 
 /// Metadata for a method on a type. Returned by reflect.methods<T>().
+@lang(method_info)
 public struct MethodInfo {
     public name: string
     public is_public: bool
@@ -41,12 +43,31 @@ public struct MethodInfo {
 }
 
 /// Metadata for an enum variant. Returned by reflect.variants<T>().
+@lang(variant_info)
 public struct VariantInfo {
     public name: string
     public has_fields: bool
     public field_count: usize
     public fields: Vec<FieldInfo>
     public serial_name: string
+}
+
+/// One parameter of a function type. Returned by reflect.params<F>().
+/// A function type has no parameter names, so `index` tells them apart.
+/// Neither flag set means the parameter is borrowed.
+@lang(param_info)
+public struct ParamInfo {
+    public index: usize
+    public type_name: string
+    public is_mutate: bool
+    public is_take: bool
+}
+
+extend ParamInfo {
+    /// Whether the parameter's type is exactly T. Resolves at compile time
+    /// inside comptime for.
+    @native
+    public func is<T>(self) -> bool {}
 }
 
 // ─── Reflect Namespace ──────────────────────────────────────────
@@ -97,4 +118,6 @@ extend reflect {
     public func interfaces<T>() -> Vec<string> {}
     @native
     public func variants<T>() -> Vec<VariantInfo> {}
+    @native
+    public func params<F>() -> Vec<ParamInfo> {}
 }

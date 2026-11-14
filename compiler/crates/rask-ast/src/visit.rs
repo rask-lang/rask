@@ -266,9 +266,12 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         }
 
         ExprKind::Closure { body, .. } => visit_expr(body, v),
-        ExprKind::Spawn { receiver, body, .. } => {
+        ExprKind::Spawn { receiver, args, body, .. } => {
             if let Some(r) = receiver {
                 visit_expr(r, v);
+            }
+            for a in args {
+                visit_expr(&a.expr, v);
             }
             visit_expr(body, v);
         }

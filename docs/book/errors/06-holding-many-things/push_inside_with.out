@@ -1,0 +1,12 @@
+error[E0808]: cannot push `rooms` inside `with` block
+  --> docs/book/errors/06-holding-many-things/push_inside_with.rk:11:9
+    |
+ 10 |     with rooms[0] as room {
+    |     ------------- element borrowed here
+ 11 |         rooms.push(Room(name: "Courtyard", items: Vec.new()))
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ push not allowed inside with block
+    = fix: move the structural mutation outside the with block
+    = why: rooms can reallocate, invalidating the borrowed element. If the
+          elements reference each other and get deleted individually, that is
+          what a `Rack` is for — a node never moves, so nothing invalidates
+          [mem.borrowing/W2]

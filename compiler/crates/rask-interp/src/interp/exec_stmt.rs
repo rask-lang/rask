@@ -33,6 +33,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
+                crate::rack::register_vec_links(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -56,6 +57,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
+                crate::rack::register_vec_links(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -94,6 +96,9 @@ impl Interpreter {
 
             StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_owned(value)?;
+                // Same as a binding: a vector of links that arrives whole is
+                // an edge holder from here on.
+                crate::rack::register_vec_links(&val);
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
@@ -458,30 +463,7 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
-                    Value::Vec(v) => {
-                        let items: Vec<Value> = v.lock().unwrap().items.clone();
-                        for item in items {
-                            self.env.push_scope();
-                            self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            self.env.pop_scope();
-                        }
-                        Ok(Value::Unit)
-                    }
+                    Value::Vec(v) => self.exec_vec_loop(iter, &v, binding, body, loop_label),
                     // type.sequence/SEQ6: a Sequence is a function taking a
                     // yield. Iterating one is calling it — the loop hands over a
                     // yield that runs the body and answers whether to continue,
@@ -541,65 +523,12 @@ impl Interpreter {
                 result
             }
 
-            // CT48: comptime for — in the interpreter, runs like a regular for loop
-            StmtKind::ComptimeFor { binding, iter, body, .. } => {
-                let loop_label: Option<&str> = None;
-                let iter_val = self.eval_expr(iter)?;
-                match iter_val {
-                    Value::Vec(v) => {
-                        let items: Vec<Value> = v.lock().unwrap().items.clone();
-                        // Every iteration first: native rejects the program
-                        // before any of it runs, so none of it runs here either.
-                        for item in &items {
-                            if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
-                                if s.lock().unwrap().name == "FieldInfo" {
-                                    let attrs = self.field_info_attrs(s);
-                                    if let Some((annotation, field, span)) =
-                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs)
-                                    {
-                                        let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
-                                        return Err(RuntimeDiagnostic::new(
-                                            RuntimeError::Generic(format!(
-                                                "`{}` has no `@{annotation}` to read{field} from — guard the read with `comptime if {name}.has<{annotation}>()`",
-                                                super::eval_expr::field_info_name(s),
-                                            )),
-                                            span,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                        for item in items {
-                            self.env.push_scope();
-                            self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            self.env.pop_scope();
-                        }
-                        Ok(Value::Unit)
-                    }
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "comptime for requires a Vec iterable, got {}",
-                            iter_val.type_name()
-                        )),
-                        stmt.span,
-                    )),
-                }
-            }
+            // Every `comptime for` is written out before the program runs, as
+            // a plain body per instance (`rask-template`, ctrl.comptime/CT50).
+            StmtKind::ComptimeFor { .. } => Err(RuntimeDiagnostic::new(
+                RuntimeError::Generic("internal: a `comptime for` reached the interpreter without being written out".into()),
+                stmt.span,
+            )),
 
         }
     }
@@ -627,6 +556,13 @@ impl Interpreter {
         }
 
         let item = args.into_iter().next().unwrap_or(Value::Unit);
+        // An adapter chain over a vector of links (`v.filter(…)`,
+        // `v.enumerate()`) yields entries the body may have deleted since the
+        // source read them; the loop doesn't visit those (mem.racks/RK15).
+        if crate::rack::entry_is_dead(&item) {
+            self.yield_stack.push(frame);
+            return Value::Bool(true);
+        }
         // Rebind the loop's own variables on top of the sequence's frame. The
         // body reads and writes the scope the `for` sits in, not the one the
         // yield was called from.
@@ -658,6 +594,62 @@ impl Interpreter {
         };
         self.yield_stack.push(frame);
         Value::Bool(keep_going)
+    }
+
+    /// `for x in v` over a vector. Its own function so its locals stay out of
+    /// `exec_stmt`'s frame, which every interpreted statement pays for (#759).
+    #[inline(never)]
+    fn exec_vec_loop(
+        &mut self,
+        iter: &rask_ast::expr::Expr,
+        v: &std::sync::Arc<std::sync::Mutex<crate::value::VecData>>,
+        binding: &ForBinding,
+        body: &[Stmt],
+        loop_label: Option<&str>,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        // A loop source nothing registered — a temporary, a parameter — is an
+        // edge holder while the loop walks it, as natively (mem.racks/RK15). A
+        // temporary gives its records back when the loop ends, the way the
+        // native loop's cleanup does; a named vector keeps them for as long as
+        // it lives.
+        let temporary = !matches!(
+            iter.kind,
+            rask_ast::expr::ExprKind::Field { .. } | rask_ast::expr::ExprKind::Ident(_)
+        );
+        if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
+            crate::rack::register_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
+        }
+        let items: Vec<Value> = v.lock().unwrap().items.clone();
+        let mut outcome = Ok(Value::Unit);
+        for item in items {
+            // The body deleted the node that owned the vector, and the vector
+            // went with it.
+            if v.lock().unwrap().freed {
+                break;
+            }
+            // A delete earlier in this loop took the entry out of the vector;
+            // the snapshot still has it.
+            if crate::rack::entry_is_dead(&item) {
+                continue;
+            }
+            self.env.push_scope();
+            self.define_for_binding(binding, item);
+            let ran = self.exec_stmts(body);
+            self.env.pop_scope();
+            match ran {
+                Ok(_) => {}
+                Err(diag) if breaks_here(&diag.error, loop_label) => break,
+                Err(diag) if continues_here(&diag.error, loop_label) => continue,
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+        }
+        if temporary {
+            crate::rack::forget_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
+        }
+        outcome
     }
 
     fn define_for_binding(&mut self, binding: &ForBinding, value: Value) {
@@ -800,3 +792,6 @@ fn value_option_depth(value: &Value) -> usize {
     }
 }
 
+
+impl Interpreter {
+}

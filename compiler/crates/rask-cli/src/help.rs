@@ -217,7 +217,7 @@ pub fn print_build_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}          Build with release profile", output::arg("--release"));
-    println!("  {} {}  Build with custom profile", output::arg("--profile"), output::arg("<name>"));
+    println!("  {} {}  Custom profile (not implemented: only picks the output directory)", output::arg("--profile"), output::arg("<name>"));
     println!("  {} {} Cross-compile for target", output::arg("--target"), output::arg("<triple>"));
     println!("  {}           Bypass all caching (build script + compilation)", output::arg("--force"));
     println!("  {} Leave out features marked `default: true`", output::arg("--no-default-features"));

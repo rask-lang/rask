@@ -7,10 +7,15 @@
 
 mod types;
 mod defs;
+mod lang;
+mod handle;
 pub mod abi;
+
+pub use lang::LangItem;
+pub use handle::RuntimeHandle;
 
 pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use defs::{
-    conformance_symbol, ErrorWrap, InterfaceAssocType, InterfaceTypeParam, MemberDecl, MethodOrigin,
-    MethodSig, SelfParam, TypeBinding, TypeDef, VariantDecl,
+    conformance_symbol, ErrorWrap, FnSignature, InterfaceAssocType, InterfaceTypeParam, MemberDecl, MethodOrigin,
+    MethodSig, PatternTarget, SelfParam, TypeBinding, TypeDef, VariantDecl,
 };

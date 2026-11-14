@@ -76,6 +76,10 @@ impl Interpreter {
                 let facts = reflect::methods(&self.types, ty).map_err(refused)?;
                 return Ok(Value::vec(facts.into_iter().map(method_info).collect()));
             }
+            "params" => {
+                let facts = reflect::params(&self.types, ty).map_err(refused)?;
+                return Ok(Value::vec(facts.into_iter().map(param_info).collect()));
+            }
             "has_method" => {
                 let name = string_arg(&args, method)?;
                 let facts = reflect::methods(&self.types, ty).map_err(refused)?;
@@ -135,12 +139,17 @@ impl Interpreter {
         if args.len() != params.len() {
             return None;
         }
-        let type_args: Vec<rask_types::Type> = args.iter().map(rask_layout::field_type).collect();
+        let type_args = self.checked_type_args(args)?;
         let owner = self.type_decls.iter().find(|d| {
             matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
         })?;
-        let def = self.types.get(self.types.declared_type(owner.id)?)?;
-        Some(rask_layout::compute_struct_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache))
+        self.types.struct_layout(self.types.declared_type(owner.id)?, &type_args)
+    }
+
+    /// Written type arguments as the checker's types, which is what layout
+    /// sizes. `None` when one doesn't resolve.
+    fn checked_type_args(&self, args: &[TypeExpr]) -> Option<Vec<rask_types::Type>> {
+        args.iter().map(|a| rask_check::resolve_type_expr(a, &self.types).ok()).collect()
     }
 
     /// reflect.fields<T>() → []FieldInfo
@@ -180,7 +189,9 @@ impl Interpreter {
                 );
                 fields.insert(
                     "type_name".to_string(),
-                    Value::String(Arc::new(Mutex::new(substitute(&f.ty).to_string()))),
+                    Value::String(Arc::new(Mutex::new(
+                        reflect::written_label(&self.types, &substitute(&f.ty)).source(),
+                    ))),
                 );
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
@@ -244,15 +255,18 @@ impl Interpreter {
         // `enums` rather than `type_decls`: it holds the stdlib's enums too,
         // `Ordering` among them.
         let base = ty.name().ok_or_else(not_enum)?;
-        let def = self
-            .types
-            .get_type_id(&base)
-            .and_then(|id| self.types.get(id))
-            .filter(|def| matches!(def, rask_types::TypeDef::Enum { .. }))
-            .ok_or_else(not_enum)?;
-        let type_args: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let layout = rask_layout::compute_enum_layout(def, &type_args, &|id| self.types.type_name(id), &self.layout_cache);
-        let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &[]);
+        let id = self.types.get_type_id(&base).ok_or_else(not_enum)?;
+        let type_args = self.checked_type_args(ty.args()).ok_or_else(not_enum)?;
+        let layout = self.types.enum_layout(id, &type_args).ok_or_else(not_enum)?;
+        // The declaration's parameters against this instantiation's
+        // arguments, for a payload declared as `T`.
+        let subst: Vec<(String, TypeExpr)> = match self.types.get(id) {
+            Some(rask_types::TypeDef::Enum { type_params, .. }) if type_params.len() == ty.args().len() => {
+                type_params.iter().cloned().zip(ty.args().iter().cloned()).collect()
+            }
+            _ => Vec::new(),
+        };
+        let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &subst);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }
 }
@@ -286,6 +300,18 @@ fn method_info(m: reflect::MethodFact) -> Value {
     f.insert("param_count".to_string(), Value::int(m.param_count as i64));
     f.insert("return_type_name".to_string(), string_value(m.return_type_name));
     info_struct("MethodInfo", f)
+}
+
+fn param_info(p: reflect::ParamFact) -> Value {
+    use rask_ast::ty::ParamMode;
+    let mut f = IndexMap::new();
+    f.insert("index".to_string(), Value::int(p.index as i64));
+    f.insert("type_name".to_string(), string_value(p.type_name));
+    f.insert("is_mutate".to_string(), Value::Bool(p.mode == ParamMode::Mutate));
+    f.insert("is_take".to_string(), Value::Bool(p.mode == ParamMode::Take));
+    // What `param.is<T>()` compares against.
+    f.insert("__type".to_string(), Value::ReflectedType(Arc::new(p.ty)));
+    info_struct("ParamInfo", f)
 }
 
 fn variant_info(v: rask_mono::reflect::VariantFact) -> Value {

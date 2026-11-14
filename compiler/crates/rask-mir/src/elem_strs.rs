@@ -20,7 +20,7 @@
 //! as owning nothing and every string in it leaked (#1395).
 
 use rask_mono::runtime_abi;
-use crate::{MirConst, MirOperand, MirType};
+use crate::{ContainerKind, MirConst, MirOperand, MirType};
 
 /// The constructor argument describing elements of type `ty`. Pass the type
 /// with its containers named (`payload_to_mir`), or a `Vec<Vec<i64>>` frees
@@ -54,18 +54,19 @@ pub const BOX_PAYLOAD_CLOSURE: i64 = runtime_abi::RASK_BOX_PAYLOAD_CLOSURE;
 /// its own release, and the runtime calls that (#1302).
 pub const BOX_PAYLOAD_BOX: i64 = runtime_abi::RASK_BOX_PAYLOAD_BOX;
 
-/// The payload kind for a checker type and its head name.
+/// The payload kind for a payload's MIR type, and whether it is itself a box.
 ///
-/// A function type has no head name, so asking by name alone could only ever say
-/// `NONE`, and every `Shared.local(|x| …)` leaked the closure.
-pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
-    if matches!(ty, rask_types::Type::Fn { .. }) {
-        return BOX_PAYLOAD_CLOSURE;
-    }
-    match head {
-        Some("Vec") => BOX_PAYLOAD_VEC,
-        Some("Map") => BOX_PAYLOAD_MAP,
-        Some("Shared") => BOX_PAYLOAD_BOX,
+/// The MIR type says how the payload is released: a closure block, a container,
+/// or a handle with a declared release (#1887). A box is a `Ptr` like any other
+/// unowned pointer, so that one fact comes from the checker.
+pub fn box_payload_kind_of(mir: &MirType, is_box: bool) -> i64 {
+    match mir {
+        MirType::FuncPtr(_) => BOX_PAYLOAD_CLOSURE,
+        MirType::Container(ContainerKind::Vec) => BOX_PAYLOAD_VEC,
+        MirType::Container(ContainerKind::Map) => BOX_PAYLOAD_MAP,
+        MirType::Container(ContainerKind::Handle(release)) => runtime_abi::handle_release_index(release)
+            .map_or(BOX_PAYLOAD_NONE, |i| runtime_abi::RASK_BOX_PAYLOAD_HANDLE_BASE + i),
+        _ if is_box => BOX_PAYLOAD_BOX,
         _ => BOX_PAYLOAD_NONE,
     }
 }
@@ -158,21 +159,16 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // then what a pair owns.
     ("Map_take_all", 3, 1, "Vec_free"),
     // Racks and pools carry no element description: a rack is told about its fields
-    // separately, through `Link_register_*`, and a pool's slots are opaque
+    // separately, through `rask_link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
     // along with nothing calling them, so `Rack.new()` with nothing in it
     // leaked (#1048).
-    // A `Random` is a heap block behind an opaque handle — no elements, no
-    // sizes, and nothing was freeing it. Here so the drop pass knows the
-    // caller owns what came back.
-    ("Random_new", 0, 0, "Random_free"),
-    ("Random_from_seed", 0, 0, "Random_free"),
-    // An `Atomic<T>` is the same shape: one heap word behind an opaque handle,
-    // with a free that didn't exist. Every counter in a program leaked eight
-    // bytes, and `Atomic<T>` is what mem.atomics/GA1 makes you write.
-    ("Atomic_new", 0, 0, "Atomic_free"),
-    ("Atomic_default", 0, 0, "Atomic_free"),
+    //
+    // A handle that frees itself (`Random`, `Atomic<T>`, a `Staged` buffer, a
+    // `cstring`) needs no row: a native whose declared return type is one
+    // hands the caller a fresh one, freed by the declared release
+    // (`mir_metadata::fresh_handle_release`).
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
     // `rack.nodes()` walks the directory and pushes each node's address into a
@@ -243,10 +239,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // rejected byte sequence leaked the builder and its buffer.
     ("StringBuilder_new", 0, 0, "StringBuilder_free"),
     ("StringBuilder_with_capacity", 0, 0, "StringBuilder_free"),
-    // A cstring owns the NUL-terminated copy it made, and it is the caller's to
-    // free — that is what makes it different from `string.as_ptr()`, which
-    // points into a buffer the string still holds (#949).
-    ("string_copy_terminated", 0, 0, "cstring_free"),
     // The other two strategies build their own runtime object, so each needs
     // its own release: `Shared.mutex(0)` is `Mutex_new` and `Shared.local(0)`
     // is `Cell_new`, and neither is `Shared_new`. Only the third was listed, so

@@ -76,7 +76,7 @@ The header binds `Rhs` to `f64`, so what the conformance owes is `scale(self, k:
 | **GT3: The applied interface is the conformance** | `Mul<f64>` and `Mul<Meters>` are different conformances of one interface, each with its own signatures and its own associated types (`type.associated-types/AT8`). A bare `T: Mul` bound means the defaulted instantiation, not "some instantiation". Both of them on one type is fine: GT7 says which a call reaches |
 | **GT4: Declared defaults** | `interface Mul<Rhs = Self>` lets `Mul` be written bare and mean `Mul<Self>`. Without a default the argument is required, in a bound and in a conformance header alike |
 | **GT5: Bounds on the parameter** | `interface Scale<Rhs: Numeric>` is checked where the conformance names its argument, the same as a bound on a generic struct's parameter |
-| **GT7: Arguments pick the conformance** | A type may conform to one generic interface more than once, and each conformance keeps its own methods. A call picks by its argument types: `report.render(Html(…))` reaches `Render<Html>`'s `render`, `Fixed.from_literal(0.5)` reaches `FromLiteral<f64>`'s. An argument converts the way it would in any call (an integer literal into an `f64`, a value into its `T?`). An unsuffixed literal tries a primitive of its own kind first, then for an integer a float, then a type built from literals; an integer only reaches integer types that hold it (`300` isn't a `u8`), and a tie goes to the literal's own default (`2` against `Scale<i32>` and `Scale<i64>` is the `i32`, against `f32` and `f64` the `f64`). A tie with no default on offer is E0957. A bound names the conformance itself: `T: Render<Html>` calls that one. No conformance taking the arguments is E0956; more than one is E0957 (`s.feed(none)` against `Feed<Html>` and `Feed<Json>`), with the fix being to give the argument a type of its own. This is the operator rule (`type.operator-resolution/OR1`) for every generic interface, and the only place one name has several bodies: free functions and inherent methods still have one each |
+| **GT7: Arguments pick the conformance** | A type may conform to one generic interface more than once, and each conformance keeps its own methods. A call picks by its argument types: `report.render(Html(…))` reaches `Render<Html>`'s `render`, `Fixed.from_literal(0.5)` reaches `FromLiteral<f64>`'s. An argument converts the way it would in any call (an integer literal into an `f64`, a value into its `T?`). An unsuffixed literal tries a primitive of its own kind first, then for an integer a float, then a type built from literals; an integer only reaches integer types that hold it (`300` isn't a `u8`), and a tie goes to the literal's own default (`2` against `Scale<i32>` and `Scale<i64>` is the `i32`, against `f32` and `f64` the `f64`). A tie with no default on offer is E0973. A bound names the conformance itself: `T: Render<Html>` calls that one. No conformance taking the arguments is E0972; more than one is E0973 (`s.feed(none)` against `Feed<Html>` and `Feed<Json>`), with the fix being to give the argument a type of its own. This is the operator rule (`type.operator-resolution/OR1`) for every generic interface, and the only place one name has several bodies: free functions and inherent methods still have one each |
 
 Associated types are the other half of this: a parameter is what the *conformance* chooses, an associated type is what the conformance *reports*. See [associated-types.md](associated-types.md).
 
@@ -127,6 +127,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
 | **GF5: Methods too** | A method declares type parameters the same way a function does, and they're independent of the receiver's. `Holder<T>` can have `func other<U>(self, u: U) -> U` — `T` is fixed by the receiver, `U` is chosen per call |
 | **GF6: A type's bounds hold in its methods** | `struct Holder<T: Named>` means every method in `extend Holder<T>` may call `Named`'s methods on a `T`. The bound is declared on the type and only there; the `extend` header names the parameters by position and may rename them |
+| **GF7: Functions on the parameter itself** | `T.zero()` calls a function `T`'s bounds require and that takes no `self`: `interface Zero { func zero() -> Self }` lets `func fresh<T: Zero>() -> T { return T.zero() }`. Each instance calls its own type's function, as `Meters.zero()` would. Through a type, `T` or a concrete one, only a function without `self` is called; a method with `self` is called on a value (E0967), and a function without one through the type (E0946) |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -135,6 +136,12 @@ public func process<T: Hashable>(items: Vec<T>) { ... }
 // Private: bounds inferred from body
 func helper(item) { item.hash() }
 // Compiler infers: func helper<T: Hashable>(item: T)
+
+// GF7: a function the bound requires, called on the parameter
+interface Zero {
+    func zero() -> Self
+}
+func fresh<T: Zero>() -> T { return T.zero() }
 
 // GF5: a method's own parameters, alongside the receiver's
 extend Holder<T> {

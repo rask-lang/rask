@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A local the rack records by address keeps that address when reassigned,
+// and the value it held is released (#1801 review). And element maps whose
+// guards or heap slots sit past what a one-word entry could hold: a tag past
+// byte 4095, a heap slot past byte 65535.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Pin {
+    at: Link<Leaf>?
+    name: string
+}
+
+struct Cursor {
+    at: Link<Leaf>?
+    label: string
+    hist: Vec<string>
+}
+
+enum Note {
+    Plain(string)
+    Linked(string, Link<Leaf>?)
+}
+
+struct Far {
+    pad: [i64; 600]
+    note: Note
+    tail: string
+}
+
+func link_id(l: Link<Leaf>?) -> i32 {
+    if l? as x {
+        return x.id
+    }
+    return -1
+}
+
+func note_id(n: Note) -> i32 {
+    match n {
+        Note.Plain(_) => return -2,
+        Note.Linked(_, l) => return link_id(l),
+    }
+}
+
+func note_text(n: Note) -> string {
+    match n {
+        Note.Plain(s) => return s,
+        Note.Linked(s, _) => return s,
+    }
+}
+
+func far(i: i32, l: Link<Leaf>) -> Far {
+    let ol: Link<Leaf>? = l
+    return Far(pad: [0; 600], note: Note.Linked("far-note-{i}-long-enough", ol), tail: "tail-{i}-long-enough")
+}
+
+func main() {}
+
+test "a reassigned tuple or array holding links releases the old value" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let oa: Link<Leaf>? = a
+    let ob: Link<Leaf>? = b
+    mut t = (oa, "first-tuple-string-long-enough-{a.id}")
+    t = (ob, "second-tuple-string-long-enough-{b.id}")
+    mut arr = [Pin(at: a, name: "pin-a-long-enough-{a.id}"), Pin(at: b, name: "pin-b-long-enough")]
+    arr = [Pin(at: b, name: "pin-c-long-enough-{b.id}"), Pin(at: a, name: "pin-d-long-enough")]
+    leaves.delete(b)
+    assert t.1 == "second-tuple-string-long-enough-2"
+    assert link_id(t.0) == -1
+    assert link_id(arr[0].at) == -1
+    assert link_id(arr[1].at) == 1
+}
+
+test "a link struct rebuilt from its own fields releases the old one" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut c = Cursor(at: a, label: "start-label-long-enough-to-heap", hist: Vec.new())
+    c.hist.push("first-entry-long-enough-to-heap")
+    for i in 0..3 {
+        c = Cursor(at: c.at, label: "{c.label}!", hist: c.hist.clone())
+    }
+    assert c.label == "start-label-long-enough-to-heap!!!"
+    assert c.hist.len() == 1
+    leaves.delete(a)
+    assert link_id(c.at) == -1
+}
+
+test "a guard past byte 4095 frees its arm and records its link" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut v: Vec<Far> = Vec.new()
+    v.push(far(1, a))
+    v.push(far(2, a))
+    let copy = v.clone()
+    leaves.delete(a)
+    assert note_id(v[0].note) == -1
+    assert note_id(copy[1].note) == -1
+    assert note_text(copy[1].note) == "far-note-2-long-enough"
+    assert v[1].tail == "tail-2-long-enough"
+}
+
+struct Tree {
+    at: Link<Leaf>?
+    kids: Vec<Tree>
+}
+
+test "a local moved away and then reassigned leaves the moved value alone" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 7))
+    mut t = Tree(at: a, kids: Vec.new())
+    for i in 0..3 {
+        mut v: Vec<Tree> = Vec.new()
+        v.push(t)
+        t = Tree(at: none, kids: v)
+    }
+    assert link_id(t.kids[0].kids[0].kids[0].at) == 7
+    leaves.delete(a)
+    assert link_id(t.kids[0].kids[0].kids[0].at) == -1
+}
+
+test "a local moved into a call's result and reassigned from it" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 3))
+    mut c = Cursor(at: a, label: "first-label-long-enough-to-heap", hist: Vec.new())
+    for i in 0..2 {
+        c = renamed(c, i)
+    }
+    assert c.label == "first-label-long-enough-to-heap-0-1"
+    leaves.delete(a)
+    assert link_id(c.at) == -1
+}
+
+func renamed(take c: Cursor, i: i32) -> Cursor {
+    return Cursor(at: c.at, label: "{c.label}-{i}", hist: c.hist.clone())
+}
+
+test "a local moved away on some turns and reassigned on every one" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 5))
+    mut kept: Vec<Cursor> = Vec.new()
+    mut c = Cursor(at: a, label: "label-0-long-enough-to-heap", hist: Vec.new())
+    for i in 0..4 {
+        if i % 2 == 0 {
+            kept.push(c)
+        }
+        c = Cursor(at: a, label: "label-{i + 1}-long-enough-to-heap", hist: Vec.new())
+    }
+    assert kept.len() == 2
+    assert kept[1].label == "label-2-long-enough-to-heap"
+    leaves.delete(a)
+    assert link_id(kept[0].at) == -1
+    assert link_id(c.at) == -1
+}
+
+// #1825: both vectors leaked.
+test "a link struct reassigned once frees both values' vectors" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut c = Cursor(at: a, label: "x", hist: ["first-entry-long-enough-to-heap"])
+    c = Cursor(at: a, label: "y", hist: ["second-entry-long-enough-to-heap"])
+    assert link_id(c.at) == 1
+    assert c.hist[0] == "second-entry-long-enough-to-heap"
+}
+
+test "a link struct assigned to itself keeps its value" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 4))
+    mut c = Cursor(at: a, label: "self-label-long-enough-to-heap", hist: ["self-entry-long-enough-to-heap"])
+    c = c
+    assert c.label == "self-label-long-enough-to-heap"
+    assert c.hist.len() == 1
+    assert link_id(c.at) == 4
+}
+
+func repinned(take p: Pin, n: i32) -> Pin {
+    p = Pin(at: p.at, name: "repinned-long-enough-to-heap-{n}")
+    return p
+}
+
+func second_of(take first: Cursor, take second: Cursor) -> Cursor {
+    mut x = first
+    x = second
+    return x
+}
+
+test "a take parameter, or a local made from one, reassigned and returned" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 6))
+    let p = repinned(Pin(at: a, name: "first-pin-long-enough-to-heap-{a.id}"), 2)
+    assert p.name == "repinned-long-enough-to-heap-2"
+    let one = Cursor(at: a, label: "one-label-long-enough-to-heap", hist: Vec.new())
+    let two = Cursor(at: none, label: "two-label-long-enough-to-heap", hist: ["two-entry-long-enough-to-heap"])
+    let x = second_of(one, two)
+    assert x.label == "two-label-long-enough-to-heap"
+    leaves.delete(a)
+    assert link_id(p.at) == -1
+}

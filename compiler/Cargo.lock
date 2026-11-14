@@ -1441,6 +1441,7 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-stdlib",
+ "rask-template",
  "rask-types",
 ]
 
@@ -1449,6 +1450,7 @@ name = "rask-comptime"
 version = "0.6.0"
 dependencies = [
  "rask-ast",
+ "rask-c-parse",
  "thiserror",
 ]
 
@@ -1516,6 +1518,7 @@ dependencies = [
  "rask-lexer",
  "rask-mono",
  "rask-parser",
+ "rask-resolve",
  "rask-stdlib",
  "rask-types",
  "thiserror",
@@ -1639,6 +1642,7 @@ dependencies = [
  "rask-ast",
  "rask-check",
  "rask-diagnostics",
+ "rask-resolve",
  "rask-stdlib",
  "rask-types",
  "thiserror",
@@ -1689,7 +1693,9 @@ version = "0.6.0"
 dependencies = [
  "rask-ast",
  "rask-check",
+ "rask-compiler",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-interp",
  "rask-lexer",
  "rask-ownership",
@@ -1706,6 +1712,18 @@ dependencies = [
  "rask-desugar",
  "rask-lexer",
  "rask-parser",
+ "rask-types",
+]
+
+[[package]]
+name = "rask-template"
+version = "0.6.0"
+dependencies = [
+ "rask-ast",
+ "rask-check",
+ "rask-layout",
+ "rask-mono",
+ "rask-types",
 ]
 
 [[package]]

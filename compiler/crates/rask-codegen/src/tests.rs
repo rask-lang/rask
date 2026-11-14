@@ -79,6 +79,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -102,6 +103,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -138,6 +140,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -179,6 +182,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -197,6 +201,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -220,6 +225,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -236,6 +242,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -286,6 +293,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -354,6 +362,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -397,6 +406,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -439,6 +449,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -467,6 +478,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -510,6 +522,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -539,6 +552,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -568,6 +582,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -592,6 +607,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -633,6 +649,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -672,6 +689,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -710,6 +728,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -762,6 +781,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -800,6 +820,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -833,6 +854,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -868,6 +890,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -899,6 +922,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -931,6 +955,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -963,6 +988,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1003,6 +1029,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1041,6 +1068,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1088,6 +1116,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1121,6 +1150,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1151,6 +1181,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1183,6 +1214,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1217,6 +1249,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1247,6 +1280,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1267,6 +1301,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1283,6 +1318,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1352,6 +1388,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1383,6 +1420,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1432,6 +1470,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1474,6 +1513,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1526,6 +1566,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1554,6 +1595,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1579,6 +1621,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1621,6 +1664,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1653,6 +1697,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1705,6 +1750,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1741,6 +1787,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1776,6 +1823,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1821,6 +1869,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1874,6 +1923,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1922,6 +1972,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1949,6 +2000,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -1997,6 +2049,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         };
 
@@ -2021,24 +2074,13 @@ mod tests {
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
             type_names: Default::default(),
-            call_rewrites: std::collections::HashMap::new(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
@@ -2048,22 +2090,12 @@ mod tests {
     /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
+                    key: None,
                     name: "Point".to_string(),
                     size: 8,
                     align: 4,
@@ -2100,7 +2132,7 @@ mod tests {
             ],
             enum_layouts: vec![],
             type_names: Default::default(),
-            call_rewrites: std::collections::HashMap::new(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
@@ -2111,23 +2143,14 @@ mod tests {
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             type_names: Default::default(),
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+            handle_releases: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
                 rask_layout::EnumLayout {
+                    key: None,
                     name: "Result".to_string(),
                     size: 8,
                     align: 4,
@@ -2182,7 +2205,6 @@ mod tests {
                     attrs: vec![],
                 },
             ],
-            call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),

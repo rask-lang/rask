@@ -34,6 +34,6 @@ Report implements Render<Json> {
 
 func main() {
     let r = Report(title: "q3")
-    // ERROR: E0956, there's no `Render<string>`
+    // ERROR: E0972, there's no `Render<string>`
     println(r.render("plain"))
 }

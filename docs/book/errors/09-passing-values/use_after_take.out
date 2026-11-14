@@ -1,0 +1,10 @@
+error[E0800]: use of moved value: `lamp`
+  --> docs/book/errors/09-passing-values/use_after_take.rk:20:13
+    |
+ 19 |     world.carried.push(lamp)
+    |                        ---- value moved here
+ 20 |     println(lamp.name)
+    |             ^^^^ value used here after move
+    = note: `Item` is 32 bytes (copy threshold is 16) — assignment moves instead
+           of copying
+    = help: add `lamp.clone()` if you need an independent copy

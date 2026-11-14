@@ -38,6 +38,7 @@ pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>
     interp.register_functions(decls);
     interp.know_enums(enum_refs(typed));
     interp.know_literals(literal_calls(typed));
+    interp.know_c_macros(typed.c_macro_calls.clone());
     interp
 }
 
@@ -87,7 +88,7 @@ pub fn fold_comptime(
 ) -> (Folded, Vec<Diagnostic>) {
     let interp = interpreter(decls, typed, cfg);
 
-    let records = mono.node_records(typed);
+    let records = rask_mono::NodeRecords::from_typed(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
     // Nominal types are what they wrap (`type Cents = i64` is an i64), the
     // same view lowering takes, so a folded one is written as its value.
@@ -134,17 +135,6 @@ pub fn fold_comptime(
     literals.sort_by_key(|(_, c)| (c.span.file_id, c.span.start));
     for (&node, conv) in literals {
         fold.fold_literal(node, conv);
-    }
-
-    // A generic function's copies have nodes of their own, each replacing one
-    // of the generic body's. A value folded there is the copy's value too.
-    for (&copy, &origin) in &mono.node_origins {
-        if let Some(node) = fold.folded.nodes.get(&origin).cloned() {
-            fold.folded.nodes.insert(copy, node);
-        }
-        if let Some(stmt) = fold.folded.statements.get(&origin).copied() {
-            fold.folded.statements.insert(copy, stmt);
-        }
     }
 
     // A default is a block at every use; its errors are one error, at the

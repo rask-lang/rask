@@ -73,14 +73,14 @@ func main() {
 }
 ```
 
-- The conversion is a `comptime func` (E0955 otherwise). One that panics is a
+- The conversion is a `comptime func` (E0971 otherwise). One that panics is a
   compile error at the literal, the way L7 is for a primitive.
 - An integer literal goes through `FromLiteral<i64>` (so it has to fit an
   `i64`), and through `FromLiteral<f64>` when the type has only that, the way
   `1` fills an `f64`. A float literal only through `FromLiteral<f64>`. A type
   may have both; the literal's kind picks the conformance (`type.generics/GT7`).
 - A suffix wins: `3.5f64` is an `f64` in any slot, and an `f64` isn't a `Fixed`.
-- A literal can't be a `match` pattern for such a type (E0958): a pattern
+- A literal can't be a `match` pattern for such a type (E0974): a pattern
   compares bits, and the built value's aren't the literal's. A guard compares
   with `==`: `_ if x == 0 => …`.
 - The slot is wherever the literal's type is decided: an annotation, a

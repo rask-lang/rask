@@ -159,7 +159,7 @@ test "L9 — inside a spawned task" {
     }
 }
 
-// A literal pattern can't match a built value (E0958); a guard compares with `==`.
+// A literal pattern can't match a built value (E0974); a guard compares with `==`.
 func classify(x: Fixed) -> i64 {
     match x {
         _ if x == 0 => return 100,

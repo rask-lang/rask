@@ -16,7 +16,7 @@
 //! leaves the pattern for the checker (`struct_shorthand_patterns`).
 
 use rask_ast::decl::{Decl, DeclKind};
-use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit, Pattern};
+use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit, Pattern, PatternKind};
 use rask_ast::rewrite::{self, Rewrite};
 use rask_ast::ty::TypeExpr;
 use rask_ast::Span;
@@ -356,27 +356,27 @@ impl Construct<'_> {
     fn place(&mut self, p: &mut Pattern, at: Span) {
         self.convert(p, at);
         self.placed.insert(p as *const Pattern);
-        match p {
-            Pattern::Constructor { fields, .. } | Pattern::Tuple(fields) | Pattern::Or(fields) => {
+        match &mut p.kind {
+            PatternKind::Constructor { fields, .. } | PatternKind::Tuple(fields) | PatternKind::Or(fields) => {
                 for f in fields {
                     self.place(f, at);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 for (_, f) in fields {
                     self.place(f, at);
                 }
             }
-            Pattern::Wildcard
-            | Pattern::Ident(_)
-            | Pattern::Literal(_)
-            | Pattern::Range { .. }
-            | Pattern::TypePat { .. } => {}
+            PatternKind::Wildcard
+            | PatternKind::Ident(_)
+            | PatternKind::Literal(_)
+            | PatternKind::Range { .. }
+            | PatternKind::TypePat { .. } => {}
         }
     }
 
     fn convert(&mut self, p: &mut Pattern, at: Span) {
-        let Pattern::Constructor { name, fields } = p else { return };
+        let PatternKind::Constructor { name, fields } = &mut p.kind else { return };
         if self.shapes.struct_or_variant(name) {
             return;
         }
@@ -384,12 +384,12 @@ impl Construct<'_> {
         let Some(declared) = self.shapes.matched_fields(&path) else { return };
         let mut named = Vec::new();
         for (i, field) in fields.iter().enumerate() {
-            let problem = match field {
-                Pattern::Ident(n) if declared.is_empty() || declared.iter().any(|f| f == n) => {
-                    named.push((n.clone(), Pattern::Ident(n.clone())));
+            let problem = match &field.kind {
+                PatternKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f == n) => {
+                    named.push((n.clone(), field.clone()));
                     continue;
                 }
-                Pattern::Ident(n) => format!(
+                PatternKind::Ident(n) => format!(
                     "`{}` has no field `{}`: a bare name binds the field it names. Write {}",
                     name, n, suggestion(&declared, i, n)
                 ),
@@ -398,6 +398,6 @@ impl Construct<'_> {
             self.error(problem, "in this pattern", at);
             return;
         }
-        *p = Pattern::Struct { name: name.clone(), fields: named, rest: false };
+        p.kind = PatternKind::Struct { name: name.clone(), fields: named, rest: false };
     }
 }

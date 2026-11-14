@@ -111,6 +111,23 @@ int64_t rask_resource_is_consumed(int64_t token);
 
 typedef struct RaskVec RaskVec;
 
+// A link slot inside a container element, handed to a walker by address.
+typedef void (*RaskLinkSlotFn)(void **slot, void *ctx);
+
+// A loop's place in a vector it walks, in the loop's frame. Four words, so
+// lowering can hold it as a tuple local.
+//
+// `end` is fixed when the loop starts, as the length read up front was: an
+// entry appended during the loop isn't visited. A removal moves both
+// `next_index` and `end` back. `detached` is set when the vector is freed
+// while the loop is still walking it, so the loop stops instead of reading it.
+typedef struct RaskVecCursor {
+    int64_t                next_index;
+    int64_t                end;
+    int64_t                detached;
+    struct RaskVecCursor  *next;
+} RaskVecCursor;
+
 // Where the strings sit inside one element.
 //
 // A container is a byte store: it knows how big an element is and nothing
@@ -159,15 +176,10 @@ typedef struct {
 // inside a decoded document is a variant payload, and the elements walk left
 // all of it behind.
 //
-// The 28 bits an offset would use carry the guard instead:
-//
-//   bits  0..11   the tag's byte offset inside the element
-//   bits 12..19   the tag value this arm is for
-//   bits 20..25   how many entries after this one belong to the arm
-//   bits 26..27   the tag's width: 0 → 1 byte, 1 → 2, 2 → 4, 3 → 8
-//
-// Codegen emits nothing at all for a layout that doesn't fit those fields,
-// which leaks rather than guessing.
+// Four words: the kind with the tag's byte offset inside the element, then the
+// tag's width in bytes, the tag value this arm is for, and how many entries
+// after the guard belong to the arm. The words after the first are plain
+// numbers below 2^31, so a flat scan for link entries never mistakes one.
 
 // The element *is* a pointer to a closure block, so there is no offset list
 // inside it: one entry at offset zero. The block describes itself —
@@ -194,16 +206,27 @@ typedef struct {
 // what is inside the block, the way a tag guard's do — so the walk releases the
 // contents first and then gives the block back.
 //
-//   bits  0..15   the pointer's byte offset inside the value
-//   bits 16..27   how many entries after this one describe the block
+// Two words: the kind with the pointer's byte offset inside the value, then how
+// many entries after these describe the block.
 //
 // Only a *field* or a frame local gets these. A `Heap` inside a container
 // element would need `retain` to deep-copy the block on a clone, and a block
 // carries no size for that — so the constructors never see this kind, and a
 // `Heap` in a container element is still nobody's, the way a boxed value's
 // contents are. `RASK_OWNED_HEAP`.
-#define RASK_OWNED_HEAP_OFFSET(e) ((e) & 0xFFFF)
-#define RASK_OWNED_HEAP_COUNT(e)  (((e) >> 16) & 0xFFF)
+
+// Read the heap entry at `entries[*i]`: sets `*body` to how many entries
+// describe the block and moves `*i` onto the entry's last word. -1 when the
+// list claims more entries than it has.
+static inline int rask_owned_heap(const int32_t *entries, int64_t count,
+                                  int64_t *i, int64_t *body) {
+    if (*i + 1 >= count) return -1;
+    *i += 1;
+    int64_t n = entries[*i];
+    if (n < 0 || *i + n >= count) return -1;
+    *body = n;
+    return 0;
+}
 
 // The value at this offset is described by the list currently being walked,
 // from its start.
@@ -219,25 +242,39 @@ typedef struct {
 // for that shape and it leaks — the same answer this file gives everywhere else
 // it can't describe something exactly. `RASK_OWNED_SELF`.
 
-#define RASK_OWNED_TAG_OFFSET(e) ((e) & 0xFFF)
-#define RASK_OWNED_TAG_VALUE(e)  (((e) >> 12) & 0xFF)
-#define RASK_OWNED_TAG_COUNT(e)  (((e) >> 20) & 0x3F)
-#define RASK_OWNED_TAG_WIDTH(e)  (1 << (((e) >> 26) & 0x3))
-
-// Release, or take a reference to, whatever one entry points at inside `elem`.
-//
-// `retain` is what makes a derived container an owner: a clone, a slice or a
-// chunk copies element bytes, so two containers name one string buffer or one
-// nested vector, and whichever is freed second reads memory that is gone. For a
-// string that's a refcount; for a nested container it's a real copy, written
-// back into the element — which is the deep clone `.clone()` is supposed to be.
-void rask_owned_release(char *elem, int32_t entry);
-void rask_owned_retain(char *elem, int32_t entry);
+// Decode the guard at `entries[*i]` against the value at `elem`. Sets `*body`
+// to its arm's length and moves `*i` onto the guard's last word, so the arm
+// starts at `*i + 1`. Returns 1 when the tag holds the guard's value, 0 when it
+// doesn't, -1 when the list claims more entries than it has.
+static inline int rask_owned_guard(const char *elem, const int32_t *entries, int64_t count,
+                                   int64_t *i, int64_t *body) {
+    int64_t g = *i;
+    if (g + 3 >= count) return -1;
+    const char *at = elem + (entries[g] & RASK_OWNED_OFFSET_MASK);
+    int64_t width = entries[g + 1];
+    int64_t value = entries[g + 2];
+    int64_t n = entries[g + 3];
+    *i = g + 3;
+    if (n < 0 || *i + n >= count) return -1;
+    *body = n;
+    int64_t tag;
+    switch (width) {
+        case 1:  tag = (int64_t)*(const uint8_t *)at;  break;
+        case 2:  tag = (int64_t)*(const uint16_t *)at; break;
+        case 4:  tag = (int64_t)*(const uint32_t *)at; break;
+        case 8:  tag = *(const int64_t *)at;           break;
+        default: return -1;
+    }
+    return tag == value;
+}
 
 // The whole list, which is what every caller actually wants: a `RASK_OWNED_TAG_IF`
 // entry decides whether the entries after it apply, so the walk has to be able
 // to skip and cannot be a loop over the single-entry calls above.
 void rask_owned_release_all(char *elem, const int32_t *entries, int64_t count);
+// Free a handle through its stdlib type's declared release, by its index in
+// `RASK_HANDLE_RELEASES`. Null handles and unknown indexes do nothing.
+void rask_handle_release(int64_t index, void *handle);
 
 // A `Heap<T>` field: releases what the block holds and then frees the block.
 // `entries` describe a `T`, so a `RASK_OWNED_SELF` inside them restarts against
@@ -299,7 +336,6 @@ void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
 void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
-void     rask_vec_write_back(RaskVec *v, int64_t index, const void *elem);
 void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
@@ -315,7 +351,7 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
-int64_t  rask_field_take(const void *field, int64_t size, void *out);
+int64_t  rask_field_take(void *field, int64_t size, void *out);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
 // key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
 // (rask_abi.h).
@@ -558,6 +594,7 @@ int64_t     rask_string_first_nul(const RaskStr *s);
 int64_t     rask_cstring_from_string(const RaskStr *s);
 int64_t     rask_cstring_as_ptr(int64_t cs);
 void        rask_cstring_free(int64_t cs);
+void        rask_atomic_free(int64_t ptr);
 RaskVec    *rask_cstring_bytes(int64_t cs);
 void        rask_panic_str(const RaskStr *msg);
 void        rask_panic_str_at(const char *file, int32_t line, int32_t col,
@@ -720,7 +757,6 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // `Map.insert` answers `V?`: a pointer to the value this call displaced, or
 // NULL if the key was fresh. Good until the next insert on this map.
 void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
-void     rask_map_write_back(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
@@ -774,6 +810,20 @@ static inline int rask_link_is_none(const void *p) {
 }
 
 RaskRack *rask_rack_new(void);
+
+// A rack's structural changes, recorded now and made by `rask_rack_apply`
+// (mem.racks/RK16–RK21).
+typedef struct RaskStaged RaskStaged;
+RaskStaged *rask_rack_staged(RaskRack *r);
+void        rask_rack_apply(RaskRack *r, RaskStaged *s);
+void        rask_staged_delete(RaskStaged *s, uint64_t key, void *node);
+void        rask_staged_insert(RaskStaged *s, uint64_t key, const void *value, int64_t elem_size,
+                               int64_t field_count, const int32_t *fields,
+                               int64_t owned_count, const int32_t *owned, int64_t elem_align);
+void        rask_staged_relink(RaskStaged *s, uint64_t key, void *node, void *to, void *closure);
+void        rask_staged_append(RaskStaged *s, RaskStaged *other);
+int64_t     rask_staged_len(const RaskStaged *s);
+void        rask_staged_free(RaskStaged *s);
 void      rask_rack_free(RaskRack *r);
 int64_t   rask_rack_len(const RaskRack *r);
 int64_t   rask_rack_is_empty(const RaskRack *r);
@@ -824,6 +874,40 @@ void      rask_link_register_map(RaskMap *m);
 // The edges a struct's own fields carry, against the storage it sits in. Same
 // (kind, byte offset) pairs `rask_rack_insert` takes.
 void      rask_link_register_struct(void *base, int64_t field_count, const int32_t *fields);
+// The other half, where that storage dies: its link slots' records go.
+void      rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fields);
+// A container's own edge records, chained from a head the container keeps.
+// `holder_died` drops every record on the chain; a container's free calls it,
+// so no record outlives the storage it names.
+void    **rask_vec_link_edges(RaskVec *v);
+// Links inside container elements of struct type (`Vec<Cursor>`): the element
+// map's `RASK_OWNED_LINK` entries say where they sit, tag guards included.
+void      rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx);
+// The links of a value behind a tag (`cur: Cursor?`, an enum variant's
+// fields) whose variant is live, within `[lo, hi)` of the value: the entries
+// of an element map that sit under a guard.
+void      rask_guarded_links(char *base, const int32_t *entries, int64_t count,
+                             int64_t lo, int64_t hi, RaskLinkSlotFn fn, void *ctx);
+// Record (`reg`) or forget those links, for storage that isn't a container:
+// a node's field, a local struct. `owned` is the value's element map.
+void      rask_link_guarded_range(void *base, int64_t lo, int64_t hi, int64_t reg,
+                                  int64_t count, const int32_t *owned);
+// The whole value at `base`, as lowering emits it (`Link_guarded`).
+void      rask_link_guarded(void *base, int64_t reg, int64_t count, const int32_t *owned);
+int64_t   rask_vec_holds_struct_links(RaskVec *v);
+const RaskElemStrs *rask_vec_elem_strs(const RaskVec *v);
+int64_t   rask_map_holds_struct_links(RaskMap *m);
+const RaskElemStrs *rask_map_val_strs(const RaskMap *m);
+void      rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *ctx);
+void      rask_link_register_element_fields(RaskVec *v, const void *elem);
+void      rask_link_register_entry_fields(RaskMap *m, const void *value);
+// A `for` over a vector of links registers its cursor, so a delete in the body
+// that removes an entry moves the cursor instead of the loop skipping one.
+void      rask_vec_iter_begin(RaskVec *v, RaskVecCursor *c, int64_t start, int64_t end);
+int64_t   rask_vec_iter_next(RaskVec *v, RaskVecCursor *c);
+void      rask_vec_iter_end(RaskVec *v, RaskVecCursor *c, int64_t forget);
+void    **rask_map_link_edges(RaskMap *m);
+void      rask_link_holder_died(void **head);
 
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.
@@ -1214,6 +1298,14 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
+// A panic caught where it happened: a task run in place keeps it as its result.
+typedef struct RaskCaughtPanic {
+    char *message;   // malloc'd
+    int   located;   // the message starts with `file:line: `
+} RaskCaughtPanic;
+RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b);
+void             rask_panic_discard(RaskCaughtPanic *caught);
+
 // Task ids (ctrl.panic/F1) — used internally by thread.c/green.c to prefix
 // panic output with "task N" while a runtime task is executing.
 int64_t rask_next_task_id(void);
@@ -1365,7 +1457,19 @@ void rask_threadpool_shutdown(void);
 
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool);
+// A pooled job not yet started; whoever claims it first runs it.
+void      rask_task_pool_queue(RaskTask *t, RaskTaskFn func, void *env);
+int       rask_task_pool_claim(RaskTask *t);
+// Its body runs on a pool worker (conc.async/B6).
+void      rask_task_mark_on_pool(RaskTask *t);
+// Run a task's body on this thread, now, catching its panic as its result.
+void      rask_task_run_inline(RaskTask *t, RaskTaskFn func, void *env);
+// A task block joined in the frame that spawned it (conc.async/S5): its
+// closure points into the frame, and a panic before its join waits for it.
+// `target` is 0 for `spawn`, 1 for `Thread.spawn`, 2 for `ThreadPool.spawn`.
+RaskTask *rask_task_spawn_borrowed(int64_t target, void *closure_ptr, int64_t result_owned,
+                                   int8_t requires_pool);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

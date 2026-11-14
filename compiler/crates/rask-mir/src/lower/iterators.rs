@@ -26,6 +26,14 @@ pub(super) struct IterLoopSetup {
     /// `skip`/`take` that a `filter` upstream forced into a runtime counter,
     /// keyed by position in the adapter list: counter local, and the limit.
     pub(super) counted: std::collections::HashMap<usize, (LocalId, MirOperand)>,
+    /// Set when the loop walks the vector through a registered cursor: the
+    /// `ensure_stack` depth below the cleanup that unregisters it, which the
+    /// loop's exit runs (`setup_iter_chain_loop_tracked`).
+    pub(super) cursor_depth: Option<usize>,
+    /// What `enumerate` numbers the element with. `idx` for a plain loop; for
+    /// a cursor loop a count of what it visited, since a removal moves the
+    /// index back and the same index would come up twice.
+    pub(super) position: LocalId,
 }
 
 /// Which `skip`/`take` adapters can't be loop bounds.
@@ -127,7 +135,7 @@ impl<'a> MirLowerer<'a> {
     /// `Vec_len` plus element loads, so anything that isn't laid out that way
     /// must keep falling through to normal method dispatch.
     fn is_iterable_source(&self, expr: &Expr) -> bool {
-        match self.ctx.lookup_raw_type(expr.id) {
+        match self.ctx.lookup_raw_type(expr.id).as_deref() {
             Some(Type::Array { .. }) => return true,
             Some(Type::UnresolvedGeneric { name, .. }) if name == "Vec" => return true,
             Some(Type::UnresolvedNamed(name)) if name == "Vec" => return true,
@@ -157,7 +165,12 @@ impl<'a> MirLowerer<'a> {
                 if meta.type_prefix.as_deref() == Some("Vec") {
                     return true;
                 }
-                if meta.full_type.as_ref().is_some_and(|t| t.name().as_deref() == Some("Vec")) {
+                if meta
+                    .checked_type
+                    .as_ref()
+                    .and_then(|t| self.generic_head(t))
+                    .is_some_and(|(name, _)| name == "Vec")
+                {
                     return true;
                 }
             }
@@ -452,34 +465,19 @@ impl<'a> MirLowerer<'a> {
             target: have_block,
         }));
 
-        // The value is taken out for the closure and put back after it, like
-        // a `with m[k]` binding.
+        // The closure works on the value where it sits, like a `with m[k]`
+        // binding.
         self.builder.switch_to_block(have_block);
-        let value = self.builder.alloc_temp(value_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(value),
-            func: FunctionRef::internal("Map_lend".to_string()),
-            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
+        let (body_op, body_ty) = self.inline_closure_with_param(
             &args[2].expr,
-            MirOperand::Local(value),
+            ClosureArg::InPlace { collection: MirOperand::Local(map), at: MirOperand::Local(key), map: true },
             value_ty,
         )?;
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("Map_write_back".to_string()),
-            args: vec![
-                MirOperand::Local(map),
-                MirOperand::Local(key),
-                MirOperand::Local(param_local.unwrap_or(value)),
-            ],
-        }));
         Ok(Some((body_op, body_ty)))
     }
 
     /// Inline a closure that takes nothing — `|| default`. The same machinery as
-    /// `inline_closure_keeping_param` without a parameter to bind.
+    /// `inline_closure_with_param` without a parameter to bind.
     fn inline_closure_no_arg(
         &mut self,
         closure: &Expr,
@@ -491,7 +489,7 @@ impl<'a> MirLowerer<'a> {
         let cont_block = self.builder.create_block();
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
+        self.inline_return_target = Some((result_local, cont_block, None));
 
         let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -561,30 +559,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(present_block);
-        let value = self.builder.alloc_temp(value_ty.clone());
-        // `modify` takes the value out and writes it back; `read` only looks.
-        let read = if method == "modify" { "Map_lend" } else { "Map_get_unwrap" };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(value),
-            func: FunctionRef::internal(read.to_string()),
-            args: vec![MirOperand::Local(map), MirOperand::Local(key)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
-            &args[1].expr,
-            MirOperand::Local(value),
-            value_ty,
-        )?;
-        if method == "modify" {
+        // `modify` works on the value where it sits; `read` only looks.
+        let arg = if method == "modify" {
+            ClosureArg::InPlace { collection: MirOperand::Local(map), at: MirOperand::Local(key), map: true }
+        } else {
+            let value = self.builder.alloc_temp(value_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Map_write_back".to_string()),
-                args: vec![
-                    MirOperand::Local(map),
-                    MirOperand::Local(key),
-                    MirOperand::Local(param_local.unwrap_or(value)),
-                ],
+                dst: Some(value),
+                func: FunctionRef::internal("Map_get_unwrap".to_string()),
+                args: vec![MirOperand::Local(map), MirOperand::Local(key)],
             }));
-        }
+            ClosureArg::Value(MirOperand::Local(value))
+        };
+        let (body_op, body_ty) = self.inline_closure_with_param(&args[1].expr, arg, value_ty)?;
         // The slot's payload is what the closure answered, known only now.
         let result_ty = MirType::Option(Box::new(body_ty));
         self.builder.set_local_type(result, result_ty.clone());
@@ -613,7 +600,7 @@ impl<'a> MirLowerer<'a> {
     ///
     /// The result slot is allocated before its payload type is known and
     /// retyped once the body has been lowered, the same way
-    /// `inline_closure_keeping_param` handles its own result local: `R` is
+    /// `inline_closure_with_param` handles its own result local: `R` is
     /// whatever the closure returns, and there's no way to know that without
     /// lowering it.
     fn lower_vec_element_closure(
@@ -689,33 +676,19 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(present_block);
-        let elem = self.builder.alloc_temp(elem_ty.clone());
-        // `modify` takes the element out and writes it back; `read` only looks.
-        let read = if method == "modify" { "Vec_lend" } else { "Vec_index" };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(elem),
-            func: FunctionRef::internal(read.to_string()),
-            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
-        }));
-        let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
-            &args[1].expr,
-            MirOperand::Local(elem),
-            elem_ty,
-        )?;
-        if method == "modify" {
-            // Always put the element back, even through a closure that takes
-            // no parameter: the frame owns the lent copy until it does.
-            let value = param_local.unwrap_or(elem);
+        // `modify` works on the element where it sits; `read` only looks.
+        let arg = if method == "modify" {
+            ClosureArg::InPlace { collection: MirOperand::Local(collection), at: MirOperand::Local(idx), map: false }
+        } else {
+            let elem = self.builder.alloc_temp(elem_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Vec_write_back".to_string()),
-                args: vec![
-                    MirOperand::Local(collection),
-                    MirOperand::Local(idx),
-                    MirOperand::Local(value),
-                ],
+                dst: Some(elem),
+                func: FunctionRef::internal("Vec_index".to_string()),
+                args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
-        }
+            ClosureArg::Value(MirOperand::Local(elem))
+        };
+        let (body_op, body_ty) = self.inline_closure_with_param(&args[1].expr, arg, elem_ty)?;
         // The slot's payload is what the closure answered, known only now.
         let result_ty = MirType::Option(Box::new(body_ty));
         self.builder.set_local_type(result, result_ty.clone());
@@ -744,32 +717,32 @@ impl<'a> MirLowerer<'a> {
         arg_op: MirOperand,
         arg_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {
-        let (result, _) = self.inline_closure_keeping_param(closure, arg_op, arg_ty)?;
-        Ok(result)
+        self.inline_closure_with_param(closure, ClosureArg::Value(arg_op), arg_ty)
     }
 
-    /// The same, handing back the local the closure's parameter was bound to.
-    ///
-    /// `modify` needs it: the closure is given mutable access to the element and
-    /// whatever it leaves there is the new element. Inlining is what makes that
-    /// cheap — the parameter *is* a local, so a body that assigns to it has
-    /// already written the value, and the write-back is one store of this local
-    /// into the slot.
-    pub(super) fn inline_closure_keeping_param(
+    /// The same, with the parameter bound either to a value or, for
+    /// `modify`, to the element where it sits: the closure is given mutable
+    /// access to the element, so whatever it leaves there is the new element.
+    pub(super) fn inline_closure_with_param(
         &mut self,
         closure: &Expr,
-        arg_op: MirOperand,
+        arg: ClosureArg,
         arg_ty: MirType,
-    ) -> Result<(TypedOperand, Option<LocalId>), LoweringError> {
+    ) -> Result<TypedOperand, LoweringError> {
         if let ExprKind::Closure { params, body, .. } = &closure.kind {
             if let Some(param) = params.first() {
                 let param_name = &param.name;
                 let saved = self.locals.remove(param_name);
                 let param_local = self.builder.alloc_local(param_name.clone(), arg_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: param_local,
-                    rvalue: MirRValue::Use(arg_op),
-                }));
+                match arg {
+                    ClosureArg::Value(op) => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: param_local,
+                        rvalue: MirRValue::Use(op),
+                    })),
+                    ClosureArg::InPlace { collection, at, map } => {
+                        self.bind_element_in_place(param_local, collection, at, map)
+                    }
+                }
                 self.locals.insert(param_name.clone(), (param_local, arg_ty));
 
                 // `|x| { return x % 2 == 0 }` is the ordinary way to write this
@@ -790,7 +763,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len(), None));
+                self.inline_return_target = Some((result_local, cont_block, None));
 
                 let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -821,10 +794,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(prev) = saved {
                     self.locals.insert(param_name.clone(), prev);
                 }
-                return Ok((
-                    (MirOperand::Local(result_local), body_ty),
-                    Some(param_local),
-                ));
+                return Ok((MirOperand::Local(result_local), body_ty));
             }
         }
         Err(LoweringError::InvalidConstruct("expected closure".to_string()))
@@ -834,6 +804,37 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn setup_iter_chain_loop(
         &mut self,
         chain: &super::IterChain<'_>,
+    ) -> Result<IterLoopSetup, LoweringError> {
+        self.setup_iter_chain_loop_inner(chain, false)
+    }
+
+    /// The same, for a `for` loop whose body runs user code. A body can delete
+    /// nodes the vector links to, and each delete takes that node's entry out
+    /// of the vector under the loop (mem.racks/RK3). Read up front, the length
+    /// and the index then skip the entry after each removal and run off the
+    /// end. So a vector of links is walked through a cursor the vector moves
+    /// back on removal, and the caller runs the cleanup that unregisters it
+    /// where the loop exits (`cursor_depth`).
+    pub(super) fn setup_iter_chain_loop_tracked(
+        &mut self,
+        chain: &super::IterChain<'_>,
+    ) -> Result<IterLoopSetup, LoweringError> {
+        self.setup_iter_chain_loop_inner(chain, true)
+    }
+
+    /// The same loop for a body no delete can reach: nothing to record, no
+    /// cursor to move.
+    pub(super) fn setup_iter_chain_loop_quiet(
+        &mut self,
+        chain: &super::IterChain<'_>,
+    ) -> Result<IterLoopSetup, LoweringError> {
+        self.setup_iter_chain_loop_inner(chain, false)
+    }
+
+    fn setup_iter_chain_loop_inner(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        tolerate_removal: bool,
     ) -> Result<IterLoopSetup, LoweringError> {
         let (source_op, source_ty) = self.lower_expr(chain.source)?;
         let (array_len, array_elem_size) = match &source_ty {
@@ -950,6 +951,54 @@ impl<'a> MirLowerer<'a> {
             end_op = MirOperand::Local(end_local);
         }
 
+        let elem_ty = self.extract_iterator_elem_type(chain.source)
+            .or_else(|| self.collection_elem_of_expr(chain.source))
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:chain_elem"));
+
+        // A `skip`/`take` that sets the bounds hands them to the cursor, which
+        // moves them back with every removal the same as it moves itself.
+        let start_op = start_val.clone().unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+        let cursor = (tolerate_removal && array_len.is_none() && elem_ty.is_link_slot())
+            .then(|| {
+                // The vector may be one nothing has registered: a temporary
+                // (`for c in n.children.clone()`), or a parameter a caller
+                // filled from one. Unregistered, a delete in the body leaves
+                // its entry naming a freed node. A field was registered where
+                // it was stored; anything else is registered here, which for a
+                // vector already registered costs a probe per entry.
+                if !matches!(chain.source.kind, ExprKind::Field { .. }) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::runtime("rask_link_register_vec".to_string()),
+                        args: vec![MirOperand::Local(collection)],
+                    }));
+                }
+                // A temporary is nobody's once the loop is done, though its
+                // free may come later; its records go with the loop.
+                let temporary = !matches!(chain.source.kind, ExprKind::Field { .. } | ExprKind::Ident(_));
+                let depth = self.ensure_stack.len();
+                let cursor = self.builder.alloc_temp(MirType::Tuple(vec![
+                    MirType::I64, MirType::I64, MirType::I64, MirType::Ptr,
+                ]));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::runtime("rask_vec_iter_begin".to_string()),
+                    args: vec![
+                        MirOperand::Local(collection),
+                        MirOperand::Local(cursor),
+                        start_op.clone(),
+                        end_op.clone(),
+                    ],
+                }));
+                self.push_cursor_cleanup(collection, cursor, temporary);
+                let visited = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: visited,
+                    rvalue: MirRValue::Use(start_op.clone()),
+                }));
+                (cursor, depth, visited)
+            });
+
         let idx = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
@@ -963,17 +1012,33 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
-        // check: idx < end
+        // check: idx < end, or the cursor's next index is a real one
         self.builder.switch_to_block(check_block);
         let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: cond,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Lt,
-                left: MirOperand::Local(idx),
-                right: end_op,
-            },
-        }));
+        if let Some((cursor, _, _)) = cursor {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(idx),
+                func: FunctionRef::runtime("rask_vec_iter_next".to_string()),
+                args: vec![MirOperand::Local(collection), MirOperand::Local(cursor)],
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: cond,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Ge,
+                    left: MirOperand::Local(idx),
+                    right: MirOperand::Constant(MirConst::Int(0)),
+                },
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: cond,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Lt,
+                    left: MirOperand::Local(idx),
+                    right: end_op,
+                },
+            }));
+        }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(cond),
             then_block: body_block,
@@ -982,9 +1047,6 @@ impl<'a> MirLowerer<'a> {
 
         // body: load element
         self.builder.switch_to_block(body_block);
-        let elem_ty = self.extract_iterator_elem_type(chain.source)
-            .or_else(|| self.collection_elem_of_expr(chain.source))
-            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:chain_elem"));
         let elem_local = self.builder.alloc_temp(elem_ty.clone());
         if let Some(elem_size) = array_elem_size {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1003,6 +1065,26 @@ impl<'a> MirLowerer<'a> {
             }));
         }
 
+        let position = match cursor {
+            Some((_, _, visited)) => {
+                let position = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: position,
+                    rvalue: MirRValue::Use(MirOperand::Local(visited)),
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: visited,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Add,
+                        left: MirOperand::Local(visited),
+                        right: MirOperand::Constant(MirConst::Int(1)),
+                    },
+                }));
+                position
+            }
+            None => idx,
+        };
+
         Ok(IterLoopSetup {
             collection,
             idx,
@@ -1012,7 +1094,32 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             check_block,
             counted,
+            cursor_depth: cursor.map(|(_, depth, _)| depth),
+            position,
         })
+    }
+
+    /// Schedule the cursor's unregistration as a scope cleanup, the shape a
+    /// `with` guard uses: every exit from the function chains through it, and
+    /// the loop's own exit runs it inline.
+    fn push_cursor_cleanup(&mut self, collection: LocalId, cursor: LocalId, temporary: bool) {
+        let cleanup_block = self.builder.create_block();
+        let continue_block = self.builder.create_block();
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
+        self.builder.switch_to_block(cleanup_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::runtime("rask_vec_iter_end".to_string()),
+            args: vec![
+                MirOperand::Local(collection),
+                MirOperand::Local(cursor),
+                MirOperand::Constant(MirConst::Int(temporary as i64)),
+            ],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.ensure_stack.push(cleanup_block);
+        self.builder.switch_to_block(continue_block);
     }
 
     /// Apply filter/map/enumerate adapters inside a loop body.
@@ -1055,7 +1162,7 @@ impl<'a> MirLowerer<'a> {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
                         offset: 0,
-                        value: MirOperand::Local(idx),
+                        value: MirOperand::Local(setup.position),
                         store_size: MirType::I64.size(),
                         field: None,
                     }));
@@ -1369,7 +1476,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((acc, setup.inc_block, self.pending_write_backs.len(), None));
+                self.inline_return_target = Some((acc, setup.inc_block, None));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
@@ -1578,11 +1685,11 @@ impl<'a> MirLowerer<'a> {
     /// total order, not IEEE `<`; a string, a 128-bit integer or an aggregate
     /// isn't one comparable word at all.
     fn extreme_fuses(&self, call: &Expr) -> bool {
-        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option()) else {
+        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option().cloned()) else {
             return false;
         };
         matches!(
-            self.ctx.type_to_mir(elem),
+            self.ctx.type_to_mir(&elem),
             MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
                 | MirType::U8 | MirType::U16 | MirType::U32
                 | MirType::Char | MirType::Bool
@@ -1801,7 +1908,7 @@ impl<'a> MirLowerer<'a> {
 
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((acc, after_block, self.pending_write_backs.len(), None));
+        self.inline_return_target = Some((acc, after_block, None));
         let (result_op, _) = self.lower_expr(body)?;
         let returned = self.inline_return_taken.take().is_some();
         self.inline_return_target = saved_return_target;
@@ -2287,4 +2394,11 @@ impl<'a> MirLowerer<'a> {
 
         Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void))
     }
+}
+
+/// What an inlined closure's parameter is bound to.
+pub(super) enum ClosureArg {
+    Value(MirOperand),
+    /// The element `collection[at]` where it sits (`modify`).
+    InPlace { collection: MirOperand, at: MirOperand, map: bool },
 }

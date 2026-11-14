@@ -13,7 +13,7 @@ pub use rask_mir::vtable_layout::{
 /// Metadata for a single vtable: one (concrete type, interface) pair.
 #[derive(Debug, Clone)]
 pub struct VTableInfo {
-    /// Data section name: ".vtable.Button__Widget"
+    /// Data section name, from monomorphization's vtable table.
     pub data_name: String,
     /// Concrete type name: "Button"
     pub concrete_type: String,
@@ -47,9 +47,4 @@ impl VTableInfo {
     pub fn byte_size(&self) -> u32 {
         VTABLE_METHODS_START + (self.methods.len() as u32) * 8
     }
-}
-
-/// Build the vtable data section name from concrete type and interface name.
-pub fn vtable_data_name(concrete_type: &str, interface_name: &str) -> String {
-    format!(".vtable.{}__{}", concrete_type, interface_name)
 }

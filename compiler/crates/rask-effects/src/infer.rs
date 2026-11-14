@@ -21,7 +21,7 @@ type FuncName = String;
 
 /// Run effect inference on declarations.
 pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
-    infer_with_reach(decls, &[], targets).0
+    infer_with_reach(decls, &[], targets, &Default::default()).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -35,8 +35,9 @@ pub fn infer_with_reach(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    c_macros: &crate::CMacros,
 ) -> (EffectMap, HashSet<FuncName>) {
-    let mut pass = InferPass::new(targets);
+    let mut pass = InferPass::new(targets, c_macros);
     pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
     (pass.effects, runtime_only)
@@ -46,11 +47,15 @@ pub fn infer_with_reach(
 struct Cx<'a> {
     targets: &'a MethodTargets,
     imports: &'a sources::ImportedNames,
+    /// Joins of tasks that borrow their frame (`crate::borrowing_joins`).
+    borrowing_joins: &'a HashSet<rask_ast::NodeId>,
 }
 
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
     targets: &'t MethodTargets,
+    /// What each C macro's body does, by the checker's reading.
+    c_macros: &'t crate::CMacros,
     /// The imports of the unit being collected, for what a name at a call
     /// site means.
     imports: sources::ImportedNames,
@@ -78,9 +83,10 @@ struct InferPass<'t> {
 }
 
 impl<'t> InferPass<'t> {
-    fn new(targets: &'t MethodTargets) -> Self {
+    fn new(targets: &'t MethodTargets, c_macros: &'t crate::CMacros) -> Self {
         Self {
             targets,
+            c_macros,
             imports: sources::ImportedNames::default(),
             scan_reach: true,
             effects: HashMap::new(),
@@ -194,7 +200,12 @@ impl<'t> InferPass<'t> {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        let cx = Cx { targets: self.targets, imports: &self.imports };
+        let borrowing_joins: HashSet<rask_ast::NodeId> = rask_ast::tasks::all_windows(body)
+            .iter()
+            .filter(|w| matches!(w.spawn.kind, ExprKind::Spawn { target: SpawnTarget::Pool, .. }))
+            .map(|w| w.join_call.id)
+            .collect();
+        let cx = Cx { targets: self.targets, imports: &self.imports, borrowing_joins: &borrowing_joins };
         classify_body(body, &mut direct, &mut callees, &cx);
 
         self.effects.insert(qname.to_string(), direct);
@@ -337,17 +348,25 @@ impl<'t> InferPass<'t> {
     // ── Phase 2: Extern declarations ────────────────────────────────
 
     /// INF5: a C function could do anything, so it blocks and touches ambient
-    /// state unless its declaration says `@memory_only`.
+    /// state unless its declaration says `@memory_only`. Either way it's C
+    /// code. A C macro has its body's effects: arithmetic is pure, since the
+    /// compiler computes it; a field read is C code; a call has the effects
+    /// of the C function it calls.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
                 // `@ambient`: reads ambient state (the clock, randomness) but
                 // never waits, which is a protocol engine's whole shape.
                 let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
-                let effects = if says("memory_only") {
-                    Effects::default()
+                let effects = if let Some(body) = self.c_macros.get(&e.name) {
+                    if !body.calls.is_empty() {
+                        self.call_graph.entry(e.name.clone()).or_default().extend(body.calls.iter().cloned());
+                    }
+                    Effects { c_code: body.touches_memory, ..Default::default() }
+                } else if says("memory_only") {
+                    Effects { c_code: true, ..Default::default() }
                 } else {
-                    Effects { blocks: !says("ambient"), ambient: true, ..Default::default() }
+                    Effects { blocks: !says("ambient"), ambient: true, c_code: true, ..Default::default() }
                 };
                 self.effects.insert(e.name.clone(), effects);
             }
@@ -369,7 +388,7 @@ impl<'t> InferPass<'t> {
         let mut work: Vec<String> = self
             .effects
             .iter()
-            .filter(|(_, e)| !e.is_pure())
+            .filter(|(_, e)| !e.is_pure() || e.c_code)
             .map(|(k, _)| k.clone())
             .collect();
         while let Some(callee) = work.pop() {
@@ -457,8 +476,10 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         ExprKind::MethodCall { object, method, args, .. } => {
             let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
             effects.union(sources::size_effects(effect));
-            for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
-                callees.insert(name);
+            if !t.borrowing_joins.contains(&expr.id) {
+                for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
+                    callees.insert(name);
+                }
             }
 
             classify_expr(object, effects, callees, t);
@@ -892,7 +913,7 @@ mod tests {
     /// the way the compiler runs it.
     fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
         let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-        infer_with_reach(decls, &stdlib, targets).0
+        infer_with_reach(decls, &stdlib, targets, &Default::default()).0
     }
 
     fn target(name: &str) -> rask_ast::decl::MethodTarget {
@@ -966,7 +987,7 @@ mod tests {
         };
         Expr {
             id: NodeId(0),
-            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, body: Box::new(body) },
+            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, args: Vec::new(), body: Box::new(body) },
             span: sp(),
         }
     }
@@ -979,6 +1000,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],
@@ -1002,6 +1024,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],

@@ -338,7 +338,10 @@ impl DefaultDesugarer {
                 self.desugar_expr(count);
             }
             ExprKind::Closure { body, .. } => self.desugar_expr(body),
-            ExprKind::Spawn { body, .. } => self.desugar_expr(body),
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args { self.desugar_expr(&mut a.expr); }
+                self.desugar_expr(body);
+            }
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.desugar_expr(&mut b.source); }
                 for s in body { self.desugar_stmt(s); }
@@ -512,6 +515,7 @@ mod tests {
         let main = Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(), type_params: vec![], params: vec![],
                 ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
@@ -572,6 +576,7 @@ mod tests {
         let main = Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(), type_params: vec![], params: vec![], ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,

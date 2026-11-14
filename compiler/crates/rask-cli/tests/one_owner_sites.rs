@@ -57,7 +57,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 89,
+        today: 77,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
               fact about a call stated by its name instead of on its \
@@ -66,7 +66,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 238,
+        today: 228,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",
@@ -83,7 +83,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "interpreters run without the driver's setup",
-        today: 3,
+        today: 0,
         target: 0,
         why: "a tool built its own interpreter instead of asking the driver for \
               one; the copies skip steps the driver does (rask-lang/rask#1568)",
@@ -91,7 +91,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "size or alignment computed outside the layout model",
-        today: 5,
+        today: 4,
         target: 0,
         why: "a second answer to how wide a value is; one layout crate answers \
               everyone (rask-lang/rask#1567)",

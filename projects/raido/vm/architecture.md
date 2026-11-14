@@ -1,6 +1,6 @@
 <!-- id: raido.vm -->
 <!-- status: proposed -->
-<!-- summary: Deterministic register-based VM with static types, fixed-point math, serializable state, configurable arena -->
+<!-- summary: Deterministic register-based VM with static types, strict floats, a garbage-collected heap scripts can't observe, serializable state -->
 <!-- depends: raido/language/types.md -->
 
 # VM Architecture
@@ -10,36 +10,33 @@ Register-based bytecode VM. Deterministic. Serializable. Sandboxed. Lightweight 
 ## Core Properties
 
 - **Register-based.** Each call frame has a fixed-size register window. Instructions encode register operands directly.
-- **Statically typed.** The compiler knows every register's type. No runtime type tags, no type dispatch.
-- **Deterministic.** Fixed-point arithmetic, specified PRNG, insertion-ordered maps. Identical execution on every platform.
-- **Serializable.** Entire state -> bytes -> restore. No pointers, only arena offsets.
+- **Statically typed.** The compiler knows every register's type, so instructions never dispatch on type. Values still carry a small tag, for the collector, serialization and debugging.
+- **Deterministic.** Strict IEEE floats, specified PRNG, insertion-ordered maps. Identical execution on every platform.
+- **Serializable.** Entire state -> bytes -> restore, in a canonical form that's identical on every machine.
 - **Send, not Sync.** Movable between threads, not shareable.
 - **`@resource`** in Rask -- must be closed.
 
 ## Value Representation
 
-**8 bytes per value.** With static types, the compiler knows the type at every register position. No runtime type tags needed.
+**16 bytes per value: an 8-byte tag word and an 8-byte payload.** The compiler already knows every register's type, so no instruction reads the tag. The collector does, to find references, and so do serialization and the debugger.
 
-| Type | Payload (8 bytes) |
-|------|-------------------|
+| Tag | Payload |
+|-----|---------|
 | `int` | i64 |
-| `number` | i64 (32.32 raw bits) |
-| `bool` | i64 (0 or 1) |
-| `string` | u32 arena offset (zero-extended to i64) |
-| `array` | u32 arena offset |
-| `map` | u32 arena offset |
-| `struct` | u32 arena offset |
-| `enum` | u32 discriminant + u32 arena offset (or inline for simple enums) |
-| `T?` | u8 tag (0=None, 1=Some) + 7 bytes payload |
-| `func ref` | u32 prototype index |
+| `float` | f64 (never NaN or infinite) |
+| `bool` | 0 or 1 |
+| `none` | unused (`T?` holding `None`) |
+| `func` | prototype index (a function or a closure that captures nothing) |
+| `enum` | discriminant (an enum with no payloads) |
+| `ref` | reference to a heap object: string, array, map, struct, enum with payload, closure, coroutine |
 
-256 registers x 8 bytes = 2 KB per call frame. At max call depth 256, worst case register memory is 512 KB.
+`Some(x)` is just `x`; `None` is the `none` tag. 256 registers x 16 bytes = 4 KB per call frame.
+
+**Containers store payloads without tags.** An array or map holds one element type, so the tag is the same for every slot. The object records its element type once, and each slot is the 8-byte payload: an `array<int>` of 1,000 items is 8 KB, not 16. The collector reads the element type to know whether the slots are references. Element types that need the tag to tell two cases apart (an optional of a non-reference type such as `int?`, or a function value that may be a closure) keep 16-byte slots. An optional of a reference type uses a null payload for `None` and stays at 8 bytes. Struct fields, closure captures and coroutine registers keep their tags, since one object mixes types there.
 
 ## Determinism
 
-All `number` arithmetic is 32.32 fixed-point (integer math). No FPU. Bitwise-identical on all platforms.
-
-Add/sub = single i64 op. Mul/div = 128-bit intermediate.
+`float` arithmetic is IEEE 754 binary64 under a strict profile, bitwise identical on all platforms: round-to-nearest, subnormals kept, no fused multiply-add, correctly rounded math functions (rask-lang/rask#1683). An operation that would produce NaN or an infinity raises `FloatError`, so registers only ever hold finite floats.
 
 Integer overflow panics by default. `wrapping_add()`, `wrapping_mul()`, etc. wrap. Both behaviors are deterministic and part of the contract.
 
@@ -52,39 +49,41 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 - **Coroutine resume sequence** is deterministic -- same yields in same order, same values.
 - **Error kind and stack trace structure** are part of the contract. Exact error message text is not.
 - **Fuel cost** is 1 per instruction, no exceptions.
-- **Arena exhaustion** is deterministic -- same allocation sequence -> same failure point.
+- **Memory exhaustion** is deterministic -- it depends on what's reachable, not on when garbage was collected.
 - **PRNG state evolution** is part of the contract -- xoshiro128++, specified seed expansion via SplitMix64.
-- **Fixed-point arithmetic** is integer math -- bitwise identical on all platforms by construction.
+- **Float arithmetic** follows the strict profile above -- bitwise identical on all platforms.
 - **Integer overflow** panics by default. Wrapping ops wrap. Both deterministic, part of the contract.
 - **Sort stability** is required -- `array.sort()` uses a stable sort algorithm.
 
-### ZK Proof Compatibility
+### Provable Profile
 
-The primary verification mode is bilateral re-execution — both parties run the same script, compare outputs. For typical Raido scripts this is sub-millisecond and sufficient.
+The primary verification mode is bilateral re-execution: both parties run the same script and compare outputs. Deterministic floats replay exactly, so this covers every script.
 
-ZK proofs are a future option for two cases re-execution can't handle:
+Zero-knowledge proofs are a future option for two cases re-execution can't handle:
 
-- **Privacy.** Re-execution requires sharing inputs. ZK proves "this output came from this script" without revealing the inputs — a domain can prove correct minting without exposing its crafting formula or resource stockpile.
+- **Privacy.** Re-execution requires sharing inputs. A ZK proof shows "this output came from this script" without revealing them, so a domain can prove correct minting without exposing its crafting formula or stockpile.
 - **Expensive scripts.** Large simulations where re-execution is costly and many parties verify.
 
-The VM wasn't designed for ZK, but the properties chosen for determinism happen to be what ZK circuits need. This section documents which constraints are load-bearing and must not be broken by future changes.
+A ZK proof works over arithmetic in a prime field: additions and multiplications of large integers. Integer operations map onto that cheaply, with range checks to enforce 64-bit wrapping. A float operation doesn't: unpacking sign, exponent and mantissa, aligning exponents by a variable shift, normalising, rounding to nearest-even and repacking are each cheap in hardware and expensive in a circuit. General-purpose zkVMs emulate floats in software for this reason, at a cost of about a hundred times an integer operation.
 
-**ZK-compatible properties:**
+So proving is a profile, not the whole language. A chunk compiled as **provable** may not use `float`; the compiler rejects it, and the chunk's header records the profile so a prover accepts only provable chunks. Minting, crafting, trades and anything conserved already count in `int`, so the scripts worth proving are the ones the profile allows.
+
+**What the provable profile relies on:**
 
 | Property | Why it matters for ZK |
 |---|---|
-| Integer arithmetic (i64, 32.32) | Maps to field arithmetic with range checks. No floats. |
+| Integer arithmetic only (i64) | Maps to field arithmetic with range checks. |
 | Fuel-bounded execution | Circuits need bounded loops. Fuel guarantees a max step count. |
-| Fixed arena size | Bounded memory = bounded memory-consistency constraints. |
-| Bump allocator (no GC) | Predictable allocation. No compaction to prove. |
-| ~38 opcodes | Small instruction set = small selector circuit per step. |
+| Memory limit | Bounded memory = bounded memory-consistency constraints. |
+| No collection inside a proof | Provable chunks run with `reset()` between evaluations and allocate without collecting, so no collector has to be proven. |
+| Small opcode set | Small selector circuit per step. |
 | Static bytecode | Immutable during execution. Encoded once as a public input. |
 | Deterministic branching | All branches depend on register values. No nondeterminism. |
 | Flat register window | Fixed-size, known count. Efficient as circuit wires. |
 
-**Execution trace.** A ZK backend would prove execution via a trace — a record of every step: opcode, PC, register reads/writes, memory reads/writes, fuel consumed. The trace is the interface between VM semantics and the proof system. The executor records the trace, the prover converts it to a proof, the verifier checks the proof without re-executing.
+**Execution trace.** A ZK backend would prove execution via a trace: a record of every step (opcode, PC, register reads/writes, memory reads/writes, fuel consumed). The executor records the trace, the prover converts it to a proof, the verifier checks the proof without re-executing.
 
-**Design constraint:** future opcodes and VM changes must preserve bounded execution, integer-only arithmetic, static bytecode, bounded memory, and deterministic control flow. Any change introducing unbounded computation, floating-point math, or nondeterminism would break ZK compatibility.
+**Design constraint:** future opcodes and VM changes must keep bounded execution, static bytecode, bounded memory and deterministic control flow for every chunk, and integer-only arithmetic within the provable profile.
 
 The ZK prover would be a separate project sharing the bytecode format and semantics. It does not affect the VM spec or the direct-execution backend.
 
@@ -94,120 +93,57 @@ The ZK prover would be a separate project sharing the bytecode format and semant
 
 - Small state (16 bytes). Fast (3 ops per output). Well-studied. Public domain.
 - State is part of VM state and serialized.
-- `math.random()` -> number (0.0 to 1.0 exclusive, 32.32 fixed-point).
+- `math.random()` -> float (0.0 to 1.0 exclusive): 53 bits from two PRNG outputs, scaled by 2^-53.
 - `math.random(n)` -> int (0 to n-1 inclusive).
 - Seeded at VM creation. `vm.seed(u64)` splits into initial state via SplitMix64.
 
 Reference: Blackman & Vigna, 2018. The algorithm is fixed -- changing it is a breaking change to determinism.
 
-## Arena
+## Heap
 
-All VM-managed heap objects live in a single contiguous byte array. Bump allocator. No GC.
+Strings, arrays, maps, structs, enums with payloads, closures and coroutines are heap objects. A value refers to one with a `ref`. The heap is garbage collected.
 
-### Layout
+**Object kinds:**
 
-Arena is a flat `[u8]` with a bump pointer (`top: u32`). Every object starts with a 4-byte header:
+| Kind | Holds |
+|------|-------|
+| String | immutable UTF-8 bytes |
+| Array | length and values, growable |
+| Map | entries in insertion order, keys `int` or `string` |
+| Struct | its fields |
+| Enum (with payload) | discriminant and payload fields |
+| Closure | prototype index and captured values |
+| Coroutine | status, call frames and their registers |
 
-```
-Object header (4 bytes):
-  kind (u8)   -- object kind tag (see table)
-  _pad (u8)   -- reserved, zero
-  size (u16)  -- object body size in bytes (max 65535 bytes per object)
-```
+How objects are laid out in memory is the implementation's business. Nothing in the language or the serialized form depends on it.
 
-The `kind` tag is not read during normal execution -- static typing means every access already knows the layout. The tag exists for serialization validation, debugging, and arena walkers (anything that inspects the arena without bytecode context).
+### Why the collector is invisible
 
-**Object kind tags** (exhaustive):
+A script can't observe when or whether the collector has run, so the VM can collect whenever it likes, on any machine, and results stay identical. That holds because the language exposes nothing that depends on it:
 
-| Value | Kind | Body layout |
-|-------|------|-------------|
-| 0 | *reserved* | zeroed arena = invalid, not a zero-length string |
-| 1 | String | `len (u32) \| utf-8 bytes[len]` |
-| 2 | Array | `len (u32) \| cap (u32) \| values[cap]` |
-| 3 | Map | `live (u32) \| cap (u32) \| indices[cap] \| entries[cap]` |
-| 4 | Struct | `fields[N] (each 8 bytes)` |
-| 5 | Enum (with payload) | `payload fields[N] (each 8 bytes)` |
+- **No finalizers.** Nothing runs when an object dies.
+- **No weak references.** Reachability is all-or-nothing.
+- **Nothing derived from addresses.** Maps hash keys by content (an `int`'s value, a `string`'s bytes), never by where an object lives; there's no identity hash and no ordering by identity. `==` on structs and other references compares identity, which is a yes-or-no answer, not an address.
 
-Values 6--255 are reserved. Types that live in registers -- `int`, `number`, `bool`, `T?`, func ref, simple enum (no payload) -- have no arena object and no kind tag. Coroutines are stored in a separate VM-side structure, not the arena.
+Any collector satisfies this. Non-moving mark-and-sweep is the simple choice, and it keeps host references stable.
 
-**The `size` field is the hard limit.** A u16 caps every object at 64 KB. An array or struct totaling more than 65535 bytes of body can't exist -- the allocator rejects it with `ArenaExhausted` before writing the header.
+**Pauses.** A stop-the-world collection pauses in proportion to what's live, so a mod holding many megabytes could cause a frame hitch. Because collection can't be observed, an implementation is free to collect incrementally (a slice of marking per allocation or per frame) or generationally, without changing any result. The arena this replaced paid a comparable cost at each reset, freeing in bulk, so pauses aren't new; they're just no longer tied to a fixed moment.
 
-All objects are 4-byte aligned. The bump pointer advances by `4 (header) + size`, rounded up to 4-byte alignment.
+### Memory Limit
 
-### Object Bodies
+The VM has a configured limit on **reachable** memory, measured in a logical size every implementation computes the same way:
 
-**String:**
-```
-len (u32) | utf-8 bytes[len]
-```
+| Object | Logical size |
+|--------|--------------|
+| String | 16 + byte length |
+| Array | 16 + 8 per slot of capacity (16 for element types that keep their tag) |
+| Map | 16 + 24 per slot of capacity, plus 8 for each of key and value that keeps its tag |
+| Struct, enum payload, closure | 16 + 16 per field or capture |
+| Coroutine | 64 + 16 per register in its frames |
 
-**Array:**
-```
-len (u32) | cap (u32) | values[cap] (each 8 bytes)
-```
-`len` is the logical length. `cap` is the allocated slot count. `push` beyond `cap` allocates a new, larger array and copies -- the old one becomes dead space. No type tags per element -- `array<int>` stores raw i64 values. Element type is known from bytecode metadata.
+Capacity grows by a fixed rule (doubling from 4), so it's the same everywhere. When an allocation would take the reachable total past the limit, the VM first runs a full collection, and raises `MemoryExhausted` only if what's still reachable plus the new object exceeds it. What's reachable at a given point in a script is the same on every machine, so so is the point where memory runs out.
 
-**Map (compact dict layout):**
-```
-live (u32) | cap (u32) | indices[cap] (each i32) | entries[cap]
-```
-Each entry: `key (8 bytes) | value (8 bytes) | hash (u32) | _pad (4 bytes)` = 24 bytes. `live` is the count of live entries. Entries are stored dense in insertion order, appended at the end.
-
-The `indices` array is the hash table -- open addressing, linear probing. Each slot holds an index into the entries array, or -1 for empty, -2 for deleted (tombstone). Lookup: hash key -> probe indices -> follow index to entry -> compare key. Insert: append entry, store its position in indices. Delete: tombstone the index slot, mark the entry as dead.
-
-Iteration walks entries[0..len], skipping deleted entries. This preserves insertion order.
-
-Map growth: when load factor exceeds ~75%, allocate a new map with larger `cap` in the arena, rehash all live entries, copy them in order. The old map becomes dead space. Same pattern as array growth.
-
-**Struct:**
-```
-fields[N] (each 8 bytes)
-```
-Fixed-size layout determined at compile time from the struct declaration. Field count and types known from bytecode metadata. No header fields beyond the arena object header.
-
-**Enum (with payloads):**
-```
-payload fields[N] (each 8 bytes)
-```
-The discriminant lives in the register (top 32 bits), not in the arena. The arena body contains only the payload fields for the active variant. The compiler knows the field count per variant from the type table.
-
-Simple enums (no payloads) are stored inline as a u32 discriminant in the register -- no arena allocation.
-
-### Limits
-
-- **Fixed size.** Set at VM creation. Exceeding = `ArenaExhausted` error.
-- **No auto-grow.** Hides allocation cost.
-- **Max object size: 64 KB** (u16 size field).
-- **Max arena: 4 GB** (u32 offsets). Practical limit set by config, usually 256 KB--4 MB.
-
-### reset() and frame_end()
-
-**`reset()`** -- sets `top = 0`. Clears all arena contents and coroutine state. Total wipe. Use between independent evaluations.
-
-**`frame_end()`** -- resets allocations made since the last `frame_begin()` marker, keeping everything below the marker.
-
-How it works:
-1. At VM creation or after `reset()`, host calls `vm.frame_begin()`. This saves `top` as the `frame_base`.
-2. Script runs. Allocations bump `top` above `frame_base`.
-3. Host calls `vm.frame_end()`. Sets `top = frame_base`. All frame allocations become dead.
-4. Next frame: host calls `vm.frame_begin()` again (saves current `top` as new `frame_base`).
-
-**What's persistent:** everything below `frame_base` -- data allocated before the first `frame_begin()` or between frames by host calls.
-
-**What's frame-local:** everything above `frame_base` -- temporary strings from interpolation, arrays built during the frame, intermediate results.
-
-If a script stores a frame-local value into persistent state, that value becomes a dangling offset after `frame_end()`. This is a **host bug**, not a VM bug.
-
-The VM supports an optional debug mode to catch this:
-
-```rask
-const vm = raido.Vm.new(raido.Config {
-    arena_size: 256.kilobytes(),
-    debug_frame_writes: true,  // off by default
-})
-```
-
-When enabled, struct field writes and array/map mutations validate that any arena offset in the stored value is below `frame_base`. If the value points above `frame_base`, the VM raises a `FrameStoreViolation` error.
+**`reset()`** clears the heap and all coroutines. Use it between independent evaluations.
 
 ## Resource Limits
 
@@ -218,15 +154,15 @@ Three runaway vectors, three limits:
 Every instruction costs 1 fuel. Reaching zero = `FuelExhausted` error.
 
 ```rask
-const vm = raido.Vm.new(raido.Config {
-    arena_size: 256.kilobytes(),
+let vm = raido.Vm.new(raido.Config {
+    memory_limit: 256.kilobytes(),
     initial_fuel: 100_000,
     max_call_depth: 256,
 })
 ```
 
 ```rask
-const remaining = vm.fuel()
+let remaining = vm.fuel()
 vm.add_fuel(50_000)
 vm.set_fuel(100_000)
 ```
@@ -239,21 +175,21 @@ Max call stack depth. Default 256. `CALL` / `RESUME` increment, `RETURN` / `YIEL
 
 `TAIL_CALL` reuses the current frame -- doesn't increment.
 
-### Arena Size
+### Memory
 
-Fixed at creation. Exceeding = `ArenaExhausted` error.
+Reachable memory is limited at creation. Exceeding it = `MemoryExhausted` error. See [Memory Limit](#memory-limit).
 
 ## Serialization
 
 `vm.serialize()` -> bytes. `Vm.deserialize(bytes)` -> restored VM.
 
-**Captures:** registers, call frames, coroutines, arena contents, PRNG state (4 x u32), fuel remaining, frame_base.
+**Captures:** the heap objects reachable from the roots (the host's root handles and the coroutines it holds), PRNG state (4 x u32), fuel remaining.
+
+**Canonical form.** Serialization walks the object graph from the roots in a fixed order (root handles in creation order, then each object's slots in order), numbers each object the first time it's reached, and writes objects by number. Two VMs in the same state write the same bytes, whatever their memory layout or collection history. Unreachable objects aren't written.
 
 **Does not capture:** host function closures (by name), bytecode (re-loaded by host).
 
 Format version in the header. Unknown version = `VersionMismatch` error on deserialize.
-
-With static types, serialization is simpler -- no type tags to encode per value. The deserializer knows the type of every register from the bytecode metadata.
 
 ## Instruction Set
 
@@ -284,7 +220,7 @@ Register operands are 8-bit (0--255). Constant/index operands are 16-bit (0--655
 
 #### Arithmetic
 
-All arithmetic is type-specific -- the compiler emits the correct variant based on operand types. No runtime type dispatch. In mixed `int`/`number` expressions, the compiler promotes the `int` operand to `number` before the operation (panics if the int exceeds number's +/-2.1B range).
+All arithmetic is type-specific -- the compiler emits the correct variant based on operand types. No runtime type dispatch. In mixed `int`/`float` expressions, the compiler converts the `int` operand to `float` before the operation.
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
@@ -295,7 +231,7 @@ All arithmetic is type-specific -- the compiler emits the correct variant based 
 | `MOD A B C` | ABC | `R[A] = R[B] % R[C]` (sign follows dividend) |
 | `NEG A B` | ABC | `R[A] = -R[B]` |
 
-**Result types:** `int OP int -> int` (except `DIV` which always returns `number`). `number OP number -> number`. Mixed ops: compiler promotes int to number, result is `number`. Integer overflow panics. Number overflow saturates.
+**Result types:** `int OP int -> int` (except `DIV` which always returns `float`). `float OP float -> float`. Mixed ops: compiler promotes int to float, result is `float`. Integer overflow panics. A float result that is NaN or infinite raises `FloatError`.
 
 #### Comparison
 
@@ -315,7 +251,7 @@ Result stored in register as `bool`.
 |----|-----|-----------|
 | `NOT A B` | ABC | `R[A] = !R[B]` (boolean negation) |
 | `LEN A B` | ABC | `R[A] = len(R[B])` (string byte length, array length, map length) |
-| `CONCAT A B C` | ABC | `R[A] = tostring(R[B]) ++ tostring(R[C])` (allocates string in arena) |
+| `CONCAT A B C` | ABC | `R[A] = tostring(R[B]) ++ tostring(R[C])` (allocates a string) |
 
 #### Collections
 
@@ -330,7 +266,7 @@ Result stored in register as `bool`.
 
 | Op | Fmt | Semantics |
 |----|-----|-----------|
-| `NEW_STRUCT A Bx` | ABx | Allocate struct of type `Bx` in arena, fields from registers starting at `A+1`. |
+| `NEW_STRUCT A Bx` | ABx | Allocate struct of type `Bx`, fields from registers starting at `A+1`. |
 | `GET_STRUCT_FIELD A B C` | ABC | `R[A] = R[B].fields[C]`. Field index known at compile time. |
 | `SET_STRUCT_FIELD A B C` | ABC | `R[A].fields[B] = R[C]`. |
 
@@ -388,21 +324,6 @@ Jumps are relative to the *next* instruction (PC after decode, before jump).
 
 Coroutine creation is similar to `CALL`: the function reference is in `R[B]`, arguments follow in `R[B+1..B+C]`. The coroutine's register window receives the arguments in `R[0..C-1]`. First `resume()` starts execution from the top of the function.
 
-#### Error Handling
-
-| Op | Fmt | Semantics |
-|----|-----|-----------|
-| `TRY A sBx` | AsBx | Execute next instruction. If it raises an error, jump `PC += sBx` with error value in `R[A]`. If no error, continue. |
-
-`TRY` acts as a one-instruction error trap. The compiler emits:
-
-```
-TRY rErr +2      // if next instruction errors, jump +2 with error in rErr
-CALL rFn ...     // the protected call
-JMP +N           // skip the error handler (no error)
-// error handler starts here, rErr has the error value
-```
-
 ## Error Types
 
 Every runtime error is a `raido.ScriptError` with a `kind` enum and a message string:
@@ -411,20 +332,20 @@ Every runtime error is a `raido.ScriptError` with a `kind` enum and a message st
 |------|-------|
 | `DivisionByZero` | Division or modulo by zero |
 | `IntegerOverflow` | Integer arithmetic overflow (non-wrapping) |
+| `FloatError` | A float operation produced NaN or an infinity |
 | `IndexOutOfBounds` | Array index < 0 or >= len |
 | `KeyNotFound` | Map key doesn't exist (on direct access) |
 | `UnwrapNone` | Force unwrap (`!`) on `None` |
-| `ArenaExhausted` | Bump allocator exceeded arena size |
+| `MemoryExhausted` | Reachable memory exceeded the configured limit |
 | `FuelExhausted` | Instruction budget reached zero |
 | `CallOverflow` | Call depth exceeded max_call_depth |
 | `CoroutineDead` | Resumed a finished coroutine |
-| `FrameStoreViolation` | Stored a frame-local value into persistent state (debug mode only) |
 | `HostError` | Raised by a host function |
 | `ScriptError` | Raised by `error(msg)` in script code |
 
 All errors carry: kind, message (string), and a stack trace (array of `{file, line, function}` if debug info is present, `{proto_idx, pc_offset}` if not).
 
-`FuelExhausted`, `ArenaExhausted`, and `CallOverflow` are **not catchable** by `TRY`. They propagate directly to the host as a `raido.ScriptError`. Scripts can't mask resource exhaustion. The VM implements this by checking error kind after any trap -- if the kind is a resource error, it bypasses the TRY handler and unwinds the entire call stack to the host.
+Scripts can't catch any of these. An error unwinds the whole call stack to the host, which receives it as a `raido.ScriptError`, and the call's changes are rolled back ([interop.md](interop.md#calls-are-transactions)).
 
 **Eliminated by static types:** `TypeError` (impossible by construction), `ReadOnlyField` (compiler rejects writes to `readonly` extern fields).
 
@@ -433,7 +354,7 @@ All errors carry: kind, message (string), and a stack trace (array of `{file, li
 Two-pass compiler. No full AST. Memory is O(declarations), not O(program size).
 
 1. **Declaration pass.** Scan for `struct`, `enum`, `extend` blocks, `extern struct`, `extern func`, `func` signatures, and `import` statements. Build a type table mapping names to types. Record function and method signatures but not bodies.
-2. **Compile pass.** Recursive descent with type checking. Emit bytecode directly during parsing. Register allocation same as current (linear, locals sequential, temporaries bump). Type inference for locals uses forward flow: `const x = 42` -> x is `int`. No backward inference, no constraint solving.
+2. **Compile pass.** Recursive descent with type checking. Emit bytecode directly during parsing. Register allocation same as current (linear, locals sequential, temporaries bump). Type inference for locals uses forward flow: `let x = 42` -> x is `int`. No backward inference, no constraint solving.
 3. **Register allocation.** Linear. Locals get sequential registers. Temporaries use a stack-like bump above locals. No optimization passes.
 4. **Constant folding.** Compile-time evaluation of constant expressions (`1 + 2` -> `LOAD_INT 3`). Only for arithmetic on literals.
 5. **Output.** Chunk (see [chunk-format.md](chunk-format.md)).

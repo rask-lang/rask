@@ -217,18 +217,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
         },
-        // An element taken out for `with`, `for mutate` or a field write, and
-        // put back afterwards. The read is `v[i]`'s; only who owns the copy
-        // differs (see `Internal::LendsElement`).
+        // The element's address, for a `with` or `for mutate` binding or a
+        // field write that works on it in place (`BindPlace`). The read is
+        // `v[i]`'s without the copy out.
         StdlibEntry {
-            mir_name: "Vec_lend", c_name: "rask_vec_get",
+            mir_name: "Vec_slot", c_name: "rask_vec_get",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
-        StdlibEntry {
-            mir_name: "Vec_write_back", c_name: "rask_vec_write_back",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Vec_remove_at", c_name: "rask_vec_remove_at",
@@ -629,16 +624,11 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
-        // The Map twins of `Vec_lend` / `Vec_write_back`, by key.
+        // The Map twin of `Vec_slot`, by key.
         StdlibEntry {
-            mir_name: "Map_lend", c_name: "rask_map_get_unwrap",
+            mir_name: "Map_slot", c_name: "rask_map_get_unwrap",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
-        },
-        StdlibEntry {
-            mir_name: "Map_write_back", c_name: "rask_map_write_back",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_get_unwrap", c_name: "rask_map_get_unwrap",
@@ -664,24 +654,23 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Link_set_node", "rask_link_set_node",
                             &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_forget", "rask_link_forget", &[types::I64], None, false),
-        StdlibEntry::simple("Link_register_element", "rask_link_register_element", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_register_entry", "rask_link_register_entry", &[types::I64, types::I64], None, false),
         StdlibEntry {
-            mir_name: "Link_register_struct", c_name: "rask_link_register_struct",
+            mir_name: "rask_link_register_struct", c_name: "rask_link_register_struct",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Link_register_vec", "rask_link_register_vec", &[types::I64], None, false),
-        StdlibEntry::simple("Link_register_map", "rask_link_register_map", &[types::I64], None, false),
-        StdlibEntry::simple("Link_forget_vec", "rask_link_forget_vec", &[types::I64], None, false),
-        StdlibEntry::simple("Link_forget_map", "rask_link_forget_map", &[types::I64], None, false),
-
-        // ── Rng operations ────────────────────────────────────────
-        StdlibEntry::simple("Random_free", "rask_rng_free", &[types::I64], None, false),
+        StdlibEntry {
+            mir_name: "rask_link_forget_struct", c_name: "rask_link_forget_struct",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "rask_link_guarded", c_name: "rask_link_guarded",
+            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
+        },
 
         // ── Releases the drop pass emits ────────────────────────────
-        StdlibEntry::simple("cstring_free", "rask_cstring_free", &[types::I64], None, false),
         // Not a method anyone writes: `build` consumes the builder, and this is
         // the release the drop pass emits for a path that never builds.
         StdlibEntry::simple("StringBuilder_free", "rask_string_builder_free", &[types::I64], None, false),
@@ -765,7 +754,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         // `ThreadPool.spawn { … }` and `Thread.spawn { … }`: see the green
         // task's entry below for the arguments.
-        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("rask_threadpool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64, types::I8], Some(types::I64), true),
         StdlibEntry::simple("rask_thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: spawn/join/detach ──────────────────────────
@@ -1017,7 +1006,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
     entries.push(atomic("Atomic_take", "rask_atomic_into_inner", &[types::I64], Some(types::I64)));
     // The ordinary drop. `into_inner` frees too and hands the value out with
     // it; this is for an atomic that just goes out of scope.
-    entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_free", &[types::I64], None, false));
 
     // Fences
     entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
@@ -1099,6 +1087,14 @@ pub fn stdlib_entries() -> &'static [StdlibEntry] {
             .map(|r| r.unwrap_or_else(|e| panic!("{e}")))
             .collect();
         entries.extend(internal_entries());
+        // A handle's declared release, called by its own symbol when the frame
+        // frees one (`@handle(release: "…")`): the handle's word in, nothing
+        // back.
+        for release in rask_stdlib::handles::declared_releases() {
+            if !entries.iter().any(|e| e.mir_name == release) {
+                entries.push(StdlibEntry::simple(release, release, &[types::I64], None, false));
+            }
+        }
         entries
     })
 }
@@ -1462,6 +1458,7 @@ mod tests {
     const NATIVE_WITHOUT_A_DISPATCH_ROW: &[(&str, NoRow)] = &[
     ("FieldInfo.get",             Ok_("t_native_reach_reflect")),
     ("FieldInfo.has",             Ok_("t_native_reach_reflect")),
+    ("ParamInfo.is",              Ok_("t_reflect_params")),
     ("Map.modify",                Ok_("t_native_reach_map_math_json")),
     ("Map.modify_with_default",   Ok_("t_native_reach_map_math_json")),
     ("Map.read",                  Ok_("t_native_reach_map_math_json")),
@@ -1504,6 +1501,7 @@ mod tests {
     ("reflect.interfaces",        Ok_("t_native_reach_reflect")),
     ("reflect.methods",           Ok_("t_native_reach_reflect")),
     ("reflect.variants",          Ok_("t_native_reach_reflect")),
+    ("reflect.params",            Ok_("t_reflect_params")),
     ("reflect.is_enum",           Ok_("t_native_reach_reflect")),
     ("reflect.is_flat",           Ok_("t_native_reach_reflect")),
     ("reflect.is_float",          Ok_("t_native_reach_reflect")),

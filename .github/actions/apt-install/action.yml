@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+# apt packages from GitHub's cache, so a slow Ubuntu mirror costs a job only
+# when the runner image changes. tests/lib/apt_install.sh says why.
+#
+# The key is the runner image plus the package list. A new image misses once,
+# goes to the network, and saves; main's save is then readable from every
+# branch. The save is its own step so a gate that fails later still leaves the
+# debs behind.
+
+name: apt-install
+description: Install apt packages, from GitHub's cache when it has them
+inputs:
+  packages:
+    description: Space-separated apt package names
+    required: true
+runs:
+  using: composite
+  steps:
+  - id: key
+    shell: bash
+    run: |
+      pkgs=$(echo "${{ inputs.packages }}" | tr -s ' ' '\n' | sort | tr '\n' '+')
+      echo "key=apt-${ImageOS:-local}-${ImageVersion:-0}-${pkgs%+}" >> "$GITHUB_OUTPUT"
+  - id: restore
+    uses: actions/cache/restore@v4
+    with:
+      path: ${{ runner.temp }}/apt-debs
+      key: ${{ steps.key.outputs.key }}
+  - shell: bash
+    env:
+      APT_DEB_DIR: ${{ runner.temp }}/apt-debs
+    run: tests/lib/apt_install.sh ${{ inputs.packages }}
+  - if: steps.restore.outputs.cache-hit != 'true'
+    uses: actions/cache/save@v4
+    continue-on-error: true
+    with:
+      path: ${{ runner.temp }}/apt-debs
+      key: ${{ steps.key.outputs.key }}

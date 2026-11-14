@@ -100,6 +100,9 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
+    // The last argument is a node going into a rack's storage, so the call
+    // carries the node type's layout (mem.racks)
+    ("places_node", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
@@ -109,6 +112,11 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("releases", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: a value the runtime holds as this scalar, with no
+    // fields for the compiler to lay out (`Duration` is an `i64` of nanoseconds)
+    ("runtime_scalar", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: one the compiler needs by identity (`LangItem`)
+    ("lang", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs, Writer::Anyone),
     ("claim", ArgForm::Exprs, Writer::Anyone), // type.claims/CL1

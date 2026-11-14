@@ -421,32 +421,39 @@ fn run_run_test(test: SpecTest, expected: &str, config: &RunConfig) -> TestResul
     }
 }
 
+/// Check a block the way `rask check` would, as one file. The message is the
+/// first few errors when it doesn't check.
+fn check(code: &str) -> Result<rask_compiler::CheckResult, String> {
+    let config = rask_compiler::CompilerConfig::new(rask_compiler::CfgConfig::from_host("debug", vec![]));
+    let output = rask_compiler::check_source("spec.rk", code, &config);
+    if output.has_errors() {
+        let errors: Vec<String> = output
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+            .take(3)
+            .map(|d| d.message.clone())
+            .collect();
+        return Err(format!("check failed: {}", errors.join("; ")));
+    }
+    output.result.ok_or_else(|| "check failed".to_string())
+}
+
 /// Run code through the tree-walk interpreter and compare output.
 fn run_interpreter(code: &str, expected: &str) -> (bool, String) {
     let code = wrap_in_main(code);
+    let checked = match check(&code) {
+        Ok(checked) => checked,
+        Err(message) => return (false, message),
+    };
 
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(&code).tokenize();
-    if !lex_result.is_ok() {
-        return (false, format!("lex failed: {:?}", lex_result.errors));
-    }
-
-    // Parse
-    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-    if !parse_result.is_ok() {
-        return (false, format!("parse failed: {:?}", parse_result.errors));
-    }
-
-    // Desugar
-    rask_desugar::desugar_with_stdlib(
-        &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
-    );
-
-    // Run with captured output
+    // Run with captured output, on what the checker resolved, as
+    // `rask run --interp` does.
     let (mut interp, output_buffer) = rask_interp::Interpreter::with_captured_output();
+    rask_compiler::prepare_interpreter(&mut interp, &checked);
+    let decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
 
-    match interp.run(&parse_result.decls) {
+    match interp.run(&decls) {
         Ok(_) => {
             let actual = output_buffer.lock().unwrap();
             let actual_trimmed = actual.trim_end();
@@ -544,26 +551,15 @@ fn run_native(code: &str, expected: &str, rask_binary: &std::path::Path) -> Nati
 ///
 /// Returns (passed, total, failures) where failures is a list of test names.
 fn run_rk_tests_interp(source: &str) -> (usize, usize, Vec<String>) {
-    // Lex
-    let lex_result = rask_lexer::Lexer::new(source).tokenize();
-    if !lex_result.is_ok() {
-        return (0, 1, vec![format!("lex failed: {:?}", lex_result.errors)]);
-    }
-
-    // Parse
-    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-    if !parse_result.is_ok() {
-        return (0, 1, vec![format!("parse failed: {:?}", parse_result.errors)]);
-    }
-
-    // Desugar
-    rask_desugar::desugar_with_stdlib(
-        &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
-    );
+    let checked = match check(source) {
+        Ok(checked) => checked,
+        Err(message) => return (0, 1, vec![message]),
+    };
 
     let mut interp = rask_interp::Interpreter::new();
-    let results = interp.run_tests(&parse_result.decls, None);
+    rask_compiler::prepare_interpreter(&mut interp, &checked);
+    let decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
+    let results = interp.run_tests(&decls, None);
 
     let total = results.len();
     let mut passed = 0;
@@ -644,6 +640,9 @@ pub struct RkTestResult {
     pub native_passed: Option<usize>,
     pub native_total: Option<usize>,
     pub native_failures: Vec<String>,
+    /// Why the file's native run is allowed to fail, from its
+    /// `// test-specs: native may fail …` line.
+    pub native_may_fail: Option<String>,
 }
 
 impl RkTestResult {
@@ -651,6 +650,9 @@ impl RkTestResult {
         self.interp_passed == self.interp_total && self.interp_total > 0
     }
     pub fn native_ok(&self) -> bool {
+        if self.native_may_fail.is_some() {
+            return true;
+        }
         match (self.native_passed, self.native_total) {
             (Some(p), Some(t)) => p == t && t > 0,
             _ => true, // Not run
@@ -660,6 +662,7 @@ impl RkTestResult {
 
 /// Run a `.rk` file through both interpreter and native test runners.
 pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig) -> RkTestResult {
+    let native_may_fail = crate::extract::native_may_fail(source);
     let (ip, it, ifails) = run_rk_tests_interp(source);
 
     let (np, nt, nfails) = if let Some(binary) = &config.rask_binary {
@@ -677,6 +680,87 @@ pub fn run_rk_test_file(path: &std::path::Path, source: &str, config: &RunConfig
         native_passed: np,
         native_total: nt,
         native_failures: nfails,
+        native_may_fail,
+    }
+}
+
+/// A package's tests, run once as the package on both backends.
+///
+/// A file in a package isn't a program on its own: it uses what its sibling
+/// files declare. Run file by file, the interpreter couldn't find those
+/// names, and the native runner reported a fifteen-test package as one
+/// passing test. Both runs go through the `rask` binary, which loads the
+/// whole package.
+pub fn run_rk_package(root: &std::path::Path, rask_binary: &std::path::Path) -> RkTestResult {
+    let (ip, it, ifails) = run_package_tests(root, rask_binary, true);
+    let (np, nt, nfails) = run_package_tests(root, rask_binary, false);
+    RkTestResult {
+        path: root.to_path_buf(),
+        interp_passed: ip,
+        interp_total: it,
+        interp_failures: ifails,
+        native_passed: Some(np),
+        native_total: Some(nt),
+        native_failures: nfails,
+        native_may_fail: None,
+    }
+}
+
+/// `(passed, total, failures)` from `rask test [--interp] <root>`, read off
+/// its summary line (`15 tests, 14 passed, 0 failed, 1 skipped`). A skipped
+/// test counts as neither. A run that exits non-zero passed nothing, whatever
+/// its summary says.
+fn run_package_tests(
+    root: &std::path::Path,
+    rask_binary: &std::path::Path,
+    interp: bool,
+) -> (usize, usize, Vec<String>) {
+    let mut cmd = std::process::Command::new(rask_binary);
+    cmd.arg("test");
+    if interp {
+        cmd.arg("--interp");
+    }
+    let output = match cmd.arg(root).output() {
+        Ok(o) => o,
+        Err(e) => return (0, 1, vec![format!("failed to run rask binary: {}", e)]),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stdout.lines().chain(stderr.lines()).collect();
+    let count = |line: &str, word: &str| -> Option<usize> {
+        let words: Vec<&str> = line.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()).collect();
+        words.windows(2).find(|w| w[1] == word).and_then(|w| w[0].parse().ok())
+    };
+    let summary = lines.iter().rev().find(|l| l.contains(" tests,") && l.contains(" passed"));
+    let failures: Vec<String> = lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with('\u{2717}'))
+        .map(|l| l.to_string())
+        .collect();
+    match summary {
+        // A run can print a clean summary and still fail after it: a false
+        // claim, a leak check, a crash on the way out. The exit code decides.
+        Some(_) if !output.status.success() => {
+            let mut failures = failures;
+            failures.push(format!("rask test exited {} after its summary", output.status.code().unwrap_or(-1)));
+            let total = summary.and_then(|l| count(l, "tests")).unwrap_or(1).max(1);
+            (0, total, failures)
+        }
+        Some(line) => {
+            let passed = count(line, "passed").unwrap_or(0);
+            let failed = count(line, "failed").unwrap_or(0);
+            (passed, passed + failed, failures)
+        }
+        None => {
+            let preview: String = stderr
+                .lines()
+                .filter(|l| l.starts_with("error"))
+                .take(3)
+                .collect::<Vec<_>>()
+                .join("; ");
+            (0, 1, vec![format!("package test run failed (exit {}): {}", output.status.code().unwrap_or(-1), preview)])
+        }
     }
 }
 

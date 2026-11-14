@@ -9,3 +9,4 @@ rask-ast = { path = "../rask-ast" }
 rask-desugar = { path = "../rask-desugar" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
+rask-types = { path = "../rask-types" }

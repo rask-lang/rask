@@ -1119,6 +1119,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// tool.warnings/W2: a call's `T or E` result is thrown away (warning).
+    #[error("unused result of type `{ty}`")]
+    UnusedResult {
+        ty: String,
+        span: Span,
+    },
+
     /// SP1/SP2: step direction doesn't match range direction (warning)
     #[error("step direction mismatch — range will be empty")]
     StepDirectionMismatch {
@@ -1137,6 +1144,16 @@ pub enum TypeError {
         ty: String,
         /// The value inside, when the receiver is a `Shared` that holds one.
         payload: Option<String>,
+        span: Span,
+    },
+
+    /// `clone` on a value holding a handle that frees itself and has no
+    /// `clone` of its own: the copy would be a second owner of one block.
+    #[error("`{ty}` can't be cloned — `{handle}` has no `clone`")]
+    CloneHandle {
+        ty: String,
+        /// The handle inside, or the value itself.
+        handle: String,
         span: Span,
     },
 
@@ -1300,6 +1317,15 @@ pub enum TypeError {
     /// A method with no `self` called on a value.
     #[error("`{method}` is a static method of `{ty}`, called on a value")]
     StaticCallOnValue {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
+    /// A method that takes `self`, called on a type: `Meters.show()`,
+    /// `T.show()`.
+    #[error("`{method}` takes `self`, called on the type `{ty}`")]
+    InstanceCallOnType {
         ty: String,
         method: String,
         span: Span,
@@ -1662,6 +1688,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.reflect/R1: `has<A>()`, `get<A>()` and `is<T>()` on a reflect item
+    /// are answered while a `comptime for` unrolls, so the item has to be that
+    /// loop's binding.
+    #[error("`{method}` on a `{info}` only answers inside a `comptime for` over it")]
+    ReflectItemNotUnrolled {
+        info: &'static str,
+        method: String,
+        span: Span,
+    },
+
     /// std.collections/V1 (#310): an index expression `c[i]` whose index type
     /// doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -1937,6 +1973,7 @@ impl TypeError {
             // Carry no types.
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
+            | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
             | AmbiguousConformance { .. }
@@ -2043,9 +2080,11 @@ impl TypeError {
             | NoReturnReturns { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
+            | UnusedResult { .. }
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
+            | CloneHandle { .. }
             | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
@@ -2071,6 +2110,7 @@ impl TypeError {
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }
+            | InstanceCallOnType { .. }
             | RepeatedBinding { .. } => {}
         }
     }

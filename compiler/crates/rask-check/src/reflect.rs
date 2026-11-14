@@ -73,6 +73,30 @@ const NEEDS_INSTANTIATION: &str =
     "is a generic instantiation, and the walk would read the declaration's type \
      parameters rather than what this instantiation substituted for them";
 
+/// A type as reflection spells it — `i64 or Shape`, the language's own
+/// spelling (`TypeExpr::source`) — with the names the program declared,
+/// never the symbols the compiler filed them under. A package's `Pos` is
+/// merged as `Pos_geo` and a program type shadowing the stdlib's is
+/// `ParseError#57`; `name_of`, `type_name` and `return_type_name` say `Pos`
+/// and `ParseError`, as a printed value does.
+pub fn type_label(types: &TypeTable, ty: &Type) -> TypeExpr {
+    types.display_type_names(ty).to_type_expr()
+}
+
+/// `type_label` for a type as written, which may still say `Pos_geo`. A
+/// spelling that resolves to nothing (a template's bare `T`) is kept.
+pub fn written_label(types: &TypeTable, ty: &TypeExpr) -> TypeExpr {
+    resolve_type_expr(ty, types).map(|t| type_label(types, &t)).unwrap_or_else(|_| ty.clone())
+}
+
+/// A declared type with an instantiation's arguments put in, labelled.
+/// `subst` is the arguments as written, by parameter name.
+pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+    type_label(types, declared)
+        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| written_label(types, a)))
+        .source()
+}
+
 /// Fold `reflect.<method><T>()` to its constant.
 ///
 /// `ty` is `T` as written at the call site, already substituted by
@@ -82,7 +106,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {
-        "name_of" => Str(ty.source()),
+        "name_of" => Str(written_label(decls.type_table(), ty).source()),
         "is_struct" => Bool(decls.declares_struct(&head)),
         "is_enum" => Bool(decls.declares_enum(&head)),
         "is_optional" => Bool(optional_payload(ty).is_some()),
@@ -109,7 +133,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
             };
             match method {
                 "is_copy" => Bool(types.is_copy(&resolved)),
-                _ => match types.size_align(&resolved) {
+                _ => match types.size_align(&resolved, &rask_layout::no_params) {
                     Some((size, align)) => Int(if method == "size_of" { size } else { align } as u64),
                     None => Unsupported(NEEDS_INSTANTIATION),
                 },
@@ -186,7 +210,7 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
     // FL3: a reference into a container is never flat — a `Link` is an
     // address. Answering here also terminates the walk: it is generic, and the
     // generic arm below would return Unknown.
-    if base == "Link" || is_heap_backed(base) || decls.is_resource(base) {
+    if base == "Link" || is_heap_backed(base, decls) || decls.is_resource(base) {
         return Flatness::NotFlat;
     }
 
@@ -242,8 +266,19 @@ fn is_flat_primitive(name: &str) -> bool {
 
 /// FL1: the types that own or point at heap memory. A runtime handle's
 /// storage is the runtime's; a struct holding one is found through its fields.
-fn is_heap_backed(name: &str) -> bool {
-    name == "string" || rask_stdlib::is_runtime_handle(name)
+///
+/// The walk reads written types, so the name is resolved through the
+/// checker's table and the declaration it names is asked. A name with no
+/// declaration can still be a compiler-provided handle (`Shared`).
+fn is_heap_backed(name: &str, decls: &dyn ReflectDecls) -> bool {
+    if name == "string" {
+        return true;
+    }
+    let table = decls.type_table();
+    match table.get_type_id(name) {
+        Some(id) => table.is_handle(id),
+        None => rask_stdlib::spelled_handle(name).is_some(),
+    }
 }
 
 // ─── Questions the checker's type table answers ─────────────────────
@@ -390,7 +425,7 @@ pub fn methods(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<MethodFact>, Stri
         let fact = MethodFact {
             is_public: types.method_is_public(c.id, &name),
             param_count: sig.params.len(),
-            return_type_name: types.resolve_type_names(&ret).to_type_expr().to_string(),
+            return_type_name: type_label(types, &ret).source(),
             name,
         };
         // The stdlib's declarations are read once as stubs and once with
@@ -415,7 +450,7 @@ pub fn interfaces(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<String>, Strin
     }
     let mut out: Vec<String> = Vec::new();
     for iface in written {
-        let name = iface.to_string();
+        let name = written_label(types, &iface).source();
         if satisfies(types, &c.ty, &iface) && !out.contains(&name) {
             out.push(name);
         }
@@ -437,6 +472,60 @@ pub fn implements(types: &TypeTable, ty: &TypeExpr, iface: &TypeExpr) -> Result<
     let resolved = resolve_type_expr(ty, types)
         .map_err(|_| format!("reflect.implements<{}, …>(): no type by that name", ty.source()))?;
     Ok(satisfies(types, &resolved, iface))
+}
+
+/// One parameter of a function type, as `reflect.params<F>()` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamFact {
+    /// Position in the parameter list. A function type has no parameter
+    /// names (`func(mutate Pos, Vel)`), so this is how one is told apart.
+    pub index: usize,
+    /// The parameter's type, for `param.is<T>()`.
+    pub ty: Type,
+    pub type_name: String,
+    /// Borrowed, `mutate` or `take` — part of the type (type.functions/FT1).
+    pub mode: rask_ast::ty::ParamMode,
+}
+
+/// `reflect.params<F>()`: each parameter of the function type `F`, in order.
+///
+/// `F` reaches here as a function type: written out, or a type parameter a
+/// caller filled by passing a named function (`run(drift)` makes `F` drift's
+/// type). A function item can't be a type argument itself, and a closure's
+/// type is a function type like any other, so it reflects the same way.
+pub fn params(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<ParamFact>, String> {
+    let resolved = resolve_type_expr(ty, types)
+        .map_err(|_| format!("reflect.params<{}>(): no type by that name", ty.source()))?;
+    let Type::Fn { params, .. } = resolved else {
+        return Err(format!(
+            "reflect.params<{}>(): `{}` isn't a function type — this asks about `func(…)`",
+            ty.source(),
+            ty.source()
+        ));
+    };
+    Ok(params
+        .into_iter()
+        .enumerate()
+        .map(|(index, p)| {
+            let ty = named(types, p.ty);
+            ParamFact {
+                index,
+                type_name: type_label(types, &ty).source(),
+                ty,
+                mode: p.mode,
+            }
+        })
+        .collect())
+}
+
+/// `param.is<T>()`: whether the parameter's type is exactly `T`. The mode
+/// isn't part of the question; `is_mutate` and `is_take` answer that.
+///
+/// Exact, not "satisfies": `is<Pos>()` on a `Pos?` parameter is false. A
+/// name that resolves to no type is false too — nothing has a type that
+/// doesn't exist.
+pub fn param_is(types: &TypeTable, param: &Type, candidate: &TypeExpr) -> bool {
+    resolve_type_expr(candidate, types).is_ok_and(|t| named(types, t) == *param)
 }
 
 /// `reflect.has_field<T>(name)`: the struct's field names, in declaration

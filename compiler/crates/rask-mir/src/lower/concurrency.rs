@@ -159,7 +159,7 @@ impl<'a> MirLowerer<'a> {
     /// or an `UnresolvedGeneric`.
     pub(super) fn resolve_shared_inner_type_name(&self, object: &Expr) -> Option<String> {
         if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match raw_ty {
+            let args = match &*raw_ty {
                 rask_types::Type::UnresolvedGeneric { args, .. }
                 | rask_types::Type::Generic { args, .. } => Some(args),
                 _ => None,
@@ -176,9 +176,13 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let Some(var_name) = object.name() {
-            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let Some(inner) = full_type.args().first() {
-                    return Some(inner.to_string());
+            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
+                if let Some((_, args)) = self.generic_head(checked) {
+                    if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
+                        if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
+                            return Some(prefix);
+                        }
+                    }
                 }
             }
         }
@@ -193,7 +197,7 @@ impl<'a> MirLowerer<'a> {
     /// correctness (SH8).
     pub(super) fn shared_strategy(&self, object: &Expr) -> SharedStrategy {
         if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match raw_ty {
+            let args = match &*raw_ty {
                 rask_types::Type::UnresolvedGeneric { args, .. }
                 | rask_types::Type::Generic { args, .. } => Some(args.as_slice()),
                 _ => None,
@@ -204,12 +208,16 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        // The declared spelling, when the checker's type didn't survive:
-        // "Shared<Queue, Mutex>" -> Mutex.
+        // The binding's type, when the use has none of its own:
+        // `Shared<Queue, Mutex>` -> Mutex.
         if let Some(var_name) = object.name() {
-            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let [_, strategy] = full.args() {
-                    return SharedStrategy::from_name(strategy.bare_name().unwrap_or_default());
+            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
+                if let Some((_, args)) = self.generic_head(checked) {
+                    if let Some(rask_types::GenericArg::Type(s)) = args.get(1) {
+                        if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
+                            return SharedStrategy::from_name(&name);
+                        }
+                    }
                 }
             }
         }
@@ -224,7 +232,7 @@ impl<'a> MirLowerer<'a> {
     /// first half read as a pointer.
     pub(super) fn resolve_sync_payload_mir(&self, object: &Expr) -> Option<MirType> {
         let raw_ty = self.ctx.lookup_raw_type(object.id)?;
-        let args = match raw_ty {
+        let args = match &*raw_ty {
             rask_types::Type::UnresolvedGeneric { args, .. }
             | rask_types::Type::Generic { args, .. } => args,
             _ => return None,
@@ -387,7 +395,7 @@ impl<'a> MirLowerer<'a> {
     /// local.
     pub(super) fn is_shared_expr(&self, object: &Expr) -> bool {
         let from_type = self.ctx.lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
             .is_some_and(|p| p.trim() == "Shared");
         from_type
             || object
@@ -477,7 +485,7 @@ impl<'a> MirLowerer<'a> {
         // `self.counters.lock().get(k)` on a `Mutex<Map<string, u64>>` had
         // nothing to resolve the value type from once `.lock()` desugared away.
         if let Some(elem) = self.ctx.lookup_raw_type(box_obj.id)
-            .and_then(|ty| self.collection_elem_of_checker_type(ty))
+            .and_then(|ty| self.collection_elem_of_checker_type(&ty))
         {
             self.meta_mut(&guard_name).elem_type = Some(elem);
         }
@@ -891,15 +899,15 @@ impl<'a> MirLowerer<'a> {
         sel_ty: &MirType,
         variant: &str,
     ) -> Result<(), LoweringError> {
-        let (err, err_ty) = self.lower_enum_variant_path("SelectError", variant).ok_or_else(|| {
+        let declared = match sel_ty {
+            MirType::Result { err, .. } => Some((**err).clone()),
+            _ => None,
+        };
+        let (err, err_ty) = declared.and_then(|t| self.lower_enum_variant(&t, variant)).ok_or_else(|| {
             LoweringError::InvalidConstruct(format!(
                 "SelectError.{variant} missing — stdlib/builtins.rk declares it"
             ))
         })?;
-        let err_ty = match sel_ty {
-            MirType::Result { err, .. } => (**err).clone(),
-            _ => err_ty,
-        };
         self.store_result_arm(result, 1, err, &err_ty);
         Ok(())
     }
@@ -917,7 +925,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Element type behind a `Receiver<T>` expression, defaulting to a word.
     fn channel_elem_type(&self, channel: &Expr) -> MirType {
-        let args = match self.ctx.lookup_raw_type(channel.id) {
+        let args = match self.ctx.lookup_raw_type(channel.id).as_deref() {
             Some(rask_types::Type::UnresolvedGeneric { args, .. }) => args.clone(),
             Some(rask_types::Type::Generic { args, .. }) => args.clone(),
             _ => return MirType::I64,

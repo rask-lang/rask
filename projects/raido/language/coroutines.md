@@ -1,6 +1,6 @@
 <!-- id: raido.coroutines -->
 <!-- status: proposed -->
-<!-- summary: Cooperative multitasking -- coroutine values with methods, try integration, serializable state -->
+<!-- summary: Cooperative multitasking -- coroutine values with methods, serializable state -->
 <!-- depends: raido/language/syntax.md -->
 
 # Coroutines
@@ -10,30 +10,22 @@ Cooperative multitasking. Yield mid-function, resume later. Fully serializable -
 ## API
 
 ```raido
-// Create from function reference + args
-const co = coroutine(patrol, entity, waypoints)
+// Create from a function + args, or a closure
+let co = coroutine(patrol, entity, waypoints)
 
-// Resume -- errors propagate via try
-const value = try co.resume()
+// Resume
+let value = co.resume()
 
 // Status
-const s = co.status  // "suspended", "running", "dead"
+let s = co.status  // "suspended", "running", "dead"
 
 // Yield from inside a coroutine
 yield(value)
 ```
 
-`coroutine(func, args...)` creates a suspended coroutine from a function reference and initial arguments. `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
+`coroutine(func, args...)` creates a suspended coroutine from a function and its initial arguments, or from a closure. `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
 
-`co.resume(args...)` returns the value passed to `yield()`. If the coroutine errors, the error propagates through `try` like any other call.
-
-```raido
-// Catch coroutine errors
-const value = co.resume() catch e => {
-    log("coroutine failed: {e}")
-    return fallback
-}
-```
+`co.resume(args...)` returns the value passed to `yield()`. If the coroutine fails, the failure aborts the host's call it ran in, like any other error, and the coroutine is dead.
 
 ## Why
 
@@ -69,7 +61,7 @@ func onboarding(user: User) {
 ```raido
 func conversation(npc: Entity, player: Entity) {
     say(npc, "Hello, traveler.")
-    const choice: string = yield  // host resumes with player's choice
+    let choice: string = yield  // host resumes with player's choice
     match choice {
         "quest" => start_quest(npc, player),
         "trade" => open_shop(npc, player),
@@ -78,13 +70,13 @@ func conversation(npc: Entity, player: Entity) {
 }
 ```
 
-## Function References, Not Closures
+## Functions and Closures
 
-Coroutines are created from function references -- named top-level functions. No closures, no captured state. Context is passed as arguments.
+Coroutines are created from a function and its arguments, or from a closure that captures what it needs.
 
 ```raido
 // The function and its arguments are stored in the coroutine
-func guard_loop(npc: Entity, post: Vec2, radius: number) {
+func guard_loop(npc: Entity, post: Vec2, radius: float) {
     loop {
         patrol_area(npc, post, radius)
         yield
@@ -95,7 +87,8 @@ func guard_loop(npc: Entity, post: Vec2, radius: number) {
     }
 }
 
-const co = coroutine(guard_loop, guard, tower_pos, 50.0)
+let co = coroutine(guard_loop, guard, tower_pos, 50.0)
+let co2 = coroutine(|| guard_loop(guard, tower_pos, 50.0))   // the same, as a closure
 ```
 
 ## Resume with Value
@@ -105,13 +98,13 @@ Resumed coroutines can receive values from the host. `yield` returns the value p
 ```raido
 func combat_tick(fleet: FleetState) {
     loop {
-        const orders: Orders = yield  // host passes orders on resume
+        let orders: Orders = yield  // host passes orders on resume
         execute_orders(fleet, orders)
     }
 }
 
 // Host side:
-try co.resume(current_orders)
+co.resume(current_orders)
 ```
 
 ## Serialization

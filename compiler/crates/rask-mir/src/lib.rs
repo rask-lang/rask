@@ -27,6 +27,7 @@ mod types;
 
 pub mod layout_check;
 pub mod bitfields;
+pub mod link_holders;
 pub mod lower;
 mod const_free;
 mod container_drop;
@@ -48,7 +49,7 @@ pub use rask_ast::expr::ConvertKind;
 pub use stmt::{lay_out_captures, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt, folded_symbol};
 pub use program::MirProgram;
-pub use types::{spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, MirType, StructLayoutId, EnumLayoutId};
+pub use types::{link_slots, rack_holding_structs, CopyLayouts, spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, LinkSlot, MirType, StructLayoutId, EnumLayoutId};
 
 /// What `malloc` and a Cranelift stack slot guarantee without help. A type
 /// aligned past this (`@align(64)`) needs an aligned allocation on the heap

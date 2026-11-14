@@ -1687,6 +1687,23 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help(format!("`{}` works on a `T?` or a `T or E`; a plain value needs none of it", op))
             }
 
+            ReflectItemNotUnrolled { info, method, span } => {
+                let iterable = if *info == "ParamInfo" { "reflect.params<F>()" } else { "reflect.fields<T>()" };
+                Diagnostic::error(format!(
+                    "`{method}` on a `{info}` only answers inside a `comptime for` over it"
+                ))
+                    .with_code("E0966")
+                    .with_primary(*span, "this isn't a `comptime for` binding")
+                    .with_fix(format!(
+                        "loop with `comptime for x in {iterable}` and ask `x.{method}<…>()` on the binding"
+                    ))
+                    .with_why(
+                        "the answer is worked out while the compiler unrolls the loop, one \
+                         copy of the body per item; a value kept past that has no answer \
+                         left in it [std.reflect/R1]",
+                    )
+            }
+
             DynamicFieldNameNotComptime { span } => {
                 Diagnostic::error("the field name in `value.(…)` isn\'t known at compile time")
                     .with_code("E0385")
@@ -2580,7 +2597,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`discard {}` frees nothing — `{}` is a Copy type",
                     name, ty
                 ))
-                .with_code("W0301")
+                .with_code("W0303")
                 .with_primary(*span, "there is no allocation here to release")
                 .with_fix(format!("remove `discard {}`", name))
                 .with_why("`discard` exists to end a value's life before its scope does, which only means something when the value owns memory. A Copy type owns none, so the statement reads as a cost it doesn't pay. It does still put the name out of use, so if that was the point, say so with a comment [mem.ownership/D1, D2]")
@@ -2613,6 +2630,14 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "step must be non-zero")
                     .with_help("use a positive step for ascending ranges, or a negative step for descending ranges")
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
+            }
+
+            UnusedResult { ty, span } => {
+                Diagnostic::warning(format!("unused result of type `{}`", ty))
+                    .with_code("W0301")
+                    .with_primary(*span, "if this fails, nothing finds out")
+                    .with_help("propagate it with `try`, handle it with `catch e => …`, or drop it on purpose with `let _ = …`")
+                    .with_why("a call that can fail hands its error back as a value, and a statement that ignores the value ignores the failure. `@allow(unused_result)` on the function says so for all of them [tool.warnings/W2]")
             }
 
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {
@@ -2652,6 +2677,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, label)
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
+            }
+            CloneHandle { ty, handle, span } => {
+                let label = if ty == handle {
+                    format!("a `{}` owns state the runtime frees, and it can't be copied", ty)
+                } else {
+                    format!("this holds a `{}`, which owns state the runtime frees and can't be copied", handle)
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0965")
+                    .with_primary(*span, label)
+                    .with_fix("move it, or borrow it where a copy was wanted")
+                    .with_why("a clone copies the handle's pointer, and then both copies would free the same block")
             }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
@@ -2805,6 +2842,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
             }
+            InstanceCallOnType { ty, method, span } => {
+                Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
+                    .with_code("E0967")
+                    .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
+                    .with_fix(format!("call it on a value: `value.{}(…)`", method))
+                    .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")
+            }
             IfWithoutElseValue { found, span } => {
                 Diagnostic::error("an `if` without `else` has no value".to_string())
                     .with_code("E0947")
@@ -2837,14 +2881,14 @@ impl ToDiagnostic for crate::TypeError {
             }
             LiteralPatternOnBuiltType { ty, span } => {
                 Diagnostic::error(format!("a literal can't be a pattern for `{}`", ty))
-                    .with_code("E0958")
+                    .with_code("E0974")
                     .with_primary(*span, format!("`{}` builds this value from the literal", ty))
                     .with_fix("compare in a guard: `_ if x == 0 => …`")
                     .with_why(format!("a `{ty}` written as a literal is built by its `from_literal` while compiling (type.primitives/L9), so its bits aren't the literal's, and a pattern only compares bits. `==` compares the built values"))
             }
             AmbiguousConformanceCall { ty, method, candidates, span } => {
                 let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
-                    .with_code("E0957")
+                    .with_code("E0973")
                     .with_primary(*span, "the arguments don't say which");
                 for c in candidates {
                     d = d.with_note(format!("it fits `{}`", c));
@@ -2854,7 +2898,7 @@ impl ToDiagnostic for crate::TypeError {
             }
             NoConformanceTakes { ty, method, args, candidates, span } => {
                 let mut d = Diagnostic::error(format!("no `{}` on `{}` takes ({})", method, ty, args.join(", ")))
-                    .with_code("E0956")
+                    .with_code("E0972")
                     .with_primary(*span, "no conformance matches these arguments");
                 for c in candidates {
                     d = d.with_note(format!("there is `{}`", c));
@@ -2863,7 +2907,7 @@ impl ToDiagnostic for crate::TypeError {
             }
             LiteralConversionNotComptime { ty, method, span } => {
                 Diagnostic::error(format!("`{}.{}` builds literals, so it has to be a `comptime func`", ty, method))
-                    .with_code("E0955")
+                    .with_code("E0971")
                     .with_primary(*span, "runs at run time as written")
                     .with_fix(format!("comptime func {}(…)", method))
                     .with_why("a literal of a type that builds itself from literals is computed while compiling, so the program holds the constant and never runs the conversion (type.primitives/L9)")

@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a pattern means is the checker's answer, not its spelling. A bare
+// capitalised name in an arm on a `T or E` is still a binding when the
+// checker says so, and a variant of one member of a union error side is
+// tested through the side, the member and the variant.
+
+enum Bad {
+    Oops
+}
+
+func f(a: i64) -> i64 or Bad {
+    if a == 0 {
+        return Bad.Oops
+    }
+    return a
+}
+
+enum DivError {
+    ByZero
+}
+
+enum Other {
+    Boom
+    Bang(string)
+}
+
+func both(a: i64) -> i64 or (DivError | Other) {
+    if a == 0 {
+        return DivError.ByZero
+    }
+    if a == 1 {
+        return Other.Boom
+    }
+    return a
+}
+
+test "a capitalised binding on a T or E binds" {
+    let n = match f(3) {
+        Bad as b => 0,
+        V => 1,
+    }
+    assert n == 1
+    let m = match f(0) {
+        Bad as b => 0,
+        V => 1,
+    }
+    assert m == 0
+}
+
+test "a variant of a union member, tested with is" {
+    assert !(both(0) is Other.Boom)
+    assert both(1) is Other.Boom
+    assert !(both(2) is Other.Boom)
+    assert both(0) is DivError
+}

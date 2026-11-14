@@ -108,6 +108,31 @@ fn misplaced_claims(decls: &[Decl]) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// The build module is a build script's (struct.build/BL4): `BuildContext` only
+/// means something while `rask build` runs `build.rk`. Imported anywhere
+/// else it type-checked, and then native codegen found no body for its
+/// methods and the interpreter said it was used outside a build script.
+fn build_module_outside_build_script(decls: &[Decl]) -> Vec<Diagnostic> {
+    // `import build.{A, B}` is a declaration per name; one error per import.
+    let mut seen = std::collections::HashSet::new();
+    decls
+        .iter()
+        .filter(|d| seen.insert(d.span))
+        .filter_map(|d| match &d.kind {
+            DeclKind::Import(i) if i.path.first().is_some_and(|m| m == "build") => Some(
+                Diagnostic::error("the `build` module is only for build scripts".to_string())
+                    .with_code("E0955")
+                    .with_primary(d.span, "imported outside `build.rk`")
+                    .with_help(
+                        "move the code that needs it into the package's `build.rk`; \
+                         a build script has `BuildContext` in scope without importing it",
+                    ),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 /// A discovered package context for multi-file compilation.
 pub struct PackageContext {
     pub registry: PackageRegistry,
@@ -120,6 +145,9 @@ pub struct PackageContext {
 pub struct CheckResult {
     pub typed: TypedProgram,
     pub decls: Vec<Decl>,
+    /// Packages bound by name on the interpreter: the stdlib modules a single
+    /// file imports, and a project's other packages, whose members are
+    /// reached through references already rewritten to qualified names.
     pub package_names: Vec<String>,
     /// Each dependency's declarations, original name against the qualified one
     /// the rest of the pipeline uses. Kept so a diagnostic raised after the
@@ -282,7 +310,10 @@ fn discover_package(root: &Path) -> Result<Option<PackageContext>, rask_resolve:
     let root_id = registry.discover(root)?;
     let Some(root_pkg) = registry.get(root_id) else { return Ok(None) };
     let all_decls: Vec<Decl> = root_pkg.all_decls().cloned().collect();
-    if all_decls.is_empty() {
+    // A `src/` layout has nothing at the root and the program in a
+    // sub-package; that's still a package. Only one with no code anywhere
+    // isn't.
+    if registry.packages().iter().all(|p| p.all_decls().next().is_none()) {
         return Ok(None);
     }
     Ok(Some(PackageContext { registry, root_id, all_decls }))
@@ -441,7 +472,22 @@ pub fn check_loaded(
     config: &CompilerConfig,
 ) -> PipelineOutput<CheckResult> {
     let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
-    let mut out = check_loaded_scoped(files, config, &mut exports);
+    let mut out = check_loaded_scoped(files, config, &mut exports, None);
+    package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
+    out
+}
+
+/// What a build script has in scope without writing it (struct.build/BL4).
+const BUILD_SCRIPT_PRELUDE: &str = "import build.{BuildContext, BuildError}";
+
+/// Check a package's `build.rk` on its own, as the separate unit it is
+/// (struct.build/BL1): the package's code may need what the script
+/// generates, so it can't be part of this check. The build module is in
+/// scope without an import (BL4).
+pub fn check_build_script(path: &Path, source: &str, config: &CompilerConfig) -> PipelineOutput<CheckResult> {
+    let mut exports: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let files = [(path.to_path_buf(), source.to_string())];
+    let mut out = check_loaded_scoped(&files, config, &mut exports, Some(BUILD_SCRIPT_PRELUDE));
     package_scope::unqualify_diagnostics(&mut out.diagnostics, &exports);
     out
 }
@@ -450,6 +496,7 @@ fn check_loaded_scoped(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
     exports: &mut HashMap<String, HashMap<String, String>>,
+    prelude: Option<&str>,
 ) -> PipelineOutput<CheckResult> {
     config.declare_target();
 
@@ -464,6 +511,16 @@ fn check_loaded_scoped(
         let source = source.clone();
         let path = path.clone();
         let file_id = idx as u16;
+
+        // Imports the file gets without writing them, in its own scope.
+        if let Some(prelude) = prelude {
+            let tokens = rask_lexer::Lexer::new_with_file_id(prelude, file_id).tokenize().tokens;
+            let mut parser = rask_parser::Parser::new_with_file_id(tokens, next_id, file_id);
+            let parsed = parser.parse();
+            next_id = parser.next_node_id();
+            debug_assert!(parsed.is_ok(), "the prelude is fixed text");
+            decls.extend(parsed.decls);
+        }
 
         // --- Lex ---
         let mut lexer = rask_lexer::Lexer::new_with_file_id(&source, file_id);
@@ -487,7 +544,10 @@ fn check_loaded_scoped(
         decls.extend(parse_result.decls);
     }
 
-    let misplaced = misplaced_claims(&decls);
+    let mut misplaced = misplaced_claims(&decls);
+    if prelude.is_none() {
+        misplaced.extend(build_module_outside_build_script(&decls));
+    }
     if !misplaced.is_empty() {
         diags.extend(misplaced);
         return PipelineOutput::fail_with_sources(diags, source_files);
@@ -503,7 +563,7 @@ fn check_loaded_scoped(
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
     let c = c_import::expand(
-        &mut decls,
+        &mut [c_import::Unit { decls: &mut decls, package: None }],
         &mut source_files,
         &mut next_id,
         &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
@@ -515,6 +575,12 @@ fn check_loaded_scoped(
     }
 
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
+
+    // PC4: a declared type parameter against the file's own types.
+    diags.extend(package_scope::type_params_named_like_types(
+        &parse_result.decls,
+        &package_scope::declared_type_names(&parse_result.decls),
+    ));
 
     // --- Build configuration into `comptime` code (CC1) ---
     rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
@@ -532,33 +598,46 @@ fn check_loaded_scoped(
         );
     }
 
-    // --- Resolve (blocking — need ResolvedProgram) ---
-    // Resolved alongside the program: the stdlib's own bodies are compiled
-    // into every program, so their names have to bind for anything downstream
-    // to know what a call inside them refers to (#425).
-    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib(
-        &parse_result.decls,
-        &stdlib_bodies,
-    ) {
-        Ok(r) => r,
-        Err(errors) => {
-            for e in &errors {
-                diags.push(e.to_diagnostic());
+    // Templates (ctrl.comptime/CT50): a generic function with comptime control
+    // is checked as written once, then written out as a plain function per
+    // instance the program reaches, and the program checked again with the
+    // copies in, until a round adds none (`rask-template`). A program with no
+    // template goes round once.
+    let mut rounds = rask_template::Rounds::new(&parse_result.decls, desugared.operator_calls.clone());
+    let round_start = diags.len();
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (mut typed, ownership_result) = loop {
+        diags.truncate(round_start);
+        parse_result.decls = rounds.program();
+        // --- Resolve (blocking — need ResolvedProgram) ---
+        // Resolved alongside the program: the stdlib's own bodies are compiled
+        // into every program, so their names have to bind for anything downstream
+        // to know what a call inside them refers to (#425). A copy of a stdlib
+        // template is one of those bodies.
+        let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        stdlib_bodies.extend(rounds.library_copies().iter().cloned());
+        let resolved = match rask_resolve::resolve_with_stdlib(
+            &parse_result.decls,
+            &stdlib_bodies,
+        ) {
+            Ok(r) => r,
+            Err(errors) => {
+                for e in &errors {
+                    diags.push(e.to_diagnostic());
+                }
+                return PipelineOutput::fail_with_sources(diags, source_files);
             }
-            return PipelineOutput::fail_with_sources(diags, source_files);
-        }
     };
+    parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
-    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (mut typed, type_errors) =
+    let (typed, type_errors) =
         rask_check::typecheck_with_stdlib_lenient(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
-            &desugared.operator_calls,
+            &rounds.operator_calls,
         );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -570,6 +649,21 @@ fn check_loaded_scoped(
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
+    if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
+        break (typed, ownership_result);
+    }
+    match expand_templates(&mut rounds, &parse_result.decls, &typed) {
+        Ok(true) => {}
+        Ok(false) => break (typed, ownership_result),
+        Err(errors) => {
+            diags.extend(errors);
+            break (typed, ownership_result);
+        }
+    }
+    };
+    name_template_instances(&mut diags[round_start..], &rounds.instances);
+    typed.template_copies =
+        rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
@@ -579,6 +673,7 @@ fn check_loaded_scoped(
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
     typed.lent_captures = ownership_result.lent_captures.clone();
+    typed.quiet_loops = ownership_result.quiet_loops.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -586,11 +681,12 @@ fn check_loaded_scoped(
         &[&parse_result.decls, &stdlib_decls],
         &[&stdlib_decls, &parse_result.decls],
     );
+    typed.field_reuses.extend(ownership_result.refills_after_move.iter().copied());
 
     // --- Effects (non-blocking metadata) ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -632,6 +728,57 @@ fn check_loaded_scoped(
     )
 }
 
+
+/// An error inside a template is an error in the copies written out from it
+/// (CT50): say which instances those are, since the template's text is what
+/// the error points at.
+fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)]) {
+    for d in diags.iter_mut().filter(|d| matches!(d.severity, Severity::Error)) {
+        let Some(at) = d.labels.first().map(|l| l.span) else { continue };
+        let names: Vec<&str> = instances
+            .iter()
+            .filter(|(t, _)| t.file_id == at.file_id && t.start <= at.start && at.end <= t.end)
+            .map(|(_, n)| n.as_str())
+            .collect();
+        if !names.is_empty() {
+            let list = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
+            *d = d.clone().with_note(format!("in this template written out as {list} (ctrl.comptime/CT50)"));
+        }
+    }
+}
+
+/// One round of template expansion: the instances of a template this checked
+/// program reaches and hasn't written out yet, as plain functions. `None`
+/// when the program declares no template, so it pays nothing.
+fn expand_templates(
+    rounds: &mut rask_template::Rounds,
+    decls: &[Decl],
+    typed: &rask_check::TypedProgram,
+) -> Result<bool, Vec<Diagnostic>> {
+    let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
+    typed.rewrite_checked_nodes(&mut stdlib);
+    if !rounds.templates().iter().chain(&stdlib).any(rask_template::has_comptime_control) {
+        return Ok(false);
+    }
+    // A `test` or `benchmark` block reaches instances as much as `main` does,
+    // so all of them are roots.
+    let mut layout_decls = runners::with_every_entry(decls);
+    layout_decls.extend(stdlib.iter().cloned());
+    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
+        // Monomorphization reports its own failures where the program is built.
+        return Ok(false);
+    };
+    rounds.expand(&stdlib, typed, &mono).map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|e| {
+                Diagnostic::error(e.message)
+                    .with_code("E0969")
+                    .with_primary(e.span, "while writing out this template for an instance")
+            })
+            .collect()
+    })
+}
 
 /// CT1: a comptime initializer that overflows or divides by zero is a compile
 /// error, so `rask check` has to run the fold to answer "does this compile".
@@ -755,26 +902,64 @@ fn check_package_scoped(
     // anyway, through a separate list merged *after* resolve. A subdirectory is
     // a package (modules/PO1), so this is what made the ordinary `src/` layout
     // fail: `func main()` in `src/main.rk` is a private declaration by this
-    // rule (#1100). Those keep sharing the program's namespace — renaming that
-    // `main` leaves the program without an entry point.
+    // rule (#1100).
+    //
+    // A sub-package is qualified the same way, by its path from the root
+    // (`pa.sub` → `f_pa_sub`): it's a package of its own (modules/PO3), and
+    // its names are reached only through it (IM1, #1744). Its entry point
+    // keeps its name, since that's what the program starts from.
+    let index = rask_resolve::ImportIndex::new(&pkg_ctx.registry, pkg_ctx.root_id);
+    // A sub-package's `main` is the entry point only when the root has none,
+    // as in a `src/` layout. Otherwise it's an ordinary name of its package.
+    // PC4 against the root package's own types.
+    diags.extend(package_scope::type_params_named_like_types(
+        &pkg_ctx.all_decls,
+        &package_scope::declared_type_names(&pkg_ctx.all_decls),
+    ));
+    let root_has_entry = pkg_ctx.all_decls.iter().any(|d| {
+        matches!(&d.kind, DeclKind::Fn(f) if f.name == "main" || f.attrs.iter().any(|a| a.is("entry")))
+    });
+    // Each package's suffix, unique however its path and name are spelled:
+    // `pa/sub` and `pa_sub/` would both be `_pa_sub` otherwise.
+    let mut suffixes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Every private declaration's qualified name.
+    let mut private: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut merged: Vec<(rask_resolve::PackageId, Vec<Decl>)> = Vec::new();
     for pkg in pkg_ctx.registry.packages() {
         if pkg.id == pkg_ctx.root_id {
             continue;
         }
-        package_names.push(pkg.name.clone());
+        // How the program's imports name it.
+        let import_name = index.key(pkg.id).unwrap_or(&pkg.name).to_string();
+        package_names.push(import_name.clone());
+        let base = import_name.replace('.', "_");
+        let mut suffix = base.clone();
+        let mut n = 1;
+        while !suffixes.insert(suffix.clone()) {
+            n += 1;
+            suffix = format!("{}{}", base, n);
+        }
         let mut decls: Vec<Decl> = pkg.all_decls().map(|d| d.clone()).collect();
-        for decl in &decls {
-            if !is_public_decl(decl) {
-                if let Some(name) = decl.name().map(str::to_string) {
-                    private_elsewhere.entry(name).or_default().push((pkg.id, pkg.name.clone(), decl.span));
-                }
+        // PC4 against the package's own types, while they still have the
+        // names its code writes.
+        diags.extend(package_scope::type_params_named_like_types(&decls, &package_scope::declared_type_names(&decls)));
+        let written: Vec<(String, Span)> = decls
+            .iter()
+            .filter(|d| !is_public_decl(d))
+            .filter_map(|d| Some((d.name()?.to_string(), d.span)))
+            .collect();
+        let map = package_scope::qualify_declarations(&mut decls, &suffix, !pkg.is_external && !root_has_entry);
+        // By the name as written, for a bare use that resolve can't find, and
+        // as qualified, for `pa.hidden()` that it can.
+        for (name, span) in written {
+            let entry = (pkg.id, import_name.clone(), span);
+            if let Some(q) = map.get(&name).filter(|q| **q != name) {
+                private.insert(q.clone());
+                private_elsewhere.entry(q.clone()).or_default().push(entry.clone());
             }
+            private_elsewhere.entry(name).or_default().push(entry);
         }
-        if pkg.is_external {
-            let map = package_scope::qualify_declarations(&mut decls, &pkg.name);
-            exports.insert(pkg.name.clone(), map);
-        }
+        exports.insert(import_name, map);
         merged.push((pkg.id, decls));
     }
 
@@ -788,10 +973,19 @@ fn check_package_scoped(
             .iter()
             .flat_map(|(_, decls)| package_scope::annotation_names(decls))
             .collect();
-        let root_visible = visible_packages(&pkg_ctx.all_decls, exports);
+        // Every dependency's types, as qualified: an unqualified import of one
+        // of these is a type in the importer's scope (PC4).
+        let dependency_types: std::collections::HashSet<String> =
+            merged.iter().flat_map(|(_, decls)| package_scope::declared_type_names(decls)).collect();
+        let imported_types = |imported: &HashMap<String, String>| -> std::collections::HashSet<String> {
+            imported.iter().filter(|(_, q)| dependency_types.contains(*q)).map(|(n, _)| n.clone()).collect()
+        };
+        let root_scope = package_scope::ImportScope { exports, index: &index, importer: None, private: &private };
+        let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
         package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
-            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_visible);
+            package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_scope);
+        diags.extend(package_scope::type_params_named_like_types(&pkg_ctx.all_decls, &imported_types(&imported)));
         package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
         diags.extend(
@@ -799,10 +993,12 @@ fn check_package_scoped(
                 .iter()
                 .map(unimported_annotation_diagnostic),
         );
-        for (_, decls) in merged.iter_mut() {
-            let visible = visible_packages(decls, exports);
+        for (id, decls) in merged.iter_mut() {
+            let scope = package_scope::ImportScope { exports, index: &index, importer: Some(*id), private: &private };
+            let visible = visible_packages(decls, &scope);
             package_scope::qualify_references(decls, &visible, &annotations);
-            let (imported, shadowed) = package_scope::unqualified_imports(decls, &visible);
+            let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);
+            diags.extend(package_scope::type_params_named_like_types(decls, &imported_types(&imported)));
             package_scope::qualify_imported_names(decls, &imported, &annotations);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
             diags.extend(
@@ -814,15 +1010,15 @@ fn check_package_scoped(
     }
     if !config.claims {
         diags.extend(misplaced_claims(&pkg_ctx.all_decls));
+        diags.extend(build_module_outside_build_script(&pkg_ctx.all_decls));
     }
     for (_, decls) in &merged {
         diags.extend(misplaced_claims(decls));
-    }
-    for (_, decls) in merged {
-        pkg_ctx.all_decls.extend(decls);
+        diags.extend(build_module_outside_build_script(decls));
     }
 
     // --- C headers, translated and merged as packages (struct.c-interop/CI1) ---
+    // Before the merge: an alias means the header its own package imported.
     {
         let source_dirs: HashMap<u16, PathBuf> = pkg_ctx
             .registry
@@ -831,14 +1027,21 @@ fn check_package_scoped(
             .flat_map(|p| p.files.iter())
             .filter_map(|f| Some((f.file_id, f.path.parent()?.to_path_buf())))
             .collect();
+        let names: HashMap<rask_resolve::PackageId, String> =
+            pkg_ctx.registry.packages().iter().map(|p| (p.id, p.name.clone())).collect();
+        let mut units = vec![c_import::Unit { decls: &mut pkg_ctx.all_decls, package: None }];
+        units.extend(merged.iter_mut().map(|(id, decls)| c_import::Unit { decls, package: Some(names[id].as_str()) }));
         let c = c_import::expand(
-            &mut pkg_ctx.all_decls,
+            &mut units,
             &mut source_files,
             pkg_ctx.registry.next_node_id_mut(),
             &c_import::Context { source_dirs: &source_dirs, arch: &config.cfg.arch, os: &config.cfg.os },
         );
         exports.extend(c.exports);
         diags.extend(c.diagnostics);
+    }
+    for (_, decls) in merged {
+        pkg_ctx.all_decls.extend(decls);
     }
 
     // --- Build configuration into `comptime` code (CC1) ---
@@ -864,108 +1067,133 @@ fn check_package_scoped(
         );
     }
 
-    // --- Resolve ---
-    // With the stdlib's own bodies, same as the single-file path. The type
-    // check below always includes them, so leaving them out here meant every
-    // name inside them arrived unresolved: a package — any package, even an
-    // empty one — reported 161 "undefined name" errors for the stdlib's
-    // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
-    // (#203).
-    let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_package_with_stdlib(
-        &pkg_ctx.all_decls,
-        &pkg_ctx.registry,
-        pkg_ctx.root_id,
-        &stdlib_bodies,
-    ) {
-        Ok(r) => r,
-        Err(errors) => {
-            for e in &errors {
-                // A dependency's private helper is no longer in the program's
-                // namespace at all, so resolve reports it as a name that
-                // doesn't exist. It does exist — the package just kept it —
-                // and saying so is the difference between "check the spelling"
-                // and "this isn't part of that library's surface".
-                match private_declaration_named(e, &private_elsewhere) {
-                    Some(d) => diags.push(d),
-                    None => diags.push(e.to_diagnostic()),
+    // Templates (ctrl.comptime/CT50), as in the single-file path: check, write
+    // out the template instances reached, check again until none are new.
+    let mut rounds = rask_template::Rounds::new(&pkg_ctx.all_decls, desugared.operator_calls.clone());
+    let round_start = diags.len();
+    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let (mut typed, ownership_result) = loop {
+        diags.truncate(round_start);
+        pkg_ctx.all_decls = rounds.program();
+        // --- Resolve ---
+        // With the stdlib's own bodies, same as the single-file path. The type
+        // check below always includes them, so leaving them out here meant every
+        // name inside them arrived unresolved: a package — any package, even an
+        // empty one — reported 161 "undefined name" errors for the stdlib's
+        // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
+        // (#203).
+        let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
+        stdlib_bodies.extend(rounds.library_copies().iter().cloned());
+        let resolved = match rask_resolve::resolve_package_with_stdlib(
+            &pkg_ctx.all_decls,
+            &pkg_ctx.registry,
+            pkg_ctx.root_id,
+            &stdlib_bodies,
+        ) {
+            Ok(r) => r,
+            Err(errors) => {
+                for e in &errors {
+                    // A dependency's private helper is no longer in the program's
+                    // namespace at all, so resolve reports it as a name that
+                    // doesn't exist. It does exist — the package just kept it —
+                    // and saying so is the difference between "check the spelling"
+                    // and "this isn't part of that library's surface".
+                    match private_declaration_named(e, &private_elsewhere) {
+                        Some(d) => diags.push(d),
+                        None => diags.push(e.to_diagnostic()),
+                    }
+                }
+                return PipelineOutput::fail_with_sources(diags, source_files);
+            }
+        };
+
+        // --- A dependency's internals are not the program's to name ---
+        //
+        // Merging every declaration is what lets a package call its own private
+        // helpers (#1100); it also puts those helpers in the program's namespace,
+        // where nothing else would object. The use sites are here, so the check is
+        // here: a resolution that reaches a name another package kept to itself,
+        // from a file that isn't that package's.
+        if !private_elsewhere.is_empty() {
+            let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
+            for pkg in pkg_ctx.registry.packages() {
+                for f in &pkg.files {
+                    file_owner.insert(f.file_id, pkg.id);
                 }
             }
-            return PipelineOutput::fail_with_sources(diags, source_files);
+            let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
+            rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
+                where_used.insert(e.id, e.span);
+            });
+
+            for (node, sym_id) in &resolved.resolutions {
+                let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
+                let base = &sym.name;
+                // The symbol has to *be* one of those private declarations. Matching
+                // the name alone flagged a program's own `helper` the moment some
+                // dependency also had a private `helper`.
+                let Some((owner, owner_name, decl_span)) = private_elsewhere
+                    .get(base)
+                    .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
+                else {
+                    continue;
+                };
+                let Some(use_span) = where_used.get(node) else { continue };
+                if file_owner.get(&use_span.file_id) == Some(owner) {
+                    continue;
+                }
+                diags.push(
+                    Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
+                        .with_code("E0877")
+                        .with_primary(*use_span, format!("`{}` can't be named from here", base))
+                        .with_secondary(*decl_span, format!("declared here, without `public`"))
+                        .with_help(format!(
+                            "mark it `public func {}` (or `public struct`, …) in `{}` if it \
+                             is meant to be part of that package's API",
+                            base, owner_name
+                        )),
+                );
+            }
+            if diags.iter().any(|d| d.severity == Severity::Error) {
+                return PipelineOutput::fail_with_sources(diags, source_files);
+            }
+        }
+
+        pkg_ctx.all_decls.extend(rounds.library_copies().iter().cloned());
+
+        // --- Typecheck (lenient — always returns TypedProgram + errors) ---
+        let (typed, type_errors) =
+            rask_check::typecheck_with_stdlib_lenient(
+                resolved,
+                &mut pkg_ctx.all_decls,
+                &stdlib_decls,
+                &rounds.operator_calls,
+            );
+        for e in &type_errors {
+            diags.push(e.to_diagnostic());
+        }
+
+        // --- Ownership (non-blocking) ---
+        let ownership_result =
+            rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
+        for e in &ownership_result.errors {
+            diags.push(e.to_diagnostic());
+        }
+        if diags[round_start..].iter().any(|d| matches!(d.severity, Severity::Error)) {
+            break (typed, ownership_result);
+        }
+        match expand_templates(&mut rounds, &pkg_ctx.all_decls, &typed) {
+            Ok(true) => {}
+            Ok(false) => break (typed, ownership_result),
+            Err(errors) => {
+                diags.extend(errors);
+                break (typed, ownership_result);
+            }
         }
     };
-
-    // --- A dependency's internals are not the program's to name ---
-    //
-    // Merging every declaration is what lets a package call its own private
-    // helpers (#1100); it also puts those helpers in the program's namespace,
-    // where nothing else would object. The use sites are here, so the check is
-    // here: a resolution that reaches a name another package kept to itself,
-    // from a file that isn't that package's.
-    if !private_elsewhere.is_empty() {
-        let mut file_owner: HashMap<u16, rask_resolve::PackageId> = HashMap::new();
-        for pkg in pkg_ctx.registry.packages() {
-            for f in &pkg.files {
-                file_owner.insert(f.file_id, pkg.id);
-            }
-        }
-        let mut where_used: HashMap<rask_ast::NodeId, Span> = HashMap::new();
-        rask_ast::visit::walk_decls(&pkg_ctx.all_decls, &mut |e| {
-            where_used.insert(e.id, e.span);
-        });
-
-        for (node, sym_id) in &resolved.resolutions {
-            let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
-            let base = &sym.name;
-            // The symbol has to *be* one of those private declarations. Matching
-            // the name alone flagged a program's own `helper` the moment some
-            // dependency also had a private `helper`.
-            let Some((owner, owner_name, decl_span)) = private_elsewhere
-                .get(base)
-                .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
-            else {
-                continue;
-            };
-            let Some(use_span) = where_used.get(node) else { continue };
-            if file_owner.get(&use_span.file_id) == Some(owner) {
-                continue;
-            }
-            diags.push(
-                Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
-                    .with_code("E0877")
-                    .with_primary(*use_span, format!("`{}` can't be named from here", base))
-                    .with_secondary(*decl_span, format!("declared here, without `public`"))
-                    .with_help(format!(
-                        "mark it `public func {}` (or `public struct`, …) in `{}` if it \
-                         is meant to be part of that package's API",
-                        base, owner_name
-                    )),
-            );
-        }
-        if diags.iter().any(|d| d.severity == Severity::Error) {
-            return PipelineOutput::fail_with_sources(diags, source_files);
-        }
-    }
-
-    // --- Typecheck (lenient — always returns TypedProgram + errors) ---
-    let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (mut typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
-            resolved,
-            &mut pkg_ctx.all_decls,
-            &stdlib_decls,
-            &desugared.operator_calls,
-        );
-    for e in &type_errors {
-        diags.push(e.to_diagnostic());
-    }
-
-    // --- Ownership (non-blocking) ---
-    let ownership_result =
-        rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
-    for e in &ownership_result.errors {
-        diags.push(e.to_diagnostic());
-    }
+    name_template_instances(&mut diags[round_start..], &rounds.instances);
+    typed.template_copies =
+        rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read
@@ -973,6 +1201,7 @@ fn check_package_scoped(
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
     typed.lent_captures = ownership_result.lent_captures.clone();
+    typed.quiet_loops = ownership_result.quiet_loops.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -980,11 +1209,12 @@ fn check_package_scoped(
         &[&pkg_ctx.all_decls, &stdlib_decls],
         &[&stdlib_decls, &pkg_ctx.all_decls],
     );
+    typed.field_reuses.extend(ownership_result.refills_after_move.iter().copied());
 
     // --- Effects ---
     let method_targets = typed.method_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
@@ -1087,14 +1317,9 @@ pub fn compile_package_with(
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
-    // Collect package_modules from the registry before check consumes pkg_ctx.
+    // The stdlib modules the program imports. Another package's members
+    // are reached through names already qualified, never through it.
     let mut package_modules = HashSet::new();
-    for pkg in pkg_ctx.registry.packages() {
-        if pkg.id != pkg_ctx.root_id {
-            package_modules.insert(pkg.name.clone());
-        }
-    }
-    // Also include builtin stdlib modules referenced by imports.
     for decl in &pkg_ctx.all_decls {
         if let DeclKind::Import(import) = &decl.kind {
             if let Some(first) = import.path.first() {
@@ -1397,19 +1622,21 @@ fn unimported_annotation_diagnostic(u: &package_scope::UnimportedAnnotation) -> 
 /// declarations by `mylib.Name` works too.
 fn visible_packages(
     decls: &[Decl],
-    exports: &HashMap<String, HashMap<String, String>>,
+    scope: &package_scope::ImportScope,
 ) -> HashMap<String, HashMap<String, String>> {
+    let exports = scope.exports;
     let mut out: HashMap<String, HashMap<String, String>> = HashMap::new();
     for decl in decls {
         let DeclKind::Import(import) = &decl.kind else { continue };
-        let Some(pkg) = import.path.first() else { continue };
-        let Some(map) = exports.get(pkg) else { continue };
-        let binding = match (&import.alias, import.path.len()) {
+        let Some((pkg, len)) = scope.package(&import.path) else { continue };
+        // `import pa.sub` binds `sub` (modules/IM2).
+        let last = import.path[len - 1].clone();
+        let binding = match &import.alias {
             // `import pkg.Name as N` renames the member, not the package.
-            (Some(alias), 1) => alias.clone(),
-            _ => pkg.clone(),
+            Some(alias) if len == import.path.len() => alias.clone(),
+            _ => last,
         };
-        out.insert(binding, map.clone());
+        out.insert(binding, exports[&pkg].clone());
     }
     out
 }

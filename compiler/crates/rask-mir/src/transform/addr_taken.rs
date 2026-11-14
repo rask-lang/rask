@@ -52,8 +52,9 @@ pub struct AddrTaken {
     /// This frame owns the storage, so each needs a stack slot — an aggregate
     /// has one already, which is why only scalars are listed.
     pub owned: HashSet<LocalId>,
-    /// Locals whose address arrived *from* a closure environment (a by-ref
-    /// `LoadCapture`), of any type. The storage belongs to the frame that
+    /// Locals whose address arrived from somewhere else, of any type: a
+    /// closure environment (a by-ref `LoadCapture`), or a collection's slot
+    /// (`BindPlace`). The storage belongs to the frame that
     /// created the closure, so these must get no slot of their own: a local
     /// listed in `stack_slot_map` while its variable points somewhere else is
     /// read through whichever of the two a given site happens to consult, and
@@ -91,8 +92,8 @@ pub fn wants_address(func: &MirFunction) -> AddrTaken {
                 // Both addressed modes name storage this frame does not own —
                 // the creating frame's for a borrow, the environment block's
                 // for an `own` capture — so neither gets a slot here.
-                MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => {
-                    found.borrowed.insert(*dst);
+                _ if establishes_address(stmt).is_some() => {
+                    found.borrowed.extend(establishes_address(stmt));
                 }
                 // Any scalar whose address is taken needs a stable one. `Ref` on
                 // a scalar used to spill a copy and hand back the copy's
@@ -115,6 +116,16 @@ pub fn wants_address(func: &MirFunction) -> AddrTaken {
         found.owned.remove(id);
     }
     found
+}
+
+/// The local a statement makes name storage elsewhere: an addressed
+/// `LoadCapture` or a `BindPlace`. That is the one write such a local keeps.
+fn establishes_address(stmt: &MirStmt) -> Option<LocalId> {
+    match &stmt.kind {
+        MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => Some(*dst),
+        MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+        _ => None,
+    }
 }
 
 /// Which locals of `func` actually live in memory — what codegen needs to know
@@ -147,13 +158,13 @@ pub fn analyze(func: &MirFunction) -> AddrTaken {
 
 /// Locals some statement still assigns a value to.
 ///
-/// An addressed `LoadCapture` is excluded: it establishes the local's address,
-/// and that is the one write a memory-resident local keeps.
+/// The statement that establishes a local's address is excluded: that is the
+/// one write a memory-resident local keeps.
 fn locals_written_as_values(func: &MirFunction) -> HashSet<LocalId> {
     let mut written = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
-            if matches!(&stmt.kind, MirStmtKind::LoadCapture { access, .. } if access.is_addressed()) {
+            if establishes_address(stmt).is_some() {
                 continue;
             }
             if let Some(dst) = uses::stmt_def(stmt) {
@@ -364,9 +375,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
             // The by-ref LoadCapture is what *establishes* the address. Leave
             // it alone: rewriting its destination into a store would store the
             // pointer through itself.
-            if matches!(&stmt.kind, MirStmtKind::LoadCapture { dst, access, .. }
-                if access.is_addressed() && rewritable.contains(dst))
-            {
+            if establishes_address(&stmt).is_some_and(|dst| rewritable.contains(&dst)) {
                 out.push(stmt);
                 continue;
             }
@@ -454,6 +463,7 @@ fn redirect_def(stmt: &mut MirStmt, to: LocalId) {
         | MirStmtKind::Phi { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::BindPlace { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
         | MirStmtKind::InterfaceBox { dst, .. } => *dst = to,

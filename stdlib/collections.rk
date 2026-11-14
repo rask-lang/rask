@@ -288,13 +288,15 @@ extend Vec<T> {
     /// (SEQ48). Compiler-inserted where a Vec fills a `Sequence<T>` slot; not a
     /// spelling anyone writes, and not a second `.iter()`.
     public func as_sequence(self) -> Sequence<T> {
+        // A `for`, not an index walk: an adapter chain over a vector of links
+        // can delete nodes the vector names, and the `for` keeps its place
+        // across those removals where `i` would skip the next entry
+        // (mem.racks/RK15).
         return |yield| {
-            mut i = 0
-            while i < self.len() {
-                if !yield(self[i]) {
+            for x in self {
+                if !yield(x) {
                     return
                 }
-                i = i + 1
             }
         }
     }
@@ -444,11 +446,6 @@ extend Vec<T> {
     @copies_elements
     public func sum(self) -> T {}
 
-    /// Clone the vector.
-    @native("rask_vec_clone")
-    @copies_elements
-    public func clone(self) -> Vec<T> {}
-
     /// Set element at index. Panics if out of bounds.
     @native("rask_vec_set", panics: true)
     @drops_elements
@@ -484,6 +481,13 @@ extend Vec<T> {
 //
 // Its own block because a `where` clause covers the whole one (type.generics/CC3).
 extend Vec<T> where T: Cloneable {
+    /// Clone the vector. Each element is copied as its bytes, so an element
+    /// type that can't be cloned (a handle that frees itself) can't be either:
+    /// the copy and the original would both free it (CL1).
+    @native("rask_vec_clone")
+    @copies_elements
+    public func clone(self) -> Vec<T> {}
+
     /// Stage this data as a `Wide` plan (conc.data-parallel). The lanes are
     /// copied here, so a later change to the Vec doesn't reach the plan.
     public func wide(self) -> Wide<T> {
@@ -693,11 +697,6 @@ extend Map<K, V> {
     @drops_elements
     public func clear(mutate self) {}
 
-    /// Clone the map.
-    @native("rask_map_clone")
-    @copies_elements
-    public func clone(self) -> Map<K, V> {}
-
     /// Get value for key (borrows).
     @native("rask_map_get")
     @copies_elements
@@ -832,6 +831,12 @@ extend Map<K, V> where V: Equal {
 // The copying read, for the same reason `Vec.get_clone` exists: `get` lends the
 // value for the expression, and past the 16-byte threshold that isn't enough.
 extend Map<K, V> where V: Cloneable {
+    /// Clone the map. A value type that can't be cloned can't be copied here
+    /// either, for the reason `Vec.clone` gives.
+    @native("rask_map_clone")
+    @copies_elements
+    public func clone(self) -> Map<K, V> {}
+
     /// A clone of the value under `key`, or `none` when the key is absent.
     public func get_clone(self, key: K) -> Option<V> {
         if self.get(key)? as v {

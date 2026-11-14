@@ -493,6 +493,15 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let args = self.place_method_args(call_node, method_sig, args);
+        // The signature applied is the declaration the call runs, unless the
+        // calling package's own block supplies the method (XC5): two
+        // packages' `label`s on one type have the same signature.
+        if let Some(Callee::Method { body, package, .. }) = call_node.and_then(|n| self.call_targets.get_mut(&n)) {
+            *body = package
+                .as_deref()
+                .and_then(|pkg| self.types.method_body(ty, &method_sig.name, Some(pkg)))
+                .or(method_sig.decl);
+        }
         if method_sig.effect.acquires || method_sig.effect.releases {
             if let (Some(call), Some((order_ty, _))) = (call_node, method_sig.params.last()) {
                 self.order_calls.insert(call, (method.to_string(), method_sig.effect, order_ty.clone()));
@@ -800,6 +809,7 @@ impl TypeChecker {
                         recv: ty.clone(),
                         method: method.clone(),
                         package: self.conformance_package_for_call(&ty, &method, span),
+                        body: None,
                     },
                 );
             }
@@ -881,6 +891,15 @@ impl TypeChecker {
 
         if method == "clone" && args.is_empty() {
             let progress = self.unify(&ty, &ret, span)?;
+            let settled = self.ctx.apply(&ty);
+            if let Some(handle) = self.types.uncloneable_handle(&settled) {
+                self.errors.push(TypeError::CloneHandle {
+                    ty: self.types.resolve_type_names(&settled).to_string(),
+                    handle: self.types.resolve_type_names(&handle).to_string(),
+                    span,
+                });
+                return Ok(progress);
+            }
             // A clone's result is its receiver's type, so unifying settles both.
             // But this arm answers before the `Var` handling further down, which
             // is what normally files a deferred constraint and records the
@@ -909,6 +928,7 @@ impl TypeChecker {
                             recv: settled.clone(),
                             method: method.clone(),
                             package: self.conformance_package_for_call(&settled, &method, span),
+                            body: None,
                         },
                     );
                 }
@@ -946,6 +966,9 @@ impl TypeChecker {
             let is_debug = call_node
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
+            if let Some(Callee::Method { body, package, .. }) = call_node.and_then(|n| self.call_targets.get_mut(&n)) {
+                *body = self.types.method_body(&ty, &method, package.as_deref());
+            }
             if !is_debug && !self.is_displayable(&ty) {
                 let debug_only = match &ty {
                     Type::Tuple(_) | Type::Array { .. } | Type::Bytes => true,
@@ -1983,6 +2006,7 @@ impl TypeChecker {
                             recv: receiver.clone(),
                             method: filed.clone(),
                             package: self.conformance_package_for_call(&receiver, "", span),
+                            body: None,
                         },
                     );
                     self.operator_targets.insert(
@@ -2014,6 +2038,17 @@ impl TypeChecker {
                 span,
             });
         };
+
+        // GF7: through the type, `T.zero()`, only a function without `self`;
+        // through a value, only a method with one.
+        let on_type = call_node.is_some_and(|n| self.type_param_static_calls.contains(&n));
+        let is_static = matches!(sig.self_param, rask_types::SelfParam::None);
+        if on_type && !is_static {
+            return Err(TypeError::InstanceCallOnType { ty: param, method, span });
+        }
+        if !on_type && is_static {
+            return Err(TypeError::StaticCallOnValue { ty: param, method, span });
+        }
 
         // The bound is only in scope while this body is checked, so the
         // labels' names are taken from it now.

@@ -31,15 +31,9 @@ fn next_tmp_id() -> u64 {
 }
 
 fn rask_binary() -> PathBuf {
-    // cargo test builds into target/debug or target/release
-    let mut path = std::env::current_exe().unwrap();
-    // Walk up from the test binary to the target dir
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
@@ -4039,11 +4033,15 @@ fn bindc_writes_and_checks() {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
 
+    // Written with `-o`: a header is named from where the file is, so the
+    // file `--check` compares is the one `-o` writes there.
     let tmp = std::env::temp_dir().join(format!("rask_bindc_{}_{}.rk", std::process::id(), next_tmp_id()));
-    std::fs::write(&tmp, &stdout).unwrap();
+    let wrote = Command::new(&rask).arg("bindc").arg(&header_path).arg("-o").arg(&tmp).output().unwrap();
+    assert!(wrote.status.success(), "{}", String::from_utf8_lossy(&wrote.stderr));
     let same = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     assert!(same.status.success(), "{}", String::from_utf8_lossy(&same.stderr));
-    std::fs::write(&tmp, stdout.replace("42", "43")).unwrap();
+    let written = std::fs::read_to_string(&tmp).unwrap();
+    std::fs::write(&tmp, written.replace("42", "43")).unwrap();
     let stale = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     let _ = std::fs::remove_file(&tmp);
     assert!(!stale.status.success(), "a stale binding should fail --check");
@@ -4727,7 +4725,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // location, so the report named whatever line last had: none at all, or
     // an earlier spawn that succeeded.
     for (fixture, line) in [
-        ("spawn_returned_closure_with_link.rk", 21),
+        ("spawn_returned_closure_with_link.rk", 23),
         ("spawn_field_closure_with_local_box.rk", 20),
     ] {
         for mode in ["--interp", "--native"] {
@@ -5015,7 +5013,7 @@ fn plain_write_keeps_the_partial_update_on_panic() {
 
 /// mem.ownership/D2: `discard` on a Copy type frees nothing.
 ///
-/// The variant, the message and the code W0301 were all written and nothing
+/// The variant, the message and the code W0303 were all written and nothing
 /// ever constructed them — a dead error path holding a live number (#992).
 ///
 /// The check waits for literal defaulting: `let n = 7` is an open type
@@ -5026,7 +5024,7 @@ fn discard_on_a_copy_type_warns() {
     let (checked, output) = check_fixture("discard_copy.rk");
     assert!(checked, "D2 is a warning — the program still type-checks:\n{output}");
     assert_eq!(
-        output.matches("W0301").count(),
+        output.matches("W0303").count(),
         3,
         "the three primitives warn and the two owners don't:\n{output}"
     );
@@ -7461,6 +7459,18 @@ fn error_int_float_arithmetic() {
     );
 }
 
+// mem.borrowing/S5: writing over a field frees what a view of it reads. A
+// `let old = p.f` the refill doesn't always follow stays a view, and reading it
+// after the refill read freed storage natively (#1838).
+#[test]
+fn error_field_view_outlives_replace() {
+    let (failed, out) = compile_error_output("field_view_outlives_replace.rk");
+    assert!(failed, "a view read after its field was replaced must be rejected: {}", out);
+    assert_eq!(out.matches("error[E0958]").count(), 16, "sixteen sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0959]").count(), 2, "two reads of an emptied field: {}", out);
+    assert!(out.contains("written over while"), "should say what happened: {}", out);
+}
+
 // mem.parameters/PM2: a `mutate` parameter is still there when the call returns,
 // so one that was consumed has to have been replaced. Consuming it *is* allowed —
 // that's the difference from a plain borrow — and nothing checked that anything
@@ -9720,4 +9730,491 @@ fn check_on_a_package_directory_checks_every_file() {
     assert!(!ok_parse, "a parse error in other.rk passed the check");
     assert!(err_parse.contains("other.rk"), "the parse error should name its file: {err_parse}");
     assert!(!err_parse.contains("Is a directory"), "stderr: {err_parse}");
+}
+
+/// A project directory: `rask.toml` and the given files, by path.
+fn temp_project(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rask_{}_{}_{}", tag, std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@2\"\n\n[package]\nname = \"proj\"\nversion = \"0.1.0\"\ndescription = \"test\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    for (path, text) in files {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    dir
+}
+
+/// `rask run <mode> <dir>`: stdout and stderr together, and whether it worked.
+fn run_project(mode: &str, dir: &std::path::Path) -> (String, bool) {
+    let out = Command::new(rask_binary())
+        .args(["run", mode])
+        .arg(dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+    (format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)), out.status.success())
+}
+
+/// A sub-package's function and struct literal, from the root, on both
+/// backends: the interpreter couldn't find `pa.via_a` (#1730) and native
+/// lowering had no layout for `pa.Pt(v: 9)` (#1728).
+#[test]
+fn a_sub_packages_functions_and_structs_work_on_both_backends() {
+    let dir = temp_project(
+        "subpkg_both",
+        &[
+            ("pa/a.rk", "public func via_a(x: i32) -> i32 {\n    return x + 1\n}\n\npublic struct Pt {\n    public v: i32\n}\n"),
+            ("main.rk", "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 9)\n    println(\"{pa.via_a(4)} {p.v}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("5 9"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two packages import different headers as `c`. Each `c` means its own
+/// package's header: macros, folded or not, and structs (#1729).
+#[test]
+fn a_c_import_alias_means_its_own_packages_header() {
+    let dir = temp_project(
+        "calias",
+        &[
+            ("pa/a.h", "#ifndef A_H\n#define A_H\nstruct pt { int x; };\n#define F(X) ((X) + 1)\n#endif\n"),
+            ("b.h", "#ifndef B_H\n#define B_H\nstruct pt { long y; long z; };\n#define F(X) ((X) * 100)\n#endif\n"),
+            (
+                "pa/a.rk",
+                "import c \"a.h\" as c\n\npublic func via_a(x: i32) -> i32 {\n    return c.F(x) + c.F(1)\n}\n\n\
+                 public func pt_x() -> i32 {\n    let p = c.Pt(x: 7)\n    return p.x\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\nimport c \"b.h\" as c\n\nfunc main() {\n    let n = 4\n    let q = c.Pt(y: 7, z: 8)\n\
+                 \x20   println(\"{c.F(n)} {c.F(4)} {pa.via_a(n)} {q.z} {pa.pt_x()}\")\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 400 7 8 7"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A C macro is no link symbol, so it belongs to its package like a
+/// function: `pa`'s macro `F` and the root's `func F` are two things, each
+/// reached by its own name (#1729, #1744). Within one package a function and
+/// a macro of one name are a duplicate.
+#[test]
+fn a_c_macro_belongs_to_its_package() {
+    let dir = temp_project(
+        "macro_pkg",
+        &[
+            ("pa/a.rk", "@c_macro(\"(X + 1)\")\npublic extern \"C\" func F(X: _) -> _\n\npublic func twice(x: i32) -> i32 {\n    return F(F(x))\n}\n"),
+            ("main.rk", "import pa\n\nfunc F(x: i32) -> i32 {\n    return x * 100\n}\n\nfunc main() {\n    let n: i32 = 4\n    println(\"{F(4)} {pa.F(n)} {pa.twice(n)} {comptime pa.F(1)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 5 6 2"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "macro_dup",
+        &[(
+            "main.rk",
+            "@c_macro(\"(X + 1)\")\nextern \"C\" func F(X: _) -> _\n\nfunc F(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{F(4)}\")\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0201") && out.contains("`F`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package's names are reached only through it (modules/IM1), and a
+/// root declaration may share one (#1744). Nested packages bind their last
+/// segment (IM2), and a `src/` layout's `main` is still the entry point.
+#[test]
+fn a_sub_package_is_its_own_namespace() {
+    let dir = temp_project(
+        "subpkg_ns",
+        &[
+            ("pa/a.rk", "import pa.sub\n\npublic func f(x: i32) -> i32 {\n    return sub.f(x) + 1\n}\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x * 10\n}\n"),
+            ("main.rk", "import pa\n\nfunc f(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{f(2)} {pa.f(2)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("2 21"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{sub.f(2)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "a package's names aren't reachable without importing it:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "subpkg_src",
+        &[("src/main.rk", "func helper() -> i32 {\n    return 7\n}\n\nfunc main() {\n    println(\"{helper()}\")\n}\n")],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('7'), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A struct `bindc` wrote, handed to a macro from another header whose
+/// header includes the struct's own one, with no include guard anywhere.
+/// The macro's C needs the struct's header, and must not include it twice
+/// (#1729).
+#[test]
+fn a_bindc_struct_reaches_another_headers_macro() {
+    let dir = temp_project(
+        "bindc_struct",
+        &[
+            ("pa/s.h", "struct pt { int v; };\n"),
+            ("m.h", "#include \"pa/s.h\"\n#define PV(P) ((P)->v)\n"),
+            ("other.h", "#define PW(P) ((P)->v * 2)\n"),
+            ("main.rk", "import pa\nimport c \"m.h\" as m\nimport c \"other.h\" as o\n\nfunc main() {\n    mut p = pa.make(9)\n    println(\"{unsafe m.PV(&p)} {unsafe o.PW(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .current_dir(&dir)
+        .args(["bindc", "pa/s.h", "-o", "pa/s.rk"])
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let mut bound = std::fs::read_to_string(dir.join("pa").join("s.rk")).unwrap();
+    assert!(bound.contains("header: \"s.h\""), "bindc writes the struct's header:\n{bound}");
+    bound.push_str("\npublic func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n");
+    std::fs::write(dir.join("pa").join("s.rk"), bound).unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("9 18"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An arithmetic C macro in `comptime` is computed while compiling (#1731).
+#[test]
+fn an_arithmetic_c_macro_runs_in_comptime() {
+    for mode in ["--native", "--interp"] {
+        let (stdout, stderr, code) = run_capture(mode, "c_macro_comptime.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "16 8 40\n", "{mode}");
+    }
+}
+
+/// C in `comptime` is refused for what it is. A macro has its body's
+/// effects, so one that calls a C function is that function's: `abs` is
+/// assumed to block (INF5). A `@memory_only` one blocks nothing and is still
+/// C (#1731).
+#[test]
+fn c_in_comptime_is_refused_for_what_it_does() {
+    let dir = temp_project(
+        "macro_ct_c",
+        &[(
+            "main.rk",
+            "extern \"C\" func abs(x: c_int) -> c_int\n@memory_only\nextern \"C\" func labs(x: c_long) -> c_long\n\n\
+             @c_macro(\"abs(X)\", header: \"stdlib.h\")\nextern \"C\" func G(X: _) -> _\n\n\
+             func main() {\n    let c = comptime G(2)\n    let d = comptime labs(2)\n    println(\"{c} {d}\")\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok, "{out}");
+    assert!(out.contains("reaches a call that blocks at compile time — `G` does"), "{out}");
+    assert!(out.contains("reaches C code at compile time — `labs` does"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One header imported by the root and by a sub-package is one set of types:
+/// a `c.Pt` the root builds is the `c.Pt` the package takes.
+#[test]
+fn one_header_imported_by_two_packages_is_one_set_of_types() {
+    let dir = temp_project(
+        "cshared",
+        &[
+            ("shared.h", "#ifndef S_H\n#define S_H\nstruct pt { int v; };\n#endif\n"),
+            ("pa/a.rk", "import c \"../shared.h\" as c\n\npublic func get(p: c.Pt) -> i32 {\n    return p.v\n}\n"),
+            ("main.rk", "import pa\nimport c \"shared.h\" as c\n\nfunc main() {\n    let p = c.Pt(v: 6)\n    println(\"{pa.get(p)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('6'), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Imports whose package and alias names run together still get names of
+/// their own: two packages both called `sub`, and a root alias `c_pa` beside
+/// `pa`'s `c`.
+#[test]
+fn c_imports_never_share_names_by_spelling() {
+    let header = |n: i32| format!("struct pt {{ int v; }};\n#define F(X) ((X) + {n})\n");
+    let dir = temp_project(
+        "cnames",
+        &[
+            ("pa/sub/s.h", &header(1)),
+            ("pb/sub/s.h", &header(2)),
+            ("pa/a.h", &header(3)),
+            ("b.h", &header(4)),
+            ("pa/sub/s.rk", "import c \"s.h\" as c\n\npublic func f(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pb/sub/s.rk", "import c \"s.h\" as c\n\npublic func g(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pa/a.rk", "import pa.sub\nimport c \"a.h\" as c\n\npublic func h(x: i32) -> i32 {\n    let y: i32 = sub.f(x)\n    return c.F(y)\n}\n"),
+            ("pb/b.rk", "import pb.sub\n\npublic func k(x: i32) -> i32 {\n    return sub.g(x)\n}\n"),
+            ("main.rk", "import pa\nimport pb\nimport c \"b.h\" as c_pa\n\nfunc main() {\n    let p = c_pa.Pt(v: 0)\n    println(\"{pa.h(0)} {pb.k(0)} {c_pa.F(p.v)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 2 4"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `rask bindc include/s.h -o src/s.rk` names the header as `src/s.rk`
+/// reaches it, and the result builds.
+#[test]
+fn bindc_output_names_its_header_from_where_it_is_written() {
+    let dir = temp_project(
+        "bindc_where",
+        &[
+            ("include/s.h", "struct pt { int v; };\n#define PV(P) ((P)->v)\n"),
+            ("main.rk", "func main() {\n    mut p = Pt(v: 3)\n    println(\"{unsafe PV(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .current_dir(&dir)
+        .args(["bindc", "include/s.h", "-o", "s.rk"])
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let bound = std::fs::read_to_string(dir.join("s.rk")).unwrap();
+    assert!(bound.contains("header: \"include/s.h\""), "{bound}");
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains('3'), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The interpreter builds `pa.Pt { … }` as the package's `Pt`, so its
+/// methods are found, and matches `pa.Shape.Circle(r)` patterns.
+#[test]
+fn the_interpreter_reads_package_qualified_types_and_patterns() {
+    let dir = temp_project(
+        "interp_pkg_types",
+        &[
+            (
+                "pa/a.rk",
+                "public struct Pt {\n    public v: i32\n}\n\nextend Pt {\n    public func get(self) -> i32 {\n        return self.v\n    }\n}\n\n\
+                 public enum Shape {\n    Circle(i32)\n    Dot\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 7)\n    let s = pa.Shape.Circle(3)\n    match s {\n\
+                 \x20       pa.Shape.Circle(r) => println(\"{p.get()} circle {r}\"),\n        pa.Shape.Dot => println(\"dot\"),\n    }\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("7 circle 3"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every spelling of a sub-package import the resolver accepts reaches the
+/// package's qualified names: the root's name in front, a nested package by
+/// its short name, and `import pa.*` (#1744).
+#[test]
+fn sub_package_imports_in_every_spelling() {
+    let dir = temp_project(
+        "subpkg_spellings",
+        &[
+            ("pa/a.rk", "import sub\n\npublic struct Pt {\n    public x: i32\n}\n\npublic func make(x: i32) -> Pt {\n    return Pt(x: sub.f(x))\n}\n\npublic const LIMIT: i32 = 5\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x + 1\n}\n"),
+            ("pb/b.rk", "public func g() -> i32 {\n    return 30\n}\n"),
+            ("main.rk", "import pa.*\nimport proj.pb\n\nfunc main() {\n    let q = make(3)\n    println(\"{q.x} {LIMIT} {pb.g()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 5 30"), "{mode}:\n{out}");
+    }
+    // From the root, `pa/sub` is `pa.sub`: its last segment alone names
+    // nothing, wherever it sits.
+    std::fs::write(dir.join("main.rk"), "import sub\n\nfunc main() {\n    println(\"{sub.f(1)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Packages whose paths spell the same once joined (`pa/sub`, `pa_sub/`)
+/// are still two, a sub-package's `main` beside the root's is an ordinary
+/// function, and a private one is refused through its package too.
+#[test]
+fn sub_packages_keep_apart_and_keep_their_private_names() {
+    let dir = temp_project(
+        "subpkg_apart",
+        &[
+            ("pa/sub/s.rk", "public func f() -> i32 {\n    return 1\n}\n"),
+            ("pa_sub/s.rk", "public func f() -> i32 {\n    return 2\n}\n"),
+            ("pc/c.rk", "public func main() -> i32 {\n    return 3\n}\n\nfunc hidden() -> i32 {\n    return 4\n}\n"),
+            ("main.rk", "import pa.sub\nimport pa_sub\nimport pc\n\nfunc main() {\n    println(\"{sub.f()} {pa_sub.f()} {pc.main()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("1 2 3"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pc\n\nfunc main() {\n    println(\"{pc.hidden()}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0877") && out.contains("private to `pc`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package's extern is the package's own name for its C function: the
+/// root's `func labs` stays the root's, `pa.labs` is C's, two packages may
+/// both declare it if they agree on its signature, and nothing declares it
+/// bare for the root (#1754).
+#[test]
+fn a_sub_packages_extern_is_its_own() {
+    let dir = temp_project(
+        "subpkg_extern",
+        &[
+            ("pa/a.rk", "public extern \"C\" func labs(x: i64) -> i64\n"),
+            ("pb/b.rk", "public extern \"C\" func labs(x: i64) -> i64\n\npublic func pos(x: i64) -> i64 {\n    return unsafe labs(x)\n}\n"),
+            (
+                "main.rk",
+                "import pa\nimport pb\n\nfunc labs(x: i64) -> i64 {\n    return 0\n}\n\n\
+                 func main() {\n    println(\"{labs(-3)} {unsafe pa.labs(-4)} {pb.pos(-5)}\")\n}\n",
+            ),
+        ],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("0 4 5"), "{out}");
+
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{unsafe labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("`labs`"), "a package's extern isn't the root's:\n{out}");
+
+    std::fs::write(dir.join("pb/b.rk"), "public extern \"C\" func labs(x: i32) -> i64\n").unwrap();
+    std::fs::write(dir.join("main.rk"), "import pa\nimport pb\n\nfunc main() {\n    println(\"{unsafe pa.labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0213"), "one C function, two signatures:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A variant of `T` on a flat `T? or E` is three steps down: the success side,
+/// the option holding a value, then the variant. Testing only the first read
+/// the option's tag word as `Light`'s, so `Light.Green` answered true to `is
+/// Light.Red`, and `Shape.Circle(x)` bound `x` out of the wrong bytes. Native
+/// only: the interpreter matches none of these yet.
+#[test]
+fn a_variant_inside_a_flat_option_result_tests_every_step() {
+    let expected = "0: Red=true Green=false\n1: Red=false Green=true\n\
+                    2: Red=false Green=false\n3: Red=false Green=false\n\
+                    circle 1.5\nnone\nis label q2\nlabel q2\nerr\n";
+    let (native, code) = run_native("flat_option_variant_path.rk");
+    assert_eq!(code, 0, "native: {native}");
+    assert_eq!(native, expected, "native");
+}
+
+// ctrl.comptime/CT50: a template's copies are told apart by their instance's
+// types. The interpreter matched them by the types' printed names, which drop
+// the module, so `Item` and `helpers.Item` shared one copy.
+#[test]
+fn template_copies_for_types_sharing_a_name_stay_apart_on_both_backends() {
+    let expected = "a,b,c,\nid,tag,\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "template_package");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert!(stdout.ends_with(expected), "{}: {}", mode, stdout);
+    }
+}
+
+// ctrl.comptime/CT50: `rask run` on a file with a `test` block. Finding the
+// instances to write out swapped `main` for the test runner's, so nothing
+// `main` called was written out and the backends met a `comptime for`.
+#[test]
+fn a_template_reached_from_main_beside_a_test_block() {
+    const SRC: &str = r#"import std.reflect
+
+struct Reading {
+    id: i64
+    temp: f64
+}
+
+func show<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name};"
+    }
+    return out
+}
+
+func main() {
+    println(show(Reading(id: 1, temp: 2.5)))
+}
+
+test "t" {
+    assert true
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_run_source(SRC, interp);
+        assert!(out.contains("id;temp;"), "interp={interp}:\n{out}");
+    }
+}
+
+// A `mutate` parameter is the caller's slot: when a panic unwinds out of the
+// callee, the caller's unwinding releases what's in it. The callee released
+// it too, once just before the panic and once more from its own unwind
+// record, so the test runner died of a double free and the tests after the
+// panicking one never ran.
+#[test]
+fn a_panic_in_a_callee_leaves_its_mutate_argument_to_the_caller() {
+    const SRC: &str = r#"enum Direction {
+    North
+    South
+}
+
+func boom() -> i64 {
+    todo()
+}
+
+struct Room {
+    exits: Map<Direction, usize>
+}
+
+struct World {
+    rooms: Vec<Room>
+}
+
+func connect(mutate w: World, d: Direction) {
+    w.rooms[0].exits[d] = 1
+    let q = boom()
+}
+
+test "panics in the callee" {
+    mut w = World(rooms: Vec.new())
+    w.rooms.push(Room(exits: Map.new()))
+    connect(mutate w, Direction.North)
+}
+
+test "runs after it" {
+    assert 1 == 1
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_test_source(SRC, interp);
+        assert!(out.contains("2 tests, 1 passed, 1 failed"), "interp={interp}:\n{out}");
+    }
 }

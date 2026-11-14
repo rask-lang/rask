@@ -10,7 +10,6 @@ use crate::{
     MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
-use rask_ast::ty::TypeExpr;
 use rask_layout::StructLayout;
 
 impl<'a> MirLowerer<'a> {
@@ -48,7 +47,7 @@ impl<'a> MirLowerer<'a> {
             .or_else(|| {
                 let first = elems.first()?;
                 let raw = self.ctx.lookup_raw_type(first.id)?.clone();
-                match raw {
+                match &*raw {
                     rask_types::Type::Var(_) => None,
                     resolved => Some(self.ctx.type_to_mir(&resolved)),
                 }
@@ -136,21 +135,16 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_map_from_pairs(
         &mut self,
         call: &Expr,
-        written: &[TypeExpr],
         arg: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let elems: &[Expr] = match &arg.kind {
             ExprKind::Array(elems) => elems,
             _ => &[],
         };
-        // The checker knows the map's own type; the spelling answers when it
-        // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
-        // recorded type). The first pair is the last resort.
+        // The checker knows the map's own type. The first pair is the last
+        // resort.
         let arg_ty = |i: usize| -> Option<MirType> {
             self.container_elem_mir_type(call.id, i)
-        };
-        let spelled_ty = |i: usize| -> Option<MirType> {
-            written.get(i).map(|arg| self.ctx.resolve_type_expr(arg))
         };
         let pair_ty = |i: usize| -> Option<MirType> {
             elems.first().and_then(|e| match &e.kind {
@@ -161,10 +155,8 @@ impl<'a> MirLowerer<'a> {
             })
         };
 
-        let key_ty = arg_ty(0).or_else(|| spelled_ty(0)).or_else(|| pair_ty(0))
-            .unwrap_or(MirType::I64);
-        let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
-            .unwrap_or(MirType::I64);
+        let key_ty = arg_ty(0).or_else(|| pair_ty(0)).unwrap_or(MirType::I64);
+        let val_ty = arg_ty(1).or_else(|| pair_ty(1)).unwrap_or(MirType::I64);
 
         let mut args = vec![
             MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
@@ -182,7 +174,6 @@ impl<'a> MirLowerer<'a> {
         // `Vec` a `Vec`.
         let desc = |i: usize, fallback: &MirType| -> MirType {
             self.container_elem_type(call.id, i)
-                .or_else(|| written.get(i).map(|arg| self.ctx.resolve_type_expr(arg)))
                 .unwrap_or_else(|| fallback.clone())
         };
         args.push(crate::elem_strs::elem(desc(0, &key_ty)));
@@ -338,22 +329,7 @@ impl<'a> MirLowerer<'a> {
         // A `Vec<T>` field is an array, not a number. Without this the field
         // went through json_buf_add_i64 and `{"items": [...]}` came out as
         // `{"items":{}}`.
-        //
-        // `field_ty` comes from the struct's own declaration (via
-        // `StructLayout`), not from the checker's inferred node types — it
-        // stays in the pre-resolve `UnresolvedGeneric` spelling, so there's no
-        // resolved `Generic { base, .. }` form to match here.
-        let vec_args = match field_ty {
-            Type::UnresolvedGeneric { name, args } if name == "Vec" => Some(args),
-            _ => None,
-        };
-        let vec_elem = vec_args.and_then(|args| {
-            args.first().and_then(|a| match a {
-                rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                _ => None,
-            })
-        });
-        if let Some(elem) = vec_elem {
+        if let Some(elem) = self.collection_arg(field_ty, "Vec", 0) {
             let elem_mir = self.ctx.type_to_mir(&elem);
             let (arr_json, _) = self.lower_json_encode_vec(
                 MirOperand::Local(field_val),
@@ -404,13 +380,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let nested_struct = match field_ty {
-            Type::UnresolvedNamed(name) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-            Type::UnresolvedGeneric { name, .. } => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
-            _ => None,
-        };
-
-        if let Some(nested_layout) = nested_struct {
+        if let Some(nested_layout) = self.struct_layout_of(field_ty) {
             let (nested_json, _) = self.lower_json_encode_struct(
                 MirOperand::Local(field_val),
                 nested_layout,
@@ -431,12 +401,7 @@ impl<'a> MirLowerer<'a> {
         // Without this an enum field fell through to the integer encoder
         // and wrote the address of its slot as a number — valid JSON with a
         // stack address in it, and no warning (#854).
-        let enum_layout = match field_ty {
-            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                self.ctx.find_enum(name).map(|(_, l)| l.clone())
-            }
-            _ => None,
-        };
+        let enum_layout = self.ctx.enum_of(field_ty).map(|(_, l)| l.clone());
         if let Some(layout) = enum_layout {
             let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -816,21 +781,16 @@ impl<'a> MirLowerer<'a> {
         // depending on which side asks, and a name that isn't in the table at
         // all used to fall back to index 0 — whatever type happens to sit
         // there (#1062).
-        let nested_struct: Option<(u32, StructLayout)> = match elem_ref {
-            Some(Type::UnresolvedNamed(name)) => self.ctx.find_struct(name),
-            Some(Type::UnresolvedGeneric { name, .. }) => self.ctx.find_struct(name),
-            Some(Type::Named(type_id)) => {
-                self.ctx.type_names.get(type_id).and_then(|name| self.ctx.find_struct(name))
-            }
-            _ => None,
-        }
-        .map(|(i, l)| (i, l.clone()))
-        .or_else(|| match &elem_mir {
-            Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
-                self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
-            }
-            _ => None,
-        });
+        let nested_struct: Option<(u32, StructLayout)> = elem_ref
+            .as_ref()
+            .and_then(|t| self.ctx.struct_of(t))
+            .map(|(i, l)| (i, l.clone()))
+            .or_else(|| match &elem_mir {
+                Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
+                    self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
+                }
+                _ => None,
+            });
 
         // The element's own type, so a struct element comes back as a pointer to
         // its storage, a string keeps all 16 bytes and a scalar is read at its
@@ -960,9 +920,9 @@ impl<'a> MirLowerer<'a> {
             // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
             // element type lives in the tuple's first component. Everything else
             // (Vec/Map/Shared/Mutex) resolves to the wrapper directly.
-            let container = match ty {
+            let container = match &*ty {
                 Type::Tuple(elems) => elems.first()?,
-                other => other,
+                other => &other,
             };
             let GenericArg::Type(inner) = generic_args(container)?.get(index)? else {
                 return None;
@@ -1001,9 +961,9 @@ impl<'a> MirLowerer<'a> {
     ) -> Option<rask_types::Type> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(node_id)?;
-        let container = match ty {
+        let container = match &*ty {
             Type::Tuple(elems) => elems.first()?,
-            other => other,
+            other => &other,
         };
         let args = match container {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,

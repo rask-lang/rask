@@ -100,6 +100,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         });
         assert_eq!(prog.functions().len(), 1);
@@ -110,6 +111,7 @@ mod tests {
     fn struct_layout_lookup() {
         let mut prog = empty_program();
         prog.struct_layouts.push(StructLayout {
+            key: None,
             name: "Point".to_string(),
             size: 16,
             align: 8,
@@ -137,6 +139,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             inline_hint: false,
+            param_modes: Vec::new(),
             source_file: None,
         });
         prog.functions_mut()[0].name = "bar".to_string();

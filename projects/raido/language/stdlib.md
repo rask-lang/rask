@@ -8,7 +8,7 @@
 Three tiers: **core functions** (always present), **built-in methods** (always present, compiler-known), and **opt-in modules** (host enables).
 
 ```rask
-const vm = raido.Vm.new(raido.Config {
+let vm = raido.Vm.new(raido.Config {
     stdlib: [raido.Stdlib.math, raido.Stdlib.bit],
 })
 ```
@@ -19,19 +19,19 @@ Always available. A Raido VM without these isn't a Raido VM.
 
 `tostring(v: T) -> string` -- convert any value to string representation.
 
-`int(x: number) -> int` -- truncate number toward zero. `int(s: string) -> int?` -- parse string to int, `None` on failure.
+`int(x: float) -> int` -- truncate float toward zero. `int(s: string) -> int?` -- parse string to int, `None` on failure.
 
-`number(x: int) -> number` -- promote int to fixed-point (panics if int exceeds +/-2.1B). `number(s: string) -> number?` -- parse string to number, `None` on failure.
+`float(x: int) -> float` -- convert int to float. `float(s: string) -> float?` -- parse string to float, `None` on failure.
 
 `len(v: T) -> int` -- string byte length, array length, or map entry count. `T` must be `string`, `array`, or `map` (compiler-enforced).
 
-`error(msg: string)` -- raises a ScriptError.
+`error(msg: string)` -- aborts the current call; its changes roll back and the host receives a ScriptError.
 
 `assert(v: bool, msg: string?)` -- if `v` is false, raises ScriptError with `msg` (default: "assertion failed").
 
 `print(v: string)` -- calls the host's print handler. Default: no-op. Host can override via `vm.set_print(handler)`.
 
-Error catching uses `try`/`else` syntax, not a stdlib function.
+Scripts don't catch errors; a failure ends the call. See [syntax.md](syntax.md#errors).
 
 ## Built-in Methods
 
@@ -49,21 +49,21 @@ User-defined structs get methods via `extend` blocks — same dot syntax, same c
 
 ## math (opt-in)
 
-All deterministic (fixed-point). Host enables via config.
+All deterministic: correctly rounded, so the same on every machine. Host enables via config.
 
-`abs(x: number) -> number`, `floor(x: number) -> int`, `ceil(x: number) -> int`, `round(x: number) -> int`
+`abs(x: float) -> float`, `floor(x: float) -> int`, `ceil(x: float) -> int`, `round(x: float) -> int`
 
-`sqrt(x: number) -> number` -- Newton's method.
+`sqrt(x: float) -> float` -- the IEEE operation, correctly rounded.
 
-`min(a: number, b: number) -> number`, `max(a: number, b: number) -> number`
+`min(a: float, b: float) -> float`, `max(a: float, b: float) -> float`
 
-`clamp(x: number, lo: number, hi: number) -> number`, `lerp(a: number, b: number, t: number) -> number`
+`clamp(x: float, lo: float, hi: float) -> float`, `lerp(a: float, b: float, t: float) -> float`
 
-`sin(x: number) -> number`, `cos(x: number) -> number`, `atan2(y: number, x: number) -> number` -- CORDIC-based fixed-point approximations. ~10-bit accuracy. Good enough for game math.
+`sin(x: float) -> float`, `cos(x: float) -> float`, `atan2(y: float, x: float) -> float` -- correctly rounded, the same functions Rask uses.
 
-`random() -> number` -- number in [0, 1). `random(n: int) -> int` -- int in [0, n). Uses VM's xoshiro128++ PRNG.
+`random() -> float` -- float in [0, 1). `random(n: int) -> int` -- int in [0, n). Uses VM's xoshiro128++ PRNG.
 
-`pi: number` -- 3.14159265 as 32.32 fixed-point.
+`pi: float` -- the double nearest to pi.
 
 ## bit (opt-in)
 

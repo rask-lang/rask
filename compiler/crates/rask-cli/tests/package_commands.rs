@@ -174,14 +174,23 @@ fn serve(mut stream: std::net::TcpStream, root: &Path) {
 }
 
 fn rask(dir: &Path, args: &[&str]) -> Run {
+    rask_env(dir, args, &[])
+}
+
+/// `rask` with extra environment, which overrides the defaults.
+fn rask_env(dir: &Path, args: &[&str], env: &[(&str, &Path)]) -> Run {
     let reg = registry();
-    let out: Output = Command::new(env!("CARGO_BIN_EXE_rask"))
-        .args(args)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rask"));
+    cmd.args(args)
         .current_dir(dir)
         .env("NO_COLOR", "1")
         .env("CLICOLOR_FORCE", "0")
         .env("RASK_REGISTRY", &reg.url)
-        .env("RASK_CACHE", &reg.cache)
+        .env("RASK_CACHE", &reg.cache);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out: Output = cmd
         // Bypasses any agent proxy for the loopback registry.
         .env("NO_PROXY", "127.0.0.1")
         .env("no_proxy", "127.0.0.1")
@@ -470,6 +479,43 @@ fn add_and_remove_keep_the_lock_up_to_date() {
     assert!(!dir.path().join("rask.lock").exists());
 }
 
+/// A download goes to a path of this process's own, never one another `rask`
+/// may be using. The archive used to land at `<tmp>/json-1.5.2.tar.gz` for
+/// every process, so two fetches at once deleted or overwrote each other's
+/// file mid-extraction: "cache I/O error: No such file or directory", seen as
+/// a flaky `add_and_remove_keep_the_lock_up_to_date`. Here something already
+/// occupies that shared path, as another process's download would, and the
+/// fetch must not care.
+#[test]
+fn a_fetch_does_not_use_a_download_path_another_process_holds() {
+    let dir = TempDir::new("app");
+    dir.write("rask.toml", PLAIN);
+    let tmp = TempDir::new("tmp");
+    fs::create_dir_all(tmp.path().join("json-1.5.2.tar.gz")).unwrap();
+    let cache = TempDir::new("cache");
+    let run = rask_env(dir.path(), &["add", "json", "^1.0"], &[("TMPDIR", tmp.path()), ("RASK_CACHE", cache.path())]);
+    assert_eq!(run.code, 0, "{:?}", run);
+}
+
+/// `rask publish` builds its tarball in a file of its own too: two publishes
+/// or dry runs of one package at once used to share
+/// `<tmp>/<name>-<version>.tar.gz`.
+#[test]
+fn publish_does_not_use_a_tarball_path_another_process_holds() {
+    let dir = TempDir::new("demo");
+    dir.write(
+        "rask.toml",
+        "schema = \"rask-package@1\"\n\n[package]\nname = \"demo\"\nversion = \"0.1.0\"\ndescription = \"d\"\nlicense = \"MIT\"\n",
+    );
+    dir.write("main.rk", "func main() {\n    println(\"hi\")\n}\n");
+    let tmp = TempDir::new("tmp");
+    fs::create_dir_all(tmp.path().join("demo-0.1.0.tar.gz")).unwrap();
+    let run = rask_env(dir.path(), &["publish", "--dry-run", "--unsigned", "."], &[("TMPDIR", tmp.path())]);
+    assert_eq!(run.code, 0, "{:?}", run);
+    let left: Vec<_> = fs::read_dir(tmp.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(left.len(), 1, "the tarball should be cleaned up: {:?}", left);
+}
+
 #[test]
 fn remove_notes_a_dependency_something_else_still_needs() {
     let dir = TempDir::new("app");
@@ -751,4 +797,23 @@ fn migrate_refuses_a_manifest_that_does_not_load() {
     let run = fails(dir.path(), &["migrate", "--to", "1"]);
     assert!(run.stderr.contains("package.version"), "{:?}", run);
     assert_eq!(dir.read("rask.toml"), broken);
+}
+
+// `check --json` on one file of a package places an error in another file
+// in that file. It counted every span against the named file's text, so an
+// error on line 3 of `b.rk` came out as line 5 of `a.rk`, quoting a line of
+// `a.rk` that had nothing wrong with it.
+#[test]
+fn check_json_places_an_error_in_the_file_it_is_in() {
+    let tmp = TempDir::new("json_file");
+    let dir = tmp.path();
+    write_package(dir, "json_file");
+    fs::write(dir.join("a.rk"), "func a_one() -> i64 {\n    return 1\n}\n\nfunc a_two() -> i64 {\n    return 2\n}\n").unwrap();
+    fs::write(dir.join("b.rk"), "func main() {\n    println(\"{a_one()}\")\n    println(\"{missing()}\")\n}\n").unwrap();
+    let run = rask(dir, &["check", "--json", "a.rk"]);
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).expect("one JSON report");
+    let location = &report["diagnostics"][0]["location"];
+    assert!(location["file"].as_str().unwrap().ends_with("b.rk"), "{location}");
+    assert_eq!(location["line"], 3, "{location}");
+    assert_eq!(location["source_line"], "    println(\"{missing()}\")", "{location}");
 }

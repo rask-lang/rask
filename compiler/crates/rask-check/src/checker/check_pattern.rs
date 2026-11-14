@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::expr::Pattern;
+use rask_ast::expr::{Pattern, PatternKind};
 use rask_ast::Span;
 
 use super::errors::TypeError;
@@ -139,7 +139,7 @@ impl TypeChecker {
     // ------------------------------------------------------------------------
 
     /// When `ty_name` is `Enum.Variant` and `Enum` is the scrutinee's error side,
-    /// the type that variant's payload binds to.
+    /// the enum, the variant, and the type that variant's payload binds to.
     ///
     /// One field binds that field's type; several bind a tuple; none binds unit,
     /// which is what a binder on a fieldless variant deserves — there's nothing
@@ -148,7 +148,11 @@ impl TypeChecker {
     /// A union error side is handled too: `is ParseError.Syntax` on a
     /// `T or (ParseError | DivError)` finds the variant in whichever member
     /// declares it.
-    pub(super) fn err_variant_payload(&self, resolved: &Type, ty: &TypeExpr) -> Option<Type> {
+    pub(super) fn err_variant_payload(
+        &self,
+        resolved: &Type,
+        ty: &TypeExpr,
+    ) -> Option<(rask_types::TypeId, String, Type)> {
         let Type::Result { err, .. } = resolved else { return None };
         let TypeExpr::Named { path, args } = ty else { return None };
         let ([enum_name, variant_name], true) = (path.as_slice(), args.is_empty()) else {
@@ -169,11 +173,12 @@ impl TypeChecker {
                 .iter()
                 .find(|(v, _)| v == variant_name)
                 .map(|(_, f)| f.clone())?;
-            return Some(match fields.len() {
+            let payload = match fields.len() {
                 0 => Type::Unit,
                 1 => fields[0].clone(),
                 _ => Type::Tuple(fields),
-            });
+            };
+            return Some((id, variant_name.clone(), payload));
         }
         None
     }
@@ -229,7 +234,7 @@ impl TypeChecker {
         let declared = declared.clone();
         let mut bindings = Vec::new();
         for field in fields {
-            let Pattern::Ident(n) = field else {
+            let PatternKind::Ident(n) = &field.kind else {
                 self.errors.push(TypeError::StructPatternByPosition {
                     name: name.to_string(),
                     fields: declared.iter().map(|(f, _)| f.clone()).collect(),
@@ -238,7 +243,10 @@ impl TypeChecker {
                 return Some(bindings);
             };
             match declared.iter().find(|(f, _)| f == n) {
-                Some((_, ty)) => bindings.push((n.clone(), ty.clone())),
+                Some((_, ty)) => {
+                    self.pattern_targets.insert(field.id, rask_types::PatternTarget::Binding);
+                    bindings.push((n.clone(), ty.clone()));
+                }
                 None => self.errors.push(TypeError::NoSuchField {
                     ty: Type::Named(id),
                     field: n.clone(),
@@ -301,21 +309,21 @@ impl TypeChecker {
         if !matches!(self.ctx.apply(scrutinee_ty), Type::Result { .. }) {
             return None;
         }
-        let ty = match pattern {
-            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            Pattern::TypePat { binding: Some(_), .. } => return None,
+        let ty = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            PatternKind::TypePat { binding: Some(_), .. } => return None,
             _ => self.tested_type(pattern, scrutinee_ty)?,
         };
-        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
+        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }))
     }
 
     /// The type an `is` pattern tests for, written with or without `as`:
     /// `x is Point as p`, `x is Point`, `x is none`. `None` for a variant, a
     /// destructure, or a name that isn't a type.
     pub(super) fn tested_type(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<TypeExpr> {
-        match pattern {
-            Pattern::TypePat { ty, .. } => Some(ty.clone()),
-            Pattern::Ident(name) if !name.contains('.') => {
+        match &pattern.kind {
+            PatternKind::TypePat { ty, .. } => Some(ty.clone()),
+            PatternKind::Ident(name) if !name.contains('.') => {
                 if self.variant_of_scrutinee(name, scrutinee_ty).is_some() {
                     return None;
                 }
@@ -334,15 +342,15 @@ impl TypeChecker {
         // against the open type, a bare `Arr(entries)` names no enum, so
         // `entries` got a fresh variable nothing ever tied back, and native
         // couldn't lower a `for` over it (#1427). Settle what's pending first.
-        if matches!(pattern, Pattern::Ident(_) | Pattern::Constructor { .. } | Pattern::Struct { .. })
+        if matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::Constructor { .. } | PatternKind::Struct { .. })
             && matches!(self.ctx.apply(scrutinee_ty), Type::Var(_))
         {
             self.solve_constraints();
         }
-        match pattern {
-            Pattern::Wildcard => vec![],
+        match &pattern.kind {
+            PatternKind::Wildcard => vec![],
 
-            Pattern::Ident(name) => {
+            PatternKind::Ident(name) => {
                 // A variant of the scrutinee's own enum, written bare or
                 // qualified, is a tag test whatever the variant carries:
                 // `c is Del`, `c is Cmd.Del`. It binds nothing; a payload is
@@ -352,12 +360,14 @@ impl TypeChecker {
                 // the bare one bound a variable named after the variant
                 // (#1401).
                 if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
-                    let fields = vec![Pattern::Wildcard; arity];
-                    return self.check_constructor_pattern(&qualified, &fields, scrutinee_ty, span);
+                    // Stand-ins for the payload a tag test doesn't name; never
+                    // stored, so they need no id of their own.
+                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard); arity];
+                    return self.check_constructor_pattern(pattern.id, &qualified, &fields, scrutinee_ty, span);
                 }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
                 if name.contains('.') {
-                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                    return self.check_constructor_pattern(pattern.id, name, &[], scrutinee_ty, span);
                 }
                 // OPT2/ER2: reject `Ok`/`Err`/`Some`/`None` when the scrutinee
                 // is Result/Option. Allow them as user-enum variant names
@@ -384,6 +394,7 @@ impl TypeChecker {
                     if let Some(candidate) = self.pattern_type_name(name) {
                         self.type_test_patterns.insert((span, name.clone()));
                         let candidate = normalize_type(&candidate, &self.types);
+                        self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), candidate.clone()));
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
                         if branches.contains(&candidate) {
@@ -438,10 +449,11 @@ impl TypeChecker {
                         return vec![];
                     }
                 }
+                self.pattern_targets.insert(pattern.id, rask_types::PatternTarget::Binding);
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
-            Pattern::Literal(expr) => {
+            PatternKind::Literal(expr) => {
                 self.pattern_literals.insert(expr.id);
                 let lit_ty = self.infer_expr(expr);
                 self.ctx.add_constraint(TypeConstraint::Equal(
@@ -452,7 +464,7 @@ impl TypeChecker {
                 vec![]
             }
 
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 // OPT2/ER2: reject `Ok(v)` / `Err(e)` / `Some(v)` / `None(..)`
                 // when the scrutinee is Result/Option. User enums with these
                 // variant names (e.g. simple_grep.rk's `GrepResult`) are fine.
@@ -470,10 +482,10 @@ impl TypeChecker {
                 if let Some(bindings) = self.check_struct_shorthand(name, fields, scrutinee_ty, span) {
                     return bindings;
                 }
-                self.check_constructor_pattern(name, fields, scrutinee_ty, span)
+                self.check_constructor_pattern(pattern.id, name, fields, scrutinee_ty, span)
             }
 
-            Pattern::Struct { name, fields, .. } => {
+            PatternKind::Struct { name, fields, .. } => {
                 // A struct-shaped *enum variant* — `Outer.Named { code, kind }`.
                 // The name isn't a type, so the struct lookup below missed it and
                 // every field got a fresh variable: `kind` had no type at all,
@@ -485,6 +497,11 @@ impl TypeChecker {
                 // (#1026). The scrutinee says which enum it is; ask it.
                 let name = &self.qualify_variant_name(name, scrutinee_ty);
                 if let Some(variant_fields) = self.types.struct_variant_fields(name) {
+                    if let Some((enum_id, _)) = self.enum_id_from_pattern_name(name) {
+                        let variant = name.rsplit('.').next().unwrap_or(name).to_string();
+                        self.pattern_targets
+                            .insert(pattern.id, rask_types::PatternTarget::Variant { enum_id, variant });
+                    }
                     // A generic enum's fields are written in its parameters;
                     // `Slot.Pair { left, right }` on a `Slot<i64>` binds `i64`s,
                     // not `T`s (#1473).
@@ -578,7 +595,7 @@ impl TypeChecker {
                 }
             }
 
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 // Use the scrutinee's own element types when it already has
                 // them. Fresh variables plus an `Equal` constraint says the same
                 // thing, but the constraint isn't solved until later, so the
@@ -603,7 +620,7 @@ impl TypeChecker {
                 bindings
             }
 
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 // Both bounds must match the scrutinee type. The parser guarantees
                 // they're char or int literals of matching kind, so we just unify.
                 let start_ty = self.infer_expr(start);
@@ -625,7 +642,7 @@ impl TypeChecker {
             // In match arms, matches either the T (ok) or E (err) branch of a
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 if self.resolve_written(ty, span).is_none() {
                     return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
                 }
@@ -646,12 +663,17 @@ impl TypeChecker {
                 // never be true". The bare `is MyErr.Worse` next to it proved that
                 // wrong: it parses as a constructor pattern and never reached this
                 // check at all (#766).
-                if let Some(payload) = self.err_variant_payload(&resolved, ty) {
+                if let Some((enum_id, variant, payload)) = self.err_variant_payload(&resolved, ty) {
+                    // A variant of the error side's enum, or of one member of
+                    // a union error side: lowering finds which from the enum.
+                    self.pattern_targets
+                        .insert(pattern.id, rask_types::PatternTarget::Variant { enum_id, variant });
                     return match binding {
                         Some(name) => vec![(name.clone(), payload)],
                         None => vec![],
                     };
                 }
+                self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), narrow_ty.clone()));
                 match &resolved {
                     Type::Result { err, .. } => {
                         // Every branch the scrutinee could hold — a flat
@@ -733,7 +755,7 @@ impl TypeChecker {
                 }
             }
 
-            Pattern::Or(alternatives) => {
+            PatternKind::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);
                     let expected_names: Vec<&str> = bindings.iter()
@@ -769,6 +791,38 @@ impl TypeChecker {
                     vec![]
                 }
             }
+        }
+    }
+
+    /// Which side of `scrutinee`, a `T or E`, the type `named` is: the error
+    /// side (`true`) or the success side, and the index of the member it
+    /// names when the error side is a union. `None` when it is neither,
+    /// which the check has already reported.
+    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<(bool, Option<usize>)> {
+        let resolved = self.ctx.apply(scrutinee);
+        let Type::Result { ok, err } = &resolved else { return None };
+        let named = normalize_type(&self.ctx.apply(named), &self.types);
+        // `none` is the absent side of an optional.
+        if named == Type::None {
+            return Some((true, None));
+        }
+        let ok_leaves = two_branch_leaves(&mut self.ctx, &self.types, ok);
+        let names = |this: &Self, l: &Type| *l == named || this.same_type_head(l, &named);
+        if ok_leaves.iter().any(|l| names(self, l)) {
+            return Some((false, None));
+        }
+        // The member index counts in canonical order, which is how MIR lays
+        // a union out whatever order a substitution left this one in.
+        let err = match normalize_type(&self.ctx.apply(err), &self.types) {
+            Type::Union(members) => Type::union_named(members, |id| Some(self.types.type_name(id))),
+            other => other,
+        };
+        match err {
+            Type::Union(members) => {
+                let member = members.iter().position(|l| names(self, l))?;
+                Some((true, Some(member)))
+            }
+            other => names(self, &other).then_some((true, None)),
         }
     }
 
@@ -891,6 +945,7 @@ impl TypeChecker {
 
     pub(super) fn check_constructor_pattern(
         &mut self,
+        pat_id: rask_ast::NodeId,
         name: &str,
         fields: &[Pattern],
         scrutinee_ty: &Type,
@@ -1028,6 +1083,23 @@ impl TypeChecker {
         // enum and every field binds to a variable nothing solves (#1026).
         let resolved_scrutinee =
             normalize_type(resolved_scrutinee.peel_heap(), &self.types);
+        // `Other.Boom` against a `T or E`: a variant of the enum that is one
+        // of the scrutinee's branches, a member of a union error side
+        // included. Filed whether or not it binds a payload.
+        if matches!(resolved_scrutinee, Type::Result { .. }) {
+            if let Some((id, _)) = self.enum_id_from_pattern_name(name) {
+                let leaves = two_branch_leaves(&mut self.ctx, &self.types, &resolved_scrutinee);
+                let is_branch = leaves
+                    .iter()
+                    .any(|leaf| matches!(leaf, Type::Named(b) | Type::Generic { base: b, .. } if *b == id));
+                if is_branch {
+                    self.pattern_targets.insert(
+                        pat_id,
+                        rask_types::PatternTarget::Variant { enum_id: id, variant: variant_lookup_name.to_string() },
+                    );
+                }
+            }
+        }
         let (base_id, type_args) = match &resolved_scrutinee {
             Type::Named(id) => (Some(*id), Vec::new()),
             Type::Generic { base, args } => (
@@ -1098,6 +1170,10 @@ impl TypeChecker {
             });
 
             if let Some((variant_field_types, type_params)) = found {
+                self.pattern_targets.insert(
+                    pat_id,
+                    rask_types::PatternTarget::Variant { enum_id: type_id, variant: variant_lookup_name.to_string() },
+                );
                 if fields.len() != variant_field_types.len() {
                     self.errors.push(TypeError::ArityMismatch {
                         expected: variant_field_types.len(),

@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Chapter 3's program: one room, printed.
+
+// exercise 03: Print the room's name on one line and its description on the
+// next: `Gate`, then `A rusted iron gate stands open to the north.`
+func main() {
+    let name = "Gate"
+    let description = "A rusted iron gate stands open to the north."
+    println(name)
+    println(description)
+}

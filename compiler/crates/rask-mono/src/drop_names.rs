@@ -24,7 +24,11 @@ use rask_types::{GenericArg, Type as RaskType, TypeId};
 /// the wrapper rather than straight off the struct — so freeing it here ran
 /// before the reads (`h.v!.len()` gave 1361822157891490808). An optional or a
 /// result has no head name, so it answers `None`.
-pub fn container_free_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> Option<&'static str> {
+pub fn container_free_for<'a>(
+    ty: &RaskType,
+    names: &HashMap<TypeId, String>,
+    releases: &'a HandleReleases,
+) -> Option<&'a str> {
     // A closure a field holds is the aggregate's: storing one moves it in, and
     // the frame stops dropping it the moment it does. The block describes
     // itself — `rask_closure_free` reads its size and its environment glue out
@@ -33,18 +37,38 @@ pub fn container_free_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> Opt
     if matches!(ty, RaskType::Fn { .. }) {
         return Some("rask_closure_free");
     }
-    match ty.head_name(names)? {
-        // A box in a field. The release is a decrement, so it is right whether
-        // or not somebody else still holds one — which is what makes a box safe
-        // to hand to a task and still free here.
-        "Shared" => Some(box_release_for(ty, names)),
-        // Every other handle names its release on its declaration
+    match ty {
+        // Every declared handle names its release on its declaration
         // (`@handle(release: …)`). A container's buffer, a rack's arena, a
         // `Random`'s state: the field owns the block, and nothing else was
         // going to give it back. One without a release is closed explicitly
         // or doesn't own what it points at.
-        head => rask_stdlib::runtime_handle(head)?.release,
+        RaskType::Named(id) | RaskType::Generic { base: id, .. } => releases.get(id).map(String::as_str),
+        // A box in a field. The release is a decrement, so it is right whether
+        // or not somebody else still holds one — which is what makes a box safe
+        // to hand to a task and still free here.
+        RaskType::UnresolvedGeneric { name, .. } | RaskType::UnresolvedNamed(name) if name == "Shared" => {
+            Some(box_release_for(ty, names))
+        }
+        // A handle with no declaration to ask.
+        RaskType::UnresolvedGeneric { name, .. } | RaskType::UnresolvedNamed(name) => {
+            rask_stdlib::spelled_handle(name)?.release
+        }
+        _ => None,
     }
+}
+
+/// What frees each declared handle that frees itself, by its declaration's
+/// id: the `release` of its `@handle(release: "…")`.
+pub type HandleReleases = HashMap<TypeId, String>;
+
+/// Every `@handle(release: …)` in the checker's table.
+pub fn handle_releases(types: &rask_check::TypeTable) -> HandleReleases {
+    types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, def)| Some((TypeId(i as u32), def.runtime_handle()?.release?.to_string())))
+        .collect()
 }
 
 /// Which of the three box releases a `Shared` field needs.

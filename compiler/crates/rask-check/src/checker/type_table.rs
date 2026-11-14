@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Central type registry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
@@ -17,6 +17,21 @@ use rask_types::{GenericArg, Type, TypeId, TypeVarId};
 pub enum TaskBound {
     LocalBox,
     Link,
+    /// Only ever answered by `side_bound` and `holds_rack`.
+    Rack,
+}
+
+/// Which question `task_bound_inner` answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoundMode {
+    /// May it go to another task: links and `Local` boxes, not racks.
+    Task,
+    /// May a borrowing task and the code beside it both name it: racks too.
+    Side,
+    /// Does storing it record a link with a rack.
+    Store,
+    /// Does it hold a rack.
+    Racks,
 }
 
 /// MN3/XC3: an `T implements Interface` block, as the conformance table remembers
@@ -94,6 +109,14 @@ pub struct ConformanceMethod {
     pub filed: Option<String>,
 }
 
+/// A transparent alias: what it stands for, and the type parameters that is
+/// written in when it is generic.
+#[derive(Debug, Clone)]
+pub struct Alias {
+    pub params: Vec<String>,
+    pub target: TypeExpr,
+}
+
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
@@ -122,6 +145,8 @@ pub struct TypeTable {
     /// where. `type_method_decls` already binds methods by TypeId for the same
     /// reason.
     pub(super) stdlib_type_names: HashMap<String, TypeId>,
+    /// Every type the stdlib declares, by identity.
+    stdlib_decls: HashSet<TypeId>,
     /// A program type sharing a stdlib type's name, by its symbol: the name as
     /// the program wrote it.
     ///
@@ -143,10 +168,10 @@ pub struct TypeTable {
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target, as program code reads them: the program's
     /// own aliases and imports, then the stdlib's.
-    type_aliases: HashMap<String, TypeExpr>,
+    type_aliases: HashMap<String, Alias>,
     /// The stdlib's aliases alone, which is all stdlib code sees. A program's
     /// `import time.Duration as Span` is not the prelude's `Span` (#1479).
-    stdlib_aliases: HashMap<String, TypeExpr>,
+    stdlib_aliases: HashMap<String, Alias>,
     /// Type parameters in scope right now, outermost first: the enclosing
     /// type's or `extend` block's, then the function's own.
     ///
@@ -171,6 +196,8 @@ pub struct TypeTable {
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
     pub(super) result_type_id: Option<TypeId>,
+    /// The declarations the compiler needs by identity, filed as they register.
+    lang: HashMap<rask_types::LangItem, TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
@@ -228,16 +255,16 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
-    /// Each struct, enum and union by the name its layout is keyed under
-    /// (`sizes.rs`). Sizes come from the layout, so the copy rule,
-    /// `reflect.size_of` and codegen read one number.
-    pub(crate) layout_types: HashMap<String, TypeId>,
+    /// Each struct, enum and union that has a layout (`sizes.rs`). Sizes come
+    /// from the layout, so the copy rule, `reflect.size_of` and codegen read
+    /// one number.
+    pub(crate) layout_types: std::collections::HashSet<TypeId>,
     /// The type each struct, enum, union and nominal type declaration
     /// registered. What a later pass holding the declaration reads, so it
     /// never has to find the type again by its name.
     declared_types: HashMap<NodeId, TypeId>,
     /// Stdlib generics declared empty because the runtime holds the value.
-    pub(crate) layout_stand_ins: std::collections::HashSet<String>,
+    pub(crate) layout_stand_ins: std::collections::HashSet<TypeId>,
     /// The bounds a generic struct or enum declares on its parameters, in
     /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
     /// Every method of the type may assume them (#1364).
@@ -267,6 +294,7 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
+            stdlib_decls: HashSet::new(),
             written_names: HashMap::new(),
             declared_names: HashMap::new(),
             stdlib_mode: false,
@@ -277,6 +305,7 @@ impl TypeTable {
             const_lengths: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
+            lang: HashMap::new(),
             builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
             type_method_decls: HashMap::new(),
@@ -286,7 +315,7 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
-            layout_types: HashMap::new(),
+            layout_types: std::collections::HashSet::new(),
             declared_types: HashMap::new(),
             layout_stand_ins: std::collections::HashSet::new(),
             declared_param_bounds: HashMap::new(),
@@ -394,7 +423,7 @@ impl TypeTable {
         // matching the resolver and interpreter registrations. Without a real
         // TypeDef entry, a user-written `Ordering` annotation is rejected as an
         // unknown type even though the name resolves.
-        self.register_type(TypeDef::Enum {
+        let ordering = self.register_type(TypeDef::Enum {
             name: "Ordering".to_string(),
             type_params: vec![],
             variants: rask_stdlib::ORDERING_VARIANTS
@@ -409,6 +438,8 @@ impl TypeTable {
             backing: None,
             variant_decls: rask_stdlib::ORDERING_VARIANTS.iter().map(|_| rask_types::VariantDecl::synthesized(0)).collect(),
         });
+        self.layout_types.insert(ordering);
+        self.lang.insert(rask_types::LangItem::Ordering, ordering);
     }
 
     /// Register a user-defined type.
@@ -452,8 +483,21 @@ impl TypeTable {
         let id = TypeId(self.types.len() as u32);
         let mut def = def;
         if self.stdlib_mode {
+            // `@lang(…)`: one of the declarations the compiler relies on.
+            for attr in def.attrs().iter().filter(|a| a.is("lang")) {
+                let item = attr
+                    .args
+                    .iter()
+                    .flatten()
+                    .find_map(|a| a.value.ident())
+                    .and_then(rask_types::LangItem::from_attr)
+                    .unwrap_or_else(|| panic!("`@lang` on `{name}` names no lang item"));
+                let previous = self.lang.insert(item, id);
+                assert!(previous.is_none(), "two stdlib declarations claim {item:?}");
+            }
             // Stdlib code always means this one.
             self.stdlib_type_names.insert(name.clone(), id);
+            self.stdlib_decls.insert(id);
             // Program code means it too, unless the program declares its
             // own. Registering stdlib first and not overwriting later is
             // what makes a program type shadow rather than collide.
@@ -664,23 +708,37 @@ impl TypeTable {
         self.type_method_decls.iter().map(|(id, decls)| (*id, decls.as_slice()))
     }
 
-    /// Register a transparent type alias.
+    /// Register a transparent type alias. `params` are a generic alias's
+    /// type parameters, which its target is written in.
     ///
     /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
     /// the program takes the name, the program's too; a program alias is the
     /// program's only.
-    pub fn register_alias(&mut self, name: String, target: TypeExpr) {
+    pub fn register_alias(&mut self, name: String, params: Vec<String>, target: TypeExpr) {
+        let alias = Alias { params, target };
         if self.stdlib_mode {
-            self.stdlib_aliases.insert(name.clone(), target.clone());
-            self.type_aliases.entry(name).or_insert(target);
+            self.stdlib_aliases.insert(name.clone(), alias.clone());
+            self.type_aliases.entry(name).or_insert(alias);
         } else {
-            self.type_aliases.insert(name, target);
+            self.type_aliases.insert(name, alias);
         }
     }
 
-    /// The aliases the code being checked can see.
-    pub(super) fn aliases(&self) -> &HashMap<String, TypeExpr> {
+    pub(super) fn aliases(&self) -> &HashMap<String, Alias> {
         if self.stdlib_mode { &self.stdlib_aliases } else { &self.type_aliases }
+    }
+
+    /// A generic alias written with arguments, `GH<i64>` under
+    /// `type alias GH<T> = Holder<T>`: its target with the arguments in.
+    /// `None` when `name` isn't a generic alias or the count is wrong.
+    pub fn alias_at(&self, name: &str, args: &[TypeExpr]) -> Option<TypeExpr> {
+        let alias = self.aliases().get(name)?;
+        if alias.params.is_empty() || alias.params.len() != args.len() {
+            return None;
+        }
+        Some(alias.target.substitute(&|p| {
+            alias.params.iter().position(|q| q == p).map(|i| args[i].clone())
+        }))
     }
 
     /// The type `name` is an alias for, following a chain of aliases that name
@@ -691,11 +749,11 @@ impl TypeTable {
     /// there under its own name.
     pub fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
         let aliases = self.aliases();
-        let mut target = aliases.get(name)?;
+        let mut target = &aliases.get(name)?.target;
         let mut seen = vec![name];
         // A cycle was rejected at registration; `seen` only keeps a bad table
         // from looping.
-        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)) {
+        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)).map(|a| &a.target) {
             let n = target.bare_name().unwrap_or_default();
             if seen.contains(&n) {
                 return None;
@@ -733,7 +791,7 @@ impl TypeTable {
             if current_name == name {
                 return Some(path);
             }
-            let next = self.aliases().get(current_name)?;
+            let next = &self.aliases().get(current_name)?.target;
             path.push(next.to_string());
             current = next;
         }
@@ -1018,6 +1076,13 @@ impl TypeTable {
     /// read before any declaration is registered, so their `any I` carries no
     /// declaration yet; it is the stdlib's `I`, even where a program declares
     /// its own (#1426).
+    /// The type a stub signature's name means: the stdlib's declaration of
+    /// it. A name the stdlib doesn't declare (a stub's single-letter
+    /// wildcard, a compiler-provided `Heap`) stays a name.
+    fn stdlib_reads(&self, name: &str) -> Option<TypeId> {
+        self.shadowed_stdlib_type(name).or_else(|| self.stdlib_type_names.get(name).copied())
+    }
+
     pub fn as_stdlib_reads(&self, ty: &Type) -> Type {
         let each = |args: &[GenericArg]| -> Vec<GenericArg> {
             args.iter()
@@ -1043,14 +1108,21 @@ impl TypeTable {
             // A name the program has taken for a type of its own still means
             // the stdlib's here: `parse` fails with the stdlib's `ParseError`
             // whatever the program calls its enum (#1333).
-            Type::UnresolvedNamed(name) if self.shadowed_stdlib_type(name).is_some() => {
-                Type::Named(self.shadowed_stdlib_type(name).unwrap())
-            }
+            //
+            // And a stdlib type the program never imported is still the type:
+            // `fs.current_dir()` returns the stdlib's `Path` whether or not the
+            // program can write `Path`. Left a bare name, nothing downstream
+            // could size it.
+            Type::UnresolvedNamed(name) => match self.stdlib_reads(name) {
+                Some(id) => Type::Named(id),
+                None => ty.clone(),
+            },
             Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
-            Type::UnresolvedGeneric { name, args } => match self.shadowed_stdlib_type(name) {
+            Type::UnresolvedGeneric { name, args } => match self.stdlib_reads(name) {
                 Some(base) => Type::Generic { base, args: each(args) },
                 None => Type::UnresolvedGeneric { name: name.clone(), args: each(args) },
             },
+            Type::Union(members) => Type::Union(members.iter().map(|m| self.as_stdlib_reads(m)).collect()),
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| p.map(|p| self.as_stdlib_reads(p))).collect(),
@@ -1288,7 +1360,8 @@ impl TypeTable {
         None
     }
 
-    /// XC4/XC5: remember which package's block a method came from.
+    /// XC5: remember that `package`'s block on someone else's type declares
+    /// `method` with the body `decl`.
     pub(super) fn record_impl_method_package(
         &mut self,
         type_id: TypeId,
@@ -1305,17 +1378,36 @@ impl TypeTable {
         }
     }
 
-    /// XC4/XC5: the packages whose blocks declare this method on this type.
-    /// One entry is the ordinary case and needs no disambiguation.
-    pub(super) fn impl_method_packages(
-        &self,
-        type_id: TypeId,
-        method: &str,
-    ) -> &[(String, NodeId)] {
-        self.impl_method_packages
-            .get(&(type_id, method.to_string()))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    /// The declaration a call of `method` on `recv` runs: the receiver's own
+    /// method of that name, the one `package`'s block supplies when the
+    /// call's package wrote one (XC5). `None` when nothing declared has a body
+    /// for it: a primitive's operation, a native, a type parameter.
+    ///
+    /// Rendering (`to_string`, and `__fmt` that `{x}` desugars to) runs
+    /// `to_string`, or `message` for an error type that is displayable
+    /// through it (std.fmt/D5).
+    pub fn method_body(&self, recv: &Type, method: &str, package: Option<&str>) -> Option<NodeId> {
+        let id = self.conformance_target(recv)?;
+        let methods: &[MethodSig] = match self.get(id)? {
+            TypeDef::Struct { methods, .. }
+            | TypeDef::Enum { methods, .. }
+            | TypeDef::NominalAlias { methods, .. }
+            | TypeDef::Primitive { methods, .. } => methods,
+            _ => return None,
+        };
+        let body_of = |name: &str| -> Option<NodeId> {
+            if let Some(pkg) = package {
+                let sites = self.impl_method_packages.get(&(id, name.to_string()));
+                if let Some((_, decl)) = sites.into_iter().flatten().find(|(p, _)| p == pkg) {
+                    return Some(*decl);
+                }
+            }
+            methods.iter().filter(|m| m.name == name).find_map(|m| m.decl)
+        };
+        match method {
+            "to_string" | "__fmt" => body_of("to_string").or_else(|| body_of("message")),
+            _ => body_of(method),
+        }
     }
 
     /// XC3: is any conformance on this type declared more than once?
@@ -1752,6 +1844,68 @@ impl TypeTable {
     /// an `item: T`. The declaration alone can't say — `T` is linear only at
     /// some instantiations — so `is_transitive_resource` was false and a
     /// `Holder<Conn>` was dropped with no error (#1366).
+    /// A handle that frees itself and has no `clone`, where cloning `ty` would
+    /// copy it: the value itself, an element of a container whose clone copies
+    /// its elements, a field or a payload. Copying the handle's pointer leaves
+    /// two owners to free one block (#1887).
+    pub fn uncloneable_handle(&self, ty: &Type) -> Option<Type> {
+        self.uncloneable_handle_in(ty, &mut Vec::new())
+    }
+
+    fn uncloneable_handle_in(&self, ty: &Type, seen: &mut Vec<(TypeId, Vec<GenericArg>)>) -> Option<Type> {
+        let (id, args): (TypeId, &[GenericArg]) = match ty {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args),
+            Type::Tuple(parts) | Type::Union(parts) => {
+                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen));
+            }
+            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen),
+            Type::Result { ok, err } => {
+                return self.uncloneable_handle_in(ok, seen).or_else(|| self.uncloneable_handle_in(err, seen));
+            }
+            _ => return None,
+        };
+        let def = self.get(id)?;
+        let declares_clone = match def {
+            TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => {
+                methods.iter().any(|m| m.name == "clone")
+            }
+            _ => true,
+        };
+        if def.runtime_handle().is_some_and(|h| h.release.is_some()) {
+            if !declares_clone {
+                return Some(ty.clone());
+            }
+            // A container's clone copies its elements.
+            return args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen),
+                _ => None,
+            });
+        }
+        if seen.iter().any(|(i, a)| *i == id && a.as_slice() == args) {
+            return None;
+        }
+        seen.push((id, args.to_vec()));
+        let (params, slots): (&Vec<String>, Vec<&Type>) = match def {
+            TypeDef::Struct { type_params, fields, .. } => (type_params, fields.iter().map(|(_, t)| t).collect()),
+            TypeDef::Enum { type_params, variants, .. } => {
+                (type_params, variants.iter().flat_map(|(_, ts)| ts.iter()).collect())
+            }
+            _ => return None,
+        };
+        let subst: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        slots
+            .into_iter()
+            .find_map(|t| self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen))
+    }
+
     fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {
         let (params, slots): (&Vec<String>, Vec<&Type>) = match self.get(base) {
             Some(TypeDef::Struct { type_params, fields, .. }) => {
@@ -1836,7 +1990,29 @@ impl TypeTable {
     /// closure literal; monomorphization asks again for a closure in a generic
     /// body, whose capture types are only concrete per instantiation.
     pub fn task_bound(&self, ty: &Type) -> Option<TaskBound> {
-        self.task_bound_inner(ty, &mut Vec::new())
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Task)
+    }
+
+    /// What keeps a value on one side of a borrowing task (conc.async/B3):
+    /// what keeps it on its task, and a rack as well. A rack isn't
+    /// task-bound, since moving it takes its links along; two sides
+    /// *borrowing* one would both write its edge index whenever either stores
+    /// a link.
+    pub fn side_bound(&self, ty: &Type) -> Option<TaskBound> {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Side)
+    }
+
+    /// Whether storing a value of this type records a link with a rack: it is
+    /// or holds one, and isn't a `Staged` buffer, whose links aren't edges
+    /// (mem.racks/RK17). A rack it holds doesn't count; its links are its own.
+    pub fn holds_registered_link(&self, ty: &Type) -> bool {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Store).is_some()
+    }
+
+    /// Whether a value of this type is or holds a rack, and so can delete
+    /// nodes through a `mutate` use of it.
+    pub fn holds_rack(&self, ty: &Type) -> bool {
+        self.task_bound_inner(ty, &mut Vec::new(), BoundMode::Racks).is_some()
     }
 
     /// Is a closure in a generic body task-bound in one instantiation? Its
@@ -1892,54 +2068,57 @@ impl TypeTable {
     ///
     /// A `Rack` isn't walked: moving the whole rack takes its nodes' links with
     /// the nodes they point at, which is how `snapshot()` hands a graph over.
-    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
+    fn task_bound_inner(&self, ty: &Type, seen: &mut Vec<TypeId>, mode: BoundMode) -> Option<TaskBound> {
         if let Some(args) = self.shared_args(ty) {
-            if self.shared_strategy_name(args) == "Local" {
+            if matches!(mode, BoundMode::Task | BoundMode::Side) && self.shared_strategy_name(args) == "Local" {
                 return Some(TaskBound::LocalBox);
             }
         }
         let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
-            "Link" => Some(TaskBound::Link),
-            "Rack" => None,
+            "Link" => (mode != BoundMode::Racks).then_some(TaskBound::Link),
+            "Rack" => matches!(mode, BoundMode::Side | BoundMode::Racks).then_some(TaskBound::Rack),
+            // A buffer's links aren't edges, and it can't delete anything; it
+            // still may not cross to another task, where its rack isn't.
+            "Staged" if mode != BoundMode::Task => None,
             _ => args.iter().find_map(|a| match a {
-                GenericArg::Type(t) => self.task_bound_inner(t, seen),
+                GenericArg::Type(t) => self.task_bound_inner(t, seen, mode),
                 _ => None,
             }),
         };
         match ty {
-            Type::Named(id) => self.def_task_bound(*id, seen),
+            Type::Named(id) => self.def_task_bound(*id, seen, mode),
             Type::UnresolvedNamed(name) => {
-                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, mode))
             }
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen))
+                generic(full.as_str(), args, seen).or_else(|| self.def_task_bound(*base, seen, mode))
             }
             Type::UnresolvedGeneric { name, args } => generic(name, args, seen).or_else(|| {
-                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen))
+                self.type_names.get(name).and_then(|&id| self.def_task_bound(id, seen, mode))
             }),
             Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().find_map(|t| self.task_bound_inner(t, seen))
+                elems.iter().find_map(|t| self.task_bound_inner(t, seen, mode))
             }
-            Type::Array { elem, .. } => self.task_bound_inner(elem, seen),
+            Type::Array { elem, .. } => self.task_bound_inner(elem, seen, mode),
             Type::Result { ok, err } => self
-                .task_bound_inner(ok, seen)
-                .or_else(|| self.task_bound_inner(err, seen)),
+                .task_bound_inner(ok, seen, mode)
+                .or_else(|| self.task_bound_inner(err, seen, mode)),
             _ => None,
         }
     }
 
-    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>) -> Option<TaskBound> {
+    fn def_task_bound(&self, id: TypeId, seen: &mut Vec<TypeId>, mode: BoundMode) -> Option<TaskBound> {
         if seen.contains(&id) {
             return None;
         }
         seen.push(id);
         match self.types.get(id.0 as usize) {
             Some(TypeDef::Struct { fields, .. }) => {
-                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen))
+                fields.iter().find_map(|(_, t)| self.task_bound_inner(t, seen, mode))
             }
             Some(TypeDef::Enum { variants, .. }) => variants.iter().find_map(|(_, payload)| {
-                payload.iter().find_map(|t| self.task_bound_inner(t, seen))
+                payload.iter().find_map(|t| self.task_bound_inner(t, seen, mode))
             }),
             _ => None,
         }
@@ -2427,6 +2606,28 @@ impl TypeTable {
     }
 
     /// Get TypeId for the builtin Result<T, E> enum.
+    /// The declaration a lang item names. `None` only when the program never
+    /// pulled in the stdlib module that declares it.
+    pub fn lang(&self, item: rask_types::LangItem) -> Option<TypeId> {
+        self.lang.get(&item).copied()
+    }
+
+    /// Is `ty` the lang item `item` (or an instance of it)?
+    pub fn is_lang(&self, ty: &Type, item: rask_types::LangItem) -> bool {
+        matches!(ty, Type::Named(id) | Type::Generic { base: id, .. } if self.lang(item) == Some(*id))
+    }
+
+    /// Did the stdlib declare this type?
+    pub fn declared_by_stdlib(&self, id: TypeId) -> bool {
+        self.stdlib_decls.contains(&id)
+    }
+
+    /// Does the declaration say the runtime owns its storage and the value is
+    /// a pointer to it (`@handle`)?
+    pub fn is_handle(&self, id: TypeId) -> bool {
+        self.get(id).is_some_and(|def| def.runtime_handle().is_some())
+    }
+
     pub fn get_result_type_id(&self) -> Option<TypeId> {
         self.result_type_id
     }
@@ -2690,6 +2891,12 @@ impl TypeTable {
         self.type_param_scope
             .extend(names.into_iter().map(|name| ScopedTypeParam { name, declared }));
         mark
+    }
+
+    /// The type parameters in scope now, for a check that runs after the
+    /// scope has closed.
+    pub fn type_params_in_scope(&self) -> Vec<String> {
+        self.type_param_scope.iter().map(|p| p.name.clone()).collect()
     }
 
     /// Drop everything pushed since `mark`.

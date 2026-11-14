@@ -46,6 +46,10 @@ struct RaskMap {
     // once at construction. See `RaskElemStrs` in rask_runtime.h.
     RaskElemStrs key_strs;
     RaskElemStrs val_strs;
+    // The rack's edge records that name this map; see `RaskVec.link_edges`.
+    void *link_edges;
+    // Whether values hold links inside them; see `RaskVec.links`.
+    int32_t links;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -293,6 +297,11 @@ static void map_retain_entry(const RaskMap *m, char *key, char *val) {
 // nothing else, so a map built with one grows exactly like a map built
 // without. Probing is `% cap`, so any positive number works — no rounding to
 // a power of two.
+static inline int map_links_inline(RaskMap *m) {
+    if (__builtin_expect(m->links == 1, 1)) return 0;
+    return m->links == 2 || rask_map_holds_struct_links(m);
+}
+
 static RaskMap *map_new(int64_t key_size, int64_t val_size,
                         RaskHashFn hash, RaskEqFn eq, int64_t cap,
                         RaskElemStrs key_strs, RaskElemStrs val_strs) {
@@ -309,6 +318,10 @@ static RaskMap *map_new(int64_t key_size, int64_t val_size,
     };
     map_alloc_tables(m, cap > 0 ? cap : MAP_INITIAL_CAP);
     return m;
+}
+
+void **rask_map_link_edges(RaskMap *m) {
+    return &m->link_edges;
 }
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
@@ -379,6 +392,7 @@ RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t 
 void rask_map_free(RaskMap *m) {
     if (!m) return;
     map_check_no_borrows(m, "free");
+    if (m->link_edges) rask_link_holder_died(&m->link_edges);
     int has_key = m->key_strs.offsets && m->key_strs.count > 0;
     int has_val = m->val_strs.offsets && m->val_strs.count > 0;
     if ((has_key || has_val) && m->states) {
@@ -461,7 +475,33 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
 // Returns 0 if inserted new, 1 if updated existing. Used where the caller
 // discards the answer — `m[k] = v`, rehashing, cloning, the runtime's own maps.
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
-    return map_insert_impl(m, key, val, NULL);
+    int64_t r = map_insert_impl(m, key, val, NULL);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
+    return r;
+}
+
+int64_t rask_map_holds_struct_links(RaskMap *m) {
+    if (!m) return 0;
+    if (!m->links) {
+        m->links = 1;
+        for (int64_t i = 0; m->val_strs.offsets && i < m->val_strs.count; i++) {
+            if (((uint32_t)m->val_strs.offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) {
+                m->links = 2;
+            }
+        }
+    }
+    return m->links == 2;
+}
+
+const RaskElemStrs *rask_map_val_strs(const RaskMap *m) {
+    return &m->val_strs;
+}
+
+void rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *ctx) {
+    if (!m) return;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) fn(m->vals + i * m->val_size, ctx);
+    }
 }
 
 // `Map.insert` is declared `-> V?`, so this is what it calls: a pointer to the
@@ -470,19 +510,8 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
 void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     void *old = NULL;
     map_insert_impl(m, key, val, &old);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
     return old;
-}
-
-// Put back a value `with m[k]` or `for mutate` took out of the entry for `key`
-// (`Map_lend` in MIR). The key stays as it is, and what the copy owns is what
-// the entry owned, less whatever the body released and plus whatever it
-// stored, so nothing is released here.
-void rask_map_write_back(RaskMap *m, const void *key, const void *val) {
-    void *slot = rask_map_get(m, key);
-    if (!slot) {
-        rask_panic("key not found in map");
-    }
-    memcpy(slot, val, (size_t)m->val_size);
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {

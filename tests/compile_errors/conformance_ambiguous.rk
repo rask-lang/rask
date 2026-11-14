@@ -2,7 +2,7 @@
 // Compile Error: a call or a conformance that two conformances could both
 // answer (type.generics/GT7, MN3)
 // Rejects: `feed(none)`, which fits `Feed<Html>`'s `feed(Html?)` and
-// `Feed<Json>`'s `feed(Json?)` alike (E0957), and `Boxed<T>` conforming to
+// `Feed<Json>`'s `feed(Json?)` alike (E0973), and `Boxed<T>` conforming to
 // `Render<T>` and `Render<Html>`, which meet at `Boxed<Html>` (E0889).
 
 interface Feed<K> {
@@ -56,6 +56,6 @@ Boxed<T> implements Render<Html> {
 
 func main() {
     let s = Sink(n: 1)
-    // ERROR: E0957, `none` could be either
+    // ERROR: E0973, `none` could be either
     println(s.feed(none))
 }

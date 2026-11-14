@@ -85,9 +85,9 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
-    // Instantiated generic bodies have nodes the checker never saw; mono
-    // carried its records onto them. Lowering wants one map for both.
-    let records = input.mono.node_records(input.typed);
+    // A generic instance's body shares the original's nodes; what differs is
+    // in its own records, which lowering enters per function.
+    let records = rask_mono::NodeRecords::from_typed(input.typed);
     let mut ctx = rask_mir::lower::MirContext::new(
         input.typed,
         &input.mono.struct_layouts,
@@ -131,6 +131,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
                 continue;
             }
         }
+        ctx.enter_instance(mono_fn);
         match rask_mir::lower::MirLowerer::lower_function_named(
             &mono_fn.body, &all_mono_decls, &ctx, Some(&mono_fn.name),
         ) {
@@ -157,11 +158,17 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     rask_mir::fallback::report_coverage();
 
     let calls_as_lowered = functions.iter().map(|f| (f.name.clone(), referred_to(f, input))).collect();
-    let pipeline = rask_mir::PassManager::default_pipeline().run(&mut functions);
+    let field_types = ctx.field_types();
+    let rack_holders = rask_mir::rack_holding_structs(&field_types);
+    let copy_layouts = rask_mir::CopyLayouts::from_fields(&field_types);
+    let pipeline = rask_mir::PassManager::default_pipeline().run_with(&mut functions, rack_holders, copy_layouts);
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
     }
+    // Local structs holding links forget their edges when their frame ends.
+    // After SSA is gone, so the locals named are the ones that hold the bytes.
+    rask_mir::link_holders::forget_local_links(&mut functions);
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }
@@ -266,23 +273,19 @@ pub fn reached_from<'f>(
 fn referred_to(f: &MirFunction, input: &BackEnd) -> Vec<String> {
     use rask_mir::{MirRValue, MirStmtKind};
     let mut out = Vec::new();
-    let mut interface_methods = None;
+    let mut vtables_by_name: Option<HashMap<&str, &rask_mono::VTable>> = None;
     for stmt in f.blocks.iter().flat_map(|b| &b.statements) {
         match &stmt.kind {
             MirStmtKind::Call { func, .. } => out.push(func.name.clone()),
             MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(n), .. } => out.push(n.clone()),
             MirStmtKind::ClosureCreate { func_name, .. } => out.push(func_name.clone()),
             MirStmtKind::EnsureHookRegister { thunk, .. } => out.push(thunk.clone()),
-            MirStmtKind::InterfaceBox { concrete_type, interface_name, .. } => {
-                let methods = interface_methods
-                    .get_or_insert_with(|| rask_check::interface_vtable_methods(&input.typed.types));
-                for method in methods.get(interface_name).into_iter().flatten() {
-                    out.push(
-                        input.mono.vtable_symbols
-                            .get(&(concrete_type.clone(), method.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{concrete_type}_{method}")),
-                    );
+            MirStmtKind::InterfaceBox { vtable_name, .. } => {
+                let vtables = vtables_by_name.get_or_insert_with(|| {
+                    input.mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect::<HashMap<_, _>>()
+                });
+                if let Some(vt) = vtables.get(vtable_name.as_str()) {
+                    out.extend(vt.slots.iter().map(|slot| slot.symbol.clone()));
                 }
             }
             _ => {}
@@ -324,16 +327,19 @@ fn emit_inner(
         DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => None,
         DeclKind::Extern(e) => Some(rask_codegen::ExternFuncSig {
             name: e.name.clone(),
-            link_name: crate::c_import::inline_header(e).map(|_| rask_c_parse::shim::wrapper_symbol(&e.name)),
+            link_name: Some(match crate::c_import::inline_header(e) {
+                Some(_) => rask_c_parse::shim::wrapper_symbol(&e.c_symbol()),
+                None => e.c_symbol(),
+            }),
             // The parser rejects an extern parameter without a type.
-            param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
-            ret_ty: e.ret_ty.clone(),
+            param_types: e.params.iter().filter_map(|p| p.ty.as_ref()).map(|t| checked_extern_type(t, &input.typed.types)).collect(),
+            ret_ty: e.ret_ty.as_ref().map(|t| checked_extern_type(t, &input.typed.types)),
         }),
         _ => None,
     }).collect();
-    let variadic = crate::variadic::route_calls(&mut functions, input.decls)?;
+    let variadic = crate::variadic::route_calls(&mut functions, input.decls, &input.typed.types)?;
     extern_sigs.extend(variadic.iter().map(|w| w.sig.clone()));
-    let macros = crate::c_macros::route_calls(&mut functions)?;
+    let macros = crate::c_macros::route_calls(&mut functions, &input.typed.types)?;
     extern_sigs.extend(macros.plain.iter().map(|w| w.sig.clone()));
     extern_sigs.extend(macros.with_header.iter().map(|(_, w)| w.sig.clone()));
     // Only the externs the program reaches. A header declares far more than
@@ -363,8 +369,7 @@ fn emit_inner(
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types);
 
-    let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
-    let vtables = collect_vtables(&functions, &interface_methods, input.mono);
+    let vtables = collect_vtables(&functions, input.mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables).map_err(fail)?;
     }
@@ -429,6 +434,7 @@ fn write_inline_wrappers(
     // macros of the same name each mean their own.
     let mut by_header: BTreeMap<Vec<std::path::PathBuf>, String> = BTreeMap::new();
     let mut errors = Vec::new();
+    let mut includes: HashMap<std::path::PathBuf, HashSet<std::path::PathBuf>> = HashMap::new();
     for (headers, w) in macros {
         let mut paths = Vec::new();
         for header in headers {
@@ -438,6 +444,19 @@ fn write_inline_wrappers(
                 Err(msg) => errors.push(format!("the header `{}`, which its C macros are compiled with, isn't found: {}", header, msg)),
             }
         }
+        // A header another one on the list includes already comes with it.
+        // Included a second time, one without an include guard redefines
+        // everything in it.
+        for p in &paths {
+            if !includes.contains_key(p) {
+                let found = crate::c_import::included_files(p, &cx).unwrap_or_default();
+                includes.insert(p.clone(), found);
+            }
+        }
+        let brought_in = |p: &std::path::PathBuf| {
+            paths.iter().any(|q| q != p && includes[q].contains(p) && !includes[p].contains(q))
+        };
+        let paths: Vec<std::path::PathBuf> = paths.iter().filter(|p| !brought_in(p)).cloned().collect();
         let src = by_header.entry(paths.clone()).or_insert_with(|| {
             paths.iter().map(|p| format!("#include \"{}\"\n", p.display())).collect()
         });
@@ -557,12 +576,21 @@ fn extern_func_names(decls: &[Decl]) -> HashSet<String> {
     }).collect()
 }
 
+/// The checker's type for a type written in an extern's signature: what the
+/// C ABI classifier finds a struct argument's layout by, and what codegen
+/// declares a scalar with. The checker resolved the same spelling when it
+/// checked calls to the extern; one it couldn't is `Error`, which crosses as
+/// a word.
+pub(crate) fn checked_extern_type(ty: &rask_ast::ty::TypeExpr, types: &rask_check::TypeTable) -> rask_types::Type {
+    rask_check::resolve_type_expr(ty, types).unwrap_or(rask_types::Type::Error)
+}
+
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
-fn collect_vtables(
-    functions: &[MirFunction],
-    interface_methods: &HashMap<String, Vec<String>>,
-    mono: &MonoProgram,
-) -> Vec<rask_codegen::vtable::VTableInfo> {
+fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_codegen::vtable::VTableInfo> {
+    // Each table with the concrete type it was built for: what the box's
+    // value owns is read off that type's layout.
+    let by_name: HashMap<&str, (&rask_types::Type, &rask_mono::VTable)> =
+        mono.vtables.iter().map(|((ty, _), vt)| (vt.name.as_str(), (ty, vt))).collect();
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
     for mir_fn in functions {
@@ -576,15 +604,11 @@ fn collect_vtables(
                 if !seen.insert(vtable_name.clone()) {
                     continue;
                 }
-                let methods = interface_methods.get(interface_name).cloned().unwrap_or_default();
-                let vt_methods = methods.iter().enumerate()
-                    .map(|(i, method_name)| rask_codegen::vtable::VTableMethod {
-                        name: method_name.clone(),
-                        func_name: mono
-                            .vtable_symbols
-                            .get(&(concrete_type.clone(), method_name.clone()))
-                            .cloned()
-                            .unwrap_or_else(|| format!("{}_{}", concrete_type, method_name)),
+                let Some(&(concrete, table)) = by_name.get(vtable_name.as_str()) else { continue };
+                let vt_methods = table.slots.iter().enumerate()
+                    .map(|(i, slot)| rask_codegen::vtable::VTableMethod {
+                        name: slot.method.clone(),
+                        func_name: slot.symbol.clone(),
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();
@@ -593,7 +617,7 @@ fn collect_vtables(
                 // holder for either.
                 let mut visited = HashSet::new();
                 let owned = rask_codegen::drop_fields::owned_fields(
-                    concrete_type, 0, &mono.struct_layouts, &mono.type_names, &mut visited,
+                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mono.handle_releases, &mut visited,
                 );
                 vtables.push(rask_codegen::vtable::VTableInfo {
                     data_name: vtable_name.clone(),

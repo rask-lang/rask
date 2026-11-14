@@ -127,16 +127,10 @@ fn call_targets_records_free_and_method_dispatch() {
 }
 
 #[test]
-fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
-    // An instantiated generic used to number its nodes from zero, so its nodes
-    // collided with the original program's. Every per-node lookup inside such a
-    // body — type, dispatch target, type arguments — then answered with an
-    // unrelated node's record rather than missing. Lowering papered over it by
-    // guessing from AST shape, which is why so much of it reconstructs
-    // information the checker already had.
-    //
-    // Two instantiations also numbered from zero identically, so they collided
-    // with each other as well.
+fn each_instance_reads_the_shared_body_at_its_own_arguments() {
+    // Every instance of a generic function shares its body's node ids; what
+    // differs between them is read through the instance. Two instances of
+    // `identity` give the same `x` two different types.
     let path = tmp_rk(r#"
         func identity<T>(x: T) -> T {
             return x
@@ -150,28 +144,19 @@ fn instantiated_bodies_dont_reuse_the_programs_node_ids() {
     let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
 
-    let checker_max = result.typed.node_types.keys().map(|n| n.0).max().unwrap_or(0);
-    let carried = &result.mono.instantiated_node_types;
-
-    assert!(
-        !carried.is_empty(),
-        "two instantiations of first_of<T> should have carried node records; \
-         an empty map means lowering is back to guessing inside them",
-    );
-    for id in carried.keys() {
-        assert!(
-            id.0 > checker_max,
-            "instantiated node {} is inside the original program's id range \
-             (max {}) — a lookup there answers with another node's record",
-            id.0, checker_max,
-        );
-    }
-    // Both instantiations must be represented. Numbering each copy from zero
-    // made them collide with each other as well as with the program.
-    assert!(
-        result.mono.functions.iter().filter(|f| !f.type_args.is_empty()).count() >= 2,
-        "expected an instantiation per type argument",
-    );
+    let instances: Vec<_> = result
+        .mono
+        .functions
+        .iter()
+        .filter(|f| f.name.starts_with("identity$"))
+        .collect();
+    assert_eq!(instances.len(), 2, "expected an instantiation per type argument");
+    let a = rask_mono::Instance::new(&instances[0].type_args, &instances[0].projections, &result.typed);
+    let b = rask_mono::Instance::new(&instances[1].type_args, &instances[1].projections, &result.typed);
+    let differs = result.typed.node_types.keys().any(|&id| {
+        matches!((a.node_type(id), b.node_type(id)), (Some(x), Some(y)) if x != y)
+    });
+    assert!(differs, "the two instances type a shared node differently");
     let _ = std::fs::remove_file(&path);
 }
 
@@ -855,5 +840,54 @@ fn dt1_public_nominal_interface_is_fine() {
     let output = check_file(path.to_str().unwrap(), &default_config());
     assert!(output.succeeded(), "hardened public interface must type-check, got: {:?}",
         output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn w2_warns_on_a_discarded_result_and_nowhere_else() {
+    // tool.warnings/W2: a call whose `T or E` goes nowhere. An `if` or block
+    // written as a statement throws away what its branches end with; one used
+    // as a value doesn't, and neither do `let _`, `catch` or `ensure`.
+    let path = tmp_rk(r#"
+        struct SaveError {}
+        SaveError implements Error {
+            func message(self) -> string { return "e" }
+        }
+        func save(n: i64) -> void or SaveError {
+            if n < 0 {
+                return SaveError()
+            }
+            return
+        }
+        func kept(c: bool) -> void or SaveError {
+            let r = if c { save(1) } else { save(2) }
+            let _ = save(3)
+            save(4) catch _ => {}
+            ensure save(5)
+            return r
+        }
+        func dropped(c: bool) {
+            save(6)
+            if c {
+                save(7)
+            }
+            for i in 0..2 {
+                save(i)
+            }
+        }
+        func main() {
+            let _ = kept(true)
+            dropped(false)
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    let lines: Vec<usize> = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "W0301"))
+        .filter_map(|d| d.labels.first().map(|l| l.span.start))
+        .collect();
+    assert_eq!(lines.len(), 3, "expected save(6), save(7) and save(i): {:?}", output.diagnostics);
+    assert_eq!(error_count(&output.diagnostics), 0, "{:?}", output.diagnostics);
     let _ = std::fs::remove_file(&path);
 }

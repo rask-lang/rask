@@ -9,7 +9,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::LineMap;
-use rask_mir::{MirConst, MirFunction, MirOperand};
+use rask_mir::{MirConst, MirFunction, MirOperand, MirStmtKind};
 use rask_layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
@@ -24,6 +24,8 @@ pub struct CodeGenerator {
     pub(crate) struct_layouts: Vec<StructLayout>,
     /// The checker's name for each type id, from monomorphization.
     type_names: HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id; from mono.
+    handle_releases: rask_mono::drop_names::HandleReleases,
     /// Enum layouts from monomorphization
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
@@ -126,6 +128,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -200,6 +203,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -1223,6 +1227,56 @@ impl CodeGenerator {
     ///
     /// Call this after `declare_runtime_functions()` and before `declare_functions()`.
     /// User-defined functions declared later will shadow any matching stdlib names.
+    /// The runtime functions lowering calls by symbol (`FunctionRef::runtime`):
+    /// each argument a word, a word back when the call has a destination. The
+    /// call states the shape, so there is no dispatch row to keep in step.
+    fn declare_runtime_calls(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        let mut arity: HashMap<String, (usize, bool)> = HashMap::new();
+        for mir_fn in mir_functions {
+            for block in &mir_fn.blocks {
+                for stmt in &block.statements {
+                    let MirStmtKind::Call { dst, func, args } = &stmt.kind else { continue };
+                    if !func.runtime {
+                        continue;
+                    }
+                    let shape = (args.len(), dst.is_some());
+                    match arity.get(&func.name) {
+                        // Two calls disagreeing on the argument count is a
+                        // lowering bug; a call that drops the result is fine.
+                        Some((n, _)) if *n != shape.0 => {
+                            return Err(CodegenError::UnsupportedFeature(format!(
+                                "runtime call `{}` made with {} and {} arguments",
+                                func.name, n, shape.0
+                            )));
+                        }
+                        Some((_, ret)) if *ret || !shape.1 => {}
+                        _ => {
+                            arity.insert(func.name.clone(), shape);
+                        }
+                    }
+                }
+            }
+        }
+        for (name, (params, ret)) in arity {
+            if self.func_ids.contains_key(&name) {
+                continue;
+            }
+            let mut sig = self.module.make_signature();
+            for _ in 0..params {
+                sig.params.push(AbiParam::new(types::I64));
+            }
+            if ret {
+                sig.returns.push(AbiParam::new(types::I64));
+            }
+            let id = self
+                .module
+                .declare_function(&name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name, id);
+        }
+        Ok(())
+    }
+
     pub fn declare_stdlib_functions(&mut self) -> CodegenResult<()> {
         crate::dispatch::declare_stdlib(&mut self.module, &mut self.func_ids)
     }
@@ -1353,7 +1407,9 @@ impl CodeGenerator {
         // Store layouts for use during code generation
         self.struct_layouts = mono.struct_layouts.clone();
         self.type_names = mono.type_names.clone();
+        self.handle_releases = mono.handle_releases.clone();
         self.enum_layouts = mono.enum_layouts.clone();
+        self.declare_runtime_calls(mir_functions)?;
 
         for mir_fn in mir_functions {
             // Skip empty-body stubs that shadow stdlib entries (e.g.
@@ -1374,6 +1430,20 @@ impl CodeGenerator {
                 &mir_fn.name
             };
 
+            // Only what C reaches by name is global: `extern "C"` functions,
+            // the entry point and the constants' release. Everything else is
+            // local to the object. A global `write` or `read` in the program
+            // was the one the linker handed the C runtime, so `sock_write`'s
+            // call to libc's `write(2)` ran a Rask function instead.
+            let linkage = if mir_fn.is_extern_c
+                || mir_fn.name == "main"
+                || mir_fn.name == rask_mir::CONST_FREE_FN
+            {
+                Linkage::Export
+            } else {
+                Linkage::Local
+            };
+
             // C calls it with a struct by value: the exported name goes to a
             // thunk that follows C's rules, and the body keeps Rask's.
             let func_id = match self.c_entry_plan(mir_fn) {
@@ -1382,7 +1452,7 @@ impl CodeGenerator {
                     self.declare_c_entry(mir_fn, &export_name, &sig, params, ret)?
                 }
                 None => self.module
-                    .declare_function(export_name, Linkage::Export, &sig)
+                    .declare_function(export_name, linkage, &sig)
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?,
             };
 
@@ -1768,18 +1838,18 @@ impl CodeGenerator {
 
         // One reference per distinct free, declared up front — a container and
         // a string field don't share one.
-        let mut free_refs: std::collections::HashMap<&'static str, cranelift_codegen::ir::FuncRef> =
+        let mut free_refs: std::collections::HashMap<&str, cranelift_codegen::ir::FuncRef> =
             std::collections::HashMap::new();
         for f in fields {
-            if free_refs.contains_key(f.free_fn) {
+            if free_refs.contains_key(f.free_fn.as_str()) {
                 continue;
             }
             let id = *self
                 .func_ids
-                .get(f.free_fn)
-                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.to_string()))?;
+                .get(&f.free_fn)
+                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.clone()))?;
             let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
-            free_refs.insert(f.free_fn, r);
+            free_refs.insert(f.free_fn.as_str(), r);
         }
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
@@ -1793,7 +1863,7 @@ impl CodeGenerator {
 
         let data_ptr = fb.block_params(entry)[0];
         for f in fields {
-            let free_ref = free_refs[f.free_fn];
+            let free_ref = free_refs[f.free_fn.as_str()];
             match f.shape {
                 // The slot is the header: pass its address.
                 crate::drop_fields::ReleaseShape::ByAddress => {
@@ -1957,6 +2027,7 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &self.type_names,
+            &self.handle_releases,
             &string_globals,
             &string_header_globals,
             &element_offset_globals,
@@ -2537,7 +2608,7 @@ fn collect_element_offsets(
         for stmt in &block.statements {
             // A retained aggregate walks the list its type would describe a
             // container element by.
-            if let rask_mir::MirStmtKind::RcIncContents { local } = &stmt.kind {
+            if let rask_mir::MirStmtKind::RcIncContents { local, .. } = &stmt.kind {
                 let ty = mir_fn
                     .locals
                     .iter()

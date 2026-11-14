@@ -8,6 +8,9 @@
 //
 // Only Copy captures get this far — anything larger is already an escaping
 // borrow (E0862) or moved in, and a move leaves the parent nothing to read.
+//
+// A task joined in the block that spawned it borrows instead, and its writes
+// land (conc.async/B1). These hand their handles on, so they carry.
 
 func main() {
     using Multitasking {
@@ -16,7 +19,7 @@ func main() {
         let h = spawn {
             count += 1
         }
-        h.join()
+        h.detach()
         println("{count}")
 
         mut hits = 0
@@ -27,14 +30,14 @@ func main() {
                 hits = hits + 1
             }
         }
-        g.join()
+        g.detach()
         println("{hits}")
 
         mut named = 0
         // ERROR: E0896 — named first, spawned after, same copy
         let f = || { named += 1 }
         let k = spawn { f() }
-        k.join()
+        k.detach()
         println("{named}")
 
         // A read before the write is not a use of what the write produced.
@@ -44,7 +47,7 @@ func main() {
             // ERROR: E0896 — nothing after this wants the new value
             seen += 1
         }
-        r.join()
+        r.detach()
         println("{seen}")
 
         // Every write here is read — by the next iteration, which writes again.
@@ -56,7 +59,7 @@ func main() {
                 total += i
             }
         }
-        a.join()
+        a.detach()
         println("{total}")
 
         // The loop's `i` is its own, not the capture. The write below is dead
@@ -70,7 +73,7 @@ func main() {
                 println("{i}")
             }
         }
-        s.join()
+        s.detach()
         println("{i}")
     }
 }

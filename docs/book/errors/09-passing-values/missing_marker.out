@@ -1,0 +1,13 @@
+error[E0373]: `go` mutates `world` — mark it at the call site
+  --> docs/book/errors/09-passing-values/missing_marker.rk:18:8
+    |
+ 18 |     go(world, 1)
+    |        ^^^^^ passed to the `mutate world` parameter
+    = fix: go(mutate world, 1)
+    = why: the compiler backstops a misread *move* — using a value after it's
+          moved is an error — but nothing backstops a misread mutation: both
+          readings are legal code, so the one that can't be caught gets written
+          down. The marker follows the signature, not the argument's size, so a
+          Copy argument writes it too. A method receiver is exempt —
+          `player.take_damage(10)` operates on the receiver by construction
+          [mem.parameters/PM4, PM5]

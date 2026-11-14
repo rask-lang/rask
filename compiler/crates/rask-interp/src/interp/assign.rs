@@ -152,20 +152,30 @@ impl Interpreter {
         // Multi-level: drill down through struct fields
         let first = &field_chain[0];
         match obj {
-            Value::Struct(s) => {
+            Value::Struct(s) | Value::Link { node: s, .. } => {
                 let guard = s.lock().unwrap();
                 let inner = guard.fields.get(first).cloned().ok_or_else(|| {
                     RuntimeError::TypeError(format!("no field '{}' on struct", first))
                 })?;
                 drop(guard);
+                // A tuple field is rebuilt and written back as a whole, which
+                // records whatever links the new tuple holds.
+                if let Value::Tuple(items) = &inner {
+                    let rebuilt = self.tuple_with_written(items, &field_chain[1..], value)?;
+                    s.lock().unwrap().fields.insert(first.clone(), rebuilt.clone());
+                    crate::rack::register_field(s, first, Some(&inner), &rebuilt);
+                    return Ok(());
+                }
                 self.assign_nested_field(&inner, &field_chain[1..], value)
             }
-            Value::Link { node, .. } => {
-                let guard = node.lock().unwrap();
-                let inner = guard.fields.get(first).cloned().ok_or_else(|| {
-                    RuntimeError::TypeError(format!("no field '{}' on node", first))
+            Value::Tuple(items) if first.parse::<usize>().is_ok() => {
+                // Reached through something that can't be written back — the
+                // element itself must be a cell for the write to land.
+                let i = first.parse::<usize>().unwrap();
+                let inner = items.get(i).cloned().ok_or(RuntimeError::IndexOutOfBounds {
+                    index: i as i64,
+                    len: items.len(),
                 })?;
-                drop(guard);
                 self.assign_nested_field(&inner, &field_chain[1..], value)
             }
             // `world.player.health = x` — the edge is optional, so the chain
@@ -179,6 +189,34 @@ impl Interpreter {
                 "cannot access field '{}' on {}", first, obj.type_name()
             ))),
         }
+    }
+
+    /// `items` with the place `chain` names inside it set to `value`, as a new
+    /// tuple. An element that is a cell (a struct) is written in place; a
+    /// nested tuple is rebuilt the same way.
+    fn tuple_with_written(
+        &self,
+        items: &std::sync::Arc<Vec<Value>>,
+        chain: &[String],
+        value: Value,
+    ) -> Result<Value, RuntimeError> {
+        let Some(first) = chain.first() else {
+            return Err(RuntimeError::TypeError("cannot assign to a tuple directly through a field chain".to_string()));
+        };
+        let i = first.parse::<usize>().map_err(|_| {
+            RuntimeError::TypeError(format!("cannot access field '{}' on tuple", first))
+        })?;
+        let mut new_items: Vec<Value> = (**items).clone();
+        let len = new_items.len();
+        let slot = new_items.get_mut(i).ok_or(RuntimeError::IndexOutOfBounds { index: i as i64, len })?;
+        if chain.len() == 1 {
+            *slot = wrap_like(Some(slot), value);
+        } else if let Value::Tuple(inner) = slot.clone() {
+            *slot = self.tuple_with_written(&inner, &chain[1..], value)?;
+        } else {
+            self.assign_nested_field(slot, &chain[1..], value)?;
+        }
+        Ok(Value::tuple(new_items))
     }
 
     /// Evaluate an expression that will be the target of an index assignment.
@@ -304,6 +342,13 @@ impl Interpreter {
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get(var_name) {
                             let obj = obj.clone();
+                            // A tuple is a value, not a cell: writing into one
+                            // builds the new tuple and stores it back (#1799).
+                            if let Value::Tuple(items) = &obj {
+                                let rebuilt = self.tuple_with_written(items, &field_chain, value)?;
+                                self.env.assign(var_name, rebuilt);
+                                return Ok(());
+                            }
                             self.assign_nested_field(&obj, &field_chain, value)
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))

@@ -2309,13 +2309,16 @@ impl<'a> Printer<'a> {
                     _ => self.format_expr(body),
                 }
             }
-            ExprKind::Spawn { receiver, body, .. } => {
+            ExprKind::Spawn { receiver, args, body, .. } => {
                 match receiver {
                     Some(r) => {
                         self.format_expr(r);
                         self.emit(".spawn");
                     }
                     None => self.emit("spawn"),
+                }
+                if !args.is_empty() {
+                    self.emit_list(args, |a| a.expr.span, |me, a| me.format_call_arg(a));
                 }
                 // The parser wraps the block in a closure node; only the
                 // block is source. Laid out the way a closure's block body is.
@@ -2727,11 +2730,11 @@ impl<'a> Printer<'a> {
     // --- Patterns ---
 
     fn format_pattern(&mut self, pattern: &Pattern) {
-        match pattern {
-            Pattern::Wildcard => self.emit("_"),
-            Pattern::Ident(name) => self.emit(name),
-            Pattern::Literal(expr) => self.format_expr(expr),
-            Pattern::Constructor { name, fields } => {
+        match &pattern.kind {
+            PatternKind::Wildcard => self.emit("_"),
+            PatternKind::Ident(name) => self.emit(name),
+            PatternKind::Literal(expr) => self.format_expr(expr),
+            PatternKind::Constructor { name, fields } => {
                 self.emit(name);
                 if !fields.is_empty() {
                     self.emit("(");
@@ -2744,7 +2747,7 @@ impl<'a> Printer<'a> {
                     self.emit(")");
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 self.emit(name);
                 self.emit("(");
                 for (i, (fname, fpat)) in fields.iter().enumerate() {
@@ -2752,7 +2755,7 @@ impl<'a> Printer<'a> {
                         self.emit(", ");
                     }
                     self.emit(fname);
-                    if !matches!(fpat, Pattern::Ident(ref n) if n == fname) {
+                    if !matches!(&fpat.kind, PatternKind::Ident(ref n) if n == fname) {
                         self.emit(": ");
                         self.format_pattern(fpat);
                     }
@@ -2765,7 +2768,7 @@ impl<'a> Printer<'a> {
                 }
                 self.emit(")");
             }
-            Pattern::Tuple(elems) => {
+            PatternKind::Tuple(elems) => {
                 self.emit("(");
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -2775,7 +2778,7 @@ impl<'a> Printer<'a> {
                 }
                 self.emit(")");
             }
-            Pattern::Or(alts) => {
+            PatternKind::Or(alts) => {
                 for (i, a) in alts.iter().enumerate() {
                     if i > 0 {
                         self.emit(" | ");
@@ -2783,12 +2786,12 @@ impl<'a> Printer<'a> {
                     self.format_pattern(a);
                 }
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 self.format_expr(start);
                 self.emit("..=");
                 self.format_expr(end);
             }
-            Pattern::TypePat { ty, binding } => {
+            PatternKind::TypePat { ty, binding } => {
                 self.emit(&ty.source());
                 if let Some(name) = binding {
                     self.emit(" as ");

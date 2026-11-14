@@ -202,6 +202,8 @@ struct CodegenCtx<'a> {
     /// The checker's name for each type id, so a resolved type's head can be
     /// read off it rather than off its rendering.
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id (`rask_mono::drop_names`).
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -307,6 +309,7 @@ enum CallAdapt {
 enum HandAdapt {
     VecContains,
     LinkRegisterStruct,
+    LinkGuarded,
     RackInsert,
     /// A `Shared` strategy's `take`.
     BoxTake,
@@ -326,10 +329,13 @@ enum HandAdapt {
 /// Which calls are adapted by hand, by MIR name. One list: it decides both
 /// that a call is adapted here and how.
 fn hand_adaptation(name: &str) -> Option<HandAdapt> {
+    if rask_stdlib::mir_metadata::lookup(name).is_some_and(|m| m.places_node) {
+        return Some(HandAdapt::RackInsert);
+    }
     Some(match name {
         "Vec_contains" => HandAdapt::VecContains,
-        "Link_register_struct" => HandAdapt::LinkRegisterStruct,
-        "Rack_insert" => HandAdapt::RackInsert,
+        "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
+        "rask_link_guarded" => HandAdapt::LinkGuarded,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
         "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
         | "Mutex_replace" => HandAdapt::BoxWrite,
@@ -367,6 +373,7 @@ pub struct FunctionBuilder<'a> {
     /// Enum layouts from monomorphization
     enum_layouts: &'a [EnumLayout],
     type_names: &'a HashMap<rask_types::TypeId, String>,
+    handle_releases: &'a rask_mono::drop_names::HandleReleases,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
@@ -434,7 +441,7 @@ impl<'a> CodegenCtx<'a> {
 
 /// No field types: a builder that wasn't handed lowering's table.
 static NO_FIELD_TYPES: rask_mir::FieldTypes =
-    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new() };
+    rask_mir::FieldTypes { structs: Vec::new(), variants: Vec::new(), struct_links: Vec::new() };
 
 impl<'a> FunctionBuilder<'a> {
     pub fn new(
@@ -444,6 +451,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
+        handle_releases: &'a rask_mono::drop_names::HandleReleases,
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -462,6 +470,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts,
             enum_layouts,
             type_names,
+            handle_releases,
             string_globals,
             string_header_globals,
             element_offset_globals,
@@ -751,6 +760,7 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
             type_names: self.type_names,
+            handle_releases: self.handle_releases,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
             element_offset_globals: self.element_offset_globals,
@@ -1294,6 +1304,21 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
+            // The variable holds the slot's address, as a borrowed capture's
+            // does: `addr_taken` has made every read and write of the local go
+            // through it, and the local has no slot of its own.
+            MirStmtKind::BindPlace { dst, addr } => {
+                let addr_val = builder.use_var(*ctx.var_map.get(addr)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace address variable not found".to_string()
+                    ))?);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "BindPlace destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr_val);
+            }
+
             MirStmtKind::ClosureDrop { closure, .. } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -1407,7 +1432,7 @@ impl<'a> FunctionBuilder<'a> {
             // what it holds. The element map is the one a container of this
             // type would carry, so this retains exactly what a cloned vector
             // would retain per element; `collect_element_offsets` registered it.
-            MirStmtKind::RcIncContents { local } => {
+            MirStmtKind::RcIncContents { local, .. } => {
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
@@ -2101,16 +2126,14 @@ impl<'a> FunctionBuilder<'a> {
     /// True when a struct field's declared type uses stack-slot (aggregate)
     /// representation in codegen. These fields return a pointer into the parent
     /// struct rather than a loaded scalar.
-    /// Byte size of a user struct/enum by name, or 0 if there's no layout for
-    /// it (a runtime-opaque handle, or a type that never got one).
-    fn named_layout_size(name: &str, ctx: &CodegenCtx) -> u32 {
-        if let Some(l) = ctx.struct_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        if let Some(l) = ctx.enum_layouts.iter().find(|l| l.name == name) {
-            return l.size;
-        }
-        0
+    /// Byte size of the struct or enum layout `ty` is laid out by, found by
+    /// the type's identity, or 0 if there's none (a runtime-opaque handle, or
+    /// a type that never got one).
+    fn declared_layout_size(ty: &RaskType, ctx: &CodegenCtx) -> u32 {
+        rask_layout::struct_for(ty, ctx.struct_layouts)
+            .map(|l| l.size)
+            .or_else(|| rask_layout::enum_for(ty, ctx.enum_layouts).map(|l| l.size))
+            .unwrap_or(0)
     }
 
     fn is_aggregate_field_type(ty: &RaskType, ctx: &CodegenCtx) -> bool {
@@ -2128,8 +2151,7 @@ impl<'a> FunctionBuilder<'a> {
             // A named type is an aggregate when it's a user struct or enum —
             // one with real bytes. Runtime-opaque handles (TcpListener, File,
             // Instant) have empty layouts and stay pointer-sized scalars.
-            RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
-            RaskType::Named(_) => false,
+            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => Self::declared_layout_size(ty, ctx) > 0,
             // The niche option — `Link<T>?` — is one word with null for
             // `none`, so it loads like a scalar. Answering "aggregate" here
             // handed back the field's *address*, and a root edge read as a
@@ -2140,11 +2162,18 @@ impl<'a> FunctionBuilder<'a> {
             // `*T?` is the same: the pointer, null for `none` (mem.unsafe/PT6).
             ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::RawPtr(_)) => false,
             // The same option with its payload already resolved to a `TypeId`.
-            // `Generic`/`Named` payloads are the runtime-opaque pointer types
-            // (line above), and an option over one of those is the niche — one
-            // word, no tag — so it loads like a scalar.
-            ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::Generic { .. }) => false,
+            // Over a runtime handle (`Vec<T>?`, `Link<T>?`) it's the niche —
+            // one word, no tag — so it loads like a scalar. Over a program
+            // generic with real bytes (`Pair<u8, u8>?`) it's a tagged
+            // aggregate like any other option.
+            ty if ty.is_option() && matches!(ty.as_option().unwrap(), RaskType::Generic { .. }) => {
+                let inner = ty.as_option().unwrap();
+                let bytes = rask_layout::struct_for(inner, ctx.struct_layouts)
+                    .map(|l| l.size)
+                    .or_else(|| rask_layout::enum_for(inner, ctx.enum_layouts).map(|l| l.size))
+                    .unwrap_or(0);
+                bytes > 0
+            }
             // User-defined enums/structs, tuples, arrays, Option (T or none), Result — aggregate
             _ => true,
         }
@@ -2352,8 +2381,14 @@ impl<'a> FunctionBuilder<'a> {
                 // A scalar that lives in a slot is addressed the same way. The
                 // spill below is a *copy*, so handing back its address is only
                 // right for a local nothing writes through — which is why a
-                // captured scalar's writes used to vanish (#1038).
-                if is_aggregate || ctx.stack_slot_map.contains_key(local_id) {
+                // captured scalar's writes used to vanish (#1038). A borrowed
+                // one (a by-reference capture, a `with` element) holds the
+                // address of storage elsewhere: `bump(mutate x)` on it has to
+                // write there, not into a spilled copy of the pointer.
+                if is_aggregate
+                    || ctx.stack_slot_map.contains_key(local_id)
+                    || ctx.addr_taken.borrowed.contains(local_id)
+                {
                     Ok(val)
                 } else {
                     // Scalar: spill to a stack slot, return the address
@@ -7128,6 +7163,7 @@ impl<'a> FunctionBuilder<'a> {
             ContainerKind::Vec => "rask_vec_free",
             ContainerKind::Map => "rask_map_free",
             ContainerKind::Rack => "rask_rack_free",
+            ContainerKind::Handle(release) => release,
         }
     }
 
@@ -7442,7 +7478,7 @@ impl<'a> FunctionBuilder<'a> {
     /// anything? A runtime handle — a `Shared`, an `Atomic`, a `File` — is a
     /// bare pointer to MIR, and only its declared type says it has a free.
     fn field_owns(declared: &RaskType, ty: &MirType, ctx: &CodegenCtx, depth: u32) -> bool {
-        crate::drop_fields::container_free_for(declared, ctx.type_names).is_some()
+        crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases).is_some()
             || Self::holds_string_mir(ty, ctx, depth)
     }
 
@@ -7467,7 +7503,7 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(ty, MirType::Heap(_)) {
             return Self::emit_heap_field_release(builder, base, offset, declared, ctx);
         }
-        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names) {
+        if let Some(free_fn) = crate::drop_fields::container_free_for(declared, ctx.type_names, ctx.handle_releases) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
         Self::release_strings_mir(builder, base, offset, ty, ctx, depth)
@@ -7842,13 +7878,13 @@ impl<'a> FunctionBuilder<'a> {
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
 
-    /// The node type's link-bearing fields, as (kind, byte offset) pairs.
+    /// Where the argument's value holds edges, as (kind, byte offset) pairs.
     ///
     /// This is the whole descriptor the rack needs: `insert` walks it to record
     /// the edges a node literal already carries, `delete` walks it to drop the
     /// edges the dying node holds, and `snapshot` walks it to re-point them at
-    /// the copy. A link is a leaf — no walk follows one — so nested aggregates
-    /// aren't descended into.
+    /// the copy. Lowering decides what counts (`rask_mir::link_slots`); this
+    /// only reads it off.
     fn link_field_descriptor(
         mir_args: &[MirOperand],
         arg_index: usize,
@@ -7856,12 +7892,9 @@ impl<'a> FunctionBuilder<'a> {
     ) -> Vec<(i32, u32)> {
         let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
-        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
-        let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) else { return Vec::new() };
-        layout
-            .fields
-            .iter()
-            .filter_map(|f| Self::link_field_kind(&f.ty).map(|k| (k, f.offset)))
+        rask_mir::link_slots(&local.ty, ctx.field_types)
+            .into_iter()
+            .map(|s| (s.kind, s.offset))
             .collect()
     }
 
@@ -7886,38 +7919,6 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or_default()
     }
 
-
-    /// `Link<T>` / `Link<T>?`, `Vec<Link<T>>` or `Map<K, Link<T>>`: the
-    /// `RASK_RACK_FIELD_*` kind.
-    fn link_field_kind(ty: &rask_types::Type) -> Option<i32> {
-        use rask_types::{GenericArg, Type};
-        let bare = ty.as_option().unwrap_or(ty);
-        let (name, args) = match bare {
-            Type::UnresolvedGeneric { name, args } => (name.as_str(), args.as_slice()),
-            _ => return None,
-        };
-        if name == "Link" {
-            return Some(rask_mono::runtime_abi::RASK_RACK_FIELD_LINK as i32);
-        }
-        // The value type is the last type argument: `Vec<T>`'s only one, and
-        // `Map<K, V>`'s second.
-        let value = args.iter().rev().find_map(|a| match a {
-            GenericArg::Type(t) => Some(t),
-            _ => None,
-        })?;
-        let holds_link = matches!(
-            value.as_option().unwrap_or(value),
-            Type::UnresolvedGeneric { name, .. } if name == "Link"
-        );
-        if !holds_link {
-            return None;
-        }
-        match name {
-            "Vec" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_VEC as i32),
-            "Map" => Some(rask_mono::runtime_abi::RASK_RACK_FIELD_MAP as i32),
-            _ => None,
-        }
-    }
 
     /// The slot an argument the runtime takes by address fills: its size,
     /// and whether the operand already is an address (an aggregate, a string)
@@ -8257,16 +8258,52 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
+            // `rask_link_guarded(addr, value, reg)`: the value's element map, read off
+            // the second operand's type, replaces that operand. The map's
+            // guarded `RASK_OWNED_LINK` entries are links behind a tag (#1801).
+            HandAdapt::LinkGuarded => {
+                let ty = mir_args
+                    .get(1)
+                    .and_then(|op| Self::operand_mir_type(op, ctx.locals))
+                    .map(|t| match t {
+                        MirType::Link(sid) => MirType::Struct(sid),
+                        other => other,
+                    });
+                let owned = ty
+                    .and_then(|t| crate::elem_offsets::owned_offsets(&t, ctx.shapes()))
+                    .unwrap_or_default();
+                if args.len() >= 2 {
+                    args.remove(1);
+                }
+                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
+                if owned.is_empty() {
+                    args.push(builder.ins().iconst(types::I64, 0));
+                } else {
+                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
+                    )));
+                    for (i, entry) in owned.iter().enumerate() {
+                        let e = builder.ins().iconst(types::I32, *entry as i64);
+                        ss.store(builder, e, (i * 4) as i32);
+                    }
+                    args.push(ss.addr(builder, 0));
+                }
+                CallAdapt::None
+            }
+
             // Rack insert: the node's bytes by address, then the shape of `T` —
             // its size, and the byte offsets of its link fields. `Rack.new()`
             // had no argument to read `T` off, so this is where the runtime
             // learns what it is holding (mem.racks).
             HandAdapt::RackInsert => {
-                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
-                if args.len() >= 2 && !is_struct {
-                    Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
+                // The node is the last argument: `Rack.insert(node)`,
+                // `Staged.insert(key, node)`.
+                let at = mir_args.len().saturating_sub(1);
+                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, at, ctx);
+                if args.len() > at && at > 0 && !is_struct {
+                    Self::spill_arg(builder, args, mir_args, at, ctx.locals);
                 }
-                let fields = Self::link_field_descriptor(mir_args, 1, ctx);
+                let fields = Self::link_field_descriptor(mir_args, at, ctx);
                 args.push(builder.ins().iconst(types::I64, elem_size));
                 args.push(builder.ins().iconst(types::I64, fields.len() as i64));
                 if fields.is_empty() {
@@ -8291,7 +8328,7 @@ impl<'a> FunctionBuilder<'a> {
                 //
                 // The runtime copies both on the first insert, so a stack slot
                 // is enough to hand them over.
-                let owned = Self::node_owned_descriptor(mir_args, 1, ctx);
+                let owned = Self::node_owned_descriptor(mir_args, at, ctx);
                 args.push(builder.ins().iconst(types::I64, owned.len() as i64));
                 if owned.is_empty() {
                     args.push(builder.ins().iconst(types::I64, 0));
@@ -8308,7 +8345,7 @@ impl<'a> FunctionBuilder<'a> {
                 // And its alignment, which an `@align(64)` node needs from the
                 // chunk it lands in.
                 let align = mir_args
-                    .get(1)
+                    .get(at)
                     .and_then(|op| Self::operand_mir_type(op, ctx.locals))
                     .map_or(0, |ty| ty.align() as i64);
                 args.push(builder.ins().iconst(types::I64, align));

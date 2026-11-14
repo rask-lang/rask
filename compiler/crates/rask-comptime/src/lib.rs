@@ -5,7 +5,7 @@
 //! Subject to restrictions: no I/O, no pools, no concurrency.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -842,10 +842,10 @@ impl ComptimeEnv {
 enum ControlFlow {
     /// Normal execution continues.
     Normal(ComptimeValue),
-    /// Break statement encountered.
-    Break(Option<ComptimeValue>),
-    /// Continue statement encountered.
-    Continue,
+    /// Break statement encountered: the loop it names, if any, and its value.
+    Break(Option<String>, Option<ComptimeValue>),
+    /// Continue statement encountered, with the loop it names.
+    Continue(Option<String>),
     /// Return statement encountered.
     Return(ComptimeValue),
 }
@@ -853,10 +853,33 @@ enum ControlFlow {
 impl ControlFlow {
     fn value(self) -> ComptimeValue {
         match self {
-            ControlFlow::Normal(v) | ControlFlow::Break(Some(v)) | ControlFlow::Return(v) => v,
-            ControlFlow::Break(None) | ControlFlow::Continue => ComptimeValue::Unit,
+            ControlFlow::Normal(v) | ControlFlow::Break(_, Some(v)) | ControlFlow::Return(v) => v,
+            ControlFlow::Break(_, None) | ControlFlow::Continue(_) => ComptimeValue::Unit,
         }
     }
+
+    /// What a loop labelled `own` does with what its body ended with.
+    fn in_loop(self, own: Option<&String>) -> LoopStep {
+        let mine = |label: &Option<String>| label.is_none() || label.as_ref() == own;
+        match self {
+            ControlFlow::Normal(_) => LoopStep::Next,
+            ControlFlow::Continue(label) if mine(&label) => LoopStep::Next,
+            ControlFlow::Break(label, value) if mine(&label) => LoopStep::Exit(value.unwrap_or(ComptimeValue::Unit)),
+            other => LoopStep::Leave(other),
+        }
+    }
+}
+
+/// One iteration's outcome for the loop running it.
+enum LoopStep {
+    Next,
+    /// Out of this loop, with its value.
+    Exit(ComptimeValue),
+    /// Out past this loop: a `return`, or a jump to a loop around it.
+    Leave(ControlFlow),
+}
+
+impl ControlFlow {
 
 }
 
@@ -1262,6 +1285,8 @@ pub struct ComptimeInterpreter {
     /// Nominal types (`type Cents = i64`). One is its underlying value, so
     /// building one hands the value back and `.value` reads it.
     nominals: std::collections::HashSet<String>,
+    /// Each call the checker typed as a C function-like macro (PP4).
+    c_macros: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
 }
 
 impl ComptimeInterpreter {
@@ -1271,6 +1296,7 @@ impl ComptimeInterpreter {
             enums: HashMap::new(),
             literals: HashMap::new(),
             nominals: std::collections::HashSet::new(),
+            c_macros: HashMap::new(),
         }
     }
 
@@ -1280,6 +1306,7 @@ impl ComptimeInterpreter {
             enums: HashMap::new(),
             literals: HashMap::new(),
             nominals: std::collections::HashSet::new(),
+            c_macros: HashMap::new(),
         }
     }
 
@@ -1383,13 +1410,69 @@ impl ComptimeInterpreter {
         self.enums = enums;
     }
 
+    /// The calls the checker typed as C macros.
+    pub fn know_c_macros(&mut self, calls: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>) {
+        self.c_macros = calls;
+    }
+
+    /// A C macro called with values: its body computed the way C would.
+    fn eval_c_macro(&mut self, call: &rask_c_parse::cexpr::MacroCall, args: &[&Expr]) -> ComptimeResult<ComptimeValue> {
+        use rask_c_parse::cexpr::CVal;
+        if call.header.is_some() {
+            return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that takes a pointer, reads memory or calls C, which only the compiled program can run",
+                call.name
+            )));
+        }
+        let mut vals = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&call.args) {
+            let v = self.eval_expr(arg)?;
+            vals.push(match v {
+                ComptimeValue::Bool(b) => CVal::Int(b as i128, ty.clone()),
+                ComptimeValue::F32(f) => CVal::Float(f as f64, ty.clone()),
+                ComptimeValue::F64(f) => CVal::Float(f, ty.clone()),
+                other => match other.as_int() {
+                    Some((CtNum::Signed(i), _)) => CVal::Int(i, ty.clone()),
+                    Some((CtNum::Big(u), _)) => CVal::Int(u as i128, ty.clone()),
+                    None => return Err(ComptimeError::NotSupported(format!(
+                        "`{}` is a C macro, and got a `{}`",
+                        call.name,
+                        other.type_name()
+                    ))),
+                },
+            });
+        }
+        let result = call.compute(&vals).ok_or_else(|| ComptimeError::Panic(format!(
+            "`{}` did what C leaves undefined: a division by zero or a shift past the width",
+            call.name
+        )))?;
+        let scalar = rask_c_parse::cexpr::rask_scalar(&call.result);
+        Ok(match (scalar, result) {
+            (Some("bool"), CVal::Int(v, _)) => ComptimeValue::Bool(v != 0),
+            (Some("i8"), CVal::Int(v, _)) => ComptimeValue::I8(v as i8),
+            (Some("u8"), CVal::Int(v, _)) => ComptimeValue::U8(v as u8),
+            (Some("i16"), CVal::Int(v, _)) => ComptimeValue::I16(v as i16),
+            (Some("u16"), CVal::Int(v, _)) => ComptimeValue::U16(v as u16),
+            (Some("i32"), CVal::Int(v, _)) => ComptimeValue::I32(v as i32),
+            (Some("u32"), CVal::Int(v, _)) => ComptimeValue::U32(v as u32),
+            (Some("u64"), CVal::Int(v, _)) => ComptimeValue::U64(v as u64),
+            (_, CVal::Int(v, _)) => ComptimeValue::I64(v as i64),
+            (Some("f32"), CVal::Float(f, _)) => ComptimeValue::F32(f as f32),
+            (_, CVal::Float(f, _)) => ComptimeValue::F64(f),
+            (_, CVal::Str(_)) => return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that doesn't answer a number",
+                call.name
+            ))),
+        })
+    }
+
     /// Evaluate a comptime expression.
     pub fn eval_expr(&mut self, expr: &Expr) -> ComptimeResult<ComptimeValue> {
         match self.eval_expr_cf(expr)? {
             ControlFlow::Normal(v) => Ok(v),
             ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
@@ -1472,7 +1555,10 @@ impl ComptimeInterpreter {
             // Function call
             ExprKind::Call { func, args } => {
                 let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
-                self.eval_call(func, &arg_exprs)?
+                match self.c_macros.get(&expr.id).cloned() {
+                    Some(call) => self.eval_c_macro(&call, &arg_exprs)?,
+                    None => self.eval_call(func, &arg_exprs)?,
+                }
             }
 
             // Method call (from desugared operators)
@@ -1905,8 +1991,8 @@ impl ComptimeInterpreter {
     pub fn eval_block_to_value(&mut self, stmts: &[Stmt]) -> ComptimeResult<ComptimeValue> {
         match self.eval_block(stmts)? {
             ControlFlow::Normal(v) | ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
@@ -1917,8 +2003,7 @@ impl ComptimeInterpreter {
             match self.eval_stmt(stmt)? {
                 ControlFlow::Normal(v) => last_value = v,
                 cf @ ControlFlow::Return(_) => return Ok(cf),
-                cf @ ControlFlow::Break(_) => return Ok(cf),
-                cf @ ControlFlow::Continue => return Ok(cf),
+                cf @ (ControlFlow::Break(..) | ControlFlow::Continue(_)) => return Ok(cf),
             }
         }
 
@@ -2058,7 +2143,7 @@ impl ComptimeInterpreter {
             // `let Point { x, .. } = p` — bind the fields the pattern names.
             StmtKind::LetStruct { pattern, init, .. } => {
                 let value = self.eval_expr(init)?;
-                let Pattern::Struct { fields: pat_fields, .. } = pattern else {
+                let PatternKind::Struct { fields: pat_fields, .. } = &pattern.kind else {
                     return Err(ComptimeError::NotSupported(
                         "destructuring binding on a non-struct pattern".to_string(),
                     ));
@@ -2075,7 +2160,7 @@ impl ComptimeInterpreter {
                             "no field `{}` to bind", field_name
                         )));
                     };
-                    let Pattern::Ident(binding) = pat else {
+                    let PatternKind::Ident(binding) = &pat.kind else {
                         return Err(ComptimeError::NotSupported(
                             "only a name can bind a field at comptime".to_string(),
                         ));
@@ -2107,25 +2192,17 @@ impl ComptimeInterpreter {
             }
 
             StmtKind::Break { label, value } => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled break".to_string()));
-                }
                 let val = if let Some(v) = value {
                     Some(self.eval_expr(v)?)
                 } else {
                     None
                 };
-                Ok(ControlFlow::Break(val))
+                Ok(ControlFlow::Break(label.clone(), val))
             }
 
-            StmtKind::Continue(label) => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled continue".to_string()));
-                }
-                Ok(ControlFlow::Continue)
-            }
+            StmtKind::Continue(label) => Ok(ControlFlow::Continue(label.clone())),
 
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { label, cond, body } => {
                 loop {
                     self.env.count_branch()?;
 
@@ -2140,13 +2217,13 @@ impl ComptimeInterpreter {
                     }
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2156,18 +2233,18 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::Loop { body, .. } => {
+            StmtKind::Loop { label, body } => {
                 loop {
                     self.env.count_branch()?;
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2176,7 +2253,7 @@ impl ComptimeInterpreter {
                 }
             }
 
-            StmtKind::For { binding, iter, body, .. } => {
+            StmtKind::For { label, binding, iter, body, .. } => {
                 let iter_val = self.eval_expr(iter)?;
                 let items = match iter_val {
                     ComptimeValue::Array(arr) => arr,
@@ -2203,13 +2280,13 @@ impl ComptimeInterpreter {
                         }
                     }
 
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2245,9 +2322,14 @@ impl ComptimeInterpreter {
                                     }
                                 }
                             }
-                            match self.eval_block(body)? {
-                                ControlFlow::Normal(_) => {}
-                                cf => {
+                            // `break` and `continue` act on this loop (CT70).
+                            match self.eval_block(body)?.in_loop(None) {
+                                LoopStep::Next => {}
+                                LoopStep::Exit(_) => {
+                                    self.env.pop_scope();
+                                    return Ok(ControlFlow::Normal(ComptimeValue::Unit));
+                                }
+                                LoopStep::Leave(cf) => {
                                     self.env.pop_scope();
                                     return Ok(cf);
                                 }
@@ -3192,22 +3274,22 @@ impl ComptimeInterpreter {
     }
 
     fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
-        match pattern {
-            Pattern::Wildcard => Ok(true),
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(true),
             // `Level.Low` parses as a name. It was taken as a binding, so the
             // first such arm matched every value. The checker has already
             // held the pattern to the scrutinee's enum; the variant decides.
-            Pattern::Ident(name) if name.contains('.') => Ok(matches!(
+            PatternKind::Ident(name) if name.contains('.') => Ok(matches!(
                 value,
                 ComptimeValue::Enum { variant, data: None, .. }
                     if name.rsplit('.').next() == Some(variant.as_str())
             )),
-            Pattern::Ident(_) => Ok(true), // Binds anything
-            Pattern::Literal(lit) => {
+            PatternKind::Ident(_) => Ok(true), // Binds anything
+            PatternKind::Literal(lit) => {
                 let lit_val = self.eval_expr(lit)?;
                 Ok(lit_val == *value)
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let ComptimeValue::Enum { variant, data, .. } = value {
                     if variant != name {
                         return Ok(false);
@@ -3237,7 +3319,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     if patterns.len() != values.len() {
                         return Ok(false);
@@ -3252,7 +3334,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 if let ComptimeValue::Struct { name: sname, fields: sfields } = value {
                     if name != sname {
                         return Ok(false);
@@ -3271,7 +3353,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
                         return Ok(true);
@@ -3279,7 +3361,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(false)
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 let start_val = self.eval_expr(start)?;
                 let end_val = self.eval_expr(end)?;
                 Ok(match (value, &start_val, &end_val) {
@@ -3295,7 +3377,7 @@ impl ComptimeInterpreter {
                     _ => false,
                 })
             }
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::TypePat { ty, .. } => {
                 // Match when the value's enum tag matches the named type.
                 Ok(matches!(value, ComptimeValue::Enum { variant, .. } if ty.name().as_deref() == Some(variant.as_str())))
             }
@@ -3303,15 +3385,15 @@ impl ComptimeInterpreter {
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<()> {
-        match pattern {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Ident(name) if name.contains('.') => Ok(()),
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(()),
+            PatternKind::Ident(name) if name.contains('.') => Ok(()),
+            PatternKind::Ident(name) => {
                 self.env.define(name.clone(), value.clone());
                 Ok(())
             }
-            Pattern::Literal(_) => Ok(()),
-            Pattern::Constructor { fields, .. } => {
+            PatternKind::Literal(_) => Ok(()),
+            PatternKind::Constructor { fields, .. } => {
                 if let ComptimeValue::Enum { data, .. } = value {
                     match (fields.len(), data) {
                         (0, _) => Ok(()),
@@ -3330,7 +3412,7 @@ impl ComptimeInterpreter {
                     Ok(())
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     for (p, v) in patterns.iter().zip(values.iter()) {
                         self.bind_pattern(p, v)?;
@@ -3338,7 +3420,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 if let ComptimeValue::Struct { fields: sfields, .. } = value {
                     for (fname, fpat) in fields {
                         if let Some(fval) = sfields.get(fname) {
@@ -3348,7 +3430,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 // Bind from first matching pattern
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
@@ -3357,8 +3439,8 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Range { .. } => Ok(()),
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::Range { .. } => Ok(()),
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     self.env.define(name.clone(), value.clone());
                 }

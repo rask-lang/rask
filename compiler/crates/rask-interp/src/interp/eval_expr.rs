@@ -323,10 +323,10 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
         }
         // is pattern: assert x is Some
         ExprKind::IsPattern { expr, pattern, .. } => {
-            let pat_name = match pattern {
-                rask_ast::expr::Pattern::Constructor { name, .. } => name.as_str(),
-                rask_ast::expr::Pattern::Ident(n) => n.as_str(),
-                rask_ast::expr::Pattern::Wildcard => "_",
+            let pat_name = match &pattern.kind {
+                rask_ast::expr::PatternKind::Constructor { name, .. } => name.as_str(),
+                rask_ast::expr::PatternKind::Ident(n) => n.as_str(),
+                rask_ast::expr::PatternKind::Wildcard => "_",
                 _ => "pattern",
             };
             let val = interp.eval_expr(expr).ok();
@@ -668,21 +668,7 @@ impl Interpreter {
                     span
                 ))
             }
-            // Package field access: lib.Color → look up lib$Color
             Value::Package(pkg_name) => {
-                let prefixed = format!("{}${}", pkg_name, field);
-                // Enums and structs both resolve to Value::Type so
-                // `lib.Color.Red` works through the normal enum
-                // variant dispatch on the next `.Red` access.
-                if self.enums.contains_key(&prefixed)
-                    || self.struct_decls.contains_key(&prefixed)
-                    || self.methods.contains_key(&prefixed)
-                {
-                    return Ok(Value::Type(prefixed));
-                }
-                if let Some(func) = self.functions.get(&prefixed) {
-                    return Ok(Value::Function { name: func.name.clone(), generics: None });
-                }
                 // A stdlib module with no Rust side of its own (`bits`)
                 // is bound as a package, but its types are registered
                 // under their bare names, like every stdlib type. The
@@ -1045,6 +1031,14 @@ impl Interpreter {
             ExprKind::None => Ok(Value::none()),
 
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
+                // A name the checker resolved to a function is that function,
+                // whatever else the spelling is bound to here (a builtin).
+                if let Some(key) = self.named_function(expr.id) {
+                    return Ok(Value::Function {
+                        name: key.to_string(),
+                        generics: self.call_generics(expr.id),
+                    });
+                }
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
                 }
@@ -1208,14 +1202,6 @@ impl Interpreter {
                 type_args,
                 args,
             } => {
-                // PP4: a C macro another package declares, `pa.F(x)`.
-                if let Some(call) = self.c_macro_calls.get(&expr.id).cloned() {
-                    let mut vals = Vec::with_capacity(args.len());
-                    for a in args {
-                        vals.push(self.eval_expr(&a.expr)?);
-                    }
-                    return self.c_macro_value(&call, vals).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                }
                 // `io.IoError.NotFound("x")` — a payload-carrying variant
                 // reached through the module that exports its enum, which is
                 // the spelling IM1 asks for. Everything below reads the enum's
@@ -1232,6 +1218,16 @@ impl Interpreter {
                             kind: ExprKind::Ident(bare),
                         };
                         &rewritten
+                    }
+                    None => object,
+                };
+                // GF7: `T.zero()` on a type parameter is the same call on the
+                // type the running body was instantiated with.
+                let instantiated;
+                let object = match self.type_param_receiver(object) {
+                    Some(concrete) => {
+                        instantiated = concrete;
+                        &instantiated
                     }
                     None => object,
                 };
@@ -1352,7 +1348,7 @@ impl Interpreter {
                             let is_module = ModuleKind::from_name(name).is_some();
                             if is_static && has_body && !is_module {
                                 let (arg_vals, places) = self.eval_call_args(args)?;
-                                let generics = self.call_generics(expr.id);
+                                let generics = self.static_call_generics(expr.id, object, method);
                                 let callee = method_fn.name.clone();
                                 self.lend_places(&callee, places);
                                 let result = self.call_function(method_fn, arg_vals, generics);
@@ -1517,18 +1513,42 @@ impl Interpreter {
                     }
                 }
 
+                // `param.is<T>()` on a reflect ParamInfo: the parameter's
+                // checked type against T, as native folds it.
+                if let Value::Struct(s) = &receiver {
+                    let param_ty = {
+                        let guard = s.lock().unwrap();
+                        match (guard.name.as_str(), guard.fields.get("__type")) {
+                            ("ParamInfo", Some(Value::ReflectedType(t))) => Some(t.clone()),
+                            _ => None,
+                        }
+                    };
+                    if let (Some(param_ty), true) = (param_ty, method == "is") {
+                        let Some(candidate) = type_args.as_ref().and_then(|ta| ta.first()) else {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(
+                                    "`param.is<T>()` needs the type it's asking about".into(),
+                                ),
+                                expr.span,
+                            ));
+                        };
+                        let candidate = self.resolve_type_param(candidate);
+                        return Ok(Value::Bool(rask_check::reflect::param_is(
+                            &self.types,
+                            &param_ty,
+                            &candidate,
+                        )));
+                    }
+                }
+
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
-                // Package-qualified call: lib.greet() → look up lib$greet
+                // A package's own declarations are reached through names the
+                // compiler already qualified; what's left is the stdlib's.
                 if let Value::Package(pkg_name) = &receiver {
-                    let prefixed = format!("{}${}", pkg_name, method);
-                    if let Some(func) = self.functions.get(&prefixed).cloned() {
-                        let generics = self.call_generics(expr.id);
-                        return self.call_function(&func, arg_vals, generics);
-                    }
                     // A bodiless `@native` declaration in the stdlib: answered
                     // by symbol, the way native codegen's dispatch table does.
                     if let Some(symbol) = Self::stdlib_native_symbol(pkg_name, method) {
@@ -2548,8 +2568,25 @@ impl Interpreter {
 
             // A task block: build its body as the carrying closure it is
             // underneath, and hand that to the task.
-            ExprKind::Spawn { target, body, .. } => {
+            ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // A task that borrows its frame (conc.async/S5) runs right
+                // here, now. The checker made sure nothing beside it touches
+                // what it writes, so running it first gives the answer every
+                // schedule gives, and the interpreter is the reference.
+                if !self.escaping_closures.contains(&body.id) {
+                    return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+                // `requires_pool: false` with no pool runs here too (S2).
+                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
+                    let requires = match args.first() {
+                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                        None => true,
+                    };
+                    if !requires {
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
                     rask_ast::expr::SpawnTarget::Thread => self.spawn_os_thread(closure, body),
@@ -3349,93 +3386,6 @@ pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
     }
 }
 
-/// AN6: a `get<A>()` read that one iteration of a `comptime for` keeps, on an
-/// item that doesn't carry `A`. The annotation, the field read off it, and
-/// where.
-///
-/// Native unrolls the loop, drops the branch each `comptime if` rules out and
-/// rejects any read left over, whether or not anything would reach it at run
-/// time. The interpreter walks the loop instead, so a plain `if f.has<A>()`
-/// kept it from ever arriving at the read and the program ran here and failed
-/// to build natively (#1291). Asking before the iteration runs gives the same
-/// answer as unrolling: `comptime if` decides with the same rules
-/// (`rask_ast::comptime_if`), and every other statement is kept.
-pub(super) fn unguarded_annotation_read(
-    body: &[rask_ast::stmt::Stmt],
-    binding: &str,
-    attrs: &[rask_ast::attr::Attr],
-) -> Option<(String, Option<String>, rask_ast::Span)> {
-    use rask_ast::comptime_if;
-    use rask_ast::stmt::{Stmt, StmtKind};
-    use rask_ast::visit::{visit_body, Visit};
-    use rask_ast::Span;
-
-    struct Reads<'b> {
-        binding: &'b str,
-        attrs: &'b [rask_ast::attr::Attr],
-        found: Option<(String, Option<String>, Span)>,
-    }
-
-    /// `binding.<method><A>()`: the annotation it names.
-    fn names_annotation<'e>(expr: &'e Expr, binding: &str, want: &str) -> Option<&'e str> {
-        let ExprKind::MethodCall { object, method, type_args, .. } = &expr.kind else {
-            return None;
-        };
-        if method != want || object.name() != Some(binding) {
-            return None;
-        }
-        type_args.as_ref()?.first()?.bare_name()
-    }
-
-    fn carries(attrs: &[rask_ast::attr::Attr], annotation: &str) -> bool {
-        attrs.iter().any(|a| a.is(annotation))
-    }
-
-    impl<'a> Visit<'a> for Reads<'_> {
-        fn stmt(&mut self, stmt: &'a Stmt) -> bool {
-            if self.found.is_some() {
-                return false;
-            }
-            let StmtKind::Comptime(stmts) = &stmt.kind else { return true };
-            let Some((cond, then_branch, else_branch)) = comptime_if::parts(stmts) else {
-                return true;
-            };
-            let (binding, attrs) = (self.binding, self.attrs);
-            let taken = comptime_if::decide(cond, &mut |call| {
-                names_annotation(call, binding, "has").map(|a| carries(attrs, a))
-            });
-            match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
-                Some(kept) => {
-                    visit_body(kept, self);
-                    false
-                }
-                None => true,
-            }
-        }
-
-        fn expr(&mut self, expr: &'a Expr) -> bool {
-            if self.found.is_some() {
-                return false;
-            }
-            let (call, field) = match &expr.kind {
-                ExprKind::Field { object, field } => (&**object, Some(field.clone())),
-                _ => (expr, None),
-            };
-            if let Some(annotation) = names_annotation(call, self.binding, "get") {
-                if !carries(self.attrs, annotation) {
-                    self.found = Some((annotation.to_string(), field, expr.span));
-                }
-                return false;
-            }
-            true
-        }
-    }
-
-    let mut reads = Reads { binding, attrs, found: None };
-    visit_body(body, &mut reads);
-    reads.found
-}
-
 impl Interpreter {
     /// The attachment `indexed(weight: 3, label: "t")` as a struct value, so a
     /// projection off `get<A>()` reads it like any other field access
@@ -3519,7 +3469,7 @@ impl Interpreter {
         }
         let mut vals = Vec::with_capacity(args.len());
         for (v, ty) in args.into_iter().zip(&call.args) {
-            let c = match v {
+            vals.push(match v {
                 Value::Int(i, _) => CVal::Int(i as i128, ty.clone()),
                 Value::Bool(b) => CVal::Int(b as i128, ty.clone()),
                 Value::Float(f, _) => CVal::Float(f, ty.clone()),
@@ -3530,20 +3480,14 @@ impl Interpreter {
                         other.type_name()
                     )))
                 }
-            };
-            vals.push(cexpr::convert(&c, ty).ok_or_else(|| {
-                RuntimeError::TypeError(format!("`{}` got an argument C can't convert", call.name))
-            })?);
+            });
         }
-        let body = cexpr::parse_body(&call.body, &call.params).map_err(RuntimeError::TypeError)?;
-        let undefined = || {
+        let result = call.compute(&vals).ok_or_else(|| {
             RuntimeError::Panic(format!(
                 "`{}` did what C leaves undefined: a division by zero or a shift past the width",
                 call.name
             ))
-        };
-        let result = cexpr::eval(&body, &vals).ok_or_else(undefined)?;
-        let result = cexpr::convert(&result, &call.result).ok_or_else(undefined)?;
+        })?;
         let kind = |name: &str| match name {
             "i8" => crate::value::IntKind::I8,
             "u8" => crate::value::IntKind::U8,

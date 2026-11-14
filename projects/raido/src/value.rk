@@ -5,171 +5,11 @@
 // typed (no runtime type tags), but the Rask host implementation uses a
 // tagged enum to represent register contents generically.
 
-// --- Fixed-point 32.32 number ---
-// Stored as i64: upper 32 bits are the integer part (signed),
-// lower 32 bits are the fractional part.
-//
-// Examples:
-//   1.0   → raw = 0x0000_0001_0000_0000 (1 << 32)
-//   0.5   → raw = 0x0000_0000_8000_0000 (1 << 31)
-//  -1.0   → raw = 0xFFFF_FFFF_0000_0000
-//   3.14  → raw = 3 << 32 + (0.14 * 2^32) ≈ 0x0000_0003_23D7_0A3E
-
-struct Number {
-    raw: i64
-}
-
-const FRAC_BITS: i64 = 32
-
-const FRAC_SCALE: i64 = 0x100000000
-// 1 << 32, but written as literal to avoid shift issues
-
-extend Number {
-    func from_int(n: i64) -> Number {
-        // Create a Number from an integer (e.g., 42 → 42.0 in fixed-point)
-        return Number(raw: n << FRAC_BITS)
-    }
-
-    func to_int(self) -> i64 {
-        // Truncate to integer (drops fractional part)
-        return self.raw >> FRAC_BITS
-    }
-
-    func modulo(self, other: Number) -> Number {
-        // Modulo
-        if other.raw == 0 {
-            return Number(raw: 0)
-        }
-        return Number(raw: self.raw % other.raw)
-    }
-
-    func eq(self, other: Number) -> bool {
-        // Comparison
-        return self.raw == other.raw
-
-        // Convert fractional part to decimal (4 digits)
-
-        // Pad to 4 digits
-    }
-
-    func lt(self, other: Number) -> bool {
-        return self.raw < other.raw
-    }
-
-    func le(self, other: Number) -> bool {
-        return self.raw <= other.raw
-    }
-
-    func to_string(self) -> string {
-        let int_part = self.raw >> FRAC_BITS
-        let frac_raw = if self.raw < 0 {
-            -self.raw & 0xFFFFFFFF
-        } else {
-            self.raw & 0xFFFFFFFF
-        }
-        let abs_frac = if frac_raw < 0 {
-            -frac_raw
-        } else {
-            frac_raw
-        }
-        let scaled = abs_frac * 10000 >> FRAC_BITS
-        let frac_str = "{scaled}"
-        let padded = if scaled < 10 {
-            "000{frac_str}"
-        } else if scaled < 100 {
-            "00{frac_str}"
-        } else if scaled < 1000 {
-            "0{frac_str}"
-        } else {
-            frac_str
-        }
-
-        let sign = if self.raw < 0 && int_part == 0 {
-            "-"
-        } else {
-            ""
-        }
-        return "{sign}{int_part}.{padded}"
-    }
-}
-
-// type.operator-resolution/OR2: the operators are conformances, so a Number
-// flows through anything written against `Add`, `Sub`, `Mul` or `Div` — and
-// through generic stdlib math, which is the whole point of a number type that
-// isn't the compiler's (std.api-design/SD7-SD9).
-
-Number implements Add {
-    func add(self, other: Number) -> Number {
-        // Addition: just add the raw values
-        return Number(raw: self.raw + other.raw)
-    }
-}
-
-Number implements Sub {
-    func sub(self, other: Number) -> Number {
-        // Subtraction: just subtract
-        return Number(raw: self.raw - other.raw)
-    }
-}
-
-Number implements Mul {
-    func mul(self, other: Number) -> Number {
-        // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
-        let a = self.raw as i128
-        let b = other.raw as i128
-
-        // Handle signs manually to avoid issues with unsigned splits
-        let sign = if (a < 0) != (b < 0) {
-            -1
-        } else {
-            1
-        }
-
-        let result = (a.abs() * b.abs()) >> FRAC_BITS
-        return Number(raw: if sign < 0 {
-            (-result).wrap<i64>()
-        } else {
-            result.wrap<i64>()
-        })
-    }
-}
-
-Number implements Div {
-    func div(self, other: Number) -> Number {
-        // Division: shift left by 32, then divide
-        // Same split trick as multiplication
-        if other.raw == 0 {
-            // Caller should check for this — but saturate rather than crash
-            return Number(raw: if self.raw >= 0 {
-                0x7FFFFFFFFFFFFFFF
-            } else {
-                -0x7FFFFFFFFFFFFFFF
-            })
-        }
-
-        let a = self.raw as i128
-        let b = other.raw as i128
-        let sign = if (a < 0) != (b < 0) {
-            -1
-        } else {
-            1
-        }
-
-        let result = (a.abs() << FRAC_BITS) / b.abs()
-        return Number(raw: if sign < 0 {
-            (-result).wrap<i64>()
-        } else {
-            result.wrap<i64>()
-        })
-    }
-}
-
-Number implements Neg {
-    func neg(self) -> Number {
-        // Negation
-        return Number(raw: -self.raw)
-    }
-}
+// --- Floats ---
+// A Raido `float` is a Rask f64. Determinism across machines comes from the
+// strict float profile (no fused multiply-add, correctly rounded math, see
+// rask-lang/rask#1683), and an operation that would produce NaN or an
+// infinity is a runtime error, so neither ever lives in a register.
 
 // --- Value enum ---
 // This is what lives in every VM register.
@@ -178,7 +18,7 @@ enum Value {
     None
     Bool(bool)
     Int(i64)
-    Num(Number)
+    Float(f64)
     Str(i64)
     Array(i64)
     MapVal(i64)
@@ -213,7 +53,7 @@ extend Value {
             Value.None => return "none"
             Value.Bool(_) => return "bool"
             Value.Int(_) => return "int"
-            Value.Num(_) => return "number"
+            Value.Float(_) => return "float"
             Value.Str(_) => return "string"
             Value.Array(_) => return "array"
             Value.MapVal(_) => return "map"
@@ -234,7 +74,7 @@ extend Value {
                 return "false"
             }
             Value.Int(n) => return "{n}"
-            Value.Num(n) => return n.to_string()
+            Value.Float(n) => return "{n}"
             Value.Str(_) => return "<string>"
             Value.Array(_) => return "<array>"
             Value.MapVal(_) => return "<map>"

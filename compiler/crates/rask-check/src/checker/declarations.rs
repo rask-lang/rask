@@ -51,7 +51,7 @@ impl TypeChecker {
             .collect();
         for (name, target) in aliases {
             if self.types.check_alias_cycle(&name, &target).is_none() {
-                self.types.register_alias(name, target);
+                self.types.register_alias(name, Vec::new(), target);
             }
         }
         // `import time as tm`, so `tm.Duration` in a signature finds the
@@ -1477,8 +1477,9 @@ impl TypeChecker {
         if let Some(pkg) = self.foreign_block_owner(type_id, span) {
             self.conformance_disambiguation.insert(decl_id, pkg.clone());
             for m in &new_methods {
-                self.types
-                    .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
+                if let Some(body) = m.decl {
+                    self.types.record_impl_method_package(type_id, &m.name, &pkg, body);
+                }
             }
         }
         let stdlib_mode = self.types.stdlib_mode;
@@ -2000,7 +2001,8 @@ impl TypeChecker {
             });
             return;
         }
-        self.types.register_alias(a.name.clone(), a.target.clone());
+        let params = a.type_params.iter().map(|p| p.name.clone()).collect();
+        self.types.register_alias(a.name.clone(), params, a.target.clone());
     }
 
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
@@ -2101,7 +2103,8 @@ impl TypeChecker {
                     let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
                         // A function a macro's body may call.
                         let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
-                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        // By its C name: a macro's body calls it as C does.
+                        self.c_functions.insert(e.c_symbol(), (params, e.ret_ty.clone(), e.is_variadic));
                         continue;
                     };
                     let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
@@ -2415,6 +2418,7 @@ impl TypeChecker {
         MethodSig {
             param_names,
             origin: rask_types::MethodOrigin::Declared,
+            decl: (m.id != rask_ast::NodeId::DUMMY).then_some(m.id),
             effect: m.declared_effects(),
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
@@ -2600,6 +2604,9 @@ impl TypeChecker {
                 if m != "clone" && self.compares_through_field(id) {
                     continue;
                 }
+                if m == "clone" && self.frees_itself(id) {
+                    continue;
+                }
                 candidates.push((id, m, shape.clone()));
             }
         }
@@ -2617,6 +2624,14 @@ impl TypeChecker {
             }
             set = keep;
         }
+    }
+
+    /// A handle that frees itself is a pointer to state it owns, with no
+    /// fields to copy: a copied pointer would leave two owners to free one
+    /// block. It clones only by declaring `clone`, and so does anything
+    /// holding one.
+    fn frees_itself(&self, id: rask_types::TypeId) -> bool {
+        self.types.get(id).and_then(|d| d.runtime_handle()).is_some_and(|h| h.release.is_some())
     }
 
     /// type.reads-as/RA6: comparing a value is reading it, so a type that
@@ -2664,6 +2679,7 @@ impl TypeChecker {
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
                 origin: rask_types::MethodOrigin::Structural,
+                decl: None,
                 effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
@@ -2683,7 +2699,7 @@ impl TypeChecker {
             let reads = self.compares_through_field(id);
             let eq_ok = !reads && self.parts_derive(&shape, "eq");
             let hash_ok = !reads && self.parts_derive(&shape, "hash");
-            let clone_ok = self.parts_derive(&shape, "clone");
+            let clone_ok = !self.frees_itself(id) && self.parts_derive(&shape, "clone");
             let cmp_ok = !reads && self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();

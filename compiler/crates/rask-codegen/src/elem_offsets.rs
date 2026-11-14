@@ -8,8 +8,9 @@
 //! adapter that points a constructor at one — so the walk lives here rather
 //! than once in each.
 //!
-//! Each entry is one `int32`: the byte offset in the low 28 bits, and what
-//! lives there in the top 4. A `Vec<Order>` whose `Order` holds a `Vec<Item>`
+//! An entry starts with one `int32`: the byte offset in the low 28 bits, and
+//! what lives there in the top 4. A guard and a `Heap` slot carry plain words
+//! after that one. A `Vec<Order>` whose `Order` holds a `Vec<Item>`
 //! is the reason the kind exists — freeing the outer vector has to free each
 //! element's inner one, and the old list of bare offsets could only say
 //! "string". A plain offset still reads as a string at that offset, so every
@@ -19,7 +20,7 @@
 //! variant it is. `RASK_OWNED_TAG_IF` is a guard rather than a thing to free:
 //! it says the entries after it apply only when the tag at some offset holds a
 //! particular value, and one enum contributes a guard per variant that owns
-//! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
+//! anything. The header describes the words; `owned_walk` in `vec.c` reads it.
 
 use rask_mono::runtime_abi;
 use rask_mir::{ContainerKind, MirType};
@@ -52,48 +53,52 @@ const KIND_HEAP: i32 = runtime_abi::RASK_OWNED_HEAP as i32;
 /// The value at this offset is described by the list being walked, from its
 /// start — how a type that reaches itself is described at all (#1202).
 const KIND_SELF: i32 = runtime_abi::RASK_OWNED_SELF as i32;
+/// A link inside the element, for the rack rather than for the free.
+const KIND_LINK: i32 = runtime_abi::RASK_OWNED_LINK as i32;
+/// A handle that frees itself through its type's `@handle(release: …)`. The
+/// offset bits carry the release's index above the byte offset.
+const KIND_HANDLE: i32 = runtime_abi::RASK_OWNED_HANDLE as i32;
 
 /// One interface-box entry at offset zero: what to hand `rask_owned_release` when
 /// the slot *is* the fat pointer, which is the shape of an interface-object field.
 pub const TRAITBOX_AT_ZERO: i32 = KIND_TRAITBOX << KIND_SHIFT;
 
-/// A `Heap<T>` slot: the pointer at `offset`, and `count` entries after this one
-/// describing the block.
-///
-/// `None` when either won't fit — an offset over 65535 or more than 4095 entries
-/// in the block's description. The caller then describes nothing, which leaks
-/// rather than freeing the wrong bytes.
-fn heap_entry(offset: i32, count: usize) -> Option<i32> {
-    if !(0..=0xFFFF).contains(&offset) || count > 0xFFF {
-        return None;
-    }
-    Some(entry(offset | ((count as i32) << 16), KIND_HEAP))
+/// A `Heap<T>` slot: the pointer at `offset`, then a word counting the entries
+/// after it that describe the block.
+fn heap_entry(offset: i32, count: usize) -> Option<[i32; 2]> {
+    Some([entry(fit_offset(offset)?, KIND_HEAP), fit_word(count as u64)?])
 }
 
 fn entry(offset: i32, kind: i32) -> i32 {
     offset | (kind << KIND_SHIFT)
 }
 
-/// A guard: the next `count` entries apply only when the tag at `tag_offset`
-/// holds `tag_value`.
+/// A guard: the next `count` entries apply only when the tag at `tag_offset`,
+/// `tag_size` bytes wide, holds `tag_value`. Four words: the kind with the
+/// offset, then the width, the value and the count as plain numbers.
 ///
-/// `None` when any field won't fit its share of the 28 bits — an offset over
-/// 4095, more than 255 variants, more than 63 entries in one arm, or a tag
-/// wider than eight bytes. The caller then emits nothing for that element,
-/// which leaks rather than describing it wrongly.
-fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<i32> {
-    let width = match tag_size {
-        1 => 0,
-        2 => 1,
-        4 => 2,
-        8 => 3,
-        _ => return None,
-    };
-    if !(0..=0xFFF).contains(&tag_offset) || tag_value > 0xFF || count > 0x3F {
+/// `None` only for a tag of a width the walk can't read. The caller then emits
+/// nothing for that element, which leaks rather than describing it wrongly.
+fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Option<[i32; 4]> {
+    if !matches!(tag_size, 1 | 2 | 4 | 8) {
         return None;
     }
-    let packed = tag_offset | ((tag_value as i32) << 12) | ((count as i32) << 20) | (width << 26);
-    Some(entry(packed, KIND_TAG_IF))
+    Some([
+        entry(fit_offset(tag_offset)?, KIND_TAG_IF),
+        tag_size as i32,
+        fit_word(tag_value)?,
+        fit_word(count as u64)?,
+    ])
+}
+
+fn fit_offset(offset: i32) -> Option<i32> {
+    (0..=runtime_abi::RASK_OWNED_OFFSET_MASK as i32).contains(&offset).then_some(offset)
+}
+
+/// A word after an entry's first. Kept below 2^31, so its kind bits never read
+/// as a link and a flat scan for links can't mistake one.
+fn fit_word(v: u64) -> Option<i32> {
+    i32::try_from(v).ok()
 }
 
 /// The program's layouts as the walks below need them, with each layout's
@@ -103,6 +108,14 @@ pub struct Shapes<'a> {
     pub layouts: &'a [StructLayout],
     pub enums: &'a [EnumLayout],
     pub fields: &'a rask_mir::FieldTypes,
+}
+
+/// A struct or enum layout, by its position in its list: what a `Heap<T>`
+/// payload is laid out by, and what a self-reference is matched against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Struct(usize),
+    Enum(usize),
 }
 
 /// What one element of type `ty` owns, and where, or `None` when it owns
@@ -115,14 +128,14 @@ pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
 
 /// What a value of type `ty` at offset `base` owns, appended to `out`.
 ///
-/// `self_name` is the payload type a `Heap<T>` description is being built for,
+/// `self_layout` is the payload a `Heap<T>` description is being built for,
 /// so a field that holds another one restarts the list instead of recursing.
 fn describe(
     ty: &MirType,
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -130,12 +143,28 @@ fn describe(
     }
     match ty {
         MirType::Buffer => out.push(entry(base, KIND_STRING)),
+        // A link inside an element is the rack's business: delete nulls it in
+        // place (#1804). An element that *is* a link is listed nowhere — the
+        // rack removes those entries instead, and frees walk nothing for them.
+        MirType::Link(_) if depth > 0 => out.push(entry(base, KIND_LINK)),
+        MirType::Option(inner) if inner.is_niche_payload() && depth > 0 => {
+            out.push(entry(base, KIND_LINK))
+        }
         // The element is the container. Its own list travels with it, so this
         // level says "a Vec lives here" and stops there. A rack is an arena
         // whose nodes outlive any one element (mem.racks), so it's nobody's
         // here.
         MirType::Container(ContainerKind::Vec) => out.push(entry(base, KIND_VEC)),
         MirType::Container(ContainerKind::Map) => out.push(entry(base, KIND_MAP)),
+        MirType::Container(ContainerKind::Handle(release)) => {
+            let index = runtime_abi::handle_release_index(release)? as i32;
+            let mask = runtime_abi::RASK_OWNED_HANDLE_OFFSET_MASK as i32;
+            let shift = runtime_abi::RASK_OWNED_HANDLE_INDEX_SHIFT as u32;
+            if base & !mask != 0 || (index << shift) & !(runtime_abi::RASK_OWNED_OFFSET_MASK as i32) != 0 {
+                return None;
+            }
+            out.push(entry(base | (index << shift), KIND_HANDLE));
+        }
         // The element *is* the pointer, so there is nothing to flatten: one
         // entry saying what kind of block it names.
         MirType::FuncPtr(_) => out.push(entry(base, KIND_CLOSURE)),
@@ -143,28 +172,28 @@ fn describe(
         MirType::Struct(id) => {
             let layout = shapes.layouts.get(id.id as usize)?;
             let tys = shapes.fields.struct_fields(id.id);
-            flatten(&layout.fields, tys, base, shapes, depth + 1, self_name, out)?;
+            flatten(&layout.fields, tys, base, shapes, depth + 1, self_layout, out)?;
         }
-        MirType::Enum(id) => enum_arms(id.id, base, shapes, depth + 1, self_name, out)?,
+        MirType::Enum(id) => enum_arms(id.id, base, shapes, depth + 1, self_layout, out)?,
         // A niche option is the payload's own word with `none` reserved: no
         // tag, and nothing it points at is the container's.
         MirType::Option(inner) if !inner.is_niche_payload() => {
             let none = MirType::Void;
-            wrapper_arms(ty, inner, &none, base, shapes, depth, self_name, out)?;
+            wrapper_arms(ty, inner, &none, base, shapes, depth, self_layout, out)?;
         }
         MirType::Result { ok, err } => {
-            wrapper_arms(ty, ok, err, base, shapes, depth, self_name, out)?;
+            wrapper_arms(ty, ok, err, base, shapes, depth, self_layout, out)?;
         }
         // Parts at their natural offsets, the packing tuple lowering uses.
         MirType::Tuple(parts) => {
             for (part, at) in parts.iter().zip(rask_mir::tuple_offsets(parts)) {
-                describe(part, base + at as i32, shapes, depth + 1, self_name, out)?;
+                describe(part, base + at as i32, shapes, depth + 1, self_layout, out)?;
             }
         }
         MirType::Array { elem, len } => {
             let stride = elem.size() as i32;
             for i in 0..*len as i32 {
-                describe(elem, base + i * stride, shapes, depth + 1, self_name, out)?;
+                describe(elem, base + i * stride, shapes, depth + 1, self_layout, out)?;
             }
         }
         _ => {}
@@ -182,19 +211,19 @@ fn wrapper_arms(
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
     let payload_offset = wrapper.payload_offset();
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
-        describe(side, base + payload_offset as i32, shapes, depth + 1, self_name, &mut arm)?;
+        describe(side, base + payload_offset as i32, shapes, depth + 1, self_layout, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
         let tag_offset = base + rask_types::abi::TAG_OFFSET as i32;
-        out.push(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
+        out.extend(tag_guard(tag_offset, tag_value, arm.len(), rask_types::abi::TAG_BYTES)?);
         out.extend(arm);
     }
     Some(())
@@ -211,7 +240,7 @@ fn enum_arms(
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -228,11 +257,11 @@ fn enum_arms(
             .map(|f| FieldLayout { offset: variant.payload_offset + f.offset, ..f.clone() })
             .collect();
         let tys = shapes.fields.variant_fields(id, i);
-        flatten(&fields, tys, base, shapes, depth + 1, self_name, &mut arm)?;
+        flatten(&fields, tys, base, shapes, depth + 1, self_layout, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
-        out.push(tag_guard(tag_offset, variant.tag, arm.len(), tag_size)?);
+        out.extend(tag_guard(tag_offset, variant.tag, arm.len(), tag_size)?);
         out.extend(arm);
     }
     Some(())
@@ -240,14 +269,14 @@ fn enum_arms(
 
 /// The fields of a struct or a variant, each at `base` plus its offset, by
 /// its MIR type. A `Heap<T>` field is the one read off its declared type: its
-/// payload's name is what a self-reference is matched by.
+/// payload's layout is what a self-reference is matched by.
 fn flatten(
     fields: &[FieldLayout],
     tys: &[MirType],
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
@@ -256,20 +285,21 @@ fn flatten(
     for (f, ty) in fields.iter().zip(tys) {
         let at = base + f.offset as i32;
         if let Some(payload) = heap_payload(&f.ty) {
-            let payload = layout_name(payload, shapes.layouts, shapes.enums);
-            // Only where a self-reference has a name to match. The
+            let payload = layout_of(payload, shapes);
+            // Only where a self-reference has a layout to match. The
             // container-element path passes `None`, because a `retain` would
             // have to copy the block and a block carries no size to copy — so
             // an element's `Heap` stays nobody's, as a boxed value's contents
             // are.
-            let Some(sn) = self_name else { continue };
+            let Some(sn) = self_layout else { continue };
             let mut body = Vec::new();
-            if payload == sn {
-                body.push(entry(0, KIND_SELF));
-            } else {
-                describe_named(&payload, 0, shapes, depth + 1, Some(&payload), &mut body)?;
+            match payload {
+                Some(p) if p == sn => body.push(entry(0, KIND_SELF)),
+                Some(p) => describe_layout(p, 0, shapes, depth + 1, Some(p), &mut body)?,
+                // A scalar payload: nothing inside the block to describe.
+                None => {}
             }
-            out.push(heap_entry(at, body.len())?);
+            out.extend(heap_entry(at, body.len())?);
             out.extend(body);
             continue;
         }
@@ -277,7 +307,7 @@ fn flatten(
         // built, so freeing it walks its elements without this one knowing
         // what they are. A nested struct flattens into the same list, and a
         // nested enum or wrapper contributes its own guards at this offset.
-        describe(ty, at, shapes, depth, self_name, out)?;
+        describe(ty, at, shapes, depth, self_layout, out)?;
     }
     Some(())
 }
@@ -301,40 +331,42 @@ fn flatten(
 /// rather than on a depth cap that would free the first eight nodes of a list
 /// and leak the rest (#1202).
 pub fn heap_field_descriptor(ty: &RaskType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
-    let payload = layout_name(heap_payload(ty)?, shapes.layouts, shapes.enums);
     let mut out = Vec::new();
-    describe_named(&payload, 0, shapes, 0, Some(&payload), &mut out)?;
+    // A payload with no layout (a scalar) owns nothing inside the block.
+    if let Some(payload) = layout_of(heap_payload(ty)?, shapes) {
+        describe_layout(payload, 0, shapes, 0, Some(payload), &mut out)?;
+    }
     Some(out)
 }
 
-/// The layout name a written type goes by — see `rask_mono::layout_name_for`.
-fn layout_name(ty: &RaskType, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
-    rask_mono::layout_name_for(ty, |n| {
-        layouts.iter().any(|l| l.name == n) || enums.iter().any(|l| l.name == n)
-    })
+/// The layout `ty` is laid out by, found by the type's identity: an
+/// instance's own when one was made, else the declaration's. `None` for a
+/// type with no struct or enum layout.
+fn layout_of(ty: &RaskType, shapes: Shapes<'_>) -> Option<Layout> {
+    rask_layout::struct_index_for(ty, shapes.layouts)
+        .map(Layout::Struct)
+        .or_else(|| rask_layout::enum_index_for(ty, shapes.enums).map(Layout::Enum))
 }
 
-/// What a value of the named type owns, relative to `base`. A name that isn't a
-/// layout owns nothing describable — a scalar, or a type this pass can't see.
-fn describe_named(
-    name: &str,
+/// What a value laid out by `layout` owns, relative to `base`.
+fn describe_layout(
+    layout: Layout,
     base: i32,
     shapes: Shapes<'_>,
     depth: u32,
-    self_name: Option<&str>,
+    self_layout: Option<Layout>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if depth > MAX_DEPTH {
         return None;
     }
-    if let Some(id) = shapes.layouts.iter().position(|l| l.name == name) {
-        let tys = shapes.fields.struct_fields(id as u32);
-        return flatten(&shapes.layouts[id].fields, tys, base, shapes, depth, self_name, out);
+    match layout {
+        Layout::Struct(id) => {
+            let tys = shapes.fields.struct_fields(id as u32);
+            flatten(&shapes.layouts.get(id)?.fields, tys, base, shapes, depth, self_layout, out)
+        }
+        Layout::Enum(id) => enum_arms(id as u32, base, shapes, depth, self_layout, out),
     }
-    if let Some(id) = shapes.enums.iter().position(|l| l.name == name) {
-        return enum_arms(id as u32, base, shapes, depth, self_name, out);
-    }
-    Some(())
 }
 
 /// Is this field a `Heap<T>`? The release walk asks before it looks at

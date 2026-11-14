@@ -89,7 +89,7 @@ impl<'a> MirLowerer<'a> {
     /// `None` when the error propagates as-is.
     fn error_wrap_target(&self, try_id: rask_ast::NodeId) -> Option<ErrorWrapTarget> {
         let wrap = self.ctx.error_wraps.get(&try_id)?;
-        let (idx, layout) = self.ctx.find_enum(&wrap.enum_name)?;
+        let (idx, layout) = self.ctx.enum_of(&wrap.enum_ty)?;
         let variant = layout.variants.iter().find(|v| v.name == wrap.variant)?;
         let field = variant.fields.first();
         Some(ErrorWrapTarget {
@@ -143,13 +143,15 @@ impl<'a> MirLowerer<'a> {
             return Ok((result, result_ty));
         }
 
-        let tag_local = self.builder.alloc_temp(MirType::U8);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: tag_local,
-            rvalue: MirRValue::EnumTag {
-                value: result.clone(),
-            },
-        }));
+        // `Link<T>?` and `Handle<T>?` are one word with `none` as a reserved
+        // value and no tag. Reading a tag off one read through the pointer, so
+        // `try` took the `none` path for a present link and crashed on an
+        // absent one (#1800).
+        let niche = match &result_ty {
+            MirType::Result { .. } => None,
+            _ => self.option_niche(inner, &result_ty),
+        };
+        let tag_local = self.emit_option_tag(&result, niche);
 
         let ok_block = self.builder.create_block();
         let err_block = self.builder.create_block();
@@ -180,43 +182,32 @@ impl<'a> MirLowerer<'a> {
             None => self.error_wrap_target(try_id),
         };
         // ER32: the enclosing function's error side is `any Interface`, so the
-        // concrete error acquires a vtable on its way out. Same trigger as
-        // ER31a's enum wrap and mutually exclusive with it — an error is either
-        // named by a boundary enum or type-erased, not both.
+        // concrete error acquires a vtable on its way out. The checker says
+        // which `try`s that is (`erased_try_errors`); one whose error arrived
+        // erased already, or is caught by a handler or wrapped by ER31a, isn't
+        // boxed here.
         //
-        // Without this the checker accepted the propagation and the payload
-        // stored into the caller's slot was the bare concrete value. The caller
-        // then read its first two words as {data, vtable} and called through
-        // whatever the second one happened to be, which is a segfault as soon
-        // as anyone asks for `.message()`.
-        //
-        // Unless it arrived erased already: `try g(n)` inside a
-        // `-> i64 or any Error` whose `g` returns one too. Boxing a box asks
-        // for the concrete type's name and an interface object hasn't got one, so
-        // the vtable came out `.vtable.unknown__Error` and the first
-        // `.message()` on it failed to link (#1106). The value is forwarded
-        // whole instead — it already carries the right vtable.
-        let already_boxed = |err: &MirType| matches!(
-            (&err_ty, err),
-            (MirType::InterfaceObject { interface_name: have }, MirType::InterfaceObject { interface_name: want })
-                if have == want
-        );
-        let box_interface: Option<String> = match (&handler, &wrap, &self.return_ty()) {
-            (None, None, MirType::Result { err, .. }) => match &**err {
-                MirType::InterfaceObject { interface_name } if !already_boxed(err) => {
-                    Some(interface_name.clone())
-                }
-                _ => None,
-            },
+        // Without the box the payload stored into the caller's slot was the
+        // bare concrete value. The caller then read its first two words as
+        // {data, vtable} and called through whatever the second one happened
+        // to be, which is a segfault as soon as anyone asks for `.message()`.
+        let box_interface: Option<(rask_types::Type, String)> = match (&handler, &wrap) {
+            (None, None) => self.ctx.erased_try_error(try_id),
             _ => None,
         };
         let err_val = match &handler {
             Some(frame) => frame.err_val,
             None => self.builder.alloc_temp(err_ty.clone()),
         };
+        // A niche `none` is the bare sentinel: there is no error beside it to
+        // read, and reading one dereferenced it.
+        let err_rvalue = match niche {
+            Some(_) => MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+            None => self.payload_field(result.clone(), &result_ty, &err_ty),
+        };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: err_val,
-            rvalue: self.payload_field(result.clone(), &result_ty, &err_ty),
+            rvalue: err_rvalue,
         }));
 
         if let Some(frame) = handler {
@@ -232,7 +223,7 @@ impl<'a> MirLowerer<'a> {
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: frame.handler_block,
             }));
-            return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
+            return self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block);
         }
 
         // ER31a: hand the caller the error type it declared. A `try store.view(id)`
@@ -263,17 +254,13 @@ impl<'a> MirLowerer<'a> {
         // ER32: box after any ER31a wrap, so the two compose in the one order
         // that makes sense — the enum names the error, the box erases it.
         let (err_val, err_store_size) = match &box_interface {
-            Some(interface_name) => {
-                let concrete = match self.ctx.lookup_raw_type(inner.id) {
-                    Some(rask_types::Type::Result { err, .. }) => Some((**err).clone()),
-                    _ => None,
-                };
+            Some((concrete, interface_name)) => {
                 let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
-                    concrete.as_ref(),
+                    Some(concrete),
                     interface_name,
-                );
+                )?;
                 match boxed {
                     MirOperand::Local(id) => (id, boxed_ty.size()),
                     _ => (err_val, err_store_size),
@@ -308,10 +295,8 @@ impl<'a> MirLowerer<'a> {
             // bisecting the test.
             let text = self
                 .ctx
-                .call_rewrites
-                .get(&try_id)
-                .cloned()
-                .and_then(|msg_fn| self.emit_error_message_text(&msg_fn, err_val, &err_ty));
+                .error_messages(inner.id)
+                .and_then(|messages| self.emit_error_message_text(&messages, err_val, &err_ty));
             match text {
                 Some(text) => {
                     let joined = self.builder.alloc_temp(MirType::Buffer);
@@ -345,7 +330,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-            return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
+            return self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block);
         }
 
         // An optional-returning function propagates *absence*, and an Option is
@@ -357,10 +342,16 @@ impl<'a> MirLowerer<'a> {
         // `try raw` in a `-> u16?` built a `string?`-shaped Result and the
         // caller's `??` read a payload of 1 where the default belonged (#608).
         if let none_ty @ MirType::Option(_) = self.return_ty() {
+            // A niche return — `-> Link<T>?` — is the sentinel word itself, with
+            // no tag byte to write. Writing one stored through a null pointer.
+            if let Some(sentinel) = super::mir_niche_none(&none_ty) {
+                self.terminate_return(Some(MirOperand::Constant(MirConst::Int(sentinel))));
+                return self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block);
+            }
             let ret_none = self.builder.alloc_temp(none_ty.clone());
             self.store_wrapper_tag(ret_none, &none_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
             self.terminate_return(Some(MirOperand::Local(ret_none)));
-            return self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block);
+            return self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block);
         }
 
         // Construct full Result.Err with origin (ER15). The slot has to be the
@@ -455,7 +446,7 @@ impl<'a> MirLowerer<'a> {
         }));
         self.terminate_return(Some(MirOperand::Local(ret_result)));
 
-        self.finish_try_ok_path(inner, &result, &result_ty, ok_block, merge_block)
+        self.finish_try_ok_path(inner, &result, &result_ty, niche.is_some(), ok_block, merge_block)
     }
 
     /// Put a concrete error into the union slot the enclosing function returns.
@@ -503,6 +494,7 @@ impl<'a> MirLowerer<'a> {
         inner: &Expr,
         result: &MirOperand,
         result_ty: &MirType,
+        is_niche: bool,
         ok_block: crate::BlockId,
         merge_block: crate::BlockId,
     ) -> Result<TypedOperand, LoweringError> {
@@ -561,9 +553,15 @@ impl<'a> MirLowerer<'a> {
             })
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/errors:367"));
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        // A niche option's payload is the word itself.
+        let ok_rvalue = if is_niche {
+            MirRValue::Use(result.clone())
+        } else {
+            self.payload_field(result.clone(), result_ty, &ok_ty)
+        };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: ok_val,
-            rvalue: self.payload_field(result.clone(), result_ty, &ok_ty),
+            rvalue: ok_rvalue,
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,

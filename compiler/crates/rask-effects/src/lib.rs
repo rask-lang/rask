@@ -56,6 +56,10 @@ pub struct Effects {
     /// Set when the function (or something it calls without an internal block) reaches `spawn`.
     /// NOT propagated via the regular call graph — uses unguarded-call edges only.
     pub needs_runtime: bool,
+    /// Runs C code: an extern, or a C macro that reads memory or calls C.
+    /// Only the compiled program can, so it's outside comptime (CT7). Not
+    /// an effect in PU1's sense: `strlen` is pure and still C.
+    pub c_code: bool,
 }
 
 impl Effects {
@@ -82,6 +86,7 @@ impl Effects {
         self.async_ |= other.async_;
         self.grow |= other.grow;
         self.shrink |= other.shrink;
+        self.c_code |= other.c_code;
     }
 
     /// Ghost text label for IDE display (IDE1): `[pure]`, or the effects
@@ -132,6 +137,9 @@ pub struct EffectWarning {
 /// call's node.
 pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
 
+/// The checker's reading of each C macro's body, by the macro's name.
+pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
+
 /// Run effect inference on a program and the stdlib it was checked with.
 ///
 /// The stdlib's bodies are inferred too, so a call into it carries what the
@@ -143,9 +151,10 @@ pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
     targets: &MethodTargets,
+    c_macros: &CMacros,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets);
+    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets, c_macros);
     let warn_prints = warn.iter().any(|w| w == "blocking_print");
     let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
     (effects, warnings)
@@ -169,6 +178,37 @@ pub(crate) fn decl_keys(decls: &[Decl]) -> Vec<String> {
         }
     }
     keys
+}
+
+/// The `h.join()` calls that join a pooled task borrowing its frame
+/// (conc.async/B1). The join runs the task itself if no worker has started it
+/// (B6), so what the join does is what the task does, and the task's body is
+/// already counted where it is spawned. A green task's or a thread's join
+/// still waits.
+pub(crate) fn borrowing_joins(decls: &[Decl]) -> std::collections::HashSet<rask_ast::NodeId> {
+    use rask_ast::decl::DeclKind;
+    let mut out = std::collections::HashSet::new();
+    let mut add = |body: &[rask_ast::stmt::Stmt]| {
+        out.extend(
+            rask_ast::tasks::all_windows(body)
+                .iter()
+                .filter(|w| matches!(w.spawn.kind, rask_ast::expr::ExprKind::Spawn { target: rask_ast::expr::SpawnTarget::Pool, .. }))
+                .map(|w| w.join_call.id),
+        );
+    };
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => add(&f.body),
+            DeclKind::Struct(s) => s.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Enum(e) => e.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Impl(i) => i.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Interface(t) => t.methods.iter().for_each(|m| add(&m.body)),
+            DeclKind::Test(t) => add(&t.body),
+            DeclKind::Benchmark(b) => add(&b.body),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The effect-map key for a method declared in `extend Target`.

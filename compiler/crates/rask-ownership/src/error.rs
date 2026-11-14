@@ -309,6 +309,25 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// S5: `p.f` written over while `name`, a view of it, is still in scope.
+    #[error("`{path}` written over while `{name}` views it")]
+    ViewOutlivedReplace {
+        name: String,
+        path: String,
+        /// Where the view was bound.
+        viewed_at: Span,
+    },
+
+    /// `let name = p.f` moved the field out, and this reads it (or the value
+    /// around it) before the refill puts one back.
+    #[error("`{path}` read while `{name}` has it")]
+    TakenFieldRead {
+        path: String,
+        name: String,
+        /// The read that moved it out.
+        taken_at: Span,
+    },
+
     /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
     /// is left holding a value that moved out from under it.
     #[error("`{name}` was consumed and not replaced before returning")]
@@ -331,6 +350,46 @@ pub enum OwnershipErrorKind {
     #[error("this `Shared` is task-local and cannot be sent")]
     LocalSharedSent {
         name: String,
+    },
+
+    /// conc.async/B4: two arguments a callee may use at the same time conflict.
+    #[error("these arguments may run at the same time: {what}")]
+    ParallelArgsConflict {
+        what: String,
+        other_span: Span,
+    },
+
+    /// mem.racks/RK16: a borrowing task, or the code beside it, shares a rack
+    /// with the other side and writes through a link or a rack, or stores a link.
+    #[error("a task that shares a rack with the code beside it changes it")]
+    SharedGraphWrite {
+        what: String,
+    },
+
+    /// mem.racks/RK20: a function a `Staged` buffer keeps captured a link or a
+    /// `Local` box.
+    #[error("the function a `Staged` buffer keeps can't hold a link")]
+    StagedFnHoldsLink,
+
+    /// conc.async/B2: a borrowing task, or the code before its join, writes a
+    /// place the other side touches.
+    #[error("a task and the code before its join both touch `{name}`, and one writes it")]
+    SideConflict {
+        name: String,
+        /// The other side writes it too, rather than only reading.
+        other_writes: bool,
+        other_span: Span,
+    },
+
+    /// conc.async/B3: a borrowing task and the code beside it each name
+    /// something that has to stay on one thread.
+    #[error("a task and the code beside it both name a value that has to stay on one thread")]
+    SideTaskBound {
+        name: String,
+        other: String,
+        other_span: Span,
+        /// One of them is a function value the checker can't see into.
+        function_value: bool,
     },
 
     /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
@@ -482,6 +541,34 @@ pub enum OwnershipErrorKind {
     LinearCaptureCarried {
         name: String,
         ty: Option<String>,
+    },
+
+    /// A `Heap` read out of an aggregate this frame owns was given away. The
+    /// aggregate's release frees it too: `if (*first).next? as n { drop(n) }`
+    /// freed the block twice.
+    #[error("cannot give away `{name}` — `{from}` still holds it")]
+    GiveAwayHeldPart {
+        name: String,
+        /// The place `name` reads, rendered: `(*first).next`.
+        from: String,
+        /// The `? as` or pattern that bound it.
+        bound_at: Span,
+        sink: Option<String>,
+    },
+
+    /// The place a held part reads was given away, moved, replaced or
+    /// resized while the part was still live: `if (*first).next? as n {
+    /// drop(first); use(n) }` read a freed box.
+    #[error("cannot {operation} `{owner}` while `{part}` reads a box inside it")]
+    PartOwnerChanged {
+        /// The place being changed, rendered: `first`, `s.next`.
+        owner: String,
+        /// "give away", "move", "replace", or the resizing method.
+        operation: String,
+        part: String,
+        /// What `part` reads, rendered: `(*first).next`.
+        from: String,
+        part_at: Span,
     },
 
     /// A part matched out of a borrowed value was given away. `match s {

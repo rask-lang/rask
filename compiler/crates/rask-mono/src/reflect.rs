@@ -42,6 +42,13 @@ pub fn variant_facts(
     types: &TypeTable,
     subst: &[(String, TypeExpr)],
 ) -> Vec<VariantFact> {
+    // The type each payload was declared with. A shared layout — which an
+    // instance keeps when its arguments fit, `Answer<f64>` — holds a word
+    // where the declaration says `T`, and the name read off it was `i64`.
+    let declared = layout.key.as_ref().and_then(|k| match types.get(k.id) {
+        Some(rask_types::TypeDef::Enum { variants, .. }) => Some(variants),
+        _ => None,
+    });
     layout
         .variants
         .iter()
@@ -51,13 +58,17 @@ pub fn variant_facts(
             fields: v
                 .fields
                 .iter()
-                .map(|f| PayloadField {
+                .enumerate()
+                .map(|(i, f)| PayloadField {
                     name: f.name.clone(),
-                    type_name: types
-                        .resolve_type_names(&f.ty)
-                        .to_type_expr()
-                        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| a.clone()))
-                        .to_string(),
+                    type_name: rask_check::reflect::substituted_label(
+                        types,
+                        declared
+                            .and_then(|vs| vs.iter().find(|(n, _)| *n == v.name))
+                            .and_then(|(_, payload)| payload.get(i))
+                            .unwrap_or(&f.ty),
+                        subst,
+                    ),
                     offset: v.payload_offset + f.offset,
                     size: f.size,
                     has_default: f.has_declared_default,

@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+struct Room {
+    name: string
+    description: string
+}
+
+func main() {
+    mut rooms: Vec<Room> = Vec.new()
+    rooms.push(Room(name: "Gate", description: "A rusted iron gate."))
+    let room = rooms[0]
+    println(room.name)
+}
