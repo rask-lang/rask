@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An or-pattern whose alternatives hold nested variants or bind names.
+//
+// Native dropped each alternative's nested tests, so `Inner(Blue) | Inner(Red)`
+// took every `Inner`.
+
+enum Color { Red, Green, Blue }
+enum Wrap { Inner(Color), Nothing }
+enum Cmd { Go(i64), Back(i64), Stop, Wait }
+
+func wrap(w: Wrap) -> string {
+    return match w {
+        Inner(Blue) | Inner(Red) => "inner br",
+        Inner(_) => "inner other",
+        Nothing => "nothing",
+    }
+}
+
+func cmd(c: Cmd) -> string {
+    return match c {
+        Go(gamma) | Back(gamma) => "move {gamma}",
+        Stop | Wait => "still",
+    }
+}
+
+func cmd_value(c: Cmd) -> i64 {
+    return match c {
+        Go(n) | Back(n) => n,
+        Stop | Wait => -1,
+    }
+}
+
+test "nested variants in alternatives are all tested" {
+    assert wrap(Wrap.Inner(Color.Red)) == "inner br"
+    assert wrap(Wrap.Inner(Color.Green)) == "inner other"
+    assert wrap(Wrap.Inner(Color.Blue)) == "inner br"
+    assert wrap(Wrap.Nothing) == "nothing"
+}
+
+test "a binding alternative and a bare one" {
+    assert cmd(Cmd.Go(1)) == "move 1"
+    assert cmd(Cmd.Back(2)) == "move 2"
+    assert cmd(Cmd.Stop) == "still"
+    assert cmd(Cmd.Wait) == "still"
+}
+
+test "the shared name is bound from the alternative that matched" {
+    assert cmd_value(Cmd.Go(7)) == 7
+    assert cmd_value(Cmd.Back(8)) == 8
+    assert cmd_value(Cmd.Stop) == -1
+}
