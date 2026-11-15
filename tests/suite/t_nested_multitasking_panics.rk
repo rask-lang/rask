@@ -41,3 +41,22 @@ test "blocks one after the other are fine" {
     }
     assert total == 3
 }
+
+// A test that fails inside a block never reaches the block's end, and the next
+// test starts in the same process. It has to find the runtime closed, not take
+// its own first block for a nested one.
+test "a test that fails inside a block" {
+    expect_fail()
+    using Multitasking {
+        let h = spawn { return 1 }
+        assert h.join()! == 2
+    }
+}
+
+test "the next test still gets a block of its own" {
+    mut got = 0
+    using Multitasking {
+        got = spawn { return 5 }.join()!
+    }
+    assert got == 5
+}

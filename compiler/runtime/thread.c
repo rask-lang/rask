@@ -365,6 +365,17 @@ void rask_scope_leave(void) {
     atomic_store(&scope_active, 0);
 }
 
+// A panic in the body of a block skips the block's end: the cleanup that closes
+// it runs on the way out of `return` and `try`, not on an unwind. A program's
+// main task then ends the process, but the test runner survives it and starts
+// the next test, which has to find the scheduler closed and not take its own
+// first block for a nested one.
+void rask_scope_close_if_open(void) {
+    if (atomic_load(&scope_active)) {
+        rask_runtime_shutdown();
+    }
+}
+
 void rask_task_slots_clear(void) {
     pthread_mutex_lock(&slot_lock);
     slots_total = 0;
