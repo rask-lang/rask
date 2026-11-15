@@ -133,7 +133,7 @@ impl<'a> WarnContext<'a> {
         self.in_loop = false;
         self.in_multitasking = false;
         self.in_root = is_root;
-        self.under_runtime = self.runtime_only.contains(qname);
+        self.under_runtime = self.runtime_only.contains(qname) || spawns_in_callers_runtime(&f.body);
         self.check_stmts(&f.body, warnings);
     }
 
@@ -498,6 +498,28 @@ impl<'a> WarnContext<'a> {
     }
 }
 
+/// conc.async/C6: a function that spawns outside a `using Multitasking` of
+/// its own spawns into its caller's runtime, so the whole body runs with one
+/// installed. Its loops are where CW2 would have a blocking call hold the
+/// thread, and the fix CW2 offers, a second runtime, is one C1 forbids.
+fn spawns_in_callers_runtime(body: &[Stmt]) -> bool {
+    let mut found = false;
+    for stmt in body {
+        rask_ast::visit::walk_stmt_pruned(stmt, &mut |e| match &e.kind {
+            ExprKind::Spawn { target: SpawnTarget::Green, .. } => {
+                found = true;
+                false
+            }
+            // A runtime this body installs is its own, not the caller's; and a
+            // closure's body runs whenever it's called, not here.
+            ExprKind::UsingBlock { name, .. } if is_multitasking(name) => false,
+            ExprKind::Closure { .. } => false,
+            _ => !found,
+        });
+    }
+    found
+}
+
 fn is_multitasking(name: &str) -> bool {
     name == "Multitasking" || name == "multitasking"
 }
@@ -686,6 +708,41 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println", "process");
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "comp.effects/CW2");
+    }
+
+    /// #1892. A function that spawns runs inside its caller's runtime
+    /// (conc.async/C6), so a loop in it isn't blocking a bare thread, and the
+    /// runtime CW2 would add is a nested one C1 forbids.
+    #[test]
+    fn cw2_silent_in_a_function_that_spawns() {
+        // func accept_all() { spawn { work() }; for x in items { println() } }
+        let mut body = vec![expr_stmt(task_spawn(vec![expr_stmt(call("work"))]))];
+        body.extend(loop_calling("println"));
+        let decls = vec![make_fn("accept_all", body)];
+        let effects = effects_with_io_concurrent("println", "accept_all");
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        assert!(warnings.is_empty(), "no CW2 in a function that spawns: {:?}", warnings.iter().map(|w| &w.code).collect::<Vec<_>>());
+    }
+
+    /// The runtime a body installs for itself doesn't cover a loop outside it.
+    #[test]
+    fn cw2_still_fires_beside_a_runtime_the_body_installs() {
+        // func f() { using Multitasking { spawn { work() } }; for x in items { println() } }
+        let mut body = vec![expr_stmt(Expr {
+            id: NodeId(0),
+            kind: ExprKind::UsingBlock {
+                name: "Multitasking".into(),
+                args: vec![],
+                body: vec![expr_stmt(task_spawn(vec![expr_stmt(call("work"))]))],
+            },
+            span: sp(),
+        })];
+        body.extend(loop_calling("println"));
+        let decls = vec![make_fn("f", body)];
+        let effects = effects_with_io_concurrent("println", "f");
         let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
