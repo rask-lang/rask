@@ -1907,39 +1907,14 @@ impl ToDiagnostic for crate::TypeError {
                         field
                     ))
                     .with_fix(format!(
-                        "give `{}` a declared default (`{}: T = value`), or an `@default(expr)` \
-                         override if the default should only apply to decoding",
-                        field, field
-                    ))
-                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
-            }
-
-            // E12a: `Port.new` rejects a zero and `json.decode<Port>` would hand
-            // one out anyway. The fields are fine; the way in is the problem.
-            DecodeSkipsConstructor { ty, owner, through, constructor, returns, error, span } => {
-                let via = if *through {
-                    format!(" (`{}` holds a `{}`)", ty, owner)
-                } else {
-                    String::new()
-                };
-                Diagnostic::error(format!("`{}` cannot be decoded: `{}.{}` checks its input{}", ty, owner, constructor, via))
-                    .with_code("E0418")
-                    .with_primary(*span, format!(
-                        "`{owner}.{constructor}` returns `{returns}`, and a decode builds `{owner}` without calling it"
-                    ))
-                    .with_fix(format!(
-                        "write the `decode` that runs the check. It takes what the input holds and returns the checked value:\n\n  \
-                         {owner} implements Decode {{\n      \
-                         func decode(raw: /* what the input holds */) -> {owner} or {error} {{\n          \
-                         return {owner}.{constructor}(raw)\n      \
-                         }}\n  \
+                        "if `{field}` is an invariant the type protects, write the type's `decode`: it reads what the input holds and builds the value itself, so no field has to come off the wire:\n\n  \
+                         {ty} implements Decode {{\n      \
+                         func decode(raw: u16) -> {ty} or MyError {{ … }}\n  \
                          }}\n\n\
-                         or, if `{constructor}` isn't a check on decoded data, say a raw decode is fine:\n\n  \
-                         {owner} implements Decode {{ }}"
+                         otherwise give `{field}` a declared default (`{field}: T = value`), or an `@default(expr)` \
+                         override if the default should only apply to decoding"
                     ))
-                    .with_why(format!(
-                        "a type with a checking constructor promises its values passed the check, and a derived `Decode` would break that promise without a word. Anyone holding a `{owner}` assumes it went through `{constructor}` [std.encoding/E12a]"
-                    ))
+                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input, so its value comes from its default, from the type's own `decode`, or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, E12b, type.structs/FD1, FD6]")
             }
 
             // E12b: the block has a `decode` or `encode`, but not one a codec can call.
@@ -2015,7 +1990,7 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why(why)
             }
 
-            // E12b: `Port` reads itself through `decode` and nothing says how it is written.
+            // E12e: `Port` reads itself through `decode` and has no `encode` to write it.
             EncodeSkipsDecode { ty, owner, through, wire, span } => {
                 let via = if *through {
                     format!(" (`{}` holds a `{}`)", ty, owner)
@@ -2034,12 +2009,10 @@ impl ToDiagnostic for crate::TypeError {
                          return /* the {wire} that `decode` reads */\n      \
                          }}\n  \
                          }}\n\n\
-                         or, if the fields really are what gets written, say so:\n\n  \
-                         {owner} implements Encode {{ }}\n\n\
                          or keep it from being written at all with `@no_encode`"
                     ))
                     .with_why(format!(
-                        "a value that is written out and read back should come back the same. `{owner}` is read through its own `decode`, so a derived `Encode` would write something `decode` can't read, and the first round trip fails at run time, in whoever reads the output [std.encoding/E12b]"
+                        "a value that is written out and read back should come back the same. `{owner}` is read through its own `decode`, so a derived `Encode`, or an empty `Encode {{ }}` block, would write its fields, which `decode` can't read, and the first round trip fails at run time, in whoever reads the output [std.encoding/E12e]"
                     ))
             }
 

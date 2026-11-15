@@ -8,10 +8,10 @@
 // no type argument takes its target from the binding it flows into, which is
 // open at the call too. The bound used to be dropped in both and the call
 // compiled whatever the type turned out to be: the encoder wrote fields a
-// `decode` can't read, the decoder built a value around a constructor that
-// checks, or a field that can't be encoded went out as garbage. The bound is
-// kept and checked once the type has settled, so each of the three errors
-// below is reported (E0424, E0418, E0388).
+// `decode` can't read, the decoder had nothing to fill a private field with, or
+// a field that can't be encoded went out as garbage. The bound is kept and
+// checked once the type has settled, so each of the three errors below is
+// reported (E0424, E0377, E0388).
 
 import json
 
@@ -45,18 +45,9 @@ Port implements Decode {
     }
 }
 
-// E0418: a checking constructor, and nothing says a raw decode is fine.
+// E0377: a private field nothing fills, and no `decode` to build the value.
 struct Gate {
-    level: u8
-}
-
-extend Gate {
-    func open(level: u8) -> Gate or PortError {
-        if level > 9 {
-            return PortError(reason: "level out of range")
-        }
-        return Gate(level: level)
-    }
+    private level: u8
 }
 
 // E0388: a field that can't be encoded.
@@ -79,12 +70,13 @@ func main() {
     }
     println(json.encode(p))
 
-    // ERROR: `Gate.open` checks its input and a decode wouldn't call it [E0418].
-    // The target comes from the annotation, so it is open at the call.
+    // ERROR: `level` is private and has no default, so a decode has nothing to
+    // fill it with [E0377]. The target comes from the annotation, so it is open
+    // at the call.
     let gate: Gate = json.decode("{{\"level\": 4}") catch _ => {
         return
     }
-    println("{gate.level}")
+    println("decoded")
 
     // ERROR: field `raw` can't be encoded [E0388]
     let h = RawBuf.open(1) catch _ => {

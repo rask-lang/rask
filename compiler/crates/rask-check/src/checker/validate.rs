@@ -687,23 +687,8 @@ impl TypeChecker {
                 };
             }
         }
-        // E12a: nothing is wrong with the fields; the type has a constructor
-        // that checks, and a decode would build it without one.
-        if interface_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
-            if let Some(skipped) = checker.decode_skips_constructor(ty) {
-                return TypeError::DecodeSkipsConstructor {
-                    ty: ty_name,
-                    through: checker.named_type_id(ty) != Some(skipped.id),
-                    owner: skipped.ty,
-                    constructor: skipped.constructor,
-                    returns: skipped.returns,
-                    error: skipped.error,
-                    span,
-                };
-            }
-        }
-        // E12b: the fields are fine; the type reads itself through its own
-        // `decode` and nothing says how it is written.
+        // E12e: the fields are fine; the type reads itself through its own
+        // `decode` and has no `encode` to write it back.
         if interface_name == "Encode" && checker.first_unencodable_field(ty).is_none() {
             if let Some(unpaired) = checker.encode_skips_decode(ty) {
                 return TypeError::EncodeSkipsDecode {

@@ -1506,9 +1506,9 @@ impl TypeChecker {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
                 // A written `Self` in the block is the type being extended.
                 // Left as the bare name, every reader of the signature had to
-                // know to replace it, and the ones that didn't (a constructor
-                // `-> Self or E` going unseen by std.encoding/E12a) saw a type
-                // called "Self" that doesn't exist.
+                // know to replace it, and the ones that didn't (a `decode`
+                // written `-> Self or E` going unseen by std.encoding/E12b) saw
+                // a type called "Self" that doesn't exist.
                 if let Some(self_ty) = &self_ty {
                     let this = std::collections::HashMap::from([("Self".to_string(), self_ty.clone())]);
                     for (ty, _) in &mut sig.params {
@@ -3358,6 +3358,23 @@ impl TypeChecker {
                                     known: self.declared_interface_names(),
                                     span: decl.span,
                                 });
+                                continue;
+                            }
+                            // `Encode` or `Decode` declared on a type the derive
+                            // refuses (an empty `Encode` block on a type that
+                            // reads itself through `decode`) isn't missing a
+                            // method: they have none. Say what it is, as a bound
+                            // on that type would.
+                            if matches!(interface_name.to_string().as_str(), "Encode" | "Decode")
+                                && matches!(e, crate::interfaces::InterfaceError::NotSatisfied { .. })
+                            {
+                                let err = self.bound_error(
+                                    &target_ty,
+                                    i.target_ty.to_string(),
+                                    interface_name.to_string(),
+                                    decl.span,
+                                );
+                                self.errors.push(err);
                                 continue;
                             }
                             // The method is there and its signature is wrong —

@@ -11,15 +11,14 @@
 // compatible struct with zero user ceremony.
 //
 // Auto-derive (E12): the compiler derives Encode for any struct where all
-// public fields have Encode types, unless @no_encode. Same for Decode, except
-// that a type with a checking constructor (a static function returning
-// `Self or E`) isn't auto-Decode: a decode would build it without the check
-// (E12a). `T implements Decode { func decode(wire: W) -> Self or E }` runs the
-// check wherever the type appears (E12b); `T implements Decode { }` says a raw
-// decode is intended. A type with its own `decode` isn't auto-Encode: it says how
-// it is written with `encode`, an empty `Encode` block, or `@no_encode` (E12e).
-// Public fields only (E13). Enums auto-derive when all variant payloads
-// are compatible (E17).
+// serialized fields have Encode types, unless @no_encode. Same for Decode, except
+// that a field left out of the wire form (`private`) needs a default (E13a). A
+// type that protects an invariant makes its field private and writes
+// `T implements Decode { func decode(wire: W) -> Self or E }`, which builds the
+// value wherever the type appears (E12b). A type with its own `decode` isn't
+// auto-Encode: it writes its `encode`, or says `@no_encode` (E12e); an empty
+// `Encode` block isn't an answer. Private fields stay off the wire (E13). Enums
+// auto-derive when all variant payloads are compatible (E17).
 //
 // Base types (E14): bool, i8–i64, u8–u64, f32, f64, string.
 // Collection types (E15): Vec<T: Encode>, Map<string, T: Encode>, T?.

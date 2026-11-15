@@ -1726,44 +1726,6 @@ fn error_decode_bound_not_satisfied() {
     );
 }
 
-// std.encoding/E12a (#1936): `Port.new` rejects 0, and a derived `Decode` built
-// ports straight from the wire without calling it. A type with a constructor
-// returning `Self or E` isn't auto-`Decode`, whether it is asked for directly
-// or sits inside a `Vec` field, and the error names the constructor.
-#[test]
-fn error_decode_skips_constructor() {
-    let (failed, out) = compile_error_output("decode_skips_constructor.rk");
-    assert!(failed, "decoding a type with a checking constructor must be rejected: {}", out);
-    assert_eq!(
-        out.matches("E0418").count(), 4,
-        "`Port`, the `Listener` that holds a `Vec<Port>`, `Gate` written `-> Self or E`, \
-         and `Wrapper<Port>`: {}", out,
-    );
-    // The type argument is what gets decoded. Judging the bare `T` blamed a field
-    // and advised `@no_serialize`, which is wrong for a `Port`.
-    assert!(
-        !out.contains("E0388") && !out.contains("@no_serialize"),
-        "`Wrapper<Port>` is a constructor problem, not an undecodable field: {}", out,
-    );
-    assert!(
-        out.contains("`Gate.open` checks its input"),
-        "a constructor written `-> Self or E` is still one: {}", out,
-    );
-    assert!(
-        out.contains("`Port.new` checks its input") && out.contains("`Listener` holds a `Port`"),
-        "should name the constructor, and the type it was reached through: {}", out,
-    );
-    assert!(
-        out.contains("Port implements Decode") && out.contains("func decode(raw:") && out.contains("Port.new(raw)"),
-        "should show the `decode` that runs the constructor: {}", out,
-    );
-    assert!(
-        out.contains("a raw decode is fine"),
-        "should still offer the empty declaration that says a raw decode is intended: {}", out,
-    );
-    assert!(!out.contains("PortWire"), "the wire-struct workaround is gone from the fix: {}", out);
-}
-
 // std.encoding/E12b: the `decode` in a `Decode` block has one shape a decoder
 // can call. Each way to break it is reported once, at the method.
 #[test]
@@ -1797,14 +1759,19 @@ fn error_decode_malformed() {
 // std.encoding/E12b: a type that reads itself through its own `decode` isn't
 // auto-`Encode`, because the fields it would write aren't what `decode` reads.
 // Reached directly, through a `Vec` field and through a `Map` value; one that
-// says how it is written (`encode`, or the empty `Encode` block) is fine.
+// writes its own `encode` is fine, and an empty `Encode` block is not.
 #[test]
 fn error_encode_skips_decode() {
     let (failed, out) = compile_error_output("encode_skips_decode.rk");
     assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0424").count(), 3,
-        "`Port`, the `Listener` that holds a `Vec<Port>` and the `Routes` that holds a `Map`: {}", out,
+        out.matches("E0424").count(), 5,
+        "`Port`, the `Listener` that holds a `Vec<Port>`, the `Routes` that holds a `Map`, and the `Flag` \
+         with an empty `Encode` block, at the block and where it is written: {}", out,
+    );
+    assert!(
+        !out.contains("E0333"),
+        "an empty `Encode` block isn't missing a method, it is the wrong block: {}", out,
     );
     assert!(
         out.contains("`Port` is read as a `u16` and would be written as its fields")
@@ -1813,7 +1780,11 @@ fn error_encode_skips_decode() {
     );
     assert!(
         out.contains("Port implements Encode") && out.contains("func encode(self) -> u16") && out.contains("@no_encode"),
-        "should show the `encode`, the empty block and the opt-out: {}", out,
+        "should show the `encode` and the opt-out: {}", out,
+    );
+    assert!(
+        !out.contains("fields really are what gets written"),
+        "the empty block is the mistake, not a fix to offer: {}", out,
     );
 }
 
@@ -1849,7 +1820,7 @@ fn error_encode_malformed() {
 // settles later, and `json.decode(text)` takes its target from the binding, so
 // both reach the bound as an open variable. The bound used to be dropped there
 // and the call compiled: the encoder wrote fields a `decode` can't read, the
-// decoder skipped a checking constructor. It is kept, and checked once the
+// decoder had no value for a private field. It is kept, and checked once the
 // type has settled.
 #[test]
 fn error_bound_on_unsettled_type() {
@@ -1857,7 +1828,7 @@ fn error_bound_on_unsettled_type() {
     assert!(failed, "a bound on a type settled after the call must still be checked: {}", out);
     for (code, what) in [
         ("E0424", "`Port` cannot be encoded"),
-        ("E0418", "`Gate` cannot be decoded"),
+        ("E0377", "`Gate` cannot be decoded"),
         ("E0388", "`RawBuf` cannot be encoded"),
     ] {
         assert_eq!(out.matches(code).count(), 1, "{code} ({what}) once: {out}");

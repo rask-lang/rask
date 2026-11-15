@@ -157,21 +157,6 @@ impl Collection {
     }
 }
 
-/// E12a: a type a decode would build without calling its checking constructor.
-#[derive(Debug, Clone)]
-pub struct SkippedConstructor {
-    /// The type that has the constructor. It can be one the asked type holds,
-    /// not the asked type itself.
-    pub id: TypeId,
-    pub ty: String,
-    /// The constructor's name, as declared.
-    pub constructor: String,
-    /// What it returns, as written in messages: `Port or PortError`.
-    pub returns: String,
-    /// The error side of that, `PortError`.
-    pub error: String,
-}
-
 /// What a walk of the types a decode or a write reaches does with each one.
 enum Walk<R> {
     /// This is the one: stop.
@@ -391,8 +376,7 @@ impl<'a> InterfaceChecker<'a> {
             self.claim_input = true;
             self.decoding = true;
             let ok = self.type_is_encodable(ty, &mut Vec::new())
-                && self.first_defaultless_excluded_field(ty).is_none()
-                && self.decode_skips_constructor(ty).is_none();
+                && self.first_defaultless_excluded_field(ty).is_none();
             self.claim_input = false;
             self.decoding = false;
             if ok {
@@ -424,14 +408,12 @@ impl<'a> InterfaceChecker<'a> {
             // needs a value for a field it leaves out; decoding has to build the
             // whole struct, so an excluded field with no default has nothing to
             // come from.
-            //
-            // E12a: and it has to be able to build the whole struct without
-            // stepping around a constructor that checks it.
             let decodable = base_interface != "Decode"
-                || (self.first_defaultless_excluded_field(ty).is_none()
-                    && self.decode_skips_constructor(ty).is_none());
-            // E12b: and a type that reads itself through its own `decode` has
-            // to say how it is written, or the output isn't what it reads.
+                || self.first_defaultless_excluded_field(ty).is_none();
+            // E12e: and a type that reads itself through its own `decode` has
+            // to write its own `encode`, or the output isn't what it reads.
+            // An empty `Encode` block doesn't do: it says the fields are what
+            // is written, which is the mismatch.
             let encodable = base_interface != "Encode" || self.encode_skips_decode(ty).is_none();
             self.decoding = false;
             self.encoding = false;
@@ -744,49 +726,16 @@ impl<'a> InterfaceChecker<'a> {
         self.defaultless_excluded_field_of(id, &mut Vec::new())
     }
 
-    /// E12a: the first type a decode of `ty` would build straight from the wire
-    /// although its author wrote a constructor that checks it, and didn't say
-    /// the raw decode is fine (`T implements Decode { }`). Reaches through
-    /// containers and fields, since `Vec<Port>` skips `Port.new` as surely as
-    /// `Port` does. Fields the wire form leaves out are never decoded, so
-    /// they don't count.
-    pub fn decode_skips_constructor(&self, ty: &Type) -> Option<SkippedConstructor> {
-        self.find_wire_type(ty, &mut Vec::new(), &|id| {
-            // A claim builds a type that supplies its own generator without
-            // decoding it, so a constructor on it is never stepped around.
-            if (self.claim_input && self.generates(id)) || self.writes_itself(id) {
-                return Walk::Skip;
-            }
-            let raw_decode_declared = self.types.declares_conformance(id, &TypeExpr::named("Decode"));
-            match self.types.checking_constructor(id).filter(|_| !raw_decode_declared) {
-                Some(ctor) => Walk::Found(SkippedConstructor {
-                    id,
-                    ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
-                    constructor: ctor.name.clone(),
-                    returns: self.format_signature_return(ctor),
-                    error: match &ctor.ret {
-                        Type::Result { err, .. } => self.display_ty(err),
-                        _ => String::new(),
-                    },
-                }),
-                None => Walk::Descend,
-            }
-        })
-    }
-
-    /// E12b: the first type a write of `ty` would emit as its fields although
-    /// it reads itself through its own `decode`, and didn't say the fields are
-    /// the wire form (`T implements Encode { }`) or write something else
-    /// (`encode`). Reaches through containers and fields like the E12a walk.
+    /// E12e: the first type a write of `ty` would emit as its fields although
+    /// it reads itself through its own `decode` and has no `encode` of its own
+    /// (an empty `Encode` block writes the fields, so it doesn't count).
+    /// Reaches through containers, fields and payloads.
     pub fn encode_skips_decode(&self, ty: &Type) -> Option<UnpairedDecode> {
         self.find_wire_type(ty, &mut Vec::new(), &|id| {
             if self.writes_itself(id) {
                 return Walk::Skip;
             }
             let Some(custom) = self.types.custom_decode(id) else { return Walk::Descend };
-            if self.types.declares_conformance(id, &TypeExpr::named("Encode")) {
-                return Walk::Descend;
-            }
             Walk::Found(UnpairedDecode {
                 id,
                 ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
@@ -890,10 +839,6 @@ impl<'a> InterfaceChecker<'a> {
         };
         visited.pop();
         found
-    }
-
-    fn format_signature_return(&self, m: &MethodSig) -> String {
-        self.display_ty(&m.ret)
     }
 
     fn defaultless_excluded_field_of(

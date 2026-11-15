@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type that protects an invariant makes its field private and writes its own
+// `decode` (std.encoding/E13a, E12b). A private field is never read from the
+// wire, and a decode that has nothing to fill it with is an error, so `decode`
+// is the one way in: it takes what the input holds, checks it and builds the
+// value itself.
+//
+// A static function that happens to return `Self or E` says nothing about
+// decoding: `Settings.load` below is a loader, and `Settings` decodes from its
+// fields like any other struct. The compile-error half, a private field with no
+// `decode`, is in `tests/compile_errors/bound_on_unsettled_type.rk`; the cases of
+// `decode` itself are in `t_decode_custom.rk`.
+
+import json
+
+struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+struct Port {
+    private value: u16
+}
+
+extend Port {
+    public func number(self) -> u16 {
+        return self.value
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        if raw == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: raw)
+    }
+}
+
+// Written the way it is read, so what comes out decodes back (E12e).
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
+    }
+}
+
+func read_port(text: string) -> string {
+    let p = json.decode<Port>(text) catch e => {
+        return e.message()
+    }
+    return "port {p.number()}"
+}
+
+test "std.encoding/E13a — a private field is filled by the type's own decode" {
+    assert read_port("8080") == "port 8080"
+    assert read_port("0") == "type error: the value: port 0 is reserved"
+}
+
+test "std.encoding/E13a — the invariant holds inside a list too" {
+    let ports = json.decode<Vec<Port>>("[80, 0, 443]")
+    if ports is JsonError as e {
+        assert e.message() == "type error: the list[1]: port 0 is reserved"
+    } else {
+        assert false
+    }
+}
+
+test "std.encoding/E13a — encode writes it back as what decode reads" {
+    let p = json.decode<Port>("443") catch _ => {
+        return
+    }
+    assert json.encode(p) == "443"
+}
+
+// A function that returns `Self or E` isn't a promise about decoded data, and
+// the type decodes from its fields as it always did.
+struct Settings {
+    name: string
+    retries: i64
+}
+
+extend Settings {
+    func load(path: string) -> Settings or PortError {
+        return PortError(reason: "no file at {path}")
+    }
+}
+
+struct App {
+    settings: Vec<Settings>
+}
+
+test "std.encoding/E12 — a loader returning Self or E doesn't stop a type decoding" {
+    let a = json.decode<App>("{{\"settings\": [{{\"name\": \"x\", \"retries\": 3}]}") catch e => {
+        assert false
+        return
+    }
+    assert a.settings.len() == 1
+    assert a.settings[0].retries == 3
+}

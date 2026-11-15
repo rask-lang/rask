@@ -6,7 +6,8 @@
 // its fields, which `decode` can't read back, so the first value written out
 // and read in again fails at run time. The error names the type and shows the
 // `encode` that is `decode` the other way round. It reaches through
-// containers and fields, like E0418 does for a constructor.
+// containers and fields. An empty `Encode` block doesn't help: it says the
+// fields are what is written, which is the mismatch.
 
 import json
 
@@ -59,7 +60,8 @@ Level implements Encode {
     }
 }
 
-// Fine: the fields really are what is written, and it says so.
+// An empty `Encode` block says the fields are the wire form, and `decode` reads
+// a bool.
 struct Flag {
     on: bool
 }
@@ -86,8 +88,9 @@ func main() {
     let r = Routes(by_name: Map.new())
     println(json.encode(r))
 
-    // Fine: the three below say how they are written. Not errors, so the test
-    // counts exactly three.
-    println(json.encode(Level(n: 1)))
+    // ERROR: the empty block writes `{{"on":true}}`, which `decode` can't read [E0424]
     println(json.encode(Flag(on: true)))
+
+    // Fine: writes the `i64` it reads. Not an error, so the test counts exactly four.
+    println(json.encode(Level(n: 1)))
 }

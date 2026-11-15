@@ -927,24 +927,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// std.encoding/E12a: a decode that would build a value around a
-    /// constructor that checks it.
-    #[error("`{ty}` cannot be decoded: `{owner}.{constructor}` checks its input and a decode wouldn't call it")]
-    DecodeSkipsConstructor {
-        /// The type that was asked for.
-        ty: String,
-        /// The type that has the constructor: `ty` itself, or one it holds.
-        owner: String,
-        /// `owner` is something `ty` holds, not `ty` itself.
-        through: bool,
-        constructor: String,
-        /// The constructor's return type as written, `Port or PortError`.
-        returns: String,
-        /// Its error type, `PortError`, for the `decode` the fix suggests.
-        error: String,
-        span: Span,
-    },
-
     /// std.encoding/E12b: the `decode` or `encode` in a `T implements Decode { }`
     /// or `Encode { }` block isn't the shape a codec can call.
     #[error("`{ty}`'s `{}` can't be used by a codec", hook.method())]
@@ -2126,7 +2108,6 @@ impl TypeError {
             | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
-            | DecodeSkipsConstructor { .. }
             | BadCustomWire { .. }
             | EncodeSkipsDecode { .. }
             | StringAddForbidden { .. }
