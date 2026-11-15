@@ -2466,9 +2466,8 @@ impl TypeChecker {
             // `Shared.new/mutex/local(value)` — the constructor settles the
             // strategy, and it lands in the type so a reader of the annotation
             // sees the same thing (conc.sync/SH2).
-            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
-                let inner = args[0].clone();
-                let shared_ty = Self::shared_type(inner, method);
+            ("Shared", _) if args.len() == 1 && Self::shared_type(Type::Unit, method).is_some() => {
+                let shared_ty = Self::shared_type(args[0].clone(), method).unwrap();
                 self.unify(ret, &shared_ty, span)
             }
             // `Cell` is the `Local` strategy now (analysis.storage-consolidation).
@@ -2488,22 +2487,24 @@ impl TypeChecker {
         }
     }
 
-    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Readers`,
-    /// which is what bare `Shared<T>` means everywhere (SH3) — the default
-    /// serves the common case, which is a box several tasks reach.
-    fn shared_type(inner: Type, constructor: &str) -> Type {
-        let strategy = match constructor {
-            "local" => "Local",
-            "mutex" => "Mutex",
-            _ => "Readers",
-        };
-        Type::UnresolvedGeneric {
+    /// `Shared<T, S>` for a constructor, with the strategy its declaration in
+    /// `sync.rk` returns: `local` says `Shared<T, Local>`, `new` says
+    /// `Shared<T, Readers>` (SH3). `None` when `constructor` isn't a static
+    /// method of `Shared` returning one.
+    fn shared_type(inner: Type, constructor: &str) -> Option<Type> {
+        let stub = rask_stdlib::lookup_method("Shared", constructor).filter(|m| !m.takes_self)?;
+        let TypeExpr::Named { path, args } = &stub.ret_ty else { return None };
+        if path.last().map(String::as_str) != Some("Shared") {
+            return None;
+        }
+        let strategy = args.get(1)?.bare_name()?;
+        Some(Type::UnresolvedGeneric {
             name: "Shared".to_string(),
             args: vec![
                 GenericArg::Type(Box::new(inner)),
                 GenericArg::Type(Box::new(Type::UnresolvedNamed(strategy.to_string()))),
             ],
-        }
+        })
     }
 
     /// `s.try_read(|v| …)` and `try_write`: tie the closure to the box.
@@ -2695,9 +2696,9 @@ impl TypeChecker {
             }
             // Written `Shared.new(0)` the element type comes from the value, so
             // pin the variable to it. The strategy comes from the constructor.
-            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
+            ("Shared", _) if args.len() == 1 && Self::shared_type(Type::Unit, method).is_some() => {
                 let _ = self.unify(&args[0], &inner_type, span);
-                let shared_ty = Self::shared_type(inner_type.clone(), method);
+                let shared_ty = Self::shared_type(inner_type.clone(), method).unwrap();
                 self.unify(ret, &shared_ty, span)
             }
             // Unrecognized method: hand the receiver on exactly as written

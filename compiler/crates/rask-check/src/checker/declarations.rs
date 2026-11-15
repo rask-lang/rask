@@ -2801,15 +2801,11 @@ impl TypeChecker {
                     match def {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
-                            let family = match method {
-                                "eq" => Some("eq"),
-                                "hash" => Some("hash"),
-                                "clone" => Some("clone"),
-                                m if Self::is_ordering_method(m) => Some("compare"),
-                                _ => None,
-                            };
+                            // The four operators ORD1 derives answer with `compare`;
+                            // every other derived method is its own entry.
+                            let family = if Self::is_ordering_method(method) { "compare" } else { method };
                             methods.iter().any(|m| m.name == method)
-                                || family.is_some_and(|f| self.derive_assumed.contains(&(*id, f)))
+                                || self.derive_assumed.contains(&(*id, family))
                         }
                         _ => false,
                     }
