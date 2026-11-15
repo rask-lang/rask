@@ -134,10 +134,22 @@ test "casts inside arithmetic" {
 
 test "casting a loop counter" {
     mut total: f64 = 0.0
-    for i in 1i32..4 {
-        total = total + (i as f64)
+    for i in 1..4 {
+        total = total + i.round<f64>()
     }
     assert total == 6.0
+}
+
+const HALVES = comptime {
+    mut v = Vec.new()
+    for i in 0..4 {
+        v.push(i.round<f64>() / 2.0)
+    }
+    v
+}
+
+test "round<f64> on an integer works at compile time too" {
+    assert HALVES[3] == 1.5
 }
 
 test "round-tripping through a wider type" {

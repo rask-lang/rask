@@ -21,10 +21,10 @@ const FACTORIALS = comptime {
 
 const STD_ATMOSPHERE = comptime {
     mut v = Vec.new()
-    for alt in 0i32..21 {
+    for alt in 0..21 {
         let altitude_m = alt * 1000
         if altitude_m <= 11000 {
-            v.push(288.15 - 6.5 * altitude_m as f64 / 1000.0)
+            v.push(288.15 - 6.5 * altitude_m.round<f64>() / 1000.0)
         } else {
             v.push(216.65)
         }
