@@ -689,6 +689,7 @@ impl TypeChecker {
             if let Some(skipped) = checker.decode_skips_constructor(ty) {
                 return TypeError::DecodeSkipsConstructor {
                     ty: ty_name,
+                    through: checker.named_type_id(ty) != Some(skipped.id),
                     owner: skipped.ty,
                     constructor: skipped.constructor,
                     returns: skipped.returns,
