@@ -1392,6 +1392,41 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// Whether everything a value of `ty` owns is counted: strings and plain
+    /// words, with no container, block, closure or box anywhere inside. A copy
+    /// of such a value takes a reference to each string and is as good as the
+    /// original, so it can be lent and kept freely. One that owns a container
+    /// can't be copied that way, and is handed over or not at all.
+    ///
+    /// Anything it can't settle within the depth bound counts as owning one.
+    pub(crate) fn mir_owns_only_counted(&self, ty: &MirType, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            MirType::Container(_)
+            | MirType::Heap(_)
+            | MirType::FuncPtr(_)
+            | MirType::InterfaceObject { .. }
+            | MirType::Union(_) => false,
+            MirType::Option(inner) => self.mir_owns_only_counted(inner, depth + 1),
+            MirType::Result { ok, err } => {
+                self.mir_owns_only_counted(ok, depth + 1) && self.mir_owns_only_counted(err, depth + 1)
+            }
+            MirType::Tuple(parts) => parts.iter().all(|p| self.mir_owns_only_counted(p, depth + 1)),
+            MirType::Array { elem, .. } => self.mir_owns_only_counted(elem, depth + 1),
+            MirType::Struct(id) => self.struct_layouts.get(id.id as usize).is_some_and(|l| {
+                l.fields.iter().all(|f| self.mir_owns_only_counted(&self.type_to_mir(&f.ty), depth + 1))
+            }),
+            MirType::Enum(id) => self.enum_layouts.get(id.id as usize).is_some_and(|l| {
+                l.variants.iter().all(|v| {
+                    v.fields.iter().all(|f| self.mir_owns_only_counted(&self.type_to_mir(&f.ty), depth + 1))
+                })
+            }),
+            _ => true,
+        }
+    }
+
     fn mir_holds_link(&self, ty: &MirType, depth: u32) -> bool {
         if depth > 8 {
             return false;

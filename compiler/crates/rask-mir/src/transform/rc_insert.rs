@@ -2638,9 +2638,14 @@ mod tests {
 /// same answer as "not kept", so the caller goes on releasing its own.
 pub(crate) fn retains_what_it_hands_on(func: &MirFunction, i: usize, copy_layouts: &crate::CopyLayouts) -> bool {
     let Some(p) = func.params.get(i) else { return false };
-    matches!(func.param_modes.get(i), Some(ParamMode::Borrow | ParamMode::Mutate))
+    let mode = func.param_modes.get(i);
+    // A borrowed parameter that isn't Copy can only reach a keeper through a
+    // generic body or a sequence's yield, where the checker lets a terminal
+    // hand back the item it was lent (`find`). Either way the keeper gets a
+    // copy, so the references are taken.
+    matches!(mode, Some(ParamMode::Borrow | ParamMode::Mutate))
         && (aggregate_may_hold_string(&p.ty) || matches!(p.ty, MirType::InterfaceObject { .. }))
-        && copy_layouts.is_copy(&p.ty)
+        && (copy_layouts.is_copy(&p.ty) || mode == Some(&ParamMode::Borrow))
 }
 
 /// The retain lowering placed after the store at `si`, when that store copies
