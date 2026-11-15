@@ -27,3 +27,5 @@ test "factorial" {
     assert factorial(1) == 1
     assert factorial(0) == 1
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

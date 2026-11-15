@@ -26,3 +26,5 @@ test "label" {
     assert label("Ada", 36) == "Ada is 36 years old"
     assert label("Alan", 41) == "Alan is 41 years old"
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

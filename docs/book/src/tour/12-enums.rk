@@ -37,3 +37,5 @@ test "turn right" {
     assert turn_right(Direction.North) == Direction.East
     assert turn_right(Direction.West) == Direction.North
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

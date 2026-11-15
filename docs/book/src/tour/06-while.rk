@@ -35,3 +35,5 @@ test "digit sum" {
     assert digit_sum(7) == 7
     assert digit_sum(0) == 0
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

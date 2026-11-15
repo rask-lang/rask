@@ -19,3 +19,5 @@ func total(a: i32, b: i32, c: i32) -> i32 {
 test "total" {
     assert total(1, 2, 3) == 6
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

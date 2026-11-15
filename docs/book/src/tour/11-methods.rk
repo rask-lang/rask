@@ -38,3 +38,5 @@ test "plus" {
     assert p.y == 22
     assert Point.origin().plus(p).x == 11
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

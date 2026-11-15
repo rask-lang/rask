@@ -37,3 +37,5 @@ test "fizz" {
     assert fizz(30) == "FizzBuzz"
     assert fizz(7) == "7"
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

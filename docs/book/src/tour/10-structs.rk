@@ -33,3 +33,5 @@ test "step right" {
     assert p.x == 4
     assert p.y == 2
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

@@ -27,3 +27,5 @@ test "largest" {
     assert largest(Vec.from([3, 9, 4])) == 9
     assert largest(Vec.from([-5, -2, -8])) == -2
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

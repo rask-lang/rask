@@ -33,3 +33,5 @@ test "evens" {
     assert evens(10) == Vec.from([0, 2, 4, 6, 8])
     assert evens(0).len() == 0
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

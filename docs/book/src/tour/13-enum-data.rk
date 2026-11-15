@@ -38,3 +38,5 @@ test "receipt" {
     assert receipt(Payment.Card(amount: 10, fee: 2)) == "card 10 + 2 fee"
     assert receipt(Payment.Free) == "free"
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

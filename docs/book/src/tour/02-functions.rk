@@ -32,3 +32,5 @@ test "square" {
     assert square(3) == 9
     assert square(-4) == 16
 }
+
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped
