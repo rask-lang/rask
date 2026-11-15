@@ -1726,6 +1726,28 @@ fn error_decode_bound_not_satisfied() {
     );
 }
 
+// std.encoding/E12a (#1936): `Port.new` rejects 0, and a derived `Decode` built
+// ports straight from the wire without calling it. A type with a constructor
+// returning `Self or E` isn't auto-`Decode`, whether it is asked for directly
+// or sits inside a `Vec` field, and the error names the constructor.
+#[test]
+fn error_decode_skips_constructor() {
+    let (failed, out) = compile_error_output("decode_skips_constructor.rk");
+    assert!(failed, "decoding a type with a checking constructor must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0418").count(), 2,
+        "one error for `Port`, one for the `Listener` that holds a `Vec<Port>`: {}", out,
+    );
+    assert!(
+        out.contains("`Port.new` checks its input") && out.contains("`Listener` holds a `Port`"),
+        "should name the constructor, and the type it was reached through: {}", out,
+    );
+    assert!(
+        out.contains("Port implements Decode"),
+        "should offer the declaration that says a raw decode is intended: {}", out,
+    );
+}
+
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
 // then segfault; it's implemented now, so `json.to_value` stands in.

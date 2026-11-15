@@ -902,6 +902,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.encoding/E12a: a decode that would build a value around a
+    /// constructor that checks it.
+    #[error("`{ty}` cannot be decoded: `{owner}.{constructor}` checks its input and a decode wouldn't call it")]
+    DecodeSkipsConstructor {
+        /// The type that was asked for.
+        ty: String,
+        /// The type that has the constructor: `ty` itself, or one it holds.
+        owner: String,
+        constructor: String,
+        /// The constructor's return type as written, `Port or PortError`.
+        returns: String,
+        span: Span,
+    },
+
     #[error("the `+` operator cannot be used on strings")]
     StringAddForbidden {
         span: Span,
@@ -2054,6 +2068,7 @@ impl TypeError {
             | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
+            | DecodeSkipsConstructor { .. }
             | StringAddForbidden { .. }
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }

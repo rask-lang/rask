@@ -157,6 +157,18 @@ impl Collection {
     }
 }
 
+/// E12a: a type a decode would build without calling its checking constructor.
+#[derive(Debug, Clone)]
+pub struct SkippedConstructor {
+    /// The type that has the constructor. It can be one the asked type holds,
+    /// not the asked type itself.
+    pub ty: String,
+    /// The constructor's name, as declared.
+    pub constructor: String,
+    /// What it returns, as written in messages: `Port or PortError`.
+    pub returns: String,
+}
+
 /// Checks structural interface satisfaction.
 pub struct InterfaceChecker<'a> {
     /// The type table containing all type definitions.
@@ -330,7 +342,9 @@ impl<'a> InterfaceChecker<'a> {
         // `claims.Generate`. Only the compiler writes this bound.
         if base_interface == "ClaimInput" {
             self.claim_input = true;
-            let ok = self.type_is_encodable(ty, &mut Vec::new()) && self.first_defaultless_excluded_field(ty).is_none();
+            let ok = self.type_is_encodable(ty, &mut Vec::new())
+                && self.first_defaultless_excluded_field(ty).is_none()
+                && self.decode_skips_constructor(ty).is_none();
             self.claim_input = false;
             if ok {
                 return Ok(());
@@ -359,8 +373,12 @@ impl<'a> InterfaceChecker<'a> {
             // needs a value for a field it leaves out; decoding has to build the
             // whole struct, so an excluded field with no default has nothing to
             // come from.
+            //
+            // E12a: and it has to be able to build the whole struct without
+            // stepping around a constructor that checks it.
             let decodable = base_interface != "Decode"
-                || self.first_defaultless_excluded_field(ty).is_none();
+                || (self.first_defaultless_excluded_field(ty).is_none()
+                    && self.decode_skips_constructor(ty).is_none());
             if structurally_ok && decodable {
                 return Ok(());
             }
@@ -657,6 +675,115 @@ impl<'a> InterfaceChecker<'a> {
             _ => None,
         }?;
         self.defaultless_excluded_field_of(id, &mut Vec::new())
+    }
+
+    /// E12a: the first type a decode of `ty` would build straight from the wire
+    /// although its author wrote a constructor that checks it, and didn't say
+    /// the raw decode is fine (`T implements Decode { }`). Reaches through
+    /// containers and fields, since `Vec<Port>` skips `Port.new` as surely as
+    /// `Port` does. Fields the wire form leaves out are never decoded, so
+    /// they don't count.
+    pub fn decode_skips_constructor(&self, ty: &Type) -> Option<SkippedConstructor> {
+        self.skipped_constructor_in(ty, &mut Vec::new())
+    }
+
+    fn skipped_constructor_in(&self, ty: &Type, visited: &mut Vec<TypeId>) -> Option<SkippedConstructor> {
+        match ty {
+            Type::Result { ok, err } if matches!(**err, Type::None) => {
+                self.skipped_constructor_in(ok, visited)
+            }
+            Type::Result { ok, err } => self
+                .skipped_constructor_in(ok, visited)
+                .or_else(|| self.skipped_constructor_in(err, visited)),
+            Type::Array { elem, .. } => self.skipped_constructor_in(elem, visited),
+            Type::Tuple(elems) => elems.iter().find_map(|e| self.skipped_constructor_in(e, visited)),
+            Type::Named(id) => self.skipped_constructor_of(*id, &[], visited),
+            Type::UnresolvedNamed(name) => {
+                self.skipped_constructor_of(self.types.get_type_id(name)?, &[], visited)
+            }
+            Type::Generic { base, args } => {
+                let targs = Self::type_args(args);
+                self.skipped_constructor_in_generic(self.types.get(*base).map(TypeDef::name).as_deref(), Some(*base), &targs, visited)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let targs = Self::type_args(args);
+                self.skipped_constructor_in_generic(Some(name), self.types.get_type_id(name), &targs, visited)
+            }
+            _ => None,
+        }
+    }
+
+    fn type_args(args: &[GenericArg]) -> Vec<Type> {
+        args.iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn skipped_constructor_in_generic(
+        &self,
+        name: Option<&str>,
+        id: Option<TypeId>,
+        targs: &[Type],
+        visited: &mut Vec<TypeId>,
+    ) -> Option<SkippedConstructor> {
+        if matches!(name, Some("Vec" | "Map" | "Set")) {
+            return targs.iter().find_map(|t| self.skipped_constructor_in(t, visited));
+        }
+        self.skipped_constructor_of(id?, targs, visited)
+    }
+
+    fn skipped_constructor_of(
+        &self,
+        id: TypeId,
+        targs: &[Type],
+        visited: &mut Vec<TypeId>,
+    ) -> Option<SkippedConstructor> {
+        // A claim builds a type that supplies its own generator without
+        // decoding it, so a constructor on it is never stepped around.
+        if visited.contains(&id) || (self.claim_input && self.generates(id)) {
+            return None;
+        }
+        visited.push(id);
+        let raw_decode_declared = self.types.declares_conformance(id, &TypeExpr::named("Decode"));
+        let found = match self.types.checking_constructor(id).filter(|_| !raw_decode_declared) {
+            Some(ctor) => Some(SkippedConstructor {
+                ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
+                constructor: ctor.name.clone(),
+                returns: self.format_signature_return(ctor),
+            }),
+            None => match self.types.get(id) {
+                Some(TypeDef::Struct { fields, type_params, private_fields, skipped_fields, .. }) => {
+                    let subst = Self::build_subst(type_params, targs);
+                    fields.iter().find_map(|(fname, fty)| {
+                        if private_fields.contains(fname) || skipped_fields.contains(fname) {
+                            return None;
+                        }
+                        self.skipped_constructor_in(&Self::apply_subst(fty, &subst), visited)
+                    })
+                }
+                Some(TypeDef::Enum { variants, type_params, .. }) => {
+                    let subst = Self::build_subst(type_params, targs);
+                    variants.iter().find_map(|(_, payloads)| {
+                        payloads
+                            .iter()
+                            .find_map(|p| self.skipped_constructor_in(&Self::apply_subst(p, &subst), visited))
+                    })
+                }
+                Some(TypeDef::NominalAlias { underlying, .. }) => {
+                    self.skipped_constructor_in(&underlying.clone(), visited)
+                }
+                _ => None,
+            },
+        };
+        visited.pop();
+        found
+    }
+
+    fn format_signature_return(&self, m: &MethodSig) -> String {
+        self.display_ty(&m.ret)
     }
 
     fn defaultless_excluded_field_of(

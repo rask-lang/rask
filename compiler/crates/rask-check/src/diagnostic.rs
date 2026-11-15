@@ -1914,6 +1914,32 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
             }
 
+            // E12a: `Port.new` rejects a zero and `json.decode<Port>` would hand
+            // one out anyway. The fields are fine; the way in is the problem.
+            DecodeSkipsConstructor { ty, owner, constructor, returns, span } => {
+                let via = if ty == owner {
+                    String::new()
+                } else {
+                    format!(" (`{}` holds a `{}`)", ty, owner)
+                };
+                Diagnostic::error(format!("`{}` cannot be decoded: `{}.{}` checks its input{}", ty, owner, constructor, via))
+                    .with_code("E0418")
+                    .with_primary(*span, format!(
+                        "`{owner}.{constructor}` returns `{returns}`, and a decode builds `{owner}` without calling it"
+                    ))
+                    .with_fix(format!(
+                        "decode a plain struct of the raw fields and call `{owner}.{constructor}` on them:\n\n  \
+                         struct {owner}Wire {{ /* the raw fields */ }}\n  \
+                         let wire = try json.decode<{owner}Wire>(text)\n  \
+                         let value = try {owner}.{constructor}(/* from wire */)\n\n\
+                         or, if `{constructor}` isn't a check on decoded data, say a raw decode is fine:\n\n  \
+                         {owner} implements Decode {{ }}"
+                    ))
+                    .with_why(format!(
+                        "a type with a checking constructor promises its values passed the check, and a derived `Decode` would break that promise without a word. Anyone holding a `{owner}` assumes it went through `{constructor}` [std.encoding/E12a]"
+                    ))
+            }
+
             NotSerializable { ty, interface_name, verb, field, field_ty, span } => {
                 let label = match (field, field_ty) {
                     (Some(f), Some(fty)) => {
