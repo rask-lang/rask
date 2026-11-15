@@ -1841,6 +1841,34 @@ fn error_encode_malformed() {
     );
 }
 
+// A bound on a type the checker doesn't know yet when it checks the call.
+// `Port.new(n)` on a program's own type answers through a constraint the solver
+// settles later, and `json.decode(text)` takes its target from the binding, so
+// both reach the bound as an open variable. The bound used to be dropped there
+// and the call compiled: the encoder wrote fields a `decode` can't read, the
+// decoder skipped a checking constructor. It is kept, and checked once the
+// type has settled.
+#[test]
+fn error_bound_on_unsettled_type() {
+    let (failed, out) = compile_error_output("bound_on_unsettled_type.rk");
+    assert!(failed, "a bound on a type settled after the call must still be checked: {}", out);
+    for (code, what) in [
+        ("E0424", "`Port` cannot be encoded"),
+        ("E0418", "`Gate` cannot be decoded"),
+        ("E0388", "`RawBuf` cannot be encoded"),
+    ] {
+        assert_eq!(out.matches(code).count(), 1, "{code} ({what}) once: {out}");
+        assert!(out.contains(what), "missing `{what}` in:\n{out}");
+    }
+    // The fix shows the block as a block: the body sits deeper than the header.
+    let depth = |needle: &str| {
+        out.lines().find(|l| l.contains(needle)).map(|l| l.len() - l.trim_start().len())
+    };
+    let header = depth("Port implements Encode {").expect("the fix shows the block");
+    let body = depth("func encode(self) -> u16 {").expect("the fix shows the method");
+    assert!(body > header, "the fix keeps its indentation ({header} vs {body}): {out}");
+}
+
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
 // then segfault; it's implemented now, so `json.to_value` stands in.

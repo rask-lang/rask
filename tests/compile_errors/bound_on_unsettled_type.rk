@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `Decode`/`Encode` bound on a type that isn't known yet when
+// the call is checked.
+//
+// A call on a program's own type (`Port.new(n)`) answers through a constraint
+// the solver settles later, so `let p = Port.new(n) catch _ => { return }`
+// gives `json.encode(p)` an open type variable. And `json.decode(text)` with
+// no type argument takes its target from the binding it flows into, which is
+// open at the call too. The bound used to be dropped in both and the call
+// compiled whatever the type turned out to be: the encoder wrote fields a
+// `decode` can't read, the decoder built a value around a constructor that
+// checks, or a field that can't be encoded went out as garbage. The bound is
+// kept and checked once the type has settled, so each of the three errors
+// below is reported (E0424, E0418, E0388).
+
+import json
+
+struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+// E0424: reads itself through `decode`, nothing says how it is written.
+struct Port {
+    value: u16
+}
+
+extend Port {
+    func new(v: u16) -> Port or PortError {
+        if v == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: v)
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        return Port.new(raw)
+    }
+}
+
+// E0418: a checking constructor, and nothing says a raw decode is fine.
+struct Gate {
+    level: u8
+}
+
+extend Gate {
+    func open(level: u8) -> Gate or PortError {
+        if level > 9 {
+            return PortError(reason: "level out of range")
+        }
+        return Gate(level: level)
+    }
+}
+
+// E0388: a field that can't be encoded.
+struct RawBuf {
+    raw: *u8
+}
+
+extend RawBuf {
+    func open(n: i64) -> RawBuf or PortError {
+        return PortError(reason: "no handle {n}")
+    }
+}
+
+func main() {
+    let n: u16 = 443
+
+    // ERROR: `Port` is read as a `u16` and would be written as its fields [E0424]
+    let p = Port.new(n) catch _ => {
+        return
+    }
+    println(json.encode(p))
+
+    // ERROR: `Gate.open` checks its input and a decode wouldn't call it [E0418].
+    // The target comes from the annotation, so it is open at the call.
+    let gate: Gate = json.decode("{{\"level\": 4}") catch _ => {
+        return
+    }
+    println("{gate.level}")
+
+    // ERROR: field `raw` can't be encoded [E0388]
+    let h = RawBuf.open(1) catch _ => {
+        return
+    }
+    println(json.encode(h))
+}

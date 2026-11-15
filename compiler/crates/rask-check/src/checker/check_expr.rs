@@ -5116,7 +5116,26 @@ impl TypeChecker {
             }
 
             // Replace placeholder types with fresh vars for generic module methods
-            self.freshen_module_return_type(&ret)
+            let result = self.freshen_module_return_type(&ret);
+
+            // A parameter no argument carries is the one the return type
+            // names: `json.decode(text)`, whose target is whatever the result
+            // is bound to (`let g: Gate = json.decode(text)`). It is a fresh
+            // variable here, so the check waits for it to settle. With no check
+            // at all, the spelling decided whether the rule applied again:
+            // `json.decode<Gate>` was refused and the inferred one wasn't.
+            for (param_name, bound) in &bounds {
+                let carried = param_type_params.iter().any(|h| h.as_deref() == Some(param_name.as_str()));
+                if carried {
+                    continue;
+                }
+                let target = match &result {
+                    Type::Result { ok, .. } => (**ok).clone(),
+                    other => other.clone(),
+                };
+                self.check_type_arg_bound(&target, bound, span);
+            }
+            result
         } else {
             self.errors.push(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed(module.to_string()),
@@ -5165,7 +5184,23 @@ impl TypeChecker {
     fn check_type_arg_bound(&mut self, ty: &Type, bound: &TypeExpr, span: Span) {
         let resolved = self.resolve_named(ty);
         match &resolved {
-            Type::Var(_) | Type::Error => return,
+            // Not known yet, which is common: a call on a program's own type
+            // answers through a constraint the solver settles later, so
+            // `let p = Port.new(n) catch _ => { return }` hands `json.encode(p)`
+            // an open variable. Dropping the check here let the call compile
+            // whatever the type turned out to be. Kept, and made once the
+            // variable has settled (`validate_pending_bound_checks`).
+            Type::Var(_) => {
+                self.pending_bound_checks.push(super::validate::BoundObligation {
+                    ty: ty.clone(),
+                    bounds: vec![bound.clone()],
+                    args: Vec::new(),
+                    on_type: false,
+                    span,
+                });
+                return;
+            }
+            Type::Error => return,
             Type::UnresolvedNamed(_) => return,
             _ => {}
         }
