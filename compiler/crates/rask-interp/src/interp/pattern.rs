@@ -268,6 +268,17 @@ impl Interpreter {
                     if variant != pat_variant
                         || pat_enum.is_some_and(|e| e != enum_name)
                     {
+                        // ER28, as for `Constructor` above: against a
+                        // `T or E` the arm names the error's own variant,
+                        // so look inside the Ok/Err payload. `Fail.A(n)`
+                        // desugars to this named form when `A`'s fields are
+                        // labelled, and `assert r is Fail.A(n: 3)` is one
+                        // from the start (#1958).
+                        if enum_name == "Result" && matches!(variant.as_str(), "Ok" | "Err") {
+                            if let Some(inner) = payload.first() {
+                                return self.match_pattern(pattern, inner);
+                            }
+                        }
                         return None;
                     }
                     // Field order comes from the declaration; the pattern may
