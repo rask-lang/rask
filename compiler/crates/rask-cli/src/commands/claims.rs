@@ -1019,7 +1019,17 @@ fn run_claims(
         path.strip_prefix(root).unwrap_or(path).display().to_string()
     };
     if format == Format::Human {
-        let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+        // Relative to where the command ran, like the path it was given: an
+        // absolute one is different on every machine that runs it.
+        let cwd = std::env::current_dir().ok().and_then(|d| d.canonicalize().ok());
+        let files: Vec<String> = plan
+            .files
+            .iter()
+            .map(|f| match &cwd {
+                Some(d) => f.strip_prefix(d).unwrap_or(f).display().to_string(),
+                None => f.display().to_string(),
+            })
+            .collect();
         println!("{} {}", "Claims".green().bold(), files.join(", "));
     }
     let mut all_held = true;
