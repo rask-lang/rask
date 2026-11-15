@@ -840,20 +840,32 @@ impl TypeChecker {
 
     /// Which side of `scrutinee`, a `T or E`, the type `named` is: the error
     /// side (`true`) or the success side, and the index of the member it
-    /// names when the error side is a union. `None` when it is neither,
-    /// which the check has already reported.
-    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<(bool, Option<usize>)> {
+    /// names when the error side is a union. A success side that is a
+    /// `T or E` of its own is searched too, and the answer says where in it
+    /// (`inside`). `None` when it is neither, which the check has already
+    /// reported.
+    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<rask_types::PatternTarget> {
+        use rask_types::PatternTarget::Side;
         let resolved = self.ctx.apply(scrutinee);
         let Type::Result { ok, err } = &resolved else { return None };
         let named = normalize_type(&self.ctx.apply(named), &self.types);
         // `none` is the absent side of an optional.
         if named == Type::None {
-            return Some((true, None));
+            return Some(Side { err: true, member: None, inside: None });
         }
         let ok_leaves = two_branch_leaves(&mut self.ctx, &self.types, ok);
         let names = |this: &Self, l: &Type| *l == named || this.same_type_head(l, &named);
         if ok_leaves.iter().any(|l| names(self, l)) {
-            return Some((false, None));
+            // `T? or E` keeps its two layers apart in MIR and numbers their
+            // leaves itself; only a success side that is a result goes down.
+            let ok_applied = self.ctx.apply(ok);
+            let inside = match &ok_applied {
+                Type::Result { .. } if ok_applied.as_option().is_none() => {
+                    self.pattern_side(&ok_applied, &named).map(Box::new)
+                }
+                _ => None,
+            };
+            return Some(Side { err: false, member: None, inside });
         }
         // The member index counts in canonical order, which is how MIR lays
         // a union out whatever order a substitution left this one in.
@@ -864,9 +876,9 @@ impl TypeChecker {
         match err {
             Type::Union(members) => {
                 let member = members.iter().position(|l| names(self, l))?;
-                Some((true, Some(member)))
+                Some(Side { err: true, member: Some(member), inside: None })
             }
-            other => names(self, &other).then_some((true, None)),
+            other => names(self, &other).then_some(Side { err: true, member: None, inside: None }),
         }
     }
 

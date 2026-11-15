@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task whose block ends in a `T or E` joins as `T or E or JoinError`: the
+// task's own error is one of the leaves, next to its value and the join's.
+// Native took the success side of the join for the whole answer, so a task that
+// ended with its `Bad` read the error's bytes as the value:
+//
+//     f64 0.00000000000000000000000000000000000000...906958062944789
+//
+// where the interpreter says `bad bad`.
+
+import async.Handle
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func parse(s: string) -> f64 or Bad {
+    if s == "bad" {
+        return Bad(why: "bad input {s}")
+    }
+    return 1.5
+}
+
+func count(s: string) -> i64 or Bad {
+    if s == "bad" {
+        return Bad(why: "no count for {s}")
+    }
+    return 7
+}
+
+func read(take h: Handle<f64 or Bad>) -> string {
+    match h.join() {
+        f64 as v => return "value {v}",
+        Bad as e => return "error {e.why}",
+        JoinError as _ => return "joined badly",
+    }
+}
+
+test "a task that ends with its error joins as that error" {
+    mut line = ""
+    using Multitasking {
+        let r = spawn { return try parse("bad") }.join()
+        match r {
+            f64 as v => { line = "value {v}" },
+            Bad as e => { line = "error {e.why}" },
+            JoinError as _ => { line = "joined badly" },
+        }
+    }
+    assert line == "error bad input bad"
+}
+
+test "a task that ends with its value joins as that value" {
+    mut line = ""
+    using Multitasking {
+        let r = spawn { return try parse("ok") }.join()
+        match r {
+            f64 as v => { line = "value {v}" },
+            Bad as e => { line = "error {e.why}" },
+            JoinError as _ => { line = "joined badly" },
+        }
+    }
+    assert line == "value 1.5"
+}
+
+test "the same through a function that takes the handle" {
+    mut bad = ""
+    mut good = ""
+    using Multitasking {
+        bad = read(spawn { return try parse("bad") })
+        good = read(spawn { return try parse("fine") })
+    }
+    assert bad == "error bad input bad"
+    assert good == "value 1.5"
+}
+
+test "an integer value, and the error test form" {
+    mut seen_error = false
+    mut total = 0
+    using Multitasking {
+        let first = spawn { return try count("bad") }.join()
+        if first is Bad {
+            seen_error = true
+        }
+        let second = spawn { return try count("ok") }.join()
+        match second {
+            i64 as n => { total = n },
+            Bad as _ => { total = -1 },
+            JoinError as _ => { total = -2 },
+        }
+    }
+    assert seen_error
+    assert total == 7
+}
