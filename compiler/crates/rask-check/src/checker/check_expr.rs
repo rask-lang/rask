@@ -7347,6 +7347,15 @@ impl TypeChecker {
                     span,
                 });
             }
+            Some(IndexContainer::Rack) => {
+                self.errors.push(TypeError::IndexTypeMismatch {
+                    container: self.nameable(&self.ctx.apply(container)),
+                    found: index.clone(),
+                    kind: IndexErrorKind::NotIndexed,
+                    span,
+                });
+                return true;
+            }
             // Unknown / unresolved container — leave it.
             None => {
                 if self.is_sequence_type(container) {
@@ -7382,6 +7391,7 @@ impl TypeChecker {
         match self.classify_index_container(&self.ctx.apply(container)) {
             Some(IndexContainer::Sequence) => Some(IndexErrorKind::NoSliceType),
             Some(IndexContainer::Map(_)) => Some(IndexErrorKind::NotSliceable),
+            Some(IndexContainer::Rack) => Some(IndexErrorKind::NotIndexed),
             None if self.is_sequence_type(container) => Some(IndexErrorKind::NotPositioned),
             None => None,
         }
@@ -7395,6 +7405,7 @@ impl TypeChecker {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),
+                    "Rack" => Some(IndexContainer::Rack),
                     "Map" => match args.first() {
                         Some(GenericArg::Type(k)) => Some(IndexContainer::Map((**k).clone())),
                         _ => None,
@@ -7806,6 +7817,8 @@ enum IndexContainer {
     Sequence,
     /// `Map<K, V>` — indexed by `K` (carried).
     Map(Type),
+    /// `Rack<T>` — not indexed at all: a node is reached through its link.
+    Rack,
 }
 
 /// An index site validated after inference finalizes (mod.rs).
