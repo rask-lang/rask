@@ -86,7 +86,7 @@ error[E0333]: `Monster` does not implement `Describe`
  26 |     println(listing(rats))
     |             ^^^^^^^^^^^^^ `Monster` has the methods `Describe` asks for, but never says it implements it
     = fix: declare it; the methods can stay where they are:
-          Monster implements Describe {}
+              Monster implements Describe {}
     = why: a type has an interface only where it says so, because a method with
           the right name and shape can still mean something else
           [type.generics/G1]
