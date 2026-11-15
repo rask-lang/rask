@@ -5885,11 +5885,22 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
             // A named variant tests like its positional spelling.
+            // A struct has no tag to test: its field patterns are the test.
+            PatternKind::Struct { fields, .. } if matches!(ty, MirType::Struct(_)) => {
+                for (local, field_ty, field_checked, field_pat) in
+                    self.read_struct_pattern_fields(value, ty, checked, fields, "__sub")
+                {
+                    self.emit_subpattern_test(
+                        &MirOperand::Local(local), &field_ty, field_checked.as_ref(), field_pat, fail,
+                    )?;
+                }
+                Ok(())
+            }
             PatternKind::Struct { name, fields, .. } => {
                 let Some(names) = self.variant_field_names(ty, name) else {
                     return Err(LoweringError::InvalidConstruct(format!(
-                        "`{name} {{ … }}` nested in a variant pattern needs an enum field, \
-                         found `{ty:?}`"
+                        "`{name} {{ … }}` nested in a variant pattern needs an enum or struct \
+                         field, found `{ty:?}`"
                     )));
                 };
                 let positional = names
@@ -5960,6 +5971,38 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Read each field a struct pattern names out of the struct `value` into a
+    /// local of its own: the local, its lowered type, the checker's type for
+    /// it (instantiated when the struct's type is known) and its pattern.
+    fn read_struct_pattern_fields<'p>(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        checked: Option<&Type>,
+        fields: &'p [(String, rask_ast::expr::Pattern)],
+        local_prefix: &str,
+    ) -> Vec<(LocalId, MirType, Option<Type>, &'p rask_ast::expr::Pattern)> {
+        let instantiated = checked.and_then(|c| self.struct_fields_of(c));
+        let mut reads = Vec::new();
+        for (field_name, field_pat) in fields {
+            let Some((field_idx, field_layout)) = self.struct_field(ty, field_name) else {
+                continue;
+            };
+            let field_checked = instantiated
+                .as_ref()
+                .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| field_layout.ty.clone());
+            let field_ty = self.ctx.type_to_mir(&field_checked);
+            let local = self.builder.alloc_local(format!("{local_prefix}_{field_name}"), field_ty.clone());
+            self.read_layout_field(
+                local, value.clone(), field_idx as u32, &field_layout, &field_ty, field_layout.offset,
+            );
+            reads.push((local, field_ty, Some(field_checked), field_pat));
+        }
+        reads
+    }
+
     /// Bind the names `pattern` introduces, reading them out of `value`.
     /// `checked` is the checker's type of `value`: a generic enum's payload
     /// takes its type from there, never from the layout's placeholder.
@@ -5994,6 +6037,39 @@ impl<'a> MirLowerer<'a> {
                 let as_constructor =
                     Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty, checked);
+            }
+            // A struct pattern nested in a variant's field: read each field
+            // it names and bind inside it.
+            PatternKind::Struct { fields, .. } if matches!(scrutinee_ty, MirType::Struct(_)) => {
+                for (local, field_ty, field_checked, field_pat) in
+                    self.read_struct_pattern_fields(&value, scrutinee_ty, checked, fields, "__bind")
+                {
+                    match &field_pat.kind {
+                        PatternKind::Ident(binding) if self.pattern_binds(field_pat) => {
+                            let bound = self.builder.alloc_local(binding.clone(), field_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: bound,
+                                rvalue: MirRValue::Use(MirOperand::Local(local)),
+                            }));
+                            if let Some(prefix) = self.mir_type_name(&field_ty) {
+                                self.meta_mut(binding).type_prefix = Some(prefix);
+                            }
+                            self.locals.insert(binding.clone(), (bound, field_ty));
+                        }
+                        PatternKind::TypePat { .. } => {
+                            self.bind_field_type_pattern(
+                                &MirOperand::Local(local), &field_ty, field_checked.as_ref(), field_pat,
+                            );
+                        }
+                        PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                            self.bind_pattern_fields(
+                                field_pat, MirOperand::Local(local), None, false, &field_ty,
+                                field_checked.as_ref(),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
             }
             PatternKind::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
