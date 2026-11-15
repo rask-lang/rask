@@ -568,6 +568,11 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op) {
     }
 }
 
+static void vec_drop_borrow(int64_t handle) {
+    RaskVec *v = (RaskVec *)(intptr_t)handle;
+    if (v && v->borrows > 0) v->borrows--;
+}
+
 // Lend out a pointer straight into the buffer, so a callee writing through a
 // `mutate` parameter writes the real element instead of a copy. Paired with
 // rask_vec_release_elem; in between, anything that would move the buffer panics.
@@ -577,11 +582,16 @@ void *rask_vec_borrow_elem(RaskVec *v, int64_t index) {
                        (long long)index, (long long)(v ? v->len : 0));
     }
     v->borrows++;
+    // A callee that panics never reaches the release the caller emitted after
+    // the call. The held-access list gives it back on the way out (ctrl.panic/U3),
+    // so the caller's unwinding can free the vector it was lent from.
+    rask_access_push(vec_drop_borrow, (int64_t)(intptr_t)v);
     return v->data + index * v->elem_size;
 }
 
 void rask_vec_release_elem(RaskVec *v) {
     if (v && v->borrows > 0) v->borrows--;
+    rask_access_pop((int64_t)(intptr_t)v);
 }
 
 int64_t rask_vec_push(RaskVec *v, const void *elem) {

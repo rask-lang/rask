@@ -2293,6 +2293,41 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             if let Some((id, ty)) = self.locals.get(name).cloned() {
+                // A `mutate` parameter given away whole: the slot is the
+                // caller's, and it is the caller's unwinding that releases
+                // what is in it. Read in place, the new owner and the slot
+                // both held the value, and a panic before the refill freed
+                // it twice (#1937). Taken, the bytes go to a local of this
+                // frame and the slot is left empty.
+                if self.ctx.field_reuses.contains(&expr.id)
+                    && self.builder.is_param(id)
+                    && self.meta(name).is_some_and(|m| m.assigns_through && m.scalar_through_ptr.is_none())
+                    && matches!(
+                        ty,
+                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                            | MirType::Array { .. } | MirType::Option(_) | MirType::Result { .. }
+                    )
+                {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(id),
+                            right: MirOperand::Constant(MirConst::Int(0)),
+                        },
+                    }));
+                    let dst = self.builder.alloc_temp(ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(dst),
+                        func: FunctionRef::internal("Field_take".to_string()),
+                        args: vec![
+                            MirOperand::Local(addr),
+                            MirOperand::Constant(MirConst::Int(ty.size() as i64)),
+                        ],
+                    }));
+                    return Ok((MirOperand::Local(dst), ty));
+                }
                 // ER24/CF22: ER24 narrowing redefines the binding's type in
                 // the type checker's scope, but the MIR local keeps its
                 // declared type. When the use-site has a more specific

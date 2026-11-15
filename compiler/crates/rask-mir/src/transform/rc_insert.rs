@@ -807,6 +807,36 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
+    // Addresses a collection lent for a `mutate` argument (`v[i]`), and the
+    // names that copy one. An inlined callee binds its parameter to one of
+    // these; it names the element where it sits, which the collection owns.
+    let lent_slots: HashSet<LocalId> = {
+        let mut lent: HashSet<LocalId> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::Call { func: fref, dst: Some(d), .. }
+                    if fref.name == "Vec_borrow_elem" || fref.name == "Map_borrow_elem" =>
+                {
+                    Some(*d)
+                }
+                _ => None,
+            })
+            .collect();
+        let mut changed = !lent.is_empty();
+        while changed {
+            changed = false;
+            for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &st.kind {
+                    if lent.contains(src) && lent.insert(*dst) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+        lent
+    };
     // Elements bound where they sit (`BindPlace`): a store through one writes
     // the collection's element, never a value of this frame's.
     let places: HashSet<LocalId> = func
@@ -923,6 +953,7 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::Alias { dst: *dst, src: *src });
                     } else if matches!(ty_of.get(src), Some(MirType::Link(_)))
                         || place_addresses.contains(src)
+                        || lent_slots.contains(src)
                     {
                         // Or an address into storage something else owns: a
                         // field of a node or of a struct, handed to an
@@ -1193,6 +1224,14 @@ fn insert_aggregate_release(
                             && closure_keeps(&func_name, *closure, i, args.len())
                         {
                             ev.push(ownership::Event::HandOver(id));
+                        } else if aggregates.contains(&id) && !retained.contains(&id) && !retained_for_this.contains(&id) {
+                            // Not kept, but a `mutate` parameter is the
+                            // caller's slot by address: the call writes into
+                            // this copy, so it is the value from here on
+                            // (the same as a direct call, above). Unmarked, a
+                            // panic in the closure left the unwind record
+                            // armed on the stale original (#1937).
+                            ev.push(ownership::Event::WriteThrough(id));
                         }
                     }
                     if let Some(dst) = dst.filter(|d| aggregates.contains(d)) {
