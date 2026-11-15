@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 4. Names that change
+//
+// A `let` name holds its value for good. A name whose value changes is made
+// with `mut`. You have to pick, so when you read `let` you know the value
+// stays put for the rest of the block.
+//
+// This file doesn't compile. Run `rask test 04-mut.rk`, read what the
+// compiler says, and fix it.
+
+func total(a: i32, b: i32, c: i32) -> i32 {
+    let sum = a
+    sum += b
+    sum += c
+    return sum
+}
+
+test "total" {
+    assert total(1, 2, 3) == 6
+}
+
+// new: mut
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

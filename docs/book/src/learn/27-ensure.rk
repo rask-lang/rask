@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 27. Cleanup that always runs
+//
+// Some things have to be undone however a function ends: a file closed, a
+// lock let go, a drawer shut. With a `return` here and a `try` there, a
+// function has several ways out, and putting the cleanup before each one is
+// easy to get wrong, especially for the exits `try` makes for you.
+//
+// `ensure` says it once, right after the thing it undoes, and runs it when
+// the block it's in ends, however it ends: a `return`, an error leaving
+// through `try`, or simply reaching the `}`. A call can follow `ensure`
+// directly, `ensure file.close()`; anything else goes in braces,
+// `ensure { door.open = false }`.
+
+struct Till {
+    drawer_open: bool
+    sales: i32
+}
+
+enum PriceError {
+    Negative(price: i32)
+}
+
+func checked(price: i32) -> i32 or PriceError {
+    if price < 0 {
+        return PriceError.Negative(price: price)
+    }
+    return price
+}
+
+func refund(mutate till: Till, amount: i32) -> i32 or PriceError {
+    till.drawer_open = true
+    ensure { till.drawer_open = false }
+    return try checked(amount)
+}
+
+// Your turn: `ring_up` opens the drawer, adds up the prices (each one
+// through `checked`), counts one more sale, and gives the total. The drawer
+// must be shut afterwards, also when a price is bad.
+
+func ring_up(mutate till: Till, prices: Vec<i32>) -> i32 or PriceError {
+    todo()
+}
+
+test "ring up" {
+    mut till = Till(drawer_open: false, sales: 0)
+    assert ring_up(mutate till, Vec.from([3, 4]))! == 7
+    assert !till.drawer_open
+    assert till.sales == 1
+    assert ring_up(mutate till, Vec.new())! == 0
+    assert till.sales == 2
+}
+
+test "a bad price" {
+    mut till = Till(drawer_open: false, sales: 0)
+    assert ring_up(mutate till, Vec.from([3, -1, 4])) is PriceError
+    assert !till.drawer_open
+    assert till.sales == 0
+    assert refund(mutate till, -5) is PriceError
+    assert !till.drawer_open
+}
+
+// new: ensure
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

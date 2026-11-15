@@ -8,6 +8,13 @@ src = "src"
 [build]
 build-dir = "../build"
 create-missing = false
+# mdBook's `index` preprocessor renders each README.md as index.html but
+# leaves links to it pointing at README.html, which doesn't exist. Without
+# it a README stays README.html, and a link to README.md works on the site
+# and in a clone alike. `links` is the other default, for {{#include}}.
+use-default-preprocessors = false
+
+[preprocessor.links]
 
 [output.html]
 default-theme = "light"

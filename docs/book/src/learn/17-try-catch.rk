@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 17. try and catch
+//
+// Most code that meets an error can't do anything useful about it, and
+// should hand it to whoever called it. Checking every result by hand with
+// `is` would bury what the function does under what could go wrong.
+//
+// `try r` takes the value out of `r`, or returns the error from the function
+// you're in, right there. The function has to be able to return that error,
+// so its own type says `or BankError` too.
+//
+// `r catch e => fallback` deals with the error where it happens instead:
+// it's the value, or, when `r` is an error, whatever comes after `=>`, with
+// the error named `e`. `catch _ =>` throws the error away, in writing.
+
+enum BankError {
+    Overdrawn(short: i32)
+}
+
+func withdraw(balance: i32, amount: i32) -> i32 or BankError {
+    if amount > balance {
+        return BankError.Overdrawn(short: amount - balance)
+    }
+    return balance - amount
+}
+
+func pay_rent_and_food(balance: i32) -> i32 or BankError {
+    let after_rent = try withdraw(balance, 700)
+    return try withdraw(after_rent, 200)
+}
+
+func left_after_rent(balance: i32) -> i32 {
+    return withdraw(balance, 700) catch _ => 0
+}
+
+// Your turn: `pay_all` pays each bill in turn and gives the balance that's
+// left, or the first error it meets. `try` does both.
+
+func pay_all(balance: i32, bills: Vec<i32>) -> i32 or BankError {
+    todo()
+}
+
+test "rent" {
+    assert pay_rent_and_food(1000)! == 100
+    assert pay_rent_and_food(800) is BankError
+    assert left_after_rent(500) == 0
+}
+
+test "pay all" {
+    assert pay_all(100, Vec.from([10, 20, 30]))! == 40
+    assert pay_all(100, Vec.new())! == 100
+    let r = pay_all(50, Vec.from([30, 40, 5]))
+    assert r is BankError
+    if r is BankError as e {
+        assert e == BankError.Overdrawn(short: 20)
+    }
+}
+
+// new: try
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

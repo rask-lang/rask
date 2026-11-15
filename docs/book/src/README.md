@@ -48,13 +48,11 @@ Rask is early and a solo project. Expect gaps in these chapters and bugs in
 the compiler; the [issue tracker](https://github.com/rask-lang/rask/issues) is
 the honest picture.
 
-**New here.** [Install it](getting-started/installation.md), then read the
-chapters under *Learn the language*, starting with [how to follow
-along](learn/README.md). They take one concept at a time and say why each rule is the way
-it is, which is the part the specs leave out. There are also
-[exercises](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask) in
-the repo. Nothing to install to look around: the [playground](/app/) runs Rask
-in the browser.
+**New here.** [Install it](getting-started/installation.md), then take [the
+tour](learn/README.md). Each step is one idea: what problem it solves, the idea
+working, and a function for you to write that its tests check. Nothing to
+install to look around: the [playground](/app/) runs Rask in the browser, and
+the tour's pages run their own code.
 
 **Already writing Rask.** The [language
 card](https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md) is the whole
