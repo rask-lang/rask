@@ -31,7 +31,7 @@ struct Ratchet {
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "name sniffs in the back half",
-        today: 11,
+        today: 5,
         target: 0,
         why: "MIR or codegen asked a callee's or type's spelling what it is. The \
               checker resolved that call; carry its identity on the call \

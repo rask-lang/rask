@@ -313,8 +313,9 @@ enum HandAdapt {
     RackInsert,
     /// A `Shared` strategy's `take`.
     BoxTake,
-    /// A `Shared` strategy's `set` or `replace`.
-    BoxWrite,
+    /// A `Shared` strategy's `set` or `replace`. `replace` (true) also gives
+    /// the old value back.
+    BoxWrite { replace: bool },
     /// A `Shared` strategy's constructor.
     BoxNew,
     Atomic,
@@ -337,10 +338,12 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "rask_link_guarded" => HandAdapt::LinkGuarded,
         "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
-        "Cell_set" | "Cell_replace" | "Shared_set" | "Shared_replace" | "Mutex_set"
-        | "Mutex_replace" => HandAdapt::BoxWrite,
+        "Cell_set" | "Shared_set" | "Mutex_set" => HandAdapt::BoxWrite { replace: false },
+        "Cell_replace" | "Shared_replace" | "Mutex_replace" => HandAdapt::BoxWrite { replace: true },
         "Shared_new" | "Mutex_new" | "Cell_new" => HandAdapt::BoxNew,
-        n if n.starts_with("Atomic_") => HandAdapt::Atomic,
+        n if rask_stdlib::mir_metadata::lookup(n).is_some_and(|m| m.owner.as_deref() == Some("Atomic")) => {
+            HandAdapt::Atomic
+        }
         "Sender_send" | "send" => HandAdapt::Send,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if n.starts_with("string_parse") => HandAdapt::Parse,
@@ -2114,6 +2117,13 @@ impl<'a> FunctionBuilder<'a> {
                 Some(MirType::I128 | MirType::U128)
             ),
         }
+    }
+
+    /// The type of parameter `index` of an imported function, as its
+    /// signature was declared.
+    fn declared_param_type(builder: &ClifFunctionBuilder, func_ref: FuncRef, index: usize) -> types::Type {
+        let sig = builder.func.dfg.ext_funcs[func_ref].signature;
+        builder.func.dfg.signatures[sig].params[index].value_type
     }
 
     fn operand_mir_type(operand: &MirOperand, locals: &[rask_mir::MirLocal]) -> Option<MirType> {
@@ -4805,12 +4815,14 @@ impl<'a> FunctionBuilder<'a> {
             // as characters, and the 128-bit pair takes its operands at their
             // own width so the reported numbers are the real ones.
             if args.len() >= 3 {
-                let arg_ty = if func.name.ends_with("128") { types::I128 } else { types::I64 };
+                let func_ref = ctx.func_refs.get(func.name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+                // The operands go over at the width the helper was declared
+                // with in `module.rs`.
+                let arg_ty = Self::declared_param_type(builder, *func_ref, 0);
                 let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
                 let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                let func_ref = ctx.func_refs.get(func.name.as_str())
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
                 let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
                 builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
@@ -4838,12 +4850,14 @@ impl<'a> FunctionBuilder<'a> {
             // double round-trips against the wrong width and prints its exact
             // binary expansion rather than the digits `println` shows.
             if args.len() >= 3 {
-                let arg_ty = if func.name.ends_with("f32") { types::F32 } else { types::F64 };
+                let func_ref = ctx.func_refs.get(func.name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+                // The operands go over at the width the helper was declared
+                // with in `module.rs`.
+                let arg_ty = Self::declared_param_type(builder, *func_ref, 0);
                 let left_val = Self::lower_operand_typed(builder, &args[0], Some(arg_ty), ctx)?;
                 let right_val = Self::lower_operand_typed(builder, &args[1], Some(arg_ty), ctx)?;
                 let op_val = Self::lower_operand_as_cstr(builder, &args[2], ctx)?;
-                let func_ref = ctx.func_refs.get(func.name.as_str())
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
                 let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
                 builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
@@ -8367,14 +8381,14 @@ impl<'a> FunctionBuilder<'a> {
             // `set` and `replace` both take the new value by pointer, so a
             // scalar spills to a slot first. `replace` also gives the old value
             // back, through an out-param of its own.
-            HandAdapt::BoxWrite => {
+            HandAdapt::BoxWrite { replace } => {
                 if args.len() >= 2 {
                     let (_, is_aggregate) = Self::struct_elem_size(mir_args, 1, ctx);
                     if !is_aggregate {
                         Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
                     }
                 }
-                if func_name.ends_with("_replace") {
+                if replace {
                     // The old value goes into the caller's own destination. It
                     // used to come back by address, which meant the runtime
                     // allocated a block for it so the pointer would outlive the
@@ -8419,13 +8433,9 @@ impl<'a> FunctionBuilder<'a> {
             // (GA2) as its raw bytes. A numeric conversion would hand the
             // runtime 1 for 1.5, and a struct is held by address.
             HandAdapt::Atomic => {
-                let values: &[usize] = match func_name {
-                    "Atomic_new" => &[0],
-                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak" => &[1, 2],
-                    "Atomic_store" | "Atomic_swap" => &[1],
-                    f if f.starts_with("Atomic_fetch_") => &[1],
-                    _ => &[],
-                };
+                // The payload arguments are the ones `sync.rk` declares as `T`.
+                let meta = rask_stdlib::mir_metadata::lookup(func_name);
+                let values: &[usize] = meta.map_or(&[], |m| m.payload_args.as_slice());
                 for &i in values {
                     if i < args.len() {
                         let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
@@ -8453,9 +8463,9 @@ impl<'a> FunctionBuilder<'a> {
                     args.push(ss.addr(builder, 0));
                     return CallAdapt::CasResult(ss);
                 }
-                match func_name {
-                    "Atomic_load" | "Atomic_swap" | "Atomic_take" => CallAdapt::AtomicBits,
-                    f if f.starts_with("Atomic_fetch_") => CallAdapt::AtomicBits,
+                // A declared `-> T` comes back as the payload's bits.
+                match meta.map(|m| &m.ret_category) {
+                    Some(rask_stdlib::mir_metadata::RetCategory::TypeParam(_)) => CallAdapt::AtomicBits,
                     _ => CallAdapt::None,
                 }
             }
