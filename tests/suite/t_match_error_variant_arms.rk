@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Arms that name the error enum's own variants, on a `T or E` (#1958).
+//
+// `Fail.A(n)` has a labelled payload, so it is a named-field pattern. The
+// interpreter only looked inside the Ok/Err wrapper for the positional form,
+// so a named-field arm never saw the error: `match r` found no arm, and
+// `assert r is BankError.TooLarge(over: 250)` failed while native passed.
+
+enum Fail {
+    A(n: i32)
+    B
+}
+
+enum BankError {
+    TooLarge(over: i32)
+    Frozen
+}
+
+func f(which: i32) -> i32 or Fail {
+    if which == 0 { return Fail.A(n: 3) }
+    if which == 1 { return Fail.B }
+    return 7
+}
+
+func describe(which: i32) -> string {
+    return match f(which) {
+        Fail.A(n) => "a {n}",
+        Fail.B => "b",
+        i32 as v => "ok {v}",
+    }
+}
+
+func withdraw(amount: i32) -> i32 or BankError {
+    if amount > 100 { return BankError.TooLarge(over: amount - 100) }
+    return amount
+}
+
+test "arms naming the error's variants find the error" {
+    assert describe(0) == "a 3"
+    assert describe(1) == "b"
+    assert describe(2) == "ok 7"
+}
+
+test "a named-field arm checks the payload" {
+    let r = withdraw(350)
+    assert r is BankError.TooLarge(over: 250)
+}
+
+test "a named-field arm that names another variant or value does not match" {
+    let big = match withdraw(350) {
+        BankError.TooLarge(over: 999) => "999",
+        BankError.TooLarge(over: 250) => "250",
+        BankError.Frozen => "frozen",
+        i32 as v => "ok {v}",
+    }
+    assert big == "250"
+    let small = match withdraw(20) {
+        BankError.TooLarge(over: 250) => "err",
+        BankError.Frozen => "frozen",
+        i32 as v => "ok {v}",
+    }
+    assert small == "ok 20"
+}
