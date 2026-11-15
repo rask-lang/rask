@@ -465,3 +465,46 @@ fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, _current_file
     // package parsing.
     primary_span.file_id == 0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the editor shows for `source`: one `code: message` per diagnostic.
+    fn editor_diagnostics(source: &str) -> Vec<String> {
+        let uri = Url::parse("file:///tmp/rask_lsp_test/main.rk").unwrap();
+        run_pipeline(&uri, source, 1)
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let code = d.code.as_ref().map(|c| c.0.clone()).unwrap_or_default();
+                format!("{code}: {}", d.message)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn let_mut_shows_its_own_error_and_still_declares_the_name() {
+        let shown = editor_diagnostics(
+            "func main() {\n    let mut res : Vec<string> = [\"a\"]\n    res.push(\"b\")\n    println(\"{res.len()}\")\n}\n",
+        );
+        assert_eq!(shown, vec!["E0100: 'let mut' is not Rask"]);
+
+        // Used later, in a function that returns it, and in a test block.
+        for src in [
+            "func f() -> Vec<string> {\n    let mut res : Vec<string> = [\"a\"]\n    res.push(\"b\")\n    return res\n}\nfunc main() {\n    println(\"{f().len()}\")\n}\n",
+            "test \"t\" {\n    let mut res : Vec<string> = [\"a\"]\n    assert res.len() == 1\n}\n",
+            "func main() {\n    let mut res : Vec<string> = [\"a\"]\n}\n",
+        ] {
+            assert_eq!(editor_diagnostics(src), vec!["E0100: 'let mut' is not Rask"], "{src}");
+        }
+    }
+
+    #[test]
+    fn a_local_const_shows_its_own_error_and_still_declares_the_name() {
+        let shown = editor_diagnostics(
+            "func main() {\n    const limit = 3\n    println(\"{limit}\")\n}\n",
+        );
+        assert_eq!(shown, vec!["E0100: 'const' is only for module-level constants"]);
+    }
+}

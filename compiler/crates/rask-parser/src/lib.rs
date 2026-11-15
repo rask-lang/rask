@@ -278,6 +278,36 @@ mod tests {
         assert_eq!(result.errors[0].hint.as_deref(), Some("'mut x = ...' declares a rebindable binding — drop the 'let'"));
     }
 
+    /// `let mut` is one error, and the statement still parses as the `mut`
+    /// binding it meant, so the name is declared for everything after it.
+    #[test]
+    fn let_mut_recovers_as_a_mut_binding() {
+        let result = parse("func main() {\n    let mut res : Vec<string> = [\"a\"]\n    res.push(\"b\")\n}");
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+        let DeclKind::Fn(ref f) = result.decls[0].kind else { panic!("expected function") };
+        assert!(
+            matches!(
+                &f.body[0].kind,
+                rask_ast::stmt::StmtKind::Mut { name, ty: Some(_), init, .. }
+                    if name == "res" && matches!(init.kind, rask_ast::expr::ExprKind::Array(_))
+            ),
+            "first statement: {:?}", f.body[0].kind,
+        );
+        assert_eq!(f.body.len(), 2);
+    }
+
+    /// Same recovery for a local `const`: read as the `let` it meant.
+    #[test]
+    fn local_const_recovers_as_a_let_binding() {
+        let result = parse("func main() {\n    const limit = 3\n    println(limit)\n}");
+        assert_eq!(result.errors.len(), 1, "{:?}", result.errors);
+        let DeclKind::Fn(ref f) = result.decls[0].kind else { panic!("expected function") };
+        assert!(
+            matches!(&f.body[0].kind, rask_ast::stmt::StmtKind::Let { name, .. } if name == "limit"),
+            "first statement: {:?}", f.body[0].kind,
+        );
+    }
+
     #[test]
     fn doc_comments_on_structs() {
         let result = parse("/// A point.\npublic struct Point {\n    x: f64\n}");
