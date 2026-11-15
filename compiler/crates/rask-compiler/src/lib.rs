@@ -1147,10 +1147,12 @@ fn check_package_scoped(
                         .with_code("E0877")
                         .with_primary(*use_span, format!("`{}` can't be named from here", base))
                         .with_secondary(*decl_span, format!("declared here, without `public`"))
+                        // `base` is the qualified name the caller wrote; the
+                        // declaration has the bare one.
                         .with_help(format!(
-                            "mark it `public func {}` (or `public struct`, …) in `{}` if it \
-                             is meant to be part of that package's API",
-                            base, owner_name
+                            "write `public` on `{}`'s declaration in `{}`, if it's meant to be \
+                             part of that package's API",
+                            base.rsplit('.').next().unwrap_or(base), owner_name
                         )),
                 );
             }

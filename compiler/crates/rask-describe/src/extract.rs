@@ -245,29 +245,34 @@ fn extract_interface(t: &InterfaceDecl) -> InterfaceDesc {
     }
 }
 
+/// The parameter's mode as written: `take`, `mutate`, `deleting`, or `borrow`
+/// for no keyword.
+fn param_mode(p: &rask_ast::decl::Param) -> &'static str {
+    if p.is_take {
+        "take"
+    } else if p.is_deleting {
+        "deleting"
+    } else if p.is_mutate {
+        "mutate"
+    } else {
+        "borrow"
+    }
+}
+
 fn extract_function(f: &FnDecl) -> FunctionDesc {
     let mut self_mode = None;
     let mut params: Vec<ParamDesc> = Vec::new();
 
     for p in &f.params {
         if p.name == "self" {
-            self_mode = Some(if p.is_take {
-                "take".to_string()
-            } else if p.is_mutate {
-                "mutate".to_string()
-            } else {
-                "self".to_string()
+            self_mode = Some(match param_mode(p) {
+                "borrow" => "self".to_string(),
+                m => m.to_string(),
             });
             continue;
         }
 
-        let mode = if p.is_take {
-            "take"
-        } else if p.is_mutate {
-            "mutate"
-        } else {
-            "borrow"
-        };
+        let mode = param_mode(p);
 
         params.push(ParamDesc {
             name: p.name.clone(),
@@ -308,13 +313,7 @@ fn extract_extern(e: &ExternDecl) -> ExternDesc {
         .params
         .iter()
         .map(|p| {
-            let mode = if p.is_take {
-                "take"
-            } else if p.is_mutate {
-                "mutate"
-            } else {
-                "borrow"
-            };
+            let mode = param_mode(p);
             ParamDesc {
                 name: p.name.clone(),
                 type_str: p.ty.as_ref().map(|t| t.to_string()).unwrap_or_default(),
