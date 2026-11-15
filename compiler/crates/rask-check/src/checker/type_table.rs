@@ -1561,6 +1561,46 @@ impl TypeTable {
         self.declares_conformance_to(type_id, iface, interface)
     }
 
+    /// std.encoding/E12a: the function that makes a type's values pass a
+    /// check. A static function the author wrote in an `extend` block whose
+    /// return type is `Self or E`, with a real error on the right. A decode
+    /// builds the value straight from the wire and never calls it, so a type
+    /// that has one isn't auto-`Decode`.
+    ///
+    /// Read off the declared signatures, so it answers once every `extend`
+    /// block has been collected and not before. `T?` doesn't count: absence
+    /// says nothing was rejected, and the rule is about a check that can fail
+    /// with a reason. Visibility doesn't count either: a package-private
+    /// constructor guards the package's own values just as a public one does.
+    pub fn checking_constructor(&self, type_id: TypeId) -> Option<&MethodSig> {
+        let methods = match self.get(type_id)? {
+            TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => methods,
+            _ => return None,
+        };
+        methods.iter().find(|m| {
+            m.origin == rask_types::MethodOrigin::Declared
+                && m.self_param == SelfParam::None
+                && matches!(
+                    &m.ret,
+                    Type::Result { ok, err }
+                        if !matches!(**err, Type::None) && self.names_type(ok, type_id)
+                )
+        })
+    }
+
+    /// Is `ty` the type `id`, instantiated or not, under whichever spelling the
+    /// signature kept?
+    fn names_type(&self, ty: &Type, id: TypeId) -> bool {
+        match ty {
+            Type::Named(n) => *n == id,
+            Type::Generic { base, .. } => *base == id,
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                self.get_type_id(name) == Some(id)
+            }
+            _ => false,
+        }
+    }
+
     /// Does the type build its own claim inputs: is there a `T implements
     /// claims.Generate` for it (type.claims/IN2)?
     pub fn builds_claim_inputs(&self, type_id: TypeId) -> bool {

@@ -1334,6 +1334,18 @@ impl TypeChecker {
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
+                // A written `Self` in the block is the type being extended.
+                // Left as the bare name, every reader of the signature had to
+                // know to replace it, and the ones that didn't (a constructor
+                // `-> Self or E` going unseen by std.encoding/E12a) saw a type
+                // called "Self" that doesn't exist.
+                if let Some(self_ty) = &self_ty {
+                    let this = std::collections::HashMap::from([("Self".to_string(), self_ty.clone())]);
+                    for (ty, _) in &mut sig.params {
+                        *ty = crate::interfaces::substitute_type(ty, &this);
+                    }
+                    sig.ret = crate::interfaces::substitute_type(&sig.ret, &this);
+                }
                 sig.owner_bounds = condition.clone();
                 if interface.is_some() {
                     receiver_as_written(m, &mut sig);

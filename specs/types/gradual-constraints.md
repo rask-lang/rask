@@ -120,7 +120,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | Example | Inferred As | Why |
 |---------|-------------|-----|
 | `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to `.mul()` |
-| `func get_port() { 8080 }` | `() -> i32` | Literal default, no interface usage |
+| `func get_port() { 8080 }` | `() -> i64` | Literal default, no interface usage |
 | `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
 | `func len(items) { items.len() }` | `(items: Vec<i64>) -> usize`, at the first call site | `.len()` names no interface, so nothing solves the shape — GC13 |
 

@@ -11,7 +11,7 @@
 //! list in a test so the two can't drift apart.
 
 /// Compiler warnings that can be suppressed at a declaration.
-pub const WARNINGS: &[&str] = &["blocking_loop", "torn_lock_update", "unused_result"];
+pub const WARNINGS: &[&str] = &["blocking_loop", "torn_lock_update"];
 
 /// Compiler warnings that are off until `--warn <name>` turns them on
 /// (tool.warnings, opt-in warnings). None is turned on from an attribute yet,

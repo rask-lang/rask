@@ -28,15 +28,22 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need e
 
 | Rule | Form | Example | Default Type |
 |------|------|---------|--------------|
-| **L1: Integer default** | Decimal | `42`, `1_000` | `i32` |
-| **L2: Alternate bases** | Hex/Bin/Oct | `0xFF`, `0b101`, `0o77` | `i32` |
+| **L1: Integer default** | Decimal | `42`, `1_000` | `i64` |
+| **L2: Alternate bases** | Hex/Bin/Oct | `0xFF`, `0b101`, `0o77` | `i64` |
 | **L3: Suffixed** | Type suffix | `42u8`, `3.14f32` | As specified |
 | **L4: Float default** | Decimal with `.` | `3.14` | `f64` |
 | **L5: Char literal** | Quoted | `'a'`, `'\n'`, `'\u{1F600}'` | `char` |
-| **L6: Default widens** | Decimal/hex too big for `i32` | `3000000000` | `i64`, then `u64`, then `i128` |
+| **L6: Default widens** | Decimal/hex too big for `i64` | `18446744073709551615` | `u64`, then `i128` |
 | **L7: Must fit** | Any literal | `const b: u8 = 300` | Compile error |
 | **L8: Literal ceiling** | Digits past `u128::MAX` | `340282366920938463463374607431768211456` | Compile error |
 | **L9: Built by its type** | Unsuffixed literal in a slot of a type implementing `FromLiteral<i64>` or `FromLiteral<f64>` | `let half: Fixed = 0.5` | That type, built at compile time |
+
+I made the default `i64` because `i32` is a trap for counters and totals. A
+`mut count = 0` that runs to three billion overflows an `i32`, and the panic
+shows up far from the `0` that picked the width. Both are fixed-width, so
+neither choice changes behaviour between 32-bit and 64-bit targets; the cost of
+`i64` is speed of 64-bit maths on 32-bit chips. Code that cares names its
+width: `let n: i32 = 0`.
 
 L6 only moves the *default*. Context still wins, all the way up: `const x: i64 = 5`
 is an `i64`, and `const x: u128 = 100000000000000000000` is a `u128` even though the
@@ -426,7 +433,7 @@ mut port: u16 = header.port   // Native u16
 |------|------|----------|
 | Integer literal out of range | L1/L3/L7 | Compile error |
 | Integer literal past `u128::MAX` | L8 | Compile error |
-| Unsuffixed literal ambiguous | L1/L4 | Defaults to `i32` or `f64` |
+| Unsuffixed literal ambiguous | L1/L4 | Defaults to `i64` or `f64` |
 | `n as char` | CH5 | Compile error — use `char.from_u32(n)` |
 | Surrogate code point via `char.from_u32` | CH1/CH3 | Returns `none` |
 | `char.from_u32_unchecked` with invalid | CH1 | Unsafe — undefined behavior |

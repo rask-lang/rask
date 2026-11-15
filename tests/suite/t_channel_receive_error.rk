@@ -26,8 +26,8 @@ struct Reading {
 test "the error branch is reachable on a drained, closed channel" {
     using Multitasking {
         mut (tx, rx) = Channel<i32>.buffered(4)
-        tx.send(1)
-        tx.close()
+        tx.send(1)!
+        tx.close()!
         match rx.receive() {
             i32 as v => { assert v == 1 }
             ReceiveError as e => { assert false }
@@ -43,9 +43,9 @@ test "the consumer loop from the spec terminates" {
     using Multitasking {
         mut (tx, rx) = Channel<i64>.buffered(8)
         for i in 1..5 {
-            tx.send(i)
+            tx.send(i)!
         }
-        tx.close()
+        tx.close()!
 
         mut total = 0
         loop {
@@ -63,8 +63,8 @@ test "the consumer loop from the spec terminates" {
 test "a struct element survives the round trip" {
     using Multitasking {
         mut (tx, rx) = Channel<Reading>.buffered(4)
-        tx.send(Reading(sensor: 3, value: 1.5, label: "north"))
-        tx.close()
+        tx.send(Reading(sensor: 3, value: 1.5, label: "north"))!
+        tx.close()!
 
         let first = rx.receive()
         if first? as r {
@@ -87,12 +87,12 @@ test "try_receive tells empty apart from closed" {
             i64 as v => { assert false }
             TryReceiveError as e => { assert e.message() == "channel is empty" }
         }
-        tx.send(7)
+        tx.send(7)!
         match rx.try_receive() {
             i64 as v => { assert v == 7 }
             TryReceiveError as e => { assert false }
         }
-        tx.close()
+        tx.close()!
         match rx.try_receive() {
             i64 as v => { assert false }
             TryReceiveError as e => { assert e.message() == "receive on closed channel" }

@@ -27,7 +27,7 @@ func open_result(path: string) -> string {
     }
     ensure f.close()
     let t = f.read_text()
-    f.close()
+    f.close()!
     if t is string as s {
         return "read [{s.trim()}]"
     } else as e {
@@ -41,7 +41,7 @@ func create_result(path: string) -> string {
     }
     ensure f.close()
     let _ = f.write_text("hello\n")
-    f.close()
+    f.close()!
     return "created"
 }
 

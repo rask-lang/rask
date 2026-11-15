@@ -99,7 +99,7 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 ```rask
 mut vec: Vec<u16> = Vec.new()
 for i in 0..vec.len() { }  // i inferred as usize
-for i in 0..10 { }          // i inferred as i32 (default)
+for i in 0..10 { }          // i inferred as i64 (default)
 for i in 0u8..10 { }        // i explicitly u8
 ```
 

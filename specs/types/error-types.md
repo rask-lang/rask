@@ -116,6 +116,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | **ER12: No `?` on a result** | `r?` / `r?.field` / `r ?? v` | Compile error, all forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; fall back with `catch`; to project, extract first |
 | **ER14: Handle the error** | `r catch e => <expr>` / `r catch _ => <expr>` | Yields T when present, else binds the error and evaluates the body — lazily, only on failure. The binder is **mandatory**: `e =>` to use the error, `_ =>` to discard it *visibly*. The body is a value or any divergence — `return`, `break`, `continue`, `panic(…)` — legal because visible: the exit is written where it happens, so `catch e => return wrap(e)` reads as transform-and-leave. There is **no bare-value form** — `r catch v` is a compile error — so an error can never be swallowed silently. Results only; absence uses `??` (`type.optionals/OPT11`) |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
+| **ER50: A result is never ignored** | `save(d)` | An expression statement whose value is a `T or E` with a real error side is a compile error, whatever expression produced it: a call (`save(d)`), a `!` that strips one error and leaves another (`handle.join()!` on a task whose body returns `T or E` leaves that result), a `catch` whose handler returns one. Write `save(d)!` (ER15) or, where the enclosing function can pass the error on, `try save(d)` (ER16); `catch` and `match` handle it. `let _ = save(d)` is legal: a discard written where it can be seen. It applies to every statement, at any depth: function and loop bodies, blocks, `using`, `with`, `comptime`, `unsafe`, and all but the last statement of an `ensure` body (the last is the cleanup, whose failure is the ensure's). The last statement of a block that is used for its value isn't one, because the block hands it on. `T?` results aren't covered (absence isn't a failure) and neither is a result bound to a name. There is no `@allow` for it |
 | **ER16: Extract or propagate** | `try x` | Extracts the success payload, or the bad branch **leaves to the caller** — the error from a `T or E` (widened into this function's error type, ER31/ER31a/ER32), the `none` from a `T?`. No clause exists; what leaves must fit the enclosing return (ER47) |
 | **ER16a: Chain placement** | `try a.b().c` | `try` attaches to the one step in the postfix chain that is fallible — `try read_file(p).len()` is `(try read_file(p)).len()`, `try store.get(id)` is `try (store.get(id))`. The wrappers have no methods at all, so exactly one placement type-checks and no parentheses are needed. `try` does not slide into call arguments |
 | **ER16b: `try` binds tighter than `??`** | `try f() ?? v` | Parses as `(try f()) ?? v` — no parens. This is the composite for a flat `T? or E` operand: `try` peels the error, `??` handles the absence — and now the line *says* so. (Zig ruled this the other way and its stdlib pays parens on the common order — issue #5436 there; ~160 error-then-absence composites against ~4 reversed) |
@@ -217,17 +218,18 @@ let cfg = load_from_disk() catch _ => load_from_env() catch _ => load_from_net()
 
 The `catch` body extends rightward (greedy, like a match-arm body), so the chain nests the natural way without parens; left of `catch`, the operand chain groups left at the same precedence level as `??` — the full ruling, including mixed `??`/`catch` lines, is in [operators.md](operators.md). The same linearity rule applies (ER43): an error carrying a must-consume payload can't be dropped with `_ =>` — bind it and consume it, or `match`.
 
-**In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and the fold is the one that reads best: the success type is `void`, so a void-returning handler needs no ceremony.
+**In statement position** — a `void or E` call whose result you aren't binding — the same forms apply, and ER50 says one of them is required:
 
 <!-- test: skip -->
 ```rask
-try save(d)                                     // propagate — the usual one
+save(d)!                                        // assert success; panics with the error's message
+try save(d)                                     // propagate, when this function can
 save(d) catch _ => return IoError.Full          // replace and leave
 save(d) catch e => log(e.message())             // handle here: `log` returns void ✓
-save(d)                                         // W2: unused result of type `void or IoError`
+save(d)                                         // ER50: result of type `void or IoError` is ignored
 ```
 
-Deliberately ignoring the error entirely is `let _ = save(d)`, which silences W2 the same way any other unused binding does (`tool.warnings/W3`) — or `save(d) catch _ => {}`, which says the same thing at the error's own granularity.
+`let _ = save(d)` also compiles, as a discard anyone reading can see. The diagnostic suggests `!` and `try`, not this.
 
 **`e =>` is the match-arm binder.** Same marker, same rules: it names a value and its body belongs to the enclosing function, so `return` there leaves the *function* (`ctrl.flow/CF26`). Braces are optional exactly as in a match arm.
 
@@ -807,6 +809,8 @@ FIX: if r is f64 as v { use(v) }          (test the success side)
 ## Appendix (non-normative)
 
 ### Rationale
+
+**Why ignoring a result is an error (ER50).** The error model rests on one promise: no error is dropped without a mark you can grep for. `try`, `!`, `catch` and `match` all leave a mark, and so does `let _ =`. A bare `save(d)` is the one way to lose an error with nothing written. I first made it a warning, since fire-and-forget logging and best-effort cleanup exist. But a warning is what people stop reading, and every one of those cases is a `!` or a `let _ =` away from compiling, a few characters. So there is no opt-out and no `@allow`: being explicit costs close to nothing, and the mistake it catches (a failed write nobody noticed) is expensive. `!` is the everyday fix: when a failure here is a bug, it stops the program with the error's own message.
 
 **Why operators instead of combinator methods.** Rust handles the same territory with a method vocabulary — `unwrap`, `expect`, `unwrap_or`, `unwrap_or_else`, `map`, `map_err`, `and_then`, `or_else`, `ok`, `ok_or`, `ok_or_else`, and their siblings, doubled across `Option` and `Result`. Rask replaces the vocabulary with the operator family (ER12–ER18, ER44, ER47), and the replacement isn't cosmetic — three structural facts make the zoo unnecessary rather than merely renamed:
 

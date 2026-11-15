@@ -249,7 +249,7 @@ func main() -> void or Error {
             }
         }
 
-        signals.receive()          // wait for Ctrl-C or SIGTERM
+        signals.receive()!          // wait for Ctrl-C or SIGTERM
         let _ = serve.cancel()     // stop taking connections
     }
 }

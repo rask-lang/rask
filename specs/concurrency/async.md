@@ -323,7 +323,7 @@ let h = spawn {
     return done
 }
 
-sleep(5.seconds)
+sleep(5.seconds)!
 let finished = try h.cancel()   // how far it got
 ```
 

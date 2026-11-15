@@ -600,8 +600,12 @@ func http_fetch(base_url: string, name: string, version: Version) -> string or R
 
     // Write to cache
     let cache_dir = "/tmp/rask-cache/{name}-{ver_str}"
-    fs.create_dir_all(cache_dir)
-    fs.write_text("{cache_dir}/package.tar", resp.body)
+    fs.create_dir_all(cache_dir) catch e => {
+        return RegistryError.IoError("cannot create {cache_dir}: {e.message()}")
+    }
+    fs.write_text("{cache_dir}/package.tar", resp.body) catch e => {
+        return RegistryError.IoError("cannot write {cache_dir}/package.tar: {e.message()}")
+    }
     return cache_dir
 }
 
@@ -761,7 +765,9 @@ enum FetchResult {
 }
 
 func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) -> void or FetchError {
-    fs.create_dir_all(cache_dir)
+    fs.create_dir_all(cache_dir) catch e => {
+        return FetchError.Io(IoErrorMsg.Msg("cannot create {cache_dir}: {e.message()}"))
+    }
 
     let items = collect_fetch_items(graph, cache_dir)
     if items.is_empty() {

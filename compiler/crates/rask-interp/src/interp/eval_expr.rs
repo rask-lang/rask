@@ -945,7 +945,7 @@ impl Interpreter {
                 use rask_ast::token::IntSuffix;
                 use crate::value::IntKind;
                 // Kind comes from an explicit suffix, else the checker's
-                // inferred type for this literal (defaults to i32). This is
+                // inferred type for this literal (defaults to i64). This is
                 // where width first attaches to a value (type.overflow).
                 // A literal that needed 64 or 128 bits for its magnitude still
                 // leaves the type open — the marker says which types it *can't*

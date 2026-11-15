@@ -230,7 +230,7 @@ test "a carried struct whose body closes its channel field" {
         let (tx, rx) = Channel<i64>.buffered(4)
         let w = Wire(label: heap("wire"), tx)
         let h = spawn {
-            w.tx.send(7)
+            w.tx.send(7)!
             let _ = w.tx.close()
         }
         h.join()!

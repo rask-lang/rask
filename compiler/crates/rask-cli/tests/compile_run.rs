@@ -1369,12 +1369,12 @@ fn error_catch_void_body_blames_itself_not_a_later_use() {
     // only legal when the value's success type is actually void. When that
     // type was still open, the checker used to *decide* it from this catch's
     // own void body — so a later, correctly-typed use of the same value
-    // (`a catch _ => -1`, a real `i32` fallback) got blamed for the mismatch
+    // (`a catch _ => -1`, a real `i64` fallback) got blamed for the mismatch
     // instead of the void-bodied catch that's actually wrong.
     let (failed, out) = compile_error_output("catch_void_body_blame.rk");
     assert!(failed, "a void catch on a non-void success type must be rejected: {}", out);
     assert!(
-        out.contains("expected `i32`, found `void`"),
+        out.contains("expected `i64`, found `void`"),
         "should name the real success type, not void: {}", out,
     );
     assert!(
@@ -1723,6 +1723,39 @@ fn error_decode_bound_not_satisfied() {
     assert!(
         out.contains("E0388") && out.contains("cannot be decoded"),
         "should say the type can't be decoded, not that it's missing methods: {}", out,
+    );
+}
+
+// std.encoding/E12a (#1936): `Port.new` rejects 0, and a derived `Decode` built
+// ports straight from the wire without calling it. A type with a constructor
+// returning `Self or E` isn't auto-`Decode`, whether it is asked for directly
+// or sits inside a `Vec` field, and the error names the constructor.
+#[test]
+fn error_decode_skips_constructor() {
+    let (failed, out) = compile_error_output("decode_skips_constructor.rk");
+    assert!(failed, "decoding a type with a checking constructor must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0418").count(), 4,
+        "`Port`, the `Listener` that holds a `Vec<Port>`, `Gate` written `-> Self or E`, \
+         and `Wrapper<Port>`: {}", out,
+    );
+    // The type argument is what gets decoded. Judging the bare `T` blamed a field
+    // and advised `@no_serialize`, which is wrong for a `Port`.
+    assert!(
+        !out.contains("E0388") && !out.contains("@no_serialize"),
+        "`Wrapper<Port>` is a constructor problem, not an undecodable field: {}", out,
+    );
+    assert!(
+        out.contains("`Gate.open` checks its input"),
+        "a constructor written `-> Self or E` is still one: {}", out,
+    );
+    assert!(
+        out.contains("`Port.new` checks its input") && out.contains("`Listener` holds a `Port`"),
+        "should name the constructor, and the type it was reached through: {}", out,
+    );
+    assert!(
+        out.contains("Port implements Decode"),
+        "should offer the declaration that says a raw decode is intended: {}", out,
     );
 }
 
@@ -2790,7 +2823,7 @@ fn polymorphic_recursion_stops_at_the_depth_limit() {
     let (_stdout, stderr, code) = run_capture("--native", "polymorphic_recursion.rk");
     assert_ne!(code, 0, "native has no finite set of copies to build: {stderr}");
     assert!(stderr.contains("E0927"), "{stderr}");
-    assert!(stderr.contains("`nest<i32>` needs `nest<Vec<i32>>`"), "the chain starts readable: {stderr}");
+    assert!(stderr.contains("`nest<i64>` needs `nest<Vec<i64>>`"), "the chain starts readable: {stderr}");
     let (stdout, stderr, code) = run_capture("--interp", "polymorphic_recursion.rk");
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "0\n");
@@ -5037,7 +5070,7 @@ fn discard_on_a_copy_type_warns() {
         "the three primitives warn and the two owners don't:\n{output}"
     );
     assert!(
-        output.contains("`i32` is a Copy type"),
+        output.contains("`i64` is a Copy type"),
         "an unsuffixed literal still has a type by the time this runs:\n{output}"
     );
 }
@@ -9291,9 +9324,9 @@ fn assert_says_which_side_wanted_a_bool() {
     let cases = [
         ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
         ("func main() { assert \"nonempty\" }", "found `string`"),
-        // An unsuffixed `1` is an `i32` (type.primitives/L1); the message
+        // An unsuffixed `1` is an `i64` (type.primitives/L1); the message
         // used to say `i64` while the literal became an `i32` (#1523).
-        ("func main() { assert 1 }", "found `i32`"),
+        ("func main() { assert 1 }", "found `i64`"),
         ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
     ];
     for (src, found) in cases {
@@ -9308,7 +9341,7 @@ fn assert_says_which_side_wanted_a_bool() {
     // The message argument had the same inversion.
     let out = check_output("func main() { assert 1 == 1, 42 }");
     assert!(
-        out.contains("expected `string`") && out.contains("found `i32`"),
+        out.contains("expected `string`") && out.contains("found `i64`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
 }

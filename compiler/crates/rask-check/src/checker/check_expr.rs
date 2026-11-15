@@ -577,9 +577,9 @@ impl TypeChecker {
                     | Some(IntSuffix::U64ByMagnitude)
                     | Some(IntSuffix::I128ByMagnitude) => {
                         let var = self.ctx.fresh_literal_var(LiteralKind::Integer);
-                        // The default is i32 (type.primitives/L1), but a literal
-                        // too big for i32 has to land somewhere it fits, or
-                        // codegen silently keeps the low 32 bits.
+                        // The default is i64 (type.primitives/L1), but a literal
+                        // too big for i64 has to land somewhere it fits, or
+                        // codegen silently keeps the low 64 bits.
                         if let Type::Var(id) = var {
                             self.ctx.record_literal_int(id, *value);
                         }
@@ -7093,7 +7093,7 @@ impl TypeChecker {
     }
 
     /// CV1–CV10: validate deferred cast/convert sites. Source types are now
-    /// concrete (literal defaults applied), so `1 as bool` sees `i32`.
+    /// concrete (literal defaults applied), so `1 as bool` sees `i64`.
     /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
     /// `Range<string>` that native walked as nothing and the interpreter
     /// refused at run time.
@@ -7688,7 +7688,7 @@ impl TypeChecker {
     }
 
     /// Classify an index type as integer / not / can't-tell. A still-unresolved
-    /// literal-integer var counts as integer (it defaults to i32); a plain
+    /// literal-integer var counts as integer (it defaults to i64); a plain
     /// unresolved var is unknown (don't reject).
     fn index_integerness(&self, index: &Type) -> Integerness {
         match index {

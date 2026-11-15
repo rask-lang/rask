@@ -38,7 +38,7 @@ test "Thread.spawn binds its payload the same way" {
     Thread.spawn {
         let _ = tx.send(7i64)
         return
-    }.join()
+    }.join()!
     mut got = 0i64
     if rx.receive() is i64 as v {
         got = v

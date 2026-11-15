@@ -64,7 +64,7 @@ Rule T2.1 clarification: `Shared<T, S>` doesn't violate T2 because access is *sc
 <!-- test: skip -->
 ```rask
 let data = load_data()
-channel.send(data)        // Ownership transferred
+channel.send(data)!        // Ownership transferred
 data.process()            // ERROR: data was sent
 
 // Receiving:

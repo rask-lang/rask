@@ -1924,6 +1924,32 @@ impl ComptimeInterpreter {
                 }
             }
 
+            // `x.round<f64>()`: the one conversion that can't fail (CV14), and
+            // what an integer takes to become a float. Nearest, ties to even,
+            // which is what Rust's own int-to-float conversion does.
+            ExprKind::Convert { expr, target, kind: rask_ast::expr::ConvertKind::Round }
+                if matches!(target.bare_name(), Some("f32" | "f64")) =>
+            {
+                let val = self.eval_expr(expr)?;
+                let wide = match (val.as_int(), val.as_f64()) {
+                    (Some((CtNum::Signed(n), _)), _) => n as f64,
+                    (Some((CtNum::Big(n), _)), _) => n as f64,
+                    (None, Some(f)) => f,
+                    (None, None) => {
+                        return Err(ComptimeError::NotSupported(format!(
+                            "rounding a `{}` to `{}`",
+                            val.type_name(),
+                            target.source()
+                        )))
+                    }
+                };
+                if target.bare_name() == Some("f32") {
+                    ComptimeValue::F32(wide as f32)
+                } else {
+                    ComptimeValue::F64(wide)
+                }
+            }
+
             // `a ?? b` — the payload when there is one, `b` when there isn't.
             ExprKind::NullCoalesce { value, default } => {
                 let v = self.eval_expr(value)?;

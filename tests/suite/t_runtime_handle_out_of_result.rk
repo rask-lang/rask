@@ -20,7 +20,7 @@ func write_then_read(path: string) -> string or IoError {
     mut w = try fs.create_file(path)
     ensure w.close()
     try w.write_text("handle round-trip\n")
-    w.close()
+    try w.close()
 
     mut f = try fs.open(path)
     ensure f.close()
@@ -42,7 +42,7 @@ test "std.fs — reading a file opened for writing is an error, not a crash" {
     mut w = fs.create_file(path) catch _ => { assert false, "create failed"; return }
     ensure w.close()
     let result = w.read_text()
-    w.close()
+    w.close()!
     let _ = fs.remove_file(path)
     assert result is IoError, "expected a read error on a write-only handle"
 }

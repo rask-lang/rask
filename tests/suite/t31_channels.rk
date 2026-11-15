@@ -3,15 +3,13 @@
 
 // try_receive() returns `T or E`: Ok(value) when a value is ready, Err on
 // empty/closed. Native codegen used to leak the empty status as a present
-// value, so a drain loop never terminated (Track 1.6 follow-up). Sends are
-// bare here on purpose — a discarded `send()` currently double-sends (tracked
-// separately), which would skew the drained counts.
+// value, so a drain loop never terminated (Track 1.6 follow-up).
 
 test "try_receive drains an i64 channel then reports empty" {
     let (tx, rx) = Channel<i64>.buffered(8)
-    tx.send(10)
-    tx.send(20)
-    tx.send(30)
+    tx.send(10)!
+    tx.send(20)!
+    tx.send(30)!
     mut sum = 0
     mut n = 0
     while rx.try_receive() is i64 as v {
@@ -28,8 +26,8 @@ test "try_receive drains an i64 channel then reports empty" {
 
 test "try_receive drains an f64 channel" {
     let (tx, rx) = Channel<f64>.buffered(8)
-    tx.send(1.5)
-    tx.send(2.5)
+    tx.send(1.5)!
+    tx.send(2.5)!
     mut sum = 0.0
     mut n = 0
     while rx.try_receive() is f64 as v {

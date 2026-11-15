@@ -149,8 +149,8 @@ test "O2: a dying sender's buffer drains, then the receiver sees closed" {
     mut outcome = 0
     using Multitasking {
         let h = Thread.spawn {
-            tx.send(1)
-            tx.send(2)
+            tx.send(1)!
+            tx.send(2)!
             panic("died after sending")
             return 0
         }
