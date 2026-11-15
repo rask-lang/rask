@@ -8384,6 +8384,137 @@ fn a_failed_assert_outside_a_test_says_it_once() {
     }
 }
 
+/// Each way a failure message is built from the program's own text, with a
+/// tail that no fixed buffer reaches: 6000 bytes of filler, then `END`.
+const LONG_FAILURE_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "assert on two long strings",
+        r#"func main() {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    assert a == b
+}"#,
+    ),
+    (
+        "assert on two long Vecs",
+        r#"func main() {
+    mut a: Vec<i64> = Vec.new()
+    mut b: Vec<i64> = Vec.new()
+    for i in 0..1500 {
+        a.push(i)
+        b.push(i)
+    }
+    b.push(0)
+    assert a == b
+}"#,
+    ),
+    (
+        "assert with a long message",
+        r#"func main() {
+    let f = "m".repeat(6000)
+    assert false, "{f}END"
+}"#,
+    ),
+    (
+        "panic with a long message",
+        r#"func main() {
+    let f = "p".repeat(6000)
+    panic("{f}END")
+}"#,
+    ),
+    (
+        "! on an error with a long message",
+        r#"enum Bad { Long }
+Bad implements Error {
+    func message(self) -> string {
+        let f = "e".repeat(6000)
+        return "{f}END"
+    }
+}
+func fail() -> i64 or Bad {
+    return Bad.Long
+}
+func main() {
+    let x = fail()!
+    println("{x}")
+}"#,
+    ),
+];
+
+const LONG_FAILURE_TESTS: &[(&str, &str)] = &[
+    (
+        "check on two long strings",
+        r#"test "long" {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    check a == b
+}
+
+func main() {}"#,
+    ),
+    (
+        "two failed checks, each long",
+        r#"test "long" {
+    let one = "1".repeat(3000)
+    let two = "2".repeat(3000)
+    check false, "one {one}"
+    check false, "two {two}END"
+}
+
+func main() {}"#,
+    ),
+    (
+        "a long skip reason",
+        r#"test "long" {
+    let f = "s".repeat(6000)
+    skip("{f}END")
+}
+
+func main() {}"#,
+    ),
+];
+
+/// A failure message is printed whole, however long the text in it.
+///
+/// Native built every one of these in a 512- or 2048-byte buffer and cut the
+/// rest off, where the interpreter printed all of it. They are now built to
+/// the size they need.
+#[test]
+fn a_long_failure_message_is_not_cut_off() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        for (what, src) in LONG_FAILURE_PROGRAMS {
+            let out = run_rask_run_source(src, interp);
+            // The Vecs end `…, 1499, 0]` on both sides of the message.
+            let tail = if what.contains("Vecs") { "1498, 1499, 0]" } else { "END" };
+            assert!(
+                out.contains(tail),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        for (what, src) in LONG_FAILURE_TESTS {
+            let out = run_rask_test_source(src, interp);
+            assert!(
+                out.contains("END"),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        // Both checks are kept, joined, whole.
+        let out = run_rask_test_source(LONG_FAILURE_TESTS[1].1, interp);
+        assert!(
+            out.contains(&"1".repeat(3000)) && out.contains(&"2".repeat(3000)),
+            "{backend}: the first of two long failed checks was cut:\n{}",
+            &out[out.len().saturating_sub(300)..]
+        );
+    }
+}
+
 #[test]
 fn float_assertion_message_keeps_every_digit() {
     for interp in [false, true] {
