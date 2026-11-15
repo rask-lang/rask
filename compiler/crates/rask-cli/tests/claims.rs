@@ -172,11 +172,29 @@ fn a_type_with_its_own_decode_is_built_through_it() {
     assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
     for claim in ["a_port_passed_its_check", "every_listed_port_passed", "a_bound_port_passed"] {
         let line = run.stdout.lines().find(|l| l.contains(claim)).unwrap_or_else(|| panic!("no line for {claim}:\n{}", run.stdout));
-        assert!(line.contains("held for") && line.contains("discarded"), "{line}");
+        assert!(line.contains("held for") && line.contains("refused by `decode`"), "{line}");
     }
     assert!(run.stderr.contains("claim `ports_are_small` is false"), "{}", run.stderr);
     assert!(run.stderr.contains("counterexample: p = Port(value: 10)"), "{}", run.stderr);
     assert_eq!(run.stderr.matches("is false").count(), 1, "only the false claim fails:\n{}", run.stderr);
+}
+
+// type.claims/IN4: a type whose `decode` accepts almost nothing a claim draws (a
+// date read from a string) would have the claim "hold" for the few inputs that
+// got through, which says nothing. It fails instead, and points at the
+// generator. The same decode on a type that also builds itself is never run:
+// the generator wins (IN2), and the claim holds for every input it tries.
+#[test]
+fn a_claim_whose_inputs_a_decode_refuses_does_not_pass_vacuously() {
+    let dir = copy_of("dated");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stderr.contains("claim `a_date_is_in_a_month` holds for almost no inputs"), "{}", run.stderr);
+    assert!(run.stderr.contains("E0975") && run.stderr.contains("claims.Generate"), "{}", run.stderr);
+    assert!(run.stderr.contains("refused 1000 of the 1000 tried"), "{}", run.stderr);
+    assert_eq!(run.stderr.matches("E0975").count(), 1, "only the claim over the decoded type fails:\n{}", run.stderr);
+    let line = run.stdout.lines().find(|l| l.contains("a_stamp_is_in_a_month")).expect("a line for the generated type");
+    assert!(line.contains("held for 1,000 inputs") && !line.contains("refused"), "{line}");
 }
 
 #[test]

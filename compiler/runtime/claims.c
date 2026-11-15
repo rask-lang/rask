@@ -489,13 +489,14 @@ static void sample_bytes(uint64_t claim_seed, int64_t input) {
     ch_len = SAMPLE_BYTES;
 }
 
-enum { OUT_PASS, OUT_FAIL, OUT_DISCARD, OUT_BUDGET, OUT_REPEAT };
+enum { OUT_PASS, OUT_FAIL, OUT_DISCARD, OUT_REFUSED, OUT_BUDGET, OUT_REPEAT };
 
 static const char *outcome_name(int out) {
     switch (out) {
     case OUT_PASS: return "pass";
     case OUT_FAIL: return "fail";
     case OUT_DISCARD: return "discard";
+    case OUT_REFUSED: return "refused";
     case OUT_BUDGET: return "budget";
     default: return "repeat";
     }
@@ -537,7 +538,7 @@ static int run_input(void (*fn)(void), uint64_t sim_seed, int64_t budget, char *
     rask_await_detached_tasks();
     if (ch_by_index && ch_index != 0) return OUT_REPEAT;
     if (over_budget) return OUT_BUDGET;
-    if (input_refused) return OUT_DISCARD;
+    if (input_refused) return OUT_REFUSED;
     if (outcome == RASK_TEST_SKIPPED) return OUT_DISCARD;
     if (outcome == RASK_TEST_PASSED && !body_done) return OUT_DISCARD;
     return outcome == RASK_TEST_FAILED ? OUT_FAIL : OUT_PASS;
@@ -623,7 +624,7 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
     int exhaustive = 1;
     int64_t walk = 1;
     uint64_t distinct = 1;
-    int64_t tried = 0, discarded = 0, budget_hits = 0;
+    int64_t tried = 0, discarded = 0, refused = 0, budget_hits = 0;
     char *budget_input = NULL;
     int failed = 0;
     int scheduled = 0;
@@ -652,7 +653,7 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
             free(msg);
             exhaustive = 0;
             walk = cfg_samples;
-            tried = discarded = budget_hits = 0;
+            tried = discarded = refused = budget_hits = 0;
             free(budget_input);
             budget_input = NULL;
             i = -1;
@@ -669,6 +670,7 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
         }
         tried++;
         if (out == OUT_DISCARD) discarded++;
+        if (out == OUT_REFUSED) refused++;
         if (out == OUT_BUDGET && budget_hits++ == 0 && note_buf) budget_input = strdup(note_buf);
         if (out == OUT_FAIL) {
             printf("%s{\"claim\":\"", rask_test_record_mark());
@@ -687,9 +689,9 @@ int64_t rask_claim_run(void (*fn)(void), const char *name, int64_t seed, int64_t
     printf("%s{\"claim\":\"", rask_test_record_mark());
     rask_test_json_escaped(name);
     printf("\",\"done\":true,\"mode\":\"%s\",\"tried\":%lld,\"distinct\":%llu,\"discarded\":%lld,"
-           "\"over_budget\":%lld,\"scheduled\":%s,\"budget_input\":\"",
+           "\"refused\":%lld,\"over_budget\":%lld,\"scheduled\":%s,\"budget_input\":\"",
            exhaustive ? "all" : "sampled", (long long)tried, (unsigned long long)distinct,
-           (long long)discarded, (long long)budget_hits, scheduled ? "true" : "false");
+           (long long)discarded, (long long)refused, (long long)budget_hits, scheduled ? "true" : "false");
     rask_test_json_escaped(budget_input ? budget_input : "");
     printf("\",\"failed\":%s}\n", failed ? "true" : "false");
     fflush(stdout);
