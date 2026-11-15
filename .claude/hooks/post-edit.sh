@@ -19,6 +19,7 @@ check_skipped() {
     tests/compile_errors/* | docs/book/errors/*) ;;   # must be rejected
     tests/packages/* | compiler/crates/*/tests/fixtures/*) ;;  # gate fixtures, some meant to fail
     agentbench/tasks/*) ;;                            # verify.rk needs the model's solution
+    docs/book/src/learn/early/*) ;;                   # fragments; tests/learn_gate.sh checks them inside the exercises
     stdlib/*) ;;                                      # built into the compiler, not a standalone file
     specs/analysis/prototype/cascade_hole_links.rk) ;;  # exists to be rejected
     *) return 1 ;;

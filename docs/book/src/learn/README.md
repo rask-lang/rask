@@ -48,3 +48,4 @@ same way, only that the tests pass.
 - [When there might be nothing](07-when-there-might-be-nothing.md): an exit that isn't there
 - [Errors are values](08-errors-are-values.md): reading what the player typed
 - [Passing values](09-passing-values.md): who has the lamp
+- [Cleanup that always runs](10-cleanup-that-always-runs.md): saving the game

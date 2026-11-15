@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The game, played in a terminal. Every line typed is written to a log, and
+// the next game plays the log back first, so it starts where the last one
+// stopped.
+//
+// test-specs: skip: these tests run in the exercise files, which put this
+// together with the rest of the program (tests/learn_gate.sh)
+
+import fs
+import io
+import io.IoError
+
+const LOG: string = "mud.log"
+
+func main() {
+    mut world = default_world()
+    mut typed = load(LOG)
+    for line in typed {
+        respond(mutate world, line)
+    }
+    ensure save(typed, LOG) catch e => println("Couldn't save: {e.message()}")
+    println(describe(world))
+    loop {
+        let line = io.read_line() catch _ => break
+        if line == "quit" {
+            break
+        }
+        println(respond(mutate world, line))
+        typed.push(line)
+    }
+}
+
+// The lines an earlier game saved, or none if there wasn't one.
+func load(path: string) -> Vec<string> {
+    if !fs.exists(path) {
+        return Vec.new()
+    }
+    return fs.read_lines(path) catch _ => Vec.new()
+}
+
+// exercise 10: Write each of `lines` to the file at `path`, one per line.
+// Open it with `fs.create_file`, and close it whichever way this ends.
+func save(lines: Vec<string>, path: string) -> void or IoError {
+    let file = try fs.create_file(path)
+    ensure file.close()
+    for line in lines {
+        try file.write_text("{line}\n")
+    }
+}
+
+test "what was typed comes back" {
+    let path = "mud_test.log"
+    save(["take lamp", "n"], path)!
+    let back = load(path)
+    fs.remove_file(path)!
+    assert back.len() == 2
+    assert back[0] == "take lamp"
+    assert back[1] == "n"
+}
+
+test "no log is a new game" {
+    assert load("no_such.log").is_empty()
+}
