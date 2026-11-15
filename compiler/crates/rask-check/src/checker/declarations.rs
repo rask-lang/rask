@@ -3290,10 +3290,8 @@ impl TypeChecker {
                 self.allowed_warnings = old_allowed;
             }
             DeclKind::Import(imp) => {
-                // Register module name as local for field/method resolution.
-                // Modules handled by BuiltinModules (net, json, fs) route through
-                // check_method_call directly. Others like 'time' need local registration
-                // so field access (time.Instant) flows through resolve_field.
+                // Register the module name as a local, so field access
+                // (`time.Instant`) flows through resolve_field.
                 if imp.path.len() == 1 {
                     let pkg_name = &imp.path[0];
                     let module_name = imp.alias.as_ref().unwrap_or(pkg_name).clone();
@@ -3308,12 +3306,10 @@ impl TypeChecker {
 
                     // The marker names the module, not the alias, so `import
                     // time as tm` checks `tm.sleep` as `time.sleep`.
-                    if !self.types.builtin_modules.is_module(pkg_name) {
-                        self.define_local(
-                            module_name.clone(),
-                            Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
-                        );
-                    }
+                    self.define_local(
+                        module_name.clone(),
+                        Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
+                    );
                 }
             }
             // Registration resolved these quietly, before every type they

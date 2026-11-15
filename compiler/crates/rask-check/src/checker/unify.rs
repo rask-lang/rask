@@ -1319,6 +1319,13 @@ impl TypeChecker {
         value_node: Option<rask_ast::NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
+        if let Some(node) = value_node {
+            let applied = self.ctx.apply(param_ty);
+            let peeled = applied.as_option().cloned().unwrap_or_else(|| applied.clone());
+            if matches!(peeled, Type::InterfaceObject { .. }) {
+                self.pending_interface_arg_coercions.push((node, applied, arg_ty.clone()));
+            }
+        }
         self.resolve_coercion(
             arg_ty.clone(),
             param_ty.clone(),

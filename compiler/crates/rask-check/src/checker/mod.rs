@@ -11,7 +11,6 @@ use rask_resolve::{ResolvedProgram, SymbolId};
 use rask_types::Type;
 
 mod type_defs;
-mod builtins;
 pub(crate) mod type_table;
 mod inference;
 mod errors;
@@ -317,6 +316,9 @@ pub struct TypeChecker {
     /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
     pub(super) pending_interface_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
+    /// TR5 for a method argument: `(argument node, declared parameter,
+    /// argument)`, read once the argument's type has settled.
+    pub(super) pending_interface_arg_coercions: Vec<(NodeId, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
     /// function, which is what makes the handler cover the block.
@@ -735,6 +737,7 @@ impl TypeChecker {
             callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
+            pending_interface_arg_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),

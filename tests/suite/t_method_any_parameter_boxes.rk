@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A concrete value passed to a method's `any Interface` parameter is boxed
+// with a vtable, the way a free function's argument is (TR5).
+//
+// A free function recorded the coercion as its call was walked. A method only
+// learns its parameters once the receiver resolves, and nothing recorded it
+// there, so natively the bare struct went where the fat pointer goes and the
+// first call through it crashed. The stdlib's module functions had a side path
+// that recorded it for them (#860); that path is gone (#1561), and every
+// method call records it now.
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Sq {
+    s: i64
+}
+
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+struct Calc {
+    k: i64
+}
+
+extend Calc {
+    func total(a: any Shape) -> i64 {
+        return a.area()
+    }
+
+    func scaled(self, a: any Shape) -> i64 {
+        return a.area() * self.k
+    }
+
+    func maybe(self, a: (any Shape)?) -> i64 {
+        if a? as s {
+            return s.area()
+        }
+        return 0
+    }
+}
+
+test "a static method's any parameter boxes its argument" {
+    assert Calc.total(Sq(s: 3)) == 9
+}
+
+test "an instance method's any parameter boxes its argument" {
+    let c = Calc(k: 2)
+    assert c.scaled(Sq(s: 4)) == 32
+}
+
+test "an already boxed argument is passed as it is" {
+    let c = Calc(k: 3)
+    let held: any Shape = Sq(s: 2)
+    assert c.scaled(held) == 12
+}
+
+test "an optional any parameter boxes before it wraps" {
+    let c = Calc(k: 1)
+    assert c.maybe(Sq(s: 5)) == 25
+    assert c.maybe(none) == 0
+}

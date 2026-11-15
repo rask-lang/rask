@@ -49,7 +49,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "`_Any` wildcards in the checker",
-        today: 4,
+        today: 0,
         target: 0,
         why: "a module function typed through a wildcard that skips argument \
               checks (rask-lang/rask#1561)",

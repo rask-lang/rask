@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
-use super::builtins::BuiltinModules;
 use rask_types::{MethodSig, SelfParam, TypeDef};
 use super::errors::{MapKeyFix, TypeError};
 
@@ -202,8 +201,6 @@ pub struct TypeTable {
     pub(super) result_type_id: Option<TypeId>,
     /// The declarations the compiler needs by identity, filed as they register.
     lang: HashMap<rask_types::LangItem, TypeId>,
-    /// Builtin modules registry.
-    pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
     module_aliases: HashMap<String, String>,
     /// Field names of a struct-shaped enum variant, keyed by
@@ -310,7 +307,6 @@ impl TypeTable {
             option_type_id: None,
             result_type_id: None,
             lang: HashMap::new(),
-            builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
