@@ -1449,6 +1449,9 @@ int  rask_io_wait(int64_t fd, int64_t want_write);
 // while nothing installs one. See thread.c.
 void rask_task_slots_install(int64_t n);
 void rask_task_slots_clear(void);
+// The one active `using Multitasking` (conc.async/C1): entering a second panics.
+void rask_scope_enter(void);
+void rask_scope_leave(void);
 int  rask_task_slot_release(void);
 void rask_task_slot_retake(int released);
 // Hand the slot to a waiting task if this one is past its budget.

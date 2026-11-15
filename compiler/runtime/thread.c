@@ -345,6 +345,26 @@ void rask_task_slots_install(int64_t n) {
     pthread_mutex_unlock(&slot_lock);
 }
 
+// ─── The one active `using Multitasking` (conc.async/C1) ───
+//
+// A second block entered while one is open is a panic, from wherever it is
+// entered: a task that calls a function opening its own block lands here. Both
+// scheduler builds start and stop through these two, so the answer is the same
+// on either. Without it the inner block's shutdown waited for every task to
+// finish, itself included, and the program hung.
+static atomic_int scope_active;
+
+void rask_scope_enter(void) {
+    if (atomic_exchange(&scope_active, 1)) {
+        rask_panic("nested `using Multitasking` blocks are not allowed\n"
+                   "only one block may be active per process at a time");
+    }
+}
+
+void rask_scope_leave(void) {
+    atomic_store(&scope_active, 0);
+}
+
 void rask_task_slots_clear(void) {
     pthread_mutex_lock(&slot_lock);
     slots_total = 0;
