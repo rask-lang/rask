@@ -375,7 +375,7 @@ try consumer.join()
 | `rx.receive()` | `T or ReceiveError` | Receive value, pauses/blocks if empty |
 | `tx.close()` | `void or CloseError` | Explicit close with error handling |
 | `rx.close()` | `void or CloseError` | Explicit close with error handling |
-| `tx.try_send(val)` | `void or TrySendError` | Non-blocking send |
+| `tx.try_send(val)` | `void or TrySendError<T>` | Non-blocking send. `take`s the value; a full or closed channel hands it back inside the error |
 | `rx.try_receive()` | `T or TryReceiveError` | Non-blocking receive |
 
 ### Buffered Items on Close
@@ -506,7 +506,7 @@ WHY: `both` runs one in a task and the other beside it, which may be on
 enum SendError { Closed, Cancelled }
 enum ReceiveError { Closed, Cancelled }
 enum CloseError { AlreadyClosed, FlushFailed }
-enum TrySendError { Full(T), Closed(T) }
+enum TrySendError<T> { Full(T), Closed(T) }
 enum TryReceiveError { Empty, Closed }
 ```
 

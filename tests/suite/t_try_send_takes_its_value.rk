@@ -1,0 +1,69 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `try_send` takes its value (conc.async, channel operations). A send that goes
+// through is the channel's; one that is refused hands the value back inside
+// `TrySendError.Full` or `.Closed`.
+//
+// It used to borrow: the bytes were copied into the channel with no reference
+// of their own and the caller then released the string, so the receiver got
+// whatever reused that memory. A refusal carried the channel's status code
+// where the value belonged.
+
+import async.TrySendError
+
+func tag_of(r: void or TrySendError<string>) -> string {
+    match r {
+        TrySendError.Full(v) => return "full:{v}",
+        TrySendError.Closed(v) => return "closed:{v}",
+        _ => return "sent",
+    }
+}
+
+test "a string sent with try_send reaches the receiver intact" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(2)
+        let name = "ada"
+        assert tag_of(tx.try_send("hello {name}")) == "sent"
+        // The next string built lands in whatever the first one freed.
+        let other = "x".repeat(40)
+        assert tag_of(tx.try_send("second {name}")) == "sent"
+        assert other.len() == 40
+        assert rx.receive()! == "hello ada"
+        assert rx.receive()! == "second ada"
+    }
+}
+
+test "a full channel hands the value back" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        assert tag_of(tx.try_send("first")) == "sent"
+        let n = 2
+        assert tag_of(tx.try_send("second {n}")) == "full:second 2"
+        assert rx.receive()! == "first"
+    }
+}
+
+test "a closed channel hands the value back" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        rx.close()!
+        let n = 7
+        assert tag_of(tx.try_send("late {n}")) == "closed:late 7"
+    }
+}
+
+test "the refused value is usable and a plain integer works too" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        let a = tx.try_send(10)
+        let b = tx.try_send(20)
+        mut back = 0
+        match b {
+            TrySendError.Full(v) => { back = v },
+            TrySendError.Closed(v) => { back = -v },
+            _ => { back = -1 },
+        }
+        assert back == 20
+        assert rx.receive()! == 10
+    }
+}
