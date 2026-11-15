@@ -206,9 +206,6 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
-    // What the program declares for itself, so a call to one of those is never
-    // mistaken for a runtime free (see `find_already_freed`).
-    let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     // Bodies something other than a call by name may run — through a value
     // the runtime may be holding — whose arguments nobody here hands over.
     let closure_bodies: HashSet<String> = fns
@@ -222,8 +219,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
         .collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &own,
-            &closure_bodies,
+            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &closure_bodies,
         );
     }
     let glue = env_drop_glue(fns, &handing_over, &targets, &kept, &reach);
@@ -1676,7 +1672,6 @@ fn insert_for_function(
     interface_handing: &HashMap<String, HandBack>,
     keeps: &Keeps,
     targets: &ClosureTargets,
-    own: &HashSet<String>,
     closure_bodies: &HashSet<String>,
 ) {
     let kept = keeps.by_name;
@@ -1727,7 +1722,7 @@ fn insert_for_function(
         .collect();
     let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
     let facts =
-        container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, own, &passed, &owned);
+        container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, &passed, &owned);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -1894,7 +1889,6 @@ fn container_facts(
     ensured: &HashSet<LocalId>,
     lent: &LentSlots,
     keeps: &Keeps,
-    own: &HashSet<String>,
     passed: &Passes,
     owned: &HashSet<LocalId>,
 ) -> crate::analysis::ownership::Facts {
@@ -1955,18 +1949,13 @@ fn container_facts(
                 MirStmtKind::Phi { .. } => {}
                 MirStmtKind::Call { func: fref, args, dst } => {
                     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                    let base = head.split('$').next().unwrap_or(head);
                     let borrows = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
                     let takes = rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
-                    // The lowering's own free of a scratch container. A name
-                    // the program declares is never one (#1248).
-                    let frees = !own.contains(&fref.name)
-                        && (base.ends_with("_free") || base.ends_with("_free_elems"));
                     for (i, arg) in args.iter().enumerate() {
                         if passes_arg(i) {
                             continue;
                         }
-                        if i == 0 && (takes || frees) {
+                        if i == 0 && takes {
                             give(&mut ev, arg);
                             continue;
                         }
@@ -3452,7 +3441,7 @@ fn exit_blocks(func: &MirFunction, cell: LocalId) -> Vec<(usize, HashSet<LocalId
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
             MirStmtKind::Call { dst: Some(dst), func: fref, args }
-                if fref.name.ends_with("rask_resource_is_consumed") =>
+                if fref.name == crate::RESOURCE_IS_CONSUMED =>
             {
                 let tok = args.first().and_then(crate::analysis::uses::operand_local)?;
                 Some((*dst, *registered.get(&tok)?))

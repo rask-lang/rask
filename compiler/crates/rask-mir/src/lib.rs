@@ -37,6 +37,10 @@ mod interface_drop;
 pub use builder::BlockBuilder;
 pub use closures::{insert_all_closure_drops, optimize_all_closures};
 pub use const_free::{add_const_free, CONST_FREE_FN};
+
+/// The runtime call lowering makes to ask whether a resource was consumed on
+/// the path just taken. The drop pass finds the flag by this symbol.
+pub const RESOURCE_IS_CONSUMED: &str = "rask_resource_is_consumed";
 pub use container_drop::{insert_container_drops, ENV_DROP_SUFFIX};
 pub use interface_drop::insert_interface_drops;
 pub use transform::clone_elision::elide_clones;

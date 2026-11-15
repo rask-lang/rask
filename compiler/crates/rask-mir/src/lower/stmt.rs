@@ -1588,7 +1588,7 @@ impl<'a> MirLowerer<'a> {
                     let consumed = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(consumed),
-                        func: crate::FunctionRef::internal("rask_resource_is_consumed".to_string()),
+                        func: crate::FunctionRef::internal(crate::RESOURCE_IS_CONSUMED.to_string()),
                         args: vec![MirOperand::Local(resource_id)],
                     }));
                     let body_block = self.builder.create_block();
