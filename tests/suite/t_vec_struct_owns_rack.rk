@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Vec` of structs that each own a `Rack` frees the racks (#1822).
+//
+// A single `Tree` local was freed correctly, but a `Vec<Tree>` described its
+// element as owning the `label` string and the `tags` vector and nothing else:
+// the walk that builds an element's description skipped a rack field, so
+// dropping the vector left every rack, every node and every node's own vector
+// behind. `tests/leak_gate.sh` is the real check — this file is not in
+// `known_leaks.txt`, so any allocation it leaves fails the gate.
+//
+// Spec: specs/memory/racks.md/RK1 — a rack owns its nodes' lifetime.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    id: i32
+    name: string
+    kids: Vec<Link<Node>>
+}
+
+struct Tree {
+    nodes: Rack<Node>
+    root: Link<Node>?
+    label: string
+    tags: Vec<string>
+}
+
+func build(n: i32) -> Tree {
+    mut t = Tree(nodes: Rack.new(), root: none, label: "tree-{n}-with-a-long-label-for-the-heap", tags: Vec.new())
+    let r = t.nodes.insert(Node(id: 0, name: "root-node-with-a-long-name-here", kids: Vec.new()))
+    t.root = r
+    for i in 1..n {
+        let k = t.nodes.insert(Node(id: i, name: "node-{i}-with-a-long-name-for-the-heap", kids: Vec.new()))
+        r.kids.push(k)
+        t.tags.push("tag-{i}-with-a-long-name-for-the-heap")
+    }
+    return t
+}
+
+test "mem.racks/RK1 — a vector of trees frees each tree's rack" {
+    mut ts: Vec<Tree> = Vec.new()
+    for i in 0..3 {
+        ts.push(build(i + 2))
+    }
+    mut nodes = 0
+    for t in ts {
+        nodes = nodes + t.nodes.len()
+    }
+    assert nodes == 9
+    assert ts.len() == 3
+}
+
+test "mem.racks/RK1 — a tree taken out of the vector keeps its rack" {
+    mut ts: Vec<Tree> = Vec.new()
+    ts.push(build(3))
+    ts.push(build(4))
+    let last = ts.pop()!
+    assert last.nodes.len() == 4
+    assert ts[0].nodes.len() == 3
+}
