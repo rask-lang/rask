@@ -314,7 +314,7 @@ impl TypeChecker {
             PatternKind::TypePat { binding: Some(_), .. } => return None,
             _ => self.tested_type(pattern, scrutinee_ty)?,
         };
-        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }))
+        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }, pattern.span))
     }
 
     /// The type an `is` pattern tests for, written with or without `as`:
@@ -362,7 +362,7 @@ impl TypeChecker {
                 if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
                     // Stand-ins for the payload a tag test doesn't name; never
                     // stored, so they need no id of their own.
-                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard); arity];
+                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, Span::new(0, 0)); arity];
                     return self.check_constructor_pattern(pattern.id, &qualified, &fields, scrutinee_ty, span);
                 }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind

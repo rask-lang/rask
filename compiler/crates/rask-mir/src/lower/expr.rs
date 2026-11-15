@@ -3913,7 +3913,7 @@ impl<'a> MirLowerer<'a> {
                 });
                 let arms = [
                     rask_ast::expr::MatchArm { pattern: pattern.clone(), guard: None, body: Box::new(then_branch.clone()) },
-                    rask_ast::expr::MatchArm { pattern: Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), guard: None, body: Box::new(otherwise) },
+                    rask_ast::expr::MatchArm { pattern: Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), guard: None, body: Box::new(otherwise) },
                 ];
                 return self.lower_struct_match(expr, val, val_ty, &arms);
             }
@@ -8569,7 +8569,7 @@ impl<'a> MirLowerer<'a> {
                 let Some(names) = self.variant_field_names(val_ty, name) else { return Vec::new() };
                 let positional = names
                     .iter()
-                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone()))
+                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone()))
                     .collect();
                 (name, positional)
             }

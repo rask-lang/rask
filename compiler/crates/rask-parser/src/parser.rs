@@ -5690,6 +5690,7 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
         let first = self.parse_single_pattern()?;
 
         if self.check(&TokenKind::Pipe) {
@@ -5697,15 +5698,18 @@ impl Parser {
             while self.match_token(&TokenKind::Pipe) {
                 patterns.push(self.parse_single_pattern()?);
             }
-            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns)))
+            let end = self.tokens[self.pos - 1].span.end;
+            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns), self.span(start, end)))
         } else {
             Ok(first)
         }
     }
 
     fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
         let kind = self.parse_pattern_kind()?;
-        Ok(Pattern::new(self.next_id(), kind))
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Pattern::new(self.next_id(), kind, self.span(start, end)))
     }
 
     fn parse_pattern_kind(&mut self) -> Result<PatternKind, ParseError> {

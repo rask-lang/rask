@@ -86,7 +86,7 @@ impl Interpreter {
             }
             _ => return None,
         };
-        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) });
+        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) }, pattern.span);
         self.match_pattern(&as_form, value)?.remove(GUARD)
     }
 
@@ -171,7 +171,7 @@ impl Interpreter {
                 if let Value::Enum { name: sc_name, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
                         let as_type =
-                            Pattern::new(pattern.id, PatternKind::TypePat { ty: TypeExpr::named(name.as_str()), binding: None });
+                            Pattern::new(pattern.id, PatternKind::TypePat { ty: TypeExpr::named(name.as_str()), binding: None }, pattern.span);
                         return self.match_pattern(&as_type, value);
                     }
                 }

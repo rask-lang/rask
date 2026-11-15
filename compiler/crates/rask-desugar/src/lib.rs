@@ -528,17 +528,17 @@ impl Desugarer {
                 vec![]
             } else {
                 variant.fields.iter().map(|f| {
-                    Pattern::new(self.fresh_id(), PatternKind::Ident(f.name.clone()))
+                    Pattern::new(self.fresh_id(), PatternKind::Ident(f.name.clone()), sp)
                 }).collect()
             };
 
             let pattern = if variant.fields.is_empty() {
-                Pattern::new(self.fresh_id(), PatternKind::Ident(variant.name.clone()))
+                Pattern::new(self.fresh_id(), PatternKind::Ident(variant.name.clone()), sp)
             } else {
                 Pattern::new(self.fresh_id(), PatternKind::Constructor {
                     name: variant.name.clone(),
                     fields: field_patterns,
-                })
+                }, sp)
             };
 
             let body_expr = match template {

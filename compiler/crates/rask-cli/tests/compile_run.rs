@@ -945,6 +945,28 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// `Payment.Cash(amount: i32)` is E0423 on the type, once per mistake, and the
+/// arm body still sees `amount`.
+///
+/// `field: name` renames the field, so `i32` after the colon used to rename
+/// `amount` to `i32`; the arm body then failed with "undefined symbol:
+/// amount", which blames the wrong thing.
+#[test]
+fn a_type_in_a_field_pattern_is_its_own_error() {
+    let (failed, out) = compile_error_output("pattern_field_type.rk");
+    assert!(failed, "the fixture has to fail to check:\n{out}");
+    assert_eq!(out.matches("error[E0423]").count(), 2, "one per written type:\n{out}");
+    assert!(
+        out.contains("`amount: i32` would rename `amount` to `i32`"),
+        "the message names the rename:\n{out}"
+    );
+    assert!(out.contains("write `Payment.Cash(amount)`"), "the fix is the bare field:\n{out}");
+    assert!(
+        !out.contains("undefined symbol"),
+        "the field is still bound, so nothing cascades:\n{out}"
+    );
+}
+
 /// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
 /// a debug build and not in release, `@checked_unsafe` panics in both, and
 /// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,

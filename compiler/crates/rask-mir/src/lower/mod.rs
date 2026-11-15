@@ -5807,13 +5807,13 @@ impl<'a> MirLowerer<'a> {
                 let positional = names
                     .iter()
                     .map(|n| {
-                        fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
+                        fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone())
                     })
                     .collect();
                 // The same pattern, its fields in declaration order; a field it
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
-                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.emit_subpattern_test(value, ty, checked, &as_constructor, fail)
             }
             PatternKind::Ident(name) | PatternKind::Constructor { name, .. } => {
@@ -5898,13 +5898,13 @@ impl<'a> MirLowerer<'a> {
                         fields
                             .iter()
                             .find(|(f, _)| f == n)
-                            .map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
+                            .map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone())
                     })
                     .collect();
                 // The same pattern, its fields in declaration order; a field it
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
-                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty, checked);
             }
             PatternKind::Constructor { name, fields } => {
@@ -7518,8 +7518,8 @@ mod tests {
             return_stmt(Some(match_expr(
                 ident_expr("x"),
                 vec![
-                    MatchArm { pattern: Pattern::new(NodeId(1), PatternKind::Literal(Box::new(int_expr(1)))), guard: None, body: Box::new(int_expr(10)) },
-                    MatchArm { pattern: Pattern::new(NodeId(2), PatternKind::Literal(Box::new(int_expr(2)))), guard: None, body: Box::new(int_expr(20)) },
+                    MatchArm { pattern: Pattern::new(NodeId(1), PatternKind::Literal(Box::new(int_expr(1))), rask_ast::Span::new(0, 0)), guard: None, body: Box::new(int_expr(10)) },
+                    MatchArm { pattern: Pattern::new(NodeId(2), PatternKind::Literal(Box::new(int_expr(2))), rask_ast::Span::new(0, 0)), guard: None, body: Box::new(int_expr(20)) },
                 ],
             ))),
         ]);

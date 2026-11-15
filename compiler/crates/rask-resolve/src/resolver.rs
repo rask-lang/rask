@@ -2954,6 +2954,47 @@ impl Resolver {
     // Pattern Resolution
     // =========================================================================
 
+    /// Does `name` mean a type here: a struct, enum, interface or builtin
+    /// (primitives included)? A stdlib module's name doesn't count. Each
+    /// module is declared as a field-less struct named after itself
+    /// (`struct time {}`), so it looks like a type, and it is never one a
+    /// pattern tests for.
+    fn names_a_type(&self, name: &str) -> bool {
+        let Some(sym) = self.scopes.lookup(name).and_then(|id| self.symbols.get(id)) else {
+            return false;
+        };
+        matches!(
+            sym.kind,
+            SymbolKind::Struct { .. }
+                | SymbolKind::Enum { .. }
+                | SymbolKind::Interface { .. }
+                | SymbolKind::BuiltinType { .. }
+        ) && !rask_stdlib::modules::is_module(name)
+    }
+
+    /// A bare name in a pattern that already means a variant or a type.
+    fn pattern_name_is_not_a_binding(&self, name: &str) -> bool {
+        self.names_a_type(name)
+            || self
+                .scopes
+                .lookup(name)
+                .and_then(|id| self.symbols.get(id))
+                .is_some_and(|sym| matches!(sym.kind, SymbolKind::EnumVariant { .. }))
+    }
+
+    fn define_pattern_binding(&mut self, name: &str) {
+        let sym_id = self.symbols.insert(
+            name.to_string(),
+            SymbolKind::Variable { mutable: false },
+            None,
+            Span::new(0, 0),
+            false,
+        );
+        if let Err(e) = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0)) {
+            self.errors.push(e);
+        }
+    }
+
     fn resolve_pattern(&mut self, pattern: &Pattern) {
         match &pattern.kind {
             PatternKind::Wildcard => {}
@@ -2970,31 +3011,10 @@ impl Resolver {
                 // field-less struct named after itself (`struct time {}`), so
                 // it looks like a type here, and it is never one a pattern
                 // tests for. `EngineStart(time) => …` binds `time`.
-                if let Some(sym_id) = self.scopes.lookup(name) {
-                    if let Some(sym) = self.symbols.get(sym_id) {
-                        let names_a_type = matches!(
-                            sym.kind,
-                            SymbolKind::Struct { .. }
-                                | SymbolKind::Enum { .. }
-                                | SymbolKind::Interface { .. }
-                                | SymbolKind::BuiltinType { .. }
-                        ) && !rask_stdlib::modules::is_module(name);
-                        if matches!(sym.kind, SymbolKind::EnumVariant { .. }) || names_a_type {
-                            return;
-                        }
-                    }
+                if self.pattern_name_is_not_a_binding(name) {
+                    return;
                 }
-
-                let sym_id = self.symbols.insert(
-                    name.clone(),
-                    SymbolKind::Variable { mutable: false },
-                    None,
-                    Span::new(0, 0),
-                    false,
-                );
-                if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
-                    self.errors.push(e);
-                }
+                self.define_pattern_binding(name);
             }
             PatternKind::Literal(expr) => {
                 self.resolve_expr(expr);
@@ -3008,8 +3028,24 @@ impl Resolver {
                 }
             }
             PatternKind::Struct { name, fields, .. } => {
-                if let Some(_sym_id) = self.scopes.lookup(name) {}
-                for (_, field_pattern) in fields {
+                for (field, field_pattern) in fields {
+                    // `Cash(amount: i32)`: the learner meant a type annotation,
+                    // but after the colon goes a pattern, and a bare `i32` there
+                    // would rename the field. The binding the learner wanted is
+                    // the field's own name, so declare that and the arm body
+                    // doesn't also fail with "undefined symbol: amount".
+                    if let PatternKind::Ident(ty) = &field_pattern.kind {
+                        if ty != field && self.names_a_type(ty) {
+                            self.errors.push(ResolveError::field_pattern_names_type(
+                                name.clone(),
+                                field.clone(),
+                                ty.clone(),
+                                field_pattern.span,
+                            ));
+                            self.define_pattern_binding(field);
+                            continue;
+                        }
+                    }
                     self.resolve_pattern(field_pattern);
                 }
             }
