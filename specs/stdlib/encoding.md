@@ -194,7 +194,8 @@ FIX: write the `encode` that is `decode` the other way round:
 | `csv.decode` | Reads a cell as `W`, so a `Port` taking a `u16` is a number in its column, empty is `0`, and `abc` is rejected as a bad number before `decode` sees it. `decode` runs on the result, and a refusal is a `CsvError.BadValue` for that row naming the column the refusal came from, with the type's own message and no JSON wording. `FieldInfo.wire_kind` (`std.reflect`) is what tells a format what to read a field as |
 | `json.encode`, `encode_pretty` (native and interpreter) | Calls `encode` for each value of the type and writes what it returns the normal way: `80`, not `{"value":80}`. Compact and pretty agree |
 | `csv.encode` | Writes the cell the encode gave, a number or an unquoted string, so what it writes is what `csv.decode` reads |
-| claim inputs | Builds a `W` from the claim's choices, calls `decode`, and discards the input when it refuses. A type with its own `decode` is always sampled, like one with its own generator (`type.claims/IN2`), because what it refuses isn't known before it runs |
+| claim inputs | Builds a `W` from the claim's choices, calls `decode`, and discards the input when it refuses. A type with its own `decode` is always sampled, like one with its own generator (`type.claims/IN2`), because what it refuses isn't known before it runs. A claim whose inputs it refuses nearly all of fails instead of passing (`type.claims/IN4`, E0975) |
+| a format library in Rask | Asks `reflect.has_decode<T>()` and `reflect.has_encode<T>()`, names the wire type as `reflect.DecodeWire<T>` or `EncodeWire<T>`, and calls `T.decode` and `v.encode()` itself (E29–E31) |
 
 ### Generic Bounds
 
@@ -373,7 +374,11 @@ import std.reflect
 
 // Type dispatch — monomorphizes per concrete type
 func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonError {
-    comptime if T == bool {
+    comptime if reflect.has_encode<T>() {
+        // A type with its own `encode` is written as what that answers (E12d),
+        // wherever it appears: the top level, an element, a value, a field.
+        return encode_value(value.encode(), mutate w)
+    } else if T == bool {
         return w.write_bool(value)
     } else if T == string {
         return w.write_string(value)
@@ -428,7 +433,14 @@ public func encode<T: Encode>(value: T) -> string {
 <!-- test: skip -->
 ```rask
 func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
-    comptime if T == bool {
+    comptime if reflect.has_decode<T>() {
+        // Read the type `decode` takes, then hand it over (E12b). The wire type
+        // is a type here, `reflect.DecodeWire<T>`, so it is read like any other.
+        let wire = try decode_value<reflect.DecodeWire<T>>(parser)
+        return T.decode(wire) catch e => {
+            return JsonError.Refused(path: "the value", reason: e.message())
+        }
+    } else if T == bool {
         return parser.read_bool()
     } else if T == string {
         return parser.read_string()
@@ -480,6 +492,55 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
     }
 }
 ```
+
+### Types With Their Own Codec [E12b, E12d]
+
+A type can write its own `decode` and `encode`, and a format library written in Rask honours them the way the stdlib's codecs do. `std.reflect` hands it the facts as data it can match on, so the library never names a user's type:
+
+| Rule | Description |
+|------|-------------|
+| **E29: Codec facts** | `reflect.has_decode<T>()` and `reflect.has_encode<T>()` say whether `T` writes its own `decode` or `encode`. They answer for any `T`: the top-level value, a `Vec` element, a `Map` value, a field's type. On a field, `f.has_decode` and `f.has_encode` say the same of its type |
+| **E30: Wire types** | `reflect.DecodeWire<T>` is the type `T`'s `decode` takes, and `reflect.EncodeWire<T>` is the type its `encode` answers. They are types, so a library names them as a type argument or an annotation: `read<reflect.DecodeWire<T>>(…)`. One step: when the wire type has a codec of its own, the library asks again. For a `T` with none, the answer is `T` |
+| **E31: Written out per instance** | A generic function that asks (`has_decode`, `has_encode`, `DecodeWire`, `EncodeWire`) is written out for each `T` it is used with, like one with a `comptime for`. The branch a `comptime if` leaves is checked for that `T`, so `T.decode(wire)` is an ordinary call there. The function is not checked as written, since for a bare `T` there is nothing to call |
+| **E32: Field kinds** | `FieldInfo.wire_kind` and `wire_optional` (`std.reflect`) give a field's wire as data: the kind of value `decode` takes, followed down a chain and through a `T?`. A format that checks or writes text by type (csv) matches on it, and never reads a type back out of a name |
+
+<!-- test: skip -->
+```rask
+// A format reads `T` from its text, and has never heard of `Port`.
+func read<T>(text: string) -> T or FormatError {
+    comptime if reflect.has_decode<T>() {
+        let wire = try read<reflect.DecodeWire<T>>(text)
+        return T.decode(wire) catch e => {
+            return FormatError(why: e.message())
+        }
+    } else if reflect.is_integer<T>() {
+        let n = text.parse<T>() catch _ => {
+            return FormatError(why: "not a number: {text}")
+        }
+        return n
+    } else if reflect.is_vec<T>() {
+        mut items = Vec.new()
+        for part in text.split(",") {
+            items.push(try read(part.to_string()))   // the element type comes from `T`
+        }
+        return items
+    }
+    // ... map, struct, string
+}
+
+// And writes it: a value with its own `encode` is written as what that answers.
+func write<T>(v: T) -> string {
+    comptime if reflect.has_encode<T>() {
+        let wire: reflect.EncodeWire<T> = v.encode()
+        return write(wire)
+    } else if reflect.is_integer<T>() {
+        return "{v}"
+    }
+    // ...
+}
+```
+
+`tests/suite/t_format_library_codecs.rk` is this, complete, running on both backends: it reads and writes a port that refuses 0 as a top-level value, as a `Vec` element, as a `Map` value, and through a type that reads another custom type. A refusal comes back as the library's own error with `decode`'s message.
 
 ### Struct Literal Construction
 
@@ -655,7 +716,10 @@ The umbrella verb is deliberate. Separate `@no_encode`/`@no_decode` at field lev
 import std.reflect
 
 func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> void or TomlError {
-    comptime if T == bool {
+    comptime if reflect.has_encode<T>() {
+        // Written as what its own `encode` answers (E12d, E29)
+        return encode_value(value.encode(), mutate w, key)
+    } else if T == bool {
         return w.write_bool(key, value)
     } else if T == string {
         return w.write_string(key, value)

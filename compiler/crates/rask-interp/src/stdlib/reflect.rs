@@ -196,6 +196,8 @@ impl Interpreter {
                 let wire = reflect::wire_written_form(&self.types, &substitute(&f.ty));
                 fields.insert("wire_kind".to_string(), wire_kind_value(wire.kind));
                 fields.insert("wire_optional".to_string(), Value::Bool(wire.optional));
+                fields.insert("has_decode".to_string(), Value::Bool(wire.own_decode));
+                fields.insert("has_encode".to_string(), Value::Bool(wire.own_encode));
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
                 // the two backends can't drift into two answers.
@@ -332,6 +334,8 @@ fn variant_info(v: rask_mono::reflect::VariantFact) -> Value {
             f.insert("type_name".to_string(), string_value(p.type_name));
             f.insert("wire_kind".to_string(), wire_kind_value(p.wire.kind));
             f.insert("wire_optional".to_string(), Value::Bool(p.wire.optional));
+            f.insert("has_decode".to_string(), Value::Bool(p.wire.own_decode));
+            f.insert("has_encode".to_string(), Value::Bool(p.wire.own_encode));
             f.insert("offset".to_string(), Value::int(p.offset as i64));
             f.insert("size".to_string(), Value::int(p.size as i64));
             // A payload has no visibility or wire annotations of its own.

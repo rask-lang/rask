@@ -166,36 +166,80 @@ impl WireKind {
     }
 }
 
-/// What a decoder reads a field as (std.encoding/E12b): the kind of value and
-/// whether it is a `T?`.
+/// How a format reads and writes a field (std.encoding/E12b, E12d): what the
+/// decoder reads it as, whether that is a `T?`, and whether its type writes
+/// its own `decode` or `encode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireForm {
     pub kind: WireKind,
     pub optional: bool,
+    /// The field's type has its own `decode` (`reflect.has_decode`).
+    pub own_decode: bool,
+    /// The field's type has its own `encode` (`reflect.has_encode`).
+    pub own_encode: bool,
 }
 
 impl WireForm {
-    fn of(ty: &TypeExpr) -> WireForm {
-        match ty {
-            TypeExpr::Optional(inner) => WireForm { kind: WireKind::of(inner), optional: true },
-            _ => WireForm { kind: WireKind::of(ty), optional: false },
+    fn of(wire: &TypeExpr, own: (bool, bool)) -> WireForm {
+        let (own_decode, own_encode) = own;
+        match wire {
+            TypeExpr::Optional(inner) => WireForm { kind: WireKind::of(inner), optional: true, own_decode, own_encode },
+            _ => WireForm { kind: WireKind::of(wire), optional: false, own_decode, own_encode },
         }
     }
 }
 
-/// What a decoder reads a declared type as: the type itself, unless it decodes
-/// through its own `decode`, then what that takes, and so on down. Looks
-/// through `T?`.
+/// Does the type write its own `decode`, and its own `encode`?
+fn own_codec(types: &TypeTable, ty: &Type) -> (bool, bool) {
+    let id = match ty {
+        Type::Named(id) => Some(*id),
+        Type::UnresolvedNamed(name) => types.get_type_id(name),
+        _ => None,
+    };
+    match id {
+        Some(id) => (types.custom_decode(id).is_some(), types.custom_encode(id).is_some()),
+        None => (false, false),
+    }
+}
+
+/// How a format reads and writes a declared type. The wire kind is what a
+/// decoder reads it as: the type itself, unless it decodes through its own
+/// `decode`, then what that takes, and so on down. Looks through `T?`.
 pub fn wire_form(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> WireForm {
-    WireForm::of(&substituted_type_expr(types, &wire_type(types, declared), subst))
+    WireForm::of(&substituted_type_expr(types, &wire_type(types, declared), subst), own_codec(types, declared))
+}
+
+/// `reflect.DecodeWire<T>` and `reflect.EncodeWire<T>` (std.reflect): what `T`'s
+/// own `decode` takes, or its own `encode` answers, as a type a generic call
+/// can name. One step, since a format reads `W` the way it reads any type and
+/// asks again when `W` has a codec of its own. A type with no `decode` (or
+/// `encode`) is read (written) as itself, so the answer is `T`.
+pub fn wire_step(types: &TypeTable, ty: &TypeExpr, decode: bool) -> TypeExpr {
+    let Ok(resolved) = resolve_type_expr(ty, types) else { return ty.clone() };
+    let id = match &resolved {
+        Type::Named(id) => Some(*id),
+        Type::UnresolvedNamed(name) => types.get_type_id(name),
+        _ => None,
+    };
+    let wire = id.and_then(|id| {
+        if decode {
+            types.custom_decode(id).map(|c| &c.wire)
+        } else {
+            types.custom_encode(id).map(|c| &c.wire)
+        }
+    });
+    match wire {
+        Some(w) => type_label(types, w),
+        None => ty.clone(),
+    }
 }
 
 /// `wire_form` for a type as written, which the interpreter has instead of a
 /// declared `Type`.
 pub fn wire_written_form(types: &TypeTable, ty: &TypeExpr) -> WireForm {
     match resolve_type_expr(ty, types) {
-        Ok(resolved) => WireForm::of(&type_label(types, &wire_type(types, &resolved))),
-        Err(_) => WireForm::of(&written_label(types, ty)),
+        Ok(resolved) => WireForm::of(&type_label(types, &wire_type(types, &resolved)), own_codec(types, &resolved)),
+        Err(_) => WireForm::of(&written_label(types, ty), (false, false)),
     }
 }
 
@@ -233,6 +277,18 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
         "is_map" => Bool(head == "Map"),
         "is_integer" => Bool(ty.bare_name().is_some_and(is_integer)),
         "is_float" => Bool(matches!(ty.bare_name(), Some("f32" | "f64"))),
+
+        // std.encoding/E12b, E12d: does the type write its own `decode` or
+        // `encode`? A format library asks before it reads or writes a value
+        // the way it would a struct.
+        "has_decode" | "has_encode" => {
+            let types = decls.type_table();
+            let Ok(resolved) = resolve_type_expr(ty, types) else {
+                return Unsupported(NOT_A_TYPE);
+            };
+            let (decode, encode) = own_codec(types, &resolved);
+            Bool(if method == "has_decode" { decode } else { encode })
+        }
 
         // mem.resource-types: the annotation is the whole answer.
         "is_resource" => Bool(decls.is_resource(&head)),

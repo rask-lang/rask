@@ -313,6 +313,37 @@ impl TypeExpr {
         }
     }
 
+    /// The same type with every named type `f` answers for replaced, the
+    /// arguments first: `f` is given a type's path and its arguments, already
+    /// rewritten, and answers what stands in its place, or `None` to keep it.
+    pub fn replace_named(&self, f: &dyn Fn(&[String], &[TypeExpr]) -> Option<TypeExpr>) -> TypeExpr {
+        let sub = |t: &TypeExpr| t.replace_named(f);
+        let sub_box = |t: &TypeExpr| Box::new(t.replace_named(f));
+        match self {
+            TypeExpr::Named { path, args } => {
+                let args: Vec<TypeExpr> = args.iter().map(sub).collect();
+                match f(path, &args) {
+                    Some(to) => to,
+                    None => TypeExpr::Named { path: path.clone(), args },
+                }
+            }
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => self.clone(),
+            TypeExpr::Optional(inner) => TypeExpr::Optional(sub_box(inner)),
+            TypeExpr::RawPtr(inner) => TypeExpr::RawPtr(sub_box(inner)),
+            TypeExpr::Any(inner) => TypeExpr::Any(sub_box(inner)),
+            TypeExpr::Result { ok, err } => TypeExpr::Result { ok: sub_box(ok), err: sub_box(err) },
+            TypeExpr::Union(ts) => TypeExpr::Union(ts.iter().map(sub).collect()),
+            TypeExpr::Tuple(ts) => TypeExpr::Tuple(ts.iter().map(sub).collect()),
+            TypeExpr::Array { elem, len } => TypeExpr::Array { elem: sub_box(elem), len: len.clone() },
+            TypeExpr::FixedCount { count, elem } => {
+                TypeExpr::FixedCount { count: count.clone(), elem: sub_box(elem) }
+            }
+            TypeExpr::Func { params, ret } => {
+                TypeExpr::Func { params: params.iter().map(|p| p.map(sub)).collect(), ret: sub_box(ret) }
+            }
+        }
+    }
+
     /// Every named type's path, outermost first: `Vec<time.Duration>?` gives
     /// `["Vec"]` then `["time", "Duration"]`.
     pub fn walk_paths(&self, f: &mut dyn FnMut(&[String])) {

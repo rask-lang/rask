@@ -104,7 +104,7 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
 /// A generic function whose body has comptime control to expand per instance.
 /// Generic counts a type parameter written without `<T>` (type.gradual/PC1).
 pub fn is_template(f: &FnDecl) -> bool {
-    is_generic(f) && has_comptime_for(&f.body)
+    is_generic(f) && (has_comptime_for(&f.body) || rask_ast::comptime_if::asks_about_codecs(&f.body))
 }
 
 fn is_generic(f: &FnDecl) -> bool {
@@ -610,8 +610,9 @@ impl Expander<'_> {
                 doc: None,
             }),
         };
-        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written, types: &self.typed.types });
         rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
+        decide_instance(&mut decl, self.known);
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -632,8 +633,9 @@ impl Expander<'_> {
         let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
         f.name = name.to_string();
         f.type_params.clear();
-        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written, types: &self.typed.types });
         rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
+        decide_instance(&mut decl, self.known);
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -645,11 +647,22 @@ impl Expander<'_> {
 /// types, as a call's receiver (`T.zero()`) and as a literal's name (`T(…)`).
 struct TypeParams<'a> {
     written: &'a HashMap<String, TypeExpr>,
+    types: &'a rask_check::TypeTable,
 }
 
 impl Rewrite for TypeParams<'_> {
+    /// `reflect.DecodeWire<Port>` is written out as what `Port`'s `decode` takes.
     fn ty(&mut self, t: &mut TypeExpr) {
-        *t = t.substitute(&|n| self.written.get(n).cloned());
+        let substituted = t.substitute(&|n| self.written.get(n).cloned());
+        *t = substituted.replace_named(&|path, args| {
+            let decode = match path {
+                [m, n] if m == "reflect" && n == "DecodeWire" => true,
+                [m, n] if m == "reflect" && n == "EncodeWire" => false,
+                _ => return None,
+            };
+            let [arg] = args else { return None };
+            Some(rask_check::reflect::wire_step(self.types, arg, decode))
+        });
     }
 
     fn expr(&mut self, e: &mut Expr) {
@@ -1060,6 +1073,8 @@ impl ItemFacts<'_> {
             "type_name" => ExprKind::String(f.type_name.clone()),
             "wire_kind" => wire_kind_expr(f.wire.kind, at),
             "wire_optional" => ExprKind::Bool(f.wire.optional),
+            "has_decode" => ExprKind::Bool(f.wire.own_decode),
+            "has_encode" => ExprKind::Bool(f.wire.own_encode),
             "serial_name" => ExprKind::String(f.serial_name.clone()),
             "offset" => ExprKind::Int(f.offset as i128, Some(IntSuffix::Usize)),
             "size" => ExprKind::Int(f.size as i128, Some(IntSuffix::Usize)),
@@ -1147,6 +1162,20 @@ impl Rewrite for ItemFacts<'_> {
         if let Some(kind) = replaced {
             e.kind = kind;
         }
+    }
+}
+
+/// An instance's own `comptime if`s: what its types settle (`reflect.has_decode<Port>()`)
+/// is decided now, so the branch not taken is never checked for this instance.
+fn decide_instance(decl: &mut Decl, known: &Known) {
+    match &mut decl.kind {
+        DeclKind::Fn(f) => decide_comptime_ifs(&mut f.body, known),
+        DeclKind::Impl(i) => {
+            for m in &mut i.methods {
+                decide_comptime_ifs(&mut m.body, known);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -100,6 +100,7 @@ addition: a link field is written as the target's slot number.
 | **RB4: Naming a node across the boundary** | Give the node an id field and look it up. `corresponding()` translates a link into *another rack in this process* (`mem.racks`), which covers `snapshot()`; it cannot translate into a graph rebuilt from bytes, because the link it would take as input is already stale |
 | **RB5: Requires Encode + Decode** | Compile error if `T` does not satisfy `Encode + Decode` |
 | **RB6: Deleted slots are gaps** | Only live nodes are written. A deleted slot is recorded as a gap so the surviving slot numbers keep their meaning — this is what NP1 rests on |
+| **RB7: Own decode and encode** | A node type that writes its own `decode` or `encode` (`std.encoding/E12b`, E12d) goes through them like in every other codec: `to_bytes` writes the `W` its `encode` answers in place of the node's fields, and `from_bytes` reads a `W` and runs `decode`. A `decode` that refuses makes `from_bytes` answer `DecodeError` with the refusal's message (`std.encoding/E12c`), and a type with a `decode` has an `encode` (E12e), so the round trip is consistent. Links are the exception: the second pass re-points the `Link<T>?` fields the derived form writes, so a node that writes its own `encode` holds no links of its own |
 
 The second pass is what a link costs. It is linear in nodes plus edges, runs once
 at deserialization, and never touches the per-read cost that made links worth
@@ -262,7 +263,9 @@ struct Editor {
 
 **Hot reload** goes through field-by-field `Encode`/`Decode`, not a bitwise copy,
 so a layout change between compilations is handled by schema evolution (SE1–SE3)
-rather than corrupting the read.
+rather than corrupting the read. A type with its own `decode` and `encode` is
+carried by those (RB7), which is what a type protecting an invariant wants: the
+reloaded value passed its check again on the way in.
 
 ### See Also
 

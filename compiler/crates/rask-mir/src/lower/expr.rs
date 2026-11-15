@@ -10381,6 +10381,8 @@ impl<'a> MirLowerer<'a> {
                     ("type_name", MirConst::String(fc.type_name.clone())),
                     ("wire_kind", MirConst::Int(wire_kind)),
                     ("wire_optional", MirConst::Bool(fc.wire.optional)),
+                    ("has_decode", MirConst::Bool(fc.wire.own_decode)),
+                    ("has_encode", MirConst::Bool(fc.wire.own_encode)),
                     ("offset", MirConst::Int(fc.offset as i64)),
                     ("size", MirConst::Int(fc.size as i64)),
                     ("is_public", MirConst::Bool(fc.is_public)),
@@ -10672,6 +10674,8 @@ impl<'a> MirLowerer<'a> {
                         ("type_name", MirConst::String(p.type_name.clone())),
                         ("wire_kind", MirConst::Int(wire_kind)),
                         ("wire_optional", MirConst::Bool(p.wire.optional)),
+                        ("has_decode", MirConst::Bool(p.wire.own_decode)),
+                        ("has_encode", MirConst::Bool(p.wire.own_encode)),
                         ("offset", MirConst::Int(p.offset as i64)),
                         ("size", MirConst::Int(p.size as i64)),
                         // A payload has no visibility or wire annotations of

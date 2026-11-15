@@ -39,6 +39,11 @@ public struct FieldInfo {
     public wire_kind: WireKind
     /// Whether that is a `T?`, which a missing member reads as `none`.
     public wire_optional: bool
+    /// The field's type writes its own `decode`, or its own `encode`
+    /// (std.encoding/E12b, E12d). Not looked through a `T?`: ask about the
+    /// payload with `reflect.has_decode<U>()`.
+    public has_decode: bool
+    public has_encode: bool
     public offset: usize
     public size: usize
     public is_public: bool
@@ -132,6 +137,10 @@ extend reflect {
     public func is_float<T>() -> bool {}
     @native
     public func is_flat<T>() -> bool {}
+    @native
+    public func has_decode<T>() -> bool {}
+    @native
+    public func has_encode<T>() -> bool {}
     @native
     public func fields<T>() -> Vec<FieldInfo> {}
     @native

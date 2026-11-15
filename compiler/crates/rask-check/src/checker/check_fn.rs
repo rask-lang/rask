@@ -323,11 +323,18 @@ impl TypeChecker {
         }
         self.fn_sigs.insert(f.id, rask_types::FnSignature { params: sig_params, ret });
 
-        for stmt in &f.body {
-            self.check_stmt(stmt);
-            // Solve as we go so a later statement sees method-call return
-            // types that are already pinned, instead of a bare var.
-            self.solve_constraints();
+        // A generic body that asks what a type's own codec is isn't checked as
+        // written: `T.decode(wire)` and `reflect.DecodeWire<T>` mean something
+        // only once `T` is a type. It is written out for each instance the
+        // program reaches and checked there (`rask-template`).
+        let instance_checked = rask_ast::comptime_if::is_instance_checked(f);
+        if !instance_checked {
+            for stmt in &f.body {
+                self.check_stmt(stmt);
+                // Solve as we go so a later statement sees method-call return
+                // types that are already pinned, instead of a bare var.
+                self.solve_constraints();
+            }
         }
 
         // ER20: Finalize error union from accumulated error types
@@ -366,6 +373,7 @@ impl TypeChecker {
         // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
+            _ if instance_checked => {}
             Type::Unit => {
                 // No return needed
             }
