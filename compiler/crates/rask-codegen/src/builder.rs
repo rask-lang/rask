@@ -915,9 +915,11 @@ impl<'a> FunctionBuilder<'a> {
             // so a `switch` in an inlined `match` is a switch here too.
             let mut cleanup_targets = self.block_map.clone();
             cleanup_targets.extend(cleanup_block_map.iter().map(|(k, v)| (*k, *v)));
-            let cleanup_ctx = CodegenCtx {
-                source_file: None,
-                line_map: None,
+            // The file and line map stay: a panic in a function an `ensure`
+            // calls is reported where it happens, whichever path ran the
+            // body (#1950). Dropping them here printed `panic: not yet
+            // implemented` with no location for every panic in a cleanup.
+            let mut cleanup_ctx = CodegenCtx {
                 current_line: 0,
                 current_col: 0,
                 current_span_start: 0,
@@ -990,6 +992,13 @@ impl<'a> FunctionBuilder<'a> {
 
                 builder.switch_to_block(cl_block);
                 for stmt in &mir_block.statements {
+                    Self::apply_srcloc(&mut builder, stmt.span);
+                    cleanup_ctx.current_span_start = stmt.span.start as u32;
+                    if let Some(lm) = cleanup_ctx.line_map {
+                        let (line, col) = lm.offset_to_line_col(stmt.span.start);
+                        cleanup_ctx.current_line = line as u32;
+                        cleanup_ctx.current_col = col as u32;
+                    }
                     Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
                 }
 
