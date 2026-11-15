@@ -32,7 +32,8 @@ use rask_mono::runtime_abi::{
     RASK_JSHAPE_CHAR as JSHAPE_CHAR, RASK_JSHAPE_I128 as JSHAPE_I128, RASK_JSHAPE_U128 as JSHAPE_U128, RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
     RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
     RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
-    RASK_JSON_ERR_TYPE as ERR_TYPE,
+    RASK_JSON_ERR_REFUSED as ERR_REFUSED, RASK_JSON_ERR_TYPE as ERR_TYPE,
+    RASK_JSON_TEXT_MESSAGE as TEXT_MESSAGE, RASK_JSON_TEXT_PATH as TEXT_PATH,
 };
 
 impl<'a> MirLowerer<'a> {
@@ -187,19 +188,22 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
             func: FunctionRef::internal("json_error_message".to_string()),
-            args: vec![],
+            args: vec![MirOperand::Constant(MirConst::Int(TEXT_MESSAGE))],
         }));
 
         let err_val = self.builder.alloc_temp(err_ty.clone());
-        let variants: Vec<(i64, u32, u32)> = [
+        // Each variant's tag and where its payload fields sit.
+        let variants: Vec<(i64, u32, u32, Vec<u32>)> = [
             (ERR_PARSE, "ParseError"),
             (ERR_TYPE, "TypeError"),
             (ERR_MISSING, "MissingField"),
+            (ERR_REFUSED, "Refused"),
         ]
         .iter()
         .filter_map(|(code, name)| {
             let v = json_error?.variants.iter().find(|v| v.name == *name)?;
-            Some((*code, v.tag as u32, v.payload_offset))
+            let at = v.fields.iter().map(|f| v.payload_offset + f.offset).collect();
+            Some((*code, v.tag as u32, v.payload_offset, at))
         })
         .collect();
 
@@ -224,7 +228,7 @@ impl<'a> MirLowerer<'a> {
         let entry = self.builder.next_stmt_pos().0;
         let join = self.builder.create_block();
         let mut cases = Vec::new();
-        for (code, tag, payload_offset) in &variants {
+        for (code, tag, payload_offset, fields) in &variants {
             let block = self.builder.create_block();
             cases.push((*code as u64, block));
             self.builder.switch_to_block(block);
@@ -235,9 +239,30 @@ impl<'a> MirLowerer<'a> {
                 store_size: tag_bytes,
                 field: None,
             }));
+            // A refusal holds where and why, apart; the others hold the
+            // message alone.
+            let (message_at, path_at) = match fields.as_slice() {
+                [path, reason] if *code == ERR_REFUSED => (*reason, Some(*path)),
+                _ => (*payload_offset, None),
+            };
+            if let Some(path_at) = path_at {
+                let path = self.builder.alloc_temp(MirType::Buffer);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(path),
+                    func: FunctionRef::internal("json_error_message".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::Int(TEXT_PATH))],
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: err_val,
+                    offset: path_at,
+                    value: MirOperand::Local(path),
+                    store_size: 16,
+                    field: None,
+                }));
+            }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: err_val,
-                offset: *payload_offset,
+                offset: message_at,
                 value: MirOperand::Local(msg),
                 store_size: 16,
                 field: None,

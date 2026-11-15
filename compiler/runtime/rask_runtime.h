@@ -1168,7 +1168,7 @@ int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *in
 void    rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape);
 void    rask_json_decode_zero(void *dst, int64_t size);
 int64_t rask_json_error_kind(void);
-void    rask_json_error_message(RaskStr *out);
+void    rask_json_error_message(RaskStr *out, int64_t part);
 
 // ─── CLI args ───────────────────────────────────────────────
 

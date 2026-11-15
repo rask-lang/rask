@@ -151,6 +151,11 @@
 #define RASK_JSON_ERR_PARSE 1
 #define RASK_JSON_ERR_TYPE 2
 #define RASK_JSON_ERR_MISSING 3
+#define RASK_JSON_ERR_REFUSED 4
+
+// Which text of a failed decode `rask_json_error_message` hands back.
+#define RASK_JSON_TEXT_MESSAGE 0
+#define RASK_JSON_TEXT_PATH 1
 
 // A decode shape's kind.
 #define RASK_JSHAPE_BOOL 0

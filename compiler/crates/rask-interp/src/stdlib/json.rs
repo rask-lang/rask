@@ -939,19 +939,23 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
 // ─── JSON Decode (typed deserialization) ───
 
 /// Which JsonError variant a failure maps to.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum JsonErrKind {
     Parse,
     Type,
     Missing,
+    /// A type's own `decode` refused; the error holds where, and the message
+    /// is why.
+    Refused { path: String },
 }
 
 impl JsonErrKind {
-    fn variant(self) -> &'static str {
+    fn variant(&self) -> &'static str {
         match self {
             JsonErrKind::Parse => "ParseError",
             JsonErrKind::Type => "TypeError",
             JsonErrKind::Missing => "MissingField",
+            JsonErrKind::Refused { .. } => "Refused",
         }
     }
 }
@@ -1080,7 +1084,7 @@ fn json_to_typed(
                     other => format!("{:?}", other),
                 };
                 let where_ = if path.is_empty() { "the value" } else { path };
-                Err(JsonErr { kind: JsonErrKind::Type, message: format!("{}: {}", where_, why) })
+                Err(JsonErr { kind: JsonErrKind::Refused { path: where_.to_string() }, message: why })
             }
             other => {
                 *cx.failed = Some(RuntimeError::TypeError(format!(
@@ -1281,7 +1285,12 @@ fn make_result_err(kind: JsonErrKind, msg: &str) -> Value {
 /// The `JsonError` a failing decode hands back (J3). A bare string used to go
 /// here, so `e.message()` didn't resolve — the error had no type.
 fn make_json_error(kind: JsonErrKind, msg: &str) -> Value {
-    Value::stdlib_enum("JsonError", kind.variant(), vec![Value::String(Arc::new(Mutex::new(msg.to_string())))])
+    let text = |s: &str| Value::String(Arc::new(Mutex::new(s.to_string())));
+    let payload = match &kind {
+        JsonErrKind::Refused { path } => vec![text(path), text(msg)],
+        _ => vec![text(msg)],
+    };
+    Value::stdlib_enum("JsonError", kind.variant(), payload)
 }
 
 

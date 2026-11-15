@@ -10372,14 +10372,15 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         ty: &TypeExpr,
     ) -> Result<TypedOperand, LoweringError> {
-        let rows = self
-            .reflect_field_consts(ty)?
-            .iter()
-            .map(|fc| {
+        let mut rows = Vec::new();
+        for fc in self.reflect_field_consts(ty)? {
+            let wire_kind = self.wire_kind_tag(fc.wire.kind)?;
+            rows.push(
                 vec![
                     ("name", MirConst::String(fc.name.clone())),
                     ("type_name", MirConst::String(fc.type_name.clone())),
-                    ("wire_type_name", MirConst::String(fc.wire_type_name.clone())),
+                    ("wire_kind", MirConst::Int(wire_kind)),
+                    ("wire_optional", MirConst::Bool(fc.wire.optional)),
                     ("offset", MirConst::Int(fc.offset as i64)),
                     ("size", MirConst::Int(fc.size as i64)),
                     ("is_public", MirConst::Bool(fc.is_public)),
@@ -10389,10 +10390,30 @@ impl<'a> MirLowerer<'a> {
                 ]
                 .into_iter()
                 .map(|(n, c)| (n, MirOperand::Constant(c)))
-                .collect()
-            })
-            .collect();
+                .collect(),
+            );
+        }
         self.lower_info_vec(rask_types::LangItem::FieldInfo, rows)
+    }
+
+    /// The tag `reflect.WireKind` gives a kind. The value is a constant, so a
+    /// field's `wire_kind` is stored as that tag.
+    fn wire_kind_tag(&self, kind: rask_check::reflect::WireKind) -> Result<i64, LoweringError> {
+        let declared = self.ctx.type_defs.lang(rask_types::LangItem::WireKind).map(rask_types::Type::Named);
+        let Some((_, layout)) = declared.as_ref().and_then(|t| self.ctx.enum_of(t)) else {
+            return Err(LoweringError::InvalidConstruct(
+                "reflect needs `WireKind`, which this program never names — add \
+                 `import std.reflect`"
+                    .to_string(),
+            ));
+        };
+        match layout.variants.iter().find(|v| v.name == kind.variant()) {
+            Some(v) if layout.tag_offset == 0 => Ok(v.tag as i64),
+            _ => Err(LoweringError::InvalidConstruct(format!(
+                "`reflect.WireKind` has no payload-free `{}` variant at tag offset 0",
+                kind.variant()
+            ))),
+        }
     }
 
     /// A `Vec<S>` of reflect info structs, element `i` built from `rows[i]`
@@ -10642,14 +10663,15 @@ impl<'a> MirLowerer<'a> {
         let facts = rask_mono::reflect::variant_facts(&layout, self.ctx.type_defs, &subst);
         let mut rows = Vec::with_capacity(facts.len());
         for v in facts {
-            let field_rows = v
-                .fields
-                .iter()
-                .map(|p| {
+            let mut field_rows = Vec::new();
+            for p in &v.fields {
+                let wire_kind = self.wire_kind_tag(p.wire.kind)?;
+                field_rows.push(
                     vec![
                         ("name", MirConst::String(p.name.clone())),
                         ("type_name", MirConst::String(p.type_name.clone())),
-                        ("wire_type_name", MirConst::String(p.wire_type_name.clone())),
+                        ("wire_kind", MirConst::Int(wire_kind)),
+                        ("wire_optional", MirConst::Bool(p.wire.optional)),
                         ("offset", MirConst::Int(p.offset as i64)),
                         ("size", MirConst::Int(p.size as i64)),
                         // A payload has no visibility or wire annotations of
@@ -10661,9 +10683,9 @@ impl<'a> MirLowerer<'a> {
                     ]
                     .into_iter()
                     .map(|(n, c)| (n, MirOperand::Constant(c)))
-                    .collect()
-                })
-                .collect();
+                    .collect(),
+                );
+            }
             let (fields_vec, _) = self.lower_info_vec(rask_types::LangItem::FieldInfo, field_rows)?;
             rows.push(vec![
                 ("name", MirOperand::Constant(MirConst::String(v.name))),

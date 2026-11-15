@@ -91,25 +91,111 @@ pub fn written_label(types: &TypeTable, ty: &TypeExpr) -> TypeExpr {
 
 /// A declared type with an instantiation's arguments put in, labelled.
 /// `subst` is the arguments as written, by parameter name.
-pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+pub fn substituted_type_expr(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> TypeExpr {
     type_label(types, declared)
         .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| written_label(types, a)))
-        .source()
 }
 
-/// What a decoder reads a declared type as (std.encoding/E12b): the type
-/// itself, unless it decodes through its own `decode`, then what that takes,
-/// and so on down. Looks through `T?`. Labelled like `substituted_label`.
-pub fn wire_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
-    substituted_label(types, &wire_type(types, declared), subst)
+/// `substituted_type_expr`, spelled.
+pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+    substituted_type_expr(types, declared, subst).source()
 }
 
-/// `wire_label` for a type as written, which the interpreter has instead of a
+/// What a value is when a format reads it off the wire: the part of the type
+/// that decides how its text is checked and written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireKind {
+    Text,
+    Bool,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    /// Anything else: a struct, a list, a map, an enum. Written as JSON.
+    Other,
+}
+
+impl WireKind {
+    /// The variant of `reflect.WireKind` that says this.
+    pub fn variant(self) -> &'static str {
+        match self {
+            WireKind::Text => "Text",
+            WireKind::Bool => "Bool",
+            WireKind::F32 => "F32",
+            WireKind::F64 => "F64",
+            WireKind::I8 => "I8",
+            WireKind::I16 => "I16",
+            WireKind::I32 => "I32",
+            WireKind::I64 => "I64",
+            WireKind::Isize => "Isize",
+            WireKind::U8 => "U8",
+            WireKind::U16 => "U16",
+            WireKind::U32 => "U32",
+            WireKind::U64 => "U64",
+            WireKind::Usize => "Usize",
+            WireKind::Other => "Other",
+        }
+    }
+
+    fn of(ty: &TypeExpr) -> WireKind {
+        match ty.bare_name() {
+            Some("string") => WireKind::Text,
+            Some("bool") => WireKind::Bool,
+            Some("f32") => WireKind::F32,
+            Some("f64") => WireKind::F64,
+            Some("i8") => WireKind::I8,
+            Some("i16") => WireKind::I16,
+            Some("i32") => WireKind::I32,
+            Some("i64") => WireKind::I64,
+            Some("isize") => WireKind::Isize,
+            Some("u8") => WireKind::U8,
+            Some("u16") => WireKind::U16,
+            Some("u32") => WireKind::U32,
+            Some("u64") => WireKind::U64,
+            Some("usize") => WireKind::Usize,
+            _ => WireKind::Other,
+        }
+    }
+}
+
+/// What a decoder reads a field as (std.encoding/E12b): the kind of value and
+/// whether it is a `T?`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireForm {
+    pub kind: WireKind,
+    pub optional: bool,
+}
+
+impl WireForm {
+    fn of(ty: &TypeExpr) -> WireForm {
+        match ty {
+            TypeExpr::Optional(inner) => WireForm { kind: WireKind::of(inner), optional: true },
+            _ => WireForm { kind: WireKind::of(ty), optional: false },
+        }
+    }
+}
+
+/// What a decoder reads a declared type as: the type itself, unless it decodes
+/// through its own `decode`, then what that takes, and so on down. Looks
+/// through `T?`.
+pub fn wire_form(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> WireForm {
+    WireForm::of(&substituted_type_expr(types, &wire_type(types, declared), subst))
+}
+
+/// `wire_form` for a type as written, which the interpreter has instead of a
 /// declared `Type`.
-pub fn wire_written_label(types: &TypeTable, ty: &TypeExpr) -> String {
+pub fn wire_written_form(types: &TypeTable, ty: &TypeExpr) -> WireForm {
     match resolve_type_expr(ty, types) {
-        Ok(resolved) => type_label(types, &wire_type(types, &resolved)).source(),
-        Err(_) => written_label(types, ty).source(),
+        Ok(resolved) => WireForm::of(&type_label(types, &wire_type(types, &resolved))),
+        Err(_) => WireForm::of(&written_label(types, ty)),
     }
 }
 

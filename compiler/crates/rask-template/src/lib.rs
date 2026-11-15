@@ -39,7 +39,7 @@ pub const TEMPLATE_ID_BASE: u32 = 60_000_000;
 pub struct FieldFact {
     pub name: String,
     pub type_name: String,
-    pub wire_type_name: String,
+    pub wire: rask_check::reflect::WireForm,
     pub offset: u32,
     pub size: u32,
     pub is_public: bool,
@@ -87,7 +87,7 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
                 FieldFact {
                     name: fl.name.clone(),
                     type_name: rask_check::reflect::substituted_label(types, declared_ty, &subst),
-                    wire_type_name: rask_check::reflect::wire_label(types, declared_ty, &subst),
+                    wire: rask_check::reflect::wire_form(types, declared_ty, &subst),
                     offset: fl.offset,
                     size: fl.size,
                     is_public: fl.is_public,
@@ -942,6 +942,15 @@ impl Rewrite for PayloadLoops<'_, '_, '_> {
     }
 }
 
+/// `reflect.WireKind.U16`: a field's wire kind as a value the copy can name.
+/// Written where the property was read, so its nodes carry that position.
+fn wire_kind_expr(kind: rask_check::reflect::WireKind, at: &Expr) -> ExprKind {
+    let node = |kind: ExprKind| Box::new(Expr { id: at.id, kind, span: at.span });
+    let module = node(ExprKind::Ident("reflect".to_string()));
+    let ty = node(ExprKind::Field { object: module, field: "WireKind".to_string() });
+    ExprKind::Field { object: ty, field: kind.variant().to_string() }
+}
+
 /// A payload field as a field of the variant: it has no visibility or wire
 /// annotations of its own.
 fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
@@ -949,7 +958,7 @@ fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
         serial_name: p.name.clone(),
         name: p.name,
         type_name: p.type_name,
-        wire_type_name: p.wire_type_name,
+        wire: p.wire,
         offset: p.offset,
         size: p.size,
         is_public: true,
@@ -1022,7 +1031,7 @@ impl ItemFacts<'_> {
     }
 
     /// `f.name`, `f.offset`, `p.is_mutate`, … as the literal it is here.
-    fn property(&self, field: &str) -> Option<ExprKind> {
+    fn property(&self, field: &str, at: &Expr) -> Option<ExprKind> {
         let (f, index) = match self.it {
             Item::Field(f, index) => (f, *index),
             Item::Variant(v) => {
@@ -1049,7 +1058,8 @@ impl ItemFacts<'_> {
         Some(match field {
             "name" => ExprKind::String(f.name.clone()),
             "type_name" => ExprKind::String(f.type_name.clone()),
-            "wire_type_name" => ExprKind::String(f.wire_type_name.clone()),
+            "wire_kind" => wire_kind_expr(f.wire.kind, at),
+            "wire_optional" => ExprKind::Bool(f.wire.optional),
             "serial_name" => ExprKind::String(f.serial_name.clone()),
             "offset" => ExprKind::Int(f.offset as i128, Some(IntSuffix::Usize)),
             "size" => ExprKind::Int(f.size as i128, Some(IntSuffix::Usize)),
@@ -1107,7 +1117,7 @@ impl Rewrite for ItemFacts<'_> {
                 }
                 _ => None,
             },
-            ExprKind::Field { object, field } if self.is_item(object) => self.property(field),
+            ExprKind::Field { object, field } if self.is_item(object) => self.property(field, e),
             // The item alone, as a value: there isn't one at run time.
             ExprKind::Ident(_) if self.report && !matches!(self.it, Item::Value(_)) && self.is_item(e) => {
                 self.errors.push(ExpandError {

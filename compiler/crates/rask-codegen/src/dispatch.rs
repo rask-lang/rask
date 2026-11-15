@@ -742,7 +742,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_decode_zero", "rask_json_decode_zero", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "json_error_message", c_name: "rask_json_error_message",
-            params: &[types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {

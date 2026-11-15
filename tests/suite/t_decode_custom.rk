@@ -466,15 +466,17 @@ test "std.encoding/E12b — csv cells go through the type's decode" {
     assert rows[0].port.value == 80
     assert rows[1].host.text == "xy"
 
+    // A refusal is the column's own, in the type's words: the column it came
+    // from and nothing about JSON.
     let zero = csv.decode<Listener>("name,port,host\nweb,0,abc\n")
     if zero is CsvError as e {
-        assert e.message().contains("port 0 is reserved")
+        assert e.message() == "CSV row 2, column \"port\": port 0 is reserved"
     } else {
         assert false
     }
     let long = csv.decode<Listener>("name,port,host\nweb,80,toolongname\n")
     if long is CsvError as e {
-        assert e.message().contains("longer than 5")
+        assert e.message() == "CSV row 2, column \"host\": longer than 5"
     } else {
         assert false
     }
@@ -501,4 +503,55 @@ test "std.encoding/E12b — csv writes a cell as the type's encode and reads it 
     assert back.len() == 2
     assert back[1].port.value == 5432
     assert back[1].host.text == "xy"
+}
+
+// Several columns can hold the same custom type; the one that was turned down
+// is the one named.
+struct Triple {
+    first: Port
+    second: Port
+    third: Port
+}
+
+test "std.encoding/E12b — csv names the column a refusal came from, among several of one type" {
+    let second = csv.decode<Triple>("first,second,third\n80,0,9\n")
+    if second is CsvError as e {
+        assert e.message() == "CSV row 2, column \"second\": port 0 is reserved"
+    } else {
+        assert false
+    }
+    let third = csv.decode<Triple>("first,second,third\n80,8080,0\n")
+    if third is CsvError as e {
+        assert e.message() == "CSV row 2, column \"third\": port 0 is reserved"
+    } else {
+        assert false
+    }
+}
+
+test "std.encoding/E12c — a refusal keeps where it happened apart from why" {
+    let _ = json.decode<Config>("{{\"ports\": [80, 0]}") catch e => {
+        match e {
+            JsonError.Refused(path, reason) => {
+                assert path == "field ports[1]"
+                assert reason == "port 0 is reserved"
+            }
+            _ => assert false
+        }
+        return
+    }
+    assert false
+}
+
+test "std.encoding/E12c — a refusal at the top is at the value" {
+    let _ = json.decode<Port>("0") catch e => {
+        match e {
+            JsonError.Refused(path, reason) => {
+                assert path == "the value"
+                assert reason == "port 0 is reserved"
+            }
+            _ => assert false
+        }
+        return
+    }
+    assert false
 }

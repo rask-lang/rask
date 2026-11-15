@@ -2278,7 +2278,7 @@ pub struct MirLowerer<'a> {
 pub(crate) struct ReflectFieldConst {
     pub(crate) name: String,
     pub(crate) type_name: String,
-    pub(crate) wire_type_name: String,
+    pub(crate) wire: rask_check::reflect::WireForm,
     pub(crate) offset: u32,
     pub(crate) size: u32,
     pub(crate) is_public: bool,

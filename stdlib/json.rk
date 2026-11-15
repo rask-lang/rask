@@ -22,6 +22,10 @@ public enum JsonError {
     ParseError(string)
     TypeError(string)
     MissingField(string)
+    /// A type's own `decode` turned the value down (std.encoding/E12c): where
+    /// in the input, worded like every other decode error (`field ports[1]`,
+    /// `the value` at the top), and why, in the type's own words.
+    Refused(path: string, reason: string)
 }
 
 extend JsonError {
@@ -30,6 +34,7 @@ extend JsonError {
             JsonError.ParseError(msg) => return "parse error: {msg}"
             JsonError.TypeError(msg) => return "type error: {msg}"
             JsonError.MissingField(field) => return "missing field: {field}"
+            JsonError.Refused(path, reason) => return "type error: {path}: {reason}"
         }
     }
 }

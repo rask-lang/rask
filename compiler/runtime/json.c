@@ -49,6 +49,8 @@ struct RaskJsonVal {
 // ─── Error reporting ──────────────────────────────────────────────
 
 static _Thread_local char json_err_msg[512];
+// Where a refusal happened, as the decoders word a path (`field ports[1]`).
+static _Thread_local char json_err_path[256];
 static _Thread_local int64_t json_err_kind = RASK_JSON_OK;
 
 static void json_fail(int64_t kind, const char *fmt, ...) {
@@ -63,8 +65,11 @@ int64_t rask_json_error_kind(void) {
     return json_err_kind;
 }
 
-void rask_json_error_message(RaskStr *out) {
-    rask_string_from_bytes(out, json_err_msg, (int64_t)strlen(json_err_msg));
+// The message of the failed decode, or where it happened (a refusal keeps the
+// two apart).
+void rask_json_error_message(RaskStr *out, int64_t part) {
+    const char *text = part == RASK_JSON_TEXT_PATH ? json_err_path : json_err_msg;
+    rask_string_from_bytes(out, text, (int64_t)strlen(text));
 }
 
 // ─── Parser ───────────────────────────────────────────────────────
@@ -777,7 +782,10 @@ static int json_decode_custom(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     int64_t refused = shape->custom(wire, dst);
     rask_free(wire);
     if (refused) {
-        json_fail(RASK_JSON_ERR_TYPE, "%s: %s", path[0] ? path : "the value", json_reject_msg);
+        // The message is the type's own reason; where it happened is kept
+        // apart so a format that knows its columns can name the right one.
+        json_fail(RASK_JSON_ERR_REFUSED, "%s", json_reject_msg);
+        snprintf(json_err_path, sizeof(json_err_path), "%s", path[0] ? path : "the value");
         return 0;
     }
     return 1;
@@ -962,6 +970,7 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input) {
     json_err_kind = RASK_JSON_OK;
     json_err_msg[0] = '\0';
+    json_err_path[0] = '\0';
 
     RaskJsonVal *tree = rask_json_tree_parse(input);
     if (!tree) return json_err_kind ? json_err_kind : RASK_JSON_ERR_PARSE;
