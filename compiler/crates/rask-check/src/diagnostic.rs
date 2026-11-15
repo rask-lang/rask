@@ -1914,6 +1914,32 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
             }
 
+            // E12a: `Port.new` rejects a zero and `json.decode<Port>` would hand
+            // one out anyway. The fields are fine; the way in is the problem.
+            DecodeSkipsConstructor { ty, owner, through, constructor, returns, span } => {
+                let via = if *through {
+                    format!(" (`{}` holds a `{}`)", ty, owner)
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!("`{}` cannot be decoded: `{}.{}` checks its input{}", ty, owner, constructor, via))
+                    .with_code("E0418")
+                    .with_primary(*span, format!(
+                        "`{owner}.{constructor}` returns `{returns}`, and a decode builds `{owner}` without calling it"
+                    ))
+                    .with_fix(format!(
+                        "decode a plain struct of the raw fields and call `{owner}.{constructor}` on them:\n\n  \
+                         struct {owner}Wire {{ /* the raw fields */ }}\n  \
+                         let wire = try json.decode<{owner}Wire>(text)\n  \
+                         let value = try {owner}.{constructor}(/* from wire */)\n\n\
+                         or, if `{constructor}` isn't a check on decoded data, say a raw decode is fine:\n\n  \
+                         {owner} implements Decode {{ }}"
+                    ))
+                    .with_why(format!(
+                        "a type with a checking constructor promises its values passed the check, and a derived `Decode` would break that promise without a word. Anyone holding a `{owner}` assumes it went through `{constructor}` [std.encoding/E12a]"
+                    ))
+            }
+
             NotSerializable { ty, interface_name, verb, field, field_ty, span } => {
                 let label = match (field, field_ty) {
                     (Some(f), Some(fty)) => {
@@ -2632,12 +2658,16 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
-            UnusedResult { ty, span } => {
-                Diagnostic::warning(format!("unused result of type `{}`", ty))
-                    .with_code("W0301")
+            UnusedResult { ty, call, can_try, span } => {
+                let mut fix = format!("{call}!    // panics with the error's message if it fails");
+                if *can_try {
+                    fix.push_str(&format!("\n    try {call}    // pass the error to the caller"));
+                }
+                Diagnostic::error(format!("result of type `{}` is ignored", ty))
+                    .with_code("E0419")
                     .with_primary(*span, "if this fails, nothing finds out")
-                    .with_help("propagate it with `try`, handle it with `catch e => …`, or drop it on purpose with `let _ = …`")
-                    .with_why("a call that can fail hands its error back as a value, and a statement that ignores the value ignores the failure. `@allow(unused_result)` on the function says so for all of them [tool.warnings/W2]")
+                    .with_fix(format!("say what happens on failure:\n    {fix}"))
+                    .with_why("a call that can fail hands its error back as a value, so a statement that ignores the value ignores the failure and the program carries on as if it worked. Every error is asserted, passed on, or handled where the code says so [type.errors/ER50]")
             }
 
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {

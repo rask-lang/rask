@@ -1775,7 +1775,7 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_int(&mut self, expr: &Expr, val: &i128, suffix: &Option<IntSuffix>) -> Result<TypedOperand, LoweringError> {
             // Suffixed literals carry their type explicitly. Unsuffixed
-            // literals follow the type checker's inference (default i32).
+            // literals follow the type checker's inference (default i64).
             let ty = match suffix {
                 Some(IntSuffix::I8) => MirType::I8,
                 Some(IntSuffix::I16) => MirType::I16,
@@ -1792,7 +1792,7 @@ impl<'a> MirLowerer<'a> {
                 // An unsuffixed literal the checker didn't pin down takes the
                 // language's own default rather than counting as a failure to
                 // resolve — type.primitives/L1 says an integer literal
-                // defaults, and i64 holds every value i32 does.
+                // defaults to i64, the same answer the checker gives.
                 None => {
                     // `let x: f64 = 1` — the checker settles the literal as a
                     // float, and the integer filter below dropped that answer

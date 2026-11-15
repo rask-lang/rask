@@ -789,7 +789,7 @@ ensure_hooks: Mutex<Vec<EnsureHook>>  // LIFO order
 
 ```rask
 ensure {
-    file.close()
+    file.close()!
 }
 
 // Desugars to:
@@ -856,7 +856,7 @@ let h = spawn { work() }
 ```rask
 let h = spawn { work() }
 if condition {
-    h.join()  // Consumed here
+    h.join()!  // Consumed here
 } else {
     h.detach()  // Consumed here
 }
@@ -870,7 +870,7 @@ func process() {
     if error {
         return  // ERROR: handle not consumed on this path
     }
-    h.join()
+    h.join()!
 }
 ```
 
@@ -1048,7 +1048,7 @@ using Multitasking {
     // Sleep
     spawn {
         print("Starting...\n")
-        sleep(Duration.seconds(5))
+        sleep(Duration.seconds(5))!
         print("5 seconds later!\n")
     }.detach()
 
@@ -1864,8 +1864,8 @@ using Multitasking {
 
 ```rask
 let h = spawn { quick_work() }
-h.join()  // Task completes
-h.cancel()  // Error: handle already consumed
+h.join()!  // Task completes
+h.cancel()!  // Error: handle already consumed
 ```
 
 **Error:** Compile error (handle moved by join).
@@ -1873,7 +1873,7 @@ h.cancel()  // Error: handle already consumed
 **Alternative:**
 ```rask
 let h = spawn { quick_work() }
-h.cancel()  // Sets flag, waits for completion
+h.cancel()!  // Sets flag, waits for completion
 ```
 
 **Behavior:** If task already complete when cancel() called, flag set but no-op. cancel() returns result immediately.
@@ -1899,7 +1899,7 @@ using Multitasking {
 using Multitasking {
     let h1 = spawn { h2.join() }
     let h2 = spawn { h1.join() }
-    h1.join()  // Deadlock: circular dependency
+    h1.join()!  // Deadlock: circular dependency
 }
 ```
 

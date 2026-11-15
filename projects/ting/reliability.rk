@@ -22,7 +22,7 @@ func byte(n: i64) -> Vec<u8> {
 func tick(mutate server: Endpoint, mutate client: Endpoint, mutate at_server: Vec<Message>, mutate at_client: Vec<Message>) -> void or IoError {
     try client.flush()
     try server.flush()
-    time.sleep(Duration.millis(1))
+    time.sleep(Duration.millis(1))!
     for m in try server.poll() {
         at_server.push(m)
     }

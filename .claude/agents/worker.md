@@ -38,6 +38,10 @@ repro in your report; the main session files it.
 
 Fifteen lines at most. No diffs, no logs, no file dumps.
 
+Stop every background job you started before you report. One still running
+wakes the main session each time it finishes or stirs, and each wake costs a
+full turn of the main session's context for nothing.
+
 - Root cause, one sentence.
 - What changed and the commit hash.
 - What you ran and how it came out.

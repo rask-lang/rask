@@ -79,8 +79,13 @@ test "shift by zero" {
 
 test "shift near limit" {
     // i32 is 32 bits, so shifting by 31 is the max valid shift
-    assert (1 << 31) == -2147483648  // i32.MIN
-    assert (-1 >> 31) == -1  // arithmetic shift preserves sign
+    let one: i32 = 1
+    let neg: i32 = -1
+    assert (one << 31) == -2147483648  // i32.MIN
+    assert (neg >> 31) == -1  // arithmetic shift preserves sign
+    // The unsuffixed default is i64 (type.primitives/L1)
+    assert (1 << 31) == 2147483648
+    assert (-1 >> 63) == -1
 }
 
 // --- compound assignment (CA1) ---

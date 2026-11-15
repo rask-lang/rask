@@ -18,7 +18,7 @@ test "conc.async/S3 — thread returns a computed value via channel" {
         }
         let _ = tx.send(acc)
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -39,9 +39,9 @@ test "conc.async/S4 — spawn multiple threads and join each" {
     ensure h2.detach()
     let h3 = Thread.spawn { let _ = txc.send(300); return }
     ensure h3.detach()
-    h1.join()
-    h2.join()
-    h3.join()
+    h1.join()!
+    h2.join()!
+    h3.join()!
     mut total = 0
     mut n = 0
     while rx.try_receive() is i64 as v {
@@ -71,7 +71,7 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
         }
         let _ = tx.send(s)
         return
-    }.join()
+    }.join()!
     mut owned = 0
     if rx.receive() is i64 as v {
         owned = v
@@ -88,7 +88,7 @@ test "conc.async/H2 — join happens-before the reader" {
         return
     }
     ensure h.detach()
-    h.join()
+    h.join()!
     mut seen = -1
     if rx.try_receive() is i64 as v {
         seen = v

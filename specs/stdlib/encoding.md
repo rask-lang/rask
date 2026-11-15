@@ -39,7 +39,8 @@ struct Point { x: f64, y: f64 }
 | Rule | Description |
 |------|-------------|
 | **E11: Marker interfaces** | `Encode` and `Decode` are marker interfaces with no methods. They signal that a type's structure is serialization-compatible |
-| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode` |
+| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode`, with one more condition: E12a |
+| **E12a: Checking constructors** | A type with a checking constructor is not auto-`Decode`. That is a static function the author wrote in an `extend` block whose return type is `Self or E`, with `E` a real error (`Self?` doesn't count), at any visibility. The type, and any `Vec`, `Map`, field or payload that holds it, fails a `Decode` bound with an error that names the constructor. `T implements Decode { }`, written where `T` is declared, says a raw decode is intended and lifts the rule for that type. `Encode` is never affected |
 | **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
 | **E15: Collection types** | `Vec<T>` where `T: Encode`, `Map<string, T>` where `T: Encode`, `T?` where `T: Encode` — all auto-implement `Encode`. Same for `Decode` |
@@ -97,6 +98,75 @@ struct Session {
 ```
 
 E13b is the mass-assignment rail: an attacker who puts `"password_hash": "…"` in the request body cannot reach the field, because decode never looks for it.
+
+### Types With a Checking Constructor [E12a]
+
+<!-- test: run | 8080\nport 0 is reserved -->
+```rask
+import json
+
+struct PortError { reason: string }
+
+extend PortError {
+    public func message(self) -> string { return self.reason }
+}
+
+struct Port { value: u16 }
+
+extend Port {
+    func new(v: u16) -> Port or PortError {
+        if v == 0 { return PortError(reason: "port 0 is reserved") }
+        return Port(value: v)
+    }
+}
+
+// `json.decode<Port>` is an error: it would build a Port without calling `new`.
+// Decode the raw fields into a plain struct and hand them to the constructor.
+struct PortWire { value: u16 }
+
+func read_port(text: string) -> Port or PortError {
+    let wire = json.decode<PortWire>(text) catch e => {
+        return PortError(reason: e.message())
+    }
+    return try Port.new(wire.value)
+}
+
+func main() {
+    let ok = read_port("{{\"value\": 8080}") catch _ => return
+    println("{ok.value}")
+    let bad = read_port("{{\"value\": 0}") catch e => {
+        println(e.message())
+        return
+    }
+    println("{bad.value}")
+}
+```
+
+When the function that returns `Self or E` isn't a check on decoded data, say so where the type is declared:
+
+<!-- test: skip -->
+```rask
+extend Settings {
+    func load(path: string) -> Settings or IoError { … }
+}
+
+Settings implements Decode { }     // a raw decode is fine
+```
+
+The error names the constructor and shows both ways out:
+
+```
+ERROR [E0418]: `Port` cannot be decoded: `Port.new` checks its input
+   |
+12 |  json.decode<Port>(text)
+   |  ^^^^^^^^^^^^^^^^^^^^^^^ `Port.new` returns `Port or PortError`, and a decode builds `Port` without calling it
+
+WHY: a type with a checking constructor promises its values passed the check,
+     and a derived `Decode` would break that promise without a word.
+
+FIX: decode a plain struct of the raw fields and call `Port.new` on them,
+     or, if `new` isn't a check on decoded data: `Port implements Decode { }`
+```
 
 ### Generic Bounds
 
@@ -486,6 +556,12 @@ FIX: @no_serialize
 **E11 (marker interfaces):** I wanted Encode/Decode for generic bounds (`T: Encode`) and a Serializer interface hierarchy (like serde) needs associated types, which Rask didn't have when this was written. It has them now (`type.associated-types`), so the hierarchy is writable — but the markers work and the rewrite isn't free, so that's its own call, not a consequence of this one. Marker interfaces are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through interface methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
 
 **E12 (auto-derive with opt-out):** The zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
+
+**E12a (a constructor that checks is a promise).** `Port.new` rejects 0, so everyone who receives a `Port` assumes it isn't 0. Auto-derived `Decode` broke that without a sound: `json.decode<Port>` built the value straight from the wire. I kept `Decode` auto-derived for plain data, because that's most types and the zero-ceremony path should stay the common one, and withheld it from a type whose author wrote a constructor that can fail. `Encode` stays derived for everyone, since writing a value out can't make an invalid one.
+
+The trigger is the shape of the declaration, not the name: a static function in an `extend` block returning `Self or E`. I count it at any visibility, because a package-private constructor guards the package's own values as much as a public one does. I don't count `Self?`: absence carries no rejection reason, and the rule is about a check that fails with one. The cost is a false positive when a function returns `Self or E` without validating anything (`Settings.load(path)`). `T implements Decode { }` is the escape for that, and it is visible at the declaration, where a reader of the type will see it. The `{ }` form means "raw decode is intended". It doesn't call anything, so it can't stand in for the check.
+
+A `Decode` conformance with a body, one that decodes the raw fields itself and calls the constructor, would need the decoders to call user code at each place the type appears. Markers have no methods (E11), so there is none yet. Until then the wire struct above is the way, and it's what the validation example's DTOs already do.
 
 **E13 (non-private, not public-only).** This used to be public-fields-only, copied from Go's exported-fields rule. It had the polarity backwards. The common case is "serialize the whole value", and it was the one paying per-field ceremony: every DTO field wore a `public` it didn't need for code access — the validation example's `dto.rk` was columns of `public` doing wire-work, not visibility-work — to guard against an uncommon accident.
 

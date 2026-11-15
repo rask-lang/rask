@@ -89,7 +89,7 @@ test "select blocks until a spawned producer sends" {
             rx -> v: v,
         }!
         assert got == 5
-        h.join()
+        h.join()!
     }
 }
 

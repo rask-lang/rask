@@ -120,10 +120,10 @@ impl Interpreter {
         // HA1: FNV-1a over the value's little-endian bytes at its own width, which
         // is what native's `rask_int_hash` computes and what an int-keyed Map
         // buckets with. The width is part of the answer, so a value that never got
-        // a slot type takes `i32`, the unsuffixed-literal default (L1) and the
+        // a slot type takes `i64`, the unsuffixed-literal default (L1) and the
         // width native gives it.
         if method == "hash" && args.is_empty() {
-            let width = (kind.bits().unwrap_or(32) / 8) as usize;
+            let width = (kind.bits().unwrap_or(64) / 8) as usize;
             let bytes = (a as u64).to_le_bytes();
             let h = crate::builtins::fnv1a(&bytes[..width]);
             return Ok(Value::Int(h as i64, crate::value::IntKind::U64));

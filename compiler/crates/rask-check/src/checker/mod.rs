@@ -569,7 +569,7 @@ pub struct TypeChecker {
     /// Matches whose scrutinee was still an open variable when the arms were
     /// walked, and that have no arm for the values the others don't name.
     ///
-    /// `let x = 5` is an unsuffixed literal, so its type isn't `i32` until
+    /// `let x = 5` is an unsuffixed literal, so its type isn't `i64` until
     /// defaults land — and asking then is the whole point, since a match on an
     /// integer is exactly the shape that needs a wildcard (#1090).
     pub(super) pending_match_wildcards: Vec<(Type, bool, rask_ast::Span)>,
@@ -976,7 +976,11 @@ impl TypeChecker {
         // default inside it.
         self.settle_collection_literals();
 
-        // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
+        // Calls on a literal receiver resolve first, with their own argument
+        // literals still open, so those take the method's parameter types.
+        self.settle_literal_receivers();
+
+        // Default unresolved literal type vars (unsuffixed int → i64, float → f64)
         self.ctx.apply_literal_defaults();
 
         // Then the answers of last resort — a diverging closure's return type,
@@ -1717,6 +1721,7 @@ pub fn typecheck_with_stdlib_lenient(
         .collect();
     let (mut typed, mut errors) = checker.check_lenient_with_stdlib(&bodies, decls);
     errors.extend(crate::unused_results::unused_results(decls, &typed));
+    errors.extend(crate::unused_results::unused_results(&bodies, &typed));
     typed.attach_derived(decls);
     (typed, errors)
 }

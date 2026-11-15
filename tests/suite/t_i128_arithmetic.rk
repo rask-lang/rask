@@ -192,8 +192,8 @@ test "type.primitives — suffixes, radixes and separators at 128 bits" {
     assert separated == 170141183460469231731687303715884105727
 }
 
-// An unsuffixed literal with nothing to constrain it defaults to `i32`, then
-// `i64`, then `i128` — whichever is the first that holds it.
+// An unsuffixed literal with nothing to constrain it defaults to `i64`, then
+// `u64`, then `i128` — whichever is the first that holds it.
 test "type.primitives — a wide literal with no slot defaults to i128" {
     let inferred = 100000000000000000000
     assert inferred / 100000000000000000 == 1000

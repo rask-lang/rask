@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An integer literal that nothing pins down is an `i64`, not an `i32`
+// (type.primitives/L1, L2, L6, #1935).
+//
+// With `i32` as the default, a counter that ran past two billion panicked far
+// from the `0` that chose its width:
+//
+//     mut count = 0
+//     for i in 0..3000000 { count += 1000 }   // panic: exceeds i32 range
+//
+// Context still wins: an annotation, a parameter type or a suffix gives the
+// literal that type, whatever the default is.
+
+func takes_i32(n: i32) -> i32 {
+    return n
+}
+
+func takes_u8(n: u8) -> u8 {
+    return n
+}
+
+func squared<T: Mul<T>>(x: T) -> T {
+    return x.mul(x)
+}
+
+test "a counter can pass the i32 range" {
+    mut count = 0
+    for i in 0..300000 {
+        count += 10000
+    }
+    assert count == 3000000000
+}
+
+test "the default is i64 for every base" {
+    let dec = 3000000000
+    let hex = 0xB2D05E00
+    let bin = 0b10110010110100000101111000000000
+    let oct = 0o26264057000
+    assert dec == hex
+    assert dec == bin
+    assert dec == oct
+    let wide: i64 = dec
+    assert wide == 3000000000
+}
+
+test "a literal past i64 widens to u64, then i128" {
+    let u = 18446744073709551615
+    assert "{u}" == "18446744073709551615"
+    let w = 100000000000000000000
+    assert "{w}" == "100000000000000000000"
+}
+
+test "context beats the default" {
+    let a: u8 = 5
+    let b = takes_i32(7)
+    let c = takes_u8(200)
+    let d = 9u16
+    assert a + 250 == 255
+    assert b + 1 == 8
+    assert c + 55 == 255
+    assert d + 65526 == 65535
+}
+
+test "the default is wide enough to multiply" {
+    let big = 100000
+    assert big * big == 10000000000
+}
+
+test "a loop counter is an i64" {
+    mut total = 0
+    for i in 0..5 {
+        total += i * 1000000000
+    }
+    assert total == 10000000000
+}
+
+test "a literal receiver's argument takes the method's parameter type" {
+    let x = 3.75
+    assert x.powi(2) == 14.0625
+}
+
+test "an i64 meets a Mul bound beside its own Duration conformance" {
+    assert squared(3000000000) == 9000000000000000000
+}

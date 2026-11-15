@@ -8,7 +8,10 @@
 // compatible struct with zero user ceremony.
 //
 // Auto-derive (E12): the compiler derives Encode for any struct where all
-// public fields have Encode types, unless @no_encode. Same for Decode.
+// public fields have Encode types, unless @no_encode. Same for Decode, except
+// that a type with a checking constructor (a static function returning
+// `Self or E`) isn't auto-Decode: a decode would build it without the check
+// (E12a). `T implements Decode { }` says a raw decode is intended.
 // Public fields only (E13). Enums auto-derive when all variant payloads
 // are compatible (E17).
 //

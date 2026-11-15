@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: decoding a type that has a checking constructor (std.encoding/E12a).
+//
+// `Port.new` rejects 0. A derived `Decode` builds a `Port` straight from the
+// wire and never calls it, so `json.decode<Port>("{\"value\": 0}")` used to
+// return a port the constructor refuses. The error names the constructor, and
+// reaches through containers and fields: a `Vec<Port>` skips it just the same.
+
+import json
+
+struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+struct Port {
+    value: u16
+}
+
+extend Port {
+    func new(v: u16) -> Port or PortError {
+        if v == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: v)
+    }
+}
+
+// `-> Self or E` is the same constructor as `-> Gate or E`.
+struct Gate {
+    level: u8
+}
+
+extend Gate {
+    func open(level: u8) -> Self or PortError {
+        if level > 9 {
+            return PortError(reason: "level out of range")
+        }
+        return Gate(level: level)
+    }
+}
+
+struct Wrapper<T> {
+    inner: T
+}
+
+struct Listener {
+    name: string
+    ports: Vec<Port>
+}
+
+func main() {
+    // ERROR: `Port` cannot be decoded: `Port.new` checks its input [E0418]
+    let p = json.decode<Port>("{{\"value\": 0}") catch e => {
+        return
+    }
+    println("{p.value}")
+
+    // ERROR: the same, through a field's `Vec` [E0418]
+    let l = json.decode<Listener>("{{\"name\": \"a\", \"ports\": [{{\"value\": 0}]}") catch e => {
+        return
+    }
+    println(l.name)
+
+    // ERROR: written `-> Self or PortError`, still a checking constructor [E0418]
+    let g = json.decode<Gate>("{{\"level\": 99}") catch e => {
+        return
+    }
+    println("{g.level}")
+
+    // ERROR: the argument is what's decoded, so this is `Port`'s problem and
+    // not a field called `inner` that "can't be decoded" [E0418]
+    let w = json.decode<Wrapper<Port>>("{{\"inner\": {{\"value\": 0}}") catch e => {
+        return
+    }
+    println("{w.inner.value}")
+
+    // Fine: the same wrapper over plain data is still Decode. Not an error, so
+    // the test counts exactly four.
+    let ok = json.decode<Wrapper<i64>>("{{\"inner\": 7}") catch e => {
+        return
+    }
+    println("{ok.inner}")
+}
