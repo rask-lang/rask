@@ -1285,6 +1285,12 @@ void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                                const char *op, const char *file,
+                                int32_t line, int32_t col);
+void rask_check_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);

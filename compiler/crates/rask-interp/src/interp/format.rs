@@ -204,7 +204,7 @@ impl Interpreter {
         out
     }
 
-    fn debug_format(&self, value: &Value) -> String {
+    pub(super) fn debug_format(&self, value: &Value) -> String {
         match value {
             Value::String(s) => Self::quote_debug(&s.lock().unwrap()),
             Value::Bytes(b) => rask_ast::token::bytes_literal(b),

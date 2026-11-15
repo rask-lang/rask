@@ -4814,9 +4814,13 @@ impl<'a> FunctionBuilder<'a> {
                 let [file_ptr, line_val, col_val] = Self::location_args(builder, ctx);
                 builder.ins().call(*func_ref, &[left_val, right_val, op_val, file_ptr, line_val, col_val]);
             }
-        } else if func.name == "assert_fail_cmp_str" || func.name == "check_fail_cmp_str" {
+        } else if matches!(func.name.as_str(),
+            "assert_fail_cmp_str" | "check_fail_cmp_str"
+            | "assert_fail_cmp_debug" | "check_fail_cmp_debug") {
             // Comparison assert/check failure with string values: args = [left, right, op_str].
             // The two sides go over as Rask strings; only the operator is a C one.
+            // `_debug` is the same call with each side already rendered to text
+            // by lowering, for operands that aren't scalars.
             if args.len() >= 3 {
                 let left_val = Self::lower_operand(builder, &args[0], ctx)?;
                 let right_val = Self::lower_operand(builder, &args[1], ctx)?;

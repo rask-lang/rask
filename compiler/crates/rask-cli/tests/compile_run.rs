@@ -5538,9 +5538,10 @@ fn assert_compares_by_value_on_both_backends() {
 /// same line, which is the one thing the two backends may not be — and no suite
 /// file asserted a *failing* comparison, so nothing compared them.
 ///
-/// Native can't do better: a struct opts into `Displayable` (std.fmt/D3) and
-/// most don't, so there is nothing to render. The message stands alone for
-/// those, on both sides.
+/// Anything that isn't a scalar goes through the debug renderer on both sides,
+/// the one `{:debug}` uses, so `[1, 2] == [1, 3]` reads as written. A Vec used to
+/// print its two buffer addresses on native and nothing at all on the
+/// interpreter.
 #[test]
 fn a_failed_comparison_reads_the_same_on_both_backends() {
     let cases: &[(&str, &str)] = &[
@@ -5551,6 +5552,11 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
         ("optionals", "assert maybe(1) == maybe(2)"),
         ("structs", "assert Point(x: 1, y: 2) == Point(x: 1, y: 3)"),
         ("tuples", "assert (1, 2) == (1, 3)"),
+        ("optional against a scalar", "assert maybe(3) == 2"),
+        ("vecs", "assert Vec.from([1, 2]) == Vec.from([1, 3])"),
+        ("vecs of structs", "assert Vec.from([Point(x: 1, y: 2)]) == Vec.from([Point(x: 1, y: 3)])"),
+        ("vecs of strings", "assert Vec.from([\"a\"]) == Vec.from([\"b\"])"),
+        ("nested", "assert (Vec.from([1]), maybe(3)) == (Vec.from([1]), maybe(1))"),
     ];
 
     for (name, assertion) in cases {
@@ -5587,6 +5593,32 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
             "{name}: no failure line at all:\n{native}"
         );
     }
+}
+
+/// `assert vec_a == vec_b` shows the elements, not buffer addresses or nothing.
+#[test]
+fn a_failed_vec_comparison_shows_the_elements() {
+    const SRC: &str = "test \"v\" {\n    assert Vec.from([1, 2]) == Vec.from([1, 3])\n}\n\
+                       test \"c\" {\n    check Vec.from([\"a\"]) != Vec.from([\"a\"])\n}\n";
+    let dir = std::env::temp_dir()
+        .join(format!("rask_vec_cmp_msg_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("vec_cmp.rk");
+    std::fs::write(&file, SRC).unwrap();
+    let path = file.to_str().unwrap();
+    for args in [vec![path], vec!["--interp", path]] {
+        let (ok, out) = rask_test_output(&args);
+        assert!(!ok, "the assertions have to fail ({args:?}):\n{out}");
+        assert!(
+            out.contains("assertion failed: [1, 2] == [1, 3] (left: [1, 2], right: [1, 3])"),
+            "assert on Vecs ({args:?}):\n{out}"
+        );
+        assert!(
+            out.contains("check failed: [\"a\"] != [\"a\"] (left: [\"a\"], right: [\"a\"])"),
+            "check on Vecs ({args:?}):\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ─── Regression: issues #566, #569 ──────────────────────────
@@ -8204,7 +8236,7 @@ func main() {
 }
 "#;
 
-const RUN_ASSERT_OPAQUE_SRC: &str = r#"
+const RUN_ASSERT_STRUCT_SRC: &str = r#"
 struct Pt { x: i64, y: i64 }
 
 func main() {
@@ -8255,16 +8287,14 @@ fn a_failed_assert_outside_a_test_says_it_once() {
             "{backend}: a hand-written message gets no prefix:\n{out}"
         );
 
-        // Neither backend renders struct operands — native compares by address
-        // — so the detail is empty and the words stand alone.
-        let out = run_rask_run_source(RUN_ASSERT_OPAQUE_SRC, interp);
+        // A struct is shown field by field, in debug form.
+        let out = run_rask_run_source(RUN_ASSERT_STRUCT_SRC, interp);
         assert!(
-            out.contains("assertion failed"),
-            "{backend}: an unrenderable comparison still reports:\n{out}"
-        );
-        assert!(
-            !out.contains("assertion failed:"),
-            "{backend}: and adds no empty detail after a colon:\n{out}"
+            out.contains(
+                "assertion failed: Pt(x: 1, y: 2) == Pt(x: 3, y: 4) \
+                 (left: Pt(x: 1, y: 2), right: Pt(x: 3, y: 4))"
+            ),
+            "{backend}: struct operands render in debug form:\n{out}"
         );
     }
 }

@@ -52,9 +52,12 @@ pub(super) struct PatternTest {
 /// the bare words "check failed"; giving it a second copy would have been a
 /// second place to relearn them.
 enum CmpFailHelper {
-    /// An optional operand — the helpers take raw scalars, and an optional is a
-    /// slot with a present flag beside the payload. Report without the values.
-    NoOperands,
+    /// Not a scalar: a Vec, a struct, an optional, a tuple, `bytes`. The typed
+    /// helpers take raw scalars, so each side is rendered to text in `{:debug}`
+    /// form first and the runtime prints the two strings. That is the renderer
+    /// `{x:debug}` uses and the interpreter's `debug_format` is its reference,
+    /// so a failed `assert v == w` reads the same on both backends.
+    Debug,
     /// Helper suffix, plus the width both operands are widened to.
     Typed(&'static str, MirType),
 }
@@ -64,16 +67,28 @@ enum CmpFailHelper {
 fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType, text: bool) -> CmpFailHelper {
     // Keyed off the lowered types, not the source shape: guessing from the
     // source meant only a written literal counted as a string (#897).
+    //
+    // An optional against a scalar (`f == 2.5` with `f: f64?`) is a slot with a
+    // present flag beside the payload, so no scalar helper can take that side.
+    // Checked ahead of `text` too: the checker calls `s? == "a"` text, and the
+    // string helper reads the optional as a string.
     if matches!(left_ty, MirType::Option(_)) || matches!(right_ty, MirType::Option(_)) {
-        return CmpFailHelper::NoOperands;
+        return CmpFailHelper::Debug;
     }
     if text {
         // Strings pass by reference; nothing to widen, and the width is unused.
         return CmpFailHelper::Typed("str", MirType::Buffer);
     }
-    // `bytes` has no one-line rendering the interpreter agrees on.
-    if matches!(left_ty, MirType::Buffer) || matches!(right_ty, MirType::Buffer) {
-        return CmpFailHelper::NoOperands;
+    // Anything that isn't one number in a register is passed by address (a
+    // struct, a tuple, `bytes`) or as a container handle (a Vec, a Map). The
+    // `i64` helper would print that address:
+    //
+    //   assertion failed: 140737253693408 == 140737253693424
+    //
+    // The comparison itself is right; there is just no scalar to report, so
+    // the operands are rendered the way `{:debug}` renders them.
+    if !is_machine_scalar(left_ty) || !is_machine_scalar(right_ty) {
+        return CmpFailHelper::Debug;
     }
     // Both sides f32 keeps the operands at that width. The shortest decimal that
     // reads back as the same value depends on the width you check against, so an
@@ -103,34 +118,22 @@ fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType, text: bool) -> CmpFa
     if matches!(left_ty, MirType::I128) || matches!(right_ty, MirType::I128) {
         return CmpFailHelper::Typed("i128", MirType::I128);
     }
-    // An aggregate compares correctly — codegen emits a real field-by-field Eq
-    // — but there is nothing to print. It is passed by address, so the `i64`
-    // fallback below rendered the two *addresses*:
-    //
-    //   assertion failed: 140737253693408 == 140737253693424
-    //
-    // which says nothing and reads as though the comparison itself were by
-    // address. There is no rendering to reach for either: a struct opts into
-    // `Displayable` (std.fmt/D3) and most don't. So the message stands on its
-    // own, which is what `assert_eq` did for the same case.
-    if is_aggregate(left_ty) || is_aggregate(right_ty) {
-        return CmpFailHelper::NoOperands;
-    }
     CmpFailHelper::Typed("i64", MirType::I64)
 }
 
-/// A value with no one-line rendering: passed by address, and its contents are
-/// a layout rather than a number.
-fn is_aggregate(ty: &MirType) -> bool {
-    matches!(
-        ty,
-        MirType::Struct(_)
-            | MirType::Enum(_)
-            | MirType::Tuple(_)
-            | MirType::Array { .. }
-            | MirType::Link(_)
-            | MirType::Result { .. }
-    )
+/// A value that is one number in a register, which the `i64` helper reads as
+/// what it is. Everything else keeps its meaning in memory it points at.
+fn is_machine_scalar(ty: &MirType) -> bool {
+    ty.is_int_like()
+        || matches!(
+            ty,
+            MirType::Bool
+                | MirType::Char
+                | MirType::F32
+                | MirType::F64
+                | MirType::RawPtr
+                | MirType::FuncPtr(_)
+        )
 }
 
 fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str)> {
@@ -598,10 +601,6 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), option_ty))
     }
 
-    /// Park an assert operand in a named local and hand back an expression that
-    /// reads it. Keeps the original node id so the comparison built around it
-    /// still resolves to the same type. A plain ident needs no parking — it's
-    /// already a name, and re-reading it costs nothing.
     /// Emit the operand-carrying failure call for a comparison, into the block
     /// that is already current.
     ///
@@ -614,17 +613,21 @@ impl<'a> MirLowerer<'a> {
         (right_expr, right_op, right_ty): (&Expr, MirOperand, &MirType),
         op_str: &str,
         prefix: &str,
-    ) {
+    ) -> Result<(), LoweringError> {
         let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
         let text = [left_expr, right_expr]
             .iter()
             .any(|e| self.ctx.node_is_text(e.id));
         match classify_cmp_fail(left_ty, right_ty, text) {
-            CmpFailHelper::NoOperands => {
+            CmpFailHelper::Debug => {
+                let left_decl = self.ctx.node_types.get(&left_expr.id).map(std::borrow::Cow::into_owned);
+                let right_decl = self.ctx.node_types.get(&right_expr.id).map(std::borrow::Cow::into_owned);
+                let left_text = self.debug_render_value(&left_op, left_ty, left_decl.as_ref(), 0)?;
+                let right_text = self.debug_render_value(&right_op, right_ty, right_decl.as_ref(), 0)?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(prefix.to_string()),
-                    args: vec![],
+                    func: FunctionRef::internal(format!("{}_cmp_debug", prefix)),
+                    args: vec![left_text, right_text, op_const],
                 }));
             }
             CmpFailHelper::Typed(suffix, want) => {
@@ -646,8 +649,13 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
         }
+        Ok(())
     }
 
+    /// Park an assert operand in a named local and hand back an expression that
+    /// reads it. Keeps the original node id so the comparison built around it
+    /// still resolves to the same type. A plain ident needs no parking — it's
+    /// already a name, and re-reading it costs nothing.
     fn bind_assert_operand(&mut self, src: &Expr, op: &MirOperand, ty: &MirType) -> Expr {
         if !expr_may_do_work(src) {
             return src.clone();
@@ -4778,7 +4786,7 @@ impl<'a> MirLowerer<'a> {
                     (right_expr, right_op, &right_ty),
                     op_str,
                     "assert_fail",
-                );
+                )?;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
                 self.builder.switch_to_block(ok_block);
@@ -4865,7 +4873,7 @@ impl<'a> MirLowerer<'a> {
                     (right_expr, right_op, &right_ty),
                     op_str,
                     "check_fail",
-                );
+                )?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
