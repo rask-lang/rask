@@ -49,3 +49,4 @@ same way, only that the tests pass.
 - [Errors are values](08-errors-are-values.md): reading what the player typed
 - [Passing values](09-passing-values.md): who has the lamp
 - [Cleanup that always runs](10-cleanup-that-always-runs.md): saving the game
+- [When one owner isn't enough](11-when-one-owner-isnt-enough.md): a tunnel collapses

@@ -1,0 +1,26 @@
+=== Testing 11-when-one-owner-isnt-enough.rk ===
+
+  ✓ every direction leads back the way it came (0ms)
+  ✓ finding an item by name (0ms)
+  ✓ a direction alone is a move (0ms)
+  ✓ the object keeps its case and inner spaces (0ms)
+  ✓ what can go wrong is a value (0ms)
+  ✗ walking to the hall
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ picking something up moves it
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ a dead end and a typo
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ two players in one room hear each other
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ a collapsed tunnel leaves a blocked exit
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ leaving drops what you carried
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ the rat wanders
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✗ a name already in the game is refused
+      11-when-one-owner-isnt-enough.rk:250: not yet implemented
+
+──────────────────────────────────────────────────
+13 tests, 5 passed, 8 failed (0ms)
