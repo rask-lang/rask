@@ -1605,13 +1605,7 @@ impl<'a> MirLowerer<'a> {
                     self.builder.switch_to_block(body_block);
                 }
 
-                for s in body {
-                    self.lower_stmt(s)?;
-                }
-
-                if let Some((param_name, handler_body)) = else_handler {
-                    self.lower_ensure_else_handler(param_name, handler_body)?;
-                }
+                self.lower_ensure_body(body, else_handler)?;
                 // Sentinel for the end of the cleanup sub-CFG: control never
                 // falls out of a cleanup block, it is spliced in at each exit.
                 if self.builder.current_block_unterminated() {
@@ -3616,7 +3610,7 @@ impl<'a> MirLowerer<'a> {
             let (val_op, _) = self.lower_expr(val_expr)?;
             // `break a` carries the resource out of the loop, so the loop's own
             // `ensure` must not still close it on the way past. Emitted before
-            // `emit_loop_cleanup` below, which is the chain that would.
+            // `emit_scope_cleanup` below, which is the chain that would.
             self.check_resource_moved(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -3626,7 +3620,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        self.emit_loop_cleanup(ensure_depth);
+        self.emit_scope_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
         }));
@@ -3644,7 +3638,7 @@ impl<'a> MirLowerer<'a> {
         let continue_block = ctx.continue_block;
         let ensure_depth = ctx.ensure_depth;
 
-        self.emit_loop_cleanup(ensure_depth);
+        self.emit_scope_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
         }));
@@ -3760,7 +3754,7 @@ impl<'a> MirLowerer<'a> {
         // The loop ran off its end or broke out: either way it reaches here,
         // and the cursor comes off the vector before anything else touches it.
         if let Some(depth) = setup.cursor_depth {
-            self.emit_loop_cleanup(depth);
+            self.emit_scope_cleanup(depth);
             self.ensure_stack.truncate(depth);
         }
         Ok(())
@@ -3770,6 +3764,46 @@ impl<'a> MirLowerer<'a> {
     fn is_take_all_call(expr: &Expr) -> bool {
         matches!(&expr.kind, ExprKind::MethodCall { method, args, .. }
             if method == "take_all" && args.is_empty())
+    }
+
+    /// An `ensure` body, as the block it is (ctrl.ensure/EN1): what it binds
+    /// stays in it, and an `ensure` inside it runs when the body ends.
+    ///
+    /// The body is lowered into a cleanup block that control only ever enters
+    /// at a scope exit, so an inner `ensure` there is registered on the same
+    /// stack as the frame's own and nothing popped it. It stayed on the stack
+    /// for the rest of the function, and the exits of the frame ran its body
+    /// where the variables it reads don't exist (#1915: a segfault in
+    /// `rask_resource_is_consumed`).
+    ///
+    /// Shared with the hook thunk, which lowers the same body for a panic.
+    pub(super) fn lower_ensure_body(
+        &mut self,
+        body: &[Stmt],
+        else_handler: &Option<(String, Vec<Stmt>)>,
+    ) -> Result<(), LoweringError> {
+        let saved_locals = self.locals.clone();
+        let saved_strings = self.comptime_strings.clone();
+        let depth = self.ensure_stack.len();
+        let mut result = Ok(());
+        for s in body {
+            result = self.lower_stmt(s);
+            if result.is_err() {
+                break;
+            }
+        }
+        if result.is_ok() {
+            if let Some((param_name, handler_body)) = else_handler {
+                result = self.lower_ensure_else_handler(param_name, handler_body);
+            }
+        }
+        if result.is_ok() && self.builder.current_block_unterminated() {
+            self.emit_scope_cleanup(depth);
+        }
+        self.ensure_stack.truncate(depth);
+        self.locals = saved_locals;
+        self.comptime_strings = saved_strings;
+        result
     }
 
     /// ER2: route an error out of an `ensure` body into its `else |e|` handler.

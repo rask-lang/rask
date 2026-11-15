@@ -266,6 +266,11 @@ impl BlockBuilder {
             .map(|b| b.terminator.kind.clone())
     }
 
+    /// A block's terminator, as written so far.
+    pub fn block_terminator(&self, block: BlockId) -> MirTerminator {
+        self.function.blocks[block.0 as usize].terminator.clone()
+    }
+
     /// Get the destination local of the last Call statement in the current block.
     /// Used to check the result of an ensure body's cleanup call.
     pub fn last_call_dst(&self) -> Option<LocalId> {

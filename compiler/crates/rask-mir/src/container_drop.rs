@@ -3090,6 +3090,7 @@ fn lent_slots(
     // one a closure copied in.
     let mut lent_to_closures: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
     let mut not_lent: HashSet<LocalId> = HashSet::new();
+    let mut lent_to_ensures: Vec<LocalId> = Vec::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         match &stmt.kind {
             MirStmtKind::ClosureCreate { dst, captures, .. } => {
@@ -3102,7 +3103,9 @@ fn lent_slots(
                 }
             }
             MirStmtKind::EnsureHookRegister { captures, .. } => {
-                not_lent.extend(captures.iter().map(|c| c.local_id));
+                for c in captures.iter().filter(|c| c.by_ref) {
+                    lent_to_ensures.push(c.local_id);
+                }
             }
             _ => {}
         }
@@ -3112,6 +3115,7 @@ fn lent_slots(
 
     let mut candidates: Vec<LocalId> = slots_whose_address_is_taken(func).into_iter().collect();
     candidates.extend(lent_to_closures.keys().copied());
+    candidates.extend(lent_to_ensures);
     candidates.sort_by_key(|l| l.0);
     candidates.dedup();
     for slot in candidates {

@@ -4343,15 +4343,7 @@ impl<'a> MirLowerer<'a> {
         // immutable, and a later ensure would snapshot it.
         let saved_meta = self.local_meta.clone();
         let saved_in_thunk = std::mem::replace(&mut self.in_ensure_thunk, true);
-        let body_result = (|| -> Result<(), LoweringError> {
-            for s in body {
-                self.lower_stmt(s)?;
-            }
-            if let Some((param_name, handler_body)) = else_handler {
-                self.lower_ensure_else_handler(param_name, handler_body)?;
-            }
-            Ok(())
-        })();
+        let body_result = self.lower_ensure_body(body, else_handler);
         self.in_ensure_thunk = saved_in_thunk;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
@@ -4388,59 +4380,85 @@ impl<'a> MirLowerer<'a> {
         if !self.builder.current_block_unterminated() {
             return;
         }
-        self.emit_loop_cleanup(ensure_depth);
+        self.emit_scope_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: next,
         }));
     }
 
-    fn emit_loop_cleanup(&mut self, depth: usize) {
+    /// Run the cleanups registered above `depth`, newest first, here in the
+    /// current block, and carry on after them.
+    ///
+    /// Each one is copied in whole: every block its body made, not only the
+    /// first. A body with a `match`, an `if`, a loop or an `else` handler is a
+    /// small graph of blocks, and copying just the head ran the statements
+    /// before the first branch and dropped the rest (#1916: an `ensure` whose
+    /// body was a `match` did nothing at the end of a loop turn). The copy is
+    /// ordinary code in the frame's own flow, so every pass that follows a
+    /// value through the frame sees the body's reads where they happen.
+    ///
+    /// The end of a body is an `Unreachable` (the original is spliced into a
+    /// chain by codegen); in the copy it is a jump to wherever the next body
+    /// starts. A body that lowered a nested `ensure` already ran it in its own
+    /// copy (`lower_ensure_body`), so its blocks hold no registration left over.
+    fn emit_scope_cleanup(&mut self, depth: usize) {
         for i in (depth..self.ensure_stack.len()).rev() {
-            let block_id = self.ensure_stack[i];
-            let stmts: Vec<_> = self.builder.block_stmts(block_id).to_vec();
-            // Check if this cleanup block has a sub-CFG (Branch terminator)
-            let term_kind = self.builder.block_terminator_kind(block_id);
-            if let Some(MirTerminatorKind::Branch { cond, then_block, else_block }) = term_kind {
-                // Branching ensure (ER2 else handler): create block copies
-                for stmt in stmts {
-                    self.builder.push_stmt(stmt);
-                }
-                // Create local copies of the sub-blocks
-                let then_copy = self.builder.create_block();
-                let else_copy = self.builder.create_block();
-                let merge = self.builder.create_block();
+            let head = self.ensure_stack[i];
+            self.copy_cleanup_body(head);
+        }
+    }
 
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond,
-                    then_block: then_copy,
-                    else_block: else_copy,
-                }));
-
-                // Copy then-block (handler) statements
-                self.builder.switch_to_block(then_copy);
-                let then_stmts: Vec<_> = self.builder.block_stmts(then_block).to_vec();
-                for stmt in then_stmts {
-                    self.builder.push_stmt(stmt);
-                }
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
-
-                // Copy else-block (done) — typically empty, just continues
-                self.builder.switch_to_block(else_copy);
-                let else_stmts: Vec<_> = self.builder.block_stmts(else_block).to_vec();
-                for stmt in else_stmts {
-                    self.builder.push_stmt(stmt);
-                }
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
-
-                // Continue in merge block
-                self.builder.switch_to_block(merge);
-            } else {
-                // Simple ensure: just copy statements inline
-                for stmt in stmts {
-                    self.builder.push_stmt(stmt);
-                }
+    fn copy_cleanup_body(&mut self, head: BlockId) {
+        // The blocks the body can reach, in the order they were found.
+        let mut order: Vec<BlockId> = Vec::new();
+        let mut seen: std::collections::HashSet<BlockId> = std::collections::HashSet::new();
+        let mut stack = vec![head];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            order.push(id);
+            let Some(kind) = self.builder.block_terminator_kind(id) else { continue };
+            match kind {
+                // A chain of bodies and a return are leaving the frame; they
+                // name blocks that aren't part of this body.
+                MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Return { .. } => {}
+                other => stack.extend(crate::analysis::cfg::successors(&MirTerminator::dummy(other))),
             }
         }
+
+        let merge = self.builder.create_block();
+        let copy_of: HashMap<BlockId, BlockId> =
+            order.iter().map(|b| (*b, self.builder.create_block())).collect();
+        let remap = |b: &BlockId| copy_of.get(b).copied().unwrap_or(*b);
+
+        // Into the copy of the head from the block this was called in.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: copy_of[&head] }));
+        for id in &order {
+            let stmts: Vec<_> = self.builder.block_stmts(*id).to_vec();
+            let term = self.builder.block_terminator(*id);
+            self.builder.switch_to_block(copy_of[id]);
+            for stmt in stmts {
+                self.builder.push_stmt(stmt);
+            }
+            let kind = match term.kind {
+                MirTerminatorKind::Unreachable => MirTerminatorKind::Goto { target: merge },
+                MirTerminatorKind::Goto { target } => MirTerminatorKind::Goto { target: remap(&target) },
+                MirTerminatorKind::Branch { cond, then_block, else_block } => MirTerminatorKind::Branch {
+                    cond,
+                    then_block: remap(&then_block),
+                    else_block: remap(&else_block),
+                },
+                MirTerminatorKind::Switch { value, cases, default } => MirTerminatorKind::Switch {
+                    value,
+                    cases: cases.into_iter().map(|(v, b)| (v, remap(&b))).collect(),
+                    default: remap(&default),
+                },
+                other => other,
+            };
+            self.builder.terminate(MirTerminator::new(kind, term.span));
+        }
+        self.builder.switch_to_block(merge);
     }
 
     /// `all_decls` provides function signatures for resolving call return types.

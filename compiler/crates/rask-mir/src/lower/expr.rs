@@ -2247,7 +2247,7 @@ impl<'a> MirLowerer<'a> {
                 self.lower_stmt(stmt)?;
             }
             // EN7: run loop-scoped ensures at iteration end
-            self.emit_loop_cleanup(ensure_depth);
+            self.emit_scope_cleanup(ensure_depth);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: loop_block,
             }));
@@ -11289,7 +11289,7 @@ impl<'a> MirLowerer<'a> {
         // `continue` drain back to the loop's depth. Only the fall-through
         // exit is left to us.
         if self.builder.current_block_unterminated() {
-            self.emit_loop_cleanup(ensure_depth);
+            self.emit_scope_cleanup(ensure_depth);
         }
         self.ensure_stack.truncate(ensure_depth);
         self.locals = saved_locals;
