@@ -30,19 +30,6 @@ impl ResolveError {
         }
     }
 
-    /// `Cash(amount: i32)`: a type where a field's pattern goes.
-    pub fn field_pattern_names_type(
-        pattern: String,
-        field: String,
-        ty: String,
-        span: Span,
-    ) -> Self {
-        Self {
-            kind: ResolveErrorKind::FieldPatternNamesType { pattern, field, ty },
-            span,
-        }
-    }
-
     pub fn duplicate(name: String, span: Span, previous: Span) -> Self {
         Self {
             kind: ResolveErrorKind::DuplicateDefinition { name, previous },
@@ -219,11 +206,6 @@ pub enum ResolveErrorKind {
     /// A stdlib module or type name used with no `import` for it (IM1).
     #[error("`{name}` is used but never imported")]
     ModuleNotImported { name: String, module: Option<String> },
-
-    /// `Cash(amount: i32)`. After the colon a pattern goes, not a type: the
-    /// bare name `i32` would rename the field.
-    #[error("patterns don't take types: `{field}: {ty}` would rename `{field}` to `{ty}`")]
-    FieldPatternNamesType { pattern: String, field: String, ty: String },
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },

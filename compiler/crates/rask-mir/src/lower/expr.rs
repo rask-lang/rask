@@ -8468,15 +8468,27 @@ impl<'a> MirLowerer<'a> {
         niche: Option<i64>,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<PatternTest, LoweringError> {
-        // What the value is to the checker: a generic enum's payload takes
-        // its type from here, not from the shared layout's placeholder.
         let checked = self.ctx.lookup_raw_type(scrutinee.id);
+        self.emit_is_test_typed(checked.as_deref(), val, val_ty, niche, pattern)
+    }
+
+    /// `emit_is_test` for a value that isn't an expression, a struct's field,
+    /// say. `checked` is the checker's type of `val`: a generic enum's payload
+    /// takes its type from there, not from the shared layout's placeholder.
+    pub(super) fn emit_is_test_typed(
+        &mut self,
+        checked: Option<&Type>,
+        val: &MirOperand,
+        val_ty: &MirType,
+        niche: Option<i64>,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Result<PatternTest, LoweringError> {
         // A variant nested inside a variant can't be one flat expression: the
         // inner tag means nothing until the outer one has passed, so it's
         // tested with branches and the answer collected in a bool (#1645).
         if matches!(val_ty, MirType::Enum(_)) && self.has_nested_variant(pattern) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_subpattern_test(val, val_ty, checked.as_deref(), pattern, fail)
+                this.emit_subpattern_test(val, val_ty, checked, pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8485,7 +8497,7 @@ impl<'a> MirLowerer<'a> {
         // one above it held.
         if let Some(path) = self.deep_result_path(pattern, val_ty) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_result_path_test(val, val_ty, checked.as_deref(), &path, pattern, fail)
+                this.emit_result_path_test(val, val_ty, checked, &path, pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8505,7 +8517,7 @@ impl<'a> MirLowerer<'a> {
         // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
         // variant the value doesn't hold reads payload bytes nobody uses, and
         // the tag test already says no.
-        for (field, wanted) in self.tested_variant_fields(val, val_ty, checked.as_deref(), pattern) {
+        for (field, wanted) in self.tested_variant_fields(val, val_ty, checked, pattern) {
             if let Some(ok) = self.emit_value_matches(&field, &wanted) {
                 matches = self.emit_and(matches, ok);
             }
@@ -8537,12 +8549,13 @@ impl<'a> MirLowerer<'a> {
         Ok(matches)
     }
 
-    /// Whether a variant pattern has another variant pattern in a field.
+    /// Whether a variant pattern has another variant pattern, or a type test,
+    /// in a field.
     fn has_nested_variant(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
-            PatternKind::Constructor { .. } | PatternKind::Struct { .. } => true,
-            PatternKind::Ident(_) => self.pattern_names_variant(p),
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. } => true,
+            PatternKind::Ident(_) => !self.pattern_binds(p),
             _ => false,
         };
         match &pattern.kind {
@@ -8677,22 +8690,39 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
         val_ty: &MirType,
     ) {
+        let checked = self.ctx.lookup_raw_type(scrutinee.id);
+        self.bind_tested_pattern_typed(test, pattern, checked.as_deref(), val.clone(), payload_ty, is_niche, val_ty);
+        let retained_ty = match &test.flat_payload {
+            Some((_, leaf)) => MirType::Option(Box::new(leaf.clone())),
+            None => val_ty.clone(),
+        };
+        self.retain_pattern_copies(pattern, scrutinee, &retained_ty);
+    }
+
+    /// `bind_tested_pattern` for a value that isn't an expression. Retaining
+    /// the copies it binds out of borrowed storage is the caller's, which
+    /// knows where the value was read from.
+    pub(super) fn bind_tested_pattern_typed(
+        &mut self,
+        test: &PatternTest,
+        pattern: &rask_ast::expr::Pattern,
+        checked: Option<&Type>,
+        val: MirOperand,
+        payload_ty: Option<MirType>,
+        is_niche: bool,
+        val_ty: &MirType,
+    ) {
         match &test.flat_payload {
             Some((inner, inner_payload)) => {
                 let opt_ty = MirType::Option(Box::new(inner_payload.clone()));
-                self.bind_pattern_payload_niche(
-                    pattern, scrutinee, MirOperand::Local(*inner),
-                    Some(inner_payload.clone()), false, &opt_ty,
+                self.bind_pattern_fields(
+                    pattern, MirOperand::Local(*inner), Some(inner_payload.clone()), false, &opt_ty, checked,
                 );
             }
             None => match self.bindable_result_path(pattern, val_ty) {
-                Some(path) => {
-                    let checked = self.ctx.lookup_raw_type(scrutinee.id);
-                    self.bind_result_path(&val, val_ty, checked.as_deref(), &path, pattern);
-                    self.retain_pattern_copies(pattern, scrutinee, val_ty);
-                }
+                Some(path) => self.bind_result_path(&val, val_ty, checked, &path, pattern),
                 None => {
-                    self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, val_ty);
+                    self.bind_pattern_fields(pattern, val, payload_ty, is_niche, val_ty, checked);
                 }
             },
         }

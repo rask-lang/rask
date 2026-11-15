@@ -950,21 +950,37 @@ fn compile_error_output(name: &str) -> (bool, String) {
 ///
 /// `field: name` renames the field, so `i32` after the colon used to rename
 /// `amount` to `i32`; the arm body then failed with "undefined symbol:
-/// amount", which blames the wrong thing.
+/// amount", which blames the wrong thing. A type after the colon is a type
+/// test, so on a field that holds that type and others (`result: IoError` on
+/// `i64 or IoError`) it is a real question and compiles. Only a field of
+/// exactly that type makes the test empty.
 #[test]
-fn a_type_in_a_field_pattern_is_its_own_error() {
+fn a_type_that_tests_nothing_in_a_field_pattern_is_its_own_error() {
     let (failed, out) = compile_error_output("pattern_field_type.rk");
     assert!(failed, "the fixture has to fail to check:\n{out}");
-    assert_eq!(out.matches("error[E0423]").count(), 2, "one per written type:\n{out}");
+    assert_eq!(out.matches("error[E0423]").count(), 2, "one per written type, no more:\n{out}");
     assert!(
-        out.contains("`amount: i32` would rename `amount` to `i32`"),
-        "the message names the rename:\n{out}"
+        out.contains("`amount: i32` tests a type the field always has, and binds nothing"),
+        "the message says the test is empty:\n{out}"
     );
-    assert!(out.contains("write `Payment.Cash(amount)`"), "the fix is the bare field:\n{out}");
+    assert!(out.contains("write `Payment.Cash(amount)` to bind it"), "the fix is the bare field:\n{out}");
     assert!(
         !out.contains("undefined symbol"),
         "the field is still bound, so nothing cascades:\n{out}"
     );
+    // The same words on a union field are a test that binds nothing: using the
+    // name says so, and a type the field can't hold is the ordinary mismatch.
+    assert!(
+        out.contains("error[E0424]: `result` is not bound: `result: i64` tests the field's type and binds nothing"),
+        "a use of a name no pattern bound:\n{out}"
+    );
+    assert!(out.contains("`Money` is not a branch of `i64 or IoError`"), "an impossible type:\n{out}");
+    // A struct matched by position: E0416, and its fix isn't what E0423 rejects.
+    assert!(
+        out.contains("Write `n`, since the field there is already of type `i64`"),
+        "the positional fix binds the field:\n{out}"
+    );
+    assert!(!out.contains("`n: i64`"), "never the form E0423 rejects:\n{out}");
 }
 
 /// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in

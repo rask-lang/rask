@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// More shapes of a type pattern in a field's position: a string payload, an
+// optional string, a guard, and `is`.
+
+enum Fault {
+    Bad(string)
+}
+
+extend Fault {
+    func message(self) -> string {
+        match self {
+            Fault.Bad(why) => return why
+        }
+    }
+}
+
+func fetch(key: string) -> string or Fault {
+    if key == "" {
+        return Fault.Bad("empty key")
+    }
+    return "value of {key}"
+}
+
+struct Entry {
+    key: string
+    found: string or Fault
+}
+
+struct Note {
+    text: string?
+}
+
+func entry_line(e: Entry) -> string {
+    match e {
+        Entry(key, found: Fault as f) => return "{key}: failed ({f.message()})"
+        Entry(key, found: string as v) => return "{key}: {v}"
+    }
+}
+
+func note_line(n: Note) -> string {
+    match n {
+        Note(text: none) => return "no note"
+        Note(text: string as t) => return "note: {t}"
+    }
+}
+
+func guarded(e: Entry) -> string {
+    match e {
+        Entry(key, found: string as v) if key == "a" => return "a is {v}"
+        Entry(key, found: string) => return "{key} is something"
+        Entry(key, found: Fault) => return "{key} failed"
+    }
+}
+
+test "a string payload binds on its branch" {
+    assert entry_line(Entry(key: "k", found: fetch("k"))) == "k: value of k"
+    assert entry_line(Entry(key: "", found: fetch(""))) == ": failed (empty key)"
+}
+
+test "an optional string field" {
+    assert note_line(Note(text: none)) == "no note"
+    assert note_line(Note(text: "hi")) == "note: hi"
+}
+
+test "a guard falls through to the next arm" {
+    assert guarded(Entry(key: "a", found: fetch("a"))) == "a is value of a"
+    assert guarded(Entry(key: "b", found: fetch("b"))) == "b is something"
+    assert guarded(Entry(key: "", found: fetch(""))) == " failed"
+}
+
+test "is with a bound payload" {
+    let good = Entry(key: "g", found: fetch("g"))
+    let bad = Entry(key: "", found: fetch(""))
+    if good is Entry(found: string as v) {
+        assert v == "value of g"
+    } else {
+        assert false
+    }
+    assert !(bad is Entry(found: string))
+    assert bad is Entry(found: Fault)
+}

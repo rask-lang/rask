@@ -42,6 +42,9 @@ pub struct Resolver {
     scopes: ScopeTree,
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
+    /// Names `field: Type` patterns declared in case the learner meant a
+    /// rename. See `ResolvedProgram::field_type_pattern_names`.
+    field_type_pattern_names: HashMap<SymbolId, crate::FieldTypePattern>,
     current_package: Option<PackageId>,
     /// Each extern's C symbol, against the first declaration of it. Two
     /// packages' externs have names of their own and still link one symbol,
@@ -112,6 +115,7 @@ impl Resolver {
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
             errors: Vec::new(),
+            field_type_pattern_names: HashMap::new(),
             current_package: None,
             import_index: crate::ImportIndex::default(),
             extern_symbols: HashMap::new(),
@@ -544,6 +548,7 @@ impl Resolver {
                 external_decls: HashMap::new(),
                 file_packages: HashMap::new(),
                 package_deps: HashMap::new(),
+                field_type_pattern_names: resolver.field_type_pattern_names,
             })
         } else {
             Err(resolver.errors)
@@ -599,6 +604,7 @@ impl Resolver {
                 external_decls: HashMap::new(),
                 file_packages: HashMap::new(),
                 package_deps: HashMap::new(),
+                field_type_pattern_names: resolver.field_type_pattern_names,
             })
         } else {
             Err(resolver.errors)
@@ -744,6 +750,7 @@ impl Resolver {
                 external_decls,
                 file_packages,
                 package_deps,
+                field_type_pattern_names: resolver.field_type_pattern_names,
             })
         } else {
             resolver.name_unlinked_scopes();
@@ -3029,21 +3036,38 @@ impl Resolver {
             }
             PatternKind::Struct { name, fields, .. } => {
                 for (field, field_pattern) in fields {
-                    // `Cash(amount: i32)`: the learner meant a type annotation,
-                    // but after the colon goes a pattern, and a bare `i32` there
-                    // would rename the field. The binding the learner wanted is
-                    // the field's own name, so declare that and the arm body
-                    // doesn't also fail with "undefined symbol: amount".
+                    // `Cash(amount: i32)`: after the colon goes a pattern, and a
+                    // bare type name there tests the field's type (ER27); it
+                    // binds nothing. Whether the test means anything depends on
+                    // the field's type, which only the checker has: on a union
+                    // or optional field it is a real test, and on a field of
+                    // exactly that type it is the learner's rename, E0423.
+                    //
+                    // Either way an arm body that uses `amount` must reach the
+                    // checker instead of dying here as "undefined symbol".
+                    // `amount` is declared tentatively, and the checker only
+                    // lets a use through when it bound the name itself. An
+                    // outer `amount` is left alone: a tentative one would
+                    // shadow it.
                     if let PatternKind::Ident(ty) = &field_pattern.kind {
-                        if ty != field && self.names_a_type(ty) {
-                            self.errors.push(ResolveError::field_pattern_names_type(
-                                name.clone(),
+                        if ty != field && self.names_a_type(ty) && self.scopes.lookup(field).is_none() {
+                            let sym_id = self.symbols.insert(
                                 field.clone(),
-                                ty.clone(),
-                                field_pattern.span,
-                            ));
-                            self.define_pattern_binding(field);
-                            continue;
+                                SymbolKind::Variable { mutable: false },
+                                None,
+                                Span::new(0, 0),
+                                false,
+                            );
+                            if self.scopes.define(field.clone(), sym_id, Span::new(0, 0)).is_ok() {
+                                self.field_type_pattern_names.insert(
+                                    sym_id,
+                                    crate::FieldTypePattern {
+                                        pattern: name.clone(),
+                                        field: field.clone(),
+                                        ty: ty.clone(),
+                                    },
+                                );
+                            }
                         }
                     }
                     self.resolve_pattern(field_pattern);

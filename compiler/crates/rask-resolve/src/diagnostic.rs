@@ -60,21 +60,6 @@ impl ToDiagnostic for crate::ResolveError {
                 .with_fix("check spelling or add an import")
                 .with_why("all symbols must be defined before use — Rask requires explicit imports"),
 
-            FieldPatternNamesType { pattern, field, ty } => Diagnostic::error(format!(
-                "patterns don't take types: `{field}: {ty}` would rename `{field}` to `{ty}`"
-            ))
-            .with_code("E0423")
-            .with_primary(self.span, format!("`{ty}` is a type, not a name for the field"))
-            .with_help(format!(
-                "after the colon goes a pattern: `{field}: other_name` renames the field. \
-                 The field's type is already known from `{pattern}`"
-            ))
-            .with_fix(format!("write `{pattern}({field})`"))
-            .with_why(
-                "a pattern names what to bind or what to match, and the type comes from the \
-                 value being matched, so there is nowhere to write one",
-            ),
-
             // structure.modules/IM1: `pkg.Name` follows from `import pkg`. The
             // stdlib's own source is resolved alongside the program and declares
             // each module as a plain type, so the name was in scope whether or
