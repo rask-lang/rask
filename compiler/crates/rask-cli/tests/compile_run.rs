@@ -1735,8 +1735,19 @@ fn error_decode_skips_constructor() {
     let (failed, out) = compile_error_output("decode_skips_constructor.rk");
     assert!(failed, "decoding a type with a checking constructor must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0418").count(), 2,
-        "one error for `Port`, one for the `Listener` that holds a `Vec<Port>`: {}", out,
+        out.matches("E0418").count(), 4,
+        "`Port`, the `Listener` that holds a `Vec<Port>`, `Gate` written `-> Self or E`, \
+         and `Wrapper<Port>`: {}", out,
+    );
+    // The type argument is what gets decoded. Judging the bare `T` blamed a field
+    // and advised `@no_serialize`, which is wrong for a `Port`.
+    assert!(
+        !out.contains("E0388") && !out.contains("@no_serialize"),
+        "`Wrapper<Port>` is a constructor problem, not an undecodable field: {}", out,
+    );
+    assert!(
+        out.contains("`Gate.open` checks its input"),
+        "a constructor written `-> Self or E` is still one: {}", out,
     );
     assert!(
         out.contains("`Port.new` checks its input") && out.contains("`Listener` holds a `Port`"),

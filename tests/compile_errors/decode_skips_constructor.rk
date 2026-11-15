@@ -31,6 +31,24 @@ extend Port {
     }
 }
 
+// `-> Self or E` is the same constructor as `-> Gate or E`.
+struct Gate {
+    level: u8
+}
+
+extend Gate {
+    func open(level: u8) -> Self or PortError {
+        if level > 9 {
+            return PortError(reason: "level out of range")
+        }
+        return Gate(level: level)
+    }
+}
+
+struct Wrapper<T> {
+    inner: T
+}
+
 struct Listener {
     name: string
     ports: Vec<Port>
@@ -48,4 +66,24 @@ func main() {
         return
     }
     println(l.name)
+
+    // ERROR: written `-> Self or PortError`, still a checking constructor [E0418]
+    let g = json.decode<Gate>("{{\"level\": 99}") catch e => {
+        return
+    }
+    println("{g.level}")
+
+    // ERROR: the argument is what's decoded, so this is `Port`'s problem and
+    // not a field called `inner` that "can't be decoded" [E0418]
+    let w = json.decode<Wrapper<Port>>("{{\"inner\": {{\"value\": 0}}") catch e => {
+        return
+    }
+    println("{w.inner.value}")
+
+    // Fine: the same wrapper over plain data is still Decode. Not an error, so
+    // the test counts exactly four.
+    let ok = json.decode<Wrapper<i64>>("{{\"inner\": 7}") catch e => {
+        return
+    }
+    println("{ok.inner}")
 }

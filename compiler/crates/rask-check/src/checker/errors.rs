@@ -910,6 +910,8 @@ pub enum TypeError {
         ty: String,
         /// The type that has the constructor: `ty` itself, or one it holds.
         owner: String,
+        /// `owner` is something `ty` holds, not `ty` itself.
+        through: bool,
         constructor: String,
         /// The constructor's return type as written, `Port or PortError`.
         returns: String,

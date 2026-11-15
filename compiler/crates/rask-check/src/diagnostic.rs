@@ -1916,11 +1916,11 @@ impl ToDiagnostic for crate::TypeError {
 
             // E12a: `Port.new` rejects a zero and `json.decode<Port>` would hand
             // one out anyway. The fields are fine; the way in is the problem.
-            DecodeSkipsConstructor { ty, owner, constructor, returns, span } => {
-                let via = if ty == owner {
-                    String::new()
-                } else {
+            DecodeSkipsConstructor { ty, owner, through, constructor, returns, span } => {
+                let via = if *through {
                     format!(" (`{}` holds a `{}`)", ty, owner)
+                } else {
+                    String::new()
                 };
                 Diagnostic::error(format!("`{}` cannot be decoded: `{}.{}` checks its input{}", ty, owner, constructor, via))
                     .with_code("E0418")

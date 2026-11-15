@@ -162,6 +162,7 @@ impl Collection {
 pub struct SkippedConstructor {
     /// The type that has the constructor. It can be one the asked type holds,
     /// not the asked type itself.
+    pub id: TypeId,
     pub ty: String,
     /// The constructor's name, as declared.
     pub constructor: String,
@@ -263,7 +264,7 @@ impl<'a> InterfaceChecker<'a> {
     /// `user_type_id` narrows to structs and enums, which is what conformance
     /// lookup wants. A nominal newtype has to be reachable too — its `implements`
     /// clause is a conformance declaration of a different shape.
-    fn named_type_id(&self, ty: &Type) -> Option<rask_types::TypeId> {
+    pub fn named_type_id(&self, ty: &Type) -> Option<rask_types::TypeId> {
         match ty {
             Type::Named(id) => Some(*id),
             Type::Generic { base, .. } => Some(*base),
@@ -668,7 +669,11 @@ impl<'a> InterfaceChecker<'a> {
             Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
             _ => None,
         }?;
-        self.unencodable_field_of(id, &mut Vec::new())
+        let targs = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => Self::type_args(args),
+            _ => Vec::new(),
+        };
+        self.unencodable_field_of(id, &targs, &mut Vec::new())
     }
 
     /// E13a: the first field the wire form leaves out that has no default to
@@ -757,6 +762,7 @@ impl<'a> InterfaceChecker<'a> {
         let raw_decode_declared = self.types.declares_conformance(id, &TypeExpr::named("Decode"));
         let found = match self.types.checking_constructor(id).filter(|_| !raw_decode_declared) {
             Some(ctor) => Some(SkippedConstructor {
+                id,
                 ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
                 constructor: ctor.name.clone(),
                 returns: self.format_signature_return(ctor),
@@ -821,9 +827,12 @@ impl<'a> InterfaceChecker<'a> {
         })
     }
 
+    /// `targs` are the arguments the type was written with, so a field of type
+    /// `T` is judged as the `Port` it stands for and not as a bare `T`.
     fn unencodable_field_of(
         &self,
         id: TypeId,
+        targs: &[Type],
         visited: &mut Vec<TypeId>,
     ) -> Option<(String, String)> {
         if visited.contains(&id) {
@@ -831,18 +840,20 @@ impl<'a> InterfaceChecker<'a> {
         }
         visited.push(id);
         let found = match self.types.get(id) {
-            Some(TypeDef::Struct { fields, private_fields, skipped_fields, .. }) => {
-                fields.iter().find_map(|(fname, fty)| {
+            Some(TypeDef::Struct { fields, type_params, private_fields, skipped_fields, .. }) => {
+                let subst = Self::build_subst(type_params, targs);
+                fields.iter().find_map(|(fname, declared)| {
                     if private_fields.contains(fname) || skipped_fields.contains(fname) {
                         return None;
                     }
+                    let fty = &Self::apply_subst(declared, &subst);
                     if self.type_is_encodable(fty, &mut visited.clone()) {
                         return None;
                     }
                     // Point at the innermost field, so a nested struct reports
                     // `home.zip` rather than just `home`.
-                    match self.nested_field_id(fty) {
-                        Some(inner) => match self.unencodable_field_of(inner, visited) {
+                    match self.nested_field(fty) {
+                        Some((inner, inner_args)) => match self.unencodable_field_of(inner, &inner_args, visited) {
                             Some((path, ty_name)) => Some((format!("{}.{}", fname, path), ty_name)),
                             None => Some((fname.clone(), self.display_ty(fty))),
                         },
@@ -861,10 +872,20 @@ impl<'a> InterfaceChecker<'a> {
         format!("{}", self.types.resolve_type_names(ty))
     }
 
-    fn nested_field_id(&self, ty: &Type) -> Option<TypeId> {
+    fn nested_field(&self, ty: &Type) -> Option<(TypeId, Vec<Type>)> {
         match ty {
-            Type::Named(id) => Some(*id),
-            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::Named(id) => Some((*id, Vec::new())),
+            Type::UnresolvedNamed(name) => Some((self.types.get_type_id(name)?, Vec::new())),
+            // A container's own fields aren't the culprit; its elements are,
+            // and the field is the right place to point.
+            Type::Generic { base, args }
+                if !matches!(self.types.get(*base).map(TypeDef::name), Some("Vec" | "Map" | "Set")) =>
+            {
+                Some((*base, Self::type_args(args)))
+            }
+            Type::UnresolvedGeneric { name, args } if !matches!(name.as_str(), "Vec" | "Map" | "Set") => {
+                Some((self.types.get_type_id(name)?, Self::type_args(args)))
+            }
             _ => None,
         }
     }
