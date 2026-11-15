@@ -24,7 +24,9 @@ func number_of(name: string) -> string {
 
 // A Map hands its entries back in no particular order, so don't rely on one.
 //
-// Your turn: `count_words` counts how often each word appears.
+// Your turn: `count_words` counts how often each word appears. `??` comes
+// after arithmetic, so `m.get(k) ?? 0 + 1` means `m.get(k) ?? 1`; put the
+// `??` in parentheses before adding to it.
 
 func count_words(words: Vec<string>) -> Map<string, i32> {
     todo()

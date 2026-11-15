@@ -3,9 +3,10 @@
 // 21. Changing an item in a Vec
 //
 // One change to an item in a Vec is one line: `team[i].health -= 3`. For
-// several, you'd want a name for the item. But `let p = team[i]` would be a
-// second owner of something the Vec owns (step 19), so it doesn't compile
-// for a Player.
+// several, you'd want a name for the item. But a Player is too big to copy
+// (step 19), so `let p = team[i]` would be a second name for an item the Vec
+// owns, and a change through either name would change both. That doesn't
+// compile.
 //
 // `with team[i] as p { ... }` names the item where it sits: changing `p`
 // changes the item in the Vec. While the block runs, the Vec can't grow or

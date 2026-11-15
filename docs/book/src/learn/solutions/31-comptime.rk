@@ -20,7 +20,8 @@ const SQUARES = comptime {
 }
 
 // A block that gives a value ends with that value on its own line, like
-// `table` above. Only functions need `return`.
+// `table` above. `return` would leave a function, and this block isn't in
+// one.
 //
 // Your turn: write `is_prime`. `PRIMES` calls it while compiling, so until
 // it's done, `rask test` stops before running anything, with the compiler
