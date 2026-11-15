@@ -2344,6 +2344,8 @@ impl<'a> FunctionBuilder<'a> {
                             let (tag_size, _) = rask_layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
+                                4 => types::I32,
+                                8 => types::I64,
                                 _ => types::I8,
                             };
                             (offset, ty)

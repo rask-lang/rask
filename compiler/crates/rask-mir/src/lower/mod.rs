@@ -5620,12 +5620,27 @@ impl<'a> MirLowerer<'a> {
             }));
             result
         } else {
-            let result = self.builder.alloc_temp(MirType::U8);
+            let result = self.builder.alloc_temp(self.stored_tag_type(value));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::EnumTag { value: value.clone() },
             }));
             result
+        }
+    }
+
+    /// The type a tag read off `value` has: the width its enum's layout
+    /// stores. A byte for the usual enum, two for one with over 256 variants,
+    /// more for a backed one. Wrappers (`T?`, `T or E`) keep a byte.
+    fn stored_tag_type(&self, value: &MirOperand) -> MirType {
+        let MirOperand::Local(id) = value else { return MirType::U8 };
+        match self.builder.local_type(*id) {
+            Some(MirType::Enum(eid)) => self
+                .ctx
+                .enum_layouts
+                .get(eid.id as usize)
+                .map_or(MirType::U8, |l| self.ctx.type_to_mir(&l.tag_ty)),
+            _ => MirType::U8,
         }
     }
 
