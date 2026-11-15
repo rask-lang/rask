@@ -172,6 +172,26 @@ pub struct SkippedConstructor {
     pub error: String,
 }
 
+/// What a walk of the types a decode or a write reaches does with each one.
+enum Walk<R> {
+    /// This is the one: stop.
+    Found(R),
+    /// Leave it alone, fields and all.
+    Skip,
+    /// Nothing wrong with it; look at what it holds.
+    Descend,
+}
+
+/// E12b: a type that reads itself through its own `decode` but has no say in
+/// how it is written.
+#[derive(Debug, Clone)]
+pub struct UnpairedDecode {
+    pub id: TypeId,
+    pub ty: String,
+    /// What its `decode` takes, as a message reads it.
+    pub wire: String,
+}
+
 /// Checks structural interface satisfaction.
 pub struct InterfaceChecker<'a> {
     /// The type table containing all type definitions.
@@ -185,11 +205,13 @@ pub struct InterfaceChecker<'a> {
     /// a type that writes its own `decode` counts wherever it sits, whatever
     /// its fields are (std.encoding/E12b).
     decoding: bool,
+    /// Answering `Encode`: the same for a type with its own `encode`.
+    encoding: bool,
 }
 
 impl<'a> InterfaceChecker<'a> {
     pub fn new(types: &'a TypeTable) -> Self {
-        Self { types, errors: Vec::new(), claim_input: false, decoding: false }
+        Self { types, errors: Vec::new(), claim_input: false, decoding: false, encoding: false }
     }
 
     /// A checker that answers the `Decode` questions, for the diagnostics that
@@ -198,9 +220,16 @@ impl<'a> InterfaceChecker<'a> {
         Self { decoding: true, ..Self::new(types) }
     }
 
-    /// The type decodes through its own `decode`, so its fields have no say.
-    fn decodes_itself(&self, id: TypeId) -> bool {
-        self.decoding && self.types.custom_decode(id).is_some()
+    /// The same for `Encode`.
+    pub fn for_encode(types: &'a TypeTable) -> Self {
+        Self { encoding: true, ..Self::new(types) }
+    }
+
+    /// The type reads or writes itself through its own `decode` or `encode`,
+    /// whichever is being asked, so its fields have no say.
+    fn writes_itself(&self, id: TypeId) -> bool {
+        (self.decoding && self.types.custom_decode(id).is_some())
+            || (self.encoding && self.types.custom_encode(id).is_some())
     }
 
     fn generates(&self, id: TypeId) -> bool {
@@ -389,6 +418,7 @@ impl<'a> InterfaceChecker<'a> {
                 });
             }
             self.decoding = base_interface == "Decode";
+            self.encoding = base_interface == "Encode";
             let structurally_ok = self.type_is_encodable(ty, &mut Vec::new());
             // E13a: decoding has one requirement encoding doesn't. Encoding never
             // needs a value for a field it leaves out; decoding has to build the
@@ -400,8 +430,12 @@ impl<'a> InterfaceChecker<'a> {
             let decodable = base_interface != "Decode"
                 || (self.first_defaultless_excluded_field(ty).is_none()
                     && self.decode_skips_constructor(ty).is_none());
+            // E12b: and a type that reads itself through its own `decode` has
+            // to say how it is written, or the output isn't what it reads.
+            let encodable = base_interface != "Encode" || self.encode_skips_decode(ty).is_none();
             self.decoding = false;
-            if structurally_ok && decodable {
+            self.encoding = false;
+            if structurally_ok && decodable && encodable {
                 return Ok(());
             }
             return Err(InterfaceError::NotSatisfied {
@@ -717,30 +751,77 @@ impl<'a> InterfaceChecker<'a> {
     /// `Port` does. Fields the wire form leaves out are never decoded, so
     /// they don't count.
     pub fn decode_skips_constructor(&self, ty: &Type) -> Option<SkippedConstructor> {
-        self.skipped_constructor_in(ty, &mut Vec::new())
+        self.find_wire_type(ty, &mut Vec::new(), &|id| {
+            // A claim builds a type that supplies its own generator without
+            // decoding it, so a constructor on it is never stepped around.
+            if (self.claim_input && self.generates(id)) || self.writes_itself(id) {
+                return Walk::Skip;
+            }
+            let raw_decode_declared = self.types.declares_conformance(id, &TypeExpr::named("Decode"));
+            match self.types.checking_constructor(id).filter(|_| !raw_decode_declared) {
+                Some(ctor) => Walk::Found(SkippedConstructor {
+                    id,
+                    ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
+                    constructor: ctor.name.clone(),
+                    returns: self.format_signature_return(ctor),
+                    error: match &ctor.ret {
+                        Type::Result { err, .. } => self.display_ty(err),
+                        _ => String::new(),
+                    },
+                }),
+                None => Walk::Descend,
+            }
+        })
     }
 
-    fn skipped_constructor_in(&self, ty: &Type, visited: &mut Vec<TypeId>) -> Option<SkippedConstructor> {
-        match ty {
-            Type::Result { ok, err } if matches!(**err, Type::None) => {
-                self.skipped_constructor_in(ok, visited)
+    /// E12b: the first type a write of `ty` would emit as its fields although
+    /// it reads itself through its own `decode`, and didn't say the fields are
+    /// the wire form (`T implements Encode { }`) or write something else
+    /// (`encode`). Reaches through containers and fields like the E12a walk.
+    pub fn encode_skips_decode(&self, ty: &Type) -> Option<UnpairedDecode> {
+        self.find_wire_type(ty, &mut Vec::new(), &|id| {
+            if self.writes_itself(id) {
+                return Walk::Skip;
             }
+            let Some(custom) = self.types.custom_decode(id) else { return Walk::Descend };
+            if self.types.declares_conformance(id, &TypeExpr::named("Encode")) {
+                return Walk::Descend;
+            }
+            Walk::Found(UnpairedDecode {
+                id,
+                ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
+                wire: self.display_ty(&custom.wire),
+            })
+        })
+    }
+
+    /// Walk the types a decode or a write of `ty` reaches (containers, fields,
+    /// payloads, aliases) and answer the first one `pick` finds. A field the
+    /// wire form leaves out is never visited.
+    fn find_wire_type<R>(
+        &self,
+        ty: &Type,
+        visited: &mut Vec<TypeId>,
+        pick: &dyn Fn(TypeId) -> Walk<R>,
+    ) -> Option<R> {
+        match ty {
+            Type::Result { ok, err } if matches!(**err, Type::None) => self.find_wire_type(ok, visited, pick),
             Type::Result { ok, err } => self
-                .skipped_constructor_in(ok, visited)
-                .or_else(|| self.skipped_constructor_in(err, visited)),
-            Type::Array { elem, .. } => self.skipped_constructor_in(elem, visited),
-            Type::Tuple(elems) => elems.iter().find_map(|e| self.skipped_constructor_in(e, visited)),
-            Type::Named(id) => self.skipped_constructor_of(*id, &[], visited),
+                .find_wire_type(ok, visited, pick)
+                .or_else(|| self.find_wire_type(err, visited, pick)),
+            Type::Array { elem, .. } => self.find_wire_type(elem, visited, pick),
+            Type::Tuple(elems) => elems.iter().find_map(|e| self.find_wire_type(e, visited, pick)),
+            Type::Named(id) => self.find_wire_type_of(*id, &[], visited, pick),
             Type::UnresolvedNamed(name) => {
-                self.skipped_constructor_of(self.types.get_type_id(name)?, &[], visited)
+                self.find_wire_type_of(self.types.get_type_id(name)?, &[], visited, pick)
             }
             Type::Generic { base, args } => {
                 let targs = Self::type_args(args);
-                self.skipped_constructor_in_generic(self.types.get(*base).map(TypeDef::name).as_deref(), Some(*base), &targs, visited)
+                self.find_wire_type_generic(self.types.get(*base).map(TypeDef::name).as_deref(), Some(*base), &targs, visited, pick)
             }
             Type::UnresolvedGeneric { name, args } => {
                 let targs = Self::type_args(args);
-                self.skipped_constructor_in_generic(Some(name), self.types.get_type_id(name), &targs, visited)
+                self.find_wire_type_generic(Some(name), self.types.get_type_id(name), &targs, visited, pick)
             }
             _ => None,
         }
@@ -755,51 +836,42 @@ impl<'a> InterfaceChecker<'a> {
             .collect()
     }
 
-    fn skipped_constructor_in_generic(
+    fn find_wire_type_generic<R>(
         &self,
         name: Option<&str>,
         id: Option<TypeId>,
         targs: &[Type],
         visited: &mut Vec<TypeId>,
-    ) -> Option<SkippedConstructor> {
+        pick: &dyn Fn(TypeId) -> Walk<R>,
+    ) -> Option<R> {
         if matches!(name, Some("Vec" | "Map" | "Set")) {
-            return targs.iter().find_map(|t| self.skipped_constructor_in(t, visited));
+            return targs.iter().find_map(|t| self.find_wire_type(t, visited, pick));
         }
-        self.skipped_constructor_of(id?, targs, visited)
+        self.find_wire_type_of(id?, targs, visited, pick)
     }
 
-    fn skipped_constructor_of(
+    fn find_wire_type_of<R>(
         &self,
         id: TypeId,
         targs: &[Type],
         visited: &mut Vec<TypeId>,
-    ) -> Option<SkippedConstructor> {
-        // A claim builds a type that supplies its own generator without
-        // decoding it, so a constructor on it is never stepped around.
-        if visited.contains(&id) || (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
+        pick: &dyn Fn(TypeId) -> Walk<R>,
+    ) -> Option<R> {
+        if visited.contains(&id) {
             return None;
         }
         visited.push(id);
-        let raw_decode_declared = self.types.declares_conformance(id, &TypeExpr::named("Decode"));
-        let found = match self.types.checking_constructor(id).filter(|_| !raw_decode_declared) {
-            Some(ctor) => Some(SkippedConstructor {
-                id,
-                ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
-                constructor: ctor.name.clone(),
-                returns: self.format_signature_return(ctor),
-                error: match &ctor.ret {
-                    Type::Result { err, .. } => self.display_ty(err),
-                    _ => String::new(),
-                },
-            }),
-            None => match self.types.get(id) {
+        let found = match pick(id) {
+            Walk::Found(r) => Some(r),
+            Walk::Skip => None,
+            Walk::Descend => match self.types.get(id) {
                 Some(TypeDef::Struct { fields, type_params, private_fields, skipped_fields, .. }) => {
                     let subst = Self::build_subst(type_params, targs);
                     fields.iter().find_map(|(fname, fty)| {
                         if private_fields.contains(fname) || skipped_fields.contains(fname) {
                             return None;
                         }
-                        self.skipped_constructor_in(&Self::apply_subst(fty, &subst), visited)
+                        self.find_wire_type(&Self::apply_subst(fty, &subst), visited, pick)
                     })
                 }
                 Some(TypeDef::Enum { variants, type_params, .. }) => {
@@ -807,11 +879,11 @@ impl<'a> InterfaceChecker<'a> {
                     variants.iter().find_map(|(_, payloads)| {
                         payloads
                             .iter()
-                            .find_map(|p| self.skipped_constructor_in(&Self::apply_subst(p, &subst), visited))
+                            .find_map(|p| self.find_wire_type(&Self::apply_subst(p, &subst), visited, pick))
                     })
                 }
                 Some(TypeDef::NominalAlias { underlying, .. }) => {
-                    self.skipped_constructor_in(&underlying.clone(), visited)
+                    self.find_wire_type(&underlying.clone(), visited, pick)
                 }
                 _ => None,
             },
@@ -829,7 +901,7 @@ impl<'a> InterfaceChecker<'a> {
         id: TypeId,
         visited: &mut Vec<TypeId>,
     ) -> Option<String> {
-        if visited.contains(&id) || (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
+        if visited.contains(&id) || (self.claim_input && self.generates(id)) || self.writes_itself(id) {
             return None;
         }
         visited.push(id);
@@ -860,7 +932,7 @@ impl<'a> InterfaceChecker<'a> {
         targs: &[Type],
         visited: &mut Vec<TypeId>,
     ) -> Option<(String, String)> {
-        if visited.contains(&id) || self.decodes_itself(id) {
+        if visited.contains(&id) || self.writes_itself(id) {
             return None;
         }
         visited.push(id);
@@ -938,7 +1010,7 @@ impl<'a> InterfaceChecker<'a> {
         if visited.contains(&id) {
             return true; // recursive type — assume ok, the non-cyclic fields decide
         }
-        if (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
+        if (self.claim_input && self.generates(id)) || self.writes_itself(id) {
             return true;
         }
         visited.push(id);

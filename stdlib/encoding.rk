@@ -4,8 +4,9 @@
 //
 // Encode and Decode have no required methods (E11). They signal that a type's
 // structure is serialization-compatible. A type can write its own `decode` in its
-// `Decode` block (E12b); it isn't declared here, because its parameter type
-// differs per type, so the checker holds it to the one shape E12b gives. Format libraries
+// `Decode` block (E12b), and its own `encode` in its `Encode` block (E12d);
+// neither is declared here, because the parameter or return type differs per
+// type, so the checker holds each to the one shape E12b gives. Format libraries
 // (JSON, TOML, MessagePack) use comptime for + reflect to serialize any
 // compatible struct with zero user ceremony.
 //
@@ -15,7 +16,8 @@
 // `Self or E`) isn't auto-Decode: a decode would build it without the check
 // (E12a). `T implements Decode { func decode(wire: W) -> Self or E }` runs the
 // check wherever the type appears (E12b); `T implements Decode { }` says a raw
-// decode is intended.
+// decode is intended. A type with its own `decode` isn't auto-Encode: it says how
+// it is written with `encode`, an empty `Encode` block, or `@no_encode` (E12e).
 // Public fields only (E13). Enums auto-derive when all variant payloads
 // are compatible (E17).
 //

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A type writes its own `Decode` (std.encoding/E12b), and every decoder calls
-// it wherever the type appears: nested in a struct, in a `Vec` or a `Map`, as
-// an optional, behind another custom type, or as an enum. One `decode`
-// serves json and csv; the claim side is `tests/fixtures/claims/decoded`.
+// A type writes its own `Decode` and `Encode` (std.encoding/E12b), and every
+// decoder and encoder calls them wherever the type appears: nested in a
+// struct, in a `Vec` or a `Map`, as an optional, behind another custom type, or
+// as an enum. One `decode` serves json and csv; the claim side is
+// `tests/fixtures/claims/decoded`. A type that reads itself through `decode`
+// writes itself through `encode`, so what is written reads back.
 //
 // A rejection comes back as a decode error with the error's message and where
 // in the input it happened.
@@ -36,6 +38,12 @@ extend Port {
 Port implements Decode {
     func decode(raw: u16) -> Port or PortError {
         return Port.new(raw)
+    }
+}
+
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
     }
 }
 
@@ -156,6 +164,12 @@ Name implements Decode {
     }
 }
 
+Name implements Encode {
+    func encode(self) -> string {
+        return self.text
+    }
+}
+
 struct Endpoint {
     host: Name
     port: Port
@@ -186,6 +200,12 @@ Group implements Decode {
             return NoNames(why: "nobody leads")
         }
         return Group(lead: p.first.text)
+    }
+}
+
+Group implements Encode {
+    func encode(self) -> Pair {
+        return Pair(first: Name(text: self.lead), rest: Vec.new())
     }
 }
 
@@ -238,6 +258,13 @@ Tag implements Decode {
     }
 }
 
+// Written as a Name, which writes itself as a string.
+Tag implements Encode {
+    func encode(self) -> Name {
+        return Name(text: self.label)
+    }
+}
+
 struct Tags {
     all: Vec<Tag>
 }
@@ -278,6 +305,12 @@ Level implements Decode {
             return Level(n: n)
         }
         return Level(n: 1)
+    }
+}
+
+Level implements Encode {
+    func encode(self) -> i64? {
+        return self.n
     }
 }
 
@@ -323,6 +356,15 @@ Mode implements Decode {
     }
 }
 
+Mode implements Encode {
+    func encode(self) -> string {
+        match self {
+            Mode.Fast => return "fast"
+            Mode.Slow => return "slow"
+        }
+    }
+}
+
 struct Run {
     modes: Vec<Mode>
 }
@@ -337,13 +379,75 @@ test "std.encoding/E12b — an enum decodes through its decode" {
     assert rejection<Run>("{{\"modes\": [\"fast\", \"warp\"]}") == "type error: field modes[1]: unknown mode"
 }
 
-// Encode never goes through `decode`: writing a value out is its fields.
-test "std.encoding/E12b — Encode is untouched" {
-    let c = json.decode<Config>("{{\"ports\": [80]}") catch err => {
+// What is written reads back: each type's `encode` is its `decode` the other
+// way round, wherever the type sits.
+test "std.encoding/E12b — json round trips through encode and decode" {
+    let text = "{{\"ports\": [80, 8080]}"
+    let c = json.decode<Config>(text) catch e => {
         assert false
         return
     }
-    assert json.encode(c) == "{{\"ports\":[{{\"value\":80}]}"
+    assert json.encode(c) == "{{\"ports\":[80,8080]}"
+    assert json.encode(c.ports[1]) == "8080"
+    assert json.encode(c.ports) == "[80,8080]"
+    assert json.encode_pretty(c) == "{{\n  \"ports\": [\n    80,\n    8080\n  ]\n}"
+    let back = json.decode<Config>(json.encode(c)) catch e => {
+        assert false
+        return
+    }
+    assert back.ports.len() == 2
+    assert back.ports[0].value == 80
+}
+
+test "std.encoding/E12b — encode in a Map, an optional and a plain field" {
+    let r = json.decode<Routes>("{{\"by_name\": {{\"web\": 80 } }") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(r) == "{{\"by_name\":{{\"web\":80}}}}"
+    let m = json.decode<Maybe>("{{\"extra\": 9}") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(m) == "{{\"extra\":9}"
+    let none_left = json.decode<Maybe>("{{ }") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(none_left) == "{{\"extra\":null}"
+}
+
+test "std.encoding/E12b — a type written as another custom type, and as a wire struct" {
+    let t = json.decode<Tags>("{{\"all\": [\"a\", \"bc\"]}") catch err => {
+        assert false
+        return
+    }
+    // Tag is written as a Name, and a Name as a string.
+    assert json.encode(t) == "{{\"all\":[\"a\",\"bc\"]}"
+    let team = json.decode<Team>("{{\"group\": {{\"first\": \"ann\", \"rest\": [\"bo\"] } }") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(team) == "{{\"group\":{{\"first\":\"ann\",\"rest\":[]}}}}"
+    let again = json.decode<Team>(json.encode(team)) catch err => {
+        assert false
+        return
+    }
+    assert again.group.lead == "ann"
+}
+
+test "std.encoding/E12b — an optional wire type and an enum round trip" {
+    let j = json.decode<Job>("{{\"level\": 4}") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(j) == "{{\"level\":4}"
+    let r = json.decode<Run>("{{\"modes\": [\"fast\", \"slow\"]}") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(r) == "{{\"modes\":[\"fast\",\"slow\"]}"
+    assert json.encode(r.modes[0]) == "\"fast\""
 }
 
 // csv reads a cell as the type `decode` takes, then runs `decode`.
@@ -381,4 +485,20 @@ test "std.encoding/E12b — csv cells go through the type's decode" {
     } else {
         assert false
     }
+}
+
+test "std.encoding/E12b — csv writes a cell as the type's encode and reads it back" {
+    let rows = csv.decode<Listener>("name,port,host\nweb,80,abc\ndb,5432,xy\n") catch e => {
+        assert false
+        return
+    }
+    let text = csv.encode(rows)
+    assert text == "name,port,host\nweb,80,abc\ndb,5432,xy\n"
+    let back = csv.decode<Listener>(text) catch e => {
+        assert false
+        return
+    }
+    assert back.len() == 2
+    assert back[1].port.value == 5432
+    assert back[1].host.text == "xy"
 }

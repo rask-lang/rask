@@ -1122,6 +1122,10 @@ typedef void (*RaskJsonFill)(void *slot);
 // after `rask_json_custom_reject` recorded why it refused.
 typedef int64_t (*RaskJsonCustom)(void *wire, void *dst);
 
+// A type's own `encode` (std.encoding/E12b), for the encoder: writes the JSON
+// text of the value at `src` into the string at `out`, which the encoder frees.
+typedef void (*RaskJsonCustomEncode)(const void *src, void *out);
+
 typedef struct RaskJsonVal RaskJsonVal;
 typedef struct RaskJsonShape RaskJsonShape;
 
@@ -1155,6 +1159,9 @@ RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t
                                       void *decode);
 // A custom decode's refusal: the message of the error it returned.
 void           rask_json_custom_reject(const RaskStr *msg);
+// A type with its own `encode`: its size, and the function that gives its
+// value as JSON text. Encoding only.
+RaskJsonShape *rask_json_shape_custom_encode(int64_t size, void *encode);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);

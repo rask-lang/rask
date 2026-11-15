@@ -37,6 +37,13 @@ Port implements Decode {
     }
 }
 
+// Written the way it is read, so what comes out decodes back (E12b).
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
+    }
+}
+
 func read_port(text: string) -> string {
     let p = json.decode<Port>(text) catch e => {
         return e.message()
@@ -49,11 +56,11 @@ test "std.encoding/E12a — a decode that calls the constructor makes the type d
     assert read_port("0") == "type error: the value: port 0 is reserved"
 }
 
-test "std.encoding/E12a — Encode is untouched by a constructor" {
+test "std.encoding/E12a — a constructor doesn't touch Encode: the type writes itself with its encode" {
     let p = Port.new(443) catch _ => {
         return
     }
-    assert json.encode(p) == "{{\"value\":443}"
+    assert json.encode(p) == "443"
 }
 
 // A function that returns `Self or E` without checking decoded data says so

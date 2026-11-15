@@ -19,23 +19,28 @@ pub enum MapKeyFix {
     ExtendBlock,
 }
 
-/// What is wrong with a custom `decode` (std.encoding/E12b).
+/// What is wrong with a custom `decode` or `encode` (std.encoding/E12b).
 #[derive(Debug, Clone)]
-pub enum CustomDecodeProblem {
-    /// Written with `self`: a decode builds a value, it has none yet.
+pub enum WireHookProblem {
+    /// A `decode` written with `self`: a decode builds a value, it has none yet.
     TakesSelf,
-    /// Zero or several parameters. The wire value is the one.
+    /// An `encode` written without it: it writes out the value it is called on.
+    NeedsSelf,
+    /// Zero or several parameters. `decode` takes the wire value alone,
+    /// `encode` takes nothing but `self`.
     ParamCount(usize),
-    /// The parameter is `mutate` or `take`.
-    WireNotPlain,
-    /// Doesn't return `Self or E`.
+    /// The wire parameter or the receiver is `mutate` or `take`.
+    NotPlain,
+    /// `decode` doesn't return `Self or E`, or `encode` returns a `T or E` or
+    /// nothing.
     Returns { found: String },
-    /// The wire type isn't `Decode`.
-    WireNotDecode { wire: String },
+    /// The wire type can't be decoded (or encoded), so nothing can read (or
+    /// write) it.
+    WireNotCodable { wire: String },
     /// On a generic type, which isn't supported.
     GenericType,
-    /// Its wire type is itself, or decodes through a chain that comes back.
-    DecodesThroughItself,
+    /// Its wire type is itself, or goes through a chain that comes back.
+    ChainsBack,
 }
 
 
@@ -940,12 +945,28 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// std.encoding/E12b: the `decode` in a `T implements Decode { }` block
-    /// isn't the shape a decoder can call.
-    #[error("`{ty}`'s `decode` can't be used by a decoder")]
-    BadCustomDecode {
+    /// std.encoding/E12b: the `decode` or `encode` in a `T implements Decode { }`
+    /// or `Encode { }` block isn't the shape a codec can call.
+    #[error("`{ty}`'s `{}` can't be used by a codec", hook.method())]
+    BadCustomWire {
         ty: String,
-        problem: CustomDecodeProblem,
+        hook: super::WireHook,
+        problem: WireHookProblem,
+        span: Span,
+    },
+
+    /// std.encoding/E12b: a type reads itself through its own `decode` and
+    /// would be written as its fields, which its `decode` doesn't read back.
+    #[error("`{ty}` cannot be encoded: `{owner}` decodes through its own `decode`, so its fields aren't what it reads")]
+    EncodeSkipsDecode {
+        /// The type that was asked for.
+        ty: String,
+        /// The type with the `decode`: `ty` itself, or one it holds.
+        owner: String,
+        /// `owner` is something `ty` holds, not `ty` itself.
+        through: bool,
+        /// What its `decode` takes.
+        wire: String,
         span: Span,
     },
 
@@ -2106,7 +2127,8 @@ impl TypeError {
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | DecodeSkipsConstructor { .. }
-            | BadCustomDecode { .. }
+            | BadCustomWire { .. }
+            | EncodeSkipsDecode { .. }
             | StringAddForbidden { .. }
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }

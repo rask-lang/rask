@@ -641,6 +641,12 @@ RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t
     return s;
 }
 
+RaskJsonShape *rask_json_shape_custom_encode(int64_t size, void *encode) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM_ENCODE, size);
+    s->custom_encode = (RaskJsonCustomEncode)encode;
+    return s;
+}
+
 // Why the custom decode that just ran refused, for the decoder to put behind
 // the path it happened at.
 static _Thread_local char json_reject_msg[384];
@@ -914,6 +920,7 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         case RASK_JSHAPE_ENUM:
         case RASK_JSHAPE_RESULT:
         case RASK_JSHAPE_GENERATED:
+        case RASK_JSHAPE_CUSTOM_ENCODE:
             json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
             return 0;
         case RASK_JSHAPE_STRING: {
@@ -1055,6 +1062,15 @@ static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShap
         return;
     }
     switch (shape->kind) {
+        // A type with its own `encode`: its value's JSON text, as it gave it.
+        case RASK_JSHAPE_CUSTOM_ENCODE: {
+            RaskStr text;
+            memset(&text, 0, sizeof text);
+            shape->custom_encode(src, &text);
+            jsb_push(b, rask_string_ptr(&text), rask_string_len(&text));
+            rask_string_free(&text);
+            return;
+        }
         case RASK_JSHAPE_OPT: {
             if (*(const uint8_t *)src != RASK_TAG_PRESENT) {
                 jsb_push(b, "null", 4);

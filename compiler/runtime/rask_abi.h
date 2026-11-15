@@ -195,6 +195,10 @@
 // shape of what `decode` reads, and the function that calls it.
 #define RASK_JSHAPE_CUSTOM 22
 
+// A type that writes itself out through its own `encode`: the shape holds
+// the function that answers its value as JSON text. Encoding only.
+#define RASK_JSHAPE_CUSTOM_ENCODE 23
+
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1
 

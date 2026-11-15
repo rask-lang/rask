@@ -86,7 +86,7 @@ extend JsonValue {
 | **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
 | **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
 | **J10: Extra keys ignored** | JSON keys not matching a serialized struct field are silently skipped. This includes a key naming a field that is excluded from the wire form (`std.encoding/E13b`) — the field is never filled from input |
-| **J12: Own decode** | A type with its own `decode` (`std.encoding/E12b`) is read as the type `decode` takes and handed to it, wherever it appears. This is also how an enum or any other type with no JSON form of its own gets one: read it as a `string` or a struct and map it in `decode`. A refusal is a `TypeError` that reads `field path: message` |
+| **J12: Own decode** | A type with its own `decode` (`std.encoding/E12b`) is read as the type `decode` takes and handed to it, wherever it appears. This is also how an enum or any other type with no JSON form of its own gets one: read it as a `string` or a struct and map it in `decode`. A refusal is a `TypeError` that reads `field path: message`. A type with its own `encode` is written as what that returns, so what `json.encode` writes reads back through `json.decode` |
 
 <!-- surface -->
 ```rask

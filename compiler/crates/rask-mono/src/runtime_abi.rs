@@ -189,6 +189,9 @@ runtime_constants! {
     /// A type that decodes through its own `decode` (std.encoding/E12b): the
     /// shape of what `decode` reads, and the function that calls it.
     RASK_JSHAPE_CUSTOM = 22;
+    /// A type that writes itself out through its own `encode`: the shape holds
+    /// the function that answers its value as JSON text. Encoding only.
+    RASK_JSHAPE_CUSTOM_ENCODE = 23;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;

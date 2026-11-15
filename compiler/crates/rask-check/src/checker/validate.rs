@@ -656,10 +656,10 @@ impl TypeChecker {
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
-        let checker = if interface_name == "Decode" {
-            crate::interfaces::InterfaceChecker::for_decode(&self.types)
-        } else {
-            crate::interfaces::InterfaceChecker::new(&self.types)
+        let checker = match interface_name.as_str() {
+            "Decode" => crate::interfaces::InterfaceChecker::for_decode(&self.types),
+            "Encode" => crate::interfaces::InterfaceChecker::for_encode(&self.types),
+            _ => crate::interfaces::InterfaceChecker::new(&self.types),
         };
         // E16: the declaration refused. Reported before the field hunt, because
         // the fields are usually fine — `@no_encode` goes on a credential whose
@@ -698,6 +698,19 @@ impl TypeChecker {
                     constructor: skipped.constructor,
                     returns: skipped.returns,
                     error: skipped.error,
+                    span,
+                };
+            }
+        }
+        // E12b: the fields are fine; the type reads itself through its own
+        // `decode` and nothing says how it is written.
+        if interface_name == "Encode" && checker.first_unencodable_field(ty).is_none() {
+            if let Some(unpaired) = checker.encode_skips_decode(ty) {
+                return TypeError::EncodeSkipsDecode {
+                    ty: ty_name,
+                    through: checker.named_type_id(ty) != Some(unpaired.id),
+                    owner: unpaired.ty,
+                    wire: unpaired.wire,
                     span,
                 };
             }

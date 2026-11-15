@@ -58,6 +58,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, false, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -67,6 +68,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, true, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -76,6 +78,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 value_to_json(&value, &self.struct_decls, &self.enums)
             }
             "decode" => Err(RuntimeError::TypeError(
@@ -86,6 +89,77 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+
+    /// std.encoding/E12b: `value` with every value of a type that has its own
+    /// `encode` replaced by what that answers, down to the leaves. The encoder
+    /// below then writes the result the normal way, so a type's wire form is
+    /// whatever its `encode` returns, however deeply the type sits in a `Vec`,
+    /// a `Map`, an optional or another struct. Read off the checker's table.
+    pub(crate) fn written_as(&mut self, value: &Value) -> Result<Value, RuntimeError> {
+        if !self.types.has_custom_encodes() {
+            return Ok(value.clone());
+        }
+        match value {
+            Value::Struct(s) => {
+                let name = s.lock().unwrap().name.clone();
+                // A struct-shaped variant is a struct named `Enum.Variant`; the
+                // `encode` belongs to the enum.
+                let owner = name.split_once('.').map_or(name.as_str(), |(e, _)| e).to_string();
+                if self.writes_itself(&owner) {
+                    let wire = self.call_rask_method(&owner, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let fields: Vec<(String, Value)> =
+                    s.lock().unwrap().fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = IndexMap::new();
+                for (k, v) in fields {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::new_struct(name, out, None))
+            }
+            Value::Enum { name, variant, fields, variant_index, origin } => {
+                if self.writes_itself(name) {
+                    let wire = self.call_rask_method(name, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let mut mapped = Vec::with_capacity(fields.len());
+                for f in fields {
+                    mapped.push(self.written_as(f)?);
+                }
+                Ok(Value::Enum {
+                    name: name.clone(),
+                    variant: variant.clone(),
+                    fields: mapped,
+                    variant_index: *variant_index,
+                    origin: origin.clone(),
+                })
+            }
+            Value::Vec(v) => {
+                let items: Vec<Value> = v.lock().unwrap().iter().cloned().collect();
+                let mut out = Vec::with_capacity(items.len());
+                for item in &items {
+                    out.push(self.written_as(item)?);
+                }
+                Ok(Value::vec(out))
+            }
+            Value::Map(m) => {
+                let entries: Vec<(MapKey, Value)> =
+                    m.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = MapData::with_capacity(entries.len());
+                for (k, v) in entries {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::Map(Arc::new(Mutex::new(out))))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    /// Does the type named this have its own `encode`?
+    fn writes_itself(&self, name: &str) -> bool {
+        let types = &self.types;
+        types.get_type_id(name).is_some_and(|id| types.custom_encode(id).is_some())
     }
 
     /// `json.decode<T>(text)`.

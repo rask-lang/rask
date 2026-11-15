@@ -1779,7 +1779,7 @@ fn error_decode_malformed() {
         "`decode` returns `NoReject`, it needs to return `NoReject or SomeError`",
         "`Opaque` can't be decoded, so nothing can read it from the input",
         "`Boxed<T>` is generic",
-        "`Loop` is read as itself",
+        "`Loop` goes through itself",
     ] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }
@@ -1788,6 +1788,55 @@ fn error_decode_malformed() {
     assert_eq!(out.matches("E0344").count(), 1, "{}", out);
     assert!(
         !out.contains("E0308") && !out.contains("E0313") && !out.contains("E0361") && !out.contains("E0893"),
+        "no second error out of code the author never wrote: {}", out,
+    );
+}
+
+// std.encoding/E12b: a type that reads itself through its own `decode` isn't
+// auto-`Encode`, because the fields it would write aren't what `decode` reads.
+// Reached directly, through a `Vec` field and through a `Map` value; one that
+// says how it is written (`encode`, or the empty `Encode` block) is fine.
+#[test]
+fn error_encode_skips_decode() {
+    let (failed, out) = compile_error_output("encode_skips_decode.rk");
+    assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0424").count(), 3,
+        "`Port`, the `Listener` that holds a `Vec<Port>` and the `Routes` that holds a `Map`: {}", out,
+    );
+    assert!(
+        out.contains("`Port` is read as a `u16` and would be written as its fields")
+            && out.contains("`Listener` holds a `Port`"),
+        "should name the type, what it is read as, and the type it was reached through: {}", out,
+    );
+    assert!(
+        out.contains("Port implements Encode") && out.contains("func encode(self) -> u16") && out.contains("@no_encode"),
+        "should show the `encode`, the empty block and the opt-out: {}", out,
+    );
+}
+
+// std.encoding/E12b: the `encode` in an `Encode` block has one shape an encoder
+// can call. Each way to break it is reported once, at the method.
+#[test]
+fn error_encode_malformed() {
+    let (failed, out) = compile_error_output("encode_malformed.rk");
+    assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0423").count(), 8, "eight shapes: {}", out);
+    for want in [
+        "`NoSelf`'s `encode` can't be used by an encoder",
+        "`encode` has no `self`",
+        "`encode` takes 1 parameter besides `self`, it needs none",
+        "`self` is `mutate` or `take`",
+        "`encode` returns `i64 or Why`",
+        "`encode` returns `void`",
+        "`Opaque` can't be encoded, so nothing can write it",
+        "`Boxed<T>` is generic",
+        "`Loop` goes through itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    assert!(
+        !out.contains("E0893") && !out.contains("E0308") && !out.contains("E0313"),
         "no second error out of code the author never wrote: {}", out,
     );
 }

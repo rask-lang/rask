@@ -277,11 +277,14 @@ impl<'a> MirLowerer<'a> {
             }
         }
         // A type with its own `decode` is read as its wire type and handed to
-        // that. Writing one out is still its fields (std.encoding/E12b).
-        if purpose != ShapeFor::Encode {
-            if let Some(shape) = self.emit_custom_decode_shape(ty, purpose) {
-                return shape;
+        // that; one with its own `encode` is written as what that returns
+        // (std.encoding/E12b). Each way only follows its own hook.
+        if purpose == ShapeFor::Encode {
+            if let Some(shape) = self.emit_custom_encode_shape(ty) {
+                return Some(shape);
             }
+        } else if let Some(shape) = self.emit_custom_decode_shape(ty, purpose) {
+            return shape;
         }
         if purpose == ShapeFor::Claims {
             if let Some(shape) = self.emit_claim_only_shape(ty) {
@@ -515,6 +518,94 @@ impl<'a> MirLowerer<'a> {
             }));
         }
         Some(shape)
+    }
+
+    /// The symbol of the `__encode_json` of a type that writes itself out
+    /// through its own `encode` (std.encoding/E12b), for a type as the checker
+    /// spells it. `None` for any other type.
+    fn custom_encode_adapter(&self, ty: &Type) -> Option<String> {
+        let name = match ty {
+            Type::Named(id) => self.ctx.type_names.get(id)?,
+            Type::UnresolvedNamed(name) => name,
+            _ => return None,
+        };
+        self.ctx.custom_encodes.get(name).cloned()
+    }
+
+    /// The JSON text of `value`, a `ty` with its own `encode`: its adapter's
+    /// answer. Where an encoder would have walked the type's fields, it adds
+    /// this instead. `None` when `ty` has no `encode` of its own.
+    pub(super) fn custom_encode_text(&mut self, value: MirOperand, ty: &Type) -> Option<crate::LocalId> {
+        let adapter = self.custom_encode_adapter(ty)?;
+        let text = self.builder.alloc_temp(MirType::Buffer);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(adapter),
+            args: vec![value],
+        }));
+        Some(text)
+    }
+
+    /// The shape of a type with its own `encode`: a function the runtime calls
+    /// with the value's address and a string slot, which it fills with the
+    /// value's JSON text and the runtime then frees.
+    fn emit_custom_encode_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        let adapter = self.custom_encode_adapter(ty)?;
+        let ty_mir = self.ctx.type_to_mir(ty);
+        let string_mir = self.ctx.type_to_mir(&Type::String);
+        let fn_name = format!("{}__encode_custom_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::Void);
+        // An aggregate arrives as its own address; a word is read out of the
+        // buffer the runtime points at.
+        let value = if ty_mir.passed_by_address() {
+            wb.add_param("__src".to_string(), ty_mir.clone())
+        } else {
+            let src = wb.add_param("__src".to_string(), MirType::Ptr);
+            let v = wb.alloc_temp(ty_mir.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: v,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(src),
+                    field_index: 0,
+                    byte_offset: Some(0),
+                    access: FieldAccess::for_field(&ty_mir, ty_mir.size()),
+                },
+            }));
+            v
+        };
+        let out = wb.add_param("__out".to_string(), MirType::Ptr);
+        let text = wb.alloc_temp(string_mir.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(adapter),
+            args: vec![MirOperand::Local(value)],
+        }));
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: 0,
+            value: MirOperand::Local(text),
+            store_size: string_mir.size(),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(fn_name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(fn_name),
+        }));
+        Some(self.emit_shape_call("json_shape_custom_encode", vec![
+            MirOperand::Constant(MirConst::Int(ty_mir.size() as i64)),
+            MirOperand::Local(addr),
+        ]))
     }
 
     /// A type that decodes through its own `decode` (std.encoding/E12b): the
@@ -918,8 +1009,8 @@ impl<'a> MirLowerer<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeFor {
     Json,
-    /// Writing a value out. The same walk as `Json`, except that a type with
-    /// its own `decode` is written as its fields.
+    /// Writing a value out. The same walk as `Json`, except that a type follows
+    /// its own `encode`, not its `decode`.
     Encode,
     Claims,
 }

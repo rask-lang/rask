@@ -2085,6 +2085,7 @@ mod tests {
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
             custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
@@ -2138,6 +2139,7 @@ mod tests {
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
             custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
@@ -2211,6 +2213,7 @@ mod tests {
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
             custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 }

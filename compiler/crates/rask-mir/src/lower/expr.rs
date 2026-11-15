@@ -5487,6 +5487,28 @@ impl<'a> MirLowerer<'a> {
                             // picks the pretty body by name.
                             let pretty = method == "encode_pretty";
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
+                            // A type with its own `encode` is written as what
+                            // that answers (std.encoding/E12b).
+                            if let Some(written) = self.ctx.lookup_raw_type(args[0].expr.id) {
+                                if let Some(text) = self.custom_encode_text(arg_op.clone(), &written) {
+                                    let encoded = (MirOperand::Local(text), MirType::Buffer);
+                                    return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
+                                }
+                                // A `T?` or a `Map` on its own: walked by the
+                                // runtime, as it is inside a struct. Falling on
+                                // to the integer encoder wrote the address of
+                                // its storage, which is what an `encode` that
+                                // answers one would have handed out.
+                                let optional = matches!(&*written, rask_types::Type::Result { err, .. } if **err == rask_types::Type::None);
+                                if optional || self.is_map_type(&written) {
+                                    if let MirOperand::Local(value) = &arg_op {
+                                        if let Some(text) = self.lower_json_encode_shaped(*value, &written) {
+                                            let encoded = (MirOperand::Local(text), MirType::Buffer);
+                                            return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
+                                        }
+                                    }
+                                }
+                            }
                             if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                                     let encoded = self.lower_json_encode_struct(arg_op, layout.clone())?;

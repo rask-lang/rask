@@ -66,6 +66,33 @@ pub struct CustomDecode {
     pub decl: NodeId,
 }
 
+/// std.encoding/E12b: a type that writes itself out through its own `encode`.
+/// An encoder calls it for the value and writes what comes back, `wire`, the
+/// normal way (which may be another type's own `encode`).
+#[derive(Debug, Clone)]
+pub struct CustomEncode {
+    /// What `encode` returns: the type that is written in its place.
+    pub wire: Type,
+    /// The `encode` method's declaration.
+    pub decl: NodeId,
+}
+
+/// Which of a type's two wire methods a rule is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireHook {
+    Decode,
+    Encode,
+}
+
+impl WireHook {
+    pub fn method(self) -> &'static str {
+        match self {
+            WireHook::Decode => "decode",
+            WireHook::Encode => "encode",
+        }
+    }
+}
+
 /// Which interface a conformance is to.
 ///
 /// A name isn't enough: a program's `interface Writer` and the stdlib's are two
@@ -242,6 +269,8 @@ pub struct TypeTable {
     /// std.encoding/E12b: the types that write their own `Decode`, each with
     /// what its `decode` reads and what it can reject with.
     pub(super) custom_decodes: HashMap<TypeId, CustomDecode>,
+    /// The same for writing out: the types with their own `encode`.
+    pub(super) custom_encodes: HashMap<TypeId, CustomEncode>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, ConformanceKey), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
@@ -329,6 +358,7 @@ impl TypeTable {
             method_access: HashMap::new(),
             conformances: HashMap::new(),
             custom_decodes: HashMap::new(),
+            custom_encodes: HashMap::new(),
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
@@ -1605,6 +1635,19 @@ impl TypeTable {
         self.custom_decodes.get(&type_id)
     }
 
+    /// std.encoding/E12b: how a type writes itself out when its author wrote
+    /// the `encode` in its `Encode` block. `None` for every type that is
+    /// written as its fields.
+    pub fn custom_encode(&self, type_id: TypeId) -> Option<&CustomEncode> {
+        self.custom_encodes.get(&type_id)
+    }
+
+    /// Does any type write itself out through its own `encode`? Lets a
+    /// backend skip the walk that looks for them when none does.
+    pub fn has_custom_encodes(&self) -> bool {
+        !self.custom_encodes.is_empty()
+    }
+
     /// A type as a message reads it, `Port`, not an id.
     pub fn display_type(&self, ty: &Type) -> String {
         format!("{}", self.resolve_type_names(ty))
@@ -1614,6 +1657,21 @@ impl TypeTable {
     /// wire type is a type that is read as `start` again never reaches a
     /// primitive, so the decoders would follow it forever.
     pub fn decodes_through(&self, wire: &Type, start: TypeId) -> bool {
+        self.wire_chain_returns(wire, start, |id| self.custom_decode(id).map(|c| &c.wire))
+    }
+
+    /// The same for `encode`: a wire type that is written through `start`
+    /// again never reaches a primitive.
+    pub fn encodes_through(&self, wire: &Type, start: TypeId) -> bool {
+        self.wire_chain_returns(wire, start, |id| self.custom_encode(id).map(|c| &c.wire))
+    }
+
+    fn wire_chain_returns<'a>(
+        &'a self,
+        wire: &Type,
+        start: TypeId,
+        next: impl Fn(TypeId) -> Option<&'a Type>,
+    ) -> bool {
         let mut at = wire.clone();
         for _ in 0..64 {
             let id = match &at {
@@ -1625,8 +1683,8 @@ impl TypeTable {
             if id == start {
                 return true;
             }
-            match self.custom_decode(id) {
-                Some(next) => at = next.wire.clone(),
+            match next(id) {
+                Some(w) => at = w.clone(),
                 None => return false,
             }
         }

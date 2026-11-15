@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: writing a type that reads itself through its own `decode`
+// (std.encoding/E12b, E0424).
+//
+// `Port` is read as a `u16`. A derived `Encode` would write it as an object of
+// its fields, which `decode` can't read back, so the first value written out
+// and read in again fails at run time. The error names the type and shows the
+// `encode` that is `decode` the other way round. It reaches through
+// containers and fields, like E0418 does for a constructor.
+
+import json
+
+struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+struct Port {
+    value: u16
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        if raw == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: raw)
+    }
+}
+
+struct Listener {
+    name: string
+    ports: Vec<Port>
+}
+
+struct Routes {
+    by_name: Map<string, Port>
+}
+
+// Fine: written as it is read.
+struct Level {
+    n: i64
+}
+
+Level implements Decode {
+    func decode(raw: i64) -> Level or PortError {
+        return Level(n: raw)
+    }
+}
+
+Level implements Encode {
+    func encode(self) -> i64 {
+        return self.n
+    }
+}
+
+// Fine: the fields really are what is written, and it says so.
+struct Flag {
+    on: bool
+}
+
+Flag implements Decode {
+    func decode(raw: bool) -> Flag or PortError {
+        return Flag(on: raw)
+    }
+}
+
+Flag implements Encode {
+}
+
+func main() {
+    // ERROR: `Port` is read as a `u16` and would be written as an object [E0424]
+    let p = Port(value: 80)
+    println(json.encode(p))
+
+    // ERROR: the same, through a `Vec` field [E0424]
+    let l = Listener(name: "a", ports: Vec.new())
+    println(json.encode(l))
+
+    // ERROR: and through a `Map` value [E0424]
+    let r = Routes(by_name: Map.new())
+    println(json.encode(r))
+
+    // Fine: the three below say how they are written. Not errors, so the test
+    // counts exactly three.
+    println(json.encode(Level(n: 1)))
+    println(json.encode(Flag(on: true)))
+}

@@ -520,6 +520,11 @@ extend json {
     @native("rask_json_custom_reject")
     func custom_reject(msg: string) {}
 
+    /// The shape of a type with its own `encode` (std.encoding/E12b): its size,
+    /// and the function that gives a value's JSON text. Encoding only.
+    @native("rask_json_shape_custom_encode")
+    func shape_custom_encode(size: i64, encode: i64) -> i64 {}
+
     /// Convert a typed value to a JsonValue tree.
     @unimplemented
     public func to_value<T: Encode>(value: T) -> JsonValue {}

@@ -1942,44 +1942,105 @@ impl ToDiagnostic for crate::TypeError {
                     ))
             }
 
-            // E12b: the block has a `decode`, but not one a decoder can call.
-            BadCustomDecode { ty, problem, span } => {
-                use crate::checker::CustomDecodeProblem as P;
+            // E12b: the block has a `decode` or `encode`, but not one a codec can call.
+            BadCustomWire { ty, hook, problem, span } => {
+                use crate::checker::{WireHook, WireHookProblem as P};
+                let method = hook.method();
                 let (label, fix) = match problem {
                     P::TakesSelf => (
                         "`decode` is written with `self`".to_string(),
                         format!("drop `self`: a decode builds a `{ty}`, so there isn't one yet\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
                     ),
-                    P::ParamCount(n) => (
-                        format!("`decode` takes {n} parameters, it needs one"),
-                        "take the one value the input holds and nothing else. If the input has several parts, make that value a struct of them\n\n  func decode(raw: Wire) -> Self or MyError { … }".to_string(),
+                    P::NeedsSelf => (
+                        "`encode` has no `self`".to_string(),
+                        format!("an encode writes out the value it is called on:\n\n  func encode(self) -> u16 {{ … }}"),
                     ),
-                    P::WireNotPlain => (
-                        "the parameter is `mutate` or `take`".to_string(),
-                        "write the parameter plain, `raw: u16`. The decoder built the value, so it is the one that releases it after `decode` answers".to_string(),
-                    ),
-                    P::Returns { found } => (
-                        format!("`decode` returns `{found}`, it needs to return `{ty} or SomeError`"),
-                        format!("return the value or the reason it was rejected\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
-                    ),
-                    P::WireNotDecode { wire } => (
-                        format!("`{wire}` can't be decoded, so nothing can read it from the input"),
-                        format!("the parameter is what the input is read as first, so it has to be `Decode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `decode`. `{wire}` isn't"),
-                    ),
-                    P::DecodesThroughItself => (
-                        format!("`{ty}` is read as itself, or as a type that is read as `{ty}`"),
-                        format!("the parameter has to be something the input holds without going back through `{ty}`: a number, a `string`, a struct of those"),
+                    P::ParamCount(n) => match hook {
+                        WireHook::Decode => (
+                            format!("`decode` takes {n} parameters, it needs one"),
+                            "take the one value the input holds and nothing else. If the input has several parts, make that value a struct of them\n\n  func decode(raw: Wire) -> Self or MyError { … }".to_string(),
+                        ),
+                        WireHook::Encode => (
+                            format!("`encode` takes {n} {} besides `self`, it needs none", if *n == 1 { "parameter" } else { "parameters" }),
+                            "an encode is `self` and nothing else. What it returns is what gets written\n\n  func encode(self) -> Wire { … }".to_string(),
+                        ),
+                    },
+                    P::NotPlain => match hook {
+                        WireHook::Decode => (
+                            "the parameter is `mutate` or `take`".to_string(),
+                            "write the parameter plain, `raw: u16`. The decoder built the value, so it is the one that releases it after `decode` answers".to_string(),
+                        ),
+                        WireHook::Encode => (
+                            "`self` is `mutate` or `take`".to_string(),
+                            format!("write it plain, `func encode(self) -> …`. An encoder writes a value out and leaves it as it was"),
+                        ),
+                    },
+                    P::Returns { found } => match hook {
+                        WireHook::Decode => (
+                            format!("`decode` returns `{found}`, it needs to return `{ty} or SomeError`"),
+                            format!("return the value or the reason it was rejected\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
+                        ),
+                        WireHook::Encode => (
+                            format!("`encode` returns `{found}`, it needs to return what is written in its place"),
+                            "return the value that stands for this one on the wire. Writing a value out can't fail, so it isn't a `T or E`\n\n  func encode(self) -> u16 { … }".to_string(),
+                        ),
+                    },
+                    P::WireNotCodable { wire } => match hook {
+                        WireHook::Decode => (
+                            format!("`{wire}` can't be decoded, so nothing can read it from the input"),
+                            format!("the parameter is what the input is read as first, so it has to be `Decode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `decode`. `{wire}` isn't"),
+                        ),
+                        WireHook::Encode => (
+                            format!("`{wire}` can't be encoded, so nothing can write it"),
+                            format!("what `encode` returns is written the normal way, so it has to be `Encode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `encode`. `{wire}` isn't"),
+                        ),
+                    },
+                    P::ChainsBack => (
+                        format!("`{ty}` goes through itself, or through a type that goes through `{ty}`"),
+                        format!("the wire type has to be something that ends in a number, a `string` or a struct of those without coming back through `{ty}`"),
                     ),
                     P::GenericType => (
                         format!("`{ty}` is generic"),
-                        format!("a custom `decode` belongs to one concrete type. Write it for a type with no parameters; a generic container can hold that type and decode it"),
+                        format!("a custom `{method}` belongs to one concrete type. Write it for a type with no parameters; a generic container can hold that type"),
                     ),
                 };
-                Diagnostic::error(format!("`{}`'s `decode` can't be used by a decoder", ty))
+                let why = match hook {
+                    WireHook::Decode => "the decoders (json, csv, a claim's inputs) call `decode` wherever the type appears: they read the input as the parameter's type, pass that value in, and turn a rejection into a decode error with its message and where it happened. That only works for `func decode(wire: W) -> Self or E` with `W` decodable and `E` an error [std.encoding/E12b]",
+                    WireHook::Encode => "the encoders (json, csv) call `encode` wherever the type appears and write what it returns in the type's place, the normal way. That only works for `func encode(self) -> W` with `W` encodable [std.encoding/E12b]",
+                };
+                Diagnostic::error(format!("`{}`'s `{}` can't be used by {}", ty, method, if *hook == WireHook::Decode { "a decoder" } else { "an encoder" }))
                     .with_code("E0423")
                     .with_primary(*span, label)
                     .with_fix(fix)
-                    .with_why("the decoders (json, csv, a claim's inputs) call `decode` wherever the type appears: they read the input as the parameter's type, pass that value in, and turn a rejection into a decode error with its message and where it happened. That only works for `func decode(wire: W) -> Self or E` with `W` decodable and `E` an error [std.encoding/E12b]")
+                    .with_why(why)
+            }
+
+            // E12b: `Port` reads itself through `decode` and nothing says how it is written.
+            EncodeSkipsDecode { ty, owner, through, wire, span } => {
+                let via = if *through {
+                    format!(" (`{}` holds a `{}`)", ty, owner)
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!("`{}` cannot be encoded: `{}` is read as a `{}` and would be written as its fields{}", ty, owner, wire, via))
+                    .with_code("E0424")
+                    .with_primary(*span, format!(
+                        "`{owner}.decode` reads a `{wire}`, and an encode would write `{owner}` as an object of its fields, which `decode` doesn't read back"
+                    ))
+                    .with_fix(format!(
+                        "write the `encode` that is `decode` the other way round:\n\n  \
+                         {owner} implements Encode {{\n      \
+                         func encode(self) -> {wire} {{\n          \
+                         return /* the {wire} that `decode` reads */\n      \
+                         }}\n  \
+                         }}\n\n\
+                         or, if the fields really are what gets written, say so:\n\n  \
+                         {owner} implements Encode {{ }}\n\n\
+                         or keep it from being written at all with `@no_encode`"
+                    ))
+                    .with_why(format!(
+                        "a value that is written out and read back should come back the same. `{owner}` is read through its own `decode`, so a derived `Encode` would write something `decode` can't read, and the first round trip fails at run time, in whoever reads the output [std.encoding/E12b]"
+                    ))
             }
 
             NotSerializable { ty, interface_name, verb, field, field_ty, span } => {

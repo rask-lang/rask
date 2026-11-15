@@ -87,6 +87,9 @@ pub struct MonoProgram {
     pub claim_generators: HashMap<String, String>,
     /// Type -> how it decodes through its own `decode` (std.encoding/E12b).
     pub custom_decodes: HashMap<String, CustomDecodeFn>,
+    /// Type -> the symbol of its `__encode_json`, for a type that writes itself
+    /// out through its own `encode` (std.encoding/E12b).
+    pub custom_encodes: HashMap<String, String>,
     /// Every vtable the program boxes into, by (concrete type, interface).
     /// The one place a vtable's name and slots are decided; lowering points a
     /// box at an entry and codegen builds the data from it.
@@ -962,6 +965,7 @@ fn monomorphize_inner(
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
         custom_decodes: mono.custom_decodes,
+        custom_encodes: mono.custom_encodes,
         vtables: mono.vtables,
         symbols: mono.symbols,
     })
