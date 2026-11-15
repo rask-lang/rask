@@ -2,8 +2,10 @@
 
 // Encoding: marker interfaces for format-agnostic serialization.
 //
-// Encode and Decode are marker interfaces with no methods (E11). They signal
-// that a type's structure is serialization-compatible. Format libraries
+// Encode and Decode have no required methods (E11). They signal that a type's
+// structure is serialization-compatible. A type can write its own `decode` in its
+// `Decode` block (E12b); it isn't declared here, because its parameter type
+// differs per type, so the checker holds it to the one shape E12b gives. Format libraries
 // (JSON, TOML, MessagePack) use comptime for + reflect to serialize any
 // compatible struct with zero user ceremony.
 //
@@ -11,7 +13,9 @@
 // public fields have Encode types, unless @no_encode. Same for Decode, except
 // that a type with a checking constructor (a static function returning
 // `Self or E`) isn't auto-Decode: a decode would build it without the check
-// (E12a). `T implements Decode { }` says a raw decode is intended.
+// (E12a). `T implements Decode { func decode(wire: W) -> Self or E }` runs the
+// check wherever the type appears (E12b); `T implements Decode { }` says a raw
+// decode is intended.
 // Public fields only (E13). Enums auto-derive when all variant payloads
 // are compatible (E17).
 //

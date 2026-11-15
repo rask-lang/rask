@@ -1117,6 +1117,11 @@ void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 // out; generated per field by the call site.
 typedef void (*RaskJsonFill)(void *slot);
 
+// A type's own `decode` (std.encoding/E12b): reads the wire value at `wire`,
+// consuming it, and writes the decoded value into `dst`. Returns 0, or nonzero
+// after `rask_json_custom_reject` recorded why it refused.
+typedef int64_t (*RaskJsonCustom)(void *wire, void *dst);
+
 typedef struct RaskJsonVal RaskJsonVal;
 typedef struct RaskJsonShape RaskJsonShape;
 
@@ -1144,6 +1149,12 @@ void           rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key);
 // A type that builds itself (`claims.Generate`): `generate` writes one into
 // the slot it's given. Claims only.
 RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate);
+// A type with its own `decode`: its size, the shape of what `decode` reads,
+// how many bytes that takes, and the function that calls `decode`.
+RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t wire_size,
+                                      void *decode);
+// A custom decode's refusal: the message of the error it returned.
+void           rask_json_custom_reject(const RaskStr *msg);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);

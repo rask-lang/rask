@@ -502,6 +502,13 @@ pub mod field_attrs {
         format!("__decode_default_{field_name}")
     }
 
+    /// The static method desugar writes beside a type's own `decode`
+    /// (std.encoding/E12b): `decode` with its rejection turned into a message,
+    /// `func __decode_checked(wire: W) -> Self or string`. The decoders call
+    /// it, so a rejection of any error type, a union included, reaches them as
+    /// the string `message()` gives.
+    pub const DECODE_ADAPTER: &str = "__decode_checked";
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {

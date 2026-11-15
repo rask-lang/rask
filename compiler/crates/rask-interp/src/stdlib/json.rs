@@ -928,6 +928,25 @@ struct Decode<'a> {
 }
 
 impl Decode<'_> {
+    /// How a type decodes through its own `decode` (std.encoding/E12b): its
+    /// name, and what `decode` reads as a type expression. `None` for any
+    /// other type. Read off the checker's table, which says so once.
+    fn custom_decode(&self, ty: &TypeExpr) -> Option<(String, TypeExpr)> {
+        let name = ty.bare_name()?;
+        let types = &self.interp.types;
+        let custom = types.custom_decode(types.get_type_id(name)?)?;
+        Some((name.to_string(), rask_check::reflect::type_label(types, &custom.wire)))
+    }
+
+    /// Does a member left out of the input still decode? A `T?` takes `none`,
+    /// and so does a custom decode whose wire type is one.
+    fn takes_absent(&self, ty: &TypeExpr) -> bool {
+        match self.custom_decode(ty) {
+            Some((_, wire)) => self.takes_absent(&wire),
+            None => matches!(ty, TypeExpr::Optional(_)),
+        }
+    }
+
     /// The value of a field the input doesn't supply: its default, run by
     /// calling the method desugar wrote for it (E20, type.structs/FD6).
     fn default_of(&mut self, ty: &str, field: &rask_ast::decl::Field) -> Result<Value, JsonErr> {
@@ -961,6 +980,41 @@ fn json_to_typed(
     // The untyped tree, handed back as-is.
     if ty.is_name("JsonValue") {
         return Ok(json.clone());
+    }
+
+    // A type that writes its own `decode`: read the input as what it takes,
+    // the normal way, and hand that over. What it refuses with comes back as
+    // the message of its error, behind where in the input the value was.
+    if let Some((name, wire_ty)) = cx.custom_decode(ty) {
+        let wire = json_to_typed(json, &wire_ty, path, cx)?;
+        let answer = cx.interp.call_rask_static(&name, rask_ast::decl::field_attrs::DECODE_ADAPTER, vec![wire]);
+        let answer = match answer {
+            Ok(v) => v,
+            Err(e) => {
+                *cx.failed = Some(e);
+                return Err(JsonErr {
+                    kind: JsonErrKind::Type,
+                    message: format!("`{}`'s decode failed", name),
+                });
+            }
+        };
+        return match answer {
+            Value::Enum { variant, mut fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
+            Value::Enum { variant, mut fields, .. } if variant == "Err" && fields.len() == 1 => {
+                let why = match fields.remove(0) {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    other => format!("{:?}", other),
+                };
+                let where_ = if path.is_empty() { "the value" } else { path };
+                Err(JsonErr { kind: JsonErrKind::Type, message: format!("{}: {}", where_, why) })
+            }
+            other => {
+                *cx.failed = Some(RuntimeError::TypeError(format!(
+                    "`{}`'s decode answered {:?}, not a `T or string`", name, other
+                )));
+                Err(JsonErr { kind: JsonErrKind::Type, message: format!("`{}`'s decode failed", name) })
+            }
+        };
     }
 
     let raw = unwrap_json_value(json);
@@ -1043,6 +1097,12 @@ fn json_to_typed(
                     // A `T?` field takes `none`; anything else has to be there (J9).
                     None if matches!(field.ty, TypeExpr::Optional(_)) => {
                         fields.insert(field.name.clone(), Value::none());
+                    }
+                    // A custom decode whose wire type is `T?` reads the absence
+                    // as that wire value.
+                    None if cx.takes_absent(&field.ty) => {
+                        let value = json_to_typed(&Value::Unit, &field.ty, &child_path(path, &key), cx)?;
+                        fields.insert(field.name.clone(), value);
                     }
                     None => {
                         return Err(JsonErr {

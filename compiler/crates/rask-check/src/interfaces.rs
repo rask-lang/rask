@@ -168,6 +168,8 @@ pub struct SkippedConstructor {
     pub constructor: String,
     /// What it returns, as written in messages: `Port or PortError`.
     pub returns: String,
+    /// The error side of that, `PortError`.
+    pub error: String,
 }
 
 /// Checks structural interface satisfaction.
@@ -179,11 +181,26 @@ pub struct InterfaceChecker<'a> {
     /// Answering `ClaimInput` rather than `Decode`: a type that builds itself
     /// (`claims.Generate`) counts wherever it sits.
     claim_input: bool,
+    /// Answering `Decode` (or `ClaimInput`, which builds what a decode would):
+    /// a type that writes its own `decode` counts wherever it sits, whatever
+    /// its fields are (std.encoding/E12b).
+    decoding: bool,
 }
 
 impl<'a> InterfaceChecker<'a> {
     pub fn new(types: &'a TypeTable) -> Self {
-        Self { types, errors: Vec::new(), claim_input: false }
+        Self { types, errors: Vec::new(), claim_input: false, decoding: false }
+    }
+
+    /// A checker that answers the `Decode` questions, for the diagnostics that
+    /// hunt for the field a decode trips on.
+    pub fn for_decode(types: &'a TypeTable) -> Self {
+        Self { decoding: true, ..Self::new(types) }
+    }
+
+    /// The type decodes through its own `decode`, so its fields have no say.
+    fn decodes_itself(&self, id: TypeId) -> bool {
+        self.decoding && self.types.custom_decode(id).is_some()
     }
 
     fn generates(&self, id: TypeId) -> bool {
@@ -343,10 +360,12 @@ impl<'a> InterfaceChecker<'a> {
         // `claims.Generate`. Only the compiler writes this bound.
         if base_interface == "ClaimInput" {
             self.claim_input = true;
+            self.decoding = true;
             let ok = self.type_is_encodable(ty, &mut Vec::new())
                 && self.first_defaultless_excluded_field(ty).is_none()
                 && self.decode_skips_constructor(ty).is_none();
             self.claim_input = false;
+            self.decoding = false;
             if ok {
                 return Ok(());
             }
@@ -369,6 +388,7 @@ impl<'a> InterfaceChecker<'a> {
                     span,
                 });
             }
+            self.decoding = base_interface == "Decode";
             let structurally_ok = self.type_is_encodable(ty, &mut Vec::new());
             // E13a: decoding has one requirement encoding doesn't. Encoding never
             // needs a value for a field it leaves out; decoding has to build the
@@ -380,6 +400,7 @@ impl<'a> InterfaceChecker<'a> {
             let decodable = base_interface != "Decode"
                 || (self.first_defaultless_excluded_field(ty).is_none()
                     && self.decode_skips_constructor(ty).is_none());
+            self.decoding = false;
             if structurally_ok && decodable {
                 return Ok(());
             }
@@ -755,7 +776,7 @@ impl<'a> InterfaceChecker<'a> {
     ) -> Option<SkippedConstructor> {
         // A claim builds a type that supplies its own generator without
         // decoding it, so a constructor on it is never stepped around.
-        if visited.contains(&id) || (self.claim_input && self.generates(id)) {
+        if visited.contains(&id) || (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
             return None;
         }
         visited.push(id);
@@ -766,6 +787,10 @@ impl<'a> InterfaceChecker<'a> {
                 ty: self.types.get(id).map(|d| d.name().to_string()).unwrap_or_default(),
                 constructor: ctor.name.clone(),
                 returns: self.format_signature_return(ctor),
+                error: match &ctor.ret {
+                    Type::Result { err, .. } => self.display_ty(err),
+                    _ => String::new(),
+                },
             }),
             None => match self.types.get(id) {
                 Some(TypeDef::Struct { fields, type_params, private_fields, skipped_fields, .. }) => {
@@ -804,7 +829,7 @@ impl<'a> InterfaceChecker<'a> {
         id: TypeId,
         visited: &mut Vec<TypeId>,
     ) -> Option<String> {
-        if visited.contains(&id) || (self.claim_input && self.generates(id)) {
+        if visited.contains(&id) || (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
             return None;
         }
         visited.push(id);
@@ -835,7 +860,7 @@ impl<'a> InterfaceChecker<'a> {
         targs: &[Type],
         visited: &mut Vec<TypeId>,
     ) -> Option<(String, String)> {
-        if visited.contains(&id) {
+        if visited.contains(&id) || self.decodes_itself(id) {
             return None;
         }
         visited.push(id);
@@ -913,7 +938,7 @@ impl<'a> InterfaceChecker<'a> {
         if visited.contains(&id) {
             return true; // recursive type — assume ok, the non-cyclic fields decide
         }
-        if self.claim_input && self.generates(id) {
+        if (self.claim_input && self.generates(id)) || self.decodes_itself(id) {
             return true;
         }
         visited.push(id);

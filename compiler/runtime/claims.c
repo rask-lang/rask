@@ -170,6 +170,9 @@ static int another(int depth) {
 
 static void fill(void *dst, RaskJsonShape *shape, int depth);
 
+// Set when a type's own `decode` refused the input being built.
+static int input_refused;
+
 static void fill_string(void *dst, int depth) {
     char buf[256];
     size_t n = 0;
@@ -277,6 +280,22 @@ static void fill(void *dst, RaskJsonShape *shape, int depth) {
     case RASK_JSHAPE_GENERATED:
         if (shape->generate) shape->generate(dst);
         return;
+    case RASK_JSHAPE_CUSTOM: {
+        // Built the way a decode builds it: the wire value first, then the
+        // type's own `decode`. One it refuses isn't an input a decode could
+        // have made, so the input is discarded (type.claims/CL5).
+        int64_t size = shape->wire_size > 16 ? shape->wire_size : 16;
+        void *wire = rask_alloc(size);
+        memset(wire, 0, (size_t)size);
+        fill(wire, shape->elem, depth);
+        int64_t refused = shape->custom(wire, dst);
+        rask_free(wire);
+        if (refused) {
+            input_refused = 1;
+            rask_panic("the type's own decode refused this input");
+        }
+        return;
+    }
     case RASK_JSHAPE_RESULT: {
         uint64_t failed = draw(2);
         *(uint8_t *)dst = failed ? RASK_TAG_ABSENT : RASK_TAG_PRESENT;
@@ -501,6 +520,7 @@ static int run_input(void (*fn)(void), uint64_t sim_seed, int64_t budget, char *
     steps = 0;
     step_budget = budget;
     over_budget = 0;
+    input_refused = 0;
     body_done = 0;
 #ifdef RASK_SIM
     if (!rask_sim_reseed(sim_seed)) {
@@ -517,6 +537,7 @@ static int run_input(void (*fn)(void), uint64_t sim_seed, int64_t budget, char *
     rask_await_detached_tasks();
     if (ch_by_index && ch_index != 0) return OUT_REPEAT;
     if (over_budget) return OUT_BUDGET;
+    if (input_refused) return OUT_DISCARD;
     if (outcome == RASK_TEST_SKIPPED) return OUT_DISCARD;
     if (outcome == RASK_TEST_PASSED && !body_done) return OUT_DISCARD;
     return outcome == RASK_TEST_FAILED ? OUT_FAIL : OUT_PASS;

@@ -10333,6 +10333,7 @@ impl<'a> MirLowerer<'a> {
                 vec![
                     ("name", MirConst::String(fc.name.clone())),
                     ("type_name", MirConst::String(fc.type_name.clone())),
+                    ("wire_type_name", MirConst::String(fc.wire_type_name.clone())),
                     ("offset", MirConst::Int(fc.offset as i64)),
                     ("size", MirConst::Int(fc.size as i64)),
                     ("is_public", MirConst::Bool(fc.is_public)),
@@ -10602,6 +10603,7 @@ impl<'a> MirLowerer<'a> {
                     vec![
                         ("name", MirConst::String(p.name.clone())),
                         ("type_name", MirConst::String(p.type_name.clone())),
+                        ("wire_type_name", MirConst::String(p.wire_type_name.clone())),
                         ("offset", MirConst::Int(p.offset as i64)),
                         ("size", MirConst::Int(p.size as i64)),
                         // A payload has no visibility or wire annotations of

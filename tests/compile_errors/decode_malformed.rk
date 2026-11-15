@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `decode` a decoder can't call (std.encoding/E12b, E0423).
+//
+// A type writes its own decode as `func decode(wire: W) -> Self or E` in its
+// `Decode` block. The decoders read the input as `W`, call it, and turn a
+// rejection into a decode error with `E`'s message, so each part of that shape
+// is checked where the block is written. Eight ways to get it wrong, each
+// reported once: seven as E0423, and a rejection with no `message()`, which
+// the signature already reports as E0344.
+
+struct Why {
+    text: string
+}
+
+extend Why {
+    public func message(self) -> string {
+        return self.text
+    }
+}
+
+// Not an error: no `message()`.
+struct Mute {
+    n: i64
+}
+
+// A wire type nothing can read.
+@no_decode
+struct Opaque {
+    n: i64
+}
+
+// ERROR: `decode` has `self`: there is no value yet [E0423]
+struct WithSelf {
+    n: i64
+}
+
+WithSelf implements Decode {
+    func decode(self, raw: i64) -> WithSelf or Why {
+        return WithSelf(n: raw)
+    }
+}
+
+// ERROR: two parameters [E0423]
+struct TwoParams {
+    n: i64
+}
+
+TwoParams implements Decode {
+    func decode(a: i64, b: i64) -> TwoParams or Why {
+        return TwoParams(n: a + b)
+    }
+}
+
+// ERROR: `mutate` wire [E0423]
+struct Mutating {
+    n: i64
+}
+
+Mutating implements Decode {
+    func decode(mutate raw: i64) -> Mutating or Why {
+        return Mutating(n: raw)
+    }
+}
+
+// ERROR: returns the type, not `Self or E` [E0423]
+struct NoReject {
+    n: i64
+}
+
+NoReject implements Decode {
+    func decode(raw: i64) -> NoReject {
+        return NoReject(n: raw)
+    }
+}
+
+// ERROR: the wire type can't be decoded [E0423]
+struct BadWire {
+    n: i64
+}
+
+BadWire implements Decode {
+    func decode(raw: Opaque) -> BadWire or Why {
+        return BadWire(n: raw.n)
+    }
+}
+
+// ERROR: a rejection with no message [E0344]
+struct BadError {
+    n: i64
+}
+
+BadError implements Decode {
+    func decode(raw: i64) -> BadError or Mute {
+        return BadError(n: raw)
+    }
+}
+
+// ERROR: generic [E0423]
+struct Boxed<T> {
+    inner: T
+}
+
+Boxed<T> implements Decode {
+    func decode(raw: i64) -> Boxed<T> or Why {
+        return Why(text: "no")
+    }
+}
+
+// ERROR: read as itself, so a decoder would never get to a number [E0423]
+struct Loop {
+    n: i64
+}
+
+Loop implements Decode {
+    func decode(raw: Loop) -> Loop or Why {
+        return Why(text: "no")
+    }
+}
+
+func main() {}

@@ -11,6 +11,10 @@
 public struct FieldInfo {
     public name: string
     public type_name: string
+    /// What a decoder reads the field as: `type_name`, unless the type
+    /// decodes through its own `decode` (std.encoding/E12b), then what that
+    /// takes, down the chain. `u16` for a `Port` whose `decode` takes a `u16`.
+    public wire_type_name: string
     public offset: usize
     public size: usize
     public is_public: bool

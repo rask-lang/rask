@@ -1916,7 +1916,7 @@ impl ToDiagnostic for crate::TypeError {
 
             // E12a: `Port.new` rejects a zero and `json.decode<Port>` would hand
             // one out anyway. The fields are fine; the way in is the problem.
-            DecodeSkipsConstructor { ty, owner, through, constructor, returns, span } => {
+            DecodeSkipsConstructor { ty, owner, through, constructor, returns, error, span } => {
                 let via = if *through {
                     format!(" (`{}` holds a `{}`)", ty, owner)
                 } else {
@@ -1928,16 +1928,58 @@ impl ToDiagnostic for crate::TypeError {
                         "`{owner}.{constructor}` returns `{returns}`, and a decode builds `{owner}` without calling it"
                     ))
                     .with_fix(format!(
-                        "decode a plain struct of the raw fields and call `{owner}.{constructor}` on them:\n\n  \
-                         struct {owner}Wire {{ /* the raw fields */ }}\n  \
-                         let wire = try json.decode<{owner}Wire>(text)\n  \
-                         let value = try {owner}.{constructor}(/* from wire */)\n\n\
+                        "write the `decode` that runs the check. It takes what the input holds and returns the checked value:\n\n  \
+                         {owner} implements Decode {{\n      \
+                         func decode(raw: /* what the input holds */) -> {owner} or {error} {{\n          \
+                         return {owner}.{constructor}(raw)\n      \
+                         }}\n  \
+                         }}\n\n\
                          or, if `{constructor}` isn't a check on decoded data, say a raw decode is fine:\n\n  \
                          {owner} implements Decode {{ }}"
                     ))
                     .with_why(format!(
                         "a type with a checking constructor promises its values passed the check, and a derived `Decode` would break that promise without a word. Anyone holding a `{owner}` assumes it went through `{constructor}` [std.encoding/E12a]"
                     ))
+            }
+
+            // E12b: the block has a `decode`, but not one a decoder can call.
+            BadCustomDecode { ty, problem, span } => {
+                use crate::checker::CustomDecodeProblem as P;
+                let (label, fix) = match problem {
+                    P::TakesSelf => (
+                        "`decode` is written with `self`".to_string(),
+                        format!("drop `self`: a decode builds a `{ty}`, so there isn't one yet\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
+                    ),
+                    P::ParamCount(n) => (
+                        format!("`decode` takes {n} parameters, it needs one"),
+                        "take the one value the input holds and nothing else. If the input has several parts, make that value a struct of them\n\n  func decode(raw: Wire) -> Self or MyError { … }".to_string(),
+                    ),
+                    P::WireNotPlain => (
+                        "the parameter is `mutate` or `take`".to_string(),
+                        "write the parameter plain, `raw: u16`. The decoder built the value, so it is the one that releases it after `decode` answers".to_string(),
+                    ),
+                    P::Returns { found } => (
+                        format!("`decode` returns `{found}`, it needs to return `{ty} or SomeError`"),
+                        format!("return the value or the reason it was rejected\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
+                    ),
+                    P::WireNotDecode { wire } => (
+                        format!("`{wire}` can't be decoded, so nothing can read it from the input"),
+                        format!("the parameter is what the input is read as first, so it has to be `Decode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `decode`. `{wire}` isn't"),
+                    ),
+                    P::DecodesThroughItself => (
+                        format!("`{ty}` is read as itself, or as a type that is read as `{ty}`"),
+                        format!("the parameter has to be something the input holds without going back through `{ty}`: a number, a `string`, a struct of those"),
+                    ),
+                    P::GenericType => (
+                        format!("`{ty}` is generic"),
+                        format!("a custom `decode` belongs to one concrete type. Write it for a type with no parameters; a generic container can hold that type and decode it"),
+                    ),
+                };
+                Diagnostic::error(format!("`{}`'s `decode` can't be used by a decoder", ty))
+                    .with_code("E0423")
+                    .with_primary(*span, label)
+                    .with_fix(fix)
+                    .with_why("the decoders (json, csv, a claim's inputs) call `decode` wherever the type appears: they read the input as the parameter's type, pass that value in, and turn a rejection into a decode error with its message and where it happened. That only works for `func decode(wire: W) -> Self or E` with `W` decodable and `E` an error [std.encoding/E12b]")
             }
 
             NotSerializable { ty, interface_name, verb, field, field_ty, span } => {

@@ -126,6 +126,8 @@ pub struct Monomorphizer<'a> {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
+    /// Type -> how it decodes through its own `decode` (`queue_decode_defaults`).
+    pub custom_decodes: HashMap<String, crate::CustomDecodeFn>,
     /// Node ids handed out to instantiated copies. Starts above every id the
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
@@ -431,6 +433,7 @@ impl<'a> Monomorphizer<'a> {
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
             claim_generators: HashMap::new(),
+            custom_decodes: HashMap::new(),
             in_test_body: false,
             records: crate::InstanceCalls::default(),
             instance_args: Vec::new(),
@@ -1049,6 +1052,18 @@ impl<'a> Monomorphizer<'a> {
                     }
                     return;
                 }
+                // A type that decodes through its own `decode` is read as its
+                // wire type and handed to the adapter; its fields aren't read.
+                if let Some(custom) = typed.types.custom_decode(*id).cloned() {
+                    let name = typed.types.type_name(*id);
+                    let adapter = format!("{name}_{}", rask_ast::decl::field_attrs::DECODE_ADAPTER);
+                    if self.method_table.contains_key(&adapter) {
+                        self.enqueue(adapter.clone(), Vec::new());
+                        self.custom_decodes.insert(name, crate::CustomDecodeFn { wire: custom.wire.clone(), adapter });
+                    }
+                    self.queue_decode_defaults(&custom.wire, seen);
+                    return;
+                }
                 let (name, fields) = match typed.types.get(*id) {
                     Some(rask_types::TypeDef::Struct { name, fields, .. }) => (name, fields),
                     // An enum's payloads are built too (claims only; a decode
@@ -1073,6 +1088,12 @@ impl<'a> Monomorphizer<'a> {
                         self.decode_defaults.insert((name.clone(), field.clone()), method);
                     }
                     self.queue_decode_defaults(field_ty, seen);
+                }
+            }
+            // A field's or a wire type's own spelling of a declared type.
+            Type::UnresolvedNamed(name) => {
+                if let Some(id) = typed.types.get_type_id(name) {
+                    self.queue_decode_defaults(&Type::Named(id), seen);
                 }
             }
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {

@@ -162,6 +162,23 @@ fn results_wide_integers_and_maps_keyed_by_numbers_are_built_and_shrunk() {
     }
 }
 
+// std.encoding/E12b: a claim's inputs go through a type's own `decode`. The
+// claims say a `Port` is never 0 wherever it sits, which only holds if an input
+// the type refuses is thrown away (discarded) instead of handed to the claim.
+#[test]
+fn a_type_with_its_own_decode_is_built_through_it() {
+    let dir = copy_of("decoded");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    for claim in ["a_port_passed_its_check", "every_listed_port_passed", "a_bound_port_passed"] {
+        let line = run.stdout.lines().find(|l| l.contains(claim)).unwrap_or_else(|| panic!("no line for {claim}:\n{}", run.stdout));
+        assert!(line.contains("held for") && line.contains("discarded"), "{line}");
+    }
+    assert!(run.stderr.contains("claim `ports_are_small` is false"), "{}", run.stderr);
+    assert!(run.stderr.contains("counterexample: p = Port(value: 10)"), "{}", run.stderr);
+    assert_eq!(run.stderr.matches("is false").count(), 1, "only the false claim fails:\n{}", run.stderr);
+}
+
 #[test]
 fn a_verdict_is_kept_until_something_the_claim_reaches_changes() {
     let dir = copy_of("strict");

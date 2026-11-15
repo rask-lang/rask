@@ -223,26 +223,32 @@ extend csv {
 
 // ─── Records to structs ─────────────────────────────────────────
 
-/// The columns a struct reads: wire name, declared type, and whether a
-/// missing column is fine because the field has another way to get a value.
+/// The columns a struct reads: wire name, declared type, the type a cell is
+/// read as, and whether a missing column is fine because the field has another
+/// way to get a value. The two types differ for a field whose type decodes
+/// through its own `decode` (std.encoding/E12b): a `Port` taking a `u16` is a
+/// number in its column, and the type's own `decode` runs on it.
 struct CsvShape {
     names: Vec<string>
     kinds: Vec<string>
+    cells: Vec<string>
     optional: Vec<bool>
 }
 
 func csv_shape<T>() -> CsvShape {
     mut names: Vec<string> = Vec.new()
     mut kinds: Vec<string> = Vec.new()
+    mut cells: Vec<string> = Vec.new()
     mut optional: Vec<bool> = Vec.new()
     comptime for f in reflect.fields<T>() {
         if !f.is_skipped {
             names.push(f.serial_name)
             kinds.push(f.type_name)
-            optional.push(f.has_default || f.type_name.ends_with("?"))
+            cells.push(f.wire_type_name)
+            optional.push(f.has_default || f.wire_type_name.ends_with("?"))
         }
     }
-    return CsvShape(names, kinds, optional)
+    return CsvShape(names, kinds, cells, optional)
 }
 
 /// Field k reads column k.
@@ -291,7 +297,7 @@ func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>,
     for k in 0..shape.names.len() {
         if cols[k] >= 0 {
             let cell = record[cols[k].wrap<usize>()]
-            let value = csv_cell_json(shape.kinds[k], cell) catch bad => {
+            let value = csv_cell_json(shape.cells[k], cell) catch bad => {
                 return CsvError.BadValue(row: row, column: shape.names[k], reason: bad.reason)
             }
             if any {

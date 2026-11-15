@@ -1790,9 +1790,12 @@ impl<'a> MirLowerer<'a> {
                     .map_or(&fl.ty, |(_, t)| t);
                 let type_name =
                     rask_check::reflect::substituted_label(self.ctx.type_defs, declared, &type_subst);
+                let wire_type_name =
+                    rask_check::reflect::wire_label(self.ctx.type_defs, declared, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
+                    wire_type_name,
                     offset: fl.offset,
                     size: fl.size,
                     is_public: fl.is_public,

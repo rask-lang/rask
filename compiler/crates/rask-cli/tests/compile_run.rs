@@ -1754,8 +1754,41 @@ fn error_decode_skips_constructor() {
         "should name the constructor, and the type it was reached through: {}", out,
     );
     assert!(
-        out.contains("Port implements Decode"),
-        "should offer the declaration that says a raw decode is intended: {}", out,
+        out.contains("Port implements Decode") && out.contains("func decode(raw:") && out.contains("Port.new(raw)"),
+        "should show the `decode` that runs the constructor: {}", out,
+    );
+    assert!(
+        out.contains("a raw decode is fine"),
+        "should still offer the empty declaration that says a raw decode is intended: {}", out,
+    );
+    assert!(!out.contains("PortWire"), "the wire-struct workaround is gone from the fix: {}", out);
+}
+
+// std.encoding/E12b: the `decode` in a `Decode` block has one shape a decoder
+// can call. Each way to break it is reported once, at the method.
+#[test]
+fn error_decode_malformed() {
+    let (failed, out) = compile_error_output("decode_malformed.rk");
+    assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0423").count(), 7, "seven shapes are E0423: {}", out);
+    for want in [
+        "`WithSelf`'s `decode` can't be used by a decoder",
+        "`decode` is written with `self`",
+        "`decode` takes 2 parameters, it needs one",
+        "the parameter is `mutate` or `take`",
+        "`decode` returns `NoReject`, it needs to return `NoReject or SomeError`",
+        "`Opaque` can't be decoded, so nothing can read it from the input",
+        "`Boxed<T>` is generic",
+        "`Loop` is read as itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // A rejection with no `message()` has its own error, and the adapter the
+    // compiler writes beside `decode` adds none of its own.
+    assert_eq!(out.matches("E0344").count(), 1, "{}", out);
+    assert!(
+        !out.contains("E0308") && !out.contains("E0313") && !out.contains("E0361") && !out.contains("E0893"),
+        "no second error out of code the author never wrote: {}", out,
     );
 }
 

@@ -707,7 +707,14 @@ impl TypeChecker {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             checker.declared_method_names(interface)
         };
-        let Some(allowed) = allowed else { return };
+        let Some(mut allowed) = allowed else { return };
+        // E12b: `Decode` is a marker, but its block may hold the type's own
+        // `decode`. Its signature varies with the type, which an interface
+        // can't say, so the checker validates it (`check_custom_decode`).
+        if interface_name == "Decode" {
+            allowed.push("decode".to_string());
+            allowed.push(rask_ast::decl::field_attrs::DECODE_ADAPTER.to_string());
+        }
         for m in &i.methods {
             if !allowed.iter().any(|a| a == &m.name) {
                 self.errors.push(TypeError::MethodOutsideInterface {
@@ -718,6 +725,105 @@ impl TypeChecker {
                 });
             }
         }
+    }
+
+    /// E12b: is this `decode` something a decoder can call? A static function
+    /// of one plain parameter returning `Self or E`. What it reads and what it
+    /// rejects with are the parameter's type and the `E`; whether those are
+    /// `Decode` and `Error` is the check pass's question, once every type is in.
+    fn custom_decode_of(
+        &self,
+        type_id: rask_types::TypeId,
+        decl: rask_ast::NodeId,
+        sig: &rask_types::MethodSig,
+    ) -> Result<super::CustomDecode, super::CustomDecodeProblem> {
+        use super::CustomDecodeProblem as P;
+        if sig.self_param != rask_types::SelfParam::None {
+            return Err(P::TakesSelf);
+        }
+        let [(wire, mode)] = sig.params.as_slice() else {
+            return Err(P::ParamCount(sig.params.len()));
+        };
+        if *mode != rask_ast::ty::ParamMode::Borrow {
+            return Err(P::WireNotPlain);
+        }
+        let Type::Result { ok, err } = &sig.ret else {
+            return Err(P::Returns { found: self.types.display_type(&sig.ret) });
+        };
+        if matches!(**err, Type::None) || !self.types.names_type(ok, type_id) {
+            return Err(P::Returns { found: self.types.display_type(&sig.ret) });
+        }
+        Ok(super::CustomDecode { wire: wire.clone(), err: (**err).clone(), decl })
+    }
+
+    /// E12b: report a `decode` that is the wrong shape, or reads a type that
+    /// can't be decoded, or goes round in a circle. A `decode` that isn't usable
+    /// is taken back out of the table, and its adapter isn't checked: the adapter
+    /// only repeats the problem, in code the author never wrote.
+    ///
+    /// A rejection type with no `message()` isn't reported here: the signature
+    /// itself says so (E0344), once.
+    ///
+    /// Answers whether the block's adapter should be checked.
+    fn check_custom_decode(&mut self, i: &ImplDecl) -> bool {
+        let Some(interface) = &i.interface else { return true };
+        if self.types.interface_name(interface) != "Decode" {
+            return true;
+        }
+        let Some(m) = i.methods.iter().find(|m| m.name == "decode") else { return true };
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else { return true };
+        let problem = self.custom_decode_problem(i, m, type_id);
+        let Some(problem) = problem else { return true };
+        if let Some(problem) = problem {
+            self.errors.push(TypeError::BadCustomDecode { ty: i.target_ty.to_string(), problem, span: m.span });
+        }
+        self.types.custom_decodes.remove(&type_id);
+        false
+    }
+
+    /// `None` when the `decode` is fine, `Some(None)` when it isn't and the
+    /// error is reported elsewhere, `Some(Some(_))` when it isn't and this says why.
+    fn custom_decode_problem(
+        &self,
+        i: &ImplDecl,
+        m: &FnDecl,
+        type_id: rask_types::TypeId,
+    ) -> Option<Option<super::CustomDecodeProblem>> {
+        use super::CustomDecodeProblem as P;
+        let generic = !i.target_ty.args().is_empty()
+            || self.types.get(type_id).is_some_and(|d| !d.type_params().is_empty());
+        if generic {
+            return Some(Some(P::GenericType));
+        }
+        // Read back off the table: the signature as registered, `Self` resolved.
+        let sig = match self.types.get(type_id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => {
+                methods.iter().find(|s| s.decl == Some(m.id)).cloned()
+            }
+            _ => None,
+        }?;
+        let custom = match self.custom_decode_of(type_id, m.id, &sig) {
+            Ok(custom) => custom,
+            Err(problem) => return Some(Some(problem)),
+        };
+        if self.types.decodes_through(&custom.wire, type_id) {
+            return Some(Some(P::DecodesThroughItself));
+        }
+        let mut decode = crate::interfaces::InterfaceChecker::for_decode(&self.types);
+        if decode.check_satisfies(&custom.wire, &TypeExpr::named("Decode"), m.span).is_err() {
+            let wire = self.types.display_type(&custom.wire);
+            return Some(Some(P::WireNotDecode { wire }));
+        }
+        // A union of errors is an error: its `message()` is the member's.
+        let members = match &custom.err {
+            Type::Union(parts) => parts.clone(),
+            one => vec![one.clone()],
+        };
+        let mut plain = crate::interfaces::InterfaceChecker::new(&self.types);
+        let all_errors = members
+            .iter()
+            .all(|e| plain.check_satisfies(e, &TypeExpr::named("Error"), m.span).is_ok());
+        (!all_errors).then_some(None)
     }
 
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
@@ -1405,6 +1511,19 @@ impl TypeChecker {
                 }
                 self.filed_methods.decls.insert((decl_id, plain), filed.clone());
                 sig.name = filed;
+            }
+        }
+        // E12b: a `decode` in a `Decode` block is how the type decodes. Filed
+        // once here, off the signature, for every decoder to read. One that
+        // isn't the right shape is reported at the check pass and filed nowhere.
+        if interface.as_ref().is_some_and(|(_, name)| name == "Decode") {
+            let generic = !i.target_ty.args().is_empty()
+                || self.types.get(type_id).is_some_and(|d| !d.type_params().is_empty());
+            let found = i.methods.iter().zip(new_methods.iter()).find(|(m, _)| m.name == "decode");
+            if let (Some((m, sig)), false) = (found, generic) {
+                if let Ok(custom) = self.custom_decode_of(type_id, m.id, sig) {
+                    self.types.custom_decodes.insert(type_id, custom);
+                }
             }
         }
         // OR12: `@builtin` says the pair's types are written here and the
@@ -3133,6 +3252,7 @@ impl TypeChecker {
                     .fold(true, |ok, t| self.check_interface_arity(t, decl.span) && ok);
                 self.check_overlapping_conformances(i, decl.span);
                 self.check_block_is_the_contract(i);
+                let check_adapter = self.check_custom_decode(i);
                 let assoc_ok = self.check_conformance_assoc_types(i, decl.span);
 
                 if arity_ok && assoc_ok && i.interface.is_some() && i.target_ty.args().is_empty() {
@@ -3217,6 +3337,9 @@ impl TypeChecker {
                         .extend(tp.bound_types());
                 }
                 for method in &i.methods {
+                    if !check_adapter && method.name == rask_ast::decl::field_attrs::DECODE_ADAPTER {
+                        continue;
+                    }
                     self.check_fn(method);
                 }
                 self.current_impl_type_param_bounds = std::collections::HashMap::new();

@@ -115,6 +115,7 @@ extend reflect {
 struct FieldInfo {
     name: string
     type_name: string
+    wire_type_name: string    // what a decoder reads the field as (std.encoding/E12b)
     offset: usize
     size: usize
     is_public: bool
@@ -126,6 +127,8 @@ struct FieldInfo {
 ```
 
 `has_field` is a predicate, so it answers rather than refuses: an enum's payload isn't a field and a primitive has none, and both say false. `fields<T>()` on a non-struct stays a compile error, because there's no list to hand back.
+
+`wire_type_name` is `type_name` unless the field's type decodes through its own `decode` (`std.encoding/E12b`), in which case it is what that takes, followed down a chain and through a `T?`: `u16` for a `Port` whose `decode` takes a `u16`, `u16?` for a `Port?`. A format that reads cells or tokens by type (csv) asks this instead of `type_name`, so it never has to know which types write their own.
 
 `serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
 

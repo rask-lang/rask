@@ -19,6 +19,26 @@ pub enum MapKeyFix {
     ExtendBlock,
 }
 
+/// What is wrong with a custom `decode` (std.encoding/E12b).
+#[derive(Debug, Clone)]
+pub enum CustomDecodeProblem {
+    /// Written with `self`: a decode builds a value, it has none yet.
+    TakesSelf,
+    /// Zero or several parameters. The wire value is the one.
+    ParamCount(usize),
+    /// The parameter is `mutate` or `take`.
+    WireNotPlain,
+    /// Doesn't return `Self or E`.
+    Returns { found: String },
+    /// The wire type isn't `Decode`.
+    WireNotDecode { wire: String },
+    /// On a generic type, which isn't supported.
+    GenericType,
+    /// Its wire type is itself, or decodes through a chain that comes back.
+    DecodesThroughItself,
+}
+
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -915,6 +935,17 @@ pub enum TypeError {
         constructor: String,
         /// The constructor's return type as written, `Port or PortError`.
         returns: String,
+        /// Its error type, `PortError`, for the `decode` the fix suggests.
+        error: String,
+        span: Span,
+    },
+
+    /// std.encoding/E12b: the `decode` in a `T implements Decode { }` block
+    /// isn't the shape a decoder can call.
+    #[error("`{ty}`'s `decode` can't be used by a decoder")]
+    BadCustomDecode {
+        ty: String,
+        problem: CustomDecodeProblem,
         span: Span,
     },
 
@@ -2075,6 +2106,7 @@ impl TypeError {
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | DecodeSkipsConstructor { .. }
+            | BadCustomDecode { .. }
             | StringAddForbidden { .. }
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }

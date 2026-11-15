@@ -193,6 +193,10 @@ impl Interpreter {
                         reflect::written_label(&self.types, &substitute(&f.ty)).source(),
                     ))),
                 );
+                fields.insert(
+                    "wire_type_name".to_string(),
+                    string_value(reflect::wire_written_label(&self.types, &substitute(&f.ty))),
+                );
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
                 // the two backends can't drift into two answers.
@@ -322,6 +326,7 @@ fn variant_info(v: rask_mono::reflect::VariantFact) -> Value {
             let mut f = IndexMap::new();
             f.insert("name".to_string(), string_value(p.name.clone()));
             f.insert("type_name".to_string(), string_value(p.type_name));
+            f.insert("wire_type_name".to_string(), string_value(p.wire_type_name));
             f.insert("offset".to_string(), Value::int(p.offset as i64));
             f.insert("size".to_string(), Value::int(p.size as i64));
             // A payload has no visibility or wire annotations of its own.

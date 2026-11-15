@@ -52,6 +52,20 @@ pub(super) struct ConformanceSite {
     pub package: Option<String>,
 }
 
+/// std.encoding/E12b: a type that decodes through its own `decode`. The
+/// decoders read the wire type, decode that the normal way, and hand the result
+/// to the type's `decode`; a rejection becomes a decode error.
+#[derive(Debug, Clone)]
+pub struct CustomDecode {
+    /// What `decode` takes: the type the input is read as first. Itself
+    /// `Decode`, possibly a custom one.
+    pub wire: Type,
+    /// What it rejects with. Any `Error`, so a rejection has a message.
+    pub err: Type,
+    /// The `decode` method's declaration.
+    pub decl: NodeId,
+}
+
 /// Which interface a conformance is to.
 ///
 /// A name isn't enough: a program's `interface Writer` and the stdlib's are two
@@ -225,6 +239,9 @@ pub struct TypeTable {
     /// G1: declared/derived interface conformances (nominal). TypeId → the interfaces
     /// the type conforms to, from `T implements Interface` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<ConformanceKey>>,
+    /// std.encoding/E12b: the types that write their own `Decode`, each with
+    /// what its `decode` reads and what it can reject with.
+    pub(super) custom_decodes: HashMap<TypeId, CustomDecode>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, ConformanceKey), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
@@ -311,6 +328,7 @@ impl TypeTable {
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
             conformances: HashMap::new(),
+            custom_decodes: HashMap::new(),
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
@@ -1565,7 +1583,7 @@ impl TypeTable {
 
     /// Is `ty` the type `id`, instantiated or not, under whichever spelling the
     /// signature kept?
-    fn names_type(&self, ty: &Type, id: TypeId) -> bool {
+    pub(super) fn names_type(&self, ty: &Type, id: TypeId) -> bool {
         match ty {
             Type::Named(n) => *n == id,
             Type::Generic { base, .. } => *base == id,
@@ -1574,6 +1592,45 @@ impl TypeTable {
             }
             _ => false,
         }
+    }
+
+    /// std.encoding/E12b: how a type decodes when its author wrote the
+    /// `decode` in its `Decode` block. `None` for every type that decodes
+    /// from its fields, which is nearly all of them.
+    ///
+    /// Filled once, when the block is collected, off the method's own
+    /// signature. Every decoder (native, interpreter, csv, claims) asks here
+    /// rather than looking for a method named `decode`.
+    pub fn custom_decode(&self, type_id: TypeId) -> Option<&CustomDecode> {
+        self.custom_decodes.get(&type_id)
+    }
+
+    /// A type as a message reads it, `Port`, not an id.
+    pub fn display_type(&self, ty: &Type) -> String {
+        format!("{}", self.resolve_type_names(ty))
+    }
+
+    /// E12b: does reading `wire` come back to `start`? A custom `decode` whose
+    /// wire type is a type that is read as `start` again never reaches a
+    /// primitive, so the decoders would follow it forever.
+    pub fn decodes_through(&self, wire: &Type, start: TypeId) -> bool {
+        let mut at = wire.clone();
+        for _ in 0..64 {
+            let id = match &at {
+                Type::Named(id) => Some(*id),
+                Type::UnresolvedNamed(name) => self.get_type_id(name),
+                _ => None,
+            };
+            let Some(id) = id else { return false };
+            if id == start {
+                return true;
+            }
+            match self.custom_decode(id) {
+                Some(next) => at = next.wire.clone(),
+                None => return false,
+            }
+        }
+        true
     }
 
     /// Does the type build its own claim inputs: is there a `T implements

@@ -191,6 +191,10 @@
 // the function that calls its `generate`. Claims only.
 #define RASK_JSHAPE_GENERATED 21
 
+// A type that decodes through its own `decode` (std.encoding/E12b): the
+// shape of what `decode` reads, and the function that calls it.
+#define RASK_JSHAPE_CUSTOM 22
+
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1
 

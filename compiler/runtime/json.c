@@ -632,6 +632,26 @@ RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int
     return s;
 }
 
+RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t wire_size,
+                                      void *decode) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM, size);
+    s->elem = wire;
+    s->wire_size = wire_size;
+    s->custom = (RaskJsonCustom)decode;
+    return s;
+}
+
+// Why the custom decode that just ran refused, for the decoder to put behind
+// the path it happened at.
+static _Thread_local char json_reject_msg[384];
+
+void rask_json_custom_reject(const RaskStr *msg) {
+    int64_t n = rask_string_len(msg);
+    if (n >= (int64_t)sizeof(json_reject_msg)) n = (int64_t)sizeof(json_reject_msg) - 1;
+    memcpy(json_reject_msg, rask_string_ptr(msg), (size_t)n);
+    json_reject_msg[n] = '\0';
+}
+
 RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_GENERATED, size);
     s->generate = (RaskJsonFill)generate;
@@ -729,6 +749,34 @@ static int json_decode_opt(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     return json_decode_into_slot((char *)dst + at, shape->elem, v, path);
 }
 
+// Does an absent member decode without being there? A `T?` takes `none`, and
+// so does a custom decode whose wire type is one (std.encoding/E12b).
+static int json_shape_takes_absent(const RaskJsonShape *shape) {
+    while (shape && shape->kind == RASK_JSHAPE_CUSTOM) shape = shape->elem;
+    return shape && shape->kind == RASK_JSHAPE_OPT;
+}
+
+// A type's own `decode`: read the input as the wire type, the normal way, and
+// hand the result over. The wire value belongs to the function it's handed to.
+static int json_decode_custom(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
+                              const char *path) {
+    int64_t size = shape->wire_size > 16 ? shape->wire_size : 16;
+    void *wire = rask_alloc(size);
+    memset(wire, 0, (size_t)size);
+    if (!json_decode_into_slot(wire, shape->elem, v, path)) {
+        rask_free(wire);
+        return 0;
+    }
+    json_reject_msg[0] = '\0';
+    int64_t refused = shape->custom(wire, dst);
+    rask_free(wire);
+    if (refused) {
+        json_fail(RASK_JSON_ERR_TYPE, "%s: %s", path[0] ? path : "the value", json_reject_msg);
+        return 0;
+    }
+    return 1;
+}
+
 static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                               const char *path) {
     if (v->kind != RASK_JSON_OBJ) {
@@ -761,8 +809,8 @@ static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                 continue;
             }
             // A `T?` field takes `none`; anything else has to be there (J9).
-            if (f->shape->kind == RASK_JSHAPE_OPT) {
-                if (!json_decode_opt((char *)dst + f->offset, f->shape, NULL, child)) return 0;
+            if (json_shape_takes_absent(f->shape)) {
+                if (!json_decode_into_slot((char *)dst + f->offset, f->shape, NULL, child)) return 0;
                 continue;
             }
             json_fail(RASK_JSON_ERR_MISSING, "field \"%s\" not found in the JSON object", f->key);
@@ -846,6 +894,9 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
     if (!shape) return 1;
     if (shape->kind == RASK_JSHAPE_OPT) {
         return json_decode_opt(dst, shape, v, path);
+    }
+    if (shape->kind == RASK_JSHAPE_CUSTOM) {
+        return json_decode_custom(dst, shape, v, path);
     }
     if (!v) {
         json_fail(RASK_JSON_ERR_MISSING, "%s is missing", path[0] ? path : "the value");

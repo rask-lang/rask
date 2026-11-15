@@ -97,6 +97,39 @@ pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, T
         .source()
 }
 
+/// What a decoder reads a declared type as (std.encoding/E12b): the type
+/// itself, unless it decodes through its own `decode`, then what that takes,
+/// and so on down. Looks through `T?`. Labelled like `substituted_label`.
+pub fn wire_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+    substituted_label(types, &wire_type(types, declared), subst)
+}
+
+/// `wire_label` for a type as written, which the interpreter has instead of a
+/// declared `Type`.
+pub fn wire_written_label(types: &TypeTable, ty: &TypeExpr) -> String {
+    match resolve_type_expr(ty, types) {
+        Ok(resolved) => type_label(types, &wire_type(types, &resolved)).source(),
+        Err(_) => written_label(types, ty).source(),
+    }
+}
+
+fn wire_type(types: &TypeTable, ty: &Type) -> Type {
+    match ty {
+        Type::Result { ok, err } if matches!(**err, Type::None) => {
+            Type::Result { ok: Box::new(wire_type(types, ok)), err: err.clone() }
+        }
+        Type::Named(id) => match types.custom_decode(*id) {
+            Some(custom) => wire_type(types, &custom.wire),
+            None => ty.clone(),
+        },
+        Type::UnresolvedNamed(name) => match types.get_type_id(name).and_then(|id| types.custom_decode(id)) {
+            Some(custom) => wire_type(types, &custom.wire),
+            None => ty.clone(),
+        },
+        _ => ty.clone(),
+    }
+}
+
 /// Fold `reflect.<method><T>()` to its constant.
 ///
 /// `ty` is `T` as written at the call site, already substituted by

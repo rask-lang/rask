@@ -268,8 +268,12 @@ impl TypeChecker {
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);
-            // PM6c: `take` on a Copy type takes nothing.
-            if param.is_take && param.name != "self" {
+            // PM6c: `take` on a Copy type takes nothing. Not for the adapter
+            // desugar writes beside a `decode` (std.encoding/E12b): it can't
+            // know whether the wire type is Copy, and `take` is what makes the
+            // function drop whatever the decoder built, a wire struct holding a
+            // `Vec` of custom types included. For a Copy wire there's nothing to drop.
+            if param.is_take && param.name != "self" && f.name != rask_ast::decl::field_attrs::DECODE_ADAPTER {
                 if let Some(spelled) = Self::always_copy_spelling(&param.ty) {
                     self.errors.push(TypeError::TakeOnCopyType {
                         param: param.name.clone(),

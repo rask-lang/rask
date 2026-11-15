@@ -656,7 +656,11 @@ impl TypeChecker {
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
-        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+        let checker = if interface_name == "Decode" {
+            crate::interfaces::InterfaceChecker::for_decode(&self.types)
+        } else {
+            crate::interfaces::InterfaceChecker::new(&self.types)
+        };
         // E16: the declaration refused. Reported before the field hunt, because
         // the fields are usually fine — `@no_encode` goes on a credential whose
         // `string` would serialize perfectly well, and that's the problem. The
@@ -693,6 +697,7 @@ impl TypeChecker {
                     owner: skipped.ty,
                     constructor: skipped.constructor,
                     returns: skipped.returns,
+                    error: skipped.error,
                     span,
                 };
             }

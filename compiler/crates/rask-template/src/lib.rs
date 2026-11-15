@@ -39,6 +39,7 @@ pub const TEMPLATE_ID_BASE: u32 = 60_000_000;
 pub struct FieldFact {
     pub name: String,
     pub type_name: String,
+    pub wire_type_name: String,
     pub offset: u32,
     pub size: u32,
     pub is_public: bool,
@@ -86,6 +87,7 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
                 FieldFact {
                     name: fl.name.clone(),
                     type_name: rask_check::reflect::substituted_label(types, declared_ty, &subst),
+                    wire_type_name: rask_check::reflect::wire_label(types, declared_ty, &subst),
                     offset: fl.offset,
                     size: fl.size,
                     is_public: fl.is_public,
@@ -947,6 +949,7 @@ fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
         serial_name: p.name.clone(),
         name: p.name,
         type_name: p.type_name,
+        wire_type_name: p.wire_type_name,
         offset: p.offset,
         size: p.size,
         is_public: true,
@@ -1046,6 +1049,7 @@ impl ItemFacts<'_> {
         Some(match field {
             "name" => ExprKind::String(f.name.clone()),
             "type_name" => ExprKind::String(f.type_name.clone()),
+            "wire_type_name" => ExprKind::String(f.wire_type_name.clone()),
             "serial_name" => ExprKind::String(f.serial_name.clone()),
             "offset" => ExprKind::Int(f.offset as i128, Some(IntSuffix::Usize)),
             "size" => ExprKind::Int(f.size as i128, Some(IntSuffix::Usize)),
