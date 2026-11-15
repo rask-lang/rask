@@ -161,7 +161,18 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let field_types = ctx.field_types();
     let rack_holders = rask_mir::rack_holding_structs(&field_types);
     let copy_layouts = rask_mir::CopyLayouts::from_fields(&field_types);
-    let pipeline = rask_mir::PassManager::default_pipeline().run_with(&mut functions, rack_holders, copy_layouts);
+    let const_init_thunks = ctx
+        .const_slot_types
+        .borrow()
+        .keys()
+        .map(|name| rask_mir::lower::const_init_fn_name(name))
+        .collect();
+    let pipeline = rask_mir::PassManager::default_pipeline().run_with(
+        &mut functions,
+        rack_holders,
+        copy_layouts,
+        const_init_thunks,
+    );
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);

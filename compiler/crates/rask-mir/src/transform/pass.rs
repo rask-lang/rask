@@ -38,6 +38,10 @@ pub struct PassContext {
     pub rack_holders: HashSet<u32>,
     /// Which struct and enum layouts are Copy (`CopyLayouts`).
     pub copy_layouts: crate::CopyLayouts,
+    /// The init thunk of every module-level const that has a slot, by the
+    /// function's name. Lowering made them from the const declarations, so
+    /// it says which they are; `const_free` reads them.
+    pub const_init_thunks: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -83,17 +87,19 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, HashSet::new(), crate::CopyLayouts::default())
+        self.run_with(fns, HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
     }
 
-    /// `run`, told which struct layouts hold a rack.
+    /// `run`, told which struct layouts hold a rack and which functions are
+    /// const init thunks.
     pub fn run_with(
         &self,
         fns: &mut Vec<MirFunction>,
         rack_holders: HashSet<u32>,
         copy_layouts: crate::CopyLayouts,
+        const_init_thunks: HashSet<String>,
     ) -> PipelineResult {
-        let mut ctx = PassContext { rack_holders, copy_layouts, ..PassContext::default() };
+        let mut ctx = PassContext { rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -196,8 +202,8 @@ pub struct ConstFreePass;
 
 impl MirPass for ConstFreePass {
     fn name(&self) -> &str { "const_free" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::add_const_free(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::add_const_free(fns, &ctx.const_init_thunks);
     }
 }
 

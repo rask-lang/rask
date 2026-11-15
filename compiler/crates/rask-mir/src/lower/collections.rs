@@ -996,18 +996,7 @@ impl<'a> MirLowerer<'a> {
     /// a `Map<string, Vec<i32>>` freed its keys and left every value vector to
     /// nobody.
     pub(super) fn elem_type_of(&self, ty: &rask_types::Type) -> MirType {
-        match ty {
-            // `Map<string, func(i64) -> i64>.new()` records its argument as a
-            // name and nothing resolves it further, so the values looked like
-            // plain words: the map never held the closure's block, the block
-            // went at the end of the statement that inserted it, and calling
-            // what came back out answered 13 for `|x| x + 1` applied to 5
-            // (#1151).
-            rask_types::Type::UnresolvedNamed(name) if name.trim_start().starts_with("func(") => {
-                MirType::FuncPtr(crate::types::SignatureId(0))
-            }
-            _ => self.ctx.type_to_mir(ty),
-        }
+        self.ctx.type_to_mir(ty)
     }
 
     pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {

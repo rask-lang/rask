@@ -1055,7 +1055,7 @@ impl<'a> MirLowerer<'a> {
         if elems.len() != 2 {
             return None;
         }
-        format!("{}", elems[0]).starts_with("Sender").then_some(which)
+        (self.head_name(&elems[0]).as_deref() == Some("Sender")).then_some(which)
     }
 
     pub(super) fn resolve_tuple_field(

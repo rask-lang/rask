@@ -2016,24 +2016,6 @@ impl<'a> MirContext<'a> {
         rask_stdlib::lookup_method(name, method).map(|_| name.to_string())
     }
 
-    /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
-    /// Used when resolving method calls on struct fields.
-    /// A written type you can call.
-    ///
-    /// Function types are spelled `|T| -> R` or `func(T) -> R`, so a string test
-    /// used to be enough. `Sequence<T>` is also callable but wears a nominal
-    /// name — it has to, so adapters can attach to it (type.sequence/SEQ1) —
-    /// and it names no arrow at all, so the string test missed it and a
-    /// `func evens(src: Sequence<i32>)` lowered `src(…)` as a call to a
-    /// function called "src".
-    pub fn is_callable_ty_str(s: &str) -> bool {
-        let s = s.trim();
-        s.starts_with('|')
-            || s.starts_with("func(")
-            || s.starts_with("Sequence<")
-            || s.starts_with("SequenceMut<")
-    }
-
     /// The answer a callable type hands back, for a type the checker resolved.
     /// `None` if it isn't callable. A sequence answers nothing — it is driven
     /// for its yields, not for a return value.
