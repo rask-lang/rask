@@ -8233,6 +8233,53 @@ fn scalar_assertion_messages_agree_across_backends() {
     );
 }
 
+const OPTIONAL_STRING_ASSERT_SRC: &str = r#"
+test "a string optional holding a string" {
+    let a: string? = "y"
+    assert a == "x"
+}
+
+test "a string optional holding none" {
+    let a: string? = none
+    assert a == "x"
+}
+
+test "a check on a string optional" {
+    let a: string? = "y"
+    check a == "x"
+}
+
+func main() {}
+"#;
+
+/// A `string?` against a string reads the same on both backends.
+///
+/// The interpreter's string case fired when *either* side was a string, so it
+/// printed the optional as a bare quoted word with no `(left:, right:)` half;
+/// native chooses by the two sides' types and the optional sent it down the
+/// debug route. The string form is for two strings.
+#[test]
+fn an_optional_string_assertion_reads_the_same_on_both_backends() {
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed") || l.contains("check failed"))
+            .map(|l| {
+                let i = l.find("assertion failed").or_else(|| l.find("check failed")).unwrap();
+                l[i..].to_string()
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, true));
+    assert_eq!(interp.len(), 3, "all three report:\n{interp:#?}");
+    assert_eq!(native, interp, "the two backends spell the same failure the same way");
+    assert!(
+        interp[0].contains("Option.Some(\"y\") == \"x\" (left: Option.Some(\"y\"), right: \"x\")"),
+        "the optional renders as an optional:\n{}",
+        interp[0]
+    );
+}
+
 /// Run a source string through `rask run` and give back stdout + stderr.
 fn run_rask_run_source(src: &str, interp: bool) -> String {
     let rask = rask_binary();

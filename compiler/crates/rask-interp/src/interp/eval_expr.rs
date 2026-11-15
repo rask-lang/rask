@@ -221,9 +221,10 @@ fn assert_operand(v: &Value) -> String {
 /// detail after it, so a form with no detail can come back empty rather than
 /// repeating the caller's own words back at it (#1098).
 fn format_comparison(interp: &Interpreter, left: &Value, op: &str, right: &Value) -> String {
-    // Same order as the MIR side picks its helper: string wins over everything,
-    // then char when both sides are chars, then the plain form.
-    if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
+    // Same order as the MIR side picks its helper: the string form when both
+    // sides are strings, then char when both are chars, then the plain form.
+    // A `string?` against a string is neither: it renders as an optional does.
+    if matches!(left, Value::String(_)) && matches!(right, Value::String(_)) {
         return format!("\"{}\" {} \"{}\"", left, op, right);
     }
     if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
