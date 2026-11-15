@@ -733,6 +733,9 @@ pub enum TypeError {
         /// shadowed by the program's own (#1329). "Missing methods" would be
         /// wrong: it may well have every one of them.
         namesake: bool,
+        /// G1: the type never declares `T implements I`. `Some(true)` when it
+        /// has every method anyway, so the declaration is all that's missing.
+        undeclared: Option<bool>,
         span: Span,
     },
     /// A bound, conformance header or cast naming an interface that doesn't exist.

@@ -886,6 +886,7 @@ impl TypeChecker {
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
                             namesake: false,
+                            undeclared: None,
                             span: bound_span,
                         });
                     }
@@ -3188,6 +3189,7 @@ impl TypeChecker {
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
                                 namesake: false,
+                                undeclared: None,
                                 span: decl.span,
                             });
                         }

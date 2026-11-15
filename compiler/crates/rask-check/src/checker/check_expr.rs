@@ -2255,12 +2255,15 @@ impl TypeChecker {
                             };
                             let namesake = self.types.conformance_target(&inner_ty)
                                 .is_some_and(|id| self.types.conforms_to_namesake(id, interface_name));
+                            let undeclared = crate::interfaces::InterfaceChecker::new(&self.types)
+                                .undeclared_conformance(&inner_ty, &TypeExpr::named(interface_name));
                             self.errors.push(TypeError::InterfaceNotSatisfied {
                                 ty: ty_desc,
                                 interface_name: interface_name.clone(),
                                 context: super::InterfaceBoundContext::InterfaceObjectCast,
                                 missing: None,
                                 namesake,
+                                undeclared,
                                 span: expr.span,
                             });
                         }
