@@ -1770,7 +1770,7 @@ fn error_decode_skips_constructor() {
 fn error_decode_malformed() {
     let (failed, out) = compile_error_output("decode_malformed.rk");
     assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0423").count(), 7, "seven shapes are E0423: {}", out);
+    assert_eq!(out.matches("E0423").count(), 9, "nine shapes are E0423: {}", out);
     for want in [
         "`WithSelf`'s `decode` can't be used by a decoder",
         "`decode` is written with `self`",
@@ -1780,6 +1780,8 @@ fn error_decode_malformed() {
         "`Opaque` can't be decoded, so nothing can read it from the input",
         "`Boxed<T>` is generic",
         "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
+        "`Ping` goes through itself",
     ] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }
@@ -1821,7 +1823,7 @@ fn error_encode_skips_decode() {
 fn error_encode_malformed() {
     let (failed, out) = compile_error_output("encode_malformed.rk");
     assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0423").count(), 8, "eight shapes: {}", out);
+    assert_eq!(out.matches("E0423").count(), 9, "nine shapes: {}", out);
     for want in [
         "`NoSelf`'s `encode` can't be used by an encoder",
         "`encode` has no `self`",
@@ -1832,6 +1834,7 @@ fn error_encode_malformed() {
         "`Opaque` can't be encoded, so nothing can write it",
         "`Boxed<T>` is generic",
         "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
     ] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }

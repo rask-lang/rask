@@ -1674,6 +1674,15 @@ impl TypeTable {
     ) -> bool {
         let mut at = wire.clone();
         for _ in 0..64 {
+            // A `T?` reads the very input a `T` does (null is `none`, anything
+            // else is a `T`), so it goes back to where `T` does.
+            while let Type::Result { ok, err } = &at {
+                if **err != Type::None {
+                    break;
+                }
+                let inner = (**ok).clone();
+                at = inner;
+            }
             let id = match &at {
                 Type::Named(id) => Some(*id),
                 Type::UnresolvedNamed(name) => self.get_type_id(name),

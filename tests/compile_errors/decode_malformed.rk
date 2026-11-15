@@ -117,4 +117,37 @@ Loop implements Decode {
     }
 }
 
+// ERROR: a `T?` reads the input a `T` does, so this is the same circle [E0423]
+struct LoopOpt {
+    n: i64
+}
+
+LoopOpt implements Decode {
+    func decode(raw: LoopOpt?) -> LoopOpt or Why {
+        return Why(text: "no")
+    }
+}
+
+// ERROR: each reads the other, one of them through a `T?`. A circle is reported
+// once, at the first type of it [E0423]
+struct Ping {
+    n: i64
+}
+
+struct Pong {
+    n: i64
+}
+
+Ping implements Decode {
+    func decode(raw: Pong?) -> Ping or Why {
+        return Why(text: "no")
+    }
+}
+
+Pong implements Decode {
+    func decode(raw: Ping) -> Pong or Why {
+        return Why(text: "no")
+    }
+}
+
 func main() {}

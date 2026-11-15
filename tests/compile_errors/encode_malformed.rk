@@ -108,4 +108,15 @@ Loop implements Encode {
     }
 }
 
+// ERROR: written as an optional of itself, which is written the same way [E0423]
+struct LoopOpt {
+    n: i64
+}
+
+LoopOpt implements Encode {
+    func encode(self) -> LoopOpt? {
+        return self
+    }
+}
+
 func main() {}
