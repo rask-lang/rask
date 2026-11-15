@@ -666,6 +666,35 @@ fn insert_aggregate_release(
         false
     };
 
+    // Where a `Field_take` reads from: `dst = base + offset`, handed to it as
+    // the field's address. The take happens at the call, so the aggregate the
+    // address points into has to stay alive until then, not just until the
+    // addition that made the address.
+    let take_addresses: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Call { func: fref, args, .. } if fref.name == "Field_take" => {
+                args.first().and_then(uses::operand_local)
+            }
+            _ => None,
+        })
+        .collect();
+    // The aggregate each of those addresses points into.
+    let take_bases: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
+            } if take_addresses.contains(dst) => Some((*dst, *base)),
+            _ => None,
+        })
+        .collect();
+
     // Names that may come to name an aggregate or read into one: the
     // aggregates, and whatever is copied, read or parked out of them.
     let mut tracked: HashSet<LocalId> = aggregates.clone();
@@ -701,6 +730,11 @@ fn insert_aggregate_release(
                     .filter(|v| tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr))
                     .map(|_| *addr),
                 MirStmtKind::BindPlace { dst, addr } => tracked.contains(addr).then_some(*dst),
+                // The address `Field_take` reads and zeroes through.
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
+                } if take_addresses.contains(dst) => tracked.contains(base).then_some(*dst),
                 MirStmtKind::ClosureCreate { dst, .. } | MirStmtKind::InterfaceBox { dst, .. } => {
                     Some(*dst)
                 }
@@ -925,6 +959,12 @@ fn insert_aggregate_release(
                         _ => ev.push(ownership::Event::Other(*dst)),
                     }
                 }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
+                } if take_addresses.contains(dst) && is_tracked(dst) && is_tracked(base) => {
+                    ev.push(ownership::Event::View { dst: *dst, base: *base });
+                }
                 // An element bound where it sits reaches into the collection
                 // it sits in, which has to outlive the binding.
                 MirStmtKind::BindPlace { dst, addr } if is_tracked(dst) => {
@@ -938,6 +978,18 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Call { func: fref, args, dst } => {
+                    // A take zeroes the field in the aggregate it was read
+                    // from, so that copy is the value from here on.
+                    if fref.name == "Field_take" {
+                        if let Some(base) = args
+                            .first()
+                            .and_then(uses::operand_local)
+                            .and_then(|a| take_bases.get(&a).copied())
+                            .filter(|b| is_tracked(b))
+                        {
+                            ev.push(ownership::Event::WriteThrough(base));
+                        }
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if !is_tracked(&id) || retained.contains(&id) {

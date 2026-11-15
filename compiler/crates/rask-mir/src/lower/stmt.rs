@@ -2588,6 +2588,34 @@ impl<'a> MirLowerer<'a> {
             _ => None,
         };
 
+        // `let (name, list) = t` on a tuple that isn't Copy moves every part
+        // out of `t`. Each non-Copy part is taken (`Field_take`: the bytes go
+        // to the new name, the slot is zeroed), so the name owns what the
+        // tuple held and `t` is left holding nothing there to release. Read
+        // as a plain field copy, `name` added a reference of its own and `t`
+        // still counted as the owner, so handing `list` on made the release
+        // pass read the whole tuple as given away and nothing ever released
+        // the string (#1902); and when `t` was released later, it freed a
+        // part a new name was still using (#1870).
+        let takes_parts = matches!(&init.kind, ExprKind::Ident(_))
+            && matches!(&init_mir_ty, MirType::Tuple(_))
+            && matches!(&init_op, MirOperand::Local(_))
+            && tuple_elems.as_ref().is_some_and(|_| {
+                self.ctx
+                    .lookup_raw_type(init.id)
+                    .is_some_and(|t| !self.ctx.type_defs.is_copy(&t))
+            });
+        let part_offsets: Vec<u32> = match &mir_elem_types {
+            Some(fields) if takes_parts => crate::types::tuple_offsets(fields),
+            _ => Vec::new(),
+        };
+        // The tuple's own slot: reading `t` made a copy of its bytes, and a
+        // take through the copy would zero the copy, not `t`.
+        let tuple_slot = match &init.kind {
+            ExprKind::Ident(name) if takes_parts => self.locals.get(name).map(|(l, _)| *l),
+            _ => None,
+        };
+
         for (i, name) in names.iter().enumerate() {
             let elem_ty = if is_channel_create {
                 // Channel tx/rx handles are opaque i64 pointers
@@ -2599,7 +2627,7 @@ impl<'a> MirLowerer<'a> {
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1285"))
             };
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
-            self.locals.insert(name.clone(), (local_id, elem_ty));
+            self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
 
             if is_channel_create && names.len() == 2 {
                 // Extract tx (index 0) or rx (index 1) from the raw channel ptr.
@@ -2609,6 +2637,45 @@ impl<'a> MirLowerer<'a> {
                     func: FunctionRef::internal(extract_fn.to_string()),
                     args: vec![init_op.clone()],
                 }));
+            } else if let (true, Some(&offset), Some(base)) =
+                (takes_parts, part_offsets.get(i), tuple_slot)
+            {
+                let part_is_copy = tuple_elems
+                    .as_ref()
+                    .and_then(|e| e.get(i))
+                    .is_some_and(|t| self.ctx.type_defs.is_copy(t));
+                if part_is_copy {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Field {
+                            base: init_op.clone(),
+                            field_index: i as u32,
+                            byte_offset: None,
+                            access: FieldAccess::Word,
+                        },
+                    }));
+                    if let Some(elem) = tuple_elems.as_ref().and_then(|e| e.get(i)) {
+                        self.retain_bound_copy(local_id, elem);
+                    }
+                } else {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(base),
+                            right: MirOperand::Constant(MirConst::Int(offset as i64)),
+                        },
+                    }));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local_id),
+                        func: FunctionRef::internal("Field_take".to_string()),
+                        args: vec![
+                            MirOperand::Local(addr),
+                            MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
+                        ],
+                    }));
+                }
             } else {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: local_id,
