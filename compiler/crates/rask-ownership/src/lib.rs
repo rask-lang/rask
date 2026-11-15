@@ -318,6 +318,10 @@ pub struct OwnershipChecker<'a> {
     /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
     /// on a link can tell "the node was deleted here" from "you moved it here".
     link_delete_spans: std::collections::HashSet<Span>,
+    /// The subset of those where the delete named no node (`clear`, a
+    /// `deleting` call), so a link dying there may name a node that's still
+    /// alive: it's revoked because nothing can tell which nodes went.
+    link_revoke_spans: std::collections::HashSet<Span>,
     /// mem.unsafe/PT1: what each binding holding a raw pointer points into,
     /// as the names of the values in this body that own that storage.
     ptr_sources: HashMap<String, Vec<String>>,
@@ -670,6 +674,7 @@ impl<'a> OwnershipChecker<'a> {
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
+            link_revoke_spans: std::collections::HashSet::new(),
             ptr_sources: HashMap::new(),
             ptr_lenders: HashMap::new(),
             ptr_deaths: HashMap::new(),
@@ -1627,6 +1632,7 @@ impl<'a> OwnershipChecker<'a> {
         self.writable_links.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
+        self.link_revoke_spans.clear();
         self.ptr_sources.clear();
         self.ptr_lenders.clear();
         self.ptr_deaths.clear();
@@ -5321,6 +5327,7 @@ impl<'a> OwnershipChecker<'a> {
             self.bindings.insert(name.clone(), BindingState::Moved { at: span });
         }
         self.link_delete_spans.insert(span);
+        self.link_revoke_spans.insert(span);
     }
 
     /// Element type of a sequence type (`Vec<T>`, `Rack<T>`), if it has one.
@@ -5409,6 +5416,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Conservative on the rack: links are not tracked back to the rack they
     /// came from, so two racks of the same node type kill each other's locals.
     fn kill_links_into_rack(&mut self, rack: &Expr, span: Span) {
+        self.link_revoke_spans.insert(span);
         let elem = self
             .node_ty(&rack.id)
             .and_then(|ty| self.elem_key(ty));
@@ -6273,6 +6281,9 @@ impl<'a> OwnershipChecker<'a> {
     fn move_reason_at(&self, ty: &Type, at: Span) -> MoveReason {
         if self.is_link_type(ty) && !self.link_delete_spans.contains(&at) {
             return MoveReason::LinkMoved;
+        }
+        if self.is_link_type(ty) && self.link_revoke_spans.contains(&at) {
+            return MoveReason::LinkRevoked;
         }
         self.move_reason(ty)
     }

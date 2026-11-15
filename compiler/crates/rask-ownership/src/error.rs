@@ -26,6 +26,11 @@ pub enum MoveReason {
     /// put and the thing it pointed at was freed, so every name for it is dead.
     /// The move checker is only the mechanism that proves it (analysis.fourth-option).
     LinkDeleted,
+    /// A `Link<T>` killed by a delete that named no node: `clear`, or a call
+    /// to something declared `deleting`. Its node may well be alive, but which
+    /// nodes went can't be known from here, so every local link into the rack
+    /// is dead (mem.parameters/PM9).
+    LinkRevoked,
     /// A `Link<T>` moved into another name the ordinary way. Nothing was deleted —
     /// links are affine among locals so that two names for one node can't drift
     /// apart, and this is that rule firing, not a use after free.

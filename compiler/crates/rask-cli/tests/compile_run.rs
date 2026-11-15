@@ -2381,8 +2381,15 @@ fn rack_link_cascade_delete_is_rejected() {
         text
     );
     assert!(
-        text.contains("E0328") && text.contains("`kid` names a deleted node"),
+        text.contains("E0328") && text.contains("`kid` may name a deleted node"),
         "the caller's *other* link is what dies, not just the one passed in: {}",
+        text
+    );
+    // The call picked its own victims, so `kid` may be alive: the error says
+    // the call can delete anything, not that it deleted `kid`'s node.
+    assert!(
+        text.contains("this can delete any node in the rack") && !text.contains("the node `kid` names was deleted"),
+        "a revoked link must not be reported as a named delete: {}",
         text
     );
     // PM5: the marker follows the signature, so a `deleting` parameter takes

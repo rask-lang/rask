@@ -29,8 +29,31 @@ fn link_deleted_diagnostic(
         .with_primary(use_span, primary)
         .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
         .with_help("read what you need before the delete, or keep the reference in a field so the rack can null it")
-        .with_fix("move the reads above the delete, or rack the link in a `Link<T>?` field")
+        .with_fix("move the reads above the delete, or keep the link in a `Link<T>?` field")
         .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the rack nulls it and the `?` makes you check; a local can't be reached by the rack, so the compiler proves here that you never follow one")
+}
+
+/// Using a `Link<T>` after a delete that named no node: `clear`, or a call to
+/// something declared `deleting`. The node may be alive; the link is dead
+/// because nothing here can tell, and saying "was deleted here" would be a
+/// claim about one node the code never made.
+fn link_revoked_diagnostic(
+    name: &str,
+    revoked_at: rask_ast::Span,
+    use_span: rask_ast::Span,
+    maybe: bool,
+) -> Diagnostic {
+    let primary = if maybe {
+        format!("`{}` is dead on at least one path reaching here", name)
+    } else {
+        format!("`{}` may point at freed memory from here on", name)
+    };
+    Diagnostic::error(format!("`{}` may name a deleted node — possible use after free", name))
+        .with_code("E0328")
+        .with_primary(use_span, primary)
+        .with_secondary(revoked_at, "this can delete any node in the rack, so every link into it dies here")
+        .with_fix("find the node again after this line, or keep the link in a `Link<T>?` field")
+        .with_why("a delete that picks its own nodes can't say which ones went, so no local link into that rack can be trusted after it. A field can survive, because the rack nulls it if its node went and the `?` makes you check")
 }
 
 impl ToDiagnostic for crate::OwnershipError {
@@ -56,6 +79,18 @@ impl ToDiagnostic for crate::OwnershipError {
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {
                 link_deleted_diagnostic(name, *moved_at, self.span, true)
+            }
+
+            UseAfterMove { name, moved_at, reason }
+                if matches!(reason, crate::MoveReason::LinkRevoked) =>
+            {
+                link_revoked_diagnostic(name, *moved_at, self.span, false)
+            }
+
+            UseAfterMaybeMove { name, moved_at, reason }
+                if matches!(reason, crate::MoveReason::LinkRevoked) =>
+            {
+                link_revoked_diagnostic(name, *moved_at, self.span, true)
             }
 
             MutableCaptureConflict { name, holder, captured_at, second_closure } => {
@@ -617,8 +652,8 @@ impl ToDiagnostic for crate::OwnershipError {
                         ),
                         format!("use `{}` before the line that consumes it, or not at all", name),
                     ),
-                    MoveReason::LinkDeleted => (
-                        // Unreachable — the guarded arm above handles it.
+                    MoveReason::LinkDeleted | MoveReason::LinkRevoked => (
+                        // Unreachable — the guarded arms above handle them.
                         format!("`{}` names a deleted node", name),
                         "read the node before deleting it".to_string(),
                     ),
