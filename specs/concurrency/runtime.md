@@ -1048,7 +1048,7 @@ using Multitasking {
     // Sleep
     spawn {
         print("Starting...\n")
-        sleep(Duration.seconds(5))
+        sleep(Duration.seconds(5))!
         print("5 seconds later!\n")
     }.detach()
 
@@ -1865,7 +1865,7 @@ using Multitasking {
 ```rask
 let h = spawn { quick_work() }
 h.join()!  // Task completes
-h.cancel()  // Error: handle already consumed
+h.cancel()!  // Error: handle already consumed
 ```
 
 **Error:** Compile error (handle moved by join).
@@ -1873,7 +1873,7 @@ h.cancel()  // Error: handle already consumed
 **Alternative:**
 ```rask
 let h = spawn { quick_work() }
-h.cancel()  // Sets flag, waits for completion
+h.cancel()!  // Sets flag, waits for completion
 ```
 
 **Behavior:** If task already complete when cancel() called, flag set but no-op. cancel() returns result immediately.

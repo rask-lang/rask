@@ -257,7 +257,7 @@ match file_result {
 
 ```rask
 match file_result {
-    Opened(file) | Recovered(file) => file.close(),
+    Opened(file) | Recovered(file) => file.close()!,
     Failed(e) => log(e)
 }
 ```

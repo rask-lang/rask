@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Rejects: a call whose `T or E` result is a statement on its own
-// (type.errors/ER50, E0418), and `@allow(unused_result)`, which no longer names
+// (type.errors/ER50, E0419), and `@allow(unused_result)`, which no longer names
 // anything (E0855).
 //
 // Ignoring a result used to be a warning. It's an error now, with no opt-out:
@@ -33,7 +33,7 @@ func maybe_name(n: i64) -> string? {
 
 // --- a bare call, in a function that could have propagated it ---
 func bare_call() -> void or SaveError {
-    // ERROR: result of type `void or SaveError` is ignored [E0418]
+    // ERROR: result of type `void or SaveError` is ignored [E0419]
     save(1)
     return
 }
@@ -41,7 +41,7 @@ func bare_call() -> void or SaveError {
 // --- an `if` arm written as a statement drops what it ends with ---
 func in_a_branch(c: bool) {
     if c {
-        // ERROR: result of type `void or SaveError` is ignored [E0418]
+        // ERROR: result of type `void or SaveError` is ignored [E0419]
         save(2)
     }
 }
@@ -49,7 +49,7 @@ func in_a_branch(c: bool) {
 // --- the same, in a loop ---
 func in_a_loop() {
     for i in 0..3 {
-        // ERROR: result of type `void or SaveError` is ignored [E0418]
+        // ERROR: result of type `void or SaveError` is ignored [E0419]
         save(i)
     }
 }
@@ -58,7 +58,7 @@ func in_a_loop() {
 // ERROR: `@allow(unused_result)` names nothing [E0855]
 @allow(unused_result)
 func allowed() {
-    // ERROR: result of type `void or SaveError` is ignored [E0418]
+    // ERROR: result of type `void or SaveError` is ignored [E0419]
     save(4)
 }
 

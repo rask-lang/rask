@@ -566,7 +566,7 @@ func process() {
     let file = try open("data.txt")
     ensure file.close()
 
-    channel.send(file)      // Transfers ownership, cancels ensure (C5, C1)
+    try channel.send(file)      // Transfers ownership, cancels ensure (C5, C1)
 }
 ```
 

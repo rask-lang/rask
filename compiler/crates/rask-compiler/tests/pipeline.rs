@@ -884,7 +884,7 @@ fn er50_rejects_a_discarded_result_and_nowhere_else() {
     let lines: Vec<usize> = output
         .diagnostics
         .iter()
-        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0418"))
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0419"))
         .filter_map(|d| d.labels.first().map(|l| l.span.start))
         .collect();
     assert_eq!(lines.len(), 3, "expected save(6), save(7) and save(i): {:?}", output.diagnostics);
@@ -925,7 +925,7 @@ fn er50_offers_try_only_where_the_function_can_propagate() {
     let fixes: Vec<&str> = output
         .diagnostics
         .iter()
-        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0418"))
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0419"))
         .map(|d| d.fix.as_deref().unwrap_or(""))
         .collect();
     assert_eq!(fixes.len(), 3, "{:?}", output.diagnostics);

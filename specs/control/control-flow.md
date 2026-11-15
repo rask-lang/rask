@@ -501,7 +501,7 @@ if state is Connected(sock) {
 
 // Handle all variants - use match
 match state {
-    Connected(sock) => sock.send(data),
+    Connected(sock) => sock.send(data)!,
     Disconnected => reconnect(),
     Error(e) => log(e),
 }
@@ -549,7 +549,7 @@ if cond {
 // Better: use ensure
 ensure file.close()
 if cond {
-    process(file)
+    process(file)!
 }
 ```
 

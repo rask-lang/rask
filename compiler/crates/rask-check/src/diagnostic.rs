@@ -2638,7 +2638,7 @@ impl ToDiagnostic for crate::TypeError {
                     fix.push_str(&format!("\n    try {call}    // pass the error to the caller"));
                 }
                 Diagnostic::error(format!("result of type `{}` is ignored", ty))
-                    .with_code("E0418")
+                    .with_code("E0419")
                     .with_primary(*span, "if this fails, nothing finds out")
                     .with_fix(format!("say what happens on failure:\n    {fix}"))
                     .with_why("a call that can fail hands its error back as a value, so a statement that ignores the value ignores the failure and the program carries on as if it worked. Every error is asserted, passed on, or handled where the code says so [type.errors/ER50]")
