@@ -94,7 +94,9 @@ whose context is thrown away when they report. Why each runs on what it does:
   main red too, does an issue exist. Not for one command; run that yourself.
 - **`worker`** (Sonnet): coding that needs a lot of reading or spans passes.
   Brief it with the goal, branch, what done means and what's ruled out; point
-  at files, don't paste them. One per branch; parallel ones in worktrees.
+  at files, don't paste them. One per branch; parallel ones in worktrees,
+  and hand each one any number they might both claim (error codes, rule IDs)
+  in its brief, since they can't see each other's work.
   Use `model: "opus"` for a task a worker failed twice, or one no test can
   check.
 - **Hold reports to the bar.** One that says workaround, "for now", partial,
