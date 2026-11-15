@@ -1008,6 +1008,40 @@ fn closure_facts(
     facts
 }
 
+/// Closures a function reads out of a join's result and returns.
+///
+/// A task that ends in a closure hands it over through the join as a boxed
+/// payload, and the joiner is the only one left holding it: the task's frame is
+/// gone and the handle was consumed. `return h.join()!` reads it out of the
+/// result wrapper with a field read, which no other rule saw as a source, so a
+/// function written that way didn't count as handing a closure back and its
+/// caller never freed the one it got.
+fn closures_out_of_joins(func: &MirFunction) -> Vec<LocalId> {
+    let mut joined: HashSet<LocalId> = HashSet::new();
+    let mut out = Vec::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                    if matches!(callee.name.as_str(), "Handle_join" | "Handle_cancel") =>
+                {
+                    joined.insert(*dst);
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: crate::MirRValue::Field { base: MirOperand::Local(base), .. },
+                } if joined.contains(base)
+                    && matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
+                {
+                    out.push(*dst);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// The `ClosureCreate` destinations in a function.
 fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     let mut found = HashMap::new();
@@ -1057,6 +1091,9 @@ fn functions_handing_back_a_closure(
                     }
                     _ => {}
                 }
+            }
+            for id in closures_out_of_joins(func) {
+                owned.insert(id, true);
             }
             if owned.is_empty() {
                 continue;

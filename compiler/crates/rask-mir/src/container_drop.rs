@@ -361,6 +361,28 @@ fn env_drop_glue(
         // free what this closure swallowed and the glue must not — unless it
         // shared the closure with a keeper, when the glue is what runs last.
         let frame_drops = crate::closures::closures_the_frame_frees_last(func);
+        // A container a task block took out of its own environment and gave to
+        // a closure it builds. The block gave it away, so the task's glue
+        // leaves it (`consumed`), and the frame never made it, so it isn't in
+        // `fresh`: nobody owned it, and the closure that carried it out leaked
+        // it with the rest (#1901).
+        let mut taken: HashMap<LocalId, &'static str> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. }
+                    if consumed.get(func.name.as_str()).is_some_and(|gone| gone.contains(offset)) =>
+                {
+                    match func.local_ty(*dst) {
+                        Some(MirType::Container(kind)) => Some((*dst, container_free(*kind))),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        follow_copies(func, &mut taken);
         for block in &func.blocks {
             for (si, stmt) in block.statements.iter().enumerate() {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
@@ -411,6 +433,28 @@ fn env_drop_glue(
                         })
                     })
                     .collect();
+                owned.extend(
+                    captures
+                        .iter()
+                        .filter(|c| !c.by_ref && !c.lent)
+                        .filter(|c| {
+                            capturers
+                                .get(&(func.name.clone(), c.local_id))
+                                .copied()
+                                .unwrap_or(0)
+                                == 1
+                        })
+                        .filter(|c| made_each_turn(c))
+                        .filter(|c| !gone(c))
+                        .filter(|c| !owned.iter().any(|o| o.offset == c.offset))
+                        .filter_map(|c| {
+                            taken.get(&c.local_id).map(|free| EnvSlot {
+                                offset: c.offset,
+                                holds: Holds::Handle(free),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 // A closure this one swallowed, when the frame won't free it.
                 //
                 // `count3().take(1)` inside a `flat_map` callback builds the
