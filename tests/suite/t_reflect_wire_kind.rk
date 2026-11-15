@@ -97,3 +97,27 @@ test "std.reflect — the same facts from reflect.fields as a value" {
     assert fields[7].wire_optional
     assert kind_name(fields[9].wire_kind) == "other"
 }
+
+// A field typed by a type parameter is asked about what the instance put there.
+struct Holder<T> {
+    x: T
+    y: T?
+    z: Vec<T>
+}
+
+test "std.reflect — a field typed by a type parameter reports the instance's type" {
+    let got = described<Holder<Port>>()
+    assert got.join(",") == "x=u16,y=u16?,z=other"
+    let fields = reflect.fields<Holder<Port>>()
+    assert fields[0].has_decode
+    assert !fields[1].has_decode
+    assert !fields[2].has_decode
+    comptime for f in reflect.fields<Holder<Port>>() {
+        comptime {
+            if f.name == "x" {
+                assert f.has_decode
+                assert f.has_encode == false
+            }
+        }
+    }
+}

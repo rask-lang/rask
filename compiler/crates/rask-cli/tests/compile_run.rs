@@ -10335,3 +10335,18 @@ test "runs after it" {
         assert!(out.contains("2 tests, 1 passed, 1 failed"), "interp={interp}:\n{out}");
     }
 }
+
+// std.reflect: a field typed by a type parameter reports what the instance put
+// there. `Row<Flag>.x` is a `Flag`, read from a cell as a `bool`; the wire kind
+// and the codec facts were worked out from the bare `T` and said "other" with no
+// `decode`, so csv refused a valid cell. Native only: the interpreter's
+// `json.decode` doesn't build a generic struct at all.
+#[test]
+fn csv_reads_a_generic_structs_custom_field_as_its_wire_type() {
+    let (stdout, code) = run_native("csv_generic_custom.rk");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(
+        stdout,
+        "2 true false\nCSV row 2, column \"x\": \"maybe\" is not true or false\n",
+    );
+}

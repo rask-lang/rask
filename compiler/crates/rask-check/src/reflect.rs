@@ -206,6 +206,12 @@ fn own_codec(types: &TypeTable, ty: &Type) -> (bool, bool) {
 /// decoder reads it as: the type itself, unless it decodes through its own
 /// `decode`, then what that takes, and so on down. Looks through `T?`.
 pub fn wire_form(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> WireForm {
+    // A field typed by a type parameter is asked about what the instance put
+    // there: `Holder<Port>.x` is a `Port`, with a `Port`'s codec, not a bare
+    // `T` that decodes as itself.
+    if !subst.is_empty() {
+        return wire_written_form(types, &substituted_type_expr(types, declared, subst));
+    }
     WireForm::of(&substituted_type_expr(types, &wire_type(types, declared), subst), own_codec(types, declared))
 }
 
