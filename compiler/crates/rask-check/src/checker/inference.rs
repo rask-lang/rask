@@ -237,7 +237,7 @@ impl InferenceContext {
     }
 
     /// Create a fresh type variable for an unsuffixed literal.
-    /// After constraint solving, unresolved literal vars default to i32/f64.
+    /// After constraint solving, unresolved literal vars default to i64/f64.
     pub fn fresh_literal_var(&mut self, kind: LiteralKind) -> Type {
         let id = TypeVarId(self.next_var);
         self.next_var += 1;
@@ -272,23 +272,24 @@ impl InferenceContext {
 
     /// The type an unsuffixed literal takes when nothing else decides it.
     ///
-    /// i32 is the default (type.primitives/L1), but only where the value fits:
-    /// `const big = 3000000000` used to keep the low 32 bits and print
-    /// -1294967296. Past that the narrowest type that holds it wins, which is
-    /// how `18446744073709551615` on its own comes out a `u64` rather than an
-    /// `i128`.
+    /// i64 is the default (type.primitives/L1), but only where the value fits:
+    /// past `i64::MAX` the narrowest type that holds it wins, which is how
+    /// `18446744073709551615` on its own comes out a `u64` rather than an
+    /// `i128`. i32 used to be the default, and counters and totals overflowed
+    /// far from the literal that picked the width (#1935).
     ///
     /// The one answer for every place that needs it: defaulting, an early bind
     /// that can't wait for defaulting, and an error naming the literal's type.
     /// The error used to say `i64` while the literal became an `i32` (#1523).
+    /// Later passes read the type this settles on from the node-type table;
+    /// none of them picks a default of its own.
     pub fn literal_default(&self, id: TypeVarId, kind: LiteralKind) -> Type {
         match kind {
             LiteralKind::Integer => match self.literal_int_values.get(&id) {
-                Some(&v) if i32::try_from(v).is_ok() => Type::I32,
                 Some(&v) if i64::try_from(v).is_ok() => Type::I64,
                 Some(&v) if u64::try_from(v).is_ok() => Type::U64,
                 Some(_) => Type::I128,
-                None => Type::I32,
+                None => Type::I64,
             },
             LiteralKind::Float => Type::F64,
         }
@@ -305,9 +306,18 @@ impl InferenceContext {
     /// resolves to, if it's still an unbound variable, that's what needs the
     /// default.
     pub fn apply_literal_defaults(&mut self) {
+        self.apply_literal_defaults_where(|_| true);
+    }
+
+    /// `apply_literal_defaults` for the literal vars `wanted` picks. A method
+    /// call on a literal receiver (`3.75.powi(2)`) can't be resolved until the
+    /// receiver has a type, but its argument literals must stay open until it
+    /// is, or they default on their own and then fail the method's signature.
+    pub fn apply_literal_defaults_where(&mut self, wanted: impl Fn(TypeVarId) -> bool) {
         let pending: Vec<(TypeVarId, LiteralKind)> = self
             .literal_vars
             .iter()
+            .filter(|(&id, _)| wanted(id))
             .map(|(&id, &kind)| (id, kind))
             .collect();
         let mut defaults: HashMap<TypeVarId, Type> = HashMap::new();
@@ -320,10 +330,9 @@ impl InferenceContext {
             // Two literals can land on the same variable — a wide one and a
             // narrow one. Take the wider, so nothing gets truncated.
             let rank = |t: &Type| match t {
-                Type::I32 => 0,
-                Type::I64 => 1,
-                Type::U64 => 2,
-                Type::I128 => 3,
+                Type::I64 => 0,
+                Type::U64 => 1,
+                Type::I128 => 2,
                 _ => 0,
             };
             match defaults.get(&tail) {

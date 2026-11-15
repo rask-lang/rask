@@ -357,7 +357,39 @@ impl TypeChecker {
         self.late_coalesce = false;
     }
 
-    pub(super) fn retry_deferred_methods(&mut self) {
+    /// Give the literals that method calls are waiting on their default, then
+    /// resolve those calls, before any other literal defaults.
+    ///
+    /// `let x = 3.75` then `x.powi(2)` defers on the unsuffixed receiver. The
+    /// `2` stays an open literal until the call resolves and meets `exp: i32`.
+    /// Defaulting every literal first made the `2` an `i64` on its own, and
+    /// the call then failed to take it. It only worked while the default
+    /// happened to be `i32` (#1935).
+    pub(super) fn settle_literal_receivers(&mut self) {
+        let mut receivers = std::collections::HashSet::new();
+        for c in &self.deferred_methods {
+            if let TypeConstraint::HasMethod { ty, .. } = c {
+                if let Type::Var(tail) = self.ctx.apply(ty) {
+                    receivers.insert(tail);
+                }
+            }
+        }
+        if receivers.is_empty() {
+            return;
+        }
+        let waited_on: std::collections::HashSet<_> = self
+            .ctx
+            .literal_vars
+            .keys()
+            .copied()
+            .filter(|id| matches!(self.ctx.apply(&Type::Var(*id)), Type::Var(t) if receivers.contains(&t)))
+            .collect();
+        self.ctx.apply_literal_defaults_where(|id| waited_on.contains(&id));
+        self.drain_deferred_methods();
+    }
+
+    /// Retry deferred method calls until a round resolves nothing new.
+    pub(super) fn drain_deferred_methods(&mut self) {
         // A deferred call can be waiting on another deferred call. The receiver
         // of `"{n.compare(m)}"`'s `to_string` is compare's *result*, which only
         // binds once compare itself resolves — and compare deferred too, since
@@ -386,6 +418,10 @@ impl TypeChecker {
                 break;
             }
         }
+    }
+
+    pub(super) fn retry_deferred_methods(&mut self) {
+        self.drain_deferred_methods();
         self.retry_deferred_fields();
         // GT7: a call still unsure which conformance it reaches has nothing
         // left to tell it. Dropping it would leave the plain name, which no

@@ -134,7 +134,7 @@ test "casts inside arithmetic" {
 
 test "casting a loop counter" {
     mut total: f64 = 0.0
-    for i in 1..4 {
+    for i in 1i32..4 {
         total = total + (i as f64)
     }
     assert total == 6.0
