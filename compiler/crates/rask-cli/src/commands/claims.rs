@@ -776,12 +776,28 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Pl
     let output = rask_compiler::compile_package_with(&mut pkg.ctx, &pkg.config, |_, _| {});
     if !variant.quiet {
         for diag in &output.diagnostics {
+            // The package was compiled, and its warnings shown, by the command
+            // that got here; this compile is the package again with the claims
+            // on top. A warning about the package's own code would be the same
+            // one a second time.
+            if diag.severity == rask_diagnostics::Severity::Warning && !about_claims(diag, &pkg.claims_files) {
+                continue;
+            }
             let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
             crate::show_diagnostic_multi(&diag, &pkg.sources);
         }
     }
     let result = output.result?;
     Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
+}
+
+/// Whether a diagnostic's primary label is in one of the claims files.
+fn about_claims(diag: &rask_diagnostics::Diagnostic, claims_files: &[u16]) -> bool {
+    diag.labels
+        .iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .or_else(|| diag.labels.first())
+        .is_some_and(|l| claims_files.contains(&l.span.file_id))
 }
 
 /// An error inside a generated case function is about one of the claim's
