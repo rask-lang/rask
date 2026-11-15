@@ -536,6 +536,12 @@ pub fn is_positional_field_name(name: &str) -> bool {
     name.strip_prefix('_').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// The static methods every fieldless enum gets without declaring them
+/// (E18): `Colour.variants()` and `Colour.from_value(n)`. A module-qualified
+/// receiver (`http.Method.from_value(0)`) is recognised by one of these names
+/// or by a variant's, so both backends read the same list.
+pub const GENERATED_ENUM_STATICS: &[&str] = &["variants", "from_value"];
+
 /// An enum variant.
 #[derive(Debug, Clone)]
 pub struct Variant {

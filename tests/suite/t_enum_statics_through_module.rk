@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `module.Enum.from_value(n)` and `module.Enum.variants()` on a stdlib fieldless
+// enum reached through its module (#1833).
+//
+// Every fieldless enum gets `from_value` and `variants` for free (E18). A user
+// enum's `Colour.from_value(n)` worked on both backends, but the same call
+// through a module (`http.Method.from_value(0)`) type-checked and then failed:
+// the interpreter said "no method 'from_value'" and native "Function not found:
+// Method_from_value". Both backends rewrite a module-qualified receiver to the
+// bare enum name, and that rewrite only fired when the method named a variant.
+import http
+import http.Method
+
+test "type.enums/E18 — from_value through the module that exports the enum" {
+    if http.Method.from_value(0) is Method as m {
+        assert m == Method.Get
+    } else {
+        assert false
+    }
+    if http.Method.from_value(2) is Method as m {
+        assert m == Method.Post
+    } else {
+        assert false
+    }
+    assert http.Method.from_value(99) is none
+}
+
+test "type.enums/E18 — variants through the module that exports the enum" {
+    let all = http.Method.variants()
+    assert all.len() == 7
+}

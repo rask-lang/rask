@@ -7410,7 +7410,9 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let (_, layout) = self.ctx.find_enum(type_name)?;
-        layout.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
+        (layout.variants.iter().any(|v| v.name == method)
+            || rask_ast::decl::GENERATED_ENUM_STATICS.contains(&method))
+        .then(|| type_name.clone())
     }
 
     /// `module.Type.method()` → flattened `Type_method` qualified call.
