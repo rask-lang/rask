@@ -791,6 +791,22 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Pl
     Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
 }
 
+/// `path` as reached from `base`, with `..` for each directory of `base` it
+/// isn't under. Both are absolute and canonical.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let p: Vec<_> = path.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let shared = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = PathBuf::new();
+    for _ in shared..b.len() {
+        out.push("..");
+    }
+    for c in &p[shared..] {
+        out.push(c);
+    }
+    out
+}
+
 /// Whether a diagnostic's primary label is in one of the claims files.
 fn about_claims(diag: &rask_diagnostics::Diagnostic, claims_files: &[u16]) -> bool {
     diag.labels
@@ -1026,7 +1042,7 @@ fn run_claims(
             .files
             .iter()
             .map(|f| match &cwd {
-                Some(d) => f.strip_prefix(d).unwrap_or(f).display().to_string(),
+                Some(d) => relative_to(f, d).display().to_string(),
                 None => f.display().to_string(),
             })
             .collect();

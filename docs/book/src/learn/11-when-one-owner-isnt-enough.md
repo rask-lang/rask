@@ -167,15 +167,14 @@ error[E0328]: `cellar` may name a deleted node — possible use after free
   --> docs/book/errors/11-when-one-owner-isnt-enough/link_after_collapse.rk:32:13
     |
  31 |     w.collapse("Tunnel")
-    |     -------------------- this can delete any node in the rack, so every link into it dies here
+    |     -------------------- this can delete the node `cellar` names, so `cellar` dies here
  32 |     println(cellar.name)
     |             ^^^^^^ `cellar` may point at freed memory from here on
     = fix: find the node again after this line, or keep the link in a `Link<T>?`
           field
-    = why: a delete that picks its own nodes can't say which ones went, so no
-          local link into that rack can be trusted after it. A field can
-          survive, because the rack nulls it if its node went and the `?` makes
-          you check
+    = why: a delete that can't say which nodes went leaves no local link into
+          that rack trustworthy after it. A field can survive, because the rack
+          nulls it if its node went and the `?` makes you check
 ```
 
 The fix is the one it gives: look the room up again by name afterwards. The game never

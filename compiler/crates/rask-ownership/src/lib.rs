@@ -318,10 +318,12 @@ pub struct OwnershipChecker<'a> {
     /// Spans where a link was consumed by `rack.delete(...)`, so a use-after-move
     /// on a link can tell "the node was deleted here" from "you moved it here".
     link_delete_spans: std::collections::HashSet<Span>,
-    /// The subset of those where the delete named no node (`clear`, a
-    /// `deleting` call), so a link dying there may name a node that's still
-    /// alive: it's revoked because nothing can tell which nodes went.
-    link_revoke_spans: std::collections::HashSet<Span>,
+    /// Link locals that died at a delete without being what it deleted: every
+    /// one at a `clear` or a `deleting` call, and the possible aliases at a
+    /// named one. Each may name a node that's still alive; it's revoked
+    /// because nothing here can tell. Keyed by name as well as span, since
+    /// the link a delete names dies at the same span and *was* deleted.
+    link_revoked: std::collections::HashSet<(String, Span)>,
     /// mem.unsafe/PT1: what each binding holding a raw pointer points into,
     /// as the names of the values in this body that own that storage.
     ptr_sources: HashMap<String, Vec<String>>,
@@ -674,7 +676,7 @@ impl<'a> OwnershipChecker<'a> {
             take_link_params: HashSet::new(),
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
-            link_revoke_spans: std::collections::HashSet::new(),
+            link_revoked: std::collections::HashSet::new(),
             ptr_sources: HashMap::new(),
             ptr_lenders: HashMap::new(),
             ptr_deaths: HashMap::new(),
@@ -1632,7 +1634,7 @@ impl<'a> OwnershipChecker<'a> {
         self.writable_links.clear();
         self.take_link_params.clear();
         self.link_delete_spans.clear();
-        self.link_revoke_spans.clear();
+        self.link_revoked.clear();
         self.ptr_sources.clear();
         self.ptr_lenders.clear();
         self.ptr_deaths.clear();
@@ -3417,7 +3419,7 @@ impl<'a> OwnershipChecker<'a> {
                                 MoveReason::Owned
                             } else {
                                 self.node_ty(&expr.id)
-                                    .map(|ty| self.move_reason_at(ty, *at))
+                                    .map(|ty| self.move_reason_at(name, ty, *at))
                                     .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
                             self.errors.push(OwnershipError {
@@ -3438,7 +3440,7 @@ impl<'a> OwnershipChecker<'a> {
                                 MoveReason::Owned
                             } else {
                                 self.node_ty(&expr.id)
-                                    .map(|ty| self.move_reason_at(ty, *at))
+                                    .map(|ty| self.move_reason_at(name, ty, *at))
                                     .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
                             self.errors.push(OwnershipError {
@@ -3697,6 +3699,9 @@ impl<'a> OwnershipChecker<'a> {
                             // node is gone, so every name for it is dead.
                             self.bindings
                                 .insert(name.clone(), BindingState::Moved { at: expr.span });
+                            // The unnamed kill above counted it among the
+                            // possibly-deleted; it's the one that certainly was.
+                            self.link_revoked.remove(&(name.clone(), expr.span));
                             self.link_delete_spans.insert(a.expr.span);
                         }
                     }
@@ -5082,7 +5087,8 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in dead {
-            self.bindings.insert(name, BindingState::Moved { at: span });
+            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.link_revoked.insert((name, span));
         }
     }
 
@@ -5325,9 +5331,9 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         for name in dead {
             self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.link_revoked.insert((name, span));
         }
         self.link_delete_spans.insert(span);
-        self.link_revoke_spans.insert(span);
     }
 
     /// Element type of a sequence type (`Vec<T>`, `Rack<T>`), if it has one.
@@ -5416,7 +5422,6 @@ impl<'a> OwnershipChecker<'a> {
     /// Conservative on the rack: links are not tracked back to the rack they
     /// came from, so two racks of the same node type kill each other's locals.
     fn kill_links_into_rack(&mut self, rack: &Expr, span: Span) {
-        self.link_revoke_spans.insert(span);
         let elem = self
             .node_ty(&rack.id)
             .and_then(|ty| self.elem_key(ty));
@@ -5434,7 +5439,8 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in dead {
-            self.bindings.insert(name, BindingState::Moved { at: span });
+            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.link_revoked.insert((name, span));
         }
     }
 
@@ -6278,11 +6284,11 @@ impl<'a> OwnershipChecker<'a> {
     /// reported as deleted if that span really was a `delete` — an ordinary move
     /// into another name is a move, and saying "deleted here" about a `let` that
     /// deleted nothing is worse than saying nothing at all.
-    fn move_reason_at(&self, ty: &Type, at: Span) -> MoveReason {
+    fn move_reason_at(&self, name: &str, ty: &Type, at: Span) -> MoveReason {
         if self.is_link_type(ty) && !self.link_delete_spans.contains(&at) {
             return MoveReason::LinkMoved;
         }
-        if self.is_link_type(ty) && self.link_revoke_spans.contains(&at) {
+        if self.is_link_type(ty) && self.link_revoked.contains(&(name.to_string(), at)) {
             return MoveReason::LinkRevoked;
         }
         self.move_reason(ty)
@@ -6290,7 +6296,7 @@ impl<'a> OwnershipChecker<'a> {
 
     fn move_reason_for_at(&self, name: &str, at: Span) -> MoveReason {
         match self.binding_types.get(name) {
-            Some(ty) => self.move_reason_at(ty, at),
+            Some(ty) => self.move_reason_at(name, ty, at),
             None => MoveReason::Unknown,
         }
     }

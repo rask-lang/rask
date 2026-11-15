@@ -2388,7 +2388,7 @@ fn rack_link_cascade_delete_is_rejected() {
     // The call picked its own victims, so `kid` may be alive: the error says
     // the call can delete anything, not that it deleted `kid`'s node.
     assert!(
-        text.contains("this can delete any node in the rack") && !text.contains("the node `kid` names was deleted"),
+        text.contains("this can delete the node `kid` names") && !text.contains("the node `kid` names was deleted"),
         "a revoked link must not be reported as a named delete: {}",
         text
     );
@@ -2904,8 +2904,9 @@ fn error_rack_link_use_after_delete() {
     );
     // The intra-function sibling of the cascade hole: `t` came out of an edge, so
     // it may be a second name for whatever the delete named.
+    // It may name a different, living node, so the error says "may".
     assert!(
-        out.contains("`t` names a deleted node"),
+        out.contains("`t` may name a deleted node"),
         "a derived alias must not survive a named delete: {}",
         out
     );

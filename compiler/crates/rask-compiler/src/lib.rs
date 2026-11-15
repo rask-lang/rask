@@ -887,7 +887,7 @@ fn check_package_scoped(
     //
     // Several packages may each keep a declaration of one name, so a name maps
     // to all of them; a use is matched to one by where its symbol was declared.
-    let mut private_elsewhere: HashMap<String, Vec<(rask_resolve::PackageId, String, Span)>> =
+    let mut private_elsewhere: HashMap<String, Vec<PrivateDecl>> =
         HashMap::new();
 
     // A dependency's declarations carry where they came from: `Cat` in
@@ -952,7 +952,7 @@ fn check_package_scoped(
         // By the name as written, for a bare use that resolve can't find, and
         // as qualified, for `pa.hidden()` that it can.
         for (name, span) in written {
-            let entry = (pkg.id, import_name.clone(), span);
+            let entry = PrivateDecl { owner: pkg.id, owner_name: import_name.clone(), span, name: name.clone() };
             if let Some(q) = map.get(&name).filter(|q| **q != name) {
                 private.insert(q.clone());
                 private_elsewhere.entry(q.clone()).or_default().push(entry.clone());
@@ -1132,9 +1132,9 @@ fn check_package_scoped(
                 // The symbol has to *be* one of those private declarations. Matching
                 // the name alone flagged a program's own `helper` the moment some
                 // dependency also had a private `helper`.
-                let Some((owner, owner_name, decl_span)) = private_elsewhere
+                let Some(PrivateDecl { owner, owner_name, span: decl_span, name: bare }) = private_elsewhere
                     .get(base)
-                    .and_then(|kept| kept.iter().find(|(_, _, at)| span_within(sym.span, *at)))
+                    .and_then(|kept| kept.iter().find(|d| span_within(sym.span, d.span)))
                 else {
                     continue;
                 };
@@ -1147,12 +1147,10 @@ fn check_package_scoped(
                         .with_code("E0877")
                         .with_primary(*use_span, format!("`{}` can't be named from here", base))
                         .with_secondary(*decl_span, format!("declared here, without `public`"))
-                        // `base` is the qualified name the caller wrote; the
-                        // declaration has the bare one.
                         .with_help(format!(
                             "write `public` on `{}`'s declaration in `{}`, if it's meant to be \
                              part of that package's API",
-                            base.rsplit('.').next().unwrap_or(base), owner_name
+                            bare, owner_name
                         )),
                 );
             }
@@ -1552,17 +1550,29 @@ fn is_public_decl(decl: &Decl) -> bool {
 ///
 /// `extend` blocks have none — they attach to a type that is named elsewhere —
 /// and neither do imports, exports or the package block itself.
+/// A dependency's declaration without `public`: the package that keeps it,
+/// what the program imports that package as, where it is, and its name as
+/// written there. The map it sits in is keyed by the compiler's qualified
+/// name, which is not something a reader writes.
+#[derive(Clone)]
+struct PrivateDecl {
+    owner: rask_resolve::PackageId,
+    owner_name: String,
+    span: Span,
+    name: String,
+}
+
 /// E0877 for a resolve failure that is really a dependency's own declaration.
 fn private_declaration_named(
     e: &rask_resolve::ResolveError,
-    private_elsewhere: &HashMap<String, Vec<(rask_resolve::PackageId, String, Span)>>,
+    private_elsewhere: &HashMap<String, Vec<PrivateDecl>>,
 ) -> Option<Diagnostic> {
     let name = match &e.kind {
         rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
         _ => return None,
     };
     let base = name.as_str();
-    let (_, owner_name, decl_span) = private_elsewhere.get(base)?.first()?;
+    let PrivateDecl { owner_name, span: decl_span, .. } = private_elsewhere.get(base)?.first()?;
     Some(
         Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))
             .with_code("E0877")
