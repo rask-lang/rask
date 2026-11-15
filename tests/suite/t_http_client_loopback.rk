@@ -55,7 +55,7 @@ func wait_until_up(addr: string) -> bool {
             let _ = c.close()
             return true
         }
-        time.sleep(Duration.millis(5))
+        time.sleep(Duration.millis(5))!
     }
     return false
 }

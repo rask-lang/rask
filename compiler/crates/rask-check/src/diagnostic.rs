@@ -2632,12 +2632,16 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
-            UnusedResult { ty, span } => {
-                Diagnostic::warning(format!("unused result of type `{}`", ty))
-                    .with_code("W0301")
+            UnusedResult { ty, call, can_try, span } => {
+                let mut fix = format!("{call}!    // panics with the error's message if it fails");
+                if *can_try {
+                    fix.push_str(&format!("\n    try {call}    // pass the error to the caller"));
+                }
+                Diagnostic::error(format!("result of type `{}` is ignored", ty))
+                    .with_code("E0418")
                     .with_primary(*span, "if this fails, nothing finds out")
-                    .with_help("propagate it with `try`, handle it with `catch e => …`, or drop it on purpose with `let _ = …`")
-                    .with_why("a call that can fail hands its error back as a value, and a statement that ignores the value ignores the failure. `@allow(unused_result)` on the function says so for all of them [tool.warnings/W2]")
+                    .with_fix(format!("say what happens on failure:\n    {fix}"))
+                    .with_why("a call that can fail hands its error back as a value, so a statement that ignores the value ignores the failure and the program carries on as if it worked. Every error is asserted, passed on, or handled where the code says so [type.errors/ER50]")
             }
 
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {

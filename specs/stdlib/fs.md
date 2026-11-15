@@ -285,7 +285,7 @@ WHY: The path does not exist on the filesystem.
 let file = try fs.create_file("data.tmp")
 ensure file.close()
 try file.write_bytes(serialize(data))
-file.close()
+file.close()!
 try fs.rename("data.tmp", "data.json")
 ```
 

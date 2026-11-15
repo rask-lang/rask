@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a call whose `T or E` result is a statement on its own
+// (type.errors/ER50, E0418), and `@allow(unused_result)`, which no longer names
+// anything (E0855).
+//
+// Ignoring a result used to be a warning. It's an error now, with no opt-out:
+// `save()!` panics with the error's message, `try save()` passes it on, and
+// `let _ = save()` drops it where anyone reading can see.
+
+struct SaveError {
+    detail: string
+}
+
+extend SaveError {
+    public func message(self) -> string {
+        return self.detail
+    }
+}
+
+func save(n: i64) -> void or SaveError {
+    if n < 0 {
+        return SaveError(detail: "negative")
+    }
+    return
+}
+
+func maybe_name(n: i64) -> string? {
+    if n < 0 {
+        return none
+    }
+    return "ok"
+}
+
+// --- a bare call, in a function that could have propagated it ---
+func bare_call() -> void or SaveError {
+    // ERROR: result of type `void or SaveError` is ignored [E0418]
+    save(1)
+    return
+}
+
+// --- an `if` arm written as a statement drops what it ends with ---
+func in_a_branch(c: bool) {
+    if c {
+        // ERROR: result of type `void or SaveError` is ignored [E0418]
+        save(2)
+    }
+}
+
+// --- the same, in a loop ---
+func in_a_loop() {
+    for i in 0..3 {
+        // ERROR: result of type `void or SaveError` is ignored [E0418]
+        save(i)
+    }
+}
+
+// --- the opt-out that used to exist ---
+// ERROR: `@allow(unused_result)` names nothing [E0855]
+@allow(unused_result)
+func allowed() {
+    // ERROR: result of type `void or SaveError` is ignored [E0418]
+    save(4)
+}
+
+// --- every accepted way to deal with it still compiles ---
+func handled(c: bool) -> void or SaveError {
+    save(5)!
+    try save(6)
+    save(7) catch _ => {}
+    save(8) catch e => println(e.message())
+    let _ = save(9)
+    // An optional isn't a failure: nothing to handle.
+    maybe_name(1)
+    return
+}
+
+func main() {
+    handled(true) catch _ => {}
+}

@@ -577,7 +577,7 @@ extend Connection {
                 if attempt? as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
-                sock.send(heartbeat())
+                sock.send(heartbeat())!
                 Connected(sock)
             },
             Failed(e) => Failed(e)

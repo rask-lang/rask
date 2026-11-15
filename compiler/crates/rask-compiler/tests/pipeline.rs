@@ -844,8 +844,8 @@ fn dt1_public_nominal_interface_is_fine() {
 }
 
 #[test]
-fn w2_warns_on_a_discarded_result_and_nowhere_else() {
-    // tool.warnings/W2: a call whose `T or E` goes nowhere. An `if` or block
+fn er50_rejects_a_discarded_result_and_nowhere_else() {
+    // type.errors/ER50: a call whose `T or E` goes nowhere. An `if` or block
     // written as a statement throws away what its branches end with; one used
     // as a value doesn't, and neither do `let _`, `catch` or `ensure`.
     let path = tmp_rk(r#"
@@ -884,10 +884,70 @@ fn w2_warns_on_a_discarded_result_and_nowhere_else() {
     let lines: Vec<usize> = output
         .diagnostics
         .iter()
-        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "W0301"))
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0418"))
         .filter_map(|d| d.labels.first().map(|l| l.span.start))
         .collect();
     assert_eq!(lines.len(), 3, "expected save(6), save(7) and save(i): {:?}", output.diagnostics);
-    assert_eq!(error_count(&output.diagnostics), 0, "{:?}", output.diagnostics);
+    assert_eq!(error_count(&output.diagnostics), 3, "{:?}", output.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn er50_offers_try_only_where_the_function_can_propagate() {
+    let path = tmp_rk(r#"
+        struct SaveError {}
+        SaveError implements Error {
+            func message(self) -> string { return "e" }
+        }
+        struct Other {}
+        Other implements Error {
+            func message(self) -> string { return "o" }
+        }
+        func save() -> void or SaveError {
+            return
+        }
+        func can() -> void or SaveError {
+            save()
+        }
+        func cannot_fit() -> void or Other {
+            save()
+        }
+        func cannot() {
+            save()
+        }
+        func main() {
+            can() catch _ => {}
+            cannot_fit() catch _ => {}
+            cannot()
+        }
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    let fixes: Vec<&str> = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0418"))
+        .map(|d| d.fix.as_deref().unwrap_or(""))
+        .collect();
+    assert_eq!(fixes.len(), 3, "{:?}", output.diagnostics);
+    for fix in &fixes {
+        assert!(fix.contains("save(…)!"), "`!` is always the first offer: {fix}");
+        assert!(!fix.contains("let _"), "the fix never suggests dropping the error: {fix}");
+    }
+    assert_eq!(fixes.iter().filter(|f| f.contains("try save")).count(), 1, "only `can` can propagate: {fixes:?}");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn allow_unused_result_is_an_unknown_name() {
+    let path = tmp_rk(r#"
+        @allow(unused_result)
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    assert!(
+        output.diagnostics.iter().any(|d| d.code.as_ref().is_some_and(|c| c.0 == "E0855")),
+        "{:?}",
+        output.diagnostics
+    );
     let _ = std::fs::remove_file(&path);
 }

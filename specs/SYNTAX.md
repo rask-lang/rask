@@ -636,7 +636,7 @@ func sort(items: Vec<T>) {
 // It never appears on a signature.
 using Multitasking {
     let t = spawn { return work() }
-    t.join()
+    t.join()!
 }
 ```
 
@@ -857,7 +857,7 @@ while reader.next()? as line {
 
 // Combined with other conditions
 if state is Connected(sock) && sock.is_ready() {
-    sock.send(data)
+    sock.send(data)!
 }
 ```
 

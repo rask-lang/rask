@@ -90,7 +90,7 @@ test "std.io/K1 — a file seeks the same way" {
     assert f.position()! == 6
     assert f.seek(SeekFrom.End(0))! == 11
     assert f.seek(SeekFrom.Current(-5))! == 6
-    f.close()
+    f.close()!
     let _ = fs.remove_file(p)
 }
 
@@ -108,7 +108,7 @@ test "std.io/K1 — a file rejects a negative absolute position too" {
     } else {
         assert false
     }
-    f.close()
+    f.close()!
     let _ = fs.remove_file(p)
 }
 

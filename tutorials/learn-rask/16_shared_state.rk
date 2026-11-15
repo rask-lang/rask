@@ -143,6 +143,6 @@ test "shared config update" {
 }
 
 func main() {
-    example_shared()
+    example_shared()!
     println("Run 'rask test 16_shared_state.rk' to check your puzzles")
 }

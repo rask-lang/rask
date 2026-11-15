@@ -43,7 +43,7 @@ test "the consumer loop from the spec terminates" {
     using Multitasking {
         mut (tx, rx) = Channel<i64>.buffered(8)
         for i in 1..5 {
-            tx.send(i)
+            tx.send(i)!
         }
         tx.close()
 
