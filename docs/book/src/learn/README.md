@@ -24,7 +24,7 @@ cd rask/docs/book/src/learn
 
 Every command in the chapters runs from this directory.
 
-Each chapter from 3 on comes with an exercise file named after it, like
+Each chapter from 3 on, apart from 13, comes with an exercise file named after it, like
 `04-types-of-your-own.rk`. It is the program so far, with the functions that chapter is
 about left empty: their bodies say `todo()`, and a comment above each says what it
 should do. Run its tests, and they fail where the program reaches something you haven't
@@ -48,3 +48,7 @@ same way, only that the tests pass.
 - [When there might be nothing](07-when-there-might-be-nothing.md): an exit that isn't there
 - [Errors are values](08-errors-are-values.md): reading what the player typed
 - [Passing values](09-passing-values.md): who has the lamp
+- [Cleanup that always runs](10-cleanup-that-always-runs.md): saving the game
+- [When one owner isn't enough](11-when-one-owner-isnt-enough.md): a tunnel collapses
+- [Writing it once for many types](12-writing-it-once-for-many-types.md): one list for items and exits
+- [Splitting a program up](13-splitting-a-program-up.md): the package, and a claim about every game

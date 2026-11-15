@@ -886,6 +886,7 @@ impl TypeChecker {
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
                             namesake: false,
+                            undeclared: None,
                             span: bound_span,
                         });
                     }
@@ -1989,7 +1990,9 @@ impl TypeChecker {
             })
             .collect();
 
-        self.types.register_type(TypeDef::Interface {
+        let defaults: std::collections::HashSet<String> =
+            t.methods.iter().filter(|m| !m.body.is_empty()).map(|m| m.name.clone()).collect();
+        let id = self.types.register_type(TypeDef::Interface {
             name: t.name.clone(),
             type_params,
             super_interfaces: t.super_interfaces.clone(),
@@ -1999,6 +2002,9 @@ impl TypeChecker {
             is_unsafe: t.is_unsafe,
             is_duck: t.is_duck,
         });
+        if !defaults.is_empty() {
+            self.types.interface_defaults.insert(id, defaults);
+        }
     }
 
     /// Put a transparent alias in the table. Runs before any other declaration
@@ -3200,6 +3206,7 @@ impl TypeChecker {
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
                                 namesake: false,
+                                undeclared: None,
                                 span: decl.span,
                             });
                         }

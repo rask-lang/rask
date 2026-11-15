@@ -776,12 +776,44 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Pl
     let output = rask_compiler::compile_package_with(&mut pkg.ctx, &pkg.config, |_, _| {});
     if !variant.quiet {
         for diag in &output.diagnostics {
+            // The package was compiled, and its warnings shown, by the command
+            // that got here; this compile is the package again with the claims
+            // on top. A warning about the package's own code would be the same
+            // one a second time.
+            if diag.severity == rask_diagnostics::Severity::Warning && !about_claims(diag, &pkg.claims_files) {
+                continue;
+            }
             let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
             crate::show_diagnostic_multi(&diag, &pkg.sources);
         }
     }
     let result = output.result?;
     Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
+}
+
+/// `path` as reached from `base`, with `..` for each directory of `base` it
+/// isn't under. Both are absolute and canonical.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let p: Vec<_> = path.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let shared = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = PathBuf::new();
+    for _ in shared..b.len() {
+        out.push("..");
+    }
+    for c in &p[shared..] {
+        out.push(c);
+    }
+    out
+}
+
+/// Whether a diagnostic's primary label is in one of the claims files.
+fn about_claims(diag: &rask_diagnostics::Diagnostic, claims_files: &[u16]) -> bool {
+    diag.labels
+        .iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .or_else(|| diag.labels.first())
+        .is_some_and(|l| claims_files.contains(&l.span.file_id))
 }
 
 /// An error inside a generated case function is about one of the claim's
@@ -1003,7 +1035,17 @@ fn run_claims(
         path.strip_prefix(root).unwrap_or(path).display().to_string()
     };
     if format == Format::Human {
-        let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+        // Relative to where the command ran, like the path it was given: an
+        // absolute one is different on every machine that runs it.
+        let cwd = std::env::current_dir().ok().and_then(|d| d.canonicalize().ok());
+        let files: Vec<String> = plan
+            .files
+            .iter()
+            .map(|f| match &cwd {
+                Some(d) => relative_to(f, d).display().to_string(),
+                None => f.display().to_string(),
+            })
+            .collect();
         println!("{} {}", "Claims".green().bold(), files.join(", "));
     }
     let mut all_held = true;

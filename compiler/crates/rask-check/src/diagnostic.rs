@@ -1967,12 +1967,25 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 
-            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, span } => {
+            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, undeclared, span } => {
                 use crate::InterfaceBoundContext as Ctx;
                 let title = match context {
                     Ctx::CopyBound => format!("`{}` isn't Copy", ty),
                     _ => format!("`{}` does not implement `{}`", ty, interface_name),
                 };
+                // G1: the type has every method, and only the declaration is
+                // missing. "Missing methods" sent the author looking for a
+                // method that was already there.
+                if *undeclared == Some(true) {
+                    return Diagnostic::error(title)
+                        .with_code("E0333")
+                        .with_primary(*span, format!(
+                            "`{}` has the methods `{}` asks for, but never says it implements it",
+                            ty, interface_name
+                        ))
+                        .with_fix(format!("declare it; the methods can stay where they are:\n    {} implements {} {{}}", ty, interface_name))
+                        .with_why("a type has an interface only where it says so, because a method with the right name and shape can still mean something else [type.generics/G1]");
+                }
                 // Two interfaces share the name: the type implements the
                 // stdlib's, and this program's own is a different one (#1329).
                 if *namesake {
@@ -1998,6 +2011,10 @@ impl ToDiagnostic for crate::TypeError {
                         // "missing methods" sent the author back through a block
                         // that was one method short.
                         (_, Some((m, _))) => format!("`{}` has no `{}`, which `{}` requires", ty, m, interface_name),
+                        _ if *undeclared == Some(false) => format!(
+                            "`{}` never says it implements `{}`, and doesn't have its methods either",
+                            ty, interface_name
+                        ),
                         _ => format!("`{}` is missing methods `{}` requires", ty, interface_name),
                     });
                 match context {

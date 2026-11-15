@@ -1,0 +1,26 @@
+Claims mud/claims.rk
+  no_item_in_two_places    held for 1,000 inputs (sampled, not proven)
+=== Testing mud ===
+
+  ✓ a direction alone is a move (0ms)
+  ✓ the object keeps its case and inner spaces (0ms)
+  ✓ what can go wrong is a value (0ms)
+  ✓ every direction leads back the way it came (0ms)
+  ✓ finding an item by name (0ms)
+  ✓ every room of the maze can be reached from its entrance (0ms)
+  ✓ walking to the hall (0ms)
+  ✓ picking something up moves it (0ms)
+  ✓ a dead end and a typo (0ms)
+  ✓ two players in one room hear each other (0ms)
+  ✓ a collapsed tunnel leaves a blocked exit (0ms)
+  ✓ leaving drops what you carried (0ms)
+  ✓ the rat wanders (0ms)
+  ✓ a name already in the game is refused (0ms)
+  ✓ a list reads like a sentence (0ms)
+  ✓ a saved world loads back the same (0ms)
+  ✓ a broken save says what's wrong (0ms)
+  ✓ two players meet and chat (0ms)
+  SKIP a dropped connection leaves the room (sim-only: needs `rask test --sim` for fault injection)
+
+──────────────────────────────────────────────────
+19 tests, 18 passed, 0 failed, 1 skipped (0ms)
