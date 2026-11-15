@@ -13,6 +13,12 @@
 // mdBook renders the marker straight through as an HTML comment sitting just
 // before the <pre>, which is how this finds them.
 //
+// The tour's pages are made from its step files (learn_pages.py), and their
+// blocks carry `tour: test` or `tour: run` instead. A step is one program cut
+// into pieces by its prose, so every Run on the page runs all of its blocks
+// together: the tests for a step with tests, `main` for one without. The
+// reader does the step's exercise right there, so those blocks are editable.
+//
 // The interpreter is a multi-megabyte wasm module. Nothing loads until someone
 // presses Run, and then one module serves every block on the page.
 
@@ -20,6 +26,7 @@
     'use strict';
 
     const RUNNABLE = /^\s*test:\s*run\b/;
+    const TOUR = /^\s*tour:\s*(test|run)\b/;
 
     let wasm = null;
     let loading = null;
@@ -56,7 +63,9 @@
         return node && node.nodeType === Node.COMMENT_NODE ? node.data : null;
     }
 
-    function addRun(pre, code) {
+    /// `source()` is the program a press runs, and `tests` says whether to run
+    /// its `test` blocks or its `main`.
+    function addRun(pre, source, tests) {
         const out = document.createElement('pre');
         out.className = 'rask-output';
         out.hidden = true;
@@ -65,8 +74,8 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'rask-run';
-        button.title = 'Run this program';
-        button.textContent = 'Run';
+        button.title = tests ? "Run this page's tests" : 'Run this program';
+        button.textContent = tests ? 'Test' : 'Run';
 
         // mdBook hangs its own controls off `.buttons` in the corner of a
         // block. Sit with them rather than inventing a second place to look.
@@ -84,7 +93,8 @@
             say(wasm ? 'Running…' : 'Starting the interpreter…');
             try {
                 const rask = await interpreter();
-                say(rask.run(code.textContent) || '(no output)', 'ok');
+                const program = source();
+                say((tests ? rask.run_tests(program) : rask.run(program)) || '(no output)', 'ok');
             } catch (error) {
                 // A compiler or runtime diagnostic arrives as a string, already
                 // escaped by the Rust side and carrying spans for its colours.
@@ -103,13 +113,28 @@
     }
 
     function wire() {
+        const tour = [];
         document.querySelectorAll('pre > code.language-rask').forEach(code => {
             const pre = code.parentElement;
             if (pre.dataset.raskRun) { return; }
             const found = marker(pre);
-            if (!found || !RUNNABLE.test(found)) { return; }
-            pre.dataset.raskRun = '1';
-            addRun(pre, code);
+            if (!found) { return; }
+            const step = TOUR.exec(found);
+            if (step) {
+                tour.push({ pre, code, tests: step[1] === 'test' });
+            } else if (RUNNABLE.test(found)) {
+                pre.dataset.raskRun = '1';
+                addRun(pre, () => code.textContent, false);
+            }
+        });
+        const whole = () => tour.map(block => block.code.textContent).join('\n\n');
+        tour.forEach(block => {
+            block.pre.dataset.raskRun = '1';
+            // `plaintext-only` keeps a paste from bringing markup along; where
+            // a browser lacks it the property throws and plain editing is left.
+            try { block.code.contentEditable = 'plaintext-only'; } catch (e) { block.code.contentEditable = 'true'; }
+            block.code.spellcheck = false;
+            addRun(block.pre, whole, block.tests);
         });
     }
 

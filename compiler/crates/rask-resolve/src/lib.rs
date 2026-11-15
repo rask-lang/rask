@@ -75,6 +75,22 @@ pub struct ResolvedProgram {
     /// using its own `Labeled` for `Doc` even when the program linking it also
     /// pulls in `libb`'s. Empty outside a package build.
     pub package_deps: HashMap<String, HashSet<String>>,
+    /// Names a `field: Type` pattern declared tentatively, by symbol.
+    ///
+    /// In `Cash(amount: i32)` the colon could mean a rename or a type test,
+    /// and the resolver can't tell which: that depends on `amount`'s type.
+    /// It declares `amount` so an arm body that uses it still resolves, and
+    /// the checker, which does know, either binds `amount` itself or reports
+    /// a use of a name nothing bound.
+    pub field_type_pattern_names: HashMap<SymbolId, FieldTypePattern>,
+}
+
+/// `field: ty` in the pattern `pattern(…)`, where `ty` names a type.
+#[derive(Debug, Clone)]
+pub struct FieldTypePattern {
+    pub pattern: String,
+    pub field: String,
+    pub ty: String,
 }
 
 /// Resolve all names in a list of declarations (single-file mode).

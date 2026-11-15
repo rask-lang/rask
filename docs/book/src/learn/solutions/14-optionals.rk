@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 14. Optionals
+//
+// Some answers don't always exist. The first negative number in a list of
+// positive ones; the age of someone you've never heard of. Many languages
+// answer with null, or with -1, and the caller has to remember to check. Forget,
+// and the program carries on with a value that isn't one.
+//
+// In Rask the type says so: `i32?` is an i32 or `none`. You can't do sums
+// with an `i32?`, so you can't forget. You get the number out first:
+//
+//     x ?? 0              the number, or 0 when there's none
+//     if x? as n { }      run the block only when there's a number, as `n`
+//
+// A function returning `i32?` returns a plain number or `none`.
+
+func first_negative(numbers: Vec<i32>) -> i32? {
+    for n in numbers {
+        if n < 0 {
+            return n
+        }
+    }
+    return none
+}
+
+func describe(numbers: Vec<i32>) -> string {
+    if first_negative(numbers)? as n {
+        return "starts going wrong at {n}"
+    }
+    return "all fine"
+}
+
+// Your turn: step 9's `largest` assumed the list wasn't empty. Make it give
+// `none` for an empty list instead of crashing.
+
+func largest(numbers: Vec<i32>) -> i32? {
+    if numbers.len() == 0 {
+        return none
+    }
+    mut best = numbers[0]
+    for n in numbers {
+        if n > best {
+            best = n
+        }
+    }
+    return best
+}
+
+test "first negative" {
+    assert first_negative(Vec.from([4, -1, -7])) == -1
+    assert first_negative(Vec.from([4, 5])) is none
+    assert (first_negative(Vec.from([4])) ?? 0) == 0
+    assert describe(Vec.from([3, -2])) == "starts going wrong at -2"
+}
+
+test "largest" {
+    assert largest(Vec.from([3, 9, 4])) == 9
+    assert largest(Vec.from([-5, -2, -8])) == -2
+    assert largest(Vec.new()) is none
+}

@@ -45,4 +45,4 @@ The repository includes working examples:
 
 ## Next Steps
 
-- [Learn the language](../learn/README.md), starting with your first program
+- [Take the tour](../learn/README.md), one idea per step, starting with hello world

@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `{c:debug}` on a collection that came out of an iterator chain with no
+// annotation on the binding (#1959).
+//
+// The fused loop behind `.to_vec()`, `.to_map()` and `.zip()` told the caller
+// its result was an `i64`, so a `let` without a written type made `c` an
+// integer and `{c:debug}` printed the vector's address. Writing
+// `let c: Vec<i32> = ...` hid it, because the annotation supplied the type.
+
+test "to_vec on a filter chain prints its elements" {
+    let s = Vec.from([1, 7, 9])
+    let c = s.filter(|x| x > 5).to_vec()
+    assert "{c:debug}" == "[7, 9]"
+}
+
+test "to_vec on a map chain prints its elements" {
+    let s = Vec.from([1, 2, 3])
+    let c = s.map(|x| x * 10).to_vec()
+    assert "{c:debug}" == "[10, 20, 30]"
+}
+
+test "to_vec of strings prints them quoted" {
+    let s = Vec.from([1, 2])
+    let c = s.map(|x| "n{x}").to_vec()
+    assert "{c:debug}" == "[\"n1\", \"n2\"]"
+}
+
+test "to_map prints its entries" {
+    let s = Vec.from([1, 2])
+    let m = s.map(|x| (x, x * x)).to_map()
+    assert "{m:debug}" == "Map {{ 1: 1, 2: 4 }}"
+}
+
+test "the inferred result still works as a vector" {
+    let s = Vec.from([1, 7, 9])
+    let c = s.filter(|x| x > 5).to_vec()
+    assert c.len() == 2
+    assert c[1] == 9
+}

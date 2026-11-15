@@ -20,7 +20,7 @@ use rask_ast::ty::ParamMode;
 
 /// A `_` standing in for a whole column of a tuple's coverage rows. Only ever
 /// compared, never stored or looked up, so it needs no id of its own.
-static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard };
+static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard, span: Span::new(0, 0) };
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
@@ -649,6 +649,16 @@ impl TypeChecker {
                     // answer the target (#1026).
                     Type::Named(type_id)
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
+                    // Declared tentatively by `field: Type` in a pattern, and
+                    // the pattern bound nothing under it.
+                    if let Some(tentative) = self.resolved.field_type_pattern_names.get(&sym_id) {
+                        self.errors.push(TypeError::NameNotBoundByTypePattern {
+                            name: name.clone(),
+                            ty: tentative.ty.clone(),
+                            span: expr.span,
+                        });
+                        return Type::Error;
+                    }
                     let ty = self.get_symbol_type(sym_id);
                     if self.callee_ident == Some(expr.id) {
                         return ty;

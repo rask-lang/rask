@@ -75,7 +75,10 @@ pub fn cmd_test_specs(path: Option<&str>) {
     for rk_path in &rk_files {
         // A file in a package runs with the rest of it, once per package.
         if let Some(root) = package_root(rk_path) {
-            if !packages_run.insert(root.clone()) || !package_has_tests(&root) {
+            if !packages_run.insert(root.clone())
+                || !package_has_tests(&root)
+                || package_skipped(&root)
+            {
                 continue;
             }
             println!("{}", output::file_path(&root.display().to_string()));
@@ -385,13 +388,27 @@ fn package_root(path: &Path) -> Option<PathBuf> {
 /// directory that is a package of its own. A package with none is skipped,
 /// as a lone file with none is.
 fn package_has_tests(root: &Path) -> bool {
+    package_files_any(root, &|c| rask_spec_test::has_rk_tests(c))
+}
+
+/// Whether any file of the package at `root` carries a `test-specs: skip`
+/// marker. A package's tests run together, so one file opting out takes the
+/// package with it: a tour step ships with a failing test on purpose.
+fn package_skipped(root: &Path) -> bool {
+    package_files_any(root, &|c| rask_spec_test::skipped(c).is_some())
+}
+
+/// Whether `pred` holds for the source of any `.rk` file `rask test` runs
+/// for the package at `root`: the directory and those below it, short of a
+/// directory that is a package of its own.
+fn package_files_any(root: &Path, pred: &dyn Fn(&str) -> bool) -> bool {
     let Ok(entries) = fs::read_dir(root) else { return false };
     entries.flatten().map(|e| e.path()).any(|p| {
         if p.is_dir() {
-            !p.join("rask.toml").is_file() && package_has_tests(&p)
+            !p.join("rask.toml").is_file() && package_files_any(&p, pred)
         } else {
             p.extension().is_some_and(|e| e == "rk")
-                && fs::read_to_string(&p).is_ok_and(|c| rask_spec_test::has_rk_tests(&c))
+                && fs::read_to_string(&p).is_ok_and(|c| pred(&c))
         }
     })
 }

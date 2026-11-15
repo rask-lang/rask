@@ -154,7 +154,7 @@ fn results_wide_integers_and_maps_keyed_by_numbers_are_built_and_shrunk() {
     assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
     assert!(run.stdout.contains("small_result             checked all 259 inputs"), "{}", run.stdout);
     for want in [
-        "counterexample: r = Result.Ok(200)",
+        "counterexample: r = 200",
         "counterexample: m = Map { -1: \"\", 0: \"\" }",
         "counterexample: big = 1000",
     ] {

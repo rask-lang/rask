@@ -1,54 +1,51 @@
-# Learn the language
+# A tour of Rask
 
-These chapters build one program: a small text adventure, the kind called a MUD,
-where several people can walk the same rooms and talk to each other. It's a good fit
-for learning Rask because the game's rules are the language's rules. An item lies in
-one room or sits in one pocket, never both, so picking it up is a move. Rooms lead to
-rooms. Later, each player is a task of its own.
+Each step is one short file that teaches one thing. It says what problem the
+idea solves, shows it working, then leaves a function for you to write with
+only that idea and the ones before it. The tests at the bottom tell you when
+you're done.
 
-They're written for someone who has programmed before, in anything. Where a language
-you know would lead you to expect the wrong thing, the chapter says so.
+On this site, each page is a step, and its code can be edited and run in
+place. In a clone of the repository the steps are the `.rk` files in
+`docs/book/src/learn/`, and you run them with
 
-## How to follow along
-
-Every chapter works with nothing but the `rask` binary and a text editor. The website
-is the same text with Run buttons on top. If you'd rather read offline, clone the
-repository and open this file in an editor; the chapters are plain Markdown and
-everything they show is next to them in this directory.
-
-<!-- learn: skip -->
 ```bash
-git clone --depth 1 https://github.com/rask-lang/rask
-cd rask/docs/book/src/learn
+rask test 02-functions.rk
 ```
 
-Every command in the chapters runs from this directory.
+If you're stuck, `solutions/` has an answer for every step.
 
-Each chapter from 3 on, apart from 13, comes with an exercise file named after it, like
-`04-types-of-your-own.rk`. It is the program so far, with the functions that chapter is
-about left empty: their bodies say `todo()`, and a comment above each says what it
-should do. Run its tests, and they fail where the program reaches something you haven't
-written yet:
+## The steps
 
-<!-- learn: skip -->
-```bash
-rask test 04-types-of-your-own.rk
-```
-
-Fill in the functions until everything passes. The finished program is in `early/`
-and `mud/`, if you want to compare or you get stuck. Nothing checks that you wrote it the
-same way, only that the tests pass.
-
-## The chapters
-
-- [Your first program](03-your-first-program.md): `main`, printing, names
-- [Types of your own](04-types-of-your-own.md): rooms, items and directions
-- [Branching and looping](05-branching-and-looping.md): answering a command
-- [Holding many things](06-holding-many-things.md): the rooms of the world
-- [When there might be nothing](07-when-there-might-be-nothing.md): an exit that isn't there
-- [Errors are values](08-errors-are-values.md): reading what the player typed
-- [Passing values](09-passing-values.md): who has the lamp
-- [Cleanup that always runs](10-cleanup-that-always-runs.md): saving the game
-- [When one owner isn't enough](11-when-one-owner-isnt-enough.md): a tunnel collapses
-- [Writing it once for many types](12-writing-it-once-for-many-types.md): one list for items and exits
-- [Splitting a program up](13-splitting-a-program-up.md): the package, and a claim about every game
+1. Hello
+2. Functions
+3. Names and strings
+4. Names that change
+5. if and else
+6. while
+7. for
+8. Vec
+9. Walking a Vec
+10. Structs
+11. Methods
+12. Enums and match
+13. Enums that carry data
+14. Optionals
+15. Map
+16. Errors are values
+17. try and catch
+18. Changing what you're given
+19. Giving a value away
+20. Copying on purpose
+21. Changing an item in a Vec
+22. Closures
+23. Chains
+24. Working with text
+25. Generic functions
+26. Interfaces
+27. Cleanup that always runs
+28. Racks and links
+29. Tasks and channels
+30. Shared state
+31. Work done while compiling
+32. Splitting a program into files

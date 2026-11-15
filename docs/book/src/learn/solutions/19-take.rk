@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 19. Giving a value away
+//
+// Sometimes a function keeps what you give it: it puts your list into an
+// order and returns the order. Now two names reach one list, yours and the
+// order's. If both could change it, editing one would quietly edit the
+// other, and which one cleans the list up when it's no longer needed?
+//
+// Rask's answer is that a value has one owner. A parameter marked `take`
+// becomes the function's to keep, and the name you passed in is gone: using
+// it afterwards is a compile error. Small values (numbers, bools, strings,
+// small structs) are copied instead, so this only ever happens to things
+// like a Vec.
+//
+// This file doesn't compile. Run `rask test 19-take.rk`, read the error, and
+// fix `summary` so it doesn't use `items` after giving it away. The compiler
+// suggests a copy; there's a better fix, since the order has the items now.
+
+struct Order {
+    customer: string
+    items: Vec<string>
+}
+
+func place(customer: string, take items: Vec<string>) -> Order {
+    return Order(customer: customer, items: items)
+}
+
+func summary(customer: string, count: i32) -> string {
+    mut items = Vec.new()
+    for _ in 0..count {
+        items.push("tea")
+    }
+    let order = place(customer, items)
+    return "{order.customer}: {order.items.len()} items"
+}
+
+test "summary" {
+    assert summary("Ada", 2) == "Ada: 2 items"
+    assert summary("Alan", 0) == "Alan: 0 items"
+}
+

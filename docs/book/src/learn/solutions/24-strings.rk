@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 24. Working with text
+//
+// Text usually arrives as one string, a line someone typed or read from a
+// file, and the program needs the pieces in it. A string has methods for
+// that, and they never change the string itself: strings can't be changed,
+// only replaced by new ones.
+//
+//     trim()            without spaces at either end
+//     split(",")        the pieces between the commas, as a chain
+//     starts_with("/")  true or false
+//     to_uppercase()    a new string in capitals
+//     parse<i32>()      the number it spells, or an error
+//
+// `trim` and the pieces of `split` don't copy anything: they are views into
+// the original string, so they can't be kept, not even in a `let`. Use them
+// on the spot, or make a string of their own with `.to_string()`.
+
+func is_command(line: string) -> bool {
+    return line.trim().starts_with("/")
+}
+
+func first_word(line: string) -> string {
+    for word in line.split(" ") {
+        return word.to_string()
+    }
+    return ""
+}
+
+// Your turn: `sum_list("3, 4,5")` adds up the numbers between the commas,
+// 12. Anything that isn't a number counts as 0.
+
+func sum_list(text: string) -> i32 {
+    mut total = 0
+    for part in text.split(",") {
+        total += part.trim().parse<i32>() catch _ => 0
+    }
+    return total
+}
+
+test "commands" {
+    assert is_command("  /quit")
+    assert !is_command("hello /quit")
+    assert first_word("take lamp") == "take"
+}
+
+test "sum list" {
+    assert sum_list("3, 4,5") == 12
+    assert sum_list(" 10 ,  20 ") == 30
+    assert sum_list("7") == 7
+    assert sum_list("4,x,6") == 10
+    assert "-3".parse<i32>()! == -3
+}

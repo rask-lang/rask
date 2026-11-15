@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 28. Racks and links
+//
+// Some data points at itself: each person in a company has a boss who is
+// another person, rooms in a game lead to other rooms. A struct field can't
+// hold a borrowed value, and a position in a Vec stops meaning the same
+// person once someone ahead of them leaves.
+//
+// A `Rack` holds things that need to point at each other. `insert` puts one
+// in and gives back a `Link`, which can be stored in a field. Reading through
+// a link reads the thing it links to: `p.boss` and `p.name` work as if `p`
+// were the Person. When someone is deleted from the rack, every link to them
+// becomes `none`, so a link to someone who's gone can't exist.
+//
+// `Rack` and `Link` live in the standard library's `memory` module. Apart
+// from the basics (numbers, strings, Vec, Map), everything there needs an
+// `import` line first.
+
+import memory.Rack
+import memory.Link
+
+struct Person {
+    name: string
+    boss: Link<Person>?
+}
+
+func chain_of_command(p: Link<Person>) -> string {
+    mut text = p.name
+    mut next = p.boss
+    while next? as boss {
+        text = "{text} > {boss.name}"
+        next = boss.boss
+    }
+    return text
+}
+
+// Your turn: everyone whose boss is `from` reports to `to` instead.
+// `staff.nodes()` goes through everyone, and links compare with `==`.
+
+func reassign(mutate staff: Rack<Person>, from: Link<Person>, to: Link<Person>) {
+    todo()
+}
+
+test "reassign" {
+    mut staff = Rack<Person>.new()
+    let ada = staff.insert(Person(name: "Ada", boss: none))
+    let bo = staff.insert(Person(name: "Bo", boss: ada))
+    let cy = staff.insert(Person(name: "Cy", boss: bo))
+    let di = staff.insert(Person(name: "Di", boss: bo))
+    assert chain_of_command(cy) == "Cy > Bo > Ada"
+    reassign(mutate staff, bo, ada)
+    assert chain_of_command(cy) == "Cy > Ada"
+    assert chain_of_command(di) == "Di > Ada"
+    assert chain_of_command(bo) == "Bo > Ada"
+    staff.delete(ada)
+    assert chain_of_command(cy) == "Cy"
+}
+
+// new: racks
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

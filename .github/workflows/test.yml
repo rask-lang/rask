@@ -184,9 +184,9 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/matrix/run.sh
 
-  # ── What the runtime hands back, and what a learner reads.
+  # ── What the runtime hands back.
   gates-memory:
-    name: gates-memory (leaks, tutorials)
+    name: gates-memory (leaks)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -235,15 +235,6 @@ jobs:
     - name: Memory leak gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
-
-    # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
-    # by nothing at all, and seven of nineteen solutions didn't compile (#1030)
-    # — they'd been broken for a while, since the same seven fail on the commit
-    # before the string-API change that surfaced them. These are what a learner
-    # reads when they're stuck, so a wrong one costs more than a missing one.
-    - name: Tutorial solutions
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/tutorials_gate.sh
 
   # ── valgrind, on its own runners.
   #
@@ -684,21 +675,19 @@ jobs:
     # snippet parsed fine while calling an API the real grep program doesn't
     # use, with both imports missing. This gate adds what parsing can't see:
     # every block must be an {{#include}} from a program another gate runs or
-    # carry a compile/run marker; every include must resolve; and the compile
-    # errors a chapter teaches with are pinned renderings of `rask check`, so
-    # improving a diagnostic shows up as a diff on the page that teaches it.
+    # carry a compile/run marker; every include must resolve; and the code on
+    # the landing page runs.
     - name: Book gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/book_gate.sh
 
-    # The tutorial, against the compiler (#1889). Each chapter's exercise file
-    # is generated from the MUD it builds, and a stale one fails; every exercise
-    # file passes `rask check`; the shell commands in the chapters run in order
-    # and print what the page says they print. Then the gate is run on a broken
-    # copy of its own small tutorial for each thing it checks, to show it fails.
-    - name: Learn gate
+    # The tour, the book's "Learn the language". Each step fails as shipped and
+    # its solution passes on both backends; no step uses an idea a later step
+    # teaches (the old tutorial's chapter 5 exercise needed chapter 6); and the
+    # book's pages can be made from the step files.
+    - name: Tour gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/learn_gate.sh
+      run: tests/tour_gate.sh
 
     # The opt-in Claude Code hook in editors/claude-code/ parses
     # `rask check --json`. Nothing else reads that output the same way, so a

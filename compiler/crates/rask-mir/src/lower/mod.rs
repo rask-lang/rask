@@ -26,6 +26,7 @@ use rask_ast::{
 };
 use rask_layout::{StructLayout, EnumLayout};
 use rask_types::Type;
+use self::expr::PatternTest;
 use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
 
@@ -2105,6 +2106,9 @@ pub struct MirLowerer<'a> {
     builder: BlockBuilder,
     /// Variable name → (local id, type)
     locals: HashMap<String, (LocalId, MirType)>,
+    /// The type tests a pattern's fields passed, by the field pattern's id,
+    /// for the binding that follows the test (`field_type_tests`).
+    field_type_tests: HashMap<rask_ast::NodeId, PatternTest>,
     /// Function name → signature (for call return types)
     func_sigs: HashMap<String, FuncSig>,
     /// Stack of enclosing loops (innermost last)
@@ -2862,7 +2866,8 @@ impl<'a> MirLowerer<'a> {
                 // retained and released like one.
                 let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
                 let elem_size = elem_desc.size() as i64;
-                let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                let vec_ty = MirType::Container(crate::types::ContainerKind::Vec);
+                let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
                     func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -2873,7 +2878,7 @@ impl<'a> MirLowerer<'a> {
                         crate::elem_strs::elem(elem_desc),
                     ],
                 }));
-                Ok((MirOperand::Local(vec_local), MirType::Ptr))
+                Ok((MirOperand::Local(vec_local), vec_ty))
             }
             FoldedForm::Map => {
                 // An empty map has no first entry to read the key and value
@@ -4794,6 +4799,7 @@ impl<'a> MirLowerer<'a> {
         let mut lowerer = MirLowerer {
             builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
+            field_type_tests: HashMap::new(),
             func_sigs,
             loop_stack: Vec::new(),
             ctx,
@@ -5413,6 +5419,13 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Is `pat`, a bare name, a type test the checker recorded? A payload
+    /// name the checker never recorded is a binding, so this asks without
+    /// complaining about the missing record.
+    pub(crate) fn pattern_tests_side(&self, pat: &rask_ast::expr::Pattern) -> bool {
+        matches!(self.pattern_target(pat), Some(rask_types::PatternTarget::Side { .. }))
+    }
+
     /// Does `pat`, a bare name, bind the value it matches? A recorded variant
     /// or type test doesn't.
     pub(crate) fn pattern_binds(&self, pat: &rask_ast::expr::Pattern) -> bool {
@@ -5718,51 +5731,107 @@ impl<'a> MirLowerer<'a> {
         Some(variant.fields.iter().map(|f| f.name.clone()).collect())
     }
 
-    /// Bind pattern payload — with niche awareness.
-    /// `payload_ty` is optional because for the common case there is no such
-    /// type to have: a Constructor pattern on a user enum takes each field's
-    /// type from the enum layout, and the Option/Result payload is never
-    /// consulted. Resolving it eagerly at the call site meant asking a question
-    /// with no answer on every `if m is Msg.Text(t)`. The paths that genuinely
-    /// need it demand it below, where not knowing it is a real gap.
-    fn bind_pattern_payload_niche(
-        &mut self,
-        pattern: &rask_ast::expr::Pattern,
-        scrutinee: &Expr,
-        value: MirOperand,
-        payload_ty: Option<MirType>,
-        is_niche: bool,
-        scrutinee_ty: &MirType,
-    ) {
-        let checked = self.ctx.lookup_raw_type(scrutinee.id);
-        self.bind_pattern_fields(pattern, value, payload_ty, is_niche, scrutinee_ty, checked.as_deref());
-        self.retain_pattern_copies(pattern, scrutinee, scrutinee_ty);
-    }
-
     /// Whether `pattern` binds a name anywhere inside a variant's fields.
     fn binds_any(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::PatternKind;
+        let binds = |f: &rask_ast::expr::Pattern| match &f.kind {
+            PatternKind::Ident(_) => self.pattern_binds(f),
+            PatternKind::TypePat { binding, .. } => binding.is_some(),
+            _ => self.binds_any(f),
+        };
         match &pattern.kind {
-            PatternKind::Constructor { fields, .. } => fields.iter().any(|f| {
-                matches!(&f.kind, PatternKind::Ident(_) if !self.pattern_names_variant(f)) || self.binds_any(f)
-            }),
-            PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| {
-                matches!(&f.kind, PatternKind::Ident(_) if !self.pattern_names_variant(f)) || self.binds_any(f)
-            }),
+            PatternKind::Constructor { fields, .. } => fields.iter().any(binds),
+            PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| binds(f)),
             _ => false,
         }
     }
 
     /// Whether a variant field's pattern needs testing at runtime: a nested
-    /// variant, or a literal or range somewhere inside one. A bare name or
-    /// `_` takes any value.
+    /// variant, a type test, or a literal or range somewhere inside one. A bare
+    /// name that binds, or `_`, takes any value.
     pub(super) fn nested_needs_test(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::PatternKind;
         match &pattern.kind {
             PatternKind::Wildcard => false,
-            PatternKind::Ident(_) => self.pattern_names_variant(pattern),
+            PatternKind::Ident(_) => !self.pattern_binds(pattern),
             _ => true,
         }
+    }
+
+    /// Does a field's pattern ask what the field holds: a type or `none` on a
+    /// union or optional field (`result: IoError`, `val: i64 as n`), or the
+    /// variant an enum-typed field is? Tested on the field's own value, the way
+    /// the same pattern tests a `T or E` that isn't in a field.
+    pub(super) fn field_pattern_tests_type(&self, pattern: &rask_ast::expr::Pattern) -> bool {
+        use rask_ast::expr::PatternKind;
+        match &pattern.kind {
+            PatternKind::Ident(_) => !self.pattern_binds(pattern),
+            PatternKind::TypePat { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Branch to `fail` unless the field `value` (a `ty`, which the checker
+    /// calls `checked`) passes the type test `pattern`; carry on in the block
+    /// where it does.
+    pub(super) fn emit_field_type_test(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        checked: Option<&Type>,
+        pattern: &rask_ast::expr::Pattern,
+        fail: BlockId,
+    ) -> Result<(), LoweringError> {
+        let niche = self.field_niche(ty, checked);
+        let test = self.emit_is_test_typed(checked, value, ty, niche, pattern)?;
+        let pass = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(test.matches),
+            then_block: pass,
+            else_block: fail,
+        }));
+        self.builder.switch_to_block(pass);
+        self.field_type_tests.insert(pattern.id, test);
+        Ok(())
+    }
+
+    /// Bind the name a passed type test (`result: IoError as e`) gives the
+    /// field's payload. A pattern with no `as` binds nothing. The test that
+    /// passed (`emit_field_type_test`) says where a flat `T? or E`'s payload
+    /// sits.
+    pub(super) fn bind_field_type_pattern(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        checked: Option<&Type>,
+        pattern: &rask_ast::expr::Pattern,
+    ) {
+        use rask_ast::expr::PatternKind;
+        if !matches!(&pattern.kind, PatternKind::TypePat { binding: Some(_), .. }) {
+            return;
+        }
+        let Some(test) = self.field_type_tests.remove(&pattern.id) else {
+            return;
+        };
+        let niche = self.field_niche(ty, checked);
+        let payload_ty = match (niche, ty) {
+            (Some(_), _) => Some(Self::payload_of_mir(ty).unwrap_or_else(|| ty.clone())),
+            (None, MirType::Result { err, .. }) if Self::is_flat_two_layer(ty) => Some((**err).clone()),
+            (None, _) => Self::payload_of_mir(ty),
+        };
+        self.bind_tested_pattern_typed(&test, pattern, checked, value.clone(), payload_ty, niche.is_some(), ty);
+    }
+
+    /// Which word means `none` in a field that is an optional, from its lowered
+    /// type and then the checker's.
+    fn field_niche(&self, ty: &MirType, checked: Option<&Type>) -> Option<i64> {
+        if let Some(sentinel) = mir_niche_none(ty) {
+            return Some(sentinel);
+        }
+        if matches!(ty, MirType::Option(inner) if !inner.is_niche_payload() && !matches!(**inner, MirType::Ptr)) {
+            return None;
+        }
+        self.ctx.niche_option_sentinel(checked?)
     }
 
     /// Test `pattern` against `value`, a `ty`, branching to `fail` when it
@@ -5789,7 +5858,11 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::{Pattern, PatternKind};
         match &pattern.kind {
             PatternKind::Wildcard => Ok(()),
-            PatternKind::Ident(_) if !self.pattern_names_variant(pattern) => Ok(()),
+            PatternKind::Ident(_) if self.pattern_binds(pattern) => Ok(()),
+            PatternKind::TypePat { .. } => self.emit_field_type_test(value, ty, checked, pattern, fail),
+            PatternKind::Ident(_) if !self.pattern_names_variant(pattern) => {
+                self.emit_field_type_test(value, ty, checked, pattern, fail)
+            }
             PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 let pass = self.builder.create_block();
                 self.emit_pattern_test(value, pattern, pass, fail)?;
@@ -5807,13 +5880,13 @@ impl<'a> MirLowerer<'a> {
                 let positional = names
                     .iter()
                     .map(|n| {
-                        fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
+                        fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone())
                     })
                     .collect();
                 // The same pattern, its fields in declaration order; a field it
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
-                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.emit_subpattern_test(value, ty, checked, &as_constructor, fail)
             }
             PatternKind::Ident(name) | PatternKind::Constructor { name, .. } => {
@@ -5898,13 +5971,13 @@ impl<'a> MirLowerer<'a> {
                         fields
                             .iter()
                             .find(|(f, _)| f == n)
-                            .map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone())
+                            .map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone())
                     })
                     .collect();
                 // The same pattern, its fields in declaration order; a field it
                 // doesn't name is a `_` nothing looks up.
                 let as_constructor =
-                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional });
+                    Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty, checked);
             }
             PatternKind::Constructor { name, fields } => {
@@ -5915,7 +5988,7 @@ impl<'a> MirLowerer<'a> {
                 // exists. Falls back to `payload_ty` for niche Option/Result values.
                 let variant_fields = self.variant_field_types(scrutinee_ty, checked, name);
                 for (i, field_pat) in fields.iter().enumerate() {
-                    if let PatternKind::Ident(name) = &field_pat.kind {
+                    if let (PatternKind::Ident(name), false) = (&field_pat.kind, self.pattern_tests_side(field_pat)) {
                         let demand = || payload_ty.clone().unwrap_or_else(|| {
                             crate::fallback::unknown_type("lower/mod:constructor_payload")
                         });
@@ -5970,10 +6043,16 @@ impl<'a> MirLowerer<'a> {
                             },
                         }));
                         let field_checked = self.ctx.variant_payload_type(checked, name, i);
-                        self.bind_pattern_fields(
-                            field_pat, MirOperand::Local(inner), None, false, &field_ty,
-                            field_checked.as_ref(),
-                        );
+                        if matches!(&field_pat.kind, PatternKind::TypePat { .. }) {
+                            self.bind_field_type_pattern(
+                                &MirOperand::Local(inner), &field_ty, field_checked.as_ref(), field_pat,
+                            );
+                        } else {
+                            self.bind_pattern_fields(
+                                field_pat, MirOperand::Local(inner), None, false, &field_ty,
+                                field_checked.as_ref(),
+                            );
+                        }
                     }
                     // Wildcard, Literal in field position — skip binding
                 }
@@ -7518,8 +7597,8 @@ mod tests {
             return_stmt(Some(match_expr(
                 ident_expr("x"),
                 vec![
-                    MatchArm { pattern: Pattern::new(NodeId(1), PatternKind::Literal(Box::new(int_expr(1)))), guard: None, body: Box::new(int_expr(10)) },
-                    MatchArm { pattern: Pattern::new(NodeId(2), PatternKind::Literal(Box::new(int_expr(2)))), guard: None, body: Box::new(int_expr(20)) },
+                    MatchArm { pattern: Pattern::new(NodeId(1), PatternKind::Literal(Box::new(int_expr(1))), rask_ast::Span::new(0, 0)), guard: None, body: Box::new(int_expr(10)) },
+                    MatchArm { pattern: Pattern::new(NodeId(2), PatternKind::Literal(Box::new(int_expr(2))), rask_ast::Span::new(0, 0)), guard: None, body: Box::new(int_expr(20)) },
                 ],
             ))),
         ]);

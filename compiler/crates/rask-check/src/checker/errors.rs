@@ -963,6 +963,26 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// `Cash(amount: i32)` where `amount` is an `i32`: the colon was meant as
+    /// a type annotation, but a bare type there tests the field's type, and a
+    /// field of exactly that type always passes.
+    #[error("`{field}: {ty}` tests a type that is always there")]
+    FieldPatternExactType {
+        pattern: String,
+        field: String,
+        ty: String,
+        span: Span,
+    },
+
+    /// A use of `result` after `Job(result: IoError)`: the type test names
+    /// the field's type and binds nothing, so there is no `result` to use.
+    #[error("`{name}` is not bound by `{name}: {ty}`")]
+    NameNotBoundByTypePattern {
+        name: String,
+        ty: String,
+        span: Span,
+    },
+
     #[error("unknown context `{name}` in `using` block")]
     UnknownContext {
         name: String,
@@ -2083,6 +2103,8 @@ impl TypeError {
             | PublicInferredError { .. }
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }
+            | FieldPatternExactType { .. }
+            | NameNotBoundByTypePattern { .. }
             | UnknownContext { .. }
             | CyclicTypeAlias { .. }
             | CallableFieldNotAMethod { .. }

@@ -258,6 +258,42 @@ impl TypeChecker {
         Some(bindings)
     }
 
+    /// `Cash(amount: i32)` where `amount` is an `i32`: a type pattern on a field
+    /// of exactly that type. It always matches and binds nothing, and it is
+    /// what a learner writes meaning a type annotation. Reported once, and the
+    /// field is bound under its own name so the arm body doesn't fail on top.
+    ///
+    /// A field whose type is a union or optional holding the type is a real
+    /// test (ER27 per field), and a type the field can't hold is the ordinary
+    /// type-test error from `check_pattern`.
+    fn field_pattern_exact_type(
+        &mut self,
+        pattern: &str,
+        field: &str,
+        sub_pattern: &Pattern,
+        field_ty: &Type,
+        span: Span,
+    ) -> Option<Vec<(String, Type)>> {
+        let PatternKind::Ident(ty) = &sub_pattern.kind else { return None };
+        if ty == field || ty.contains('.') {
+            return None;
+        }
+        let candidate = normalize_type(&self.pattern_type_name(ty)?, &self.types);
+        let field_ty_applied = normalize_type(&self.ctx.apply(field_ty), &self.types);
+        if candidate != field_ty_applied {
+            return None;
+        }
+        let at = if sub_pattern.span == Span::new(0, 0) { span } else { sub_pattern.span };
+        self.errors.push(TypeError::FieldPatternExactType {
+            pattern: pattern.to_string(),
+            field: field.to_string(),
+            ty: ty.clone(),
+            span: at,
+        });
+        self.pattern_targets.insert(sub_pattern.id, rask_types::PatternTarget::Binding);
+        Some(vec![(field.to_string(), field_ty.clone())])
+    }
+
     /// `name` as a variant of the enum the scrutinee already is, qualified,
     /// with how many payload fields it carries. `None` when the scrutinee
     /// isn't known to be that enum: a bare name is then a binding, and a
@@ -314,7 +350,7 @@ impl TypeChecker {
             PatternKind::TypePat { binding: Some(_), .. } => return None,
             _ => self.tested_type(pattern, scrutinee_ty)?,
         };
-        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }))
+        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }, pattern.span))
     }
 
     /// The type an `is` pattern tests for, written with or without `as`:
@@ -362,7 +398,7 @@ impl TypeChecker {
                 if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
                     // Stand-ins for the payload a tag test doesn't name; never
                     // stored, so they need no id of their own.
-                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard); arity];
+                    let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, Span::new(0, 0)); arity];
                     return self.check_constructor_pattern(pattern.id, &qualified, &fields, scrutinee_ty, span);
                 }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
@@ -532,6 +568,10 @@ impl TypeChecker {
                                 Type::Error
                             }
                         };
+                        if let Some(bound) = self.field_pattern_exact_type(name, field_name, field_pattern, &field_ty, span) {
+                            bindings.extend(bound);
+                            continue;
+                        }
                         bindings.extend(self.check_pattern(field_pattern, &field_ty, span));
                     }
                     return bindings;
@@ -581,6 +621,10 @@ impl TypeChecker {
                                     });
                                     Type::Error
                                 });
+                            if let Some(bound) = self.field_pattern_exact_type(name, field_name, field_pattern, &field_ty, span) {
+                                bindings.extend(bound);
+                                continue;
+                            }
                             bindings.extend(self.check_pattern(field_pattern, &field_ty, span));
                         }
                     }

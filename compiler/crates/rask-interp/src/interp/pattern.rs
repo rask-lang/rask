@@ -86,7 +86,7 @@ impl Interpreter {
             }
             _ => return None,
         };
-        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) });
+        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) }, pattern.span);
         self.match_pattern(&as_form, value)?.remove(GUARD)
     }
 
@@ -171,7 +171,7 @@ impl Interpreter {
                 if let Value::Enum { name: sc_name, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
                         let as_type =
-                            Pattern::new(pattern.id, PatternKind::TypePat { ty: TypeExpr::named(name.as_str()), binding: None });
+                            Pattern::new(pattern.id, PatternKind::TypePat { ty: TypeExpr::named(name.as_str()), binding: None }, pattern.span);
                         return self.match_pattern(&as_type, value);
                     }
                 }
@@ -268,6 +268,17 @@ impl Interpreter {
                     if variant != pat_variant
                         || pat_enum.is_some_and(|e| e != enum_name)
                     {
+                        // ER28, as for `Constructor` above: against a
+                        // `T or E` the arm names the error's own variant,
+                        // so look inside the Ok/Err payload. `Fail.A(n)`
+                        // desugars to this named form when `A`'s fields are
+                        // labelled, and `assert r is Fail.A(n: 3)` is one
+                        // from the start (#1958).
+                        if enum_name == "Result" && matches!(variant.as_str(), "Ok" | "Err") {
+                            if let Some(inner) = payload.first() {
+                                return self.match_pattern(pattern, inner);
+                            }
+                        }
                         return None;
                     }
                     // Field order comes from the declaration; the pattern may

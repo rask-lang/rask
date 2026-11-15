@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 3. Names and strings
+//
+// `let` gives a value a name. A string can hold values in braces: "{name}"
+// becomes whatever `name` holds. There's no `+` for strings, so this is how
+// you build one.
+
+func greeting(name: string) -> string {
+    let mark = "!"
+    return "Hello, {name}{mark}"
+}
+
+// Your turn: label("Ada", 36) should give "Ada is 36 years old". Numbers go
+// into braces the same way strings do.
+
+func label(name: string, age: i32) -> string {
+    todo()
+}
+
+test "greeting" {
+    assert greeting("Ada") == "Hello, Ada!"
+}
+
+test "label" {
+    assert label("Ada", 36) == "Ada is 36 years old"
+    assert label("Alan", 41) == "Alan is 41 years old"
+}
+
+// new: names
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

@@ -26,17 +26,30 @@ use crate::DesugarError;
 
 const CODE: &str = "E0416";
 
+/// A declared field: its name, and the type it was written with.
+#[derive(Clone)]
+struct Field {
+    name: String,
+    ty: TypeExpr,
+}
+
+impl Field {
+    fn of(f: &rask_ast::decl::Field) -> Field {
+        Field { name: f.name.clone(), ty: f.ty.clone() }
+    }
+}
+
 /// What the declarations say about each name a value can be built from.
 #[derive(Default)]
 struct Shapes {
     /// Struct name → its field names.
-    structs: HashMap<String, Vec<String>>,
+    structs: HashMap<String, Vec<Field>>,
     /// Enum name → variant name → its field names, `None` when positional.
-    enums: HashMap<String, HashMap<String, Option<Vec<String>>>>,
+    enums: HashMap<String, HashMap<String, Option<Vec<Field>>>>,
     /// Variant name → field names, for variants with named fields in any
     /// enum. Empty when two enums name one differently: which one a bare use
     /// means takes the matched type, so the checker judges its fields.
-    named_variants: HashMap<String, Vec<String>>,
+    named_variants: HashMap<String, Vec<Field>>,
     /// Variant names with positional fields, in any enum.
     positional_variants: HashSet<String>,
 }
@@ -48,12 +61,12 @@ impl Shapes {
         for decl in stdlib.iter().chain(decls.iter()) {
             match &decl.kind {
                 DeclKind::Struct(s) => {
-                    let fields = s.fields.iter().map(|f| f.name.clone()).collect();
+                    let fields = s.fields.iter().map(Field::of).collect();
                     shapes.structs.insert(last_segment(&s.name).to_string(), fields);
                 }
                 // Built the same way, from the one member that's live (UN1).
                 DeclKind::Union(u) => {
-                    let fields = u.fields.iter().map(|f| f.name.clone()).collect();
+                    let fields = u.fields.iter().map(Field::of).collect();
                     shapes.structs.insert(last_segment(&u.name).to_string(), fields);
                 }
                 DeclKind::Enum(e) => {
@@ -64,10 +77,10 @@ impl Shapes {
                             variants.insert(v.name.clone(), None);
                             shapes.positional_variants.insert(v.name.clone());
                         } else {
-                            let fields: Vec<String> = v.fields.iter().map(|f| f.name.clone()).collect();
+                            let fields: Vec<Field> = v.fields.iter().map(Field::of).collect();
                             variants.insert(v.name.clone(), Some(fields.clone()));
                             match shapes.named_variants.get(&v.name) {
-                                Some(seen) if *seen != fields => {
+                                Some(seen) if !same_names(seen, &fields) => {
                                     shapes.named_variants.insert(v.name.clone(), Vec::new());
                                 }
                                 _ => {
@@ -101,7 +114,7 @@ impl Shapes {
 
     /// The fields `path(…)` fills by name in an expression, or `None` when
     /// it's a call (a function, a static method, a positional variant).
-    fn built_fields(&self, path: &[String], labelled: bool, method: bool) -> Option<Vec<String>> {
+    fn built_fields(&self, path: &[String], labelled: bool, method: bool) -> Option<Vec<Field>> {
         let last = path.last()?;
         if let Some(variant) = self.variant_of(path) {
             return variant;
@@ -121,7 +134,7 @@ impl Shapes {
 
     /// The fields the pattern `path(…)`, written without labels, matches by
     /// name, or `None` when it matches by position.
-    fn matched_fields(&self, path: &[String]) -> Option<Vec<String>> {
+    fn matched_fields(&self, path: &[String]) -> Option<Vec<Field>> {
         let last = path.last()?;
         if let Some(variant) = self.variant_of(path) {
             return variant;
@@ -140,7 +153,7 @@ impl Shapes {
     }
 
     /// `Enum.Variant`: that variant's fields, if `path` names one.
-    fn variant_of(&self, path: &[String]) -> Option<Option<Vec<String>>> {
+    fn variant_of(&self, path: &[String]) -> Option<Option<Vec<Field>>> {
         let [.., ty, variant] = path else { return None };
         self.enums.get(last_segment(ty))?.get(variant.as_str()).cloned()
     }
@@ -154,10 +167,14 @@ impl Shapes {
 
     /// A bare variant name. Two enums can each have one, one named and one
     /// positional; then a label written says which.
-    fn bare_named_variant(&self, name: &str, labelled: bool) -> Option<Vec<String>> {
+    fn bare_named_variant(&self, name: &str, labelled: bool) -> Option<Vec<Field>> {
         let fields = self.named_variants.get(name)?;
         (!self.positional_variants.contains(name) || labelled).then(|| fields.clone())
     }
+}
+
+fn same_names(a: &[Field], b: &[Field]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name == y.name)
 }
 
 fn last_segment(name: &str) -> &str {
@@ -188,10 +205,25 @@ fn callee_path(e: &Expr) -> Option<(Vec<String>, Vec<TypeExpr>)> {
 
 /// "`blocks: n`" — the field at the position a value was written in, as the
 /// fix to suggest.
-fn suggestion(fields: &[String], index: usize, value: &str) -> String {
+fn suggestion(fields: &[Field], index: usize, value: &str) -> String {
     match fields.get(index).or(fields.first()) {
-        Some(f) => format!("`{}: {}`", f, value),
+        Some(f) => format!("`{}: {}`", f.name, value),
         None => "`field: value`".to_string(),
+    }
+}
+
+/// What to write for a bare `name` in a pattern that isn't a field's name.
+///
+/// Usually `field: name`, which tests the field for that type. When the field
+/// is exactly that type there is nothing to test, and `field: name` is E0423,
+/// so the fix is the bare field.
+fn bare_pattern_fix(fields: &[Field], index: usize, name: &str) -> String {
+    let exact = |f: &Field| matches!(&f.ty, TypeExpr::Named { path, args } if args.is_empty() && path.as_slice() == [name]);
+    match fields.get(index).or(fields.first()) {
+        Some(f) if exact(f) => {
+            format!("`{}`, since the field there is already of type `{}`", f.name, name)
+        }
+        _ => suggestion(fields, index, name),
     }
 }
 
@@ -225,7 +257,7 @@ impl Construct<'_> {
     /// `name(args)` as a struct literal. A value that can't be a field — a
     /// positional one, or a bare name that isn't a field — is reported with
     /// the field its position suggests.
-    fn struct_literal(&mut self, name: String, type_args: Vec<TypeExpr>, args: &[CallArg], declared: &[String]) -> ExprKind {
+    fn struct_literal(&mut self, name: String, type_args: Vec<TypeExpr>, args: &[CallArg], declared: &[Field]) -> ExprKind {
         let mut fields = Vec::new();
         let mut spread = None;
         for (i, arg) in args.iter().enumerate() {
@@ -242,7 +274,7 @@ impl Construct<'_> {
                 (ArgMode::Default, None) => match &arg.expr.kind {
                     // `Point(x)` is `Point(x: x)`. With no declaration to
                     // hand, the checker says whether `x` is a field.
-                    ExprKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f == n) => {
+                    ExprKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f.name == *n) => {
                         fields.push(FieldInit { name: n.clone(), value: arg.expr.clone() })
                     }
                     ExprKind::Ident(n) => {
@@ -273,10 +305,10 @@ impl Construct<'_> {
     /// After reporting a value with no field name, carry on as if it filled
     /// the field its position suggests — the one the error names — so the
     /// checker types it there instead of reporting that field missing too.
-    fn assume_positional(&self, fields: &mut Vec<FieldInit>, declared: &[String], index: usize, arg: &CallArg) {
+    fn assume_positional(&self, fields: &mut Vec<FieldInit>, declared: &[Field], index: usize, arg: &CallArg) {
         if let Some(field) = declared.get(index) {
-            if !fields.iter().any(|f| &f.name == field) {
-                fields.push(FieldInit { name: field.clone(), value: arg.expr.clone() });
+            if !fields.iter().any(|f| f.name == field.name) {
+                fields.push(FieldInit { name: field.name.clone(), value: arg.expr.clone() });
             }
         }
     }
@@ -385,13 +417,13 @@ impl Construct<'_> {
         let mut named = Vec::new();
         for (i, field) in fields.iter().enumerate() {
             let problem = match &field.kind {
-                PatternKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f == n) => {
+                PatternKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f.name == *n) => {
                     named.push((n.clone(), field.clone()));
                     continue;
                 }
                 PatternKind::Ident(n) => format!(
                     "`{}` has no field `{}`: a bare name binds the field it names. Write {}",
-                    name, n, suggestion(&declared, i, n)
+                    name, n, bare_pattern_fix(&declared, i, n)
                 ),
                 _ => format!("`{}(…)` matches its fields by name. Write {}", name, suggestion(&declared, i, "…")),
             };
