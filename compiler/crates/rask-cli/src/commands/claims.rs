@@ -1300,17 +1300,18 @@ fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compil
 const MIN_ACCEPTED_ONE_IN: u64 = 10;
 
 /// Did a type's own `decode` refuse so many inputs that fewer than one in
-/// `MIN_ACCEPTED_ONE_IN` reached the claim? Only refusals count: what a claim
-/// discards itself (CL5) is its author's precondition and stays unlimited.
+/// `MIN_ACCEPTED_ONE_IN` got past it? Only what `decode` itself turned away
+/// counts: an input the claim then discards with its own `return` (CL5) or one
+/// that ran past the step budget did get past `decode`, so a claim that skips
+/// most inputs by its own precondition is not this.
 fn mostly_refused(r: &Record) -> bool {
-    let accepted = r.tried - r.discarded - r.refused - r.over_budget;
-    r.refused > 0 && accepted * MIN_ACCEPTED_ONE_IN < r.tried
+    r.refused > 0 && (r.tried - r.refused) * MIN_ACCEPTED_ONE_IN < r.tried
 }
 
 /// E0975: a claim that held only for the few inputs a `decode` let through.
 fn report_mostly_refused(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
     let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
-    let accepted = r.tried - r.discarded - r.refused - r.over_budget;
+    let accepted = r.tried - r.refused;
     let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` holds for almost no inputs", claim.name))
         .with_code("E0975")
         .with_primary(span, format!(

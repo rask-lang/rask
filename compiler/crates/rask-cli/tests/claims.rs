@@ -197,6 +197,19 @@ fn a_claim_whose_inputs_a_decode_refuses_does_not_pass_vacuously() {
     assert!(line.contains("held for 1,000 inputs") && !line.contains("refused"), "{line}");
 }
 
+// IN4 counts only what `decode` turned away. A claim that skips most of its
+// inputs with its own `return` (CL5) did get them past `decode`, so a `decode`
+// that refuses 2 in 100 doesn't fail it, however few the claim keeps.
+#[test]
+fn a_claim_that_skips_its_own_inputs_is_not_blamed_on_decode() {
+    let dir = copy_of("portish");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(!run.stderr.contains("E0975"), "{}", run.stderr);
+    let line = run.stdout.lines().find(|l| l.contains("small_ports_are_nonzero")).expect("a line for the claim");
+    assert!(line.contains("held for") && line.contains("discarded") && line.contains("refused by `decode`"), "{line}");
+}
+
 #[test]
 fn a_verdict_is_kept_until_something_the_claim_reaches_changes() {
     let dir = copy_of("strict");
