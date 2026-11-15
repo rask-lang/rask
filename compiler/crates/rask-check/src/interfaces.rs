@@ -524,11 +524,18 @@ impl<'a> InterfaceChecker<'a> {
                 .iter()
                 .filter(|m| rask_stdlib::operators::method_display(&m.name) == required.name)
                 .collect();
-            let found = by_name
-                .iter()
-                .find(|m| self.signatures_match(required, m))
-                .or(by_name.first())
-                .copied();
+            // A primitive can carry a conformance of its own beside the ones the
+            // compiler gives it: `i64 implements Mul<Duration>` files a `mul`
+            // under `i64`. Falling back to that one for a `Mul<i64>` bound
+            // reported a mismatch against a method the bound never asked for,
+            // so `squared(7)` failed once an unsuffixed literal defaulted to
+            // `i64` (#1935). The compiler's own conformance answers first.
+            let exact = by_name.iter().find(|m| self.signatures_match(required, m)).copied();
+            let found = match exact {
+                Some(m) => Some(m),
+                None if self.has_builtin_method(ty, &required.name) => None,
+                None => by_name.first().copied(),
+            };
             if let Some(found) = found {
                 // Check signature matches
                 if !self.signatures_match(required, found) {

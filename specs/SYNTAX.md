@@ -127,7 +127,7 @@ if x > 0 {
 Types inferred within function bodies. Public signatures require explicit types; private functions can omit them entirely.
 
 ```rask
-let x = 42            // i32 inferred (within body)
+let x = 42            // i64 inferred (within body)
 let y: u64 = 42       // Explicit when needed
 
 // Public: full signature required
@@ -203,7 +203,7 @@ func compute() -> i32 {
 
 ```rask
 // Numbers
-42                  // i32
+42                  // i64
 42u64               // u64 (suffix)
 3.14                // f64
 3.14f32             // f32

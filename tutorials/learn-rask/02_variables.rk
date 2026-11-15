@@ -11,14 +11,14 @@
 // In Python everything is mutable. In Rask you opt *in* to mutability.
 //
 // Types you'll use:
-//   i32       — integer (whole number). The default. Handles up to ~2 billion.
-//   i64       — bigger integer. For when i32 isn't enough.
+//   i64       — integer (whole number). The default. Handles up to ~9 quintillion.
+//   i32       — smaller integer, half the memory. Handles up to ~2 billion.
 //   f64       — decimal number. Same as Python's `float`.
 //   bool      — true or false
 //   string    — text (note: lowercase!)
 //
 // The compiler usually figures out the type from context:
-//   let x = 42           // compiler knows this is i32
+//   let x = 42           // compiler knows this is i64
 //   let x: f64 = 42.0    // you can spell it out if you want
 //
 // Scientific notation works: 6.674e-11 means 6.674 × 10⁻¹¹
