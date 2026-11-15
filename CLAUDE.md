@@ -99,6 +99,10 @@ whose context is thrown away when they report. Why each runs on what it does:
   in its brief, since they can't see each other's work.
   Use `model: "opus"` for a task a worker failed twice, or one no test can
   check.
+- **`lead`** (Opus, small context): for a job that fans out to three or
+  more workers. It runs them, merges, runs skeptic and pushes, and wakes the
+  main session once with the result. One or two workers report to main
+  directly.
 - **Hold reports to the bar.** One that says workaround, "for now", partial,
   deferred or follow-up goes back to the worker: "finish it properly".
 - **`skeptic`** (Opus): once per finished PR that changes compiler, runtime or
