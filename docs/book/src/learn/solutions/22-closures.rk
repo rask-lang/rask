@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 22. Closures
+//
+// Counting the even numbers in a list and counting the negative ones are the
+// same loop with a different test inside. Rather than write the loop twice,
+// write it once and take the test as a parameter.
+//
+// A closure is a small function written where it's used: `|n| n < 0` takes
+// `n` and gives back whether it's negative. A parameter that takes one has a
+// function type, `func(i32) -> bool`. The body can use names from around it,
+// like `limit` in `count_above`.
+
+func count_where(numbers: Vec<i32>, keep: func(i32) -> bool) -> i32 {
+    mut count = 0
+    for n in numbers {
+        if keep(n) {
+            count += 1
+        }
+    }
+    return count
+}
+
+func count_above(numbers: Vec<i32>, limit: i32) -> i32 {
+    return count_where(numbers, |n| n > limit)
+}
+
+// Your turn: `keep_where` gives the numbers that pass the test, in order.
+
+func keep_where(numbers: Vec<i32>, keep: func(i32) -> bool) -> Vec<i32> {
+    mut kept = Vec.new()
+    for n in numbers {
+        if keep(n) {
+            kept.push(n)
+        }
+    }
+    return kept
+}
+
+test "count where" {
+    let numbers = Vec.from([4, -1, 6, -3, 7])
+    assert count_where(numbers, |n| n < 0) == 2
+    assert count_where(numbers, |n| n % 2 == 0) == 2
+    assert count_above(numbers, 5) == 2
+}
+
+test "keep where" {
+    let numbers = Vec.from([4, -1, 6, -3, 7])
+    assert keep_where(numbers, |n| n < 0) == Vec.from([-1, -3])
+    assert keep_where(numbers, |n| n > 100).len() == 0
+    let small = 5
+    assert keep_where(numbers, |n| n > -2 && n < small) == Vec.from([4, -1])
+}

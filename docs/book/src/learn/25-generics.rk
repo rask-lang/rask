@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 25. Generic functions
+//
+// Counting how often 3 appears in a list of numbers and how often "tea"
+// appears in a list of strings is the same code with different types in it.
+// A generic function is written once with a stand-in type, `T`, and works
+// for each type you call it with.
+//
+// `<T: Equal>` says which types are allowed: ones whose values can be
+// compared with `==`. The compiler checks the body uses only what the
+// bound allows, so `<` in here would be an error; that needs `Comparable`.
+// Numbers, strings, and most of your own structs and enums are both.
+//
+// Behind the scenes the compiler writes out a copy of the function for each
+// type it's used with, so a generic function runs as fast as one written for
+// that type by hand.
+
+func count_of<T: Equal>(items: Vec<T>, want: T) -> i32 {
+    mut count = 0
+    for item in items {
+        if item == want {
+            count += 1
+        }
+    }
+    return count
+}
+
+// Your turn: `position` gives where `want` first appears in `items`, or
+// none if it's not there.
+
+func position<T: Equal>(items: Vec<T>, want: T) -> usize? {
+    todo()
+}
+
+test "count of" {
+    assert count_of(Vec.from([3, 1, 3]), 3) == 2
+    assert count_of(Vec.from(["tea", "cake"]), "tea") == 1
+}
+
+test "position" {
+    assert position(Vec.from([5, 6, 7]), 7) == 2
+    assert position(Vec.from([5, 6, 5]), 5) == 0
+    assert position(Vec.from(["tea", "cake"]), "cake") == 1
+    assert position(Vec.from(["tea"]), "jam") is none
+}
+
+// new: generics
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

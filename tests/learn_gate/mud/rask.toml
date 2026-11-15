@@ -1,5 +1,0 @@
-schema = "rask-package@1"
-
-[package]
-name = "greet"
-version = "0.1.0"

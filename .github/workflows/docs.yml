@@ -77,6 +77,8 @@ jobs:
         cp docs/shared/tokens.css docs/build/tokens.css
         cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
         cp docs/shared/rask-highlight.js docs/build/rask-highlight.js
+        # The tour's pages are made from its step files, not committed.
+        python3 docs/book/learn_pages.py
         cd docs/book
         mdbook build -d ../build/book
 

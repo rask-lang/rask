@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 15. Map
+//
+// A Vec finds things by position. Often you want to find them by name
+// instead: someone's phone number, a word's count. Searching a Vec for the
+// name gets slower the longer the list; a `Map` goes straight to it.
+//
+// `m[key] = value` adds or replaces. `m[key]` reads, and stops the program
+// if the key isn't there. `m.get(key)` is the careful read: it gives an
+// optional, `none` for a missing key, so step 14's `??` and `? as` work on it.
+// `m.contains(key)` asks whether it's there.
+
+func phone_book() -> Map<string, string> {
+    mut book = Map.new()
+    book["Ada"] = "555-0100"
+    book["Alan"] = "555-0199"
+    return book
+}
+
+func number_of(name: string) -> string {
+    return phone_book().get(name) ?? "unknown"
+}
+
+// A Map hands its entries back in no particular order, so don't rely on one.
+//
+// Your turn: `count_words` counts how often each word appears.
+
+func count_words(words: Vec<string>) -> Map<string, i32> {
+    todo()
+}
+
+test "phone book" {
+    assert number_of("Ada") == "555-0100"
+    assert number_of("Grace") == "unknown"
+    assert phone_book().contains("Alan")
+}
+
+test "count words" {
+    let counts = count_words(Vec.from(["to", "be", "or", "not", "to", "be"]))
+    assert counts["to"] == 2
+    assert counts["or"] == 1
+    assert counts.len() == 4
+    assert count_words(Vec.from(["a", "a", "a"]))["a"] == 3
+    assert count_words(Vec.new()).len() == 0
+}
+
+// new: maps
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

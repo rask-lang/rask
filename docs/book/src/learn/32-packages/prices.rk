@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What things cost. Only `price_of` is public; how the prices are kept is
+// this package's own business.
+
+public func price_of(item: string) -> i32? {
+    return price_list().get(item)
+}
+
+func price_list() -> Map<string, i32> {
+    mut list = Map.new()
+    list["tea"] = 3
+    list["cake"] = 4
+    list["jam"] = 2
+    return list
+}

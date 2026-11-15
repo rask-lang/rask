@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 20. Copying on purpose
+//
+// Copying a list costs time and memory, more the longer it is. Plenty of
+// languages copy behind your back, and a slow program ends up slow in lines
+// that look innocent. Rask never copies anything big unless you ask, and you
+// ask with `.clone()`, so every copy is there to see.
+//
+// You need one when you want a changed version of something and the original
+// too. A borrowed parameter can't be changed (step 18), so to build on it you
+// clone it into a `mut` name of your own and change that.
+
+func sorted_copy(numbers: Vec<i32>) -> Vec<i32> {
+    mut out = numbers.clone()
+    out.sort()
+    return out
+}
+
+// Strings are the exception that doesn't feel like one: they can't be
+// changed in place, so sharing one is safe and there's never a reason to
+// clone a string.
+//
+// Your turn: `with_extra(list, x)` gives a new list, `list` with `x` on the
+// end. The caller's list stays as it was.
+
+func with_extra(list: Vec<i32>, x: i32) -> Vec<i32> {
+    mut out = list.clone()
+    out.push(x)
+    return out
+}
+
+test "sorted copy" {
+    let numbers = Vec.from([3, 1, 2])
+    assert sorted_copy(numbers) == Vec.from([1, 2, 3])
+    assert numbers == Vec.from([3, 1, 2])
+}
+
+test "with extra" {
+    let list = Vec.from([1, 2])
+    assert with_extra(list, 3) == Vec.from([1, 2, 3])
+    assert with_extra(list, 9) == Vec.from([1, 2, 9])
+    assert list == Vec.from([1, 2])
+    assert with_extra(Vec.new(), 4) == Vec.from([4])
+}

@@ -17,6 +17,8 @@ research/
 # mdBook build artifacts
 docs/build/
 docs/book/book/
+# The tour's pages, made from its step files by docs/book/learn_pages.py
+docs/book/src/learn/[0-9]*.md
 
 # Compiled Rask binaries
 build/
