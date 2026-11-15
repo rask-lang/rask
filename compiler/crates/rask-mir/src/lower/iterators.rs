@@ -1290,7 +1290,7 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         elem: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
-        let result_vec = self.builder.alloc_temp(MirType::I64);
+        let result_vec = self.builder.alloc_temp(MirType::Container(crate::types::ContainerKind::Vec));
         // Without a checker type the element size isn't known until the
         // adapters have been lowered — `.map(|r| r.view.clone())` collects
         // whatever the closure returns. Note where the call lands and fill the
@@ -1329,7 +1329,7 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result_vec), MirType::I64))
+        Ok((MirOperand::Local(result_vec), MirType::Container(crate::types::ContainerKind::Vec)))
     }
 
     /// `.to_map()` — the collect loop, inserting each pair instead of pushing.
@@ -1348,7 +1348,7 @@ impl<'a> MirLowerer<'a> {
         key: Option<MirType>,
         value: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
-        let result_map = self.builder.alloc_temp(MirType::I64);
+        let result_map = self.builder.alloc_temp(MirType::Container(crate::types::ContainerKind::Map));
         let map_new_pos = self.builder.next_stmt_pos();
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_map),
@@ -1426,7 +1426,7 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result_map), MirType::I64))
+        Ok((MirOperand::Local(result_map), MirType::Container(crate::types::ContainerKind::Map)))
     }
 
     /// .fold(init, |acc, x| body) — fused loop with accumulator.
@@ -2022,7 +2022,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(other_vec)],
         }));
 
-        let result_vec = self.builder.alloc_temp(MirType::I64);
+        let result_vec = self.builder.alloc_temp(MirType::Container(crate::types::ContainerKind::Vec));
         // The pair's size isn't known until the self side's adapters (if any)
         // have been lowered — same reasoning as `lower_iter_collect`'s
         // deferred `Vec_new` size.
@@ -2116,7 +2116,7 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result_vec), MirType::I64))
+        Ok((MirOperand::Local(result_vec), MirType::Container(crate::types::ContainerKind::Vec)))
     }
 
     /// Packs two already-typed values into a tuple local at natural offsets —
