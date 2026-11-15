@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! tool.warnings/W2: a call whose `T or E` result nobody looks at.
+//! type.errors/ER50: a call whose `T or E` result nobody looks at.
 //!
 //! Run over the program once types are settled, since a statement's type can
 //! still be open when the statement is checked. A statement list whose last
@@ -8,8 +8,12 @@
 //! counts all of them, because neither has a value of its own. An `ensure`'s
 //! body is the exception: what its cleanup fails with is the ensure's to
 //! handle.
+//!
+//! The diagnostic offers `try` only when the function (or closure) around the
+//! statement could carry the error out, so each statement is walked with what
+//! its enclosing body returns.
 
-use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::visit::{visit_body, visit_expr, Visit};
@@ -17,49 +21,61 @@ use rask_types::Type;
 
 use crate::{TypeError, TypedProgram};
 
+/// Where a `try` in the current body would send an error.
+#[derive(Clone)]
+enum Exit {
+    /// The body's declared return type.
+    Return(Type),
+    /// A `test` block turns any propagated error into the test's failure
+    /// (std.testing/T20).
+    Test,
+    /// Nowhere: an `ensure` handler (ctrl.ensure/ER3), a body with no result.
+    Nowhere,
+}
+
 /// Every discarded `T or E` in `decls`.
 pub fn unused_results(decls: &[Decl], typed: &TypedProgram) -> Vec<TypeError> {
-    let mut walk = Walk { typed, found: Vec::new() };
+    let mut walk = Walk { typed, found: Vec::new(), exit: Exit::Nowhere };
     for decl in decls {
-        for body in bodies(decl) {
+        for (exit, body) in bodies(decl, typed) {
+            walk.exit = exit;
             walk.list(body, true);
             visit_body(body, &mut walk);
         }
         if let DeclKind::Const(c) = &decl.kind {
+            walk.exit = Exit::Nowhere;
             visit_expr(&c.init, &mut walk);
         }
     }
     walk.found
 }
 
-/// The statement lists a declaration runs: function, method and test bodies.
-/// A function that writes `@allow(unused_result)` has said its discards are
-/// meant, and is left out.
-fn bodies(decl: &Decl) -> Vec<&[Stmt]> {
-    let checked = |f: &&rask_ast::decl::FnDecl| !allows(&f.attrs);
+/// The statement lists a declaration runs (function, method and test bodies),
+/// each with where a `try` inside it would propagate to.
+fn bodies<'d>(decl: &'d Decl, typed: &TypedProgram) -> Vec<(Exit, &'d [Stmt])> {
+    let of = |f: &'d FnDecl| {
+        let exit = typed
+            .fn_sigs
+            .get(&f.id)
+            .map_or(Exit::Nowhere, |sig| Exit::Return(sig.ret.clone()));
+        (exit, f.body.as_slice())
+    };
     match &decl.kind {
-        DeclKind::Fn(f) => [f].into_iter().filter(checked).map(|f| f.body.as_slice()).collect(),
-        DeclKind::Struct(s) => s.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
-        DeclKind::Enum(e) => e.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
-        DeclKind::Impl(i) => i.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
-        DeclKind::Interface(t) => t.methods.iter().filter(checked).map(|m| m.body.as_slice()).collect(),
-        DeclKind::Test(t) if !allows(&t.attrs) => vec![&t.body],
-        DeclKind::Benchmark(b) if !allows(&b.attrs) => vec![&b.body],
+        DeclKind::Fn(f) => vec![of(f)],
+        DeclKind::Struct(s) => s.methods.iter().map(of).collect(),
+        DeclKind::Enum(e) => e.methods.iter().map(of).collect(),
+        DeclKind::Impl(i) => i.methods.iter().map(of).collect(),
+        DeclKind::Interface(t) => t.methods.iter().map(of).collect(),
+        DeclKind::Test(t) => vec![(Exit::Test, t.body.as_slice())],
+        DeclKind::Benchmark(b) => vec![(Exit::Nowhere, b.body.as_slice())],
         _ => Vec::new(),
     }
-}
-
-/// `@allow(unused_result)`.
-fn allows(attrs: &[rask_ast::attr::Attr]) -> bool {
-    attrs
-        .iter()
-        .filter_map(rask_ast::allow_names::allowed_name)
-        .any(|name| name == "unused_result")
 }
 
 struct Walk<'t> {
     typed: &'t TypedProgram,
     found: Vec<TypeError>,
+    exit: Exit,
 }
 
 impl Walk<'_> {
@@ -101,24 +117,86 @@ impl Walk<'_> {
     }
 
     fn call(&mut self, expr: &Expr) {
-        if !matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
-            return;
-        }
+        let shown = match &expr.kind {
+            ExprKind::Call { func, .. } => match &func.kind {
+                ExprKind::Ident(name) => format!("{name}(…)"),
+                ExprKind::Field { object, field, .. } => match &object.kind {
+                    ExprKind::Ident(base) => format!("{base}.{field}(…)"),
+                    _ => format!("….{field}(…)"),
+                },
+                _ => "<call>".to_string(),
+            },
+            ExprKind::MethodCall { object, method, .. } => match &object.kind {
+                ExprKind::Ident(base) => format!("{base}.{method}(…)"),
+                _ => format!("….{method}(…)"),
+            },
+            _ => return,
+        };
         let Some(result @ Type::Result { err, .. }) = self.typed.node_types.get(&expr.id) else { return };
         if matches!(**err, Type::None | Type::Never) {
             return;
         }
+        let can_try = self.can_propagate(&self.typed.types.resolve_type_names(err));
         self.found.push(TypeError::UnusedResult {
             ty: self.typed.types.resolve_type_names(result).to_string(),
+            call: shown,
+            can_try,
             span: expr.span,
         });
+    }
+
+    /// Can `try` pass an error of type `err` out of the current body? The
+    /// answers the checker gives a `try` written there: the error is the
+    /// return's error, a member of its union (ER31), boxed into `any I`
+    /// (ER32), or wrapped in the one variant of its error enum made for it
+    /// (ER31a).
+    fn can_propagate(&self, err: &Type) -> bool {
+        let types = &self.typed.types;
+        let target = match &self.exit {
+            Exit::Test => return true,
+            Exit::Nowhere => return false,
+            Exit::Return(ret) => match types.resolve_type_names(ret) {
+                Type::Result { err: target, .. } => *target,
+                _ => return false,
+            },
+        };
+        if matches!(target, Type::None | Type::Never | Type::Var(_)) {
+            return false;
+        }
+        let members = |t: &Type| match t {
+            Type::Union(ms) => ms.clone(),
+            other => vec![other.clone()],
+        };
+        let wanted = members(&target);
+        if members(err).iter().all(|m| wanted.contains(m)) {
+            return true;
+        }
+        if let Type::InterfaceObject { interface_name, decl } = &target {
+            return crate::interfaces::implements_interface_object(types, err, interface_name, *decl);
+        }
+        types.error_wrap_variants(err, &target).len() == 1
     }
 }
 
 impl<'a> Visit<'a> for Walk<'_> {
     fn expr(&mut self, expr: &'a Expr) -> bool {
-        if let ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } = &expr.kind {
-            self.list(stmts, false);
+        match &expr.kind {
+            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } => self.list(stmts, false),
+            // A closure is its own body: its `try` leaves the closure, so
+            // what it returns decides whether `try` is on offer inside it.
+            ExprKind::Closure { body, .. } => {
+                let outer = std::mem::replace(
+                    &mut self.exit,
+                    match self.typed.node_types.get(&expr.id) {
+                        Some(Type::Fn { ret, .. }) => Exit::Return((**ret).clone()),
+                        _ => Exit::Nowhere,
+                    },
+                );
+                visit_expr(body, self);
+                self.exit = outer;
+                return false;
+            }
+            _ => {}
         }
         true
     }
@@ -133,11 +211,17 @@ impl<'a> Visit<'a> for Walk<'_> {
             | StmtKind::Comptime(body) => self.list(body, true),
             // An `ensure`'s failure is the ensure's own business: its `else`
             // takes it, and without one it's dropped by design (ensure's
-            // error rule), so its body's call isn't a discard.
-            StmtKind::Ensure { else_handler, .. } => {
+            // error rule), so its body's call isn't a discard. Nothing can
+            // propagate out of the handler, since cleanup runs at scope exit.
+            StmtKind::Ensure { body, else_handler } => {
+                visit_body(body, self);
                 if let Some((_, handler)) = else_handler {
+                    let outer = std::mem::replace(&mut self.exit, Exit::Nowhere);
                     self.list(handler, true);
+                    visit_body(handler, self);
+                    self.exit = outer;
                 }
+                return false;
             }
             _ => {}
         }

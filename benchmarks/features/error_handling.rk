@@ -30,7 +30,7 @@ func sum_divs(n: i64) -> i64 or DivError {
 benchmark "result propagation 10k" {
     mut i = 0
     while i < 100 {
-        sum_divs(100)
+        sum_divs(100)!
         i = i + 1
     }
 }

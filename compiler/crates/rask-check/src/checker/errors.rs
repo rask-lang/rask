@@ -1133,10 +1133,14 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// tool.warnings/W2: a call's `T or E` result is thrown away (warning).
+    /// type.errors/ER50: a call's `T or E` result is thrown away.
     #[error("unused result of type `{ty}`")]
     UnusedResult {
         ty: String,
+        /// The call as the fix will write it: `save(…)`, `….write_text(…)`.
+        call: String,
+        /// The enclosing function can pass this error on, so `try` is offered.
+        can_try: bool,
         span: Span,
     },
 

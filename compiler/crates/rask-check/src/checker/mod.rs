@@ -1717,6 +1717,7 @@ pub fn typecheck_with_stdlib_lenient(
         .collect();
     let (mut typed, mut errors) = checker.check_lenient_with_stdlib(&bodies, decls);
     errors.extend(crate::unused_results::unused_results(decls, &typed));
+    errors.extend(crate::unused_results::unused_results(&bodies, &typed));
     typed.attach_derived(decls);
     (typed, errors)
 }

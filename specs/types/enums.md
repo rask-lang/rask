@@ -257,7 +257,7 @@ match file_result {
 
 ```rask
 match file_result {
-    Opened(file) | Recovered(file) => file.close(),
+    Opened(file) | Recovered(file) => file.close()!,
     Failed(e) => log(e)
 }
 ```
@@ -577,7 +577,7 @@ extend Connection {
                 if attempt? as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
-                sock.send(heartbeat())
+                sock.send(heartbeat())!
                 Connected(sock)
             },
             Failed(e) => Failed(e)

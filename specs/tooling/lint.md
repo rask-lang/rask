@@ -200,7 +200,7 @@ checks now.
 
 ### Patterns & Guidance
 
-**Lint vs warnings:** Lint rules (`naming/is`, `idiom/force-unwrap-production`) enforce conventions. Compiler warnings (`unused_result`, `unreachable_code`) flag likely bugs. Both use `@allow` for suppression but different ID namespaces.
+**Lint vs warnings:** Lint rules (`naming/is`, `idiom/force-unwrap-production`) enforce conventions. Compiler warnings (`unused_variable`, `unreachable_code`) flag likely bugs. Both use `@allow` for suppression but different ID namespaces.
 
 **CI usage:**
 ```

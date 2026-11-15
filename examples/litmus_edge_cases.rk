@@ -440,7 +440,7 @@ import http.Response
 test "fs write and read round-trip" {
     let path = "/tmp/rask_test_litmus.txt"
     let content = "hello from rask\nsecond line\n"
-    fs.write_text(path, content)
+    fs.write_text(path, content)!
     let read_back = fs.read_text(path) is string as data else {
         assert false, "failed to read back"
         return
@@ -450,7 +450,7 @@ test "fs write and read round-trip" {
 
 test "fs read_lines returns correct line count" {
     let path = "/tmp/rask_test_litmus2.txt"
-    fs.write_text(path, "line1\nline2\nline3\n")
+    fs.write_text(path, "line1\nline2\nline3\n")!
     let lines = fs.read_lines(path) catch _ => {
         assert false, "failed to read lines"
         return

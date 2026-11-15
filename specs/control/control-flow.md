@@ -88,7 +88,7 @@ if error {
 ```rask
 // Pattern match with explicit binding
 if state is Connected(sock) {
-    sock.send(data)
+    sock.send(data)!
 }
 
 // A bare variant only tests
@@ -113,7 +113,7 @@ while reader.next()? as line {
 
 // Combined with boolean
 if state is Connected(sock) && sock.is_ready() {
-    sock.send(data)
+    sock.send(data)!
 }
 ```
 
@@ -389,9 +389,9 @@ FIX: Consume in both branches or use ensure:
 
   // Option 1: consume in both
   if cond {
-      file.close()
+      file.close()!
   } else {
-      file.close()
+      file.close()!
   }
 
   // Option 2: use ensure
@@ -496,12 +496,12 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 ```rask
 // Check one variant - use if is
 if state is Connected(sock) {
-    sock.send(data)
+    sock.send(data)!
 }
 
 // Handle all variants - use match
 match state {
-    Connected(sock) => sock.send(data),
+    Connected(sock) => sock.send(data)!,
     Disconnected => reconnect(),
     Error(e) => log(e),
 }
@@ -541,15 +541,15 @@ Linear resources (files, connections, etc.) must be consumed on all paths. Use `
 ```rask
 // Valid: linear consumed in both branches
 if cond {
-    file.close()
+    file.close()!
 } else {
-    file.close()
+    file.close()!
 }
 
 // Better: use ensure
 ensure file.close()
 if cond {
-    process(file)
+    process(file)!
 }
 ```
 
@@ -661,7 +661,7 @@ func run_server(server: Server) {
 ```rask
 // Single-variant check with binding
 if state is Connected(sock) {
-    sock.send(data)
+    sock.send(data)!
 }
 
 // Loop while optional has a value
@@ -678,7 +678,7 @@ if result? as value {
 
 // Combined with boolean
 if state is Connected(sock) && sock.is_ready() {
-    sock.send(data)
+    sock.send(data)!
 }
 ```
 
