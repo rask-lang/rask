@@ -41,7 +41,7 @@ func channel_sum(n: i32) -> i32 or Error {
             for i in 1..(n + 1) {
                 tx.send(i)!
             }
-            tx.close()
+            tx.close()!
         }
         ensure producer.detach()
 

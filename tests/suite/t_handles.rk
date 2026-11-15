@@ -181,7 +181,7 @@ test "cancelling a task that already finished keeps its value" {
     using Multitasking(workers: 2) {
         let h = spawn { return 42 }
         ensure h.detach()
-        time.sleep(Duration.millis(20))
+        time.sleep(Duration.millis(20))!
         match h.cancel() {
             i64 as v => { assert v == 42 },
             _ => { assert false },

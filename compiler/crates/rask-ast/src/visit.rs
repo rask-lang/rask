@@ -62,6 +62,18 @@ pub trait Visit<'a> {
     fn stmt(&mut self, _stmt: &'a Stmt) -> bool {
         true
     }
+    /// A statement list nested in an expression or statement: a block, a loop
+    /// body, a `using`/`with` body, an `ensure`. Called before its statements
+    /// are visited. `last_is_value` says whether the final statement is what
+    /// the list evaluates to (a block, `using`, `with`, `unsafe`, `comptime`
+    /// block, an `ensure`'s cleanup) or the list runs for effect and every
+    /// statement's value is dropped (a loop body, an `ensure`'s `else`).
+    ///
+    /// Every place the walk enters a statement list says which, so a new
+    /// block form has to pick one here rather than being skipped by a visitor
+    /// that only knows the old forms. A function's own body is not announced:
+    /// the caller handed it over.
+    fn list(&mut self, _stmts: &'a [Stmt], _last_is_value: bool) {}
 }
 
 struct ExprsOnly<F>(F);
@@ -78,6 +90,12 @@ pub fn visit_body<'a>(body: &'a [Stmt], v: &mut impl Visit<'a>) {
     for stmt in body {
         visit_stmt(stmt, v);
     }
+}
+
+/// A nested statement list: announced to the visitor, then walked.
+fn visit_list<'a>(body: &'a [Stmt], last_is_value: bool, v: &mut impl Visit<'a>) {
+    v.list(body, last_is_value);
+    visit_body(body, v);
 }
 
 /// Every expression and statement in a declaration's bodies, as `walk_decl`.
@@ -173,10 +191,10 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
             visit_expr(index, v);
         }
 
-        ExprKind::Block(body)
-        | ExprKind::Unsafe { body }
-        | ExprKind::Comptime { body }
-        | ExprKind::Loop { body, .. } => visit_body(body, v),
+        ExprKind::Block(body) | ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
+            visit_list(body, true, v)
+        }
+        ExprKind::Loop { body, .. } => visit_list(body, false, v),
 
         ExprKind::If { cond, then_branch, else_branch, .. } => {
             visit_expr(cond, v);
@@ -256,13 +274,13 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
             for a in args {
                 visit_expr(&a.expr, v);
             }
-            visit_body(body, v);
+            visit_list(body, true, v);
         }
         ExprKind::WithAs { bindings, body } => {
             for b in bindings {
                 visit_expr(&b.source, v);
             }
-            visit_body(body, v);
+            visit_list(body, true, v);
         }
 
         ExprKind::Closure { body, .. } => visit_expr(body, v),
@@ -338,21 +356,21 @@ pub fn visit_stmt<'a>(stmt: &'a Stmt, v: &mut impl Visit<'a>) {
 
         StmtKind::While { cond, body, .. } => {
             visit_expr(cond, v);
-            visit_body(body, v);
+            visit_list(body, false, v);
         }
         StmtKind::WhileLet { expr, body, .. } => {
             visit_expr(expr, v);
-            visit_body(body, v);
+            visit_list(body, false, v);
         }
-        StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => visit_body(body, v),
+        StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => visit_list(body, false, v),
         StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
             visit_expr(iter, v);
-            visit_body(body, v);
+            visit_list(body, false, v);
         }
         StmtKind::Ensure { body, else_handler } => {
-            visit_body(body, v);
+            visit_list(body, true, v);
             if let Some((_, handler)) = else_handler {
-                visit_body(handler, v);
+                visit_list(handler, false, v);
             }
         }
     }

@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! type.errors/ER50: a call whose `T or E` result nobody looks at.
+//! type.errors/ER50: an expression statement whose value is a `T or E`.
 //!
 //! Run over the program once types are settled, since a statement's type can
-//! still be open when the statement is checked. A statement list whose last
-//! statement is its value (a block used as an expression: an `if` arm, a
-//! closure body) doesn't count that statement; a function's or a loop's body
-//! counts all of them, because neither has a value of its own. An `ensure`'s
-//! body is the exception: what its cleanup fails with is the ensure's to
-//! handle.
+//! still be open when the statement is checked. The rule is about the
+//! statement's type, not the shape of the expression: `save()`,
+//! `thread.join()!` (which strips the join error and leaves the closure's own
+//! result) and `x catch _ => save()` all end in a result nobody looks at.
+//!
+//! Which statements are discarded comes from the shared walk in
+//! `rask_ast::visit`, which announces every statement list it enters and says
+//! whether the last statement is the list's value. A list whose last statement
+//! is its value (a block used as an expression, a `using` or `with` body, a
+//! closure body) doesn't count that statement; a function's, a loop's or an
+//! `ensure`'s `else` body counts all of them, because none has a value of its
+//! own. An `ensure` body's last statement is the cleanup: what it fails with is
+//! the ensure's to handle.
 //!
 //! The diagnostic offers `try` only when the function (or closure) around the
 //! statement could carry the error out, so each statement is walked with what
@@ -39,7 +46,7 @@ pub fn unused_results(decls: &[Decl], typed: &TypedProgram) -> Vec<TypeError> {
     for decl in decls {
         for (exit, body) in bodies(decl, typed) {
             walk.exit = exit;
-            walk.list(body, true);
+            walk.count_list(body, false);
             visit_body(body, &mut walk);
         }
         if let DeclKind::Const(c) = &decl.kind {
@@ -80,8 +87,8 @@ struct Walk<'t> {
 
 impl Walk<'_> {
     /// The statements of one list; the last only when the list has no value.
-    fn list(&mut self, stmts: &[Stmt], last_too: bool) {
-        let n = if last_too { stmts.len() } else { stmts.len().saturating_sub(1) };
+    fn count_list(&mut self, stmts: &[Stmt], last_is_value: bool) {
+        let n = if last_is_value { stmts.len().saturating_sub(1) } else { stmts.len() };
         for stmt in &stmts[..n] {
             if let StmtKind::Expr(expr) = &stmt.kind {
                 self.discarded(expr);
@@ -89,10 +96,13 @@ impl Walk<'_> {
         }
     }
 
-    /// An expression whose value goes nowhere. An `if`, `match` or block
-    /// written as a statement throws away what its branches end with, so
-    /// that's a discard too: `if verbose { save() }` drops `save`'s error.
-    /// The other statements of a block are the block's own list's.
+    /// An expression whose value goes nowhere. An `if`, `match`, block or
+    /// `select` written as a statement throws away what its branches end with,
+    /// and a `catch` handler's value goes nowhere too (the handler stands in
+    /// for the `catch`'s own success value). So those are discards of their
+    /// tails: `if verbose { save() }` drops `save`'s error. The other
+    /// statements of a block are the block's own list's. Anything else is
+    /// judged by its own type.
     fn discarded(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::If { then_branch, else_branch, .. }
@@ -107,31 +117,27 @@ impl Walk<'_> {
                     self.discarded(&arm.body);
                 }
             }
-            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } => {
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    self.discarded(&arm.body);
+                }
+            }
+            ExprKind::Catch { clause, .. } => self.discarded(&clause.body),
+            ExprKind::Block(stmts)
+            | ExprKind::Unsafe { body: stmts, .. }
+            | ExprKind::Comptime { body: stmts }
+            | ExprKind::UsingBlock { body: stmts, .. }
+            | ExprKind::WithAs { body: stmts, .. } => {
                 if let Some(Stmt { kind: StmtKind::Expr(last), .. }) = stmts.last() {
                     self.discarded(last);
                 }
             }
-            _ => self.call(expr),
+            _ => self.by_type(expr),
         }
     }
 
-    fn call(&mut self, expr: &Expr) {
-        let shown = match &expr.kind {
-            ExprKind::Call { func, .. } => match &func.kind {
-                ExprKind::Ident(name) => format!("{name}(…)"),
-                ExprKind::Field { object, field, .. } => match &object.kind {
-                    ExprKind::Ident(base) => format!("{base}.{field}(…)"),
-                    _ => format!("….{field}(…)"),
-                },
-                _ => "<call>".to_string(),
-            },
-            ExprKind::MethodCall { object, method, .. } => match &object.kind {
-                ExprKind::Ident(base) => format!("{base}.{method}(…)"),
-                _ => format!("….{method}(…)"),
-            },
-            _ => return,
-        };
+    /// Report `expr` when its value is a `T or E`.
+    fn by_type(&mut self, expr: &Expr) {
         let Some(result @ Type::Result { err, .. }) = self.typed.node_types.get(&expr.id) else { return };
         if matches!(**err, Type::None | Type::Never) {
             return;
@@ -139,7 +145,7 @@ impl Walk<'_> {
         let can_try = self.can_propagate(&self.typed.types.resolve_type_names(err));
         self.found.push(TypeError::UnusedResult {
             ty: self.typed.types.resolve_type_names(result).to_string(),
-            call: shown,
+            call: describe(expr),
             can_try,
             span: expr.span,
         });
@@ -178,52 +184,66 @@ impl Walk<'_> {
     }
 }
 
+/// The expression as a fix will write it: the callee with its arguments
+/// elided (`save(…)`, `….write_text(…)`), a `!` on top of that, or `(…)` for
+/// anything else, which stands for the whole expression.
+fn describe(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Call { func, .. } => match &func.kind {
+            ExprKind::Ident(name) => format!("{name}(…)"),
+            ExprKind::Field { object, field, .. } => match &object.kind {
+                ExprKind::Ident(base) => format!("{base}.{field}(…)"),
+                _ => format!("….{field}(…)"),
+            },
+            _ => "(…)".to_string(),
+        },
+        ExprKind::MethodCall { object, method, .. } => match &object.kind {
+            ExprKind::Ident(base) => format!("{base}.{method}(…)"),
+            _ => format!("….{method}(…)"),
+        },
+        ExprKind::Unwrap { expr: inner, .. } => format!("{}!", describe(inner)),
+        _ => "(…)".to_string(),
+    }
+}
+
 impl<'a> Visit<'a> for Walk<'_> {
+    fn list(&mut self, stmts: &'a [Stmt], last_is_value: bool) {
+        self.count_list(stmts, last_is_value);
+    }
+
     fn expr(&mut self, expr: &'a Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts, .. } => self.list(stmts, false),
-            // A closure is its own body: its `try` leaves the closure, so
-            // what it returns decides whether `try` is on offer inside it.
-            ExprKind::Closure { body, .. } => {
-                let outer = std::mem::replace(
-                    &mut self.exit,
-                    match self.typed.node_types.get(&expr.id) {
-                        Some(Type::Fn { ret, .. }) => Exit::Return((**ret).clone()),
-                        _ => Exit::Nowhere,
-                    },
-                );
-                visit_expr(body, self);
-                self.exit = outer;
-                return false;
-            }
-            _ => {}
+        // A closure is its own body: its `try` leaves the closure, so what it
+        // returns decides whether `try` is on offer inside it.
+        if let ExprKind::Closure { body, .. } = &expr.kind {
+            let outer = std::mem::replace(
+                &mut self.exit,
+                match self.typed.node_types.get(&expr.id) {
+                    Some(Type::Fn { ret, .. }) => Exit::Return((**ret).clone()),
+                    _ => Exit::Nowhere,
+                },
+            );
+            visit_expr(body, self);
+            self.exit = outer;
+            return false;
         }
         true
     }
 
     fn stmt(&mut self, stmt: &'a Stmt) -> bool {
-        match &stmt.kind {
-            StmtKind::While { body, .. }
-            | StmtKind::WhileLet { body, .. }
-            | StmtKind::Loop { body, .. }
-            | StmtKind::For { body, .. }
-            | StmtKind::ComptimeFor { body, .. }
-            | StmtKind::Comptime(body) => self.list(body, true),
-            // An `ensure`'s failure is the ensure's own business: its `else`
-            // takes it, and without one it's dropped by design (ensure's
-            // error rule), so its body's call isn't a discard. Nothing can
-            // propagate out of the handler, since cleanup runs at scope exit.
-            StmtKind::Ensure { body, else_handler } => {
-                visit_body(body, self);
-                if let Some((_, handler)) = else_handler {
-                    let outer = std::mem::replace(&mut self.exit, Exit::Nowhere);
-                    self.list(handler, true);
-                    visit_body(handler, self);
-                    self.exit = outer;
-                }
-                return false;
+        // An `ensure`'s cleanup is its last statement, whose failure is the
+        // ensure's own business: its `else` takes it, and without one it's
+        // dropped by design (ensure's error rule). Nothing can propagate out
+        // of the body or the handler, since cleanup runs at scope exit.
+        if let StmtKind::Ensure { body, else_handler } = &stmt.kind {
+            let outer = std::mem::replace(&mut self.exit, Exit::Nowhere);
+            self.count_list(body, true);
+            visit_body(body, self);
+            if let Some((_, handler)) = else_handler {
+                self.count_list(handler, false);
+                visit_body(handler, self);
             }
-            _ => {}
+            self.exit = outer;
+            return false;
         }
         true
     }

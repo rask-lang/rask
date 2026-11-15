@@ -101,6 +101,6 @@ func reports_its_own() {
             seen += 1
             println("task saw {seen}")
         }
-        h.join()
+        h.join()!
     }
 }

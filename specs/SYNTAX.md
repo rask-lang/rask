@@ -636,7 +636,7 @@ func sort(items: Vec<T>) {
 // It never appears on a signature.
 using Multitasking {
     let t = spawn { return work() }
-    t.join()!
+    let answer = t.join()!
 }
 ```
 

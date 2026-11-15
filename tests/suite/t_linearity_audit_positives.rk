@@ -238,8 +238,8 @@ extend Pass {
 test "conc.async/CH1 — a channel carrying a resource" {
     using Multitasking {
         mut (tx, rx) = Channel<Pass>.buffered(2)
-        tx.send(Pass(seat: 4))
-        tx.send(Pass(seat: 9))
+        tx.send(Pass(seat: 4))!
+        tx.send(Pass(seat: 9))!
         let first = rx.receive() catch e => {
             assert false
             return
@@ -258,7 +258,7 @@ test "conc.async/CH1 — a channel carrying a resource" {
 test "conc.async/CH1 — and one carrying something ordinary" {
     using Multitasking {
         mut (tx, rx) = Channel<Ticket>.buffered(1)
-        tx.send(Ticket(seat: 7))
+        tx.send(Ticket(seat: 7))!
         let t = rx.receive() catch e => {
             assert false
             return

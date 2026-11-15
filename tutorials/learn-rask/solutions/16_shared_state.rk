@@ -97,7 +97,7 @@ func shared_config_update() -> i32 {
         // `write()` is for reaching into something with methods or fields.
         let atc = spawn {
             config.set(37000)
-            tx.send(true)
+            tx.send(true)!
         }
         ensure atc.detach()
 
