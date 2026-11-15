@@ -2,9 +2,20 @@
 //
 // 12. Enums and match
 //
-// An enum is a type whose value is one of a fixed list. `match` picks the arm
-// for the value it has, and it must cover every one: leave a case out and the
-// program doesn't compile. Like `if`, `match` gives a value.
+// An enum is a type whose value is one choice from a fixed list, like the
+// options in a drop-down menu. A direction is North, East, South or West and
+// nothing else.
+//
+// You could use a string for that, "north", but then "nrth" is a direction
+// too, and nothing tells you which strings are allowed. With an enum the list
+// is written down once, the compiler rejects anything not on it, and a reader
+// sees every possibility in one place.
+//
+// `match` is how you act on an enum, and you'll see it everywhere in Rask. It
+// picks the arm for the value it has and must cover every case: leave one out
+// and the program doesn't compile. So when you add a fifth case to an enum,
+// the compiler shows you every `match` that has to handle it. Like `if`,
+// `match` gives a value.
 
 enum Direction {
     North

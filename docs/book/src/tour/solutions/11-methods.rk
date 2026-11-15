@@ -2,9 +2,10 @@
 //
 // 11. Methods
 //
-// Functions that belong to a type go in an `extend` block. One that takes
-// `self` is called on a value, `p.flipped()`. One without `self` is called on
-// the type, `Point.origin()`.
+// A function that belongs to a type is called a method, and methods go in an
+// `extend` block for that type. A method that takes `self` is called on a
+// value, `p.flipped()`, and `self` is that value. One without `self` is called
+// on the type itself, `Point.origin()`, and is usually a way to build one.
 
 struct Point {
     x: i32

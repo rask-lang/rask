@@ -16,6 +16,10 @@ func countdown(from: i32) -> Vec<i32> {
     return list
 }
 
+// A Vec can't go straight into a string, because there's no one right way to
+// show a list to a user. `"{list:debug}"` shows it the way a programmer wants
+// to see it, `[3, 2, 1]`.
+//
 // Your turn: `evens(10)` is the even numbers below 10: [0, 2, 4, 6, 8].
 
 func evens(below: i32) -> Vec<i32> {
