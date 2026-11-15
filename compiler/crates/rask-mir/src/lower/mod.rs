@@ -6494,37 +6494,13 @@ fn is_type_constructor_name(name: &str) -> bool {
 /// the MIR lowerer uses this to track which type a local holds, so later
 /// method calls get correctly qualified (e.g. `rng.range()` → `Rng_range`).
 ///
-/// Derived from stdlib stub files. SIMD scalar returns are handled as a
-/// fallback since stubs don't distinguish vector vs scalar return methods.
+/// Derived from stdlib stub files.
 fn func_return_type_prefix(func_name: &str) -> Option<&str> {
-    // SIMD: non-scalar-returning methods keep their type prefix
-    if is_simd_prefix(func_name) && !is_scalar_return(func_name) {
-        return func_name.split('_').next();
-    }
-
-    // Look up from stub-derived metadata
     if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
         return meta.ret_type_prefix.as_deref();
     }
 
     None
-}
-
-fn is_simd_prefix(name: &str) -> bool {
-    name.starts_with("f32x4_") || name.starts_with("f32x8_")
-        || name.starts_with("f64x2_") || name.starts_with("f64x4_")
-        || name.starts_with("i32x4_") || name.starts_with("i32x8_")
-}
-
-/// SIMD methods that return a scalar, not a vector.
-fn is_scalar_return(func_name: &str) -> bool {
-    func_name.ends_with("_sum")
-        || func_name.ends_with("_product")
-        || func_name.ends_with("_min")
-        || func_name.ends_with("_max")
-        || func_name.ends_with("_get")
-        || func_name.ends_with("_store")
-        || func_name.ends_with("_set")
 }
 
 /// The type parameter this type still names, if any.
@@ -6613,13 +6589,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
         // (#1025).
         let Some(ctx) = ctx else { return None };
         return Some(ctx.resolve_type_expr(&meta.ret_ty));
-    }
-
-    // SIMD float reductions return F64
-    if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
-        if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
-            return Some(MirType::F64);
-        }
     }
 
     // No suffix guessing. There used to be a block here that answered from the

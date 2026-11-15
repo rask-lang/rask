@@ -31,7 +31,7 @@ struct Ratchet {
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "name sniffs in the back half",
-        today: 29,
+        today: 17,
         target: 0,
         why: "MIR or codegen asked a callee's or type's spelling what it is. The \
               checker resolved that call; carry its identity on the call \
@@ -40,7 +40,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 21,
+        today: 7,
         target: 0,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
@@ -66,7 +66,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 228,
+        today: 212,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",
@@ -171,7 +171,6 @@ fn checker_method_arms(crates: &Path) -> Vec<String> {
     const NOT_METHOD_TABLES: &[(&str, &str)] = &[
         ("removed_string_method", "names methods `string` doesn't have, to say why"),
         ("closest_type_name", "other languages' type names, to suggest Rask's"),
-        ("simd_elem_type", "SIMD type names, not methods"),
         ("check_call", "builtin free functions (`panic`, `todo`), not methods"),
     ];
     let mut out = Vec::new();
