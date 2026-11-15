@@ -357,6 +357,11 @@ A field pattern either tests a value or binds one. `x: 0` tests; `y` binds, and
 the same shorthand as construction applies — `y` means `y: y`. Arms are tried in
 order, so the general one goes last.
 
+After the colon goes a pattern, never a type: `Point(x: i32, y)` would bind
+`x`'s value to a variable named `i32`, so a name there that is a type (a
+primitive, or one in scope) is E0423. The matched value already has its type;
+write `Point(x, y)`.
+
 The braces make this a `match`-only form: in `if point is Point { … }` the `{`
 opens the branch, so an `is` test names the type and nothing else.
 

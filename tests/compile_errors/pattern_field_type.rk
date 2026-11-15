@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type where a field's pattern goes (E0423).
+//
+// `field: name` renames the field, so `amount: i32` reads as "bind `amount` to
+// a variable called `i32`". The learner meant a type annotation, which a
+// pattern has no place for. The arm body still sees `amount`: the error is the
+// only one reported.
+
+struct Money {
+    cents: i64
+}
+
+enum Payment {
+    Cash(amount: i32)
+    Card(total: Money, last4: i32)
+}
+
+func describe(p: Payment) -> i32 {
+    match p {
+        Payment.Cash(amount: i32) => return amount     // ERROR: E0423 a primitive after the colon
+        Payment.Card(total: Money, last4) => return last4  // ERROR: E0423 a type in scope
+    }
+}
+
+func main() {
+    println("{describe(Payment.Cash(amount: 5))}")
+}

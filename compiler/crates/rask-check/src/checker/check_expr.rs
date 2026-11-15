@@ -20,7 +20,7 @@ use rask_ast::ty::ParamMode;
 
 /// A `_` standing in for a whole column of a tuple's coverage rows. Only ever
 /// compared, never stored or looked up, so it needs no id of its own.
-static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard };
+static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard, span: Span::new(0, 0) };
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.

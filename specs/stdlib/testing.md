@@ -39,7 +39,7 @@ func config_defaults_are_valid() -> bool {
 | **A1: assert** | `assert expr` — test stops immediately on failure |
 | **A2: check** | `check expr` — test continues, marked failed |
 | **A3: Messages** | Both accept optional message: `assert expr, "message"` |
-| **A5: Operands in the message** | A failed comparison names both sides — `assertion failed: 2 == 3 (left: 2, right: 3)` — for anything with a one-line rendering. A struct or an optional has none (`std.fmt/D3`: types opt into `Displayable`), so the message stands alone rather than printing an address |
+| **A5: Operands in the message** | A failed comparison names both sides — `assertion failed: 2 == 3 (left: 2, right: 3)`. Scalars print as `println` shows them, strings quoted. Everything else (a Vec, a struct, an optional, a tuple) prints in `{:debug}` form, which every type has (`std.fmt/G2`): `assertion failed: [1, 2] == [1, 3] (left: [1, 2], right: [1, 3])`. Both backends print the same text |
 
 There is no `assert_eq`. A comparison is `==`, and `assert` reports the operands
 itself:

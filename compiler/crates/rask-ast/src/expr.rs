@@ -608,11 +608,15 @@ pub struct MatchArm {
 pub struct Pattern {
     pub id: NodeId,
     pub kind: PatternKind,
+    /// The source the pattern was written in. A pattern a pass builds has
+    /// the span of what it stands in for, or `Span::new(0, 0)` when nothing
+    /// was written.
+    pub span: Span,
 }
 
 impl Pattern {
-    pub fn new(id: NodeId, kind: PatternKind) -> Self {
-        Self { id, kind }
+    pub fn new(id: NodeId, kind: PatternKind, span: Span) -> Self {
+        Self { id, kind, span }
     }
 }
 

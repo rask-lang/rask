@@ -1111,7 +1111,7 @@ impl TypeChecker {
     }
 
     fn pat(&mut self, kind: PatternKind) -> Pattern {
-        Pattern::new(self.derived_id(), kind)
+        Pattern::new(self.derived_id(), kind, Span::new(0, 0))
     }
 
     /// `E.V` or `E.V(prefix0, prefix1, …)`, with what each part means filed

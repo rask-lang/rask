@@ -458,6 +458,35 @@ void rask_check_fail_cmp_str(const RaskStr *left, const RaskStr *right,
     rask_check_fail(buf);
 }
 
+// A comparison of values that aren't scalars: a Vec, a struct, an optional.
+// Lowering renders each side in `{:debug}` form and hands over the two strings,
+// so there is nothing type-specific to do here. Same line as the scalar kinds,
+// `(left:, right:)` tail included, which is also what the interpreter prints.
+static void fmt_cmp_debug(char *buf, size_t n, const char *what,
+                          const RaskStr *left, const RaskStr *right, const char *op) {
+    int ll = (int)rask_string_len(left), rl = (int)rask_string_len(right);
+    const char *lp = rask_string_ptr(left), *rp = rask_string_ptr(right);
+    snprintf(buf, n, "%s: %.*s %s %.*s (left: %.*s, right: %.*s)",
+             what, ll, lp, op ? op : "?", rl, rp, ll, lp, rl, rp);
+}
+
+void rask_assert_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                                const char *op, const char *file,
+                                int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_debug(buf, sizeof(buf), "assertion failed", left, right, op);
+    rask_panic_at(file, line, col, buf);
+}
+
+void rask_check_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col) {
+    char buf[RASK_PANIC_MSG_MAX];
+    fmt_cmp_debug(buf, sizeof(buf), "check failed", left, right, op);
+    (void)file; (void)line; (void)col;
+    rask_check_fail(buf);
+}
+
 // `%g` here rounded both operands to 6 significant digits, so two floats that
 // differ past the 6th printed as the same number — "assertion failed: 1 == 1"
 // for 1.000000001 vs 1.000000002, which reads like the assert machinery is
