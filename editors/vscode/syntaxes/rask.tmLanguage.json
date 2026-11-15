@@ -36,21 +36,48 @@
       ]
     },
     "strings": {
+      "comment": "Every string can interpolate: a lone { opens a hole holding an expression, up to the matching }. {{ and }} are literal braces.",
       "patterns": [
         {
           "name": "string.quoted.triple.rk",
+          "comment": "Raw text: no backslash escapes, but holes still work",
           "begin": "\"\"\"",
           "end": "\"\"\"",
           "patterns": [
-            { "include": "#string-escapes" }
+            { "include": "#string-brace-escapes" },
+            { "include": "#interpolation-multiline" }
           ]
+        },
+        {
+          "name": "string.quoted.raw.hash.rk",
+          "begin": "(?<![A-Za-z0-9_])r(#+)\"",
+          "end": "\"\\1",
+          "patterns": [
+            { "include": "#string-brace-escapes" },
+            { "include": "#interpolation-multiline" }
+          ]
+        },
+        {
+          "name": "string.quoted.raw.rk",
+          "begin": "(?<![A-Za-z0-9_])r\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#string-brace-escapes" },
+            { "include": "#interpolation-raw" }
+          ]
+        },
+        {
+          "name": "string.quoted.bytes.rk",
+          "match": "(?<![A-Za-z0-9_])x\"[^\"]*\""
         },
         {
           "name": "string.quoted.double.rk",
           "begin": "\"",
           "end": "\"",
           "patterns": [
-            { "include": "#string-escapes" }
+            { "include": "#string-escapes" },
+            { "include": "#string-brace-escapes" },
+            { "include": "#interpolation" }
           ]
         },
         {
@@ -69,6 +96,107 @@
           "name": "constant.character.escape.rk",
           "match": "\\\\(n|r|t|\\\\|0|'|\"|\\{|u\\{[0-9a-fA-F]{1,6}\\})"
         }
+      ]
+    },
+    "string-brace-escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.brace.rk",
+          "match": "\\{\\{|\\}\\}"
+        }
+      ]
+    },
+    "interpolation": {
+      "comment": "Same rule as the lexer: { opens a hole only when a matching } follows on the same line (nested strings closed), and not for the {\"key\": ..} of JSON text. Otherwise the brace is plain text.",
+      "name": "meta.interpolation.rk",
+      "begin": "(?=(?<hole>\\{(?:[^{}\"\\\\]|\\\\.|\"(?:[^\"\\\\]|\\\\.)*\"|\\g<hole>)*+\\}))\\{(?!\\{)(?!\\s*\"(?:[^\"\\\\]|\\\\.)*\"\\s*:)",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rk" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rk" } },
+      "patterns": [
+        { "include": "#format-spec" },
+        { "include": "#interpolation-expr" }
+      ]
+    },
+    "interpolation-multiline": {
+      "comment": "Holes in triple-quoted and r#\"..\"# strings may run over lines; the closing quotes end an unclosed one",
+      "name": "meta.interpolation.rk",
+      "begin": "\\{(?!\\{)",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rk" } },
+      "end": "\\}|(?=\"\"\"|\"#)",
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rk" } },
+      "patterns": [
+        { "include": "#format-spec" },
+        { "include": "#interpolation-expr" }
+      ]
+    },
+    "interpolation-raw": {
+      "comment": "r\"..\" has no way to write a quote inside, so a hole has no nested strings",
+      "name": "meta.interpolation.rk",
+      "begin": "(?=(?<hole>\\{(?:[^{}\"]|\\g<hole>)*+\\}))\\{(?!\\{)",
+      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rk" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rk" } },
+      "patterns": [
+        { "include": "#format-spec" },
+        { "include": "#interpolation-expr-no-strings" }
+      ]
+    },
+    "format-spec": {
+      "comment": "The first colon outside any bracket or string starts the spec: {x:>5}, {x:debug}",
+      "name": "meta.format-spec.rk",
+      "match": "(:)([^}]*)",
+      "captures": {
+        "1": { "name": "punctuation.separator.colon.rk" },
+        "2": { "name": "constant.other.format-spec.rk" }
+      }
+    },
+    "interpolation-expr": {
+      "patterns": [
+        { "include": "#strings" },
+        { "include": "#interpolation-expr-no-strings" }
+      ]
+    },
+    "interpolation-expr-no-strings": {
+      "comment": "Code inside a hole. Brackets nest so a } or : inside them doesn't end the hole or start a spec",
+      "patterns": [
+        { "include": "#interpolation-braces" },
+        { "include": "#interpolation-parens" },
+        { "include": "#interpolation-brackets" },
+        { "include": "#numbers" },
+        { "include": "#method-calls" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#operators" },
+        { "include": "#punctuation" },
+        { "include": "#identifiers" }
+      ]
+    },
+    "interpolation-braces": {
+      "begin": "\\{",
+      "beginCaptures": { "0": { "name": "punctuation.definition.block.rk" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.definition.block.rk" } },
+      "patterns": [
+        { "include": "#interpolation-expr" }
+      ]
+    },
+    "interpolation-parens": {
+      "begin": "\\(",
+      "beginCaptures": { "0": { "name": "punctuation.definition.parameters.rk" } },
+      "end": "\\)",
+      "endCaptures": { "0": { "name": "punctuation.definition.parameters.rk" } },
+      "patterns": [
+        { "include": "#interpolation-expr" }
+      ]
+    },
+    "interpolation-brackets": {
+      "begin": "\\[",
+      "beginCaptures": { "0": { "name": "punctuation.definition.brackets.rk" } },
+      "end": "\\]",
+      "endCaptures": { "0": { "name": "punctuation.definition.brackets.rk" } },
+      "patterns": [
+        { "include": "#interpolation-expr" }
       ]
     },
     "numbers": {
@@ -123,7 +251,7 @@
       "patterns": [
         {
           "name": "entity.name.function.method.rk",
-          "match": "(?<=\\.)\\s*(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try|func|mut|const|struct|enum|interface|implements|extend|import|type|test|public|take|own|mutate|unsafe|comptime|native|export|extern|using|lazy|with|using|ensure|catch|select|step|or|as|where|none|benchmark|asm)(?=\\s*\\()"
+          "match": "(?<=\\.)\\s*(func|let|mut|const|struct|enum|union|interface|implements|extend|import|type|test|benchmark|public|private|take|mutate|unsafe|comptime|native|export|extern|lazy|if|else|match|for|in|while|loop|break|continue|return|is|assert|check|try|catch|discard|select_priority|select|using|with|ensure|where|as|or|asm|void|true|false|none)(?=\\s*\\()"
         },
         {
           "name": "entity.name.function.method.rk",
@@ -135,19 +263,23 @@
       "patterns": [
         {
           "name": "keyword.control.rk",
-          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try)\\b"
+          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|is|assert|check|try|catch|discard)\\b"
         },
         {
           "name": "keyword.declaration.rk",
-          "match": "\\b(func|mut|const|struct|enum|interface|implements|extend|import|type|test)\\b"
+          "match": "\\b(func|let|mut|const|struct|enum|union|interface|implements|extend|import|type|test)\\b"
         },
         {
           "name": "keyword.modifier.rk",
-          "match": "\\b(public|take|own|mutate|unsafe|comptime|native|export|lazy)\\b"
+          "match": "\\b(public|private|take|mutate|unsafe|comptime|native|export|extern|lazy)\\b"
         },
         {
           "name": "keyword.other.rk",
-          "match": "\\b(select|using|with|ensure|where|as|or|asm|step|benchmark)\\b"
+          "match": "\\b(select_priority|select|using|with|ensure|where|as|or|asm|benchmark)\\b"
+        },
+        {
+          "name": "storage.type.void.rk",
+          "match": "\\bvoid\\b"
         },
         {
           "name": "constant.language.rk",
