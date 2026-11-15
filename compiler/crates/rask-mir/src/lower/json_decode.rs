@@ -556,12 +556,20 @@ impl<'a> MirLowerer<'a> {
         let fn_name = format!("{}__encode_custom_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
         let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::Void);
+        // Both parameters first, as in the decode trampoline: a parameter's
+        // local id is its position.
         // An aggregate arrives as its own address; a word is read out of the
         // buffer the runtime points at.
-        let value = if ty_mir.passed_by_address() {
+        let src_param = if ty_mir.passed_by_address() {
             wb.add_param("__src".to_string(), ty_mir.clone())
         } else {
-            let src = wb.add_param("__src".to_string(), MirType::Ptr);
+            wb.add_param("__src".to_string(), MirType::Ptr)
+        };
+        let out = wb.add_param("__out".to_string(), MirType::Ptr);
+        let value = if ty_mir.passed_by_address() {
+            src_param
+        } else {
+            let src = src_param;
             let v = wb.alloc_temp(ty_mir.clone());
             wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: v,
@@ -574,7 +582,6 @@ impl<'a> MirLowerer<'a> {
             }));
             v
         };
-        let out = wb.add_param("__out".to_string(), MirType::Ptr);
         let text = wb.alloc_temp(string_mir.clone());
         wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(text),
@@ -632,12 +639,21 @@ impl<'a> MirLowerer<'a> {
         let fn_name = format!("{}__decode_custom_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
         let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::I64);
+        // Both parameters first: a parameter's local id is its position, so a
+        // temp allocated between them would take the second parameter's slot
+        // and hand `__dst` a local of the wire's type.
         // An aggregate arrives as its own address, the way any aggregate
         // parameter does; a word is read out of the buffer the runtime points at.
-        let wire = if wire_mir.passed_by_address() {
+        let wire_param = if wire_mir.passed_by_address() {
             wb.add_param("__wire".to_string(), wire_mir.clone())
         } else {
-            let wire_ptr = wb.add_param("__wire".to_string(), MirType::Ptr);
+            wb.add_param("__wire".to_string(), MirType::Ptr)
+        };
+        let dst = wb.add_param("__dst".to_string(), MirType::Ptr);
+        let wire = if wire_mir.passed_by_address() {
+            wire_param
+        } else {
+            let wire_ptr = wire_param;
             let v = wb.alloc_temp(wire_mir.clone());
             wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: v,
@@ -650,7 +666,6 @@ impl<'a> MirLowerer<'a> {
             }));
             v
         };
-        let dst = wb.add_param("__dst".to_string(), MirType::Ptr);
         let result = wb.alloc_temp(result_mir.clone());
         wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),

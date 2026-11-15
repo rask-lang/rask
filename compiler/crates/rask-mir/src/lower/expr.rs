@@ -5619,19 +5619,43 @@ impl<'a> MirLowerer<'a> {
                                 }
                             }
 
-                            // Non-struct: string or integer
+                            // Non-struct: string, bool, float or integer. A bool
+                            // or a float handed to the integer encoder printed
+                            // its register bits (`2.5` came out `2`, `true` an
+                            // address). JSON spells both the way a program
+                            // prints them, so they use the same formatters the
+                            // struct-field path does.
+                            // An f32 is written as the double it widens to, as it
+                            // is inside a struct or a Vec and in the interpreter.
+                            let mut arg_op = arg_op;
+                            if arg_ty == MirType::F32 {
+                                let wide = self.builder.alloc_temp(MirType::F64);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: wide,
+                                    rvalue: MirRValue::Cast { value: arg_op, target_ty: MirType::F64 },
+                                }));
+                                arg_op = MirOperand::Local(wide);
+                            }
                             let helper = if raw_ty.is_some_and(|t| self.ctx.is_text(&t)) {
                                 "json_encode_string"
                             } else {
-                                "json_encode_i64"
+                                match &arg_ty {
+                                    MirType::Bool => "bool_to_string",
+                                    MirType::F32 | MirType::F64 => "f64_to_string",
+                                    _ => "json_encode_i64",
+                                }
                             };
-                            let result_local = self.builder.alloc_temp(MirType::I64);
+                            // Every helper here writes a string, so the result
+                            // is one (the way the struct path types its own):
+                            // typed as an integer, `println(json.encode(5))`
+                            // printed the string's address.
+                            let result_local = self.builder.alloc_temp(MirType::Buffer);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
                                 func: FunctionRef::internal(helper.to_string()),
                                 args: vec![arg_op],
                             }));
-                            let encoded = (MirOperand::Local(result_local), MirType::I64);
+                            let encoded = (MirOperand::Local(result_local), MirType::Buffer);
                             return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                         }
 

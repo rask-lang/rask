@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type whose `decode` takes a float or a bool (std.encoding/E12b). The
+// runtime hands the decoder a word out of its buffer, so the wire value has to
+// come back as the float or bool it is, not as the word's bits: native once
+// decoded 21.5 as 4626744929681408000. The write side is the same story: a
+// bare `json.encode` of a float or bool wrote the integer encoder's answer.
+
+import json
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Temp {
+    c: f64
+}
+
+Temp implements Decode {
+    func decode(raw: f64) -> Temp or Bad {
+        return Temp(c: raw)
+    }
+}
+
+Temp implements Encode {
+    func encode(self) -> f64 {
+        return self.c
+    }
+}
+
+struct Small {
+    c: f32
+}
+
+Small implements Decode {
+    func decode(raw: f32) -> Small or Bad {
+        return Small(c: raw)
+    }
+}
+
+Small implements Encode {
+    func encode(self) -> f32 {
+        return self.c
+    }
+}
+
+struct Flag {
+    on: bool
+}
+
+Flag implements Decode {
+    func decode(raw: bool) -> Flag or Bad {
+        return Flag(on: raw)
+    }
+}
+
+Flag implements Encode {
+    func encode(self) -> bool {
+        return self.on
+    }
+}
+
+struct Reading {
+    t: Temp
+    s: Small
+    f: Flag
+}
+
+test "std.encoding/E12b — a float or bool wire reaches decode as itself" {
+    let t = json.decode<Temp>("21.5") catch e => {
+        assert false
+        return
+    }
+    assert t.c == 21.5
+    let s = json.decode<Small>("1.25") catch e => {
+        assert false
+        return
+    }
+    assert s.c == 1.25
+    let f = json.decode<Flag>("true") catch e => {
+        assert false
+        return
+    }
+    assert f.on
+    let r = json.decode<Reading>("{{\"t\": -3.5, \"s\": 0.5, \"f\": false}") catch e => {
+        assert false
+        return
+    }
+    assert r.t.c == -3.5
+    assert r.s.c == 0.5
+    assert r.f.on == false
+}
+
+test "std.encoding/E12b — a float or bool wire is written as a float or bool" {
+    assert json.encode(Temp(c: 2.5)) == "2.5"
+    assert json.encode(Temp(c: -1.25)) == "-1.25"
+    assert json.encode(Small(c: 1.25)) == "1.25"
+    assert json.encode(Flag(on: true)) == "true"
+    assert json.encode(Flag(on: false)) == "false"
+    let r = Reading(t: Temp(c: 21.5), s: Small(c: 0.5), f: Flag(on: true))
+    assert json.encode(r) == "{{\"t\":21.5,\"s\":0.5,\"f\":true}"
+    let back = json.decode<Reading>(json.encode(r)) catch e => {
+        assert false
+        return
+    }
+    assert back.t.c == 21.5
+    assert back.f.on
+}
+
+test "std.encoding/E12b — json.encode of a bare float, f32 or bool" {
+    let x = 2.5
+    assert json.encode(x) == "2.5"
+    assert json.encode(true) == "true"
+    let small: f32 = 0.5
+    assert json.encode(small) == "0.5"
+    let flag = false
+    assert json.encode(flag) == "false"
+    // An f32 is written as the double it widens to, here and inside a struct.
+    let tenth: f32 = 0.1
+    assert json.encode(tenth) == "0.10000000149011612"
+}
