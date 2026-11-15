@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 9. Walking a Vec
+//
+// `for` walks a Vec the same way it walks a range, one item at a time.
+
+func sum(numbers: Vec<i32>) -> i32 {
+    mut total = 0
+    for n in numbers {
+        total += n
+    }
+    return total
+}
+
+// Your turn: `largest` gives the biggest number in the list. You can assume
+// the list isn't empty, so start from `numbers[0]`.
+
+func largest(numbers: Vec<i32>) -> i32 {
+    todo()
+}
+
+test "sum" {
+    assert sum(Vec.from([1, 2, 3])) == 6
+}
+
+test "largest" {
+    assert largest(Vec.from([3, 9, 4])) == 9
+    assert largest(Vec.from([-5, -2, -8])) == -2
+}

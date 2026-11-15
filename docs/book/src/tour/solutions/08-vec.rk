@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 8. Vec
+//
+// A `Vec` is a list that can grow. `Vec.from([...])` makes one from values,
+// `Vec.new()` makes an empty one, `push` adds to the end, `len()` counts, and
+// `v[0]` is the first item. Pushing changes the list, so it needs a `mut` name.
+
+func countdown(from: i32) -> Vec<i32> {
+    mut list = Vec.new()
+    mut n = from
+    while n > 0 {
+        list.push(n)
+        n -= 1
+    }
+    return list
+}
+
+// Your turn: `evens(10)` is the even numbers below 10: [0, 2, 4, 6, 8].
+
+func evens(below: i32) -> Vec<i32> {
+    mut list = Vec.new()
+    for i in 0..below {
+        if i % 2 == 0 {
+            list.push(i)
+        }
+    }
+    return list
+}
+
+test "countdown" {
+    let list = countdown(3)
+    assert list.len() == 3
+    assert list[0] == 3
+    assert list == Vec.from([3, 2, 1])
+}
+
+test "evens" {
+    assert evens(10) == Vec.from([0, 2, 4, 6, 8])
+    assert evens(0).len() == 0
+}

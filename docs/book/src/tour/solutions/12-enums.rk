@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 12. Enums and match
+//
+// An enum is a type whose value is one of a fixed list. `match` picks the arm
+// for the value it has, and it must cover every one: leave a case out and the
+// program doesn't compile. Like `if`, `match` gives a value.
+
+enum Direction {
+    North
+    East
+    South
+    West
+}
+
+func opposite(d: Direction) -> Direction {
+    return match d {
+        Direction.North => Direction.South,
+        Direction.East => Direction.West,
+        Direction.South => Direction.North,
+        Direction.West => Direction.East,
+    }
+}
+
+// Your turn: `turn_right` gives the direction a quarter turn clockwise, so
+// North becomes East.
+
+func turn_right(d: Direction) -> Direction {
+    return match d {
+        Direction.North => Direction.East,
+        Direction.East => Direction.South,
+        Direction.South => Direction.West,
+        Direction.West => Direction.North,
+    }
+}
+
+test "opposite" {
+    assert opposite(Direction.North) == Direction.South
+}
+
+test "turn right" {
+    assert turn_right(Direction.North) == Direction.East
+    assert turn_right(Direction.West) == Direction.North
+}

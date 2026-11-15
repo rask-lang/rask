@@ -700,6 +700,11 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/learn_gate.sh
 
+    # The tour: each step fails as shipped and its solution passes.
+    - name: Tour gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/tour_gate.sh
+
     # The opt-in Claude Code hook in editors/claude-code/ parses
     # `rask check --json`. Nothing else reads that output the same way, so a
     # format change would break the hook silently without this.
