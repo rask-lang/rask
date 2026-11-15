@@ -10,3 +10,4 @@
 09-passing-values.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/main.rk
 10-cleanup-that-always-runs.rk: mud/direction.rk mud/item.rk mud/command.rk early/world.rk early/game.rk early/start.rk early/play.rk early/alone.rk
 11-when-one-owner-isnt-enough.rk: mud/direction.rk mud/item.rk mud/command.rk mud/world.rk mud/game.rk mud/start.rk mud/play.rk
+12-writing-it-once-for-many-types.rk: mud/direction.rk mud/item.rk mud/command.rk mud/world.rk mud/game.rk mud/start.rk mud/play.rk

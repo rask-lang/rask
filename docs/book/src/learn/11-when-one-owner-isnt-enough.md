@@ -249,7 +249,8 @@ rask test 11-when-one-owner-isnt-enough.rk
       11-when-one-owner-isnt-enough.rk:250: not yet implemented
   ✗ a name already in the game is refused
       11-when-one-owner-isnt-enough.rk:250: not yet implemented
+  ✓ a list reads like a sentence (0ms)
 
 ──────────────────────────────────────────────────
-13 tests, 5 passed, 8 failed (0ms)
+14 tests, 6 passed, 8 failed (0ms)
 ```

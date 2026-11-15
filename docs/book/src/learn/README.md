@@ -50,3 +50,4 @@ same way, only that the tests pass.
 - [Passing values](09-passing-values.md): who has the lamp
 - [Cleanup that always runs](10-cleanup-that-always-runs.md): saving the game
 - [When one owner isn't enough](11-when-one-owner-isnt-enough.md): a tunnel collapses
+- [Writing it once for many types](12-writing-it-once-for-many-types.md): one list for items and exits

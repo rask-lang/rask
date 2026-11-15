@@ -19,6 +19,7 @@
 - [Passing values](learn/09-passing-values.md)
 - [Cleanup that always runs](learn/10-cleanup-that-always-runs.md)
 - [When one owner isn't enough](learn/11-when-one-owner-isnt-enough.md)
+- [Writing it once for many types](learn/12-writing-it-once-for-many-types.md)
 
 # Look things up
 

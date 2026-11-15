@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+interface Describe {
+    func describe(self) -> string
+}
+
+struct Item {
+    name: string
+    description: string
+}
+
+Item implements Describe {
+    public func describe(self, closely: bool) -> string {
+        if closely {
+            return self.description
+        }
+        return self.name
+    }
+}
+
+func main() {
+    println(Item(name: "lamp", description: "A brass lamp.").describe(true))
+}

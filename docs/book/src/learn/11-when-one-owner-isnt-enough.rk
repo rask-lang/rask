@@ -329,6 +329,8 @@ Item implements Describe {
 }
 
 Exit implements Describe {
+    // exercise 12: An exit describes itself by its direction, with
+    // ` (blocked)` after it when the room it led to is gone.
     public func describe(self) -> string {
         if self.to? {
             return self.dir.name()
@@ -337,7 +339,8 @@ Exit implements Describe {
     }
 }
 
-// "a, b and c", or `empty` when there is nothing to list.
+// exercise 12: Describe each thing and list them: `lamp`, `lamp and key`,
+// `lamp, key and rope`. When there's nothing, answer `empty`.
 public func listing<T: Describe>(things: Vec<T>, empty: string) -> string {
     let n = things.len()
     if n == 0 {
@@ -626,4 +629,13 @@ test "a name already in the game is refused" {
     assert enter(mutate w, "ada", START) is EnterError.NameTaken
     assert enter(mutate w, "", START) is EnterError.NoName
     assert w.players.len() == 1
+}
+
+test "a list reads like a sentence" {
+    let none_here: Vec<Item> = Vec.new()
+    let one: Vec<Item> = [Item(name: "lamp", description: "")]
+    let three: Vec<Item> = [Item(name: "lamp", description: ""), Item(name: "key", description: ""), Item(name: "rope", description: "")]
+    assert listing(none_here, "nothing") == "nothing"
+    assert listing(one, "nothing") == "lamp"
+    assert listing(three, "nothing") == "lamp, key and rope"
 }
