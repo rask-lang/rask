@@ -2866,7 +2866,8 @@ impl<'a> MirLowerer<'a> {
                 // retained and released like one.
                 let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
                 let elem_size = elem_desc.size() as i64;
-                let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                let vec_ty = MirType::Container(crate::types::ContainerKind::Vec);
+                let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
                     func: FunctionRef::internal("rask_vec_from_static".to_string()),
@@ -2877,7 +2878,7 @@ impl<'a> MirLowerer<'a> {
                         crate::elem_strs::elem(elem_desc),
                     ],
                 }));
-                Ok((MirOperand::Local(vec_local), MirType::Ptr))
+                Ok((MirOperand::Local(vec_local), vec_ty))
             }
             FoldedForm::Map => {
                 // An empty map has no first entry to read the key and value

@@ -9648,7 +9648,8 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let ctor = crate::elem_strs::map_ctor_for(&key_ty);
-        let map = self.builder.alloc_temp(MirType::I64);
+        let map_ty = MirType::Container(crate::types::ContainerKind::Map);
+        let map = self.builder.alloc_temp(map_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),
             func: FunctionRef::internal(ctor.to_string()),
@@ -9740,7 +9741,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_free".to_string()),
             args: vec![MirOperand::Local(pairs)],
         }));
-        Ok((MirOperand::Local(map), MirType::I64))
+        Ok((MirOperand::Local(map), map_ty))
     }
 
     /// `Map { "a": 1, "b": 2 }` — the entries, in sorted order.
