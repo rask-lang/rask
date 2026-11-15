@@ -9339,12 +9339,12 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `Option.Some(2.5)`, `Option.None`, `Result.Ok(3)`, `Result.Err(Fault.Bad)`
-    /// — the interpreter's spelling for a wrapper. The tag picks a block and
-    /// each block renders its payload through `debug_render_value`, so a
-    /// struct, a Vec or another wrapper inside reads as it does anywhere else.
-    /// A union err side is the same shape one level down: the member index
-    /// picks the block.
+    /// `2.5`, `none`, `3`, `Fault.Bad` — a wrapper renders as what it holds
+    /// (fmt/G6): a present optional as its payload, an absent one as `none`, a
+    /// result as whichever side it is. The tag picks a block and each block
+    /// renders its payload through `debug_render_value`, so a struct, a Vec or
+    /// another wrapper inside reads as it does anywhere else. A union err side
+    /// is the same shape one level down: the member index picks the block.
     ///
     /// A niche option (`Link<T>?`) is one word with no tag: the null address
     /// is `none`, and the link itself has no rendering.
@@ -9380,7 +9380,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(none_block);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
-                    rvalue: MirRValue::Use(lit("Option.None")),
+                    rvalue: MirRValue::Use(lit("none")),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
                 self.builder.switch_to_block(some_block);
@@ -9392,10 +9392,9 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(op.clone()),
                 }));
                 let node = self.debug_render_value(&MirOperand::Local(link), inner, None, depth)?;
-                let text = self.concat_all(vec![lit("Option.Some("), node, lit(")")]);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
-                    rvalue: MirRValue::Use(text),
+                    rvalue: MirRValue::Use(node),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
                 self.builder.switch_to_block(merge);
@@ -9414,17 +9413,18 @@ impl<'a> MirLowerer<'a> {
             _ => None,
         };
 
-        // One arm per tag value: its opening text, and what sits in the
-        // payload slot when it does carry one.
+        // One arm per tag value: the text it is when it holds nothing, and what
+        // sits in the payload slot when it holds something, which renders as
+        // itself.
         type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
         let arms: Vec<Arm> = match ty {
             MirType::Option(inner) => vec![
-                (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
-                (1, "Option.None".to_string(), None),
+                (0, String::new(), Some(((**inner).clone(), decl_ok))),
+                (1, "none".to_string(), None),
             ],
             MirType::Result { ok, err } => vec![
-                (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
-                (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+                (0, String::new(), Some(((**ok).clone(), decl_ok))),
+                (1, String::new(), Some(((**err).clone(), decl_err))),
             ],
             MirType::Union(members) => members
                 .iter()
@@ -9447,24 +9447,17 @@ impl<'a> MirLowerer<'a> {
             default,
         }));
 
-        for ((_, open, payload), block) in arms.into_iter().zip(blocks) {
+        for ((_, empty, payload), block) in arms.into_iter().zip(blocks) {
             self.builder.switch_to_block(block);
             let text = match payload {
-                None => lit(&open),
+                None => lit(&empty),
                 Some((payload_ty, payload_decl)) => {
                     let slot = self.builder.alloc_temp(payload_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: slot,
                         rvalue: self.payload_field(op.clone(), ty, &payload_ty),
                     }));
-                    let inner = self.debug_render_value(
-                        &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
-                    )?;
-                    if open.is_empty() {
-                        inner
-                    } else {
-                        self.concat_all(vec![lit(&open), inner, lit(")")])
-                    }
+                    self.debug_render_value(&MirOperand::Local(slot), &payload_ty, payload_decl, depth)?
                 }
             };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

@@ -8274,8 +8274,8 @@ fn an_optional_string_assertion_reads_the_same_on_both_backends() {
     assert_eq!(interp.len(), 3, "all three report:\n{interp:#?}");
     assert_eq!(native, interp, "the two backends spell the same failure the same way");
     assert!(
-        interp[0].contains("Option.Some(\"y\") == \"x\" (left: Option.Some(\"y\"), right: \"x\")"),
-        "the optional renders as an optional:\n{}",
+        interp[0].contains("\"y\" == \"x\" (left: \"y\", right: \"x\")"),
+        "the optional renders as what it holds (fmt/G6):\n{}",
         interp[0]
     );
 }
