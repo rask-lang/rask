@@ -44,7 +44,8 @@ extend World {
         return self.rooms.insert(Room(name, description, items: Vec.new(), exits: Vec.new()))
     }
 
-    // Both ways: going north from `a` reaches `b`, and south from `b` reaches `a`.
+    // exercise 11: Join `a` to `b` both ways: going `dir` from `a` reaches `b`,
+    // and the opposite way from `b` leads back to `a`.
     public func connect(mutate self, a: Link<Room>, dir: Direction, b: Link<Room>) -> void {
         a.exits.push(Exit(dir, to: b))
         b.exits.push(Exit(dir: dir.opposite(), to: a))
@@ -81,8 +82,9 @@ extend World {
         return names
     }
 
-    // Deleting the room turns every exit into it into a dead end, and every
-    // player standing in it into nobody-knows-where; callers move them first.
+    // exercise 11: Delete the room called `name`, and answer whether there was
+    // one. Every exit into it reads `none` afterwards. Anyone standing in it is
+    // nowhere, so callers move them out first.
     public func collapse(deleting self, name: string) -> bool {
         let r = self.room(name) ?? return false
         self.rooms.delete(r)

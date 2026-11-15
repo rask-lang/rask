@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+interface Describe {
+    func describe(self) -> string
+}
+
+struct Monster {
+    name: string
+}
+
+extend Monster {
+    func describe(self) -> string {
+        return "a {self.name}"
+    }
+}
+
+func listing<T: Describe>(things: Vec<T>) -> string {
+    mut out = ""
+    for t in things {
+        out = "{out}{t.describe()}"
+    }
+    return out
+}
+
+func main() {
+    let rats: Vec<Monster> = [Monster(name: "rat")]
+    println(listing(rats))
+}

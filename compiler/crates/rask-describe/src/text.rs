@@ -185,25 +185,26 @@ fn format_function(out: &mut String, f: &FunctionDesc) {
     if let Some(sm) = &f.self_mode {
         match sm.as_str() {
             "self" => parts.push("self".to_string()),
-            "read" => parts.push("read self".to_string()),
-            "take" => parts.push("take self".to_string()),
             _ => parts.push(format!("{} self", sm)),
         }
     }
 
     for p in &f.params {
-        let prefix = match p.mode.as_str() {
-            "read" => "read ",
-            "take" => "take ",
-            _ => "",
-        };
-        parts.push(format!("{}{}: {}", prefix, p.name, p.type_str));
+        parts.push(format!("{}{}: {}", mode_prefix(&p.mode), p.name, p.type_str));
     }
 
     out.push_str(&parts.join(", "));
     out.push(')');
 
     format_returns(out, &f.returns);
+}
+
+/// The keyword a mode is written with, and its space; none for a borrow.
+fn mode_prefix(mode: &str) -> String {
+    match mode {
+        "borrow" | "" => String::new(),
+        m => format!("{} ", m),
+    }
 }
 
 fn format_returns(out: &mut String, ret: &ReturnsDesc) {
@@ -221,14 +222,7 @@ fn format_returns(out: &mut String, ret: &ReturnsDesc) {
 fn format_params(out: &mut String, params: &[ParamDesc]) {
     let parts: Vec<String> = params
         .iter()
-        .map(|p| {
-            let prefix = match p.mode.as_str() {
-                "read" => "read ",
-                "take" => "take ",
-                _ => "",
-            };
-            format!("{}{}: {}", prefix, p.name, p.type_str)
-        })
+        .map(|p| format!("{}{}: {}", mode_prefix(&p.mode), p.name, p.type_str))
         .collect();
     out.push_str(&parts.join(", "));
 }

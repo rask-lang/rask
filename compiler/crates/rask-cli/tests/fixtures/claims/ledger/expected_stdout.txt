@@ -1,5 +1,5 @@
 === Typecheck OK ===
-Claims <pkg>/claims.rk
+Claims claims.rk
   kinds_hold               checked all 514 inputs, 257 discarded
   entries_print            held for 1,000 inputs (sampled, not proven)
   spins_on_seven           checked all 256 inputs

@@ -419,7 +419,7 @@ error[E0328]: `b` names a deleted node — this is a use after free
     |                  - the node `b` names was deleted here
  25 |     println("{b.name}")
     |               ^ `b` points at freed memory from here on
-    = fix: move the reads above the `delete`, or rack the link in a `Link<T>?` field
+    = fix: move the reads above the `delete`, or keep the link in a `Link<T>?` field
 ```
 
 **The move checker is the mechanism, not the concept.** `delete` takes the link,

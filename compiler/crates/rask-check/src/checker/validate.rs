@@ -651,8 +651,10 @@ impl TypeChecker {
             };
             let namesake = self.types.conformance_target(ty)
                 .is_some_and(|id| self.types.conforms_to_namesake(id, &interface_name));
+            let undeclared = crate::interfaces::InterfaceChecker::new(&self.types)
+                .undeclared_conformance(ty, &rask_ast::ty::TypeExpr::named(&interface_name));
             return TypeError::InterfaceNotSatisfied {
-                ty: ty_name, interface_name, context, missing: None, namesake, span,
+                ty: ty_name, interface_name, context, missing: None, namesake, undeclared, span,
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };

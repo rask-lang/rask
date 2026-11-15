@@ -161,6 +161,10 @@ pub struct Alias {
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
+    /// Each interface's methods that come with a body (TD2). Desugar copies
+    /// those into every conformer, so by the time a type declares the
+    /// interface it has them; a type that doesn't declare it never needs them.
+    pub(super) interface_defaults: HashMap<TypeId, std::collections::HashSet<String>>,
     /// A method name that two `extend` blocks with different headers both
     /// declare on one type → the names the later blocks' methods are filed
     /// under (`extend Sequence<string>` and `extend Sequence<StringSlice>`
@@ -372,6 +376,7 @@ impl TypeTable {
             impl_method_packages: HashMap::new(),
             primitive_ids: HashMap::new(),
             filed_methods: HashMap::new(),
+            interface_defaults: HashMap::new(),
             conformance_methods: HashMap::new(),
             builtin_methods: std::collections::HashSet::new(),
             conformers_by_pair: HashMap::new(),
@@ -920,6 +925,26 @@ impl TypeTable {
     /// alike (#1467). Dropping the module and looking the bare name up found
     /// the program's. Anything else is the name as the code being checked
     /// means it. `None` for an interface the compiler provides by name only.
+    /// Whether the interface `written` names, or one it extends, gives
+    /// `method` a default body.
+    pub fn interface_has_default(&self, written: &TypeExpr, method: &str) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        let mut work = vec![written.clone()];
+        while let Some(t) = work.pop() {
+            let Some(id) = self.interface_decl(&t) else { continue };
+            if !seen.insert(id) {
+                continue;
+            }
+            if self.interface_defaults.get(&id).is_some_and(|d| d.contains(method)) {
+                return true;
+            }
+            if let Some(TypeDef::Interface { super_interfaces, .. }) = self.get(id) {
+                work.extend(super_interfaces.iter().cloned());
+            }
+        }
+        false
+    }
+
     pub fn interface_decl(&self, written: &TypeExpr) -> Option<TypeId> {
         let is_interface = |id: &TypeId| matches!(self.get(*id), Some(TypeDef::Interface { .. }));
         if let Some(id) = self.module_interface(written) {

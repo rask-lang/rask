@@ -17,7 +17,10 @@
 - [When there might be nothing](learn/07-when-there-might-be-nothing.md)
 - [Errors are values](learn/08-errors-are-values.md)
 - [Passing values](learn/09-passing-values.md)
-- [When one owner isn't enough](guide/beyond-one-owner.md)
+- [Cleanup that always runs](learn/10-cleanup-that-always-runs.md)
+- [When one owner isn't enough](learn/11-when-one-owner-isnt-enough.md)
+- [Writing it once for many types](learn/12-writing-it-once-for-many-types.md)
+- [Splitting a program up](learn/13-splitting-a-program-up.md)
 
 # Look things up
 

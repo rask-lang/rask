@@ -1,0 +1,27 @@
+=== Testing 12-writing-it-once-for-many-types.rk ===
+
+  ✓ every direction leads back the way it came (0ms)
+  ✓ finding an item by name (0ms)
+  ✓ a direction alone is a move (0ms)
+  ✓ the object keeps its case and inner spaces (0ms)
+  ✓ what can go wrong is a value (0ms)
+  ✗ walking to the hall
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ picking something up moves it
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ a dead end and a typo
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ two players in one room hear each other
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ a collapsed tunnel leaves a blocked exit
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ leaving drops what you carried
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✓ the rat wanders (0ms)
+  ✗ a name already in the game is refused
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+  ✗ a list reads like a sentence
+      12-writing-it-once-for-many-types.rk:345: not yet implemented
+
+──────────────────────────────────────────────────
+14 tests, 6 passed, 8 failed (0ms)

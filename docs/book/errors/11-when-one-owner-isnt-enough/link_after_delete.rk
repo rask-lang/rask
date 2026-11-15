@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import memory.Rack
+import memory.Link
+
+struct Room {
+    name: string
+    north: Link<Room>?
+}
+
+func main() {
+    mut rooms: Rack<Room> = Rack.new()
+    let cellar = rooms.insert(Room(name: "Cellar", north: none))
+    let tunnel = rooms.insert(Room(name: "Tunnel", north: none))
+    cellar.north = tunnel
+    rooms.delete(tunnel)
+    println(tunnel.name)
+}

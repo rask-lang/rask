@@ -84,3 +84,12 @@ test "a name already in the game is refused" {
     assert enter(mutate w, "", START) is EnterError.NoName
     assert w.players.len() == 1
 }
+
+test "a list reads like a sentence" {
+    let none_here: Vec<Item> = Vec.new()
+    let one: Vec<Item> = [Item(name: "lamp", description: "")]
+    let three: Vec<Item> = [Item(name: "lamp", description: ""), Item(name: "key", description: ""), Item(name: "rope", description: "")]
+    assert listing(none_here, "nothing") == "nothing"
+    assert listing(one, "nothing") == "lamp"
+    assert listing(three, "nothing") == "lamp, key and rope"
+}

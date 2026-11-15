@@ -277,6 +277,27 @@ impl<'a> InterfaceChecker<'a> {
         )
     }
 
+    /// G1: when `ty` fails `interface` only because it never declares the
+    /// conformance, whether it has every required method anyway. `None` when
+    /// the declaration isn't what's missing (a builtin interface, or one the
+    /// type does declare). "Missing methods" is wrong for a type that has
+    /// them, and the fix there is one empty block.
+    pub fn undeclared_conformance(&self, ty: &Type, interface: &TypeExpr) -> Option<bool> {
+        if !self.is_nominal_user_interface(interface) {
+            return None;
+        }
+        let id = self.user_type_id(ty)?;
+        if self.types.declares_conformance(id, interface) {
+            return None;
+        }
+        let required = self.interface_methods(interface).ok()?;
+        let have = self.get_type_methods(ty);
+        Some(required.iter().all(|r| {
+            self.types.interface_has_default(interface, &r.name)
+                || have.iter().any(|m| m.name == r.name && self.signatures_match(r, m))
+        }))
+    }
+
     /// The registered TypeId of a struct/enum type, for conformance lookup.
     fn user_type_id(&self, ty: &Type) -> Option<rask_types::TypeId> {
         let id = match ty {
