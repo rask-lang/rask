@@ -35,6 +35,47 @@ func pick_if_let(maybe: i64?) -> usize {
     return r.len() + fallback.len()
 }
 
+enum Val {
+    Table(Vec<string>)
+    Num(i64)
+}
+
+// A branch that ends in a part of a value on loan, a borrowed parameter or a
+// loop's element hands out a second owner, the same as `let q = part` does.
+func entries_of(v: Val) -> Vec<string> {
+    let es = match v {
+        // ERROR: `es` is part of `v`, which is borrowed [E0899]
+        Val.Table(es) => es
+        _ => Vec.new()
+    }
+    return es
+}
+
+func param_through_if(flag: bool, a: Vec<i64>) -> usize {
+    // ERROR: `a` is the caller's [E0835]
+    let r = if flag { a } else { Vec.new() }
+    return r.len()
+}
+
+func item_through_if(lists: Vec<Vec<i64>>) -> usize {
+    mut total = 0
+    for item in lists {
+        // ERROR: `item` is lent by `lists` [E0902]
+        let r = if total > 0 { item } else { Vec.new() }
+        total += r.len()
+    }
+    return total
+}
+
+// Fine: the match moves out of a value this function owns.
+func fine_owned(take v: Val) -> usize {
+    let es = match v {
+        Val.Table(es) => es
+        _ => Vec.new()
+    }
+    return es.len()
+}
+
 // Fine: each name is used only on the path that didn't hand it over.
 func fine(flag: bool) -> usize {
     let fresh = Vec.from([1, 2, 3])
@@ -52,4 +93,5 @@ func fine_copy(flag: bool) -> i64 {
 
 func main() {
     println("{pick(true)} {pick_match(0)} {pick_if_let(none)} {fine(true)} {fine_copy(true)}")
+    println("{entries_of(Val.Num(1)).len()} {param_through_if(true, [1])} {item_through_if([[1]])} {fine_owned(Val.Num(2))}")
 }

@@ -2434,16 +2434,6 @@ impl<'a> OwnershipChecker<'a> {
                 _ => return,
             }
         }
-        // A part of a value on loan, a loop's element and a borrowed
-        // parameter aren't owned here, so there is nothing for the branch to
-        // move out of the name.
-        let ExprKind::Ident(name) = &tail.kind else { return };
-        if self.parts.contains_key(name)
-            || self.borrowed_params.contains_key(name)
-            || self.borrowed_loop_items.contains_key(name)
-        {
-            return;
-        }
         self.handle_assignment(tail, tail.span, false);
     }
 

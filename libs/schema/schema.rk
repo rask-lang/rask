@@ -264,11 +264,11 @@ public func apply_to_shape(shape: Ty, c: Change, first: bool) -> Ty or SchemaErr
 
 public func change_path(c: Change) -> Vec<Step> {
     return match c {
-        Change.Add(at, ..) => at,
-        Change.Remove(at, ..) => at,
-        Change.Rename(at, ..) => at,
-        Change.Retype(at, ..) => at,
-        Change.Default(at, ..) => at,
+        Change.Add(at, ..) => at.clone(),
+        Change.Remove(at, ..) => at.clone(),
+        Change.Rename(at, ..) => at.clone(),
+        Change.Retype(at, ..) => at.clone(),
+        Change.Default(at, ..) => at.clone(),
     }
 }
 
