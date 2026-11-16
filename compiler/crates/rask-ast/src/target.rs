@@ -12,6 +12,12 @@
 //! ran. A global lets two compilations in one process, such as the LSP or a
 //! test binary, disagree about what `usize` is, and it hid every place that
 //! needed the width behind a call that took no argument.
+//!
+//! The width is the *target's*, never the compiler host's. The browser
+//! playground is a wasm32 build of the compiler that emits no code: it
+//! interprets, on 64-bit values, so it asks for an x86-64 configuration. Read
+//! from the host, `usize` there was 32 bits and the playground rejected its own
+//! standard library's `n as usize`.
 
 /// What a compilation is for. Copy it freely; it is two words of facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,10 +36,6 @@ impl Default for Target {
 }
 
 impl Target {
-    pub(crate) fn from_parts(pointer_bits: u32, c_char_unsigned: bool) -> Target {
-        Target { pointer_bits, c_char_unsigned }
-    }
-
     /// 64-bit pointers, C `char` signed. The x86-64 machines the compiler
     /// links for today, and what a tool that emits no code (the playground's
     /// interpreter, a unit test) works in.

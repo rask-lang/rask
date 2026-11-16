@@ -1343,7 +1343,7 @@ mod tests {
             (LocalId(1), MirType::U8, false, true),
             (LocalId(2), MirType::I32, false, true),
             (LocalId(3), MirType::F64, true, false),
-        ]);
+        ], rask_ast::Target::LP64);
         let offsets: Vec<u32> = caps.iter().map(|c| c.offset).collect();
         assert_eq!(offsets, vec![0, 8, 12, 16]);
 

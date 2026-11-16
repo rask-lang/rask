@@ -179,6 +179,7 @@ impl CodeGenerator {
     }
 
     fn gen_c_entry(&mut self, e: &CEntry) -> CodegenResult<()> {
+        let target = self.target();
         let sig = self.c_entry_signature("thunk", &e.params, &e.ret)?;
         self.ctx.clear();
         self.ctx.func.signature = sig;
@@ -195,8 +196,8 @@ impl CodeGenerator {
         let sret = if matches!(ret_plan, CRet::Indirect) { incoming.next() } else { None };
         // Where the body writes a struct it returns through a destination
         // pointer: straight into C's memory when C lent some.
-        let through_dst = crate::builder::FunctionBuilder::returns_through_dst(ret_ty);
-        let dst = through_dst.then(|| sret.unwrap_or_else(|| slot(&mut b, ret_ty.size())));
+        let through_dst = crate::builder::FunctionBuilder::returns_through_dst(ret_ty, target);
+        let dst = through_dst.then(|| sret.unwrap_or_else(|| slot(&mut b, rask_layout::size_of(ret_ty, target))));
 
         let mut args = Vec::with_capacity(e.params.len() + 1);
         args.extend(dst);
@@ -205,7 +206,7 @@ impl CodeGenerator {
                 // A struct C split across registers is put back together here,
                 // and the body gets its address, as every Rask caller passes one.
                 CArg::Registers(pieces) => {
-                    let addr = slot(&mut b, ty.size());
+                    let addr = slot(&mut b, rask_layout::size_of(ty, target));
                     for p in pieces {
                         let v = incoming.next().expect("one block param per piece");
                         b.ins().store(MemFlags::new(), v, addr, p.offset as i32);
@@ -250,7 +251,7 @@ impl CodeGenerator {
                     let s = slot(&mut b, 8);
                     b.ins().store(MemFlags::new(), results[0], s, 0);
                     let to = sret.expect("indirect has a destination");
-                    crate::builder::copy_bytes(&mut b, s, 0, to, 0, ret_ty.size());
+                    crate::builder::copy_bytes(&mut b, s, 0, to, 0, rask_layout::size_of(ret_ty, target));
                 }
                 b.ins().return_(&[]);
             }

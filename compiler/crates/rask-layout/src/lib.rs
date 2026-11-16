@@ -7,6 +7,13 @@ use rask_ast::ty::TypeExpr;
 use rask_types::{FnParam, GenericArg, Type, TypeDef, TypeId};
 use std::collections::HashMap;
 
+mod shape;
+pub use shape::{
+    align_of, array_layout, fat_pointer, payload_offset_of, simd_layout, size_align_of, size_of, tuple_layout,
+    tuple_offsets, widest, wrapper_of, Shape, Shaped, BUFFER_SIZE_ALIGN,
+};
+use shape::align_up;
+
 /// What a layout is keyed by: the type's declaration and, for one instance of
 /// a generic type, its arguments. No arguments is the declaration's own
 /// layout, the shared one for a generic type.
@@ -177,9 +184,9 @@ impl LayoutCache {
 }
 
 /// The struct layout a checked type is laid out by: an instance's own when one
-/// was made, else the declaration's. A type the checker left spelled (a
-/// compiler-provided one, or a layout read from written syntax) is found by
-/// its name, until every reader holds checked types.
+/// was made, else the declaration's. Found by identity only: a type that is
+/// still a spelled name has no layout here, because the same name can mean two
+/// types and one type can be spelled two ways.
 pub fn struct_for<'a>(ty: &Type, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
     struct_index_for(ty, layouts).map(|i| &layouts[i])
 }
@@ -191,16 +198,16 @@ pub fn enum_for<'a>(ty: &Type, layouts: &'a [EnumLayout]) -> Option<&'a EnumLayo
 
 /// `struct_for`, giving the layout's position: what MIR's layout ids are.
 pub fn struct_index_for(ty: &Type, layouts: &[StructLayout]) -> Option<usize> {
-    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    index_for(ty, layouts, |l| l.key.as_ref())
 }
 
 /// `struct_index_for` for enums.
 pub fn enum_index_for(ty: &Type, layouts: &[EnumLayout]) -> Option<usize> {
-    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    index_for(ty, layouts, |l| l.key.as_ref())
 }
 
-fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutKey>, &str)) -> Option<usize> {
-    let by_key = |key: &LayoutKey| layouts.iter().position(|l| parts(l).0 == Some(key));
+fn index_for<L>(ty: &Type, layouts: &[L], key_of: impl Fn(&L) -> Option<&LayoutKey>) -> Option<usize> {
+    let by_key = |key: &LayoutKey| layouts.iter().position(|l| key_of(l) == Some(key));
     let type_args = |args: &[GenericArg]| -> Vec<Type> {
         args.iter()
             .filter_map(|a| match a {
@@ -213,13 +220,6 @@ fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutK
         Type::Named(id) => by_key(&LayoutKey::of(*id)),
         Type::Generic { base, args } => {
             by_key(&LayoutKey::instance(*base, type_args(args))).or_else(|| by_key(&LayoutKey::of(*base)))
-        }
-        Type::UnresolvedNamed(name) => layouts.iter().position(|l| parts(l).1 == name),
-        Type::UnresolvedGeneric { name, args } => {
-            let by_name = |n: &str| layouts.iter().position(|l| parts(l).1 == n);
-            generic_instance_name(name, &type_args(args), &HashMap::new())
-                .and_then(|instance| by_name(&instance))
-                .or_else(|| by_name(name))
         }
         _ => None,
     }
@@ -489,7 +489,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         Type::Usize | Type::Isize => (w, w),
         // The runtime's `RaskStr`: 16 bytes on every target, since its heap
         // form holds a 64-bit length beside the pointer.
-        Type::String | Type::Bytes => (16, 8),
+        Type::String | Type::Bytes => BUFFER_SIZE_ALIGN,
         // Niche optimization: `Link<T>?` is the node's address and `*T?` the
         // pointer, each with null for `none` — one word, no tag.
         ty if ty.as_option().is_some_and(|inner| is_niche_word(inner, cache)) => (w, w),
@@ -498,21 +498,14 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             (l.size, l.align)
         }
         Type::Tuple(types) => {
-            let mut offset = 0u32;
-            let mut max_align = 1u32;
-            for ty in types {
-                let (size, align) = size_align_in(ty, cache, on_unknown)?;
-                max_align = max_align.max(align);
-                offset = align_up(offset, align);
-                offset += size;
-            }
-            let total_size = align_up(offset, max_align);
-            (total_size, max_align)
+            let parts = types
+                .iter()
+                .map(|ty| size_align_in(ty, cache, on_unknown))
+                .collect::<Option<Vec<_>>>()?;
+            let (_, size, align) = tuple_layout(parts);
+            (size, align)
         }
-        Type::Array { elem, len } => {
-            let (elem_size, elem_align) = size_align_in(elem, cache, on_unknown)?;
-            (elem_size * (*len as u32), elem_align)
-        }
+        Type::Array { elem, len } => array_layout(size_align_in(elem, cache, on_unknown)?, *len as u32),
         Type::Fn { .. } => (w, w), // Function pointer
         Type::Named(id) => match cache.get(&LayoutKey::of(*id)) {
             Some(found) => found,
@@ -593,22 +586,13 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)
         }
-        Type::SimdVector { elem, lanes } => {
-            let (elem_size, _) = size_align_in(elem, cache, on_unknown)?;
-            let total = elem_size * *lanes as u32;
-            (total, total.min(32)) // natural SIMD alignment, cap at 32
-        }
+        Type::SimdVector { elem, lanes } => simd_layout(size_align_in(elem, cache, on_unknown)?.0, *lanes as u32),
         Type::Never => (0, 1),
         Type::None => (0, 1),
-        Type::InterfaceObject { .. } => (2 * w, w), // Fat pointer: data_ptr + vtable_ptr
+        Type::InterfaceObject { .. } => fat_pointer(w),
         Type::RawPtr(_) => (w, w),
         Type::Error => return on_unknown.unknown(format_args!("Error type in layout computation"), w),
     })
-}
-
-/// Align a value up to the given alignment
-fn align_up(val: u32, align: u32) -> u32 {
-    (val + align - 1) & !(align - 1)
 }
 
 fn align_up_u64(val: u64, align: u64) -> u64 {
@@ -1449,7 +1433,7 @@ mod tests {
     #[test]
     fn primitive_sizes() {
         // A scalar is as wide as it says it is — the same answer
-        // `MirType::size` has always given (#1083).
+        // MIR gave (#1083).
         assert_eq!(tsa(&Type::Bool), (1, 1));
         assert_eq!(tsa(&Type::I8), (1, 1));
         assert_eq!(tsa(&Type::U8), (1, 1));

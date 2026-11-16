@@ -64,7 +64,7 @@ impl<'a> MirLowerer<'a> {
                 self.to_slot_width(op, &elem_ty)
             })
             .collect();
-        let elem_size = elem_ty.size();
+        let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),
             len: elems.len() as u32,
@@ -159,8 +159,8 @@ impl<'a> MirLowerer<'a> {
         let val_ty = arg_ty(1).or_else(|| pair_ty(1)).unwrap_or(MirType::I64);
 
         let mut args = vec![
-            MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
-            MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&key_ty, self.ctx.target()) as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&val_ty, self.ctx.target()) as i64)),
         ];
         let ctor = match self.map_key_fn_addrs(call.id, &key_ty) {
             Some((hash, eq)) => {
@@ -882,7 +882,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
         match ty {
             rask_types::Type::Var(_) => None,
-            _ => Some(self.ctx.type_to_mir(ty).size() as i64),
+            _ => Some(rask_layout::size_of(&self.ctx.type_to_mir(ty), self.ctx.target()) as i64),
         }
     }
 
@@ -912,7 +912,7 @@ impl<'a> MirLowerer<'a> {
         if self.ctx.lookup_raw_type(node_id).is_none() {
             if let Some(hint) = self.field_type_hint.clone() {
                 if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
-                    return Ok(self.ctx.type_to_mir(arg).size() as i64);
+                    return Ok(rask_layout::size_of(&self.ctx.type_to_mir(arg), self.ctx.target()) as i64);
                 }
             }
         }
@@ -1131,7 +1131,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result,
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
-                            store_size: MirType::Ptr.size(),
+                            store_size: rask_layout::size_of(&MirType::Ptr, self.ctx.target()),
                             field: None,
                         }));
                     }

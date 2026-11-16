@@ -15,6 +15,8 @@ use crate::transform::inline::InlineRegion;
 /// Passes write metadata and diagnostics here; downstream consumers read them.
 #[derive(Debug, Default)]
 pub struct PassContext {
+    /// The machine the program is for.
+    pub target: rask_ast::Target,
     /// DI5: inline region metadata per caller function name.
     pub inline_regions: HashMap<String, Vec<InlineRegion>>,
     /// Accumulated diagnostics from analysis passes (typestate errors, etc.).
@@ -87,7 +89,7 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
+        self.run_with(fns, rask_ast::Target::default(), HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
     }
 
     /// `run`, told which struct layouts hold a rack and which functions are
@@ -95,11 +97,12 @@ impl PassManager {
     pub fn run_with(
         &self,
         fns: &mut Vec<MirFunction>,
+        target: rask_ast::Target,
         rack_holders: HashSet<u32>,
         copy_layouts: crate::CopyLayouts,
         const_init_thunks: HashSet<String>,
     ) -> PipelineResult {
-        let mut ctx = PassContext { rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
+        let mut ctx = PassContext { target, rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -213,8 +216,8 @@ pub struct UnwindRecordPass;
 
 impl MirPass for UnwindRecordPass {
     fn name(&self) -> &str { "unwind_records" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::transform::unwind::build_unwind_records(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::transform::unwind::build_unwind_records(fns, ctx.target);
     }
 }
 

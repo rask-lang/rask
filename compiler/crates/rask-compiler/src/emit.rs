@@ -149,7 +149,8 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
 
     // A captured scalar has to live in memory before SSA runs, or SSA builds
     // phis over a variable whose real home is a stack slot (#1038).
-    rask_mir::transform::addr_taken::run_all(&mut functions);
+    let target = ctx.target();
+    rask_mir::transform::addr_taken::run_all(&mut functions, target);
     for func in &mut functions {
         rask_mir::transform::ssa::construct(func);
     }
@@ -161,7 +162,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let field_types = ctx.field_types();
     let rack_holders = rask_mir::rack_holding_structs(&field_types);
     let copy_layouts = rask_mir::CopyLayouts::from_fields(&field_types);
-    let const_init_thunks = ctx
+    let const_init_thunks: std::collections::HashSet<String> = ctx
         .const_slot_types
         .borrow()
         .keys()
@@ -169,6 +170,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .collect();
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
+        target,
         rack_holders,
         copy_layouts,
         const_init_thunks,
@@ -179,7 +181,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     }
     // Local structs holding links forget their edges when their frame ends.
     // After SSA is gone, so the locals named are the ones that hold the bytes.
-    rask_mir::link_holders::forget_local_links(&mut functions);
+    rask_mir::link_holders::forget_local_links(&mut functions, target);
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }
@@ -378,7 +380,7 @@ fn emit_inner(
         codegen.set_debug_context(file, rask_ast::LineMap::new(text));
     }
     codegen.set_inline_regions(pipeline.inline_regions);
-    codegen.set_field_types(field_types);
+    codegen.set_field_types(field_types).map_err(fail)?;
 
     let vtables = collect_vtables(&functions, input.mono);
     if !vtables.is_empty() {

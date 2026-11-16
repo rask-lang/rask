@@ -50,15 +50,14 @@ impl IntKind {
         }
     }
 
-    /// P2: what `usize` is on this target — pointer-sized. The width comes
-    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
-    pub fn usize_kind() -> IntKind {
-        if rask_ast::primitives::pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
+    /// P2: what `usize` is on this target — pointer-sized.
+    pub fn usize_kind(target: rask_ast::Target) -> IntKind {
+        if target.pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
     }
 
     /// P2: what `isize` is on this target.
-    pub fn isize_kind() -> IntKind {
-        if rask_ast::primitives::pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
+    pub fn isize_kind(target: rask_ast::Target) -> IntKind {
+        if target.pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
     }
 
     /// Unsigned widths carry their value as a bit pattern in the signed slot.
@@ -68,7 +67,7 @@ impl IntKind {
 
     /// Map a checker type to an int kind. Non-integers and i128/u128 (their own
     /// `Value` variants) map to `Untyped`.
-    pub fn from_type(ty: &rask_types::Type) -> IntKind {
+    pub fn from_type(ty: &rask_types::Type, target: rask_ast::Target) -> IntKind {
         use rask_types::Type;
         match ty {
             Type::I8 => IntKind::I8,
@@ -79,8 +78,8 @@ impl IntKind {
             Type::U16 => IntKind::U16,
             Type::U32 => IntKind::U32,
             Type::U64 => IntKind::U64,
-            Type::Usize => IntKind::usize_kind(),
-            Type::Isize => IntKind::isize_kind(),
+            Type::Usize => IntKind::usize_kind(target),
+            Type::Isize => IntKind::isize_kind(target),
             _ => IntKind::Untyped,
         }
     }
@@ -115,18 +114,18 @@ impl IntKind {
     }
 
     /// Map a type-name string (as used by `as` casts) to an int kind.
-    pub fn from_name(s: &str) -> Option<IntKind> {
+    pub fn from_name(s: &str, target: rask_ast::Target) -> Option<IntKind> {
         Some(match s {
             "i8" => IntKind::I8,
             "i16" => IntKind::I16,
             "i32" => IntKind::I32,
             "i64" => IntKind::I64,
-            "isize" => IntKind::isize_kind(),
+            "isize" => IntKind::isize_kind(target),
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
             "u32" => IntKind::U32,
             "u64" => IntKind::U64,
-            "usize" => IntKind::usize_kind(),
+            "usize" => IntKind::usize_kind(target),
             _ => return None,
         })
     }

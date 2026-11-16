@@ -674,18 +674,21 @@ pub fn parse_body(body: &str, params: &[String]) -> Result<CExpr, String> {
 
 /// The Rask scalar a C arithmetic type is: `int` is `i32`, `unsigned long`
 /// is `u64`. `None` for anything that isn't a number.
-pub fn rask_scalar(ty: &CType) -> Option<&'static str> {
+pub fn rask_scalar(ty: &CType, target: rask_ast::Target) -> Option<&'static str> {
     Some(match canonical(ty) {
         CType::Bool => "bool",
-        CType::Char => if rask_ast::primitives::c_char_unsigned() { "u8" } else { "i8" },
+        CType::Char => if target.c_char_unsigned() { "u8" } else { "i8" },
         CType::SignedChar => "i8",
         CType::UnsignedChar => "u8",
         CType::Short => "i16",
         CType::UnsignedShort => "u16",
         CType::Int => "i32",
         CType::UnsignedInt => "u32",
-        CType::Long | CType::LongLong => "i64",
-        CType::UnsignedLong | CType::UnsignedLongLong => "u64",
+        // `long` is as wide as the target's data model says, `long long` always 64.
+        CType::Long => return target.c_type_spelling("c_long"),
+        CType::UnsignedLong => return target.c_type_spelling("c_ulong"),
+        CType::LongLong => "i64",
+        CType::UnsignedLongLong => "u64",
         CType::Float => "f32",
         CType::Double => "f64",
         _ => return None,
@@ -1295,6 +1298,19 @@ mod tests {
     fn writes_c_that_means_the_same() {
         let ms = macro_(&["NS"], "((NS) / NS_PER_MS)").unwrap();
         assert_eq!(to_c(&ms, &["a0".into()]), "(a0 / ((unsigned long)1000000))");
+    }
+
+    /// What a C scalar is depends on the target's data model: `long` is a
+    /// word on 32-bit ARM and 64 bits on x86-64, and a plain `char` is
+    /// unsigned on one and signed on the other.
+    #[test]
+    fn c_scalars_follow_the_target() {
+        let arm = rask_ast::Target::for_arch("arm");
+        let x86 = rask_ast::Target::for_arch("x86_64");
+        assert_eq!((rask_scalar(&CType::Long, arm), rask_scalar(&CType::Long, x86)), (Some("i32"), Some("i64")));
+        assert_eq!(rask_scalar(&CType::UnsignedLong, arm), Some("u32"));
+        assert_eq!(rask_scalar(&CType::LongLong, arm), Some("i64"));
+        assert_eq!((rask_scalar(&CType::Char, arm), rask_scalar(&CType::Char, x86)), (Some("u8"), Some("i8")));
     }
 
     #[test]

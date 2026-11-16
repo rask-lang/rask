@@ -7974,7 +7974,7 @@ impl TypeChecker {
     /// pointer that may be absent, as every C pointer is (mem.unsafe/PT6).
     fn rask_type_of_c(&self, ty: &rask_c_parse::CType) -> Option<Type> {
         use rask_c_parse::CType;
-        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty) {
+        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty, self.types.target()) {
             return Some(scalar_type(name));
         }
         let CType::Pointer(inner) = rask_c_parse::cexpr::canonical(ty) else { return None };
@@ -7982,7 +7982,7 @@ impl TypeChecker {
             CType::Char | CType::SignedChar | CType::UnsignedChar => Type::U8,
             CType::Void => Type::Unit,
             CType::Named(n) => Type::Named(self.types.get_type_id(n)?),
-            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other)?),
+            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other, self.types.target())?),
         };
         Some(Type::option(Type::RawPtr(Box::new(pointee))))
     }
