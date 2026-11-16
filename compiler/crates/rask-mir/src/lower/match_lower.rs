@@ -677,7 +677,7 @@ impl<'a> MirLowerer<'a> {
             // fields are that variant's: bind them now.
             for (value, ty, checked, pattern) in &field_tests {
                 match &pattern.kind {
-                    PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                    PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Tuple(_) => {
                         self.bind_pattern_fields(pattern, value.clone(), None, false, ty, checked.as_ref());
                     }
                     PatternKind::TypePat { .. } => {
@@ -1804,14 +1804,10 @@ impl<'a> MirLowerer<'a> {
         let cond_local = self.builder.alloc_temp(MirType::Bool);
         match &pattern.kind {
             PatternKind::Literal(lit_expr) => {
-                let (lit_op, _) = self.lower_expr(lit_expr)?;
+                let is_equal = self.emit_literal_eq(scrutinee_op, lit_expr)?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: cond_local,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::BinOp::Eq,
-                        left: scrutinee_op.clone(),
-                        right: lit_op,
-                    },
+                    rvalue: MirRValue::Use(MirOperand::Local(is_equal)),
                 }));
             }
             PatternKind::Range { start, end } => {
@@ -1870,6 +1866,31 @@ impl<'a> MirLowerer<'a> {
             else_block: fail_block,
         }));
         Ok(())
+    }
+
+    /// `value == literal` as a bool local, for a literal in a pattern. A string
+    /// literal compares by content: `==` on two buffers compares their
+    /// addresses, so `Has("ab")` never matched `Has("ab")` held in a variant.
+    pub(super) fn emit_literal_eq(
+        &mut self,
+        value: &MirOperand,
+        lit: &Expr,
+    ) -> Result<crate::LocalId, LoweringError> {
+        let (lit_op, _) = self.lower_expr(lit)?;
+        let out = self.builder.alloc_temp(MirType::Bool);
+        if matches!(&lit.kind, ExprKind::String(_)) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(out),
+                func: FunctionRef::internal("string_eq".to_string()),
+                args: vec![value.clone(), lit_op],
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: out,
+                rvalue: MirRValue::BinaryOp { op: crate::BinOp::Eq, left: value.clone(), right: lit_op },
+            }));
+        }
+        Ok(out)
     }
 
     /// A variant pattern the checker resolved that the scrutinee's layout
