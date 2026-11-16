@@ -360,7 +360,8 @@ impl<'a> MirLowerer<'a> {
         matches!(
             fty,
             MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::Array { .. } | MirType::FuncPtr(_)
+                | MirType::Array { .. } | MirType::FuncPtr(_) | MirType::Option(_)
+                | MirType::Result { .. }
         )
         .then(|| fty.clone())
     }
@@ -1294,18 +1295,14 @@ impl<'a> MirLowerer<'a> {
                                 // out, `a[0] = s` on a `[string; 2]` leaked the
                                 // string it replaced (#1884).
                                 //
-                                // Only an array that is a binding of its own.
                                 // Through a field (`s.v[1] = t`) the store lands
-                                // in a new SSA version of `s` while the frame
-                                // still releases the old one at its end, so the
-                                // old element would be released twice; that
-                                // case keeps leaking until #1884 is closed.
+                                // in a copy of `s`, which is the value from then
+                                // on; the release pass reads the write as one
+                                // into the aggregate the array sits in
+                                // (`rc_insert`, `inline_roots`), so the frame
+                                // releases that copy and not the stale original.
                                 let elem_ty = (**elem).clone();
-                                let own_binding = matches!(object.kind, ExprKind::Ident(_));
-                                if let Some(old) = self
-                                    .replaced_slot_type(target, reuses_old, &elem_ty)
-                                    .filter(|_| own_binding)
-                                {
+                                if let Some(old) = self.replaced_slot_type(target, reuses_old, &elem_ty) {
                                     let scaled = self.builder.alloc_temp(MirType::I64);
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                         dst: scaled,

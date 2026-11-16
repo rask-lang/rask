@@ -374,6 +374,18 @@ fn retain_views_handed_over(
                     return true;
                 }
                 for src in source_of.get(&name).into_iter().flatten() {
+                    // A field read out of a larger value that holds more: the
+                    // copy needs references of its own whether or not the
+                    // value is read again. Moved, the keeper took the whole
+                    // value's reference to it, and what else the value held
+                    // was released by nobody (`let v = [tw.a]` leaked
+                    // `tw.b`'s string).
+                    if is_aggregate(src)
+                        && !owns_copy.contains(src)
+                        && ty_of.get(src).zip(ty_of.get(&name)).is_some_and(|(whole, part)| whole.size() > part.size())
+                    {
+                        return true;
+                    }
                     if !owns_copy.contains(src) {
                         todo.push(*src);
                     }
@@ -694,6 +706,43 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
+
+    // Names for storage inside an aggregate: a nested struct or array field
+    // read out of one (`_19 = _17.0`), an element's address inside it
+    // (`_21 = _19 + 16`), mapped to the aggregate they sit in. A write
+    // through one is a write into that aggregate, so a copy of it made
+    // earlier is stale and the written one is the value from there on.
+    let inline_roots: HashMap<LocalId, LocalId> = {
+        let mut roots: HashMap<LocalId, LocalId> = HashMap::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                let found = match &st.kind {
+                    MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Field { base: MirOperand::Local(b), .. }
+                            | MirRValue::ArrayIndex { base: MirOperand::Local(b), .. },
+                    } if aggregates.contains(dst) => Some((*dst, *b)),
+                    MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(b),
+                            ..
+                        },
+                    } if roots.contains_key(b) => Some((*dst, *b)),
+                    _ => None,
+                };
+                let Some((dst, b)) = found else { continue };
+                let root = roots.get(&b).copied().unwrap_or(b);
+                if aggregates.contains(&root) && roots.insert(dst, root) != Some(root) {
+                    changed = true;
+                }
+            }
+        }
+        roots
+    };
 
     // Names that may come to name an aggregate or read into one: the
     // aggregates, and whatever is copied, read or parked out of them.
@@ -1125,11 +1174,19 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::WriteThrough(*addr));
                     }
                 }
-                MirStmtKind::ArrayStore { value, .. } => {
+                MirStmtKind::ArrayStore { base, value, .. } => {
                     if let Some(v) = uses::operand_local(value)
                         .filter(|v| !retained.contains(v) && !retained_for_this.contains(v))
                     {
                         hand_over(&mut ev, v);
+                    }
+                    if let Some(root) = inline_roots.get(base).filter(|r| is_tracked(r)) {
+                        ev.push(ownership::Event::WriteThrough(*root));
+                    }
+                }
+                MirStmtKind::ReleaseSlot { addr, .. } => {
+                    if let Some(root) = inline_roots.get(addr).filter(|r| is_tracked(r)) {
+                        ev.push(ownership::Event::WriteThrough(*root));
                     }
                 }
                 MirStmtKind::InterfaceBox { dst, value, .. } => {

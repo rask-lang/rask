@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `take` or `mutate` parameter the callee keeps, moves or replaces on only
+// some paths: the paths that don't must release what the slot still holds
+// (#1903, #1910, #1842). The leak gate runs this file.
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+struct Big {
+    name: string
+    tag: string
+    v: Vec<i64>
+}
+
+struct Names {
+    list: Vec<string>
+}
+
+struct Cursor {
+    label: string
+    hist: Vec<string>
+}
+
+func maybe(mutate b: Big, mutate keep: Vec<Big>, c: bool) {
+    if c {
+        keep.push(b)
+    }
+    b = Big(name: mk(60), tag: mk(61), v: Vec.new())
+}
+
+func gen(take x: Names, take y: Names, early: bool) -> usize {
+    mut a: Vec<Names> = Vec.new()
+    a.push(x)
+    if early {
+        return a.len()
+    }
+    mut b: Vec<Names> = Vec.new()
+    b.push(y)
+    return a.len() + b.len()
+}
+
+func maybe_keep(take c: Cursor, mutate into: Vec<Cursor>, yes: bool) {
+    if yes {
+        into.push(c)
+    }
+}
+
+test "a mutate parameter moved out on one path, then refilled" {
+    mut keep: Vec<Big> = Vec.new()
+    mut b = Big(name: mk(1), tag: mk(2), v: Vec.new())
+    maybe(mutate b, mutate keep, false)
+    maybe(mutate b, mutate keep, true)
+    maybe(mutate b, mutate keep, false)
+    assert b.name == mk(60)
+    assert keep.len() == 1
+    assert keep[0].name == mk(60)
+}
+
+test "a take parameter not yet consumed at an early return" {
+    let n = gen(Names(list: [mk(1)]), Names(list: [mk(2)]), true)
+    assert n == 1
+    let m = gen(Names(list: [mk(3)]), Names(list: [mk(4)]), false)
+    assert m == 2
+}
+
+test "a take parameter kept on one path only" {
+    mut kept: Vec<Cursor> = Vec.new()
+    maybe_keep(Cursor(label: mk(1), hist: Vec.new()), mutate kept, false)
+    maybe_keep(Cursor(label: mk(2), hist: Vec.new()), mutate kept, true)
+    assert kept.len() == 1
+    assert kept[0].label == mk(2)
+}
