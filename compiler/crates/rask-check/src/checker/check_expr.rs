@@ -3439,6 +3439,7 @@ impl TypeChecker {
                 // argument goes in: `mutate x` lends it for writing, anything
                 // else lends it to read. A `take` parameter has no marker, so
                 // a callee that turns out to take one is a mode mismatch.
+                self.check_marked_args_of_opaque_call(args);
                 let params: Vec<_> = args
                     .iter()
                     .map(|a| FnParam {
@@ -3504,6 +3505,7 @@ impl TypeChecker {
                 }
             }
             _ => {
+                self.check_marked_args_of_opaque_call(args);
                 for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
@@ -3651,6 +3653,65 @@ impl TypeChecker {
         self.check_arg_markers(&callee_name, args, &params);
     }
 
+    /// What a name handed to a `mutate` parameter must be: a place the caller
+    /// may write. A `let`, a `with` read binding, a read-only parameter and a
+    /// name an `as` binding copied out are all refused, whatever the callee is.
+    ///
+    /// A part of a name (`entry.1`, `v[0]`) is the same question one step
+    /// down: the write lands in the name's storage. Judged after solving, like
+    /// a field assignment, because whether a link or a pointer sits on the way
+    /// depends on types that aren't settled yet.
+    fn check_mutate_target(&mut self, arg: &Expr, arg_is_link: bool) {
+        if matches!(arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            let Some(root) = Self::root_ident_name(arg) else { return };
+            let Some(kind) = self.lookup_binding_kind(&root) else { return };
+            let mut steps = Vec::new();
+            let mut place: &Expr = arg;
+            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                steps.push(object.id);
+                place = object;
+            }
+            self.pending_mutations.push(super::PendingMutation {
+                root: root.clone(),
+                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                kind,
+                span: arg.span,
+                steps,
+                call: None,
+            });
+            return;
+        }
+        let ExprKind::Ident(arg_name) = &arg.kind else { return };
+        match self.lookup_binding_kind(arg_name) {
+            Some(super::BindingKind::Let) if !arg_is_link => {
+                self.errors.push(TypeError::MutateConst { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::WithRead) => {
+                self.errors.push(TypeError::MutateWithBinding { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::Param) => {
+                self.errors.push(TypeError::MutateReadOnlyParam { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::Bound(from)) => {
+                self.errors.push(TypeError::MutateBoundName { name: arg_name.clone(), from, span: arg.span });
+            }
+            _ => {}
+        }
+    }
+
+    /// A call through a value whose type says nothing about its modes (a
+    /// type parameter, or a variable the solver hasn't placed): the markers
+    /// are all there is to read, and a `mutate` argument is a write the callee
+    /// may perform. It has to be a place the caller can write, the same as for
+    /// a callee the checker can see (mem.parameters/PM1, PM4).
+    fn check_marked_args_of_opaque_call(&mut self, args: &[CallArg]) {
+        for arg in args {
+            if matches!(arg.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                self.check_mutate_target(&arg.expr, false);
+            }
+        }
+    }
+
     /// `params` has `None` for a parameter whose symbol didn't resolve:
     /// nothing to check that argument against.
     fn check_arg_markers(&mut self, callee_name: &str, args: &[CallArg], params: &[Option<CallParam>]) {
@@ -3679,36 +3740,7 @@ impl TypeChecker {
             // `mutate` would launder a view into a writer in one hop. That's the
             // guarantee that makes `n: Link<T>` a usable read-only view.
             if is_mutate && !is_take {
-                if let ExprKind::Ident(arg_name) = &arg.expr.kind {
-                    match self.lookup_binding_kind(arg_name) {
-                        Some(super::BindingKind::Let) if !arg_is_link => {
-                            self.errors.push(TypeError::MutateConst {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::WithRead) => {
-                            self.errors.push(TypeError::MutateWithBinding {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::Param) => {
-                            self.errors.push(TypeError::MutateReadOnlyParam {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::Bound(from)) => {
-                            self.errors.push(TypeError::MutateBoundName {
-                                name: arg_name.clone(),
-                                from,
-                                span: arg.expr.span,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
+                self.check_mutate_target(&arg.expr, arg_is_link);
             }
 
             match (&arg.mode, is_take, is_mutate) {

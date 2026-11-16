@@ -1421,8 +1421,8 @@ impl ToDiagnostic for crate::OwnershipError {
             WithBlockStructuralMutation { collection, operation, via, binding_span } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, and a `with` block is holding an element of it", callee, collection),
-                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                        format!("`{}` can resize or reorder `{}`, and a `with` block is holding an element of it", callee, collection),
+                        format!("`{}` can grow, shrink or reorder `{}` through this argument", callee, collection),
                     ),
                     None => (
                         format!("cannot {} `{}` inside `with` block", operation, collection),
@@ -1436,7 +1436,9 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
                 .with_why(format!(
-                    "{} can reallocate, invalidating the borrowed element. If the elements \
+                    "{} can reallocate or move its elements (`push` and `remove` change the buffer, \
+                     `sort`, `swap` and `reverse` change which element sits where), \
+                     so the borrowed element would be gone or name a different one. If the elements \
                      reference each other and get deleted individually, that is what a `Rack` \
                      is for — a node never moves, so nothing invalidates [mem.borrowing/W2]",
                     collection
@@ -1598,8 +1600,8 @@ impl ToDiagnostic for crate::OwnershipError {
             ForMutateStructuralMutation { collection, operation, via, loop_span, loop_form } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, which a `{}` is iterating", callee, collection, loop_form),
-                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                        format!("`{}` can resize or reorder `{}`, which a `{}` is iterating", callee, collection, loop_form),
+                        format!("`{}` can grow, shrink or reorder `{}` through this argument", callee, collection),
                     ),
                     None => (
                         format!("cannot {} `{}` during `{}` — invalidates iteration", operation, collection, loop_form),
@@ -1611,7 +1613,7 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_primary(self.span, primary)
                 .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
                 .with_help("collect changes and apply them after the loop")
-                .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")
+                .with_why("structural mutations (insert, remove, push, clear, and reordering with sort, swap or reverse) invalidate the iterator — elements may shift, be reallocated or change places")
             }
 
             ForMutateTakeItem { item, collection, loop_span } => {
