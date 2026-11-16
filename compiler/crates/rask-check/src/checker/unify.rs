@@ -2518,7 +2518,16 @@ impl TypeChecker {
         if members.iter().any(|m| m == value) {
             return true;
         }
-        let open: Vec<&Type> = members.iter().filter(|m| self.fits_with_holes(m, value)).collect();
+        // An error type nothing has fixed yet (`E` in `E or void`) is not a
+        // reason to call the value an error: a `void` body is the success
+        // side there, and `E` is settled by the values that really are errors.
+        // Only a member with a head to match counts.
+        let has_head = |t: &Type| !matches!(self.ctx.apply(t), Type::Var(_));
+        if !has_head(value) {
+            return false;
+        }
+        let open: Vec<&Type> =
+            members.iter().filter(|m| has_head(m) && self.fits_with_holes(m, value)).collect();
         let [only] = open.as_slice() else { return false };
         let only = (*only).clone();
         self.unify(&only, value, span).is_ok()
