@@ -86,6 +86,10 @@ pub fn insert_rc_ops(
     // keeper, takes references of its own to what it holds.
     retain_views_handed_over(func, kept, own, &owns_copy, closure_keeps, copy_layouts);
 
+    // A join that might hand the frame's own value on gets a copy of it with
+    // references of its own, so the join always owns what it holds.
+    own_joins_of_kept_values(func, &owns_copy, copy_layouts);
+
     // And a Copy aggregate copied into a heap closure's environment.
     retain_copy_captures(func);
 
@@ -168,6 +172,122 @@ fn retain_copy_captures(func: &mut MirFunction) {
             func.blocks[bi].statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));
         }
     }
+}
+
+/// Give each way into a join of Copy aggregates that carries a value the frame
+/// keeps its own copy of, so the join owns what it holds on every way in.
+///
+/// ```text
+/// let p = Pt(s: mk(1))
+/// for i in 0..4 {
+///     let x = if i % 2 == 0 { p } else { Pt(s: mk(10 + i)) }
+///     keep.push(x)
+/// }
+/// println(p.s)
+/// ```
+///
+/// `x` is `p` on one way in and a fresh value on the other. The frame reads
+/// `p` afterwards, so `x` can't be `p`'s own reference, and on the fresh way
+/// it can't be released unless it is released on both: on the `p` way `x`
+/// *is* `p`, and a second release of it frees what `p` still holds. The
+/// release pass can't say which way it came and leaves `x` alone, which leaks
+/// the fresh value on every other turn (#1904).
+///
+/// Retaining on the edge where `p` flows in makes `x` a new value on that way
+/// too, with references of its own. Then it is the frame's to release or to
+/// hand to a keeper on both, and nothing needs a per-path answer.
+///
+/// Only a Copy aggregate: that is what a keeper copies. A non-Copy value read
+/// after it moved is the checker's error already.
+fn own_joins_of_kept_values(
+    func: &mut MirFunction,
+    owns_copy: &HashSet<LocalId>,
+    copy_layouts: &crate::CopyLayouts,
+) {
+    if !func.blocks.iter().flat_map(|b| b.statements.iter()).any(|s| matches!(s.kind, MirStmtKind::Phi { .. })) {
+        return;
+    }
+    let ty_of: HashMap<LocalId, MirType> =
+        func.locals.iter().chain(func.params.iter()).map(|l| (l.id, l.ty.clone())).collect();
+    let copy_aggregate = |l: &LocalId| {
+        ty_of.get(l).is_some_and(|t| aggregate_may_hold_string(t) && copy_layouts.is_copy(t))
+    };
+    let live = liveness::analyze_phis_on_edges(func);
+    let aliases = AddrAliases::build(func);
+    let mut source_of: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+            if dst != src {
+                source_of.entry(*dst).or_default().push(*src);
+            }
+        }
+    }
+
+    // (block, statement, argument, the name flowing in)
+    let mut rewrites: Vec<(usize, usize, usize, LocalId)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        let after_phis = block.statements.iter().take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. })).count();
+        for (si, stmt) in block.statements.iter().take(after_phis).enumerate() {
+            let MirStmtKind::Phi { dst, args } = &stmt.kind else { continue };
+            if !copy_aggregate(dst) || args.len() < 2 {
+                continue;
+            }
+            // Read once the join is behind us: the frame keeps its own.
+            let kept_after = |name: LocalId| {
+                block.statements[after_phis..].iter().any(|later| aliases.stmt_reads(later, name))
+                    || aliases.terminator_reads(&block.terminator, name)
+                    || live.live_at_exit(block.id, name)
+            };
+            for (ai, (_, op)) in args.iter().enumerate() {
+                let Some(a) = uses::operand_local(op) else { continue };
+                if !copy_aggregate(&a) || owns_copy.contains(&a) {
+                    continue;
+                }
+                let mut seen: HashSet<LocalId> = HashSet::new();
+                let mut todo = vec![a];
+                let mut kept = false;
+                while let Some(n) = todo.pop() {
+                    if !seen.insert(n) || seen.len() > 64 {
+                        continue;
+                    }
+                    if kept_after(n) {
+                        kept = true;
+                        break;
+                    }
+                    todo.extend(source_of.get(&n).into_iter().flatten().copied());
+                }
+                if kept {
+                    rewrites.push((bi, si, ai, a));
+                }
+            }
+        }
+    }
+    if rewrites.is_empty() {
+        return;
+    }
+
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0).max().map_or(0, |m| m + 1);
+    let mut edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
+    for (bi, si, ai, a) in rewrites {
+        let id = LocalId(next);
+        next += 1;
+        let ty = ty_of[&a].clone();
+        func.locals.push(crate::MirLocal { id, name: None, ty, is_param: false });
+        let to = func.blocks[bi].id;
+        let span = func.blocks[bi].statements[si].span;
+        let MirStmtKind::Phi { args, .. } = &mut func.blocks[bi].statements[si].kind else { continue };
+        let from = args[ai].0;
+        args[ai].1 = MirOperand::Local(id);
+        edges.push((
+            from,
+            to,
+            vec![
+                MirStmt::new(MirStmtKind::Assign { dst: id, rvalue: MirRValue::Use(MirOperand::Local(a)) }, span),
+                MirStmt::new(MirStmtKind::RcIncContents { local: id, for_hand_off: false }, span),
+            ],
+        ));
+    }
+    ownership::insert_on_edges(func, edges);
 }
 
 /// Does the call keep its argument at `i`, rather than only read it?
@@ -950,13 +1070,41 @@ fn insert_aggregate_release(
         while changed {
             changed = false;
             for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-                if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &st.kind {
-                    if let Some(slots) = map.get(src).cloned() {
-                        if !map.contains_key(dst) {
-                            map.insert(*dst, slots);
-                            changed = true;
-                        }
+                // The closure itself, a copy of it, or a handle that points
+                // into it (a borrowing task's, joined later: the body runs
+                // against the slots until then).
+                let (dst, from): (LocalId, Vec<LocalId>) = match &st.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                        (*dst, vec![*src])
                     }
+                    MirStmtKind::Call { func: fref, dst: Some(dst), args } if fref.points_into_args => {
+                        (*dst, args.iter().filter_map(uses::operand_local).collect())
+                    }
+                    MirStmtKind::Call { func: fref, dst: Some(dst), args }
+                        if crate::own_names::returns_a_view(&fref.name, own) =>
+                    {
+                        (*dst, args.first().and_then(uses::operand_local).into_iter().collect())
+                    }
+                    _ => continue,
+                };
+                let mut slots: Vec<LocalId> = from
+                    .iter()
+                    .filter_map(|src| map.get(src))
+                    .flatten()
+                    .copied()
+                    .collect();
+                slots.sort();
+                slots.dedup();
+                if slots.is_empty() {
+                    continue;
+                }
+                let have = map.entry(dst).or_default();
+                let before = have.len();
+                have.extend(slots);
+                have.sort();
+                have.dedup();
+                if have.len() != before {
+                    changed = true;
                 }
             }
         }

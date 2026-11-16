@@ -357,12 +357,24 @@ impl<'a> MirLowerer<'a> {
         // Left out, `p.run = || …` leaked the closure it replaced. An array's
         // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
         // `[string; 2]` field leaked the strings it replaced.
-        matches!(
-            fty,
-            MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::Array { .. } | MirType::FuncPtr(_) | MirType::Option(_)
-                | MirType::Result { .. }
-        )
+        // An optional or a result whose payload is Copy: reading one out
+        // (`take self.spare`) copies it with references of its own, so what the
+        // slot holds is still its own to give back. A non-Copy payload may have
+        // moved out, and which paths it did is the ownership pass's to say
+        // (`field_reuses`), so those stay as they were.
+        let copy_payload = matches!(fty, MirType::Option(_) | MirType::Result { .. })
+            && self.ctx.lookup_raw_type(target.id).is_some_and(|t| match &*t {
+                rask_types::Type::Result { ok, err } => {
+                    self.ctx.type_defs.is_copy(ok) && self.ctx.type_defs.is_copy(err)
+                }
+                _ => false,
+            });
+        (copy_payload
+            || matches!(
+                fty,
+                MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                    | MirType::Array { .. } | MirType::FuncPtr(_)
+            ))
         .then(|| fty.clone())
     }
 

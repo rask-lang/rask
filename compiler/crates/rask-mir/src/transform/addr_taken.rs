@@ -414,7 +414,11 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                     // first `c`, #1839). Not when the new value is built from
                     // the old one, which the zeroing would wipe, and not an
                     // array, whose copy on assignment has its own release.
-                    if ty.passed_by_address() && !matches!(ty, MirType::Array { .. }) && !reads_old {
+                    // Only a variable this frame owns: a `with` binding or a
+                    // closure's capture names storage somewhere else, and
+                    // lowering already gives back what a write over it
+                    // replaces.
+                    if taken.owned.contains(&dst) && ty.passed_by_address() && !matches!(ty, MirType::Array { .. }) && !reads_old {
                         out.push(MirStmt::new(MirStmtKind::ZeroAggregate { local: dst }, span));
                     }
                     out.push(MirStmt::new(
