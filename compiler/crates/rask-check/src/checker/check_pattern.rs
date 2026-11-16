@@ -221,17 +221,37 @@ impl TypeChecker {
         if name.contains('.') {
             return None;
         }
-        let id = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
-            Type::Named(id) => id,
+        let (id, args) = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
+            Type::Named(id) => (id, Vec::new()),
+            Type::Generic { base, args } => (
+                base,
+                args.iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
             _ => return None,
         };
-        let Some(TypeDef::Struct { name: struct_name, fields: declared, .. }) = self.types.get(id) else {
+        let Some(TypeDef::Struct { name: struct_name, fields: declared, type_params, .. }) = self.types.get(id) else {
             return None;
         };
         if struct_name != name {
             return None;
         }
-        let declared = declared.clone();
+        // A generic struct's fields are written in its parameters; the
+        // scrutinee's arguments say what they hold here.
+        let declared: Vec<(String, Type)> = if type_params.is_empty() || type_params.len() != args.len() {
+            declared.clone()
+        } else {
+            let subst: HashMap<&str, Type> =
+                type_params.iter().map(String::as_str).zip(args.iter().cloned()).collect();
+            declared
+                .iter()
+                .map(|(f, t)| (f.clone(), Self::substitute_type_params(t, &subst)))
+                .collect()
+        };
         let mut bindings = Vec::new();
         for field in fields {
             let PatternKind::Ident(n) = &field.kind else {
@@ -578,16 +598,50 @@ impl TypeChecker {
                 }
                 // Look up the struct type
                 if let Some(type_id) = self.types.get_type_id(name) {
+                    // A generic struct is `Generic { base, args }`, its
+                    // arguments the scrutinee's own when it says them. A bare
+                    // `Named` constraint made `Pair(first: "a", second)` against
+                    // a `Pair<string>` a mismatch of `Pair<string>` with `Pair`.
+                    let type_params = match self.types.get(type_id) {
+                        Some(TypeDef::Struct { type_params, .. }) => type_params.clone(),
+                        _ => Vec::new(),
+                    };
+                    let struct_args = if type_params.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.pattern_enum_args(type_id, type_params.len(), scrutinee_ty)
+                    };
+                    let struct_ty = if type_params.is_empty() {
+                        Type::Named(type_id)
+                    } else {
+                        Type::Generic {
+                            base: type_id,
+                            args: struct_args.iter().cloned().map(|t| GenericArg::Type(Box::new(t))).collect(),
+                        }
+                    };
                     // Constrain scrutinee to be this struct type
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         scrutinee_ty.clone(),
-                        Type::Named(type_id),
+                        struct_ty,
                         span,
                     ));
                     // Check each field pattern
                     let (struct_fields, private) = match self.types.get(type_id) {
                         Some(TypeDef::Struct { fields, private_fields, .. }) => {
-                            (Some(fields.clone()), private_fields.clone())
+                            let fields: Vec<(String, Type)> = if type_params.is_empty() {
+                                fields.clone()
+                            } else {
+                                let subst: HashMap<&str, Type> = type_params
+                                    .iter()
+                                    .map(String::as_str)
+                                    .zip(struct_args.iter().cloned())
+                                    .collect();
+                                fields
+                                    .iter()
+                                    .map(|(f, t)| (f.clone(), Self::substitute_type_params(t, &subst)))
+                                    .collect()
+                            };
+                            (Some(fields), private_fields.clone())
                         }
                         _ => (None, Vec::new()),
                     };

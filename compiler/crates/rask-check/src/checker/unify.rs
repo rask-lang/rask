@@ -2551,7 +2551,18 @@ impl TypeChecker {
             return h1 == h2 && args_fit(a1, a2);
         }
         match (&member, &value) {
-            (Type::Var(_), _) | (_, Type::Var(_)) => true,
+            (Type::Var(x), Type::Var(y)) if x == y => true,
+            // A literal's variable only fits the family it can become: a
+            // `{float}` is never an `i64`, so `E<f64> | E<i64>` still has one
+            // member a `2.25` payload can be.
+            (Type::Var(id), other) | (other, Type::Var(id)) => {
+                use super::inference::LiteralKind;
+                match self.ctx.literal_vars.get(id) {
+                    Some(LiteralKind::Float) => Self::is_float_type(other) || matches!(other, Type::Var(_)),
+                    Some(LiteralKind::Integer) => Self::is_integer_type(other) || matches!(other, Type::Var(_)),
+                    None => true,
+                }
+            }
             (Type::Tuple(x), Type::Tuple(y)) => {
                 x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.fits_with_holes(x, y))
             }

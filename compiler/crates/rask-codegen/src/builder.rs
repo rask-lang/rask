@@ -2354,6 +2354,8 @@ impl<'a> FunctionBuilder<'a> {
                             let (tag_size, _) = rask_layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
+                                4 => types::I32,
+                                8 => types::I64,
                                 _ => types::I8,
                             };
                             (offset, ty)
@@ -4439,6 +4441,11 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirType::Struct(id)) => {
                 if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
                     if let Some(field) = layout.fields.get(*field_index as usize) {
+                        // The field as MIR sees it. A newtype field's layout
+                        // type is the newtype's own name, which says nothing
+                        // about float or integer; MIR already looked through
+                        // it to what it wraps.
+                        let mir_field = ctx.field_types.struct_fields(id.id).get(*field_index as usize);
                         // Aggregate field: return pointer into parent struct.
                         // Covers both >8-byte structs and ≤8-byte enums/structs
                         // that use stack-slot representation in codegen.
@@ -4450,7 +4457,9 @@ impl<'a> FunctionBuilder<'a> {
                         // here from the size alone handed back the address and
                         // `ledger.balance` printed a stack address (#933).
                         if !matches!(access, FieldAccess::InRegister(_))
-                            && (field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx))
+                            && (field.size > 8
+                                || Self::is_aggregate_field_type(&field.ty, ctx)
+                                || mir_field.is_some_and(MirType::passed_by_address))
                         {
                             let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                             return Ok(addr);
@@ -4464,9 +4473,11 @@ impl<'a> FunctionBuilder<'a> {
                         let field_is_float = matches!(
                             &field.ty,
                             RaskType::F64 | RaskType::F32
-                        ) || (field.is_type_param && load_ty.is_float());
+                        ) || (field.is_type_param && load_ty.is_float())
+                            || matches!(mir_field, Some(MirType::F32 | MirType::F64));
                         load_ty = Self::field_scalar_type(field_is_float, field.size);
-                        from_mir = Self::rask_scalar_to_mir(&field.ty);
+                        from_mir = Self::rask_scalar_to_mir(&field.ty)
+                            .or_else(|| mir_field.and_then(|t| t.is_int_like().then(|| t.clone())));
                         field.offset as i32
                     } else {
                         0

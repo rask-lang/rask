@@ -2026,6 +2026,9 @@ impl<'a> MirLowerer<'a> {
             if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
                 return self.lower_struct_is(inner, val, val_ty, pattern);
             }
+            if super::match_lower::contains_or(pattern) {
+                return self.lower_is_or_pattern(inner, val, val_ty, pattern);
+            }
             let niche = self.option_niche(inner, &val_ty);
             let test = self.emit_is_test(inner, &val, &val_ty, niche, pattern)?;
             Ok((MirOperand::Local(test.matches), MirType::Bool))
@@ -8642,7 +8645,8 @@ impl<'a> MirLowerer<'a> {
     fn has_nested_variant(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
-            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. } => true,
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. }
+            | PatternKind::Tuple(_) => true,
             PatternKind::Ident(_) => !self.pattern_binds(p),
             _ => false,
         };
@@ -8714,10 +8718,7 @@ impl<'a> MirLowerer<'a> {
             out
         };
         match &pattern.kind {
-            PatternKind::Literal(lit) => {
-                let (lit_op, _) = self.lower_expr(lit).ok()?;
-                Some(compare(self, crate::operand::BinOp::Eq, lit_op))
-            }
+            PatternKind::Literal(lit) => self.emit_literal_eq(value, lit).ok(),
             PatternKind::Range { start, end } => {
                 let (lo, _) = self.lower_expr(start).ok()?;
                 let (hi, _) = self.lower_expr(end).ok()?;
@@ -9170,6 +9171,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         obj_op: &MirOperand,
         obj_ty: &MirType,
+        decl: Option<&rask_types::Type>,
         depth: u32,
     ) -> Result<Option<MirOperand>, LoweringError> {
         let lit = |this: &mut Self, text: &str| {
@@ -9182,9 +9184,11 @@ impl<'a> MirLowerer<'a> {
                 let Some(layout) = self.ctx.struct_layouts.get(id.id as usize).cloned() else {
                     return Ok(None);
                 };
-                // A program type sharing a stdlib type's name is laid out under
-                // a symbol of its own; it prints as written.
-                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
+                let name = self.written_layout_name(&layout.name, layout.key.as_ref());
+                // A generic struct's field declared as a type parameter has
+                // only a placeholder in the layout; the checker's type says
+                // what it holds.
+                let instantiated = decl.and_then(|d| self.struct_fields_of(d));
                 let mut parts: Vec<MirOperand> = Vec::new();
                 parts.push(lit(self, &format!("{}(", name)));
                 for (i, f) in layout.fields.iter().enumerate() {
@@ -9192,12 +9196,21 @@ impl<'a> MirLowerer<'a> {
                         parts.push(lit(self, ", "));
                     }
                     parts.push(lit(self, &format!("{}: ", f.name)));
-                    let field_ty = self.ctx.type_to_mir(&f.ty);
+                    let field_decl = instantiated
+                        .as_ref()
+                        .and_then(|fs| fs.iter().find(|(n, _)| *n == f.name))
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or_else(|| f.ty.clone());
+                    let field_ty = if f.is_type_param {
+                        self.ctx.type_to_mir(&field_decl)
+                    } else {
+                        self.ctx.type_to_mir(&f.ty)
+                    };
                     let field = self.builder.alloc_temp(field_ty.clone());
                     let f = f.clone();
                     self.read_layout_field(field, obj_op.clone(), i as u32, &f, &field_ty, f.offset);
                     parts.push(self.debug_render_value(
-                        &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                        &MirOperand::Local(field), &field_ty, Some(&field_decl), depth,
                     )?);
                 }
                 parts.push(lit(self, ")"));
@@ -9230,7 +9243,7 @@ impl<'a> MirLowerer<'a> {
                     default,
                 }));
 
-                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
+                let name = self.written_layout_name(&layout.name, layout.key.as_ref());
                 for (vi, variant) in layout.variants.iter().enumerate() {
                     self.builder.switch_to_block(arms[vi]);
                     let mut parts: Vec<MirOperand> = Vec::new();
@@ -9248,7 +9261,17 @@ impl<'a> MirLowerer<'a> {
                             if !rask_ast::decl::is_positional_field_name(&f.name) {
                                 parts.push(lit(self, &format!("{}: ", f.name)));
                             }
-                            let field_ty = self.ctx.type_to_mir(&f.ty);
+                            // A payload declared as a type parameter has only a
+                            // placeholder in the shared layout: read it at the
+                            // type the checker's `decl` gives it.
+                            let field_ty = self
+                                .ctx
+                                .variant_payload_mir(decl, &variant.name, fi)
+                                .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty));
+                            let field_decl = self
+                                .ctx
+                                .variant_payload_type(decl, &variant.name, fi)
+                                .unwrap_or_else(|| f.ty.clone());
                             let field = self.builder.alloc_temp(field_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                 dst: field,
@@ -9260,7 +9283,7 @@ impl<'a> MirLowerer<'a> {
                                 },
                             }));
                             parts.push(self.debug_render_value(
-                                &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                                &MirOperand::Local(field), &field_ty, Some(&field_decl), depth,
                             )?);
                         }
                         parts.push(lit(self, ")"));
@@ -9280,6 +9303,15 @@ impl<'a> MirLowerer<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// A type's name as the program wrote it, for a printed value: the
+    /// declaration's name, whichever instance's layout is being read. A
+    /// program type sharing a stdlib type's name is laid out under a symbol
+    /// of its own and prints as written.
+    fn written_layout_name(&self, layout_name: &str, key: Option<&rask_layout::LayoutKey>) -> String {
+        let declared = key.map_or_else(|| layout_name.to_string(), |k| self.ctx.type_defs.type_name(k.id));
+        self.ctx.type_defs.written_name(&declared).to_string()
     }
 
     /// One value inside a derived Debug: quoted for a string or char, recursive
@@ -9322,7 +9354,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
             MirType::Struct(_) | MirType::Enum(_) if depth + 1 < MAX_DEPTH => {
                 Ok(self
-                    .lower_derived_debug(op, ty, depth + 1)?
+                    .lower_derived_debug(op, ty, decl, depth + 1)?
                     .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string()))))
             }
             MirType::Struct(_) | MirType::Enum(_) => Ok(elided(self)),
@@ -9406,7 +9438,7 @@ impl<'a> MirLowerer<'a> {
             // the node — what the interpreter prints. A cycle through `next`
             // stops at the depth cap like a box that contains itself.
             MirType::Link(sid) if depth + 1 < MAX_DEPTH => Ok(self
-                .lower_derived_debug(op, &MirType::Struct(*sid), depth + 1)?
+                .lower_derived_debug(op, &MirType::Struct(*sid), decl, depth + 1)?
                 .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
             MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
@@ -11135,6 +11167,9 @@ impl<'a> MirLowerer<'a> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, rask_ast::expr::PatternKind::Struct { .. }) {
             return self.lower_struct_is(scrutinee, val, val_ty, pattern);
+        }
+        if super::match_lower::contains_or(pattern) {
+            return self.lower_is_or_pattern(scrutinee, val, val_ty, pattern);
         }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();

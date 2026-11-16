@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic error variant built from a bare number, returned from a `T or E`
+// function.
+//
+// `return Refusal.Full(2.25)` against `i64 or Refusal<f64>` was reported as
+// "expected `i64`, found `Refusal<f64>`": the literal's type was still open
+// inside `Refusal<{float}>`, which is not equal to `Refusal<f64>`, so the
+// checker took the value for the success side.
+
+enum Refusal<T> { Full(T), Other }
+
+func grow(i: i64) -> i64 or Refusal<f64> {
+    if i == 0 { return Refusal.Full(2.25) }
+    if i == 1 { return Refusal.Other }
+    return i
+}
+
+func count(i: i64) -> string or Refusal<i64> {
+    if i == 0 { return Refusal.Full(7) }
+    return "fine"
+}
+
+test "a float literal fills the error variant's payload" {
+    match grow(0) {
+        Refusal.Full(x) => assert x == 2.25
+        _ => assert false
+    }
+    assert grow(1) is Refusal<f64>
+    assert grow(5) is i64
+}
+
+test "an integer literal does too" {
+    match count(0) {
+        Refusal.Full(n) => assert n == 7
+        _ => assert false
+    }
+    assert count(1) is string
+}

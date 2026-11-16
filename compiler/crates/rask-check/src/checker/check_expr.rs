@@ -523,12 +523,12 @@ impl TypeChecker {
             || (matches!(suffix, Some(IntSuffix::U128)) && value < 0)
     }
 
-    fn is_integer_type(ty: &Type) -> bool {
+    pub(super) fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize)
     }
 
-    fn is_float_type(ty: &Type) -> bool {
+    pub(super) fn is_float_type(ty: &Type) -> bool {
         matches!(ty, Type::F32 | Type::F64)
     }
 
