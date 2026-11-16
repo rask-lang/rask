@@ -4273,7 +4273,10 @@ impl TypeChecker {
             // Span.from_millis(1)` came back "couldn't work out the type of `d`"
             // (#923).
             let aliased = self.types.alias_target_name(spelled);
-            let base_name = aliased.as_deref().unwrap_or(spelled);
+            // `import fs as files` makes `files.exists(p)` the call `fs.exists(p)`,
+            // on the module's namespace struct either way.
+            let module = self.module_named_by(object);
+            let base_name = aliased.as_deref().or(module).unwrap_or(spelled);
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
@@ -4949,6 +4952,9 @@ impl TypeChecker {
             let written = self.resolve_method_type_args(Some(module), function, type_args, span);
             self.written_method_type_args.insert(call_id, written);
         }
+        // The argument nodes, so a parameter that boxes (`any Writer`) can
+        // record its coercion once the call resolves (`coerce_arg`).
+        self.method_call_args.insert(call_id, args.iter().map(|a| a.expr.id).collect());
         let slots = self.stub_static_param_types(module, function);
         let arg_types: Vec<_> = args
             .iter()
