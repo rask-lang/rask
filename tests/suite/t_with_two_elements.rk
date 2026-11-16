@@ -77,7 +77,7 @@ test "the same index twice panics before the body runs" {
     mut note = ""
     mut ran = false
     using Multitasking {
-        let h = Thread.spawn {
+        let h = spawn {
             mut v: Vec<i64> = [1, 2]
             swap_at(mutate v, 1, 1)
             return v[0]
@@ -94,7 +94,7 @@ test "the same index twice panics before the body runs" {
 test "the same Map key twice panics" {
     mut note = ""
     using Multitasking {
-        let h = Thread.spawn {
+        let h = spawn {
             mut m: Map<string, i64> = Map.new()
             m.insert("k", 1)
             with m["k"] as x, m["k"] as y {
