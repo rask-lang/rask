@@ -260,6 +260,7 @@ impl<'a> MirLowerer<'a> {
                     &err_ty,
                     Some(concrete),
                     interface_name,
+                    false,
                 )?;
                 match boxed {
                     MirOperand::Local(id) => (id, boxed_ty.size()),

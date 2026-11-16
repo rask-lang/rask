@@ -83,6 +83,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
+    let interface_take_self = rask_check::interface_take_self_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
     // A generic instance's body shares the original's nodes; what differs is
@@ -99,6 +100,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     .with_extern_funcs(&extern_funcs)
     .with_package_modules(input.package_modules)
     .with_interface_methods(interface_methods)
+    .with_interface_take_self(interface_take_self)
     .with_mono_calls(input.mono)
     .with_nominal_underlying(&nominal_underlying);
     ctx.line_map = line_map.as_ref();

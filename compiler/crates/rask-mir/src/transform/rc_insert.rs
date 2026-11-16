@@ -627,7 +627,7 @@ fn insert_aggregate_release(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::InterfaceDrop { interface_object, owns: false } => Some(*interface_object),
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Borrows } => Some(*interface_object),
             _ => None,
         })
         .collect();
@@ -661,6 +661,45 @@ fn insert_aggregate_release(
             }
         }
         false
+    };
+
+    // The values a box only views, by every name the box goes by. A `take self`
+    // call through the box consumes what is inside, and those values are given
+    // up there on that path (the box was dropped as a borrower on the others).
+    let lent_to_box: HashMap<LocalId, Vec<LocalId>> = {
+        let mut lent: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::InterfaceBox { dst, value, .. } = &stmt.kind {
+                if let Some(v) = uses::operand_local(value).filter(|_| reaches_a_drop(*dst)) {
+                    lent.entry(*dst).or_default().push(v);
+                }
+            }
+        }
+        let mut changed = !lent.is_empty();
+        while changed {
+            changed = false;
+            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                let (dst, srcs): (LocalId, Vec<LocalId>) = match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                        (*dst, vec![*src])
+                    }
+                    MirStmtKind::Phi { dst, args } => {
+                        (*dst, args.iter().filter_map(|(_, op)| uses::operand_local(op)).collect())
+                    }
+                    _ => continue,
+                };
+                for src in srcs {
+                    for v in lent.get(&src).cloned().unwrap_or_default() {
+                        let into = lent.entry(dst).or_default();
+                        if !into.contains(&v) {
+                            into.push(v);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        lent
     };
 
     // Names that may come to name an aggregate or read into one: the
@@ -800,7 +839,22 @@ fn insert_aggregate_release(
         .filter(|(i, p)| (given_up(*i) || held.contains(p)) && tracked.contains(p))
         .map(|(_, p)| *p)
         .collect();
+    let slot_parts = struct_field_parts(func, &ty_of, &held);
+    // A field returned leaves the frame at the `return`, which is after the
+    // last place the struct could be released. The marker puts the
+    // hand-over on a statement, ahead of the release.
+    for block in func.blocks.iter_mut() {
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(n)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(n)), .. } = &block.terminator.kind
+        {
+            if slot_parts.contains_key(n) {
+                let marker = MirStmt::new(MirStmtKind::MovedOut { local: *n }, block.terminator.span);
+                block.statements.push(marker);
+            }
+        }
+    }
     let mut facts = ownership::Facts {
+        moved_parts: slot_parts.keys().copied().collect(),
         names: tracked.iter().copied().collect(),
         events: Vec::new(),
         terminator_events: Vec::new(),
@@ -1044,6 +1098,11 @@ fn insert_aggregate_release(
                         .filter(|v| !retained.contains(v) && !retained_for_this.contains(v))
                     {
                         hand_over(&mut ev, v);
+                    }
+                }
+                MirStmtKind::InterfaceCall { interface_object, takes_receiver: true, .. } => {
+                    for v in lent_to_box.get(interface_object).into_iter().flatten() {
+                        hand_over(&mut ev, *v);
                     }
                 }
                 MirStmtKind::InterfaceBox { dst, value, .. } => {
@@ -1302,6 +1361,35 @@ fn insert_aggregate_release(
         },
     );
     let mut by_block: HashMap<usize, Vec<(usize, LocalId, Option<usize>)>> = HashMap::new();
+    // The slot a field left empty when it was handed on, so that releasing
+    // the struct skips it. In front of the hand-over, and in front of a
+    // release at the same spot.
+    let mut clears: HashMap<usize, Vec<(usize, MirStmt)>> = HashMap::new();
+    for (bi, si, name, holders) in &plan.moved_out {
+        let Some((root, offset)) = slot_parts.get(name) else { continue };
+        let block = &func.blocks[*bi];
+        let span = block.statements.get(*si).map(|s| s.span).unwrap_or(block.terminator.span);
+        let mut copies: Vec<LocalId> =
+            holders.iter().copied().filter(|h| ty_of.get(h) == ty_of.get(root)).collect();
+        if !copies.contains(root) {
+            copies.push(*root);
+        }
+        for addr in copies {
+            clears.entry(*bi).or_default().push((
+                shifted.at(*bi, *si),
+                MirStmt::new(
+                    MirStmtKind::Store {
+                        addr,
+                        offset: *offset,
+                        value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                        store_size: 8,
+                        field: None,
+                    },
+                    span,
+                ),
+            ));
+        }
+    }
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
@@ -1340,6 +1428,12 @@ fn insert_aggregate_release(
             }
         }
     }
+    for (bi, mut list) in clears {
+        list.sort_by(|a, b| b.0.cmp(&a.0));
+        for (at, stmt) in list {
+            func.blocks[bi].statements.insert(at, stmt);
+        }
+    }
     // After the in-block ones: those index into the blocks as they were.
     let flag_edges = guards.edges(func);
     ownership::insert_on_edges(
@@ -1348,6 +1442,84 @@ fn insert_aggregate_release(
     );
     guards.finish(func);
     sites.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Names that hold a container or `Heap` block read out of a field of a
+/// struct (`_5 = _0.1`), or a copy of one, with the struct's local and the
+/// field's byte offset. Each is defined once, so the name says which field it
+/// is wherever it is handed on.
+///
+/// Only a field no other name can be reading a copy of: a `Copy` field is
+/// read again and again, and a closure or raw pointer read out of a struct is
+/// a view of what the struct keeps. A container or a `Heap` block is moved
+/// when it is handed on, and the struct is not the one to release it then.
+///
+/// Not a field of a held `mutate` parameter, which is the caller's slot with
+/// its own rules for moving out and refilling (`held_mutate_params`).
+fn struct_field_parts(
+    func: &MirFunction,
+    ty_of: &HashMap<LocalId, MirType>,
+    held: &[LocalId],
+) -> HashMap<LocalId, (LocalId, u32)> {
+    let mut defs: HashMap<LocalId, usize> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let Some(d) = uses::stmt_def(stmt) {
+            *defs.entry(d).or_default() += 1;
+        }
+    }
+    let once = |l: &LocalId| defs.get(l).copied().unwrap_or(0) <= 1;
+    // The local a name is a copy of, followed back.
+    let mut copy_of: HashMap<LocalId, LocalId> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+            if once(dst) {
+                copy_of.insert(*dst, *src);
+            }
+        }
+    }
+    let origin = |mut l: LocalId| {
+        let mut hops = 0;
+        while let Some(src) = copy_of.get(&l) {
+            l = *src;
+            hops += 1;
+            if hops > copy_of.len() {
+                break;
+            }
+        }
+        l
+    };
+    let mut out: HashMap<LocalId, (LocalId, u32)> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Field { base: MirOperand::Local(root), byte_offset: Some(offset), .. },
+        } = &stmt.kind
+        else {
+            continue;
+        };
+        let moves_out = matches!(ty_of.get(dst), Some(MirType::Container(_) | MirType::Heap(_)))
+            && matches!(ty_of.get(root), Some(MirType::Struct(_)))
+            && once(dst)
+            && !held.contains(&origin(*root));
+        if moves_out {
+            out.insert(*dst, (*root, *offset));
+        }
+    }
+    // A copy of one is the same field.
+    loop {
+        let mut grew = false;
+        for (dst, src) in &copy_of {
+            if let Some(part) = out.get(src).copied() {
+                if !out.contains_key(dst) {
+                    out.insert(*dst, part);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            return out;
+        }
+    }
 }
 
 /// Where each name's bytes sit, as a field path from the local they were

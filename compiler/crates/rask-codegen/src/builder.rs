@@ -301,6 +301,12 @@ enum CallAdapt {
     /// into the first slot and any panic message into the second (a 16-byte
     /// RaskStr). Build a `T or JoinError` in dst.
     JoinOutcome(LocalSlot, LocalSlot),
+    /// try_send: the call returned the channel's status and, on a refusal,
+    /// left the value where it was (the address passed in, and its size).
+    /// Build a
+    /// `void or TrySendError<T>`: Ok, or the variant the status names carrying
+    /// the value back.
+    TrySend(Option<(Value, u32)>),
 }
 
 /// A runtime call whose arguments are adapted by code written for it
@@ -320,6 +326,7 @@ enum HandAdapt {
     BoxNew,
     Atomic,
     Send,
+    TrySend,
     Receive,
     Parse,
     JoinOutcome,
@@ -345,6 +352,7 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
             HandAdapt::Atomic
         }
         "Sender_send" | "send" => HandAdapt::Send,
+        "Sender_try_send" => HandAdapt::TrySend,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
         "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
@@ -362,7 +370,7 @@ pub(crate) fn hand_adapted(name: &str) -> bool {
 }
 
 use rask_mono::runtime_abi::{
-    RASK_CHAN_CANCELLED, RASK_CHAN_EMPTY, RASK_CHAN_OK, RASK_JOIN_OK, RASK_JOIN_PANICKED, RASK_STROUT_EOF,
+    RASK_CHAN_CANCELLED, RASK_CHAN_EMPTY, RASK_CHAN_FULL, RASK_CHAN_OK, RASK_JOIN_OK, RASK_JOIN_PANICKED, RASK_STROUT_EOF,
 };
 
 pub struct FunctionBuilder<'a> {
@@ -1359,7 +1367,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::InterfaceBox { dst, value, vtable_name, concrete_size, .. } => Self::lower_interface_box(builder, dst, value, vtable_name, concrete_size, ctx)?,
 
-            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args, .. } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
 
             // A *borrowed* box — one built for a call while the frame keeps
             // the value — frees the block and nothing inside it: the value's
@@ -1368,15 +1376,17 @@ impl<'a> FunctionBuilder<'a> {
             // `rc_insert` puts the frame's own release after this statement.
             // Hence the null hook.
             //
-            // A box the value was *moved* into owns its contents (`owns`), and
+            // A box the value was *moved* into owns its contents (`Owns`), and
             // its release goes through the vtable's `owned_release`, which is
-            // what a container element's release does.
-            MirStmtKind::InterfaceDrop { interface_object, owns } => {
+            // what a container element's release does. One a `take self` call
+            // consumed (`Taken`) gave the contents to the method, so it frees
+            // the block alone, as a borrowed one does.
+            MirStmtKind::InterfaceDrop { interface_object, release } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "InterfaceDrop: interface object variable not found".to_string()
                     ))?);
-                if *owns {
+                if *release == rask_mir::BoxRelease::Owns {
                     // The variable holds the fat pointer's address, which is
                     // the slot shape a boxed field's release takes.
                     Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;
@@ -2354,6 +2364,8 @@ impl<'a> FunctionBuilder<'a> {
                             let (tag_size, _) = rask_layout::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
+                                4 => types::I32,
+                                8 => types::I64,
                                 _ => types::I8,
                             };
                             (offset, ty)
@@ -3288,7 +3300,10 @@ impl<'a> FunctionBuilder<'a> {
         let sig_ref = builder.import_signature(sig);
         let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
 
-        if let Some(dst_id) = dst {
+        // A method that returns nothing has no result to land: the call
+        // gave back no value, and nothing reads the void destination.
+        let answers = !matches!(ret_mir, Some(MirType::Void));
+        if let Some(dst_id) = dst.as_ref().filter(|_| answers) {
             let result = match dst_ptr {
                 Some(addr) => addr,
                 None => builder.inst_results(call_inst)[0],
@@ -4439,6 +4454,11 @@ impl<'a> FunctionBuilder<'a> {
             Some(MirType::Struct(id)) => {
                 if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
                     if let Some(field) = layout.fields.get(*field_index as usize) {
+                        // The field as MIR sees it. A newtype field's layout
+                        // type is the newtype's own name, which says nothing
+                        // about float or integer; MIR already looked through
+                        // it to what it wraps.
+                        let mir_field = ctx.field_types.struct_fields(id.id).get(*field_index as usize);
                         // Aggregate field: return pointer into parent struct.
                         // Covers both >8-byte structs and ≤8-byte enums/structs
                         // that use stack-slot representation in codegen.
@@ -4450,7 +4470,9 @@ impl<'a> FunctionBuilder<'a> {
                         // here from the size alone handed back the address and
                         // `ledger.balance` printed a stack address (#933).
                         if !matches!(access, FieldAccess::InRegister(_))
-                            && (field.size > 8 || Self::is_aggregate_field_type(&field.ty, ctx))
+                            && (field.size > 8
+                                || Self::is_aggregate_field_type(&field.ty, ctx)
+                                || mir_field.is_some_and(MirType::passed_by_address))
                         {
                             let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                             return Ok(addr);
@@ -4464,9 +4486,11 @@ impl<'a> FunctionBuilder<'a> {
                         let field_is_float = matches!(
                             &field.ty,
                             RaskType::F64 | RaskType::F32
-                        ) || (field.is_type_param && load_ty.is_float());
+                        ) || (field.is_type_param && load_ty.is_float())
+                            || matches!(mir_field, Some(MirType::F32 | MirType::F64));
                         load_ty = Self::field_scalar_type(field_is_float, field.size);
-                        from_mir = Self::rask_scalar_to_mir(&field.ty);
+                        from_mir = Self::rask_scalar_to_mir(&field.ty)
+                            .or_else(|| mir_field.and_then(|t| t.is_int_like().then(|| t.clone())));
                         field.offset as i32
                     } else {
                         0
@@ -5641,6 +5665,53 @@ impl<'a> FunctionBuilder<'a> {
                         builder.seal_block(err_block);
                         let variant = Self::chan_error_variant(builder, status, dst_id, ctx);
                         Self::build_err_variant(builder, ctx, dst_ss, &wrapper, variant);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
+                CallAdapt::TrySend(value_addr) => {
+                    let results = &call_results[..];
+                    let status = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    let dst = ctx.stack_slot_map.get(dst_id).copied().zip(Self::dst_wrapper(ctx, dst_id));
+                    if let Some(((dst_ss, _), wrapper)) = dst {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        Self::build_ok(builder, dst_ss, &wrapper, zero);
+                        builder.ins().jump(merge_block, &[]);
+
+                        // Full says so; anything else the channel reported is
+                        // closed. Both variants carry the value at the same
+                        // place, since both hold a `T`.
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let full = Self::err_variant_payload(&wrapper, "Full", ctx);
+                        let closed = Self::err_variant_payload(&wrapper, "Closed", ctx);
+                        let tag_of = |v: &Option<(i64, u32, u32)>| v.map(|(t, _, _)| t).unwrap_or(0);
+                        let is_full = builder.ins().icmp_imm(IntCC::Equal, status, RASK_CHAN_FULL);
+                        let full_tag = builder.ins().iconst(types::I64, tag_of(&full));
+                        let closed_tag = builder.ins().iconst(types::I64, tag_of(&closed));
+                        let variant = builder.ins().select(is_full, full_tag, closed_tag);
+                        Self::build_err_variant(builder, ctx, dst_ss, &wrapper, variant);
+                        // The size is the value's own: the error enum's layout
+                        // is shared by every `T` and holds a one-word
+                        // placeholder where the payload goes.
+                        if let (Some((src, size)), Some((_, offset, _))) = (value_addr, full.or(closed)) {
+                            let dst_addr = dst_ss.addr(builder, 0);
+                            Self::copy_bytes(builder, src, 0, dst_addr, offset as i32, size);
+                        }
                         builder.ins().jump(merge_block, &[]);
 
                         builder.switch_to_block(merge_block);
@@ -6961,6 +7032,20 @@ impl<'a> FunctionBuilder<'a> {
             variant = builder.ins().select(is, this, variant);
         }
         variant
+    }
+
+    /// A variant of the error enum on `wrapper`'s err side that carries one
+    /// field: its tag, and where that field sits from the start of the wrapper.
+    fn err_variant_payload(wrapper: &MirType, name: &str, ctx: &CodegenCtx) -> Option<(i64, u32, u32)> {
+        let MirType::Enum(id) = Self::wrapper_arm(wrapper, true) else { return None };
+        let layout = ctx.enum_layouts.get(id.id as usize)?;
+        let variant = layout.variants.iter().find(|v| v.name == name)?;
+        let field = variant.fields.first()?;
+        Some((
+            variant.tag as i64,
+            wrapper.payload_offset() + variant.payload_offset + field.offset,
+            field.size,
+        ))
     }
 
     /// Err(payload) into a Result slot, with no origin.
@@ -8480,6 +8565,20 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 // Custom entries return before `ret_adapt` is read.
                 CallAdapt::Status
+            }
+
+            // try_send hands the value over the same way `send` does. A
+            // refusal leaves it with us, and it goes back inside the error.
+            HandAdapt::TrySend => {
+                let mut value = None;
+                if args.len() >= 2 {
+                    let (size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
+                    if !is_struct {
+                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
+                    }
+                    value = Some((args[1], size as u32));
+                }
+                CallAdapt::TrySend(value)
             }
 
             // Both receives take the value through a buffer of the element's

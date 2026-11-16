@@ -83,7 +83,7 @@ The `as any Interface` cast marks the allocation site (TR5).
 
 | Rule | Description |
 |------|-------------|
-| **TR12: Vtable dispatch** | `any Interface` method calls go through a vtable — a table of function pointers, one per compatible method |
+| **TR12: Vtable dispatch** | `any Interface` method calls go through a vtable — a table of function pointers, one per compatible method. A method declared `take self` consumes the box (TR11): the method gets the value and releases it like any `take` parameter, and the box's block is freed at the call. So the receiver has to be one the caller owns, which a `for` loop's lent item or a borrowed parameter isn't (`mem.parameters/PM6`) |
 | **TR13: Two-word value** | `any Interface` is a fat pointer: data pointer and vtable pointer (16 bytes) |
 
 ## Drop

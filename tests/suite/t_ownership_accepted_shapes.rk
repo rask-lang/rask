@@ -1,0 +1,188 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The programs the ownership checker has to keep accepting while it refuses
+// their neighbours (tests/compile_errors/if_branch_value_moves.rk,
+// optional_local_pushed_twice.rk, mutate_through_function_value.rk,
+// reorder_under_with.rk, mutate_part_of_as_binding.rk,
+// match_payload_view_replaced.rk, view_through_index_replaced.rk,
+// unbounded_param_element_binding.rk). Each runs on both backends, so a
+// check that got too wide shows up here as a compile failure, and one that
+// got the rule right but the code wrong as a different answer.
+
+struct Acc {
+    total: i64
+}
+
+func add(mutate acc: Acc) {
+    acc.total += 1
+}
+
+func apply_mutable<F>(f: F, mutate acc: Acc) {
+    f(mutate acc)
+}
+
+func apply_local<F>(f: F) -> i64 {
+    mut local = Acc(total: 5)
+    f(mutate local)
+    return local.total
+}
+
+func bump(mutate x: i64) {
+    x = x + 100
+}
+
+func grab_copy<T: Copy>(mutate v: Vec<T>, take x: T) -> T {
+    let old = v[0]
+    v[0] = x
+    return old
+}
+
+func grab_replace<T>(mutate v: Vec<T>, take x: T) -> T {
+    return v.replace(0, x)
+}
+
+enum State {
+    Idle
+    Running(Vec<string>)
+}
+
+struct Machine {
+    state: State
+    ticks: i64
+}
+
+extend Machine {
+    func tick(mutate self) -> usize {
+        match self.state {
+            State.Running(job) => {
+                self.ticks += 1
+                return job.len()
+            }
+            State.Idle => return 0
+        }
+    }
+
+    func finish(mutate self) -> usize {
+        mut n = 0
+        match self.state {
+            State.Running(job) => {
+                n = job.len()
+            }
+            State.Idle => {}
+        }
+        self.state = State.Idle
+        return n
+    }
+}
+
+struct Box {
+    names: Vec<string>
+    tag: i64
+}
+
+struct Shelf {
+    boxes: Vec<Box>
+}
+
+extend Shelf {
+    func wipe_all(mutate self) {
+        for mutate b in self.boxes {
+            b.names = Vec.new()
+        }
+    }
+}
+
+test "a branch that hands a value over moves it on that path only" {
+    let fresh = Vec.from([1, 2, 3])
+    let other = Vec.from([4])
+    let r = if true { fresh } else { other }
+    assert r.len() == 3
+    let x = 5
+    let c = if true { x } else { 6 }
+    assert c + x == 10
+}
+
+test "a match arm that ends in a name moves it" {
+    let a = Vec.from([1, 2])
+    let b = Vec.from([3])
+    let r = match 1 {
+        0 => a
+        _ => b
+    }
+    assert r.len() == 1
+}
+
+test "a cloned optional can be pushed alongside the original" {
+    mut ks: Vec<string?> = Vec.new()
+    let so: string? = "item-long-enough-to-live-on-the-heap"
+    ks.push(so.clone())
+    ks.push(so)
+    assert ks.len() == 2
+    if ks[0]? as first {
+        assert first == "item-long-enough-to-live-on-the-heap"
+    }
+}
+
+test "a mutate parameter and a mut local pass through a function value" {
+    mut a = Acc(total: 1)
+    apply_mutable(add, mutate a)
+    assert a.total == 2
+    assert apply_local(add) == 6
+}
+
+test "a part of a mut binding is written in place" {
+    mut pair = ("a", 1)
+    bump(mutate pair.1)
+    assert pair.1 == 101
+}
+
+test "sorting another vector, or after the block, is fine" {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    mut w: Vec<string> = ["b", "a"]
+    with v[0] as z {
+        w.sort()
+        z = "{z}!"
+    }
+    v.sort()
+    assert v.join(" ") == "alpha zeta!"
+    assert w.join(" ") == "a b"
+}
+
+test "a bounded or replaced element comes out of a generic body" {
+    mut k: Vec<i64> = [5]
+    assert grab_copy(mutate k, 6) == 5
+    assert k[0] == 6
+    mut w: Vec<Vec<i64>> = [[1]]
+    let n: Vec<i64> = [2]
+    let o = grab_replace(mutate w, n)
+    assert o.len() == 1
+    assert w[0][0] == 2
+}
+
+test "a match arm's payload is read while another field is written" {
+    mut m = Machine(state: State.Running(["abc", "d"]), ticks: 0)
+    assert m.tick() == 2
+    assert m.ticks == 1
+    assert m.finish() == 2
+    assert m.tick() == 0
+}
+
+test "a view ends with its block, then the element's field can be replaced" {
+    mut s = Shelf(boxes: [Box(names: ["hello"], tag: 1)])
+    mut first = ""
+    if true {
+        let v = s.boxes[0].names
+        first = v[0]
+    }
+    s.wipe_all()
+    assert first == "hello"
+    assert s.boxes[0].names.len() == 0
+}
+
+test "writing another field of an element leaves a view of one alone" {
+    mut items: Vec<Box> = [Box(names: ["x"], tag: 1)]
+    let v = items[0].names
+    items[0].tag = 7
+    assert v[0] == "x"
+    assert items[0].tag == 7
+}

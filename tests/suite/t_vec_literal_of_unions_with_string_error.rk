@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Vec literal of `T or E` values whose error side carries a string.
+//
+// Native segfaulted building or releasing the elements.
+
+enum Bad { Msg(string), Code(i64) }
+
+func f(a: i64) -> i64 or Bad {
+    if a == 1 { return Bad.Msg("hey") }
+    return a
+}
+
+test "list literal of unions with a string error" {
+    let v = [f(3), f(1)]
+    assert v[0] is i64
+    assert !(v[1] is i64)
+    assert v.len() == 2
+}
+
+test "the error side keeps its string" {
+    let v = [f(1), f(2), f(1)]
+    match v[0] {
+        Bad.Msg(m) => assert m == "hey"
+        _ => assert false
+    }
+    assert v[1] is i64
+}
+
+func code_or_num(a: i64) -> i64 or Bad {
+    if a == 2 { return Bad.Code(9) }
+    return a
+}
+
+test "an element can be replaced and iterated" {
+    mut v = [f(3), f(1)]
+    v[0] = code_or_num(2)
+    v[1] = f(5)
+    match v[0] {
+        Bad.Code(c) => assert c == 9
+        _ => assert false
+    }
+    assert v[1] is i64
+    mut oks = 0
+    for x in v {
+        if x is i64 { oks += 1 }
+    }
+    assert oks == 1
+}

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// conc.async/C1, C6: a `using Multitasking` entered while another is open is a
+// runtime panic, not a hang. A function called from inside a task opens its own
+// block; the panic kills that task and arrives at the join (ctrl.panic/O1).
+//
+// Native used to start the inner block and then wait at its end for every task
+// to finish, the task it was running in among them.
+
+func opens_its_own() -> i64 {
+    using Multitasking {
+        let h = spawn { return 41 }
+        return h.join()! + 1
+    }
+}
+
+test "a nested block panics the task that entered it" {
+    mut panicked = false
+    mut note = ""
+    using Multitasking {
+        let outer = spawn { return opens_its_own() }
+        match outer.join() {
+            i64 as _ => { panicked = false },
+            JoinError.Panicked(msg) => {
+                panicked = true
+                note = msg
+            },
+        }
+    }
+    assert panicked
+    assert note.contains("nested `using Multitasking`")
+}
+
+test "blocks one after the other are fine" {
+    mut total = 0
+    using Multitasking {
+        total += spawn { return 1 }.join()!
+    }
+    using Multitasking {
+        total += spawn { return 2 }.join()!
+    }
+    assert total == 3
+}
+
+// A test that fails inside a block never reaches the block's end, and the next
+// test starts in the same process. It has to find the runtime closed, not take
+// its own first block for a nested one.
+test "a test that fails inside a block" {
+    expect_fail()
+    using Multitasking {
+        let h = spawn { return 1 }
+        assert h.join()! == 2
+    }
+}
+
+test "the next test still gets a block of its own" {
+    mut got = 0
+    using Multitasking {
+        got = spawn { return 5 }.join()!
+    }
+    assert got == 5
+}

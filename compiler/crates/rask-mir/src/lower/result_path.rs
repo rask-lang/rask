@@ -28,6 +28,18 @@ pub(super) struct ResultPath {
     pub member: Option<(usize, MirType)>,
     /// A variant of the enum the steps above reach.
     pub variant: Option<PathVariant>,
+    /// The success side is itself a `T or E` and the path goes on into it.
+    pub inner: Option<Box<ResultPath>>,
+}
+
+impl ResultPath {
+    /// The last step, which is where the member and the variant are.
+    pub(super) fn leaf(&self) -> &ResultPath {
+        match &self.inner {
+            Some(inner) => inner.leaf(),
+            None => self,
+        }
+    }
 }
 
 pub(super) struct PathVariant {
@@ -43,14 +55,25 @@ impl<'a> MirLowerer<'a> {
     /// The path `pat` names inside `val_ty`, a `T or E`. `None` when
     /// `val_ty` isn't one, or the pattern names no step of it (a binding).
     pub(super) fn result_path(&self, pat: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<ResultPath> {
+        self.path_to_target(self.pattern_target(pat)?, val_ty)
+    }
+
+    /// The path `target` names inside `val_ty`, a `T or E`.
+    fn path_to_target(&self, target: &rask_types::PatternTarget, val_ty: &MirType) -> Option<ResultPath> {
         let MirType::Result { ok, err } = val_ty else { return None };
-        match self.pattern_target(pat)? {
-            rask_types::PatternTarget::Side { err: is_err, member } => {
+        match target {
+            rask_types::PatternTarget::Side { err: is_err, member, inside } => {
                 let member = match (is_err, member, err.as_ref()) {
                     (true, Some(i), MirType::Union(members)) => Some((*i, members.get(*i)?.clone())),
                     _ => None,
                 };
-                Some(ResultPath { err: *is_err, present: false, member, variant: None })
+                let inner = match (inside, ok.as_ref()) {
+                    (Some(inside), MirType::Result { .. }) => {
+                        Some(Box::new(self.path_to_target(inside, ok)?))
+                    }
+                    _ => None,
+                };
+                Some(ResultPath { err: *is_err, present: false, member, variant: None, inner })
             }
             rask_types::PatternTarget::Variant { enum_id, variant } => {
                 let find = |t: &MirType| -> Option<PathVariant> {
@@ -62,7 +85,9 @@ impl<'a> MirLowerer<'a> {
                     let index = layout.variants.iter().position(|v| v.name == *variant)?;
                     Some(PathVariant { enum_ty: t.clone(), layout: eid.id as usize, index })
                 };
-                let path = |err, present, member, v| ResultPath { err, present, member, variant: Some(v) };
+                let path = |err, present, member, v| ResultPath {
+                    err, present, member, variant: Some(v), inner: None,
+                };
                 if let MirType::Union(members) = err.as_ref() {
                     for (i, m) in members.iter().enumerate() {
                         if let Some(v) = find(m) {
@@ -74,6 +99,14 @@ impl<'a> MirLowerer<'a> {
                 }
                 match ok.as_ref() {
                     MirType::Option(inner) => find(inner).map(|v| path(false, true, None, v)),
+                    // A variant of the success side's own result.
+                    MirType::Result { .. } => {
+                        let inner = self.path_to_target(target, ok)?;
+                        Some(ResultPath {
+                            err: false, present: false, member: None, variant: None,
+                            inner: Some(Box::new(inner)),
+                        })
+                    }
                     ok => find(ok).map(|v| path(false, false, None, v)),
                 }
             }
@@ -85,7 +118,8 @@ impl<'a> MirLowerer<'a> {
     /// or a variant. Those are what the plain ok/err tag can't answer.
     /// (`present` only ever leads to a variant, so it needs no check here.)
     pub(super) fn deep_result_path(&self, pat: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<ResultPath> {
-        self.result_path(pat, val_ty).filter(|p| p.member.is_some() || p.variant.is_some())
+        self.result_path(pat, val_ty)
+            .filter(|p| p.member.is_some() || p.variant.is_some() || p.inner.is_some())
     }
 
     /// The value at the end of `path`'s side, present and member steps, read
@@ -93,6 +127,9 @@ impl<'a> MirLowerer<'a> {
     /// the member inside it.
     fn result_path_value(&mut self, val: &MirOperand, val_ty: &MirType, path: &ResultPath) -> (MirOperand, MirType) {
         let (mut side, mut side_ty) = self.result_side_value(val, val_ty, path.err);
+        if let Some(inner) = &path.inner {
+            return self.result_path_value(&side, &side_ty, inner);
+        }
         if path.present {
             (side, side_ty) = self.option_value(side, &side_ty);
         }
@@ -129,6 +166,9 @@ impl<'a> MirLowerer<'a> {
     fn result_path_checked(&self, path: &ResultPath, val: Option<&rask_types::Type>) -> Option<rask_types::Type> {
         let rask_types::Type::Result { ok, err } = val? else { return None };
         let mut ty: rask_types::Type = if path.err { (**err).clone() } else { (**ok).clone() };
+        if let Some(inner) = &path.inner {
+            return self.result_path_checked(inner, Some(&ty));
+        }
         if path.present {
             ty = ty.as_option()?.clone();
         }
@@ -181,6 +221,14 @@ impl<'a> MirLowerer<'a> {
         let tag = self.emit_option_tag(val, None);
         let on_side = self.emit_eq_const(tag, path.err as i64);
         self.pass_or(on_side, fail);
+        if let Some(inner) = &path.inner {
+            let (side, side_ty) = self.result_side_value(val, val_ty, path.err);
+            let inner_checked = match checked {
+                Some(rask_types::Type::Result { ok, .. }) => Some(ok.as_ref()),
+                _ => None,
+            };
+            return self.emit_result_path_test(&side, &side_ty, inner_checked, inner, pattern, fail);
+        }
         if path.present {
             // An option's tag is 0 when it holds a value.
             let (side, _) = self.result_side_value(val, val_ty, path.err);
@@ -231,11 +279,12 @@ impl<'a> MirLowerer<'a> {
             PatternKind::TypePat { binding, .. } => binding.as_ref(),
             _ => None,
         };
-        if path.variant.is_none() && binding.is_none() {
+        let leaf = path.leaf();
+        if leaf.variant.is_none() && binding.is_none() {
             return;
         }
         let (value, value_ty) = self.result_path_value(val, val_ty, path);
-        let Some(variant) = &path.variant else {
+        let Some(variant) = &leaf.variant else {
             let Some(name) = binding else { return };
             self.bind_local(name, MirRValue::Use(value), value_ty);
             return;

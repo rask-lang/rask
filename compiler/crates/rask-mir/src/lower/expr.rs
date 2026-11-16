@@ -909,6 +909,20 @@ impl<'a> MirLowerer<'a> {
         self.ctx.enum_of(&ty).map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
     }
 
+    /// Is the expression a value written right here, which nothing else names?
+    /// A box made from one is its only owner.
+    fn builds_its_value(kind: &ExprKind) -> bool {
+        matches!(
+            kind,
+            ExprKind::StructLit { .. }
+                | ExprKind::Int(..)
+                | ExprKind::Float(..)
+                | ExprKind::String(_)
+                | ExprKind::Char(_)
+                | ExprKind::Bool(_)
+        )
+    }
+
     /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
     /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
     /// The vtable is the one monomorphization made for this type and interface.
@@ -918,6 +932,7 @@ impl<'a> MirLowerer<'a> {
         concrete_mir_ty: &MirType,
         concrete: Option<&rask_types::Type>,
         interface_name: &str,
+        owns_value: bool,
     ) -> Result<(MirOperand, MirType), LoweringError> {
         let vtable_name = concrete
             .and_then(|t| self.ctx.vtables.get(&(t.clone(), interface_name.to_string())))
@@ -945,6 +960,7 @@ impl<'a> MirLowerer<'a> {
             concrete_size,
             concrete_align,
             vtable_name,
+            owns_value,
         }));
 
         Ok((MirOperand::Local(result_local), interface_obj_ty))
@@ -1547,7 +1563,8 @@ impl<'a> MirLowerer<'a> {
         if !matches!(ty, MirType::InterfaceObject { .. }) {
             if let Some(interface_name) = self.ctx.interface_coercions.get(&expr.id).cloned() {
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name);
+                let owns_value = Self::builds_its_value(&expr.kind);
+                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name, owns_value);
             }
         }
         Ok((op, ty))
@@ -2032,6 +2049,9 @@ impl<'a> MirLowerer<'a> {
             if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
                 return self.lower_struct_is(inner, val, val_ty, pattern);
             }
+            if super::match_lower::contains_or(pattern) {
+                return self.lower_is_or_pattern(inner, val, val_ty, pattern);
+            }
             let niche = self.option_niche(inner, &val_ty);
             let test = self.emit_is_test(inner, &val, &val_ty, niche, pattern)?;
             Ok((MirOperand::Local(test.matches), MirType::Bool))
@@ -2176,7 +2196,8 @@ impl<'a> MirLowerer<'a> {
                 let interface_name = interface.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name);
+                let owns_value = Self::builds_its_value(&expr.kind);
+                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name, owns_value);
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
@@ -4070,6 +4091,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<(MirOperand, MirType), LoweringError> {
         if let (MirType::Result { ok, err }, Some(path)) = (val_ty, self.deep_result_path(pattern, val_ty)) {
+            if let Some(inner_path) = &path.inner {
+                return self.nested_rest_after_leaf(val, ok, err, inner_path);
+            }
             if let (Some((tested, _)), None) = (path.member, &path.variant) {
                 return Ok(self.union_rest_after_member(val, ok, err, tested));
             }
@@ -4178,6 +4202,93 @@ impl<'a> MirLowerer<'a> {
         (MirOperand::Local(dst), rest_ty)
     }
 
+    /// What is left of `(A or B) or E` once `A` (or `B`) is ruled out: the
+    /// other leaf of the inner result and `E`, as one `B or E` (or `A or E`).
+    /// The error stays the error, with its origin; when the success side's
+    /// inner result held the leaf that is left, that becomes the payload.
+    ///
+    /// A member of the inner result's error union leaves the inner result over
+    /// the members that are left, still inside the join's: `(T or (A | B)) or
+    /// J` less `A` is `(T or B) or J`, the type the checker gives it
+    /// (`without_leaf`). A variant can't be tested this way (`else as` needs a
+    /// leaf of the type to take out), so none arrives here.
+    fn nested_rest_after_leaf(
+        &mut self,
+        val: &MirOperand,
+        inner_ty: &MirType,
+        err_ty: &MirType,
+        tested: &super::result_path::ResultPath,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        let MirType::Result { ok: inner_ok, err: inner_err } = inner_ty else {
+            unreachable!("an inner path is only made for a success side that is a result")
+        };
+        if tested.variant.is_some() || tested.inner.is_some() {
+            return Err(LoweringError::InvalidConstruct(
+                "`else as` after a test that names a variant inside a join's own `T or E`: \
+                 the checker only binds the rest after a leaf type"
+                    .to_string(),
+            ));
+        }
+        // What is left of the inner result. A member of its error union
+        // leaves a result over the other members; a plain side leaves the
+        // other side.
+        let member = tested.member.as_ref().map(|(i, _)| *i);
+        let left_ty = match member {
+            Some(_) => MirType::Result {
+                ok: inner_ok.clone(),
+                err: Box::new(Self::union_without_member(inner_err, member.unwrap())),
+            },
+            // Testing the inner success side leaves the inner error, and the
+            // other way round.
+            None if tested.err => (**inner_ok).clone(),
+            None => (**inner_err).clone(),
+        };
+        let outer_ty = MirType::Result { ok: Box::new(inner_ty.clone()), err: Box::new(err_ty.clone()) };
+        let rest_ty = MirType::Result { ok: Box::new(left_ty.clone()), err: Box::new(err_ty.clone()) };
+        let dst = self.builder.alloc_temp(rest_ty.clone());
+        let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
+
+        self.builder.switch_to_block(err_blk);
+        let e = self.emit_option_payload(val.clone(), err_ty.clone(), false);
+        let failed = self.rewrap_err(val, MirOperand::Local(e), err_ty, &rest_ty);
+        self.assign_and_goto(dst, failed, done_blk);
+
+        // The inner result sits inline in the payload slot, so it is read by
+        // address, and its payload is the one leaf the test left.
+        self.builder.switch_to_block(ok_blk);
+        let inner = self.builder.alloc_temp(inner_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: inner,
+            rvalue: self.payload_field(val.clone(), &outer_ty, inner_ty),
+        }));
+        let left = match member {
+            Some(i) => self.union_rest_after_member(&MirOperand::Local(inner), inner_ok, inner_err, i).0,
+            None => MirOperand::Local(self.emit_option_payload(MirOperand::Local(inner), left_ty.clone(), false)),
+        };
+        let succeeded = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            left,
+            &left_ty,
+            &rest_ty,
+        );
+        self.assign_and_goto(dst, succeeded, done_blk);
+
+        self.builder.switch_to_block(done_blk);
+        Ok((MirOperand::Local(dst), rest_ty))
+    }
+
+    /// The union of the members left once member `tested` is out, or the one
+    /// member standing alone.
+    fn union_without_member(union_ty: &MirType, tested: usize) -> MirType {
+        let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
+        let rest: Vec<MirType> =
+            members.iter().enumerate().filter(|(i, _)| *i != tested).map(|(_, m)| m.clone()).collect();
+        match &rest[..] {
+            [only] => only.clone(),
+            _ => MirType::Union(rest),
+        }
+    }
+
     /// `T or B` out of a `T or (A | B)` that isn't an `A`: the success side as
     /// it was, and the error moved into the union of the members left, or
     /// standing alone when one is left.
@@ -4191,10 +4302,7 @@ impl<'a> MirLowerer<'a> {
         let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
         let rest: Vec<(usize, MirType)> =
             members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
-        let rest_err = match &rest[..] {
-            [(_, only)] => only.clone(),
-            _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
-        };
+        let rest_err = Self::union_without_member(union_ty, tested);
         let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
         let dst = self.builder.alloc_temp(rest_ty.clone());
         let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
@@ -6606,6 +6714,13 @@ impl<'a> MirLowerer<'a> {
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
+        } else if qualified_name == "Sender_try_send" {
+            // `void or TrySendError<T>`: the stub's `T` is a placeholder word,
+            // so the result took the shared layout of the error enum. A
+            // `string` handed back in `Full(v)` is sixteen bytes and was
+            // written, and read, past that slot. The call site knows what
+            // `T` became.
+            self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Result { .. }))
         } else if qualified_name == "string_parse" {
             // `parse<T>` yields `T or ParseError`. The stub's signature still
             // says the literal `T`, which maps to i64, so the fallback below
@@ -8676,7 +8791,8 @@ impl<'a> MirLowerer<'a> {
     fn has_nested_variant(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
-            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. } => true,
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. }
+            | PatternKind::Tuple(_) => true,
             PatternKind::Ident(_) => !self.pattern_binds(p),
             _ => false,
         };
@@ -8748,10 +8864,7 @@ impl<'a> MirLowerer<'a> {
             out
         };
         match &pattern.kind {
-            PatternKind::Literal(lit) => {
-                let (lit_op, _) = self.lower_expr(lit).ok()?;
-                Some(compare(self, crate::operand::BinOp::Eq, lit_op))
-            }
+            PatternKind::Literal(lit) => self.emit_literal_eq(value, lit).ok(),
             PatternKind::Range { start, end } => {
                 let (lo, _) = self.lower_expr(start).ok()?;
                 let (hi, _) = self.lower_expr(end).ok()?;
@@ -9204,6 +9317,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         obj_op: &MirOperand,
         obj_ty: &MirType,
+        decl: Option<&rask_types::Type>,
         depth: u32,
     ) -> Result<Option<MirOperand>, LoweringError> {
         let lit = |this: &mut Self, text: &str| {
@@ -9216,9 +9330,11 @@ impl<'a> MirLowerer<'a> {
                 let Some(layout) = self.ctx.struct_layouts.get(id.id as usize).cloned() else {
                     return Ok(None);
                 };
-                // A program type sharing a stdlib type's name is laid out under
-                // a symbol of its own; it prints as written.
-                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
+                let name = self.written_layout_name(&layout.name, layout.key.as_ref());
+                // A generic struct's field declared as a type parameter has
+                // only a placeholder in the layout; the checker's type says
+                // what it holds.
+                let instantiated = decl.and_then(|d| self.struct_fields_of(d));
                 let mut parts: Vec<MirOperand> = Vec::new();
                 parts.push(lit(self, &format!("{}(", name)));
                 for (i, f) in layout.fields.iter().enumerate() {
@@ -9226,12 +9342,21 @@ impl<'a> MirLowerer<'a> {
                         parts.push(lit(self, ", "));
                     }
                     parts.push(lit(self, &format!("{}: ", f.name)));
-                    let field_ty = self.ctx.type_to_mir(&f.ty);
+                    let field_decl = instantiated
+                        .as_ref()
+                        .and_then(|fs| fs.iter().find(|(n, _)| *n == f.name))
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or_else(|| f.ty.clone());
+                    let field_ty = if f.is_type_param {
+                        self.ctx.type_to_mir(&field_decl)
+                    } else {
+                        self.ctx.type_to_mir(&f.ty)
+                    };
                     let field = self.builder.alloc_temp(field_ty.clone());
                     let f = f.clone();
                     self.read_layout_field(field, obj_op.clone(), i as u32, &f, &field_ty, f.offset);
                     parts.push(self.debug_render_value(
-                        &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                        &MirOperand::Local(field), &field_ty, Some(&field_decl), depth,
                     )?);
                 }
                 parts.push(lit(self, ")"));
@@ -9264,7 +9389,7 @@ impl<'a> MirLowerer<'a> {
                     default,
                 }));
 
-                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
+                let name = self.written_layout_name(&layout.name, layout.key.as_ref());
                 for (vi, variant) in layout.variants.iter().enumerate() {
                     self.builder.switch_to_block(arms[vi]);
                     let mut parts: Vec<MirOperand> = Vec::new();
@@ -9282,7 +9407,17 @@ impl<'a> MirLowerer<'a> {
                             if !rask_ast::decl::is_positional_field_name(&f.name) {
                                 parts.push(lit(self, &format!("{}: ", f.name)));
                             }
-                            let field_ty = self.ctx.type_to_mir(&f.ty);
+                            // A payload declared as a type parameter has only a
+                            // placeholder in the shared layout: read it at the
+                            // type the checker's `decl` gives it.
+                            let field_ty = self
+                                .ctx
+                                .variant_payload_mir(decl, &variant.name, fi)
+                                .unwrap_or_else(|| self.ctx.type_to_mir(&f.ty));
+                            let field_decl = self
+                                .ctx
+                                .variant_payload_type(decl, &variant.name, fi)
+                                .unwrap_or_else(|| f.ty.clone());
                             let field = self.builder.alloc_temp(field_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                 dst: field,
@@ -9294,7 +9429,7 @@ impl<'a> MirLowerer<'a> {
                                 },
                             }));
                             parts.push(self.debug_render_value(
-                                &MirOperand::Local(field), &field_ty, Some(&f.ty), depth,
+                                &MirOperand::Local(field), &field_ty, Some(&field_decl), depth,
                             )?);
                         }
                         parts.push(lit(self, ")"));
@@ -9314,6 +9449,15 @@ impl<'a> MirLowerer<'a> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// A type's name as the program wrote it, for a printed value: the
+    /// declaration's name, whichever instance's layout is being read. A
+    /// program type sharing a stdlib type's name is laid out under a symbol
+    /// of its own and prints as written.
+    fn written_layout_name(&self, layout_name: &str, key: Option<&rask_layout::LayoutKey>) -> String {
+        let declared = key.map_or_else(|| layout_name.to_string(), |k| self.ctx.type_defs.type_name(k.id));
+        self.ctx.type_defs.written_name(&declared).to_string()
     }
 
     /// One value inside a derived Debug: quoted for a string or char, recursive
@@ -9356,7 +9500,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
             MirType::Struct(_) | MirType::Enum(_) if depth + 1 < MAX_DEPTH => {
                 Ok(self
-                    .lower_derived_debug(op, ty, depth + 1)?
+                    .lower_derived_debug(op, ty, decl, depth + 1)?
                     .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string()))))
             }
             MirType::Struct(_) | MirType::Enum(_) => Ok(elided(self)),
@@ -9440,7 +9584,7 @@ impl<'a> MirLowerer<'a> {
             // the node — what the interpreter prints. A cycle through `next`
             // stops at the depth cap like a box that contains itself.
             MirType::Link(sid) if depth + 1 < MAX_DEPTH => Ok(self
-                .lower_derived_debug(op, &MirType::Struct(*sid), depth + 1)?
+                .lower_derived_debug(op, &MirType::Struct(*sid), decl, depth + 1)?
                 .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
             MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
@@ -10965,6 +11109,11 @@ impl<'a> MirLowerer<'a> {
                         method_name: method.clone(),
                         vtable_offset,
                         args: arg_operands,
+                        takes_receiver: self
+                            .ctx
+                            .interface_take_self
+                            .get(interface_name)
+                            .is_some_and(|methods| methods.contains(method)),
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok(Some((MirOperand::Local(result_local), ret_ty)));
@@ -11146,6 +11295,9 @@ impl<'a> MirLowerer<'a> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, rask_ast::expr::PatternKind::Struct { .. }) {
             return self.lower_struct_is(scrutinee, val, val_ty, pattern);
+        }
+        if super::match_lower::contains_or(pattern) {
+            return self.lower_is_or_pattern(scrutinee, val, val_ty, pattern);
         }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();

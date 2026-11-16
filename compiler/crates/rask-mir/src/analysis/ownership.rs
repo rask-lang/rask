@@ -164,6 +164,13 @@ pub struct Facts {
     /// What one holds is the caller's to release if a panic unwinds past
     /// this frame, so the frame's unwind record never takes it.
     pub caller_slots: Vec<LocalId>,
+    /// Names holding a container or `Heap` block read out of a field of a
+    /// struct, where nothing else holds that struct's bytes. Handed on while
+    /// the struct is the frame's, such a name takes the field with it and
+    /// leaves the rest of the struct ours: the pass empties the field's slot
+    /// at the hand-over (`Plan::moved_out`), and the struct is released
+    /// where it normally would be, minus that field.
+    pub moved_parts: BTreeSet<LocalId>,
 }
 
 /// A release to insert, under `name`. `made` is the name the value was made
@@ -587,6 +594,7 @@ fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(us
 /// out to be the next field of the value already in the slot.
 fn apply(
     st: &mut State,
+    moved: &BTreeSet<LocalId>,
     events: &[Event],
     bi: usize,
     si: usize,
@@ -658,7 +666,7 @@ fn apply(
                     .filter_map(|b| b.value().and_then(|v| st.guard.get(&v).copied()))
                     .collect();
                 for src in srcs {
-                    hand_over(st, *src);
+                    hand_over(st, moved, *src);
                 }
                 if ours && flags.len() <= 1 {
                     make(st, *dst, bi, si);
@@ -672,7 +680,7 @@ fn apply(
             Event::Other(n) => {
                 st.bind.insert(*n, BTreeSet::from([Bind::Other]));
             }
-            Event::HandOver(n) | Event::Carry(n) => hand_over(st, *n),
+            Event::HandOver(n) | Event::Carry(n) => hand_over(st, moved, *n),
             Event::Fill(n) => {
                 let held = st.binds(*n);
                 let only = (held.len() == 1).then(|| *held.iter().next().unwrap());
@@ -720,7 +728,30 @@ fn written_through(st: &mut State, n: LocalId) {
     }
 }
 
-fn hand_over(st: &mut State, n: LocalId) {
+/// The struct a `moved_parts` name takes a field out of when handed on, if
+/// the frame owns it outright here. Only then is it the field that leaves:
+/// where the struct is ours only under a flag, or may be somebody else's, the
+/// pass has no single place to empty the slot, and the whole goes with it.
+fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<Value> {
+    if !moved.contains(&n) {
+        return None;
+    }
+    let held = st.binds(n);
+    let Some(Bind::Part(v)) = (held.len() == 1).then(|| *held.iter().next().unwrap()) else {
+        return None;
+    };
+    (st.owned(v) && !st.guard.contains_key(&v)).then_some(v)
+}
+
+fn hand_over(st: &mut State, moved: &BTreeSet<LocalId>, n: LocalId) {
+    // A field moved out of a struct the frame owns leaves the rest of it
+    // ours: released where the struct would have been, field slot emptied.
+    // The name stops standing for the struct, so that what it was handed to
+    // doesn't keep the rest of it needed.
+    if field_taken_from(st, moved, n).is_some() {
+        st.bind.insert(n, BTreeSet::from([Bind::Other]));
+        return;
+    }
     for b in st.binds(n) {
         if let Bind::Own(v) | Bind::Part(v) = b {
             if st.own.contains_key(&v) {
@@ -944,11 +975,11 @@ fn transfer(
         if is_phi(func, bi, si) {
             continue;
         }
-        apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], updates);
+        apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], updates);
         killed_at(&mut st, kills, bi, si);
     }
     let len = func.blocks[bi].statements.len();
-    apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], updates);
+    apply(&mut st, &facts.moved_parts, &facts.terminator_events[bi], bi, len, &live.out[bi], updates);
     st
 }
 
@@ -1097,6 +1128,13 @@ pub struct Plan {
     pub unwind: Vec<Mark>,
     /// The drop flags `releases` and `unwind` name by index.
     pub guards: Vec<Guard>,
+    /// Hand-overs of a `Facts::moved_parts` name that took a field out of a
+    /// struct the frame owns: `(block, statement, name, holders)`, by index.
+    /// The statement index is the block's length for the terminator. The
+    /// holders are every name that holds the struct's bytes there: copies of an
+    /// aggregate are copies of its bytes, so the field is emptied in each, and
+    /// whichever one the struct is released under later skips it.
+    pub moved_out: Vec<(usize, usize, LocalId, Vec<LocalId>)>,
 }
 
 /// Where each value this frame owns is released, and under which name.
@@ -1129,7 +1167,10 @@ pub fn plan_carrying(
     disjoint: &dyn Fn(LocalId, LocalId) -> bool,
 ) -> (Plan, Carried) {
     if func.blocks.is_empty() {
-        return (Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new() }, Carried::new());
+        return (
+            Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new(), moved_out: Vec::new() },
+            Carried::new(),
+        );
     }
     let mut flags = FlagIndex::default();
     let sh = shape(func, &facts.names);
@@ -1229,7 +1270,55 @@ pub fn plan_carrying(
     };
     let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
     let guards = flags.guards(func, &defs);
-    (Plan { releases: out, unwind, guards }, carried)
+    let moved_out = if facts.moved_parts.is_empty() {
+        Vec::new()
+    } else {
+        fields_moved_out(func, facts, &live, &entries, &kills)
+    };
+    (Plan { releases: out, unwind, guards, moved_out }, carried)
+}
+
+/// The hand-overs that take a field out of a struct the frame owns, against
+/// the settled state: `(block, statement, name)`.
+fn fields_moved_out(
+    func: &MirFunction,
+    facts: &Facts,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+) -> Vec<(usize, usize, LocalId, Vec<LocalId>)> {
+    let note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<(usize, usize, LocalId, Vec<LocalId>)>| {
+        for ev in events {
+            let names: Vec<LocalId> = match ev {
+                Event::HandOver(n) | Event::Carry(n) => vec![*n],
+                Event::Remake { srcs, .. } => srcs.clone(),
+                _ => continue,
+            };
+            for n in names {
+                let Some(v) = field_taken_from(st, &facts.moved_parts, n) else { continue };
+                if !out.iter().any(|(b, s, m, _)| (*b, *s, *m) == (bi, si, n)) {
+                    out.push((bi, si, n, st.holders(v)));
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for bi in 0..func.blocks.len() {
+        let Some(entry) = &entries[bi] else { continue };
+        let mut st = entry.clone();
+        let len = func.blocks[bi].statements.len();
+        for si in 0..len {
+            if is_phi(func, bi, si) {
+                continue;
+            }
+            let events = &facts.events[bi][si];
+            note(&st, events, bi, si, &mut out);
+            apply(&mut st, &facts.moved_parts, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            killed_at(&mut st, kills, bi, si);
+        }
+        note(&st, &facts.terminator_events[bi], bi, len, &mut out);
+    }
+    out
 }
 
 /// The `Carry` events that hand over an owned value, or part of one, that
@@ -1280,7 +1369,7 @@ fn carried_outright(
                     out.insert((bi, si, *n));
                 }
             }
-            apply(&mut st, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            apply(&mut st, &facts.moved_parts, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             killed_at(&mut st, kills, bi, si);
         }
     }
@@ -1324,7 +1413,7 @@ fn after_last_use(
                 continue;
             }
             let before = st.clone();
-            apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             killed_at(&mut st, kills, bi, si);
             let touched: Vec<LocalId> = facts.reads[bi][si]
                 .iter()
@@ -1598,7 +1687,7 @@ fn unwind_marks(
             note_reads(&st, &mut read, &facts.reads[bi][si]);
             let held_before: BTreeMap<Value, Vec<LocalId>> =
                 arm.keys().map(|v| (*v, st.holders(*v))).collect();
-            apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             forget_made(&mut read, &facts.events[bi][si], bi, si);
             // Handed over, or no longer held by the name it was armed under:
             // gone before the statement runs, because a callee that panics
@@ -1665,7 +1754,7 @@ fn unwind_marks(
         }
         // A cleanup return released everything still ours just before it; the
         // `ensure` bodies it runs next can still panic.
-        apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
+        apply(&mut st, &facts.moved_parts, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
         let cleanup_return =
             matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
         for (v, name) in arm.clone() {
@@ -1775,7 +1864,7 @@ fn read_since_made(
                     continue;
                 }
                 note_reads(&st, &mut read, &facts.reads[bi][si]);
-                apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+                apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
                 forget_made(&mut read, &facts.events[bi][si], bi, si);
                 killed_at(&mut st, kills, bi, si);
             }

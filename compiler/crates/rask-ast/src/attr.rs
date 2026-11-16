@@ -98,6 +98,10 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // comp.effects/FX1)
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
+    // Moves elements to other slots without changing how many there are
+    // (`sort`, `swap`, `reverse`): a place held inside the receiver names a
+    // different element afterwards (mem.borrowing/W2)
+    ("reorders", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
     ("moves_out", ArgForm::Exprs, Writer::Stdlib),

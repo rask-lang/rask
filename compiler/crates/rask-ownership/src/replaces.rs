@@ -30,6 +30,25 @@ use crate::OwnershipChecker;
 /// A field path under a parameter.
 pub(crate) type Path = Vec<String>;
 
+/// The step into an element of a `Vec` or `Map`, in a path: `boxes.[].names`
+/// is the `names` of any element of `boxes`. Which element isn't known, so a
+/// write to one counts as a write to all.
+pub(crate) const ELEM: &str = "[]";
+
+/// A root and its steps as written: `s.boxes[…].names`.
+pub(crate) fn render_steps(root: &str, steps: &[String]) -> String {
+    let mut out = root.to_string();
+    for step in steps {
+        if step == ELEM {
+            out.push_str("[…]");
+        } else {
+            out.push('.');
+            out.push_str(step);
+        }
+    }
+    out
+}
+
 /// What a function may do to one parameter.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Effects {
@@ -184,13 +203,21 @@ impl<'a> OwnershipChecker<'a> {
             checker: &'c OwnershipChecker<'a>,
             param: &'c str,
             fx: Effects,
+            /// The items of the `for mutate` loops being walked, each as the
+            /// element path under the parameter it stands for.
+            items: Vec<(String, Path)>,
         }
         impl Walk<'_, '_> {
             /// `place` and `under` as a path under the parameter, if it's one.
-            fn path(&self, place: &Expr, under: &[String]) -> Option<Path> {
-                let (root, mut path) = self.checker.written_place(place)?;
+            /// A write goes through elements (`self.boxes[i].names`) and
+            /// through a loop's item, which is an element of what it walks; a
+            /// read stops at the first element, as the summary always has.
+            fn path(&self, place: &Expr, under: &[String], writing: bool) -> Option<Path> {
+                let (root, mut path) = self.checker.place_of(place, writing)?;
                 if root != self.param {
-                    return None;
+                    let (_, mut through) = self.items.iter().rev().find(|(n, _)| *n == root).filter(|_| writing)?.clone();
+                    through.extend(path);
+                    path = through;
                 }
                 path.extend(under.iter().cloned());
                 path.truncate(MAX_PATH);
@@ -198,12 +225,12 @@ impl<'a> OwnershipChecker<'a> {
             }
             fn call(&mut self, e: &Expr) {
                 for (place, under) in self.checker.call_writes(e) {
-                    if let Some(p) = self.path(place, &under) {
+                    if let Some(p) = self.path(place, &under, true) {
                         self.fx.writes.push(p);
                     }
                 }
                 for (place, under) in self.checker.call_reads(e) {
-                    if let Some(p) = self.path(place, &under) {
+                    if let Some(p) = self.path(place, &under, false) {
                         self.fx.reads.push(p);
                     }
                 }
@@ -237,7 +264,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     // `take p.f` reads the field out and leaves it empty.
                     ExprKind::Take { place } => {
-                        if let Some(p) = self.path(place, &[]) {
+                        if let Some(p) = self.path(place, &[], false) {
                             self.fx.writes.push(p.clone());
                             self.fx.reads.push(p);
                             return false;
@@ -245,7 +272,7 @@ impl<'a> OwnershipChecker<'a> {
                         true
                     }
                     ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::OptionalField { .. } => {
-                        if let Some(p) = self.path(e, &[]) {
+                        if let Some(p) = self.path(e, &[], false) {
                             self.fx.reads.push(p);
                             return false;
                         }
@@ -255,8 +282,25 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             fn stmt(&mut self, s: &'e Stmt) -> bool {
+                if let StmtKind::For { binding, mutate: true, iter, body, .. } = &s.kind {
+                    visit::visit_expr(iter, self);
+                    let source = match &iter.kind {
+                        ExprKind::MethodCall { object, .. } => object,
+                        _ => iter,
+                    };
+                    let mark = self.items.len();
+                    if let Some(mut walked) = self.path(source, &[], true) {
+                        walked.push(ELEM.to_string());
+                        for name in binding.names() {
+                            self.items.push((name.to_string(), walked.clone()));
+                        }
+                    }
+                    visit::visit_body(body, self);
+                    self.items.truncate(mark);
+                    return false;
+                }
                 let StmtKind::Assign { target, value, .. } = &s.kind else { return true };
-                if let Some(p) = self.path(target, &[]) {
+                if let Some(p) = self.path(target, &[], true) {
                     self.fx.writes.push(p);
                 }
                 // Writing a field doesn't read it; a target that isn't a plain
@@ -269,7 +313,7 @@ impl<'a> OwnershipChecker<'a> {
                 false
             }
         }
-        let mut w = Walk { checker: self, param, fx: Effects::default() };
+        let mut w = Walk { checker: self, param, fx: Effects::default(), items: Vec::new() };
         visit::visit_body(body, &mut w);
         // A parameter the function only borrows can't be written through it.
         let writes = if may_write { minimal(w.fx.writes) } else { Vec::new() };
@@ -323,9 +367,16 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     None if self.is_container_receiver(object) => {
                         // A stdlib container's own method grows or empties it
-                        // and replaces no handle, but reads all of it.
+                        // and replaces no handle, but reads all of it. One that
+                        // removes elements frees them, and whatever a caller
+                        // views inside one goes with it.
                         if !writes {
                             each(object, vec![Vec::new()]);
+                        } else {
+                            let effect = self.program.declared_effects(e.id);
+                            if effect.shrinks || effect.drops_elements {
+                                each(object, vec![vec![ELEM.to_string()]]);
+                            }
                         }
                         for a in args.iter().filter(|a| unknown(a)) {
                             each(&a.expr, vec![Vec::new()]);
@@ -403,18 +454,31 @@ impl<'a> OwnershipChecker<'a> {
     /// = …` writes `slots`. An element of a `Vec` isn't: a view of the vector
     /// shares its handle and sees the new element.
     pub(crate) fn written_place(&self, e: &Expr) -> Option<(String, Path)> {
+        self.place_of(e, false)
+    }
+
+    /// `written_place`, and with `elements` also through an index into a
+    /// `Vec` or `Map`, as a step `ELEM`. A write through one can land in any
+    /// element, so it is a write to the field of all of them.
+    pub(crate) fn place_of(&self, e: &Expr, elements: bool) -> Option<(String, Path)> {
         match &e.kind {
             ExprKind::Ident(name) => Some((name.clone(), Vec::new())),
             ExprKind::Field { object, field } | ExprKind::OptionalField { object, field } => {
-                let (root, mut path) = self.written_place(object)?;
+                let (root, mut path) = self.place_of(object, elements)?;
                 path.push(field.clone());
                 Some((root, path))
             }
-            ExprKind::Unwrap { expr, .. } => self.written_place(expr),
-            ExprKind::Index { object, .. }
-                if matches!(self.node_ty(&object.id), Some(rask_types::Type::Array { .. })) =>
-            {
-                self.written_place(object)
+            ExprKind::Unwrap { expr, .. } => self.place_of(expr, elements),
+            ExprKind::Index { object, .. } => {
+                let (root, mut path) = self.place_of(object, elements)?;
+                if matches!(self.node_ty(&object.id), Some(rask_types::Type::Array { .. })) {
+                    return Some((root, path));
+                }
+                if !elements {
+                    return None;
+                }
+                path.push(ELEM.to_string());
+                Some((root, path))
             }
             _ => None,
         }

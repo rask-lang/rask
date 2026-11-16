@@ -116,13 +116,15 @@ func check_variant(v: Value, cases: Vec<Case>, shared: Vec<Field>, at: string, m
     for c in cases {
         names.push(c.name)
     }
-    let entries = match v {
-        Value.Table(es) => es,
-        _ => {
-            errors.push("{at}: expected a table holding one of {quoted_list(names)}, found {v.kind()}")
-            return
-        }
+    if v is Table(entries) {
+        check_variant_entries(entries, cases, shared, names, at, mutate errors)
+    } else {
+        errors.push("{at}: expected a table holding one of {quoted_list(names)}, found {v.kind()}")
     }
+}
+
+// The table `check_variant` was given, read in place: it belongs to the caller.
+func check_variant_entries(entries: Vec<Entry>, cases: Vec<Case>, shared: Vec<Field>, names: Vec<string>, at: string, mutate errors: Vec<string>) {
     mut tags = Vec<string>.new()
     for e in entries {
         if names.contains(e.key) {

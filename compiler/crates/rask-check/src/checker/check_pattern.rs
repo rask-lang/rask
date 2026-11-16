@@ -221,17 +221,37 @@ impl TypeChecker {
         if name.contains('.') {
             return None;
         }
-        let id = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
-            Type::Named(id) => id,
+        let (id, args) = match normalize_type(&self.ctx.apply(scrutinee_ty), &self.types) {
+            Type::Named(id) => (id, Vec::new()),
+            Type::Generic { base, args } => (
+                base,
+                args.iter()
+                    .filter_map(|a| match a {
+                        GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
             _ => return None,
         };
-        let Some(TypeDef::Struct { name: struct_name, fields: declared, .. }) = self.types.get(id) else {
+        let Some(TypeDef::Struct { name: struct_name, fields: declared, type_params, .. }) = self.types.get(id) else {
             return None;
         };
         if struct_name != name {
             return None;
         }
-        let declared = declared.clone();
+        // A generic struct's fields are written in its parameters; the
+        // scrutinee's arguments say what they hold here.
+        let declared: Vec<(String, Type)> = if type_params.is_empty() || type_params.len() != args.len() {
+            declared.clone()
+        } else {
+            let subst: HashMap<&str, Type> =
+                type_params.iter().map(String::as_str).zip(args.iter().cloned()).collect();
+            declared
+                .iter()
+                .map(|(f, t)| (f.clone(), Self::substitute_type_params(t, &subst)))
+                .collect()
+        };
         let mut bindings = Vec::new();
         for field in fields {
             let PatternKind::Ident(n) = &field.kind else {
@@ -433,7 +453,15 @@ impl TypeChecker {
                         self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), candidate.clone()));
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
-                        if branches.contains(&candidate) {
+                        // A generic error written without its arguments
+                        // (`r is TrySendError`) names the one branch with that
+                        // head, as the `as` form does (`branch_named`).
+                        let by_head = branches
+                            .iter()
+                            .filter(|b| self.same_type_head(b, &candidate))
+                            .count()
+                            == 1;
+                        if branches.contains(&candidate) || by_head {
                             return vec![];
                         }
                         // A branch that hasn't resolved yet can't be compared
@@ -578,16 +606,50 @@ impl TypeChecker {
                 }
                 // Look up the struct type
                 if let Some(type_id) = self.types.get_type_id(name) {
+                    // A generic struct is `Generic { base, args }`, its
+                    // arguments the scrutinee's own when it says them. A bare
+                    // `Named` constraint made `Pair(first: "a", second)` against
+                    // a `Pair<string>` a mismatch of `Pair<string>` with `Pair`.
+                    let type_params = match self.types.get(type_id) {
+                        Some(TypeDef::Struct { type_params, .. }) => type_params.clone(),
+                        _ => Vec::new(),
+                    };
+                    let struct_args = if type_params.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.pattern_enum_args(type_id, type_params.len(), scrutinee_ty)
+                    };
+                    let struct_ty = if type_params.is_empty() {
+                        Type::Named(type_id)
+                    } else {
+                        Type::Generic {
+                            base: type_id,
+                            args: struct_args.iter().cloned().map(|t| GenericArg::Type(Box::new(t))).collect(),
+                        }
+                    };
                     // Constrain scrutinee to be this struct type
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         scrutinee_ty.clone(),
-                        Type::Named(type_id),
+                        struct_ty,
                         span,
                     ));
                     // Check each field pattern
                     let (struct_fields, private) = match self.types.get(type_id) {
                         Some(TypeDef::Struct { fields, private_fields, .. }) => {
-                            (Some(fields.clone()), private_fields.clone())
+                            let fields: Vec<(String, Type)> = if type_params.is_empty() {
+                                fields.clone()
+                            } else {
+                                let subst: HashMap<&str, Type> = type_params
+                                    .iter()
+                                    .map(String::as_str)
+                                    .zip(struct_args.iter().cloned())
+                                    .collect();
+                                fields
+                                    .iter()
+                                    .map(|(f, t)| (f.clone(), Self::substitute_type_params(t, &subst)))
+                                    .collect()
+                            };
+                            (Some(fields), private_fields.clone())
                         }
                         _ => (None, Vec::new()),
                     };
@@ -840,20 +902,32 @@ impl TypeChecker {
 
     /// Which side of `scrutinee`, a `T or E`, the type `named` is: the error
     /// side (`true`) or the success side, and the index of the member it
-    /// names when the error side is a union. `None` when it is neither,
-    /// which the check has already reported.
-    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<(bool, Option<usize>)> {
+    /// names when the error side is a union. A success side that is a
+    /// `T or E` of its own is searched too, and the answer says where in it
+    /// (`inside`). `None` when it is neither, which the check has already
+    /// reported.
+    pub(super) fn pattern_side(&mut self, scrutinee: &Type, named: &Type) -> Option<rask_types::PatternTarget> {
+        use rask_types::PatternTarget::Side;
         let resolved = self.ctx.apply(scrutinee);
         let Type::Result { ok, err } = &resolved else { return None };
         let named = normalize_type(&self.ctx.apply(named), &self.types);
         // `none` is the absent side of an optional.
         if named == Type::None {
-            return Some((true, None));
+            return Some(Side { err: true, member: None, inside: None });
         }
         let ok_leaves = two_branch_leaves(&mut self.ctx, &self.types, ok);
         let names = |this: &Self, l: &Type| *l == named || this.same_type_head(l, &named);
         if ok_leaves.iter().any(|l| names(self, l)) {
-            return Some((false, None));
+            // `T? or E` keeps its two layers apart in MIR and numbers their
+            // leaves itself; only a success side that is a result goes down.
+            let ok_applied = self.ctx.apply(ok);
+            let inside = match &ok_applied {
+                Type::Result { .. } if ok_applied.as_option().is_none() => {
+                    self.pattern_side(&ok_applied, &named).map(Box::new)
+                }
+                _ => None,
+            };
+            return Some(Side { err: false, member: None, inside });
         }
         // The member index counts in canonical order, which is how MIR lays
         // a union out whatever order a substitution left this one in.
@@ -864,9 +938,9 @@ impl TypeChecker {
         match err {
             Type::Union(members) => {
                 let member = members.iter().position(|l| names(self, l))?;
-                Some((true, Some(member)))
+                Some(Side { err: true, member: Some(member), inside: None })
             }
-            other => names(self, &other).then_some((true, None)),
+            other => names(self, &other).then_some(Side { err: true, member: None, inside: None }),
         }
     }
 

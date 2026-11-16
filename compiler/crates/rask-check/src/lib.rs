@@ -19,5 +19,5 @@ pub use rask_layout::no_params;
 pub use interfaces::{
     InterfaceBound, InterfaceChecker, InterfaceError,
     verify_instantiation, implements_interface, bound_implies_copy, substitute_type,
-    COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, interface_requires, object_compatible_methods, interface_vtable_methods,
+    COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, interface_requires, object_compatible_methods, interface_vtable_methods, interface_take_self_methods,
 };
