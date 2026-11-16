@@ -7,16 +7,15 @@ per million tokens, input/output, from the API pricing page (checked
 - **Haiku 5.5 ($0.10/$0.50) is twenty times cheaper than Sonnet only while its
   prompt is under 100K tokens.** Past that the whole request costs five times
   as much ($0.50/$2.50). So the scout is capped at 100K, gets no CLAUDE.md and
-  does short jobs. Anything with a long loop or a judgment in it is a worker's.
+  does short jobs. Anything with a long loop or a judgment in it is the main session's.
 - **Sonnet 5.5 ($2/$10)** runs the one optional background worker, at `high`:
   at lower effort it is documented to call a change done without running the
   check. It is cheaper per token than Opus, but that only pays while its cache
   stays warm (below).
-- **Opus 5.5 ($4/$20) defaults to `medium`**, right for routine work and wrong
-  for the two places it's used here. Both are pinned to `high`: a review runs
-  once and a miss ships, and an escalated task already beat Sonnet twice.
-  `xhigh` and `max` stay off until a bug that `high` missed shows they'd have
-  caught it.
+- **Opus 5.5 ($4/$20) defaults to `medium`**, right for the main session's
+  routine work. The skeptics are pinned to `high`: a review runs once and a
+  miss ships. `xhigh` and `max` stay off until a bug that `high` missed shows
+  they'd have caught it.
 - **Opus does the coding**, in the main session. Its cache lives an hour.
   A subagent's cache lasts minutes, so a worker that waits on a ten-minute
   build pays to write its whole context again when it returns, at 25 times
