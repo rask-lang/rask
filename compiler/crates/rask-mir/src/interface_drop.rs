@@ -632,6 +632,7 @@ fn box_facts(
     use crate::analysis::uses;
     let names: std::collections::BTreeSet<LocalId> = tracked.iter().copied().collect();
     let mut facts = crate::analysis::ownership::Facts {
+        moved_parts: Default::default(),
         names: names.clone(),
         events: Vec::new(),
         terminator_events: Vec::new(),
