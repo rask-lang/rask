@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An explicit type argument on a call through a package (#1929): the rewrite
+// that turns `libpkg.plain(5)` into a plain call skipped every call that
+// carried type arguments, so `libpkg.plain<i64>(5)` was left as a method call
+// on a name that isn't a value.
+
+import libpkg
+
+func main() {
+    println("{libpkg.plain(5)}")
+    println("{libpkg.plain<i64>(5)}")
+    println("{libpkg.plain<string>(\"five\")}")
+    println("{libpkg.first<i64, string>(7, \"x\")}")
+    return
+}
+
+test "a qualified call with type arguments answers the same on the interpreter" {
+    assert libpkg.plain<i64>(5) == 5
+    assert libpkg.plain<string>("five") == "five"
+    assert libpkg.first<i64, string>(7, "x") == 7
+}
