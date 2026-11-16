@@ -2140,7 +2140,9 @@ impl<'a> OwnershipChecker<'a> {
         let Some(ty) = self.node_ty(&init.id).cloned() else {
             return;
         };
-        if self.copy_verdict(&ty) != CopyVerdict::Move {
+        // Nothing asks again per instantiation here, so an unbounded `T` is
+        // the move G1a says it is.
+        if self.copy_verdict_params_move(&ty) != CopyVerdict::Move {
             return;
         }
         let collection = match &init.kind {
@@ -6438,6 +6440,10 @@ impl<'a> OwnershipChecker<'a> {
     /// Is `name` a type parameter of the function being walked?
     fn names_type_param(&self, name: &str) -> bool {
         self.type_params_in_scope.iter().any(|p| p == name)
+    }
+
+    fn copy_verdict_params_move(&self, ty: &Type) -> CopyVerdict {
+        self.program.types.copy_verdict_params_move(ty, &|name| self.names_type_param(name), &|name| self.copy_params.contains(name))
     }
 
     fn copy_verdict(&self, ty: &Type) -> CopyVerdict {
