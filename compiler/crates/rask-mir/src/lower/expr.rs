@@ -6692,35 +6692,6 @@ impl<'a> MirLowerer<'a> {
             // the return type for `corresponding` entirely, and its `?` test
             // then read a tag that isn't there.
             self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
-        } else if matches!(qualified_name.as_str(),
-            "Receiver_receive" | "Receiver_try_receive")
-        {
-            // The stub's `T or E` doesn't survive to MIR — neither side has a
-            // name by the time it gets here, so the fallback typed the result a
-            // bare i64. `r?` then read a tag off a local that never got a Result
-            // slot and every receive looked like a failure (#463); for
-            // `try_receive` the ok/err routing ran out of type identities and
-            // fell through to a capitalization guess that sent the success case
-            // to the error tag, so the ok branch ran on an empty channel and
-            // read a payload nothing had written (#631).
-            let stub = qualified_name.as_str();
-            // The checker's answer has to be a wrapper — a `Result` or an
-            // `Option`. The nested `!matches!(**ok, MirType::Ptr)` this used to
-            // carry was the same guess at "the ok side is still `T`" the rest of
-            // the file made; `lookup_node_type` refuses a real type parameter
-            // and keeps a channel of `Vec`s, which is legitimately `Ptr`
-            // inside.
-            self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
-                .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
-                .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
-        } else if qualified_name == "Sender_try_send" {
-            // `void or TrySendError<T>`: the stub's `T` is a placeholder word,
-            // so the result took the shared layout of the error enum. A
-            // `string` handed back in `Full(v)` is sixteen bytes and was
-            // written, and read, past that slot. The call site knows what
-            // `T` became.
-            self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Result { .. }))
         } else if qualified_name == "string_parse" {
             // `parse<T>` yields `T or ParseError`. The stub's signature still
             // says the literal `T`, which maps to i64, so the fallback below
@@ -6740,6 +6711,25 @@ impl<'a> MirLowerer<'a> {
                     ok: Box::new(target),
                     err: Box::new(self.ctx.resolve_type_name("ParseError")),
                 }))
+        } else if rask_stdlib::mir_metadata::declared_shape(&qualified_name)
+            .is_some_and(|s| s.generic_result())
+        {
+            // `receive` is `T or ReceiveError`, `try_send` is `void or
+            // TrySendError<T>`: the declaration's `T` is a placeholder word, so
+            // neither side has a name by the time it gets here and the result
+            // took a bare i64 or the shared layout of the error enum. `r?` then
+            // read a tag off a local that never got a Result slot and every
+            // receive looked like a failure (#463); for `try_receive` the ok/err
+            // routing fell through to a capitalization guess that sent the
+            // success case to the error tag (#631); and a `string` handed back in
+            // `Full(v)` is sixteen bytes, written and read past its slot.
+            //
+            // The checker's answer has to be a wrapper — a `Result` or an
+            // `Option`. `lookup_node_type` refuses a real type parameter and
+            // keeps a channel of `Vec`s, which is legitimately `Ptr` inside.
+            // Without one, the declaration's type is the fallback below.
+            self.ctx.lookup_node_type(expr.id)
+                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
         } else {
             None
         }.unwrap_or_else(|| self

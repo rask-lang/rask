@@ -343,6 +343,7 @@ pub struct CallShape {
     moves_out: bool,
     eager_callback: bool,
     fresh_release: Option<&'static str>,
+    generic_result: bool,
 }
 
 impl CallShape {
@@ -357,6 +358,7 @@ impl CallShape {
             moves_out: false,
             eager_callback: false,
             fresh_release: None,
+            generic_result: false,
         }
     }
 
@@ -412,6 +414,16 @@ impl CallShape {
             .last_segment()
             .filter(|head| !matches!(*head, "Vec" | "Map" | "Rack"))
             .and_then(crate::handles::declared_release);
+        // A `T or E<T>` or `T?` answer: the declaration says it holds one of
+        // the type's own parameters, so what the slot is made of is the call
+        // site's to say.
+        let generic_result = matches!(m.ret_ty, TypeExpr::Result { .. } | TypeExpr::Optional(_)) && {
+            let mut found = false;
+            m.ret_ty.walk_paths(&mut |path| {
+                found |= matches!(path, [name] if name.len() == 1 && name.chars().all(|c| c.is_ascii_uppercase()));
+            });
+            found
+        };
         Self {
             receiver,
             given,
@@ -419,6 +431,7 @@ impl CallShape {
             moves_out: m.moves_out,
             eager_callback: m.eager_callback,
             fresh_release,
+            generic_result,
         }
     }
 
@@ -458,6 +471,14 @@ impl CallShape {
     /// Does the call use up its closure argument before it returns?
     pub fn is_eager_callback(&self) -> bool {
         self.eager_callback
+    }
+
+    /// Is the declared answer a `Result` or an optional that mentions one of
+    /// the type's own parameters? Its layout is whatever the call site's type
+    /// made of them, so lowering reads the checker's type for the call rather
+    /// than the declaration's.
+    pub fn generic_result(&self) -> bool {
+        self.generic_result
     }
 
     /// What releases the handle this call hands back, when it hands back a
