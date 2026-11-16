@@ -20,6 +20,11 @@ per million tokens, input/output, from the API pricing page (checked
   A subagent's cache lasts minutes, so a worker that waits on a ten-minute
   build pays to write its whole context again when it returns, at 25 times
   the read price. Twice the per-token price is the smaller cost.
+- **What a subagent costs is its context size times its cache misses.** A
+  fresh agent with a short brief that finishes inside one cache window is
+  cheap, and the Haiku scout costs cents even when every call misses. The
+  overnight builders were the other end: long-lived, resumed, waiting on slow
+  builds. Spawn the first kind freely; don't make the second.
 
 ## What a turn costs
 
