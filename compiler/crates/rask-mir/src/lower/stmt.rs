@@ -793,6 +793,16 @@ impl<'a> MirLowerer<'a> {
                 // was dropped on the floor — native printed the old value back
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
+                // `c = if cond { c } else { new }`: on one way in the new value
+                // is the old one, on the other the old one is garbage. Which
+                // way is only known at run time, and the release pass can't
+                // name one holder for it, so the assignment goes into each arm:
+                // `c = c` writes nothing, and `c = new` releases the old `c`
+                // like any other write over it (#1841).
+                if let Some(split) = Self::assign_into_arms(stmt, target, value) {
+                    self.lower_expr(&split)?;
+                    return Ok(());
+                }
                 // `p = p`, `s.f = s.f`: nothing changes, and releasing the
                 // slot before the store would free the value being stored.
                 if same_place(target, value) {
@@ -3974,6 +3984,82 @@ pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
 
 /// Do two expressions name the same place — the same binding and the same
 /// field path?
+impl MirLowerer<'_> {
+    /// `target = if cond { … tail } else { … tail }`, or a `match`, as the same
+    /// expression whose arms each end in an assignment of their own tail, or
+    /// `None` when the value isn't that shape.
+    ///
+    /// An arm that doesn't name the target builds its value from nothing the
+    /// slot holds, so its write is an ordinary one that releases the old value.
+    /// One that does (`c = Wrap(inner: c)`) keeps the statement's own id, so it
+    /// is still read as built from the old value.
+    fn assign_into_arms(stmt: &Stmt, target: &Expr, value: &Expr) -> Option<Expr> {
+        let ExprKind::Ident(name) = &target.kind else { return None };
+        // Only a value that reads the slot it writes: the others have no
+        // join with the old value to untangle.
+        let mut reads_target = false;
+        rask_ast::visit::walk_expr(value, &mut |e| {
+            if matches!(&e.kind, ExprKind::Ident(n) if n == name) {
+                reads_target = true;
+            }
+        });
+        if !reads_target {
+            return None;
+        }
+        // The arm's own statements, then the write of its tail. A bare
+        // expression body is a tail with no statements before it.
+        let arm = |branch: &Expr| -> Option<Expr> {
+            let (init, tail, span): (Vec<Stmt>, &Expr, _) = match &branch.kind {
+                ExprKind::Block(stmts) => {
+                    let (last, init) = stmts.split_last()?;
+                    let StmtKind::Expr(tail) = &last.kind else { return None };
+                    (init.to_vec(), tail, last.span)
+                }
+                _ => (Vec::new(), branch, branch.span),
+            };
+            let mut mentions = false;
+            rask_ast::visit::walk_expr(tail, &mut |e| {
+                if matches!(&e.kind, ExprKind::Ident(n) if n == name) {
+                    mentions = true;
+                }
+            });
+            let id = if mentions { stmt.id } else { rask_ast::NodeId::DUMMY };
+            let mut out = init;
+            out.push(Stmt {
+                id,
+                kind: StmtKind::Assign { target: target.clone(), value: tail.clone(), op: None },
+                span,
+            });
+            Some(Expr { id: branch.id, span: branch.span, kind: ExprKind::Block(out) })
+        };
+        let kind = match &value.kind {
+            ExprKind::If { cond, then_branch, else_branch: Some(else_branch), else_binding: None }
+                if !matches!(cond.kind, ExprKind::IsPresent { .. }) =>
+            {
+                ExprKind::If {
+                    cond: cond.clone(),
+                    then_branch: Box::new(arm(then_branch)?),
+                    else_branch: Some(Box::new(arm(else_branch)?)),
+                    else_binding: None,
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let mut split = Vec::with_capacity(arms.len());
+                for a in arms {
+                    split.push(rask_ast::expr::MatchArm {
+                        pattern: a.pattern.clone(),
+                        guard: a.guard.clone(),
+                        body: Box::new(arm(&a.body)?),
+                    });
+                }
+                ExprKind::Match { scrutinee: scrutinee.clone(), arms: split }
+            }
+            _ => return None,
+        };
+        Some(Expr { id: value.id, span: value.span, kind })
+    }
+}
+
 fn same_place(a: &Expr, b: &Expr) -> bool {
     match (&a.kind, &b.kind) {
         (ExprKind::Ident(x), ExprKind::Ident(y)) => x == y,
