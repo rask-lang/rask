@@ -3091,6 +3091,7 @@ fn cells_this_frame_frees(
         }
     }
 
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
     let mut out = Vec::new();
     for cell in &by_ref_cells {
         let Some(values) = stores.get(cell) else { continue };
@@ -3106,10 +3107,14 @@ fn cells_this_frame_frees(
             _ => false,
         };
         if values.iter().any(|(v, _)| is_string(v)) {
-            if let [(_, store_block)] = values.as_slice() {
-                if ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
-                    out.push((*cell, Holds::Str, *store_block));
-                }
+            // The first store fills the cell; the rest overwrite it, and
+            // `insert_cell_drops` releases what each one covers. The first has
+            // to be the one every other store follows, or there is no telling
+            // which write makes the value and which replaces it.
+            let (_, store_block) = &values[0];
+            let first_leads = values.iter().all(|(_, b)| dom.dominates(*store_block, *b));
+            if first_leads && ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
+                out.push((*cell, Holds::Str, *store_block));
             }
             continue;
         }
@@ -3209,6 +3214,7 @@ fn lent_slots(
     // one a closure copied in.
     let mut lent_to_closures: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
     let mut not_lent: HashSet<LocalId> = HashSet::new();
+    let mut lent_to_ensures: Vec<LocalId> = Vec::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         match &stmt.kind {
             MirStmtKind::ClosureCreate { dst, captures, .. } => {
@@ -3221,7 +3227,9 @@ fn lent_slots(
                 }
             }
             MirStmtKind::EnsureHookRegister { captures, .. } => {
-                not_lent.extend(captures.iter().map(|c| c.local_id));
+                for c in captures.iter().filter(|c| c.by_ref) {
+                    lent_to_ensures.push(c.local_id);
+                }
             }
             _ => {}
         }
@@ -3231,6 +3239,7 @@ fn lent_slots(
 
     let mut candidates: Vec<LocalId> = slots_whose_address_is_taken(func).into_iter().collect();
     candidates.extend(lent_to_closures.keys().copied());
+    candidates.extend(lent_to_ensures);
     candidates.sort_by_key(|l| l.0);
     candidates.dedup();
     for slot in candidates {
@@ -3392,11 +3401,32 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// had there — reliably zero on a fresh frame, and 0xAAAA… under
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    release_overwritten_string_cells(func, cells);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    // `return s` with ensure bodies still to run: the bodies read the cell and
+    // may write it, and the cell's release comes at the end of the last one
+    // that does. The caller gets a reference of its own, taken at the return,
+    // so the string it gets is the one `s` held there.
+    for (cell, holds, _) in cells {
+        if !matches!(holds, Holds::Str) {
+            continue;
+        }
+        for block in func.blocks.iter_mut() {
+            let returns_cell = matches!(
+                &block.terminator.kind,
+                MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), cleanup_chain }
+                    if v == cell && !cleanup_chain.is_empty()
+            );
+            if !returns_cell {
+                continue;
+            }
+            block.statements.push(MirStmt::dummy(MirStmtKind::RcIncContents { local: *cell, for_hand_off: false }));
+        }
+    }
     for (ci, (cell, holds, store_block)) in cells.iter().enumerate() {
         for (block_idx, consumed_here) in exits[ci].clone() {
             let exit = func.blocks[block_idx].id;
@@ -3453,6 +3483,45 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
                 func: free_call(free),
                 args: vec![MirOperand::Local(tmp)],
             }));
+        }
+    }
+}
+
+/// A store into a string cell after the one that filled it replaces a string
+/// the cell owns, so the old one is released first. A variable an `ensure`
+/// reads is such a cell, and `s = "…"` after the ensure (or in its body) left
+/// every string it covered unreleased (#1917).
+fn release_overwritten_string_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    for (cell, holds, fill_block) in cells {
+        if !matches!(holds, Holds::Str) {
+            continue;
+        }
+        let is_store = |s: &MirStmt| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell);
+        let is_zero = |s: &MirStmt| matches!(&s.kind, MirStmtKind::ZeroAggregate { local } if local == cell);
+        for block in func.blocks.iter_mut() {
+            let mut skip_first = block.id == *fill_block;
+            // A whole write of an addressed cell starts by zeroing it
+            // (`addr_taken`), so the old string has to go before the zero,
+            // not before the store that follows it.
+            let mut zeroed_at: Option<usize> = None;
+            let mut at = 0;
+            while at < block.statements.len() {
+                if is_zero(&block.statements[at]) {
+                    zeroed_at = Some(at);
+                } else if is_store(&block.statements[at]) {
+                    let write_starts = zeroed_at.take().unwrap_or(at);
+                    if skip_first {
+                        skip_first = false;
+                    } else {
+                        block.statements.insert(
+                            write_starts,
+                            MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::Buffer }),
+                        );
+                        at += 1;
+                    }
+                }
+                at += 1;
+            }
         }
     }
 }

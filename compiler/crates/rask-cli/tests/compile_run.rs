@@ -5860,6 +5860,35 @@ fn panic_reports_the_line_it_happened_on() {
     }
 }
 
+const PANIC_IN_A_FUNCTION_AN_ENSURE_CALLS_SRC: &str = r#"import io.IoError
+
+func save() -> void or IoError {
+    todo()
+}
+
+func main() {
+    ensure save() catch e => println(e.message())
+    println("hi")
+}
+"#;
+
+/// A panic in a function only an `ensure` calls names its line.
+///
+/// The chain of cleanup bodies was compiled with no file and no line map, so a
+/// `todo()` there printed `panic: not yet implemented` while the same call
+/// anywhere else said where it was (#1950).
+#[test]
+fn panic_in_a_function_an_ensure_calls_names_its_line() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        let out = run_rask_run_source(PANIC_IN_A_FUNCTION_AN_ENSURE_CALLS_SRC, interp);
+        assert!(
+            out.contains(":4:") || out.contains(":4\n"),
+            "{backend}: expected the panic at line 4, the `todo()`:\n{out}"
+        );
+    }
+}
+
 const BANG_ON_A_MULTI_LINE_CALL_SRC: &str = r#"import builtins.ConvertError
 
 func fails(a: i64, b: i64) -> i64 or ConvertError {

@@ -326,7 +326,7 @@ impl<'a> MirLowerer<'a> {
         // be lowered somewhere. Without a fresh block it landed on top of the
         // body's own terminator and erased it.
         if self.builder.current_block_unterminated() {
-            self.emit_loop_cleanup(depth);
+            self.emit_scope_cleanup(depth);
         } else {
             let unreachable = self.builder.create_block();
             self.builder.switch_to_block(unreachable);

@@ -135,9 +135,9 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
         | MirStmtKind::UnwindArm { .. }
         | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => kept.iter().for_each(|l| f(Named::Local(*l))),
     }
 }
 
@@ -282,9 +282,9 @@ pub fn visit_stmt_use_locals_mut(
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
         | MirStmtKind::UnwindArm { .. }
         | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => kept.iter_mut().for_each(|l| f(l, UseKind::AddressOf)),
     }
 }
 

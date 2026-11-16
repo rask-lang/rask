@@ -546,10 +546,26 @@ impl Interpreter {
         }
     }
 
+    /// An ensure body is a block like any other (ctrl.ensure/EN1): an `ensure`
+    /// inside it is scheduled where it stands and runs when the body ends, on
+    /// the way out of an error as much as on the way out of the last statement.
+    /// It used to evaluate to nothing, so the inner cleanup never ran (#1915).
     fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
         let mut last_value = Value::Unit;
+        let mut nested: Vec<&Stmt> = Vec::new();
+        let mut failure: Option<RuntimeDiagnostic> = None;
         for stmt in body {
-            last_value = self.exec_stmt(stmt)?;
+            if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
+                nested.push(stmt);
+                continue;
+            }
+            match self.exec_stmt(stmt) {
+                Ok(v) => last_value = v,
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
             // A binding statement evaluates to Unit, but the cleanup call whose
             // failure the `else` handler exists for is its initializer — so
             // `ensure { let n = s.close() }` has to read `n` back, or a failed
@@ -560,7 +576,21 @@ impl Interpreter {
                 }
             }
         }
-        Ok(last_value)
+        if nested.is_empty() {
+            return match failure {
+                Some(e) => Err(e),
+                None => Ok(last_value),
+            };
+        }
+        let panicked = matches!(&failure, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let nested_fatal = self.run_ensures(&nested, panicked);
+        match (failure, nested_fatal) {
+            (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
+            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
+            (_, Some(f)) => Err(f),
+            (Some(e), _) => Err(e),
+            (None, None) => Ok(last_value),
+        }
     }
 
     fn handle_ensure_error(&mut self, error_value: Value, else_handler: &Option<(String, Vec<Stmt>)>) {

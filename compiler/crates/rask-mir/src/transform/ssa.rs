@@ -481,7 +481,12 @@ fn rename_stmt(
         MirStmtKind::UnwindArm { value, .. } => {
             *value = current_version(*value, version_stack, num_orig_locals);
         }
-        MirStmtKind::EnsureHookPop | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => {
+            for l in kept.iter_mut() {
+                *l = current_version(*l, version_stack, num_orig_locals);
+            }
+        }
+        MirStmtKind::UnwindDisarm { .. } => {}
     }
     None
 }
