@@ -32,13 +32,17 @@ use crate::types::MirType;
 /// one symbol to link against rather than a conditional one.
 pub const CONST_FREE_FN: &str = "rask_const_free";
 
-/// Add `rask_const_free` to the program.
-pub fn add_const_free(fns: &mut Vec<MirFunction>) {
+/// Add `rask_const_free` to the program. `thunks` names each const's init
+/// thunk, as lowering made them.
+pub fn add_const_free(fns: &mut Vec<MirFunction>, thunks: &std::collections::HashSet<String>) {
     if fns.iter().any(|f| f.name == CONST_FREE_FN) {
         return;
     }
     let mut owned: Vec<(String, &'static str, MirType)> = Vec::new();
     for func in fns.iter() {
+        if !thunks.contains(&func.name) {
+            continue;
+        }
         if let Some((slot, free_fn, ty)) = const_a_thunk_owns(func) {
             owned.push((slot, free_fn, ty));
         }
@@ -57,10 +61,6 @@ pub fn add_const_free(fns: &mut Vec<MirFunction>) {
 /// and `Shared.new(0)` are one declared type over two runtime objects with two
 /// different releases.
 fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirType)> {
-    if !func.name.starts_with("__rask_const_init__") {
-        return None;
-    }
-
     // Which locals hold the address of which slot, and which hold the result of
     // which call.
     let mut slot_of: HashMap<LocalId, String> = HashMap::new();

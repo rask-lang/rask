@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
 
-use super::builtins::BuiltinModules;
 use rask_types::{MethodSig, SelfParam, TypeDef};
 use super::errors::{MapKeyFix, TypeError};
 
@@ -161,6 +160,9 @@ pub struct Alias {
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
+    /// The machine this compilation is for. Every later stage reads it from
+    /// here: layout's pointer width, the C scalar names, what `usize` holds.
+    target: rask_ast::Target,
     /// Each interface's methods that come with a body (TD2). Desugar copies
     /// those into every conformer, so by the time a type declares the
     /// interface it has them; a type that doesn't declare it never needs them.
@@ -243,8 +245,6 @@ pub struct TypeTable {
     pub(super) result_type_id: Option<TypeId>,
     /// The declarations the compiler needs by identity, filed as they register.
     lang: HashMap<rask_types::LangItem, TypeId>,
-    /// Builtin modules registry.
-    pub(super) builtin_modules: BuiltinModules,
     /// `import time as tm`: `tm` → `time`.
     module_aliases: HashMap<String, String>,
     /// Field names of a struct-shaped enum variant, keyed by
@@ -339,8 +339,9 @@ pub struct TypeTable {
 }
 
 impl TypeTable {
-    pub fn new() -> Self {
+    pub fn new(target: rask_ast::Target) -> Self {
         let mut table = Self {
+            target,
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
@@ -356,7 +357,6 @@ impl TypeTable {
             option_type_id: None,
             result_type_id: None,
             lang: HashMap::new(),
-            builtin_modules: BuiltinModules::new(),
             module_aliases: HashMap::new(),
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
@@ -411,8 +411,8 @@ impl TypeTable {
         // The C scalar names an `import c` header translates to. Until these
         // were here none of them was a type, so `*i64` passed for a `const int
         // *` and the C side read a 64-bit buffer as 32-bit ints (#947).
-        for name in rask_ast::primitives::C_SCALARS {
-            let spelling = rask_ast::primitives::c_type_spelling(name)
+        for name in rask_ast::target::C_SCALARS {
+            let spelling = self.target.c_type_spelling(name)
                 .expect("C_SCALARS and c_type_spelling must agree");
             let ty = self
                 .builtins
@@ -885,6 +885,11 @@ impl TypeTable {
     }
 
     /// Get a type definition by ID.
+    /// The machine this compilation is for.
+    pub fn target(&self) -> rask_ast::Target {
+        self.target
+    }
+
     pub fn get(&self, id: TypeId) -> Option<&TypeDef> {
         self.types.get(id.0 as usize)
     }
@@ -2011,19 +2016,38 @@ impl TypeTable {
     /// its elements, a field or a payload. Copying the handle's pointer leaves
     /// two owners to free one block (#1887).
     pub fn uncloneable_handle(&self, ty: &Type) -> Option<Type> {
-        self.uncloneable_handle_in(ty, &mut Vec::new())
+        self.uncloneable_handle_in(ty, &mut Vec::new(), 0)
     }
 
-    fn uncloneable_handle_in(&self, ty: &Type, seen: &mut Vec<(TypeId, Vec<GenericArg>)>) -> Option<Type> {
+    /// `depth` counts the generic instances between `ty` and the one the walk
+    /// started at. A struct that holds itself at a bigger type behind a `Vec`
+    /// (`n: Vec<Grow<(T, T)>>`) has a new instance at every step, which `seen`
+    /// never matches; past either limit nothing more is looked for (CT68).
+    fn uncloneable_handle_in(
+        &self,
+        ty: &Type,
+        seen: &mut Vec<(TypeId, Vec<GenericArg>)>,
+        depth: usize,
+    ) -> Option<Type> {
+        let nodes = std::cell::Cell::new(0usize);
+        ty.contains(&|_| {
+            nodes.set(nodes.get() + 1);
+            false
+        });
+        if depth > rask_types::INSTANTIATION_LIMIT || nodes.get() > rask_types::INSTANTIATION_SIZE_LIMIT {
+            return None;
+        }
         let (id, args): (TypeId, &[GenericArg]) = match ty {
             Type::Named(id) => (*id, &[]),
             Type::Generic { base, args } => (*base, args),
             Type::Tuple(parts) | Type::Union(parts) => {
-                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen));
+                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen, depth));
             }
-            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen),
+            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen, depth),
             Type::Result { ok, err } => {
-                return self.uncloneable_handle_in(ok, seen).or_else(|| self.uncloneable_handle_in(err, seen));
+                return self
+                    .uncloneable_handle_in(ok, seen, depth)
+                    .or_else(|| self.uncloneable_handle_in(err, seen, depth));
             }
             _ => return None,
         };
@@ -2040,7 +2064,7 @@ impl TypeTable {
             }
             // A container's clone copies its elements.
             return args.iter().find_map(|a| match a {
-                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen),
+                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen, depth + 1),
                 _ => None,
             });
         }
@@ -2065,7 +2089,9 @@ impl TypeTable {
             .collect();
         slots
             .into_iter()
-            .find_map(|t| self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen))
+            .find_map(|t| {
+                self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen, depth + 1)
+            })
     }
 
     fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {

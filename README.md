@@ -42,24 +42,28 @@ Full example: [grep_clone.rk](examples/grep_clone.rk).
 
 ## Getting started
 
-Build from source. You'll need a Rust toolchain for now — bootstrapping the compiler in Rask itself is on the list, just not soon.
-
 ```bash
-git clone https://github.com/rask-lang/rask.git
-cd rask/compiler
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
+curl -fsSL https://rask-lang.dev/install.sh | sh
 ```
 
-Then:
+That puts `rask` in `~/.local/bin` (Linux on x86_64, macOS on Apple silicon) and tells you if your PATH or a C compiler is missing. Anything else, or the newest compiler: [build from source](CONTRIBUTING.md#build-from-source). The [install page](https://rask-lang.dev/book/getting-started/installation.html) has the details.
 
-```bash
-rask run examples/hello_world.rk
+A first program, `hello.rk`:
+
+<!-- test: run | Hello, Rask! -->
+```rask
+func main() {
+    println("Hello, Rask!")
+}
 ```
 
-Other commands: `rask build`, `rask check`, `rask test`, `rask lint`, `rask fmt`. `rask help` lists the rest.
+```bash
+rask run hello.rk
+```
 
-Next: read [Learning Rask](https://rask-lang.dev/book), or browse [examples/](examples/) if you'd rather read whole programs.
+Then take [the tour](https://rask-lang.dev/book/learn/): 32 short steps, one idea each, every one a file you run and finish yourself. In a clone they are in [docs/book/src/learn/](docs/book/src/learn/). Other commands: `rask test`, `rask check`, `rask build`, `rask fmt`, `rask lint`; `rask help` lists the rest. [examples/](examples/) has whole programs if you'd rather read.
+
+Found a bug or want to help: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 

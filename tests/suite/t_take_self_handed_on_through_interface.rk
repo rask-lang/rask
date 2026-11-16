@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take self` method called through `any Interface` that hands `self` on
+// whole: to another `take` function, or into a vector. The caller's box gives
+// the value up at the call, so exactly one owner is left.
+//
+// Before, the box kept owning the value after the call and released it, and so
+// did whoever `self` was handed to. The block was freed twice, and the vector
+// below held freed memory: memcheck reports invalid reads and a bad free, and
+// RASK_LEAK_CHECK exits non-zero. The asserts read the value back after the
+// call, which is where it showed.
+
+struct Pt {
+    name: string
+    items: Vec<usize>
+}
+
+interface Sink {
+    func weigh(take self) -> usize
+    func stash(take self, mutate out: Vec<Pt>) -> usize
+}
+
+func total(take p: Pt) -> usize {
+    return p.name.len() + p.items.len()
+}
+
+Pt implements Sink {
+    func weigh(take self) -> usize {
+        return total(self)
+    }
+    func stash(take self, mutate out: Vec<Pt>) -> usize {
+        out.push(self)
+        return 1
+    }
+}
+
+func make(n: usize) -> Pt {
+    mut items: Vec<usize> = Vec.new()
+    items.push(n)
+    return Pt(name: "a name long enough to live on the heap, number {n}", items: items)
+}
+
+test "self handed to a taking function" {
+    let d: any Sink = make(1)
+    assert d.weigh() == 49
+}
+
+test "self pushed into a vector" {
+    mut out: Vec<Pt> = Vec.new()
+    let d: any Sink = make(2)
+    assert d.stash(mutate out) == 1
+    assert out.len() == 1
+    assert out[0].name == "a name long enough to live on the heap, number 2"
+    assert out[0].items.len() == 1
+}
+
+test "the same through a box a function took" {
+    mut out: Vec<Pt> = Vec.new()
+    let a: any Sink = make(3)
+    let b: any Sink = make(4)
+    assert a.stash(mutate out) + b.stash(mutate out) == 2
+    assert out[1].name == "a name long enough to live on the heap, number 4"
+}

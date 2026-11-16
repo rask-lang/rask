@@ -8,13 +8,25 @@
 // machine has.
 //
 // `spawn { ... }` starts the block as a task that runs alongside the code
-// that started it. `join()` waits for it and gives back what the block gave,
-// or an error if the task crashed, hence the `!`. Any function can run in a
-// task; there's no special kind of function for it. Tasks need something to
-// run them, which `using Multitasking { ... }` sets up.
-//
-// A channel carries values from one task to another. `Channel<i32>.buffered(10)`
-// gives a sending end and a receiving end, which can hold 10 values waiting.
+// that started it. The block is the whole of the task, so it hands back its
+// answer with `return`, as a function does. `join()` waits for the task and
+// gives back that answer, or an error if the task crashed, hence the `!`.
+// Every task you start has to be joined; forgetting one is a compile error.
+// Any function can run in a task, with no special kind of function for it.
+// Tasks need something to run them, which `using Multitasking { ... }` sets
+// up.
+
+func doubled_and_squared(n: i32) -> i32 {
+    using Multitasking {
+        let doubled = spawn { return n * 2 }
+        let squared = spawn { return n * n }
+        return doubled.join()! + squared.join()!
+    }
+}
+
+// A channel carries values from one task to another while both run.
+// `Channel<i32>.buffered(10)` gives a sending end and a receiving end, which
+// can hold 10 values waiting.
 
 func squares(n: i32) -> Vec<i32> {
     using Multitasking {
@@ -55,6 +67,10 @@ func split_sum(numbers: Vec<i32>) -> i32 {
         }
         return low.join()! + high.join()!
     }
+}
+
+test "two tasks" {
+    assert doubled_and_squared(5) == 35
 }
 
 test "squares" {

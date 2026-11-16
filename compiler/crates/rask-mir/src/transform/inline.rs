@@ -197,7 +197,7 @@ fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
     alias
 }
 
-fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
+pub(crate) fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
     use std::collections::HashSet;
 
     let known: HashMap<&str, &MirFunction> =
@@ -817,6 +817,7 @@ fn remap_stmt(
             concrete_size,
             concrete_align,
             vtable_name,
+            owns_value,
         } => MirStmtKind::InterfaceBox {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             value: remap_operand(value, local_map),
@@ -825,6 +826,7 @@ fn remap_stmt(
             concrete_size: *concrete_size,
             concrete_align: *concrete_align,
             vtable_name: vtable_name.clone(),
+            owns_value: *owns_value,
         },
         MirStmtKind::InterfaceCall {
             dst,
@@ -832,16 +834,18 @@ fn remap_stmt(
             method_name,
             vtable_offset,
             args,
+            takes_receiver,
         } => MirStmtKind::InterfaceCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
             method_name: method_name.clone(),
             vtable_offset: *vtable_offset,
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
+            takes_receiver: *takes_receiver,
         },
-        MirStmtKind::InterfaceDrop { interface_object, owns } => MirStmtKind::InterfaceDrop {
+        MirStmtKind::InterfaceDrop { interface_object, release } => MirStmtKind::InterfaceDrop {
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
-            owns: *owns,
+            release: *release,
         },
         MirStmtKind::Phi { dst, args } => MirStmtKind::Phi {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
@@ -1432,6 +1436,7 @@ mod tests {
             method_name: "add".to_string(),
             vtable_offset: 0,
             args: vec![MirOperand::Local(LocalId(0))],
+            takes_receiver: false,
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0));

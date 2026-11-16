@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Copy arrays and structs holding strings, stored into fields and literals.
+// Each of these answered correctly and leaked a string natively; the leak gate
+// runs this file.
+//
+// An element store through a field (#1884), a `T?` field written over twice
+// (#1907), an array literal built from a field of a struct nobody reads again
+// (#1906).
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+struct Slots {
+    v: [string; 2]
+}
+
+struct One {
+    one: [string; 1]
+}
+
+struct Hop {
+    opt: [string; 1] or none
+}
+
+struct Pt {
+    s: string
+}
+
+struct Two {
+    a: Pt
+    b: Pt
+}
+
+test "an element stored through a field gives back the one it replaces" {
+    mut s = Slots(v: [mk(1), mk(2)])
+    s.v[1] = mk(7)
+    assert s.v[1] == mk(7)
+    assert s.v[0] == mk(1)
+}
+
+test "an element stored through a field, in a loop" {
+    mut s = Slots(v: [mk(1), mk(2)])
+    for i in 0..4 {
+        s.v[i.mod(2)] = mk(10 + i)
+    }
+    assert s.v[0] == mk(12)
+    assert s.v[1] == mk(13)
+}
+
+test "an optional array field written over and over" {
+    let src = One(one: [mk(1)])
+    mut h = Hop(opt: none)
+    h.opt = src.one
+    h.opt = [mk(5)]
+    h.opt = src.one
+    assert src.one[0] == mk(1)
+}
+
+test "an array literal from a field of a struct nobody reads again" {
+    let tw = Two(a: Pt(s: mk(1)), b: Pt(s: mk(2)))
+    let v2 = [tw.a]
+    assert v2[0].s == mk(1)
+}

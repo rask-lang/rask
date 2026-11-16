@@ -117,6 +117,23 @@ pub struct StdlibMethodMeta {
     pub moves_out: bool,
     /// `@places_node`: the last argument is a node bound for a rack.
     pub places_node: bool,
+    /// The type whose `extend` block declares this method; `None` for a free
+    /// function.
+    pub owner: Option<std::string::String>,
+    /// Which MIR arguments (receiver first) are declared as one of the type's
+    /// own parameters: the `value: T` of `Atomic.store`. What the caller hands
+    /// over there is the payload itself, at whatever type `T` is.
+    pub payload_args: Vec<usize>,
+}
+
+/// MIR argument positions whose declared type is a bare type parameter.
+fn payload_args(params: &[(std::string::String, TypeExpr)], takes_self: bool) -> Vec<usize> {
+    params
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, ty))| matches!(ret_category(ty), RetCategory::TypeParam(_)))
+        .map(|(i, _)| i + usize::from(takes_self))
+        .collect()
 }
 
 /// Cached metadata derived from StubRegistry.
@@ -175,6 +192,8 @@ fn build_cache() -> MetadataCache {
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
                 moves_out: method.effects.moves_out,
                 places_node: method.effects.places_node,
+                owner: Some(type_name.to_string()),
+                payload_args: payload_args(&method.params, method.takes_self),
             });
         }
     }
@@ -193,6 +212,8 @@ fn build_cache() -> MetadataCache {
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
             moves_out: func.effects.moves_out,
             places_node: func.effects.places_node,
+            owner: None,
+            payload_args: payload_args(&func.params, false),
         });
     }
 
@@ -360,7 +381,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
-    ("Sender_clone", Internal::FreshFromReceiver),
     // Every strategy's clone hands back another handle on the same cell, so
     // the receiver is borrowed and the result is the caller's. `Mutex_clone`
     // was here and the other two spellings weren't, which made a

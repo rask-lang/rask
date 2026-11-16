@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `c = if cond { c } else { new }` and the `match` form: on one way in the new
+// value is the old one, on the other the old one is garbage. On a struct the
+// rack records edges of, the old value was never released on the arm that
+// replaced it (#1841). The leak gate runs this file.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Cursor {
+    at: Link<Leaf>?
+    label: string
+    hist: Vec<string>
+}
+
+struct Plain {
+    label: string
+    hist: Vec<string>
+}
+
+func mk(l: Link<Leaf>, i: i64) -> Cursor {
+    return Cursor(at: l, label: "label-long-enough-to-live-on-the-heap-{i}", hist: Vec.new())
+}
+
+func plain(i: i64) -> Plain {
+    return Plain(label: "plain-label-long-enough-to-live-on-the-heap-{i}", hist: Vec.new())
+}
+
+test "a link struct kept or replaced by an if" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut c = mk(a, 1)
+    for i in 0..4 {
+        c = if i % 2 == 0 { c } else { mk(b, 10 + i) }
+    }
+    assert c.label == "label-long-enough-to-live-on-the-heap-13"
+}
+
+test "a link struct kept or replaced by a match" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut c = mk(a, 1)
+    for i in 0..4 {
+        c = match i % 2 {
+            0 => c
+            _ => mk(b, 10 + i)
+        }
+    }
+    assert c.label == "label-long-enough-to-live-on-the-heap-13"
+}
+
+test "the kept value is still there when the other arm never runs" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    mut c = mk(a, 1)
+    c.hist.push("an entry long enough to live on the heap")
+    for i in 0..3 {
+        c = if i < 10 { c } else { mk(a, i) }
+    }
+    assert c.label == "label-long-enough-to-live-on-the-heap-1"
+    assert c.hist.len() == 1
+}
+
+test "an arm that builds the new value from the old one" {
+    mut p = plain(1)
+    p.hist.push("an entry long enough to live on the heap")
+    for i in 0..3 {
+        p = if i % 2 == 0 {
+            Plain(label: "rebuilt-{i}-label-long-enough-for-the-heap", hist: p.hist)
+        } else {
+            plain(10 + i)
+        }
+    }
+    assert p.label == "rebuilt-2-label-long-enough-for-the-heap"
+    assert p.hist.len() == 0
+}
+
+test "a plain struct kept or replaced" {
+    mut p = plain(1)
+    for i in 0..4 {
+        p = if i % 2 == 0 { p } else { plain(10 + i) }
+    }
+    assert p.label == "plain-label-long-enough-to-live-on-the-heap-13"
+}

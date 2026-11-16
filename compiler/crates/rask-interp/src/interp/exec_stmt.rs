@@ -619,19 +619,35 @@ impl Interpreter {
         if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
             crate::rack::register_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
         }
-        let items: Vec<Value> = v.lock().unwrap().items.clone();
+        // The loop walks the live vector through a cursor, not a snapshot: a
+        // call in the body can pop, clear, swap or replace entries, and the
+        // loop visits what is in the vector when it gets there. Its end is
+        // fixed at the start, so an entry added meanwhile isn't visited, and a
+        // removal moves the cursor back so none is skipped (mem.racks/RK15).
+        let cursor = {
+            let mut guard = v.lock().unwrap();
+            let cursor = std::sync::Arc::new(std::sync::Mutex::new(crate::value::VecCursor {
+                next: 0,
+                end: guard.len(),
+                detached: false,
+            }));
+            guard.cursors.0.push(std::sync::Arc::clone(&cursor));
+            cursor
+        };
         let mut outcome = Ok(Value::Unit);
-        for item in items {
-            // The body deleted the node that owned the vector, and the vector
-            // went with it.
-            if v.lock().unwrap().freed {
-                break;
-            }
-            // A delete earlier in this loop took the entry out of the vector;
-            // the snapshot still has it.
-            if crate::rack::entry_is_dead(&item) {
-                continue;
-            }
+        loop {
+            let item = {
+                let guard = v.lock().unwrap();
+                let mut c = cursor.lock().unwrap();
+                // The body deleted the node that owned the vector, or dropped
+                // the vector, and it went with it.
+                if guard.freed || c.detached || c.next >= c.end || c.next >= guard.len() {
+                    break;
+                }
+                let item = guard.items[c.next].clone();
+                c.next += 1;
+                item
+            };
             self.env.push_scope();
             self.define_for_binding(binding, item);
             let ran = self.exec_stmts(body);
@@ -646,6 +662,7 @@ impl Interpreter {
                 }
             }
         }
+        v.lock().unwrap().cursors.0.retain(|c| !std::sync::Arc::ptr_eq(c, &cursor));
         if temporary {
             crate::rack::forget_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
         }

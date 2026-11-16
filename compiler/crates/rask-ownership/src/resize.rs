@@ -143,12 +143,18 @@ impl<'a> OwnershipChecker<'a> {
         let mut out: Vec<(&'e Expr, Option<String>)> = Vec::new();
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
-                let declared = self.program.declared_effects(expr.id).changes_size();
+                let declared = self.program.declared_effects(expr.id).changes_layout();
                 let user = self
                     .receiver_type_name(object)
                     .and_then(|ty| self.method_resizes.get(&(ty, method.clone())));
                 if declared {
                     out.push((object, None));
+                    // A declared effect on a function that takes the
+                    // collection as an argument (`random.shuffle(mutate v)`)
+                    // is on the argument it is lent for writing.
+                    for a in args.iter().filter(|a| matches!(a.mode, rask_ast::expr::ArgMode::Mutate)) {
+                        out.push((&a.expr, None));
+                    }
                 } else if user.is_some_and(|(s, _)| *s) {
                     out.push((object, Some(method.clone())));
                 }

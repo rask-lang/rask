@@ -3470,6 +3470,14 @@ impl ToDiagnostic for crate::TypeError {
                         "a range index reads a run of positions, and a map has none — it is keyed [std.collections/V1]".to_string(),
                         None,
                     ),
+                    K::NotIndexed => (
+                        format!("cannot index `{}`", container),
+                        "a rack isn't indexed: its nodes are reached through their links, \
+                         and a link reads like its node, so `h.field` is the node's field \
+                         [mem.racks/RK2]"
+                            .to_string(),
+                        Some("read or write through the link: `h.field = value`".to_string()),
+                    ),
                     K::NoSliceType => (
                         format!("cannot slice `{}` with a range", container),
                         "there is no slice type, so this has nothing to be. A run of \

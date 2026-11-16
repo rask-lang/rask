@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A loop over a node's `Vec<Link<..>>` walks the live vector, not a snapshot
+// of it: a call in the body can change the vector through a `mutate`
+// parameter, and the loop visits whatever is there when it gets to it. Its
+// end is where the vector ended when the loop began (mem.racks/RK15, #1823).
+//
+// The interpreter copied the entries when the loop started, so a pop, a clear,
+// a swap or a replaced vector all went unseen and it printed the original
+// four ids every time.
+import memory.Link
+import memory.Rack
+
+struct Node {
+    id: i32
+    kids: Vec<Link<Node>>
+}
+
+struct Tree {
+    nodes: Rack<Node>
+    root: Link<Node>?
+    extra: Link<Node>?
+}
+
+// root.kids = [10, 11, 12, 13], extra = 99
+func tree_with(n: i32) -> Tree {
+    mut t = Tree(nodes: Rack.new(), root: none, extra: none)
+    let root = t.nodes.insert(Node(id: 0, kids: Vec.new()))
+    t.root = root
+    for i in 0..n {
+        let c = t.nodes.insert(Node(id: 10 + i, kids: Vec.new()))
+        root.kids.push(c)
+    }
+    t.extra = t.nodes.insert(Node(id: 99, kids: Vec.new()))
+    return t
+}
+
+func op(mutate t: Tree, which: i32) {
+    if t.root? as r {
+        if which == 0 {
+            let _ = r.kids.pop()
+        } else if which == 1 {
+            r.kids.clear()
+            if t.extra? as e {
+                r.kids.push(e)
+                r.kids.push(e)
+                r.kids.push(e)
+            }
+        } else if which == 2 {
+            r.kids = Vec.new()
+        } else if which == 3 {
+            let _ = r.kids.remove(3)
+        } else if which == 4 {
+            let a = r.kids[0]
+            r.kids[0] = r.kids[2]
+            r.kids[2] = a
+        }
+    }
+}
+
+func walk(which: i32) -> string {
+    mut t = tree_with(4)
+    mut out = ""
+    mut n = 0
+    if t.root? as r {
+        for k in r.kids {
+            out = "{out} {k.id}"
+            n = n + 1
+            if n == 2 {
+                op(mutate t, which)
+            }
+        }
+    }
+    return out
+}
+
+func main() {}
+
+test "pop during the loop: the popped entry is never reached" {
+    assert walk(0) == " 10 11 12"
+}
+
+test "clear and push during the loop: what is at the cursor is visited" {
+    assert walk(1) == " 10 11 99"
+}
+
+test "replacing the vector during the loop ends the loop" {
+    assert walk(2) == " 10 11"
+}
+
+test "removing a later entry during the loop" {
+    assert walk(3) == " 10 11 12"
+}
+
+test "swapping entries during the loop shows the swapped value" {
+    assert walk(4) == " 10 11 10 13"
+}
+
+test "no change during the loop visits every entry" {
+    assert walk(9) == " 10 11 12 13"
+}

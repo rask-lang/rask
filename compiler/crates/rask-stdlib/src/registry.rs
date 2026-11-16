@@ -52,13 +52,6 @@ pub fn module_layer(module: &str) -> StdlibLayer {
 // Instance methods by type
 // ---------------------------------------------------------------------------
 
-const SIMD_METHODS: &[&str] = &[
-    "splat", "load", "store",
-    "add", "sub", "mul", "div", "scale",
-    "sum", "product", "min", "max",
-    "get", "set",
-];
-
 // ---------------------------------------------------------------------------
 // Lookup
 // ---------------------------------------------------------------------------
@@ -117,14 +110,8 @@ pub fn is_rask_implemented(type_name: &str) -> bool {
 /// The methods a program can call on `type_name`: the public, implemented
 /// ones its declaration in `stdlib/*.rk` has. A hand list per type drifted from
 /// the declarations, so "did you mean" offered methods that didn't exist.
-///
-/// The SIMD vectors have no declaration, so they answer from the list above.
 pub fn type_method_names(type_name: &str) -> Vec<&'static str> {
-    let compiler_type: &[&str] = match type_name {
-        "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
-        _ => return declared_method_names(type_name),
-    };
-    compiler_type.to_vec()
+    declared_method_names(type_name)
 }
 
 /// What a program can call on a stdlib type or module, from its declaration.

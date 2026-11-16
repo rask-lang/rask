@@ -1027,7 +1027,7 @@ static void sim_worker_entry(void *arg) {
 // ─── Public API ─────────────────────────────────────────────
 
 void rask_runtime_init(int64_t worker_count) {
-    if (g_sched) return; // already initialized
+    rask_scope_enter();
 
     GreenScheduler *s = (GreenScheduler *)calloc(1, sizeof(GreenScheduler));
     if (!s) {
@@ -1211,6 +1211,7 @@ void rask_runtime_shutdown(void) {
     free(s->workers);
     free(s);
     g_sched = NULL;
+    rask_scope_leave();
 }
 
 // ─── Parking ────────────────────────────────────────────────

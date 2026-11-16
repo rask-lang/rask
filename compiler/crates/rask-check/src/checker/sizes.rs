@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rask_layout::{
     compute_enum_layout, compute_shared_enum_layout, compute_shared_struct_layout, compute_struct_layout,
-    compute_union_layout, generic_is_one_word, known_size_align, no_params, settle, substitute_inside, type_size_align,
+    compute_union_layout, generic_is_one_word, known_size_align, settle, substitute_inside, type_size_align,
     EnumLayout, FieldLayout, IsParam, LayoutCache, LayoutKey, StructLayout, Unsolved,
 };
 use rask_types::{GenericArg, Type, TypeDef, TypeId};
@@ -35,7 +35,7 @@ impl crate::TypeTable {
     /// inference variable nobody solved.
     pub fn size_align(&self, ty: &Type, is_param: IsParam) -> Option<(u32, u32)> {
         let ty = settle(ty, Unsolved::Refuse, is_param)?;
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(self.target());
         self.fill_layouts(&ty, &mut cache, &mut Vec::new());
         known_size_align(&ty, &cache)
     }
@@ -54,14 +54,14 @@ impl crate::TypeTable {
     /// Size and alignment of a type with nothing left to settle, as a laid-out
     /// field's is.
     pub fn size_align_settled(&self, ty: &Type) -> (u32, u32) {
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(self.target());
         self.fill_layouts(ty, &mut cache, &mut Vec::new());
         type_size_align(ty, &cache)
     }
 
     /// The layout of the struct `id`, with these type arguments.
     pub fn struct_layout(&self, id: TypeId, args: &[Type]) -> Option<StructLayout> {
-        self.struct_layout_in(id, args, LayoutCache::new())
+        self.struct_layout_in(id, args, LayoutCache::new(self.target()))
     }
 
     /// The layout of the enum `id`, with these type arguments.
@@ -71,7 +71,7 @@ impl crate::TypeTable {
         }
         let def = self.get(id)?;
         let TypeDef::Enum { .. } = def else { return None };
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(self.target());
         for ty in args {
             self.fill_layouts(ty, &mut cache, &mut Vec::new());
         }

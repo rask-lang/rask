@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `T or none` is `T?` written out (type.optionals/OPT1). The interpreter read
+// it as a result: a `none` stored under it came out present, and a bare `T`
+// stored under it was never wrapped, so `if h.opt? as o` found nothing
+// (#1907). Both backends have to agree.
+
+struct One {
+    one: [string; 1]
+}
+
+struct Hop {
+    opt: [string; 1] or none
+}
+
+struct Name {
+    text: string or none
+}
+
+test "none under a long-spelled optional is absent" {
+    let n = Name(text: none)
+    assert n.text? == false
+    let h = Hop(opt: none)
+    assert h.opt? == false
+    mut a: string or none = none
+    assert a? == false
+    a = "here"
+    assert a? == true
+}
+
+test "a bare value stored in a long-spelled optional field is present" {
+    mut n = Name(text: none)
+    n.text = "a name long enough to live on the heap"
+    if n.text? as t {
+        assert t == "a name long enough to live on the heap"
+    } else {
+        assert false
+    }
+}
+
+test "an array stored, overwritten and stored again" {
+    let src = One(one: ["first, long enough to live on the heap"])
+    mut h = Hop(opt: none)
+    h.opt = src.one
+    assert h.opt?
+    h.opt = ["second, long enough to live on the heap"]
+    if h.opt? as o {
+        assert o[0] == "second, long enough to live on the heap"
+    } else {
+        assert false
+    }
+    h.opt = src.one
+    if h.opt? as o {
+        assert o[0] == "first, long enough to live on the heap"
+    } else {
+        assert false
+    }
+    assert src.one[0] == "first, long enough to live on the heap"
+}

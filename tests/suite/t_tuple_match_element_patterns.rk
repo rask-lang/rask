@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every kind of pattern as an element of a tuple pattern in a `match`.
+//
+// Native only knew literals, plain names and `Variant(..)` there. A struct
+// pattern, a nested tuple, a range or a type test in an element was skipped
+// without a word, so its arm matched whatever the value was.
+
+struct Pt { x: i64, y: i64 }
+enum Bad { Msg(string), Code(i64) }
+enum Shape { Dot, Line(i64) }
+
+func points(a: Pt, b: Pt) -> string {
+    return match (a, b) {
+        (Pt(x: 0, y), Pt(x: 0, y: y2)) => "both on the axis {y} {y2}",
+        (Pt(x, y: 0), _) => "first on the x axis {x}",
+        _ => "other",
+    }
+}
+
+func nested(a: (i64, i64), b: i64) -> string {
+    return match (a, b) {
+        ((0, y), 1) => "zero {y}",
+        ((x, _), 2) => "two {x}",
+        _ => "other",
+    }
+}
+
+func ranged(n: i64, c: char) -> string {
+    return match (n, c) {
+        (0..=9, 'a'..='z') => "digit and letter",
+        (10..=99, _) => "two digits",
+        _ => "other",
+    }
+}
+
+func typed(a: i64 or Bad, n: i64) -> string {
+    return match (a, n) {
+        (i64 as v, 0) => "number {v} and zero",
+        (Bad.Code(c), _) => "code {c}",
+        (Bad.Msg(m), _) => "message {m}",
+        _ => "other",
+    }
+}
+
+func number(n: i64) -> i64 or Bad {
+    return n
+}
+
+func code(n: i64) -> i64 or Bad {
+    return Bad.Code(n)
+}
+
+func message(m: string) -> i64 or Bad {
+    return Bad.Msg(m)
+}
+
+func shapes(a: Shape, b: Shape) -> string {
+    return match (a, b) {
+        (Dot, Dot) => "two dots",
+        (Line(n), Dot) => "line {n} and dot",
+        (Dot, Line(n)) => "dot and line {n}",
+        (Line(n), Line(m)) => "lines {n} {m}",
+    }
+}
+
+func parts(p: (string, i64), q: Pt) -> string {
+    return match (p, q) {
+        (("a", n), Pt(x: 1, y)) => "a {n} {y}",
+        ((s, 0), _) => "{s} and zero",
+        _ => "other",
+    }
+}
+
+test "a struct pattern in a tuple element tests its fields" {
+    assert points(Pt(x: 0, y: 3), Pt(x: 0, y: 4)) == "both on the axis 3 4"
+    assert points(Pt(x: 5, y: 0), Pt(x: 1, y: 1)) == "first on the x axis 5"
+    assert points(Pt(x: 0, y: 3), Pt(x: 9, y: 4)) == "other"
+    assert points(Pt(x: 5, y: 2), Pt(x: 0, y: 0)) == "other"
+}
+
+test "a tuple pattern in a tuple element" {
+    assert nested((0, 7), 1) == "zero 7"
+    assert nested((4, 7), 2) == "two 4"
+    assert nested((4, 7), 1) == "other"
+    assert nested((0, 7), 3) == "other"
+}
+
+test "a range in a tuple element" {
+    assert ranged(5, 'q') == "digit and letter"
+    assert ranged(5, 'Q') == "other"
+    assert ranged(42, 'Q') == "two digits"
+    assert ranged(100, 'a') == "other"
+}
+
+test "a type pattern in a tuple element" {
+    assert typed(number(3), 0) == "number 3 and zero"
+    assert typed(number(3), 1) == "other"
+    assert typed(code(9), 1) == "code 9"
+    assert typed(message("no"), 1) == "message no"
+}
+
+test "variants with payloads in a tuple" {
+    assert shapes(Shape.Dot, Shape.Dot) == "two dots"
+    assert shapes(Shape.Line(1), Shape.Dot) == "line 1 and dot"
+    assert shapes(Shape.Dot, Shape.Line(2)) == "dot and line 2"
+    assert shapes(Shape.Line(1), Shape.Line(2)) == "lines 1 2"
+}
+
+test "nested tuple with a string literal beside a struct" {
+    assert parts(("a", 5), Pt(x: 1, y: 6)) == "a 5 6"
+    assert parts(("a", 5), Pt(x: 2, y: 6)) == "other"
+    assert parts(("b", 0), Pt(x: 2, y: 6)) == "b and zero"
+}
+
+func whole(a: i64, b: i64) -> i64 {
+    return match (a, b) {
+        (0, y) => y,
+        t => t.0 + t.1,
+    }
+}
+
+test "a plain name takes the whole tuple" {
+    assert whole(0, 5) == 5
+    assert whole(2, 5) == 7
+}

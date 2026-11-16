@@ -341,6 +341,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
+            cfg.target(),
         );
     for error in &type_errors {
         let diag = error.to_diagnostic();

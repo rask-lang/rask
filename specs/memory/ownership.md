@@ -14,7 +14,7 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 |------|-------------|
 | **O1: Single owner** | Every value has exactly one owner at any time |
 | **O2: Move on assignment** | For large types (>16 bytes), assignment transfers the value — the original variable becomes unusable |
-| **O3: Invalid after move** | Using the original variable after a move is a compile error |
+| **O3: Invalid after move** | Using the original variable after a move is a compile error. A value an `if`, `if let` or `match` branch ends with is moved at the end of that branch, so after `let r = if c { a } else { b }` both `a` and `b` are maybe-moved |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 | **O11: A const can't be given away** | A module-level `const` is one value the whole program reads, so no function owns it. Handing a non-Copy const to a `take` parameter, or storing it into an aggregate, is a compile error at that line; `.clone()` is the fix. A Copy const — a scalar, a `string`, a small struct — is copied into the `take` and needs nothing written (`mem.parameters/PM6b`) |
 

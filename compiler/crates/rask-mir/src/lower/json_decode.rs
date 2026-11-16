@@ -96,7 +96,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.alloc_temp(target_mir.clone())
         };
-        let dst_size = if scalar_dst { 16 } else { target_mir.size() as i64 };
+        let dst_size = if scalar_dst { 16 } else { rask_layout::size_of(&target_mir, self.ctx.target()) as i64 };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("json_decode_zero".to_string()),
@@ -151,7 +151,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(dst),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
+                    access: FieldAccess::for_field(&target_mir, rask_layout::size_of(&target_mir, self.ctx.target())),
                 },
             }));
             v
@@ -291,7 +291,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn emit_shape_for(&mut self, ty: &Type, purpose: ShapeFor) -> Option<crate::LocalId> {
-        if let Some(kind) = prim_shape_kind(ty) {
+        if let Some(kind) = prim_shape_kind(ty, self.ctx.type_defs.target()) {
             return Some(self.emit_shape_call("json_shape_prim", vec![
                 MirOperand::Constant(MirConst::Int(kind)),
             ]));
@@ -324,8 +324,8 @@ impl<'a> MirLowerer<'a> {
                 let opt = self.ctx.type_to_mir(ty);
                 return Some(self.emit_shape_call("json_shape_opt", vec![
                     MirOperand::Local(inner),
-                    MirOperand::Constant(MirConst::Int(opt.size() as i64)),
-                    MirOperand::Constant(MirConst::Int(opt.payload_offset() as i64)),
+                    MirOperand::Constant(MirConst::Int(rask_layout::size_of(&opt, self.ctx.target()) as i64)),
+                    MirOperand::Constant(MirConst::Int(rask_layout::payload_offset_of(&opt, self.ctx.target()) as i64)),
                 ]));
             }
             return None;
@@ -477,8 +477,8 @@ impl<'a> MirLowerer<'a> {
                 return Some(self.emit_shape_call("json_shape_result", vec![
                     MirOperand::Local(ok_shape),
                     MirOperand::Local(err_shape),
-                    int(mir.size() as i64),
-                    int(mir.payload_offset() as i64),
+                    int(rask_layout::size_of(&mir, self.ctx.target()) as i64),
+                    int(rask_layout::payload_offset_of(&mir, self.ctx.target()) as i64),
                 ]));
             }
         }
@@ -486,7 +486,7 @@ impl<'a> MirLowerer<'a> {
         // can have any key a map compares by its bytes. A key with its own
         // `eq` and `hash` (a struct, an enum) isn't built yet.
         if let Some(key) = self.collection_arg(ty, "Map", 0) {
-            if compared_by_bytes(&key) {
+            if compared_by_bytes(&key, self.ctx.type_defs.target()) {
                 let key_shape = self.emit_shape_for(&key, ShapeFor::Claims)?;
                 let val = self.collection_arg(ty, "Map", 1)?;
                 let val_shape = self.emit_shape_for(&val, ShapeFor::Claims)?;
@@ -507,14 +507,14 @@ impl<'a> MirLowerer<'a> {
         }
         if let Type::Tuple(elems) = ty {
             let MirType::Tuple(fields) = self.ctx.type_to_mir(ty) else { return None };
-            let shape = self.emit_shape_call("json_shape_struct", vec![int(self.ctx.type_to_mir(ty).size() as i64)]);
+            let shape = self.emit_shape_call("json_shape_struct", vec![int(rask_layout::size_of(&self.ctx.type_to_mir(ty), self.ctx.target()) as i64)]);
             // Tuple fields sit one after the other, as `debug_render_tuple`
             // and field access read them.
             let mut offset: i64 = 0;
             for (elem, fty) in elems.iter().zip(&fields) {
                 let elem_shape = self.emit_shape_for(elem, ShapeFor::Claims)?;
                 self.add_shape_field(shape, offset, elem_shape);
-                offset += fty.size() as i64;
+                offset += rask_layout::size_of(fty, self.ctx.target()) as i64;
             }
             return Some(shape);
         }
@@ -602,7 +602,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(src),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::for_field(&ty_mir, ty_mir.size()),
+                    access: FieldAccess::for_field(&ty_mir, rask_layout::size_of(&ty_mir, self.ctx.target())),
                 },
             }));
             v
@@ -617,7 +617,7 @@ impl<'a> MirLowerer<'a> {
             addr: out,
             offset: 0,
             value: MirOperand::Local(text),
-            store_size: string_mir.size(),
+            store_size: rask_layout::size_of(&string_mir, self.ctx.target()),
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
@@ -635,7 +635,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::FuncAddr(fn_name),
         }));
         Some(self.emit_shape_call("json_shape_custom_encode", vec![
-            MirOperand::Constant(MirConst::Int(ty_mir.size() as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64)),
             MirOperand::Local(addr),
         ]))
     }
@@ -686,7 +686,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(wire_ptr),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::for_field(&wire_mir, wire_mir.size()),
+                    access: FieldAccess::for_field(&wire_mir, rask_layout::size_of(&wire_mir, self.ctx.target())),
                 },
             }));
             v
@@ -716,8 +716,8 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(result),
                     field_index: 0,
-                    byte_offset: Some(result_mir.payload_offset()),
-                    access: FieldAccess::for_field(arm, arm.size()),
+                    byte_offset: Some(rask_layout::payload_offset_of(&result_mir, self.ctx.target())),
+                    access: FieldAccess::for_field(arm, rask_layout::size_of(arm, self.ctx.target())),
                 },
             }));
             value
@@ -728,7 +728,7 @@ impl<'a> MirLowerer<'a> {
             addr: dst,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: ty_mir.size(),
+            store_size: rask_layout::size_of(&ty_mir, self.ctx.target()),
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
@@ -769,9 +769,9 @@ impl<'a> MirLowerer<'a> {
         }));
         let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
         Some(Some(self.emit_shape_call("json_shape_custom", vec![
-            int(ty_mir.size() as i64),
+            int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64),
             MirOperand::Local(wire_shape),
-            int(wire_mir.size() as i64),
+            int(rask_layout::size_of(&wire_mir, self.ctx.target()) as i64),
             MirOperand::Local(addr),
         ])))
     }
@@ -800,7 +800,7 @@ impl<'a> MirLowerer<'a> {
             addr: slot,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: ty_mir.size(),
+            store_size: rask_layout::size_of(&ty_mir, self.ctx.target()),
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
@@ -818,7 +818,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::FuncAddr(name),
         }));
         Some(self.emit_shape_call("json_shape_generated", vec![
-            MirOperand::Constant(MirConst::Int(ty_mir.size() as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64)),
             MirOperand::Local(addr),
         ]))
     }
@@ -882,7 +882,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.alloc_temp(target_mir.clone())
         };
-        let dst_size = if scalar_dst { 16 } else { target_mir.size() as i64 };
+        let dst_size = if scalar_dst { 16 } else { rask_layout::size_of(&target_mir, self.ctx.target()) as i64 };
         for (func, args) in [
             ("json_decode_zero", vec![MirOperand::Local(dst), MirOperand::Constant(MirConst::Int(dst_size))]),
             ("claims_fill", vec![MirOperand::Local(dst), MirOperand::Local(shape)]),
@@ -902,7 +902,7 @@ impl<'a> MirLowerer<'a> {
                     base: MirOperand::Local(dst),
                     field_index: 0,
                     byte_offset: Some(0),
-                    access: FieldAccess::for_field(&target_mir, target_mir.size()),
+                    access: FieldAccess::for_field(&target_mir, rask_layout::size_of(&target_mir, self.ctx.target())),
                 },
             }));
             v
@@ -1055,8 +1055,8 @@ enum ShapeFor {
     Claims,
 }
 
-fn prim_shape_kind(ty: &Type) -> Option<i64> {
-    let kind = match &ty.at_target_width() {
+fn prim_shape_kind(ty: &Type, target: rask_ast::Target) -> Option<i64> {
+    let kind = match &ty.at_target(target) {
         Type::Bool => JSHAPE_BOOL,
         Type::I8 => JSHAPE_I8,
         Type::I16 => JSHAPE_I16,
@@ -1075,12 +1075,12 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
             "i16" => JSHAPE_I16,
             "i32" => JSHAPE_I32,
             "i64" => JSHAPE_I64,
-            "isize" => return prim_shape_kind(&Type::Isize),
+            "isize" => return prim_shape_kind(&Type::Isize, target),
             "u8" => JSHAPE_U8,
             "u16" => JSHAPE_U16,
             "u32" => JSHAPE_U32,
             "u64" => JSHAPE_U64,
-            "usize" => return prim_shape_kind(&Type::Usize),
+            "usize" => return prim_shape_kind(&Type::Usize, target),
             "f32" => JSHAPE_F32,
             "f64" => JSHAPE_F64,
             "string" => JSHAPE_STRING,
@@ -1093,9 +1093,9 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
 
 /// A key a map compares by its bytes (`Map_new`): a number, a `bool`, a
 /// `char`. Not a string, which compares by contents.
-fn compared_by_bytes(ty: &Type) -> bool {
+fn compared_by_bytes(ty: &Type, target: rask_ast::Target) -> bool {
     let named = |n: &str| matches!(ty, Type::UnresolvedNamed(x) if x == n);
-    let kind = prim_shape_kind(ty);
+    let kind = prim_shape_kind(ty, target);
     (kind.is_some() && kind != Some(JSHAPE_STRING))
         || matches!(ty, Type::Char | Type::I128 | Type::U128)
         || named("char")

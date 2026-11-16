@@ -435,8 +435,15 @@ impl Interpreter {
             }),
         ));
         for c in &top_level_consts {
-            let value = self.eval_expr(&c.init)
+            let mut value = self.eval_expr(&c.init)
                 .map_err(|diag| RuntimeError::Generic(format!("Error evaluating const {}: {}", c.name, diag.error)))?;
+            // The declared type decides what an unsuffixed literal is, as it
+            // does for `let`: `const F: f64 = 7` is 7.0.
+            if let Some(ty) = &c.ty {
+                value = super::exec_stmt::auto_wrap_for_annotation(
+                    value, ty, super::exec_stmt::is_none_literal(&c.init),
+                );
+            }
             self.env.define(c.name.clone(), value);
         }
 

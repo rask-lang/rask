@@ -1824,6 +1824,10 @@ pub enum IndexErrorKind {
     /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
     /// so there is no position to read.
     NotPositioned,
+    /// A `Rack<T>` was indexed. A rack's nodes are reached through their links
+    /// (`h.field`), not by position or by link: `rack[h]` is the pool-and-handle
+    /// style a rack is set against (mem.racks).
+    NotIndexed,
     /// A range indexed a Vec or a fixed array. There is no slice type for the
     /// result to have — only a string slices to another string.
     NoSliceType,

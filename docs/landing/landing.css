@@ -143,8 +143,10 @@ nav a:hover { color: var(--accent); }
 .btn.outline:hover { border-color: var(--accent); color: var(--accent); }
 
 .install { margin: 0; font-size: 0.88rem; color: var(--ink-faint); }
-/* Don't let a command wrap between its flag's two dashes. */
-.install code { font-size: 0.92em; white-space: nowrap; }
+/* A command never wraps: a break inside one reads as two commands, or as a
+   URL with a newline in it. On a phone the line scrolls inside itself. */
+.install code { font-size: 0.92em; white-space: nowrap; display: inline-block;
+                max-width: 100%; overflow-x: auto; vertical-align: bottom; }
 
 /* ---------- code windows ---------- */
 

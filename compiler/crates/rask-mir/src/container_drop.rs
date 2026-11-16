@@ -196,9 +196,9 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // below covers those calls too (#943). Built first: it reads only the MIR,
     // and the "hands a container back" fixed point needs it.
     let targets = crate::closure_targets::ClosureTargets::build(fns);
-    let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let reach = ClosureReach::build(fns);
     let kept = params_a_callee_keeps(fns, &targets, &reach);
+    let handing_over = functions_that_hand_a_container_back(fns, &kept, &targets);
     let interface_kept = interface_method_args_kept(fns, &kept);
     let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets, reach: &reach };
     let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
@@ -206,9 +206,6 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
-    // What the program declares for itself, so a call to one of those is never
-    // mistaken for a runtime free (see `find_already_freed`).
-    let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     // Bodies something other than a call by name may run — through a value
     // the runtime may be holding — whose arguments nobody here hands over.
     let closure_bodies: HashSet<String> = fns
@@ -222,8 +219,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
         .collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &own,
-            &closure_bodies,
+            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &closure_bodies,
         );
     }
     let glue = env_drop_glue(fns, &handing_over, &targets, &kept, &reach);
@@ -306,11 +302,12 @@ fn env_drop_glue(
     // glue freeing it again on the way out aborted the process on a double
     // free. A task block may give away anything it captured, since it runs
     // once (conc.async/S6).
+    let body_consumed = captures_consumed_by_bodies(fns);
     let consumed: HashMap<&str, HashSet<u32>> = fns
         .iter()
         .map(|f| {
             let mut gone = captures_the_body_consumes(f);
-            gone.extend(task_captures_given_away(f, kept, targets, closure_reach));
+            gone.extend(task_captures_given_away(f, kept, &body_consumed, targets, closure_reach));
             (f.name.as_str(), gone)
         })
         .collect();
@@ -361,6 +358,28 @@ fn env_drop_glue(
         // free what this closure swallowed and the glue must not — unless it
         // shared the closure with a keeper, when the glue is what runs last.
         let frame_drops = crate::closures::closures_the_frame_frees_last(func);
+        // A container a task block took out of its own environment and gave to
+        // a closure it builds. The block gave it away, so the task's glue
+        // leaves it (`consumed`), and the frame never made it, so it isn't in
+        // `fresh`: nobody owned it, and the closure that carried it out leaked
+        // it with the rest (#1901).
+        let mut taken: HashMap<LocalId, &'static str> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. }
+                    if consumed.get(func.name.as_str()).is_some_and(|gone| gone.contains(offset)) =>
+                {
+                    match func.local_ty(*dst) {
+                        Some(MirType::Container(kind)) => Some((*dst, container_free(*kind))),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        follow_copies(func, &mut taken);
         for block in &func.blocks {
             for (si, stmt) in block.statements.iter().enumerate() {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
@@ -411,6 +430,28 @@ fn env_drop_glue(
                         })
                     })
                     .collect();
+                owned.extend(
+                    captures
+                        .iter()
+                        .filter(|c| !c.by_ref && !c.lent)
+                        .filter(|c| {
+                            capturers
+                                .get(&(func.name.clone(), c.local_id))
+                                .copied()
+                                .unwrap_or(0)
+                                == 1
+                        })
+                        .filter(|c| made_each_turn(c))
+                        .filter(|c| !gone(c))
+                        .filter(|c| !owned.iter().any(|o| o.offset == c.offset))
+                        .filter_map(|c| {
+                            taken.get(&c.local_id).map(|free| EnvSlot {
+                                offset: c.offset,
+                                holds: Holds::Handle(free),
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
                 // A closure this one swallowed, when the frame won't free it.
                 //
                 // `count3().take(1)` inside a `flat_map` callback builds the
@@ -592,6 +633,11 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
+/// What each closure body takes away from its own captures, by function name.
+fn captures_consumed_by_bodies(fns: &[MirFunction]) -> HashMap<&str, HashSet<u32>> {
+    fns.iter().map(|f| (f.name.as_str(), captures_the_body_consumes(f))).collect()
+}
+
 /// The capture offsets a task block's body gives away: returns, stores, hands
 /// to something that keeps it, or carries into a task of its own. A closure
 /// value it captured counts whatever it does with it: the body frees that one
@@ -603,13 +649,19 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
 /// of each capture the block loads. Conservative the same way: a capture given
 /// away on one path counts, which leaks on the other path rather than freeing
 /// twice.
+///
+/// `consumed` is what each closure body takes away from its own captures
+/// (`captures_consumed_by_bodies`), so a capture the block only lends to a
+/// closure it builds and frees itself isn't read as given away. Asked of an
+/// empty map, every capture handed to a closure counted as consumed by it, and
+/// a vector a task block walked through `m.as_sequence()` was freed by nobody.
 pub(crate) fn task_captures_given_away(
     func: &MirFunction,
     kept: &HashMap<String, Vec<bool>>,
+    consumed: &HashMap<&str, HashSet<u32>>,
     targets: &ClosureTargets,
     reach: &ClosureReach,
 ) -> HashSet<u32> {
-    let none = HashMap::new();
     func.blocks
         .iter()
         .flat_map(|b| b.statements.iter())
@@ -621,7 +673,7 @@ pub(crate) fn task_captures_given_away(
                 Some(*offset)
             }
             MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
-                param_is_kept_by(func, *dst, kept, &none, targets, reach).then_some(*offset)
+                param_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
             }
             _ => None,
         })
@@ -660,6 +712,13 @@ pub(crate) fn add_carried_releases(
     targets: &ClosureTargets,
     reach: &ClosureReach,
 ) {
+    // Owned, because the glue functions are pushed onto `fns` below.
+    let consumed_by_name: HashMap<String, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), captures_the_body_consumes(f)))
+        .collect();
+    let body_consumed: HashMap<&str, HashSet<u32>> =
+        consumed_by_name.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for site in sites {
@@ -683,7 +742,7 @@ pub(crate) fn add_carried_releases(
         // non-Copy field of one, and the Copy things a body can consume — a
         // channel end's `close` — are not what the walk releases.
         if let Some(body) = fns.iter().find(|f| f.name == name) {
-            let gone = task_captures_given_away(body, kept, targets, reach);
+            let gone = task_captures_given_away(body, kept, &body_consumed, targets, reach);
             slots.retain(|(offset, _)| !gone.contains(offset));
         }
         if slots.is_empty() {
@@ -805,13 +864,6 @@ pub(crate) fn params_a_callee_keeps(
         .iter()
         .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
         .collect();
-    // A method a vtable can hold is also called through `any Interface`,
-    // where the caller's box keeps owning the receiver and releases it
-    // (`interface_drop_owned`). Its `take self` is read off the body, as
-    // before modes were: one answer has to serve both kinds of call.
-    // Workaround until an interface call hands the receiver over (#1911).
-    let behind_vtable: HashSet<&str> = vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()).collect();
-
     loop {
         let mut grew = false;
         for func in fns {
@@ -825,8 +877,7 @@ pub(crate) fn params_a_callee_keeps(
                 // a borrowed non-Copy one can't be given away (PM6), and a
                 // `mutate` slot the callee moves out of comes back refilled
                 // (PM7), the new value the caller's to release (#1885).
-                let mode = func.param_modes.get(i).filter(|_| !(i == 0 && behind_vtable.contains(func.name.as_str())));
-                match mode {
+                match func.param_modes.get(i) {
                     Some(ParamMode::Borrow | ParamMode::Mutate) => continue,
                     // Written `take`: the frame owns it from the call on, and
                     // releases what it doesn't hand on.
@@ -1218,6 +1269,7 @@ impl Keeps<'_> {
 /// reading an element out of one doesn't take a reference — #1035.
 fn functions_that_hand_a_container_back(
     fns: &[MirFunction],
+    kept: &HashMap<String, Vec<bool>>,
     targets: &crate::closure_targets::ClosureTargets,
 ) -> HashMap<String, HandBack> {
     let mut handing: HashMap<String, HandBack> = HashMap::new();
@@ -1227,7 +1279,7 @@ fn functions_that_hand_a_container_back(
             if handing.contains_key(&func.name) {
                 continue;
             }
-            if let Some(back) = what_comes_back(func, fns, &handing, targets) {
+            if let Some(back) = what_comes_back(func, fns, &handing, kept, targets) {
                 handing.insert(func.name.clone(), back);
                 grew = true;
             }
@@ -1252,6 +1304,7 @@ fn what_comes_back(
     func: &MirFunction,
     fns: &[MirFunction],
     handing: &HashMap<String, HandBack>,
+    kept: &HashMap<String, Vec<bool>>,
     targets: &ClosureTargets,
 ) -> Option<HandBack> {
     // No interface answer yet — it is built from this one, and a half-built
@@ -1294,6 +1347,10 @@ fn what_comes_back(
             continue;
         }
         if let Some(f) = fresh.get(id) {
+            paths.push(Path::Made(f));
+            continue;
+        }
+        if let Some(f) = container_moved_out_of_taken_param(func, *id, kept) {
             paths.push(Path::Made(f));
             continue;
         }
@@ -1340,6 +1397,71 @@ fn what_comes_back(
         (false, _) if wrapped => None,
         _ => Some(HandBack { free, wrapped, args }),
     }
+}
+
+/// The free of a container read out of a field of a struct `take` parameter,
+/// when `local` is one (`return self.items`).
+///
+/// A `take` argument was given up at the call, and everything in it with it:
+/// the field is the callee's to hand on, and what comes back is the caller's
+/// whatever it owned before. The rest of the struct is the callee's to
+/// release (`rc_insert`).
+fn container_moved_out_of_taken_param(
+    func: &MirFunction,
+    local: LocalId,
+    kept: &HashMap<String, Vec<bool>>,
+) -> Option<&'static str> {
+    if func.is_extern_c {
+        return None;
+    }
+    let flags = kept.get(&func.name)?;
+    let defs_of = |l: LocalId| {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter(move |st| crate::analysis::uses::stmt_def(st) == Some(l))
+    };
+    // The one definition of a name, through copies.
+    let sole = |mut l: LocalId| -> Option<&MirStmt> {
+        for _ in 0..func.locals.len() + func.params.len() {
+            let mut defs = defs_of(l);
+            let def = defs.next()?;
+            if defs.next().is_some() {
+                return None;
+            }
+            match &def.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => l = *src,
+                _ => return Some(def),
+            }
+        }
+        None
+    };
+    let MirStmtKind::Assign { rvalue: MirRValue::Field { base: MirOperand::Local(root), .. }, dst, .. } =
+        &sole(local)?.kind
+    else {
+        return None;
+    };
+    let Some(MirType::Container(kind)) = func.local_ty(*dst).cloned() else { return None };
+    if !matches!(func.local_ty(*root), Some(MirType::Struct(_))) {
+        return None;
+    }
+    // The struct is a parameter, or a copy of one.
+    let mut at = *root;
+    for _ in 0..func.locals.len() + func.params.len() {
+        if let Some(i) = func.params.iter().position(|p| p.id == at) {
+            return flags.get(i).copied().unwrap_or(false).then(|| container_free(kind));
+        }
+        let mut defs = defs_of(at);
+        let def = defs.next()?;
+        if defs.next().is_some() {
+            return None;
+        }
+        match &def.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => at = *src,
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// What a call that may hand back one of its arguments was passed there: per
@@ -1676,7 +1798,6 @@ fn insert_for_function(
     interface_handing: &HashMap<String, HandBack>,
     keeps: &Keeps,
     targets: &ClosureTargets,
-    own: &HashSet<String>,
     closure_bodies: &HashSet<String>,
 ) {
     let kept = keeps.by_name;
@@ -1727,7 +1848,7 @@ fn insert_for_function(
         .collect();
     let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
     let facts =
-        container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, own, &passed, &owned);
+        container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, &passed, &owned);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -1894,7 +2015,6 @@ fn container_facts(
     ensured: &HashSet<LocalId>,
     lent: &LentSlots,
     keeps: &Keeps,
-    own: &HashSet<String>,
     passed: &Passes,
     owned: &HashSet<LocalId>,
 ) -> crate::analysis::ownership::Facts {
@@ -1906,6 +2026,7 @@ fn container_facts(
     let is = |l: &LocalId| tracked.contains_key(l);
     let env = |l: &LocalId| envs.contains(l);
     let mut facts = crate::analysis::ownership::Facts {
+        moved_parts: Default::default(),
         names: names.clone(),
         events: Vec::new(),
         terminator_events: Vec::new(),
@@ -1955,18 +2076,13 @@ fn container_facts(
                 MirStmtKind::Phi { .. } => {}
                 MirStmtKind::Call { func: fref, args, dst } => {
                     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                    let base = head.split('$').next().unwrap_or(head);
                     let borrows = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
                     let takes = rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
-                    // The lowering's own free of a scratch container. A name
-                    // the program declares is never one (#1248).
-                    let frees = !own.contains(&fref.name)
-                        && (base.ends_with("_free") || base.ends_with("_free_elems"));
                     for (i, arg) in args.iter().enumerate() {
                         if passes_arg(i) {
                             continue;
                         }
-                        if i == 0 && (takes || frees) {
+                        if i == 0 && takes {
                             give(&mut ev, arg);
                             continue;
                         }
@@ -2631,9 +2747,12 @@ fn containers_and_makers(
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
             // A call through a closure counts the same way: its destination is
-            // the definition, not a copy of some other name (#943).
+            // the definition, not a copy of some other name (#943). So does
+            // one through a vtable, whose implementations all agreed to hand
+            // a container back: pruned as a copy it was never freed.
             MirStmtKind::Call { dst: Some(dst), .. }
-            | MirStmtKind::ClosureCall { dst: Some(dst), .. } => Some(*dst),
+            | MirStmtKind::ClosureCall { dst: Some(dst), .. }
+            | MirStmtKind::InterfaceCall { dst: Some(dst), .. } => Some(*dst),
             _ => None,
         })
         // What a call that may hand back its argument returns follows the
@@ -3452,7 +3571,7 @@ fn exit_blocks(func: &MirFunction, cell: LocalId) -> Vec<(usize, HashSet<LocalId
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
             MirStmtKind::Call { dst: Some(dst), func: fref, args }
-                if fref.name.ends_with("rask_resource_is_consumed") =>
+                if fref.name == crate::RESOURCE_IS_CONSUMED =>
             {
                 let tok = args.first().and_then(crate::analysis::uses::operand_local)?;
                 Some((*dst, *registered.get(&tok)?))

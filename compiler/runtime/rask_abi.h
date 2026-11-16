@@ -222,10 +222,15 @@
 // `RASK_OWNED_HANDLE` entry or a handle box payload calls.
 #define RASK_HANDLE_RELEASES(X) \
     X(rask_atomic_free) \
+    X(rask_cell_free) \
     X(rask_cstring_free) \
     X(rask_map_free) \
+    X(rask_mutex_drop) \
     X(rask_rack_free) \
+    X(rask_recver_drop_i64) \
     X(rask_rng_free) \
+    X(rask_sender_drop_i64) \
+    X(rask_shared_drop_i64) \
     X(rask_staged_free) \
     X(rask_vec_free)
 

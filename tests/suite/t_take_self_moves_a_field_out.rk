@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take` parameter, `self` included, that has one field moved out of it
+// (`return self.items`): the caller owns what came out, and the callee
+// releases the rest of the struct, the strings and vectors beside the field.
+//
+// Before, handing a field on handed the whole struct on, so nothing released
+// the other fields, and the caller didn't own the vector that came back. Each
+// call leaked both. The answers were right either way; RASK_LEAK_CHECK is what
+// sees it, the leak gate runs every suite file under it. The bodies are long
+// enough that nothing inlines them into the caller, where the frame's own
+// release of the struct hid it.
+
+struct Pt {
+    name: string
+    items: Vec<usize>
+    extra: Vec<string>
+}
+
+interface Source {
+    func into_items(take self) -> Vec<usize>
+}
+
+Pt implements Source {
+    func into_items(take self) -> Vec<usize> {
+        mut total = 0
+        for i in 0..self.name.len() {
+            total += i
+        }
+        if total > 100000 {
+            println("big {total}")
+            println("really big {total}")
+            println("huge {total}")
+        }
+        println("name {self.name} {self.extra.len()}")
+        println("again {total} {self.name}")
+        return self.items
+    }
+}
+
+extend Pt {
+    func take_items(take self) -> Vec<usize> {
+        mut total = 0
+        for i in 0..self.name.len() {
+            total += i
+        }
+        if total > 100000 {
+            println("big {total}")
+            println("really big {total}")
+            println("huge {total}")
+        }
+        println("name {self.name} {self.extra.len()}")
+        println("again {total} {self.name}")
+        return self.items
+    }
+}
+
+func items_of(take p: Pt) -> Vec<usize> {
+    mut total = 0
+    for i in 0..p.name.len() {
+        total += i
+    }
+    if total > 100000 {
+        println("big {total}")
+        println("really big {total}")
+        println("huge {total}")
+    }
+    println("name {p.name} {p.extra.len()}")
+    println("again {total} {p.name}")
+    return p.items
+}
+
+func make(n: usize) -> Pt {
+    mut items: Vec<usize> = Vec.new()
+    items.push(n)
+    mut extra: Vec<string> = Vec.new()
+    extra.push("extra entry number {n} and then some more text")
+    return Pt(name: "a name long enough to live on the heap {n}", items: items, extra: extra)
+}
+
+test "take self moves a field out" {
+    let a = make(1).take_items()
+    let b = make(2).take_items()
+    assert a[0] == 1
+    assert b[0] == 2
+}
+
+test "take parameter moves a field out" {
+    let a = items_of(make(3))
+    let b = items_of(make(4))
+    assert a[0] == 3
+    assert b[0] == 4
+}
+
+test "take self moves a field out through any" {
+    let d: any Source = make(5)
+    let e: any Source = make(6)
+    let a = d.into_items()
+    let b = e.into_items()
+    assert a[0] == 5
+    assert b[0] == 6
+}

@@ -15,6 +15,8 @@ use crate::transform::inline::InlineRegion;
 /// Passes write metadata and diagnostics here; downstream consumers read them.
 #[derive(Debug, Default)]
 pub struct PassContext {
+    /// The machine the program is for.
+    pub target: rask_ast::Target,
     /// DI5: inline region metadata per caller function name.
     pub inline_regions: HashMap<String, Vec<InlineRegion>>,
     /// Accumulated diagnostics from analysis passes (typestate errors, etc.).
@@ -38,6 +40,10 @@ pub struct PassContext {
     pub rack_holders: HashSet<u32>,
     /// Which struct and enum layouts are Copy (`CopyLayouts`).
     pub copy_layouts: crate::CopyLayouts,
+    /// The init thunk of every module-level const that has a slot, by the
+    /// function's name. Lowering made them from the const declarations, so
+    /// it says which they are; `const_free` reads them.
+    pub const_init_thunks: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -83,17 +89,20 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, HashSet::new(), crate::CopyLayouts::default())
+        self.run_with(fns, rask_ast::Target::default(), HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
     }
 
-    /// `run`, told which struct layouts hold a rack.
+    /// `run`, told which struct layouts hold a rack and which functions are
+    /// const init thunks.
     pub fn run_with(
         &self,
         fns: &mut Vec<MirFunction>,
+        target: rask_ast::Target,
         rack_holders: HashSet<u32>,
         copy_layouts: crate::CopyLayouts,
+        const_init_thunks: HashSet<String>,
     ) -> PipelineResult {
-        let mut ctx = PassContext { rack_holders, copy_layouts, ..PassContext::default() };
+        let mut ctx = PassContext { target, rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -196,8 +205,8 @@ pub struct ConstFreePass;
 
 impl MirPass for ConstFreePass {
     fn name(&self) -> &str { "const_free" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::add_const_free(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::add_const_free(fns, &ctx.const_init_thunks);
     }
 }
 
@@ -207,8 +216,8 @@ pub struct UnwindRecordPass;
 
 impl MirPass for UnwindRecordPass {
     fn name(&self) -> &str { "unwind_records" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::transform::unwind::build_unwind_records(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::transform::unwind::build_unwind_records(fns, ctx.target);
     }
 }
 
@@ -309,15 +318,18 @@ impl MirPass for StringRcInsertionPass {
         let closure_keeps = |func: &str, closure, i, n| {
             crate::container_drop::closure_call_keeps_argument(&targets, &reach, &kept, func, closure, i, n)
         };
+        let writes = crate::transform::inline::params_written_through(fns);
         let mut carried = Vec::new();
         for func in fns.iter_mut() {
             carried.extend(crate::transform::rc_insert::insert_rc_ops(
                 func,
                 &kept,
+                &writes,
                 &ctx.own_functions,
                 &closure_keeps,
                 &ctx.rack_holders,
                 &ctx.copy_layouts,
+                ctx.target,
             ));
         }
         crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);

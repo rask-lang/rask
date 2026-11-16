@@ -238,7 +238,7 @@ fn all_pointer_methods_implemented() {
             rask_stdlib::PtrSig::Comparison => vec![Value::RawPtr(p.clone())],
             _ => args,
         };
-        match call_ptr_method(&p, m.name, args) {
+        match call_ptr_method(&p, m.name, args, rask_ast::Target::LP64) {
             Err(RuntimeError::NoSuchMethod { .. }) | Err(RuntimeError::Generic(_)) => panic!(
                 "`{}` is in rask-stdlib's PTR_METHODS but the interpreter has no \
                  implementation — add one in rask-interp/src/ptr.rs",

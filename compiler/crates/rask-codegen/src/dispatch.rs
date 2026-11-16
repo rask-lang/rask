@@ -805,7 +805,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("channel_rx", "rask_channel_get_rx", &[types::I64], Some(types::I64), false),
 
-        StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "send", c_name: "rask_channel_send_ptr",
@@ -1042,39 +1041,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             PtrSig::Cast => continue,
         };
         entries.push(entry);
-    }
-
-    // ── SIMD vector operations ──────────────────────────────
-    // Float vector types: f32x4, f32x8, f64x2, f64x4
-    // Scalar args/returns are F64 (ABI), vec args/returns are I64 (pointer).
-    for simd_type in &["f32x4", "f32x8", "f64x2", "f64x4"] {
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_splat", simd_type)), leak_str(&format!("rask_simd_{}_splat", simd_type)), &[types::F64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_load", simd_type)), leak_str(&format!("rask_simd_{}_load", simd_type)), &[types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_store", simd_type)), leak_str(&format!("rask_simd_{}_store", simd_type)), &[types::I64, types::I64], None, false));
-        for op in &["add", "sub", "mul", "div"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", simd_type, op)), leak_str(&format!("rask_simd_{}_{}", simd_type, op)), &[types::I64, types::I64], Some(types::I64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_scale", simd_type)), leak_str(&format!("rask_simd_{}_scale", simd_type)), &[types::I64, types::F64], Some(types::I64), false));
-        for op in &["sum", "product", "min", "max"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", simd_type, op)), leak_str(&format!("rask_simd_{}_{}", simd_type, op)), &[types::I64], Some(types::F64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_get", simd_type)), leak_str(&format!("rask_simd_{}_get", simd_type)), &[types::I64, types::I64], Some(types::F64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_set", simd_type)), leak_str(&format!("rask_simd_{}_set", simd_type)), &[types::I64, types::I64, types::F64], None, false));
-    }
-
-    for simd_type in &["i32x4", "i32x8"] {
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_splat", simd_type)), leak_str(&format!("rask_simd_{}_splat", simd_type)), &[types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_load", simd_type)), leak_str(&format!("rask_simd_{}_load", simd_type)), &[types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_store", simd_type)), leak_str(&format!("rask_simd_{}_store", simd_type)), &[types::I64, types::I64], None, false));
-        for op in &["add", "sub", "mul", "div"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", simd_type, op)), leak_str(&format!("rask_simd_{}_{}", simd_type, op)), &[types::I64, types::I64], Some(types::I64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_scale", simd_type)), leak_str(&format!("rask_simd_{}_scale", simd_type)), &[types::I64, types::I64], Some(types::I64), false));
-        for op in &["sum", "product", "min", "max"] {
-            entries.push(StdlibEntry::simple(leak_str(&format!("{}_{}", simd_type, op)), leak_str(&format!("rask_simd_{}_{}", simd_type, op)), &[types::I64], Some(types::I64), false));
-        }
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_get", simd_type)), leak_str(&format!("rask_simd_{}_get", simd_type)), &[types::I64, types::I64], Some(types::I64), false));
-        entries.push(StdlibEntry::simple(leak_str(&format!("{}_set", simd_type)), leak_str(&format!("rask_simd_{}_set", simd_type)), &[types::I64, types::I64, types::I64], None, false));
     }
 
     entries

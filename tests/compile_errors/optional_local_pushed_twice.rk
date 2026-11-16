@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A name declared `let so: string? = mk()` holds a `string?`, which is 24
+// bytes and so moves (mem.value/VS1). The ownership pass read the type of
+// the initializer instead (`mk()` answers a `string`, which copies), so
+// `push(so)` didn't count as a move, a second `push(so)` passed, and the
+// vector held one string in two slots (#1905).
+
+struct Pt {
+    s: string
+}
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+func twice_string() -> usize {
+    mut ks: Vec<string?> = Vec.new()
+    let so: string? = mk(2)
+    ks.push(so)
+    // ERROR: `so` was moved into the first push [E0800]
+    ks.push(so)
+    return ks.len()
+}
+
+func twice_struct() -> usize {
+    mut ps: Vec<Pt?> = Vec.new()
+    let p: Pt? = Pt(s: mk(3))
+    ps.push(p)
+    // ERROR: `p` was moved into the first push [E0800]
+    ps.push(p)
+    return ps.len()
+}
+
+// Fine: a clone is a separate value.
+func fine() -> usize {
+    mut ks: Vec<string?> = Vec.new()
+    let so: string? = mk(4)
+    ks.push(so.clone())
+    ks.push(so)
+    return ks.len()
+}
+
+func main() {
+    println("{twice_string()} {twice_struct()} {fine()}")
+}

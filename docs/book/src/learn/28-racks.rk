@@ -10,8 +10,11 @@
 // A `Rack` holds things that need to point at each other. `insert` puts one
 // in and gives back a `Link`, which can be stored in a field. Reading through
 // a link reads the thing it links to: `p.boss` and `p.name` work as if `p`
-// were the Person. When someone is deleted from the rack, every link to them
-// becomes `none`, so a link to someone who's gone can't exist.
+// were the Person. In a function that can change the rack, `p.boss = ...`
+// changes that person. When someone is deleted from the rack, every field that
+// links to them becomes `none` before the delete returns, so a link to someone
+// who's gone can't exist. That's why `boss` is a `Link<Person>?`: the `?` is
+// where the `none` goes, and it makes you check before following the link.
 //
 // `Rack` and `Link` live in the standard library's `memory` module. Apart
 // from the basics (numbers, strings, Vec, Map), everything there needs an

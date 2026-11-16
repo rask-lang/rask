@@ -27,13 +27,9 @@ fn names_something_spelled(ty: &Type) -> bool {
     }
 }
 
-fn align_up(n: u32, align: u32) -> u32 {
-    (n + align - 1) & !(align - 1)
-}
-
 /// Width in bytes of an integer type, and whether it's signed.
-fn int_shape(ty: &Type) -> Option<(usize, bool)> {
-    Some(match ty.at_target_width() {
+fn int_shape(ty: &Type, target: rask_ast::Target) -> Option<(usize, bool)> {
+    Some(match ty.at_target(target) {
         Type::I8 => (1, true),
         Type::I16 => (2, true),
         Type::I32 => (4, true),
@@ -85,7 +81,7 @@ impl Interpreter {
     fn byte_layout(&self, ty: &Type) -> Result<(u32, u32), RuntimeError> {
         match ty {
             Type::Bool | Type::Char | Type::F32 | Type::F64 | Type::I128 | Type::U128 => {}
-            _ if int_shape(ty).is_some() => {}
+            _ if int_shape(ty, self.types.target()).is_some() => {}
             Type::Array { elem, .. } => {
                 self.byte_layout(elem)?;
             }
@@ -100,6 +96,11 @@ impl Interpreter {
             _ => return Err(self.unsupported(ty)),
         }
         Ok(self.types.size_align_settled(ty))
+    }
+
+    /// Size and alignment of each element of a tuple.
+    fn tuple_parts(&self, elems: &[Type]) -> Result<Vec<(u32, u32)>, RuntimeError> {
+        elems.iter().map(|e| self.byte_layout(e)).collect()
     }
 
     /// The struct a type names, its name, and its layout.
@@ -135,8 +136,8 @@ impl Interpreter {
             (Type::F64, Value::Float(f, _)) => put(&f.to_bits().to_le_bytes()),
             (Type::I128, Value::Int128(v)) => put(&v.to_le_bytes()),
             (Type::U128, Value::Uint128(v)) => put(&v.to_le_bytes()),
-            (_, Value::Int(v, _)) if int_shape(ty).is_some() => {
-                let (width, _) = int_shape(ty).unwrap();
+            (_, Value::Int(v, _)) if int_shape(ty, self.types.target()).is_some() => {
+                let (width, _) = int_shape(ty, self.types.target()).unwrap();
                 put(&v.to_le_bytes()[..width]);
             }
             (Type::Array { elem, .. }, Value::Vec(items)) => {
@@ -146,12 +147,9 @@ impl Interpreter {
                 }
             }
             (Type::Tuple(elems), Value::Tuple(items)) => {
-                let mut offset = 0u32;
-                for (elem, item) in elems.iter().zip(items.iter()) {
-                    let (size, align) = self.byte_layout(elem)?;
-                    offset = align_up(offset, align);
+                let (offsets, _, _) = rask_layout::tuple_layout(self.tuple_parts(elems)?);
+                for ((elem, item), offset) in elems.iter().zip(items.iter()).zip(offsets) {
                     self.write_bytes(item, elem, out, at + offset as usize)?;
-                    offset += size;
                 }
             }
             (Type::Named(_) | Type::Generic { .. }, Value::Struct(data)) => {
@@ -188,28 +186,25 @@ impl Interpreter {
             Type::F64 => Value::Float(f64::from_bits(u64::from_le_bytes(take(8)[..8].try_into().unwrap())), FloatKind::F64),
             Type::I128 => Value::Int128(i128::from_le_bytes(take(16))),
             Type::U128 => Value::Uint128(u128::from_le_bytes(take(16))),
-            _ if int_shape(ty).is_some() => {
-                let (width, signed) = int_shape(ty).unwrap();
+            _ if int_shape(ty, self.types.target()).is_some() => {
+                let (width, signed) = int_shape(ty, self.types.target()).unwrap();
                 let raw = u64::from_le_bytes(take(width)[..8].try_into().unwrap());
                 let shift = 64 - 8 * width as u32;
                 let v = if signed { ((raw << shift) as i64) >> shift } else { raw as i64 };
-                Value::Int(v, IntKind::from_type(ty))
+                Value::Int(v, IntKind::from_type(ty, self.types.target()))
             }
             Type::Array { elem, len } => {
                 let (elem_size, _) = self.byte_layout(elem)?;
                 let items = (0..*len)
                     .map(|i| self.read_bytes(elem, bytes, at + i * elem_size as usize))
                     .collect::<Result<Vec<_>, _>>()?;
-                Value::vec(items)
+                Value::array(items)
             }
             Type::Tuple(elems) => {
-                let mut offset = 0u32;
+                let (offsets, _, _) = rask_layout::tuple_layout(self.tuple_parts(elems)?);
                 let mut items = Vec::with_capacity(elems.len());
-                for elem in elems {
-                    let (size, align) = self.byte_layout(elem)?;
-                    offset = align_up(offset, align);
+                for (elem, offset) in elems.iter().zip(offsets) {
                     items.push(self.read_bytes(elem, bytes, at + offset as usize)?);
-                    offset += size;
                 }
                 Value::tuple(items)
             }

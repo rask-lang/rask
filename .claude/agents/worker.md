@@ -42,6 +42,16 @@ Stop every background job you started before you report. One still running
 wakes the main session each time it finishes or stirs, and each wake costs a
 full turn of the main session's context for nothing.
 
+Run builds and gates in the foreground with a long timeout (up to 600000 ms),
+one command for the whole sweep. Don't start them in the background and end
+your turn to wait: each time you do, the main session gets a "waiting on its
+own background work" wake. One worker caused nine of those in a night.
+
+Keep your context small. Read the lines you need (`grep -n`, `sed -n`), not
+whole files; pipe build and gate output through `tail` or `grep`. Your context
+is re-read on every tool call, so a 50K-line log you read once is paid for on
+every call after it.
+
 - Root cause, one sentence.
 - What changed and the commit hash.
 - What you ran and how it came out.
