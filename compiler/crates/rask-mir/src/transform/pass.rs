@@ -329,6 +329,7 @@ impl MirPass for StringRcInsertionPass {
                 &closure_keeps,
                 &ctx.rack_holders,
                 &ctx.copy_layouts,
+                ctx.target,
             ));
         }
         crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);

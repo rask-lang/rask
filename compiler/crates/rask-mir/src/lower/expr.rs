@@ -2352,7 +2352,7 @@ impl<'a> MirLowerer<'a> {
                             func: FunctionRef::internal("Field_take".to_string()),
                             args: vec![
                                 MirOperand::Local(addr),
-                                MirOperand::Constant(MirConst::Int(sty.size() as i64)),
+                                MirOperand::Constant(MirConst::Int(rask_layout::size_of(&sty, self.ctx.target()) as i64)),
                             ],
                         }));
                         return Ok((MirOperand::Local(dst), sty));
@@ -2401,7 +2401,7 @@ impl<'a> MirLowerer<'a> {
                         func: FunctionRef::internal("Field_take".to_string()),
                         args: vec![
                             MirOperand::Local(addr),
-                            MirOperand::Constant(MirConst::Int(ty.size() as i64)),
+                            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty, self.ctx.target()) as i64)),
                         ],
                     }));
                     return Ok((MirOperand::Local(dst), ty));

@@ -2635,7 +2635,7 @@ impl<'a> MirLowerer<'a> {
                     .is_some_and(|t| !self.ctx.type_defs.is_copy(&t))
             });
         let part_offsets: Vec<u32> = match &mir_elem_types {
-            Some(fields) if takes_parts => crate::types::tuple_offsets(fields),
+            Some(fields) if takes_parts => rask_layout::tuple_offsets(fields, self.ctx.target()),
             _ => Vec::new(),
         };
         // The tuple's own slot: reading `t` made a copy of its bytes, and a
@@ -2701,7 +2701,7 @@ impl<'a> MirLowerer<'a> {
                         func: FunctionRef::internal("Field_take".to_string()),
                         args: vec![
                             MirOperand::Local(addr),
-                            MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
+                            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
                         ],
                     }));
                 }
