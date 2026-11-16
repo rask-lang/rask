@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: an `encode` an encoder can't call (std.encoding/E12b, E0423).
+// Compile Error: an `encode` an encoder can't call (std.encoding/E12b, E0425).
 //
 // A type writes itself out as `func encode(self) -> W` in its `Encode` block.
 // The encoders call it and write `W` the normal way, so each part of that shape
@@ -22,7 +22,7 @@ extend Why {
     }
 }
 
-// ERROR: no `self`: it has no value to write [E0423]
+// ERROR: no `self`: it has no value to write [E0425]
 struct NoSelf {
     n: i64
 }
@@ -33,7 +33,7 @@ NoSelf implements Encode {
     }
 }
 
-// ERROR: a parameter besides `self` [E0423]
+// ERROR: a parameter besides `self` [E0425]
 struct Extra {
     n: i64
 }
@@ -44,7 +44,7 @@ Extra implements Encode {
     }
 }
 
-// ERROR: `mutate self` [E0423]
+// ERROR: `mutate self` [E0425]
 struct Mutating {
     n: i64
 }
@@ -55,7 +55,7 @@ Mutating implements Encode {
     }
 }
 
-// ERROR: can fail: writing a value out can't [E0423]
+// ERROR: can fail: writing a value out can't [E0425]
 struct Fails {
     n: i64
 }
@@ -66,7 +66,7 @@ Fails implements Encode {
     }
 }
 
-// ERROR: returns nothing [E0423]
+// ERROR: returns nothing [E0425]
 struct Nothing {
     n: i64
 }
@@ -75,7 +75,7 @@ Nothing implements Encode {
     func encode(self) {}
 }
 
-// ERROR: the wire type can't be encoded [E0423]
+// ERROR: the wire type can't be encoded [E0425]
 struct BadWire {
     n: i64
 }
@@ -86,7 +86,7 @@ BadWire implements Encode {
     }
 }
 
-// ERROR: generic [E0423]
+// ERROR: generic [E0425]
 struct Boxed<T> {
     inner: T
 }
@@ -97,7 +97,7 @@ Boxed<T> implements Encode {
     }
 }
 
-// ERROR: written as itself, so an encoder would never reach a number [E0423]
+// ERROR: written as itself, so an encoder would never reach a number [E0425]
 struct Loop {
     n: i64
 }
@@ -108,7 +108,7 @@ Loop implements Encode {
     }
 }
 
-// ERROR: written as an optional of itself, which is written the same way [E0423]
+// ERROR: written as an optional of itself, which is written the same way [E0425]
 struct LoopOpt {
     n: i64
 }

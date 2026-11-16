@@ -4,11 +4,21 @@
 
 use crate::FieldAccess;
 use super::{LoweringError, MirLowerer, TypedOperand};
+
+/// A struct pattern's field, read out of the matched value: where it was put,
+/// what it is lowered as, what the checker calls it, and the pattern for it.
+struct FieldRead<'p> {
+    local: crate::LocalId,
+    ty: MirType,
+    checked: Type,
+    pattern: &'p Pattern,
+}
 use crate::{
     operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_types::Type;
 use rask_ast::ty::TypeExpr;
 
 /// Walk a pattern to see if it contains a range pattern anywhere.
@@ -765,8 +775,14 @@ impl<'a> MirLowerer<'a> {
             // Every tag on the way down has passed, so a nested variant's
             // fields are that variant's: bind them now.
             for (value, ty, checked, pattern) in &field_tests {
-                if matches!(&pattern.kind, PatternKind::Constructor { .. } | PatternKind::Struct { .. }) {
-                    self.bind_pattern_fields(pattern, value.clone(), None, false, ty, checked.as_ref());
+                match &pattern.kind {
+                    PatternKind::Constructor { .. } | PatternKind::Struct { .. } => {
+                        self.bind_pattern_fields(pattern, value.clone(), None, false, ty, checked.as_ref());
+                    }
+                    PatternKind::TypePat { .. } => {
+                        self.bind_field_type_pattern(value, ty, checked.as_ref(), pattern);
+                    }
+                    _ => {}
                 }
             }
             // After the nested bindings, so their copies are retained too.
@@ -1225,7 +1241,7 @@ impl<'a> MirLowerer<'a> {
 
             // Every field the pattern names is read once, whether it's tested or
             // bound — a test needs the value and so does the body.
-            let mut reads: Vec<(String, crate::LocalId, MirType, &Pattern)> = Vec::new();
+            let mut reads: Vec<FieldRead> = Vec::new();
             if let PatternKind::Struct { fields, .. } = &arm.pattern.kind {
                 for (field_name, field_pat) in fields {
                     let Some((field_idx, field_layout)) =
@@ -1237,59 +1253,26 @@ impl<'a> MirLowerer<'a> {
                     // Named for the binding when there is one, so debug info and
                     // the local's name agree.
                     let local_name = match &field_pat.kind {
-                        PatternKind::Ident(binding) => binding.clone(),
+                        PatternKind::Ident(binding) if self.pattern_binds(field_pat) => binding.clone(),
                         _ => format!("__match_{}", field_name),
                     };
                     let local = self.builder.alloc_local(local_name, field_ty.clone());
                     let fl = field_layout.clone();
                     self.read_layout_field(local, scrutinee_op.clone(), field_idx as u32, &fl, &field_ty, fl.offset);
-                    reads.push((field_name.clone(), local, field_ty, field_pat));
+                    reads.push(FieldRead { local, ty: field_ty, checked: fl.ty.clone(), pattern: field_pat });
                 }
             }
 
             // A pattern that only binds is a catch-all: nothing to test.
-            let tests: Vec<(crate::LocalId, &Pattern)> = reads
-                .iter()
-                .filter(|(_, _, _, pat)| {
-                    !matches!(&pat.kind, PatternKind::Ident(_) | PatternKind::Wildcard)
-                })
-                .map(|(_, local, _, pat)| (*local, *pat))
-                .collect();
-
-            if tests.is_empty() {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                    target: arm_body_blocks[i],
-                }));
-            } else {
-                let n = tests.len();
-                for (j, (local, pat)) in tests.into_iter().enumerate() {
-                    let last = j + 1 == n;
-                    // Each test's success moves to the next one; the last one's
-                    // success is the arm body. Any failure skips to the next arm.
-                    let pass = if last {
-                        arm_body_blocks[i]
-                    } else {
-                        self.builder.create_block()
-                    };
-                    self.emit_pattern_test(&MirOperand::Local(local), pat, pass, next_arm)?;
-                    if !last {
-                        self.builder.switch_to_block(pass);
-                    }
-                }
-            }
+            self.emit_field_tests(&reads, next_arm)?;
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                target: arm_body_blocks[i],
+            }));
 
             self.builder.switch_to_block(arm_body_blocks[i]);
 
             // The bindings the body reads.
-            for (_, local, field_ty, pat) in &reads {
-                if let PatternKind::Ident(binding) = &pat.kind {
-                    if let Some(p) = self.mir_type_name(field_ty) {
-                        self.meta_mut(binding.as_str()).type_prefix = Some(p);
-                    }
-                    self.locals
-                        .insert(binding.clone(), (*local, field_ty.clone()));
-                }
-            }
+            self.bind_field_reads(&reads);
             // A whole-value catch-all (`p => …`) binds the struct itself.
             if let PatternKind::Ident(name) = &arm.pattern.kind {
                 let bind_local = self.builder.alloc_local(name.clone(), scrutinee_ty.clone());
@@ -1346,6 +1329,46 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), result_ty))
     }
 
+    /// Test each field of a struct pattern that can fail, in order, branching
+    /// to `fail` at the first that does. Carries on in the block where they
+    /// all passed. A field that only binds, or is `_`, has nothing to test.
+    fn emit_field_tests(&mut self, reads: &[FieldRead], fail: BlockId) -> Result<(), LoweringError> {
+        use rask_ast::expr::PatternKind;
+        for read in reads {
+            let pattern = read.pattern;
+            let value = MirOperand::Local(read.local);
+            if self.field_pattern_tests_type(pattern) {
+                self.emit_field_type_test(&value, &read.ty, Some(&read.checked), pattern, fail)?;
+            } else if !matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::Wildcard) {
+                let pass = self.builder.create_block();
+                self.emit_pattern_test(&value, pattern, pass, fail)?;
+                self.builder.switch_to_block(pass);
+            }
+        }
+        Ok(())
+    }
+
+    /// The names a struct pattern's fields bind, which the arm body reads.
+    fn bind_field_reads(&mut self, reads: &[FieldRead]) {
+        use rask_ast::expr::PatternKind;
+        for read in reads {
+            match &read.pattern.kind {
+                PatternKind::Ident(binding) if self.pattern_binds(read.pattern) => {
+                    if let Some(p) = self.mir_type_name(&read.ty) {
+                        self.meta_mut(binding.as_str()).type_prefix = Some(p);
+                    }
+                    self.locals.insert(binding.clone(), (read.local, read.ty.clone()));
+                }
+                PatternKind::TypePat { .. } => {
+                    self.bind_field_type_pattern(
+                        &MirOperand::Local(read.local), &read.ty, Some(&read.checked), read.pattern,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// `p is Point(x: 0, y)` on a plain struct, as a bool: read each field the
     /// pattern names, test the ones that can fail, bind the rest. The
     /// bindings stay in scope past the test — an `&&` chain reads them — so
@@ -1363,51 +1386,28 @@ impl<'a> MirLowerer<'a> {
             unreachable!("lower_struct_is takes a struct pattern");
         };
         let result = self.builder.alloc_temp(MirType::Bool);
-        let mut reads: Vec<(crate::LocalId, MirType, &Pattern)> = Vec::new();
+        let mut reads: Vec<FieldRead> = Vec::new();
         for (field_name, field_pat) in fields {
             let Some((field_idx, field_layout)) = self.struct_field(&val_ty, field_name) else {
                 continue;
             };
             let field_ty = self.ctx.type_to_mir(&field_layout.ty);
             let local_name = match &field_pat.kind {
-                PatternKind::Ident(binding) => binding.clone(),
+                PatternKind::Ident(binding) if self.pattern_binds(field_pat) => binding.clone(),
                 _ => format!("__is_{}", field_name),
             };
             let local = self.builder.alloc_local(local_name, field_ty.clone());
             let fl = field_layout.clone();
             self.read_layout_field(local, val.clone(), field_idx as u32, &fl, &field_ty, fl.offset);
-            reads.push((local, field_ty, field_pat));
+            reads.push(FieldRead { local, ty: field_ty, checked: fl.ty.clone(), pattern: field_pat });
         }
 
         let pass_block = self.builder.create_block();
         let fail_block = self.builder.create_block();
         let merge_block = self.builder.create_block();
-        let tests: Vec<(crate::LocalId, &Pattern)> = reads
-            .iter()
-            .filter(|(_, _, pat)| !matches!(&pat.kind, PatternKind::Ident(_) | PatternKind::Wildcard))
-            .map(|(local, _, pat)| (*local, *pat))
-            .collect();
-        if tests.is_empty() {
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: pass_block }));
-        } else {
-            let n = tests.len();
-            for (j, (local, pat)) in tests.into_iter().enumerate() {
-                let pass = if j + 1 == n { pass_block } else { self.builder.create_block() };
-                self.emit_pattern_test(&MirOperand::Local(local), pat, pass, fail_block)?;
-                if j + 1 != n {
-                    self.builder.switch_to_block(pass);
-                }
-            }
-        }
-
-        for (local, field_ty, pat) in &reads {
-            if let PatternKind::Ident(binding) = &pat.kind {
-                if let Some(p) = self.mir_type_name(field_ty) {
-                    self.meta_mut(binding.as_str()).type_prefix = Some(p);
-                }
-                self.locals.insert(binding.clone(), (*local, field_ty.clone()));
-            }
-        }
+        self.emit_field_tests(&reads, fail_block)?;
+        self.bind_field_reads(&reads);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: pass_block }));
 
         self.builder.switch_to_block(pass_block);
         self.retain_pattern_copies(pattern, scrutinee, &val_ty);
@@ -1418,10 +1418,10 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
         self.builder.switch_to_block(fail_block);
-        for (local, field_ty, pat) in &reads {
-            if matches!(&pat.kind, PatternKind::Ident(_)) && *field_ty == MirType::Buffer {
+        for read in &reads {
+            if matches!(&read.pattern.kind, PatternKind::Ident(_)) && read.ty == MirType::Buffer {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: *local,
+                    dst: read.local,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
                 }));
             }

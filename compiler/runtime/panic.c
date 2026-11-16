@@ -442,7 +442,41 @@ static void rask_unwind_for_panic(void) {
     }
 }
 
-_Noreturn void rask_panic(const char *msg) {
+// A message built to size. The panic paths used to format into a 2 KB stack
+// buffer, so a failed `assert a == b` on two long Vecs, or a long message the
+// program wrote, was cut off where the interpreter printed it whole. Anything
+// that carries the program's own text is formatted here instead: once to
+// measure, once into a block that fits.
+char *rask_msg_vformat(const char *fmt, va_list ap) {
+    va_list measure;
+    va_copy(measure, ap);
+    int n = vsnprintf(NULL, 0, fmt, measure);
+    va_end(measure);
+    if (n < 0) n = 0;
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) {
+        fputs("panic: out of memory building a panic message\n", stderr);
+        abort();
+    }
+    vsnprintf(buf, (size_t)n + 1, fmt, ap);
+    return buf;
+}
+
+char *rask_msg_format(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    char *buf = rask_msg_vformat(fmt, args);
+    va_end(args);
+    return buf;
+}
+
+static char *msg_dup(const char *msg) {
+    return rask_msg_format("%s", msg ? msg : "(unknown panic)");
+}
+
+// The panic proper. `msg` is a malloc'd message this call owns: it becomes the
+// task's panic message, or is printed on the way out of the process.
+_Noreturn void rask_panic_owned(char *msg) {
     // If codegen set a source location, use rask_panic_at instead
     if (panic_loc_file && panic_loc_line > 0) {
         const char *f = panic_loc_file;
@@ -451,7 +485,7 @@ _Noreturn void rask_panic(const char *msg) {
         panic_loc_file = NULL;
         panic_loc_line = 0;
         panic_loc_col  = 0;
-        rask_panic_at(f, l, c, msg);
+        rask_panic_at_owned(f, l, c, msg);
     }
 
     // A1: inside an exported symbol there are C frames between here and any
@@ -466,12 +500,6 @@ _Noreturn void rask_panic(const char *msg) {
     // codegen's print lock and deadlock every later print on other threads.
     rask_print_unlock_all();
 
-    // The unwind below releases what the dying frames own, and the message
-    // may live in one of them.
-    char own_msg[RASK_PANIC_MSG_MAX];
-    snprintf(own_msg, sizeof(own_msg), "%s", msg ? msg : "(unknown panic)");
-    msg = own_msg;
-
     // U3/U4: release the locks and borrows this task still holds. Before the
     // ensures, not after — a cleanup that touches the same box has to be able to
     // take the lock, and an ensure blocking on it is a hang, not a failure.
@@ -479,25 +507,31 @@ _Noreturn void rask_panic(const char *msg) {
 
     // Unwind: run the dying frames' ensures and release what they own, down
     // to the handler (U1/U6/E2/E3). The primary panic message is set
-    // afterward, so it wins over any secondary.
+    // afterward, so it wins over any secondary. The message is a block of its
+    // own, so nothing the unwind frees can be what it reads.
     rask_unwind_for_panic();
 
     if (panic_ctx.active) {
         // Spawned task — store message and longjmp back to task entry
-        panic_ctx.message = msg ? strdup(msg) : strdup("(unknown panic)");
+        panic_ctx.message = msg;
         panic_ctx.located = 0;
         panic_ctx.active = 0;
         longjmp(panic_ctx.buf, 1);
     }
 
     // Main task — a panic escaping main exits 101 after unwind (P4).
-    fprintf(stderr, "panic: %s\n", msg ? msg : "(unknown panic)");
+    fprintf(stderr, "panic: %s\n", msg);
     print_backtrace();
     exit(101);
 }
 
-_Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
-                             const char *msg) {
+_Noreturn void rask_panic(const char *msg) {
+    rask_panic_owned(msg_dup(msg));
+}
+
+// As `rask_panic_owned`, with the source line in front of the message.
+_Noreturn void rask_panic_at_owned(const char *file, int32_t line, int32_t col,
+                                   char *msg) {
     // `file:line:` — no column. The message is stored and handed to user code
     // through `JoinError.Panicked(msg)`, so both backends have to agree on it,
     // and they point their columns at different sub-expressions: codegen's is
@@ -505,12 +539,11 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     // call. The line is the useful half either way, and ER15's `origin`
     // strings are already file:line (#748).
     (void)col;
-    char buf[RASK_PANIC_MSG_MAX];
+    char *buf = msg;
     // No file when the back end had no source to name (a package build, #1568).
     if (file) {
-        snprintf(buf, sizeof(buf), "%s:%d: %s", file, line, msg ? msg : "(unknown panic)");
-    } else {
-        snprintf(buf, sizeof(buf), "%s", msg ? msg : "(unknown panic)");
+        buf = rask_msg_format("%s:%d: %s", file, line, msg);
+        free(msg);
     }
 
     if (ffi_boundary_depth > 0) {
@@ -522,7 +555,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     rask_unwind_for_panic();
 
     if (panic_ctx.active) {
-        panic_ctx.message = strdup(buf);
+        panic_ctx.message = buf;
         panic_ctx.located = file != NULL;
         panic_ctx.active = 0;
         longjmp(panic_ctx.buf, 1);
@@ -533,13 +566,17 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
     exit(101);
 }
 
+_Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
+                             const char *msg) {
+    rask_panic_at_owned(file, line, col, msg_dup(msg));
+}
+
 _Noreturn void rask_panic_fmt(const char *fmt, ...) {
-    char buf[RASK_PANIC_MSG_MAX];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
+    char *buf = rask_msg_vformat(fmt, args);
     va_end(args);
-    rask_panic(buf);
+    rask_panic_owned(buf);
 }
 
 // ─── Catching a panic in place ─────────────────────────────

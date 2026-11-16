@@ -220,19 +220,12 @@ fn assert_operand(v: &Value) -> String {
 /// The caller supplies "assertion failed" / "check failed" — this is only the
 /// detail after it, so a form with no detail can come back empty rather than
 /// repeating the caller's own words back at it (#1098).
-fn format_comparison(left: &Value, op: &str, right: &Value) -> String {
-    // Same order as the MIR side picks its helper: string wins over everything,
-    // then char when both sides are chars, then the plain form.
-    if matches!(left, Value::String(_)) || matches!(right, Value::String(_)) {
+fn format_comparison(interp: &Interpreter, left: &Value, op: &str, right: &Value) -> String {
+    // Same order as the MIR side picks its helper: the string form when both
+    // sides are strings, then char when both are chars, then the plain form.
+    // A `string?` against a string is neither: it renders as an optional does.
+    if matches!(left, Value::String(_)) && matches!(right, Value::String(_)) {
         return format!("\"{}\" {} \"{}\"", left, op, right);
-    }
-    // Anything native has no rendering for gets none here either. It compares
-    // an aggregate by address, so printing the operands there gave two pointer
-    // values; the interpreter has the whole struct and would have printed
-    // `Point { x: 1, y: 2 }`. Both are "correct" and they are not the same
-    // line, which is the one thing the two backends may not be.
-    if !renders_as_operand(left) || !renders_as_operand(right) {
-        return String::new();
     }
     if matches!(left, Value::Char(_)) && matches!(right, Value::Char(_)) {
         return format!(
@@ -240,14 +233,17 @@ fn format_comparison(left: &Value, op: &str, right: &Value) -> String {
             left, op, right, left, right,
         );
     }
+    // A Vec, a struct, an optional: native lowers each side through the same
+    // renderer `{:debug}` uses, and so does this.
+    if !renders_as_operand(left) || !renders_as_operand(right) {
+        let (l, r) = (interp.debug_format(left), interp.debug_format(right));
+        return format!("{} {} {} (left: {}, right: {})", l, op, r, l, r);
+    }
     format!("{} {} {} (left: {}, right: {})", left, op, right, left, right)
 }
 
-/// Has a one-line rendering both backends agree on.
-///
-/// The list is the MIR side's `classify_cmp_fail` read from the other end: it
-/// has a typed reporter for exactly these, and falls through to a message with
-/// no operands for everything else — optionals, structs, enums, tuples, arrays.
+/// A scalar, which prints the way it does under `println`. Anything else
+/// goes through the debug renderer.
 fn renders_as_operand(v: &Value) -> bool {
     matches!(
         v,
@@ -275,7 +271,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
             let left_val = interp.eval_expr(object).ok();
             let right_val = interp.eval_expr(&args[0].expr).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                (Some(l), Some(r)) => format_comparison(interp, &l, op_str, &r),
                 _ => String::new(),
             }
         }
@@ -288,7 +284,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
                     let left_val = interp.eval_expr(object).ok();
                     let right_val = interp.eval_expr(&args[0].expr).ok();
                     match (left_val, right_val) {
-                        (Some(l), Some(r)) => format_comparison(&l, "!=", &r),
+                        (Some(l), Some(r)) => format_comparison(interp, &l, "!=", &r),
                         _ => String::new(),
                     }
                 }
@@ -317,7 +313,7 @@ fn build_comparison_message(interp: &mut Interpreter, condition: &Expr) -> Strin
             let left_val = interp.eval_expr(left).ok();
             let right_val = interp.eval_expr(right).ok();
             match (left_val, right_val) {
-                (Some(l), Some(r)) => format_comparison(&l, op_str, &r),
+                (Some(l), Some(r)) => format_comparison(interp, &l, op_str, &r),
                 _ => String::new(),
             }
         }

@@ -1,9 +1,0 @@
-error[E0888]: `Item.describe` doesn't match what `Describe` requires
-  --> docs/book/errors/12-writing-it-once-for-many-types/wrong_signature.rk:12:12
-    |
- 12 |     public func describe(self, closely: bool) -> string {
-    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is `func describe(self, bool) -> string`
-    = fix: the interface asks for `func describe(self) -> string`
-    = why: the header is the claim and the block is the evidence — a signature
-          that differs answers a different question than the one the interface
-          asked [type.generics/G1]

@@ -1,5 +1,0 @@
-play (mud/play.rk)
-
-  public func respond(mutate world: World, name: string, line: string) -> Outcome
-
-  public func script(mutate world: World, name: string, lines: Vec<string>) -> Vec<string>

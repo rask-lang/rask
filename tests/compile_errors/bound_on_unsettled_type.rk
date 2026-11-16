@@ -11,7 +11,7 @@
 // `decode` can't read, the decoder had nothing to fill a private field with, or
 // a field that can't be encoded went out as garbage. The bound is kept and
 // checked once the type has settled, so each of the three errors below is
-// reported (E0424, E0377, E0388).
+// reported (E0426, E0377, E0388).
 
 import json
 
@@ -25,7 +25,7 @@ extend PortError {
     }
 }
 
-// E0424: reads itself through `decode`, nothing says how it is written.
+// E0426: reads itself through `decode`, nothing says how it is written.
 struct Port {
     value: u16
 }
@@ -64,7 +64,7 @@ extend RawBuf {
 func main() {
     let n: u16 = 443
 
-    // ERROR: `Port` is read as a `u16` and would be written as its fields [E0424]
+    // ERROR: `Port` is read as a `u16` and would be written as its fields [E0426]
     let p = Port.new(n) catch _ => {
         return
     }

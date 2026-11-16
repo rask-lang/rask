@@ -367,6 +367,20 @@ match load() {
 }
 ```
 
+A type pattern also works one level down, as a field's pattern, wherever the field is a union or an optional that holds the type (ER27 applied per field). It tests that field and nothing else:
+
+<!-- test: skip -->
+```rask
+struct Job { id: i64, result: i64 or IoError }
+
+match job {
+    Job(id, result: IoError as e) => log("job {id}: {e.message()}"),
+    Job(id, result: i64)          => log("job {id} ok"),
+}
+```
+
+On a field of exactly that type, `amount: i32` where `amount` is an `i32`, the test always passes and binds nothing, so it is an error (E0423); write `Cash(amount)`. A type the field can't hold is the same error as anywhere else (E0398).
+
 Match earns its keep on multi-error unions. Two-branch cases read better as the fold (`r catch e => f(e)`).
 
 ## Methods

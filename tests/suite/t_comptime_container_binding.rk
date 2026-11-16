@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A folded `comptime` list or map is a Vec or a Map in MIR.
+//
+// Loading one handed back a bare word for the Map and a bare pointer for the
+// list, and an unannotated `let` keeps the type its initializer reports, so
+// `let m = comptime { … a Map … }` was an integer: `{m:debug}` printed an
+// address and the Map was never released as one. The annotated form worked
+// because the annotation supplied the type (#1959 has the same fault in the
+// collect loops; t_debug_inferred_chain_result.rk covers those).
+
+test "a comptime Map binds as a Map" {
+    let m = comptime {
+        mut x: Map<i64, i64> = Map.new()
+        x.insert(1, 2)
+        x.insert(3, 4)
+        x
+    }
+    assert "{m:debug}" == "Map {{ 1: 2, 3: 4 }}"
+    assert m.len() == 2
+}
+
+test "a comptime Vec binds as a Vec" {
+    let v = comptime {
+        mut x: Vec<i64> = Vec.new()
+        x.push(1)
+        x.push(2)
+        x
+    }
+    assert "{v:debug}" == "[1, 2]"
+    assert v.len() == 2
+}

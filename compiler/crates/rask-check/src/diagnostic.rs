@@ -1984,7 +1984,7 @@ impl ToDiagnostic for crate::TypeError {
                     WireHook::Encode => "the encoders (json, csv) call `encode` wherever the type appears and write what it returns in the type's place, the normal way. That only works for `func encode(self) -> W` with `W` encodable [std.encoding/E12b]",
                 };
                 Diagnostic::error(format!("`{}`'s `{}` can't be used by {}", ty, method, if *hook == WireHook::Decode { "a decoder" } else { "an encoder" }))
-                    .with_code("E0423")
+                    .with_code("E0425")
                     .with_primary(*span, label)
                     .with_fix(fix)
                     .with_why(why)
@@ -1998,7 +1998,7 @@ impl ToDiagnostic for crate::TypeError {
                     String::new()
                 };
                 Diagnostic::error(format!("`{}` cannot be encoded: `{}` is read as a `{}` and would be written as its fields{}", ty, owner, wire, via))
-                    .with_code("E0424")
+                    .with_code("E0426")
                     .with_primary(*span, format!(
                         "`{owner}.decode` reads a `{wire}`, and an encode would write `{owner}` as an object of its fields, which `decode` doesn't read back"
                     ))
@@ -2503,6 +2503,34 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix("check spelling or add an import")
                     .with_why("all names must be defined or imported before use")
             }
+
+            FieldPatternExactType { pattern, field, ty, span } => Diagnostic::error(format!(
+                "`{field}: {ty}` tests a type the field always has, and binds nothing"
+            ))
+            .with_code("E0423")
+            .with_primary(*span, format!("`{field}` is already of type `{ty}`, so this always matches"))
+            .with_help(format!(
+                "after the colon goes a pattern. A bare type name there tests the field's type, \
+                 which is useful on a union or optional field and says nothing on `{field}: {ty}`. \
+                 It does not rename `{field}` or declare its type"
+            ))
+            .with_fix(format!("write `{pattern}({field})` to bind it"))
+            .with_why(
+                "the matched value already has its type, so a type test on a field of exactly \
+                 that type can't fail and names nothing",
+            ),
+
+            NameNotBoundByTypePattern { name, ty, span } => Diagnostic::error(format!(
+                "`{name}` is not bound: `{name}: {ty}` tests the field's type and binds nothing"
+            ))
+            .with_code("E0424")
+            .with_primary(*span, format!("`{name}` is not defined here"))
+            .with_help(format!(
+                "after the colon goes a pattern, and a bare type name there is a type test. \
+                 To keep the value, write `{name}: {ty} as {name}`"
+            ))
+            .with_fix(format!("write `{name}: {ty} as {name}`"))
+            .with_why("a type pattern binds a name only when it says `as name`"),
 
             UnknownContext { name, span } => {
                 Diagnostic::error(format!("unknown context `{}` in `using` block", name))

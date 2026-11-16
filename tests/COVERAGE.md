@@ -290,7 +290,7 @@ tests/examples_gate.sh
 tests/projects_gate.sh
 tests/prototypes_gate.sh
 tests/packages_gate.sh
-tests/tutorials_gate.sh
+tests/tour_gate.sh             # the tour: each step fails as shipped, its answer passes
 tests/book_gate.sh
 tests/spellings_gate.sh        # every internal MIR name is accounted for
 tests/stdlib_coverage_gate.sh  # what stdlib specs promise against what exists and runs

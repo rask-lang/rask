@@ -204,7 +204,7 @@ impl Interpreter {
         out
     }
 
-    fn debug_format(&self, value: &Value) -> String {
+    pub(super) fn debug_format(&self, value: &Value) -> String {
         match value {
             Value::String(s) => Self::quote_debug(&s.lock().unwrap()),
             Value::Bytes(b) => rask_ast::token::bytes_literal(b),
@@ -263,6 +263,23 @@ impl Interpreter {
                     .map(|(_, k, v)| format!("{}: {}", k, v))
                     .collect();
                 format!("Map {{ {} }}", parts.join(", "))
+            }
+            // A link renders as the node it names (fmt/G6), in the node's own
+            // debug form.
+            Value::Link { node, .. } => {
+                let node = node.lock().unwrap().clone();
+                self.debug_format(&Value::Struct(std::sync::Arc::new(std::sync::Mutex::new(node))))
+            }
+            // `T?` and `T or E` render as what they hold (fmt/G6): the payload's
+            // own form, or `none` for an absent optional. The wrapper's own
+            // name isn't something a program writes.
+            Value::Enum { name, fields, .. }
+                if (name == "Option" || name == "Result") && fields.len() <= 1 =>
+            {
+                match fields.first() {
+                    Some(payload) => self.debug_format(payload),
+                    None => "none".to_string(),
+                }
             }
             Value::Enum { name, variant, fields, .. } => {
                 // A named variant prints its field names, as it's built.

@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 18. Changing what you're given
+//
+// Every function so far has only read its parameters. That's the default,
+// and it's cheap: a function reads a Vec where the caller keeps it, without
+// copying it. It also can't change it: a `scores.push(1)` in a function that
+// only reads `scores` is a compile error.
+//
+// So when a function should change the caller's value, it says `mutate`, and
+// the caller writes `mutate` too. You can tell which calls might change your
+// data by reading the calls, without opening every function.
+//
+// A method that changes its value takes `mutate self`. There the value it's
+// called on is the thing being changed, so the call is just `p.heal(5)`.
+
+struct Player {
+    name: string
+    health: i32
+}
+
+extend Player {
+    func heal(mutate self, amount: i32) {
+        self.health += amount
+    }
+}
+
+func add_bonus(mutate scores: Vec<i32>, bonus: i32) {
+    for i in 0..scores.len() {
+        scores[i] += bonus
+    }
+}
+
+// Your turn: `cap` lowers every score above `max` to `max`, in the
+// caller's own Vec.
+
+func cap(mutate scores: Vec<i32>, max: i32) {
+    for i in 0..scores.len() {
+        if scores[i] > max {
+            scores[i] = max
+        }
+    }
+}
+
+test "bonus" {
+    mut scores = Vec.from([1, 2])
+    add_bonus(mutate scores, 10)
+    assert scores == Vec.from([11, 12])
+    mut p = Player(name: "Ada", health: 5)
+    p.heal(5)
+    assert p.health == 10
+}
+
+test "cap" {
+    mut scores = Vec.from([4, 70, 9, 12])
+    cap(mutate scores, 10)
+    assert scores == Vec.from([4, 10, 9, 10])
+    cap(mutate scores, 5)
+    assert scores == Vec.from([4, 5, 5, 5])
+}

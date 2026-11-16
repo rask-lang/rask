@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type pattern in a field's position tests the field's type.
+//
+// `Job(id, result: IoError)` asks whether the `result` field holds an
+// `IoError`, the same question `result is IoError` asks of a `T or E` value
+// (ER27, applied per field). It works wherever the field is a union or an
+// optional that holds the type. Native read the field and then ignored the
+// test, so the first such arm always won: `Wrap(val: i64)` matched `none`, and
+// `Job(id, result: IoError)` was skipped for a failed job. `as name` bound
+// nothing there either ("unresolved variable"). The interpreter had it right.
+
+enum IoError {
+    Missing
+}
+
+extend IoError {
+    func message(self) -> string {
+        return "missing"
+    }
+}
+
+func load(n: i64) -> i64 or IoError {
+    if n == 0 {
+        return IoError.Missing
+    }
+    return n
+}
+
+struct Job {
+    id: i64
+    result: i64 or IoError
+}
+
+struct Wrap {
+    val: i64?
+}
+
+enum Event {
+    Done(result: i64 or IoError)
+    Idle
+}
+
+enum Reply {
+    Got(i64 or IoError)
+    Nothing
+}
+
+func job_line(j: Job) -> string {
+    match j {
+        Job(id, result: IoError) => return "job {id} failed"
+        Job(id, result: i64) => return "job {id} ok"
+    }
+}
+
+func job_bound(j: Job) -> string {
+    match j {
+        Job(id, result: IoError as e) => return "job {id} failed: {e.message()}"
+        Job(id, result: i64 as n) => return "job {id} ok: {n}"
+    }
+}
+
+func wrap_line(w: Wrap) -> string {
+    match w {
+        Wrap(val: i64) => return "some"
+        Wrap(val: none) => return "none"
+    }
+}
+
+func wrap_bound(w: Wrap) -> i64 {
+    match w {
+        Wrap(val: none) => return -1
+        Wrap(val: i64 as n) => return n
+    }
+}
+
+func event_line(e: Event) -> string {
+    match e {
+        Event.Done(result: IoError) => return "failed"
+        Event.Done(result: i64) => return "ok"
+        Event.Idle => return "idle"
+    }
+}
+
+func reply_line(r: Reply) -> string {
+    match r {
+        Reply.Got(IoError) => return "failed"
+        Reply.Got(i64) => return "ok"
+        Reply.Nothing => return "nothing"
+    }
+}
+
+test "a struct field's type picks the arm" {
+    assert job_line(Job(id: 1, result: load(0))) == "job 1 failed"
+    assert job_line(Job(id: 2, result: load(5))) == "job 2 ok"
+}
+
+test "as binds the field's value on that branch" {
+    assert job_bound(Job(id: 1, result: load(0))) == "job 1 failed: missing"
+    assert job_bound(Job(id: 2, result: load(5))) == "job 2 ok: 5"
+}
+
+test "an optional field is tested by its type or by none" {
+    assert wrap_line(Wrap(val: 3)) == "some"
+    assert wrap_line(Wrap(val: none)) == "none"
+    assert wrap_bound(Wrap(val: 7)) == 7
+    assert wrap_bound(Wrap(val: none)) == -1
+}
+
+test "a named variant field is tested by its type" {
+    assert event_line(Event.Done(result: load(0))) == "failed"
+    assert event_line(Event.Done(result: load(4))) == "ok"
+    assert event_line(Event.Idle) == "idle"
+}
+
+test "a positional variant field is tested by its type" {
+    assert reply_line(Reply.Got(load(0))) == "failed"
+    assert reply_line(Reply.Got(load(4))) == "ok"
+    assert reply_line(Reply.Nothing) == "nothing"
+}
+
+test "is takes a field's type pattern too" {
+    let bad = Job(id: 1, result: load(0))
+    let good = Job(id: 2, result: load(9))
+    assert(bad is Job(result: IoError))
+    assert(!(good is Job(result: IoError)))
+    assert(good is Job(result: i64))
+}

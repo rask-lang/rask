@@ -945,6 +945,44 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// `Payment.Cash(amount: i32)` is E0423 on the type, once per mistake, and the
+/// arm body still sees `amount`.
+///
+/// `field: name` renames the field, so `i32` after the colon used to rename
+/// `amount` to `i32`; the arm body then failed with "undefined symbol:
+/// amount", which blames the wrong thing. A type after the colon is a type
+/// test, so on a field that holds that type and others (`result: IoError` on
+/// `i64 or IoError`) it is a real question and compiles. Only a field of
+/// exactly that type makes the test empty.
+#[test]
+fn a_type_that_tests_nothing_in_a_field_pattern_is_its_own_error() {
+    let (failed, out) = compile_error_output("pattern_field_type.rk");
+    assert!(failed, "the fixture has to fail to check:\n{out}");
+    assert_eq!(out.matches("error[E0423]").count(), 2, "one per written type, no more:\n{out}");
+    assert!(
+        out.contains("`amount: i32` tests a type the field always has, and binds nothing"),
+        "the message says the test is empty:\n{out}"
+    );
+    assert!(out.contains("write `Payment.Cash(amount)` to bind it"), "the fix is the bare field:\n{out}");
+    assert!(
+        !out.contains("undefined symbol"),
+        "the field is still bound, so nothing cascades:\n{out}"
+    );
+    // The same words on a union field are a test that binds nothing: using the
+    // name says so, and a type the field can't hold is the ordinary mismatch.
+    assert!(
+        out.contains("error[E0424]: `result` is not bound: `result: i64` tests the field's type and binds nothing"),
+        "a use of a name no pattern bound:\n{out}"
+    );
+    assert!(out.contains("`Money` is not a branch of `i64 or IoError`"), "an impossible type:\n{out}");
+    // A struct matched by position: E0416, and its fix isn't what E0423 rejects.
+    assert!(
+        out.contains("Write `n`, since the field there is already of type `i64`"),
+        "the positional fix binds the field:\n{out}"
+    );
+    assert!(!out.contains("`n: i64`"), "never the form E0423 rejects:\n{out}");
+}
+
 /// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
 /// a debug build and not in release, `@checked_unsafe` panics in both, and
 /// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,
@@ -1732,7 +1770,7 @@ fn error_decode_bound_not_satisfied() {
 fn error_decode_malformed() {
     let (failed, out) = compile_error_output("decode_malformed.rk");
     assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0423").count(), 9, "nine shapes are E0423: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes are E0425: {}", out);
     for want in [
         "`WithSelf`'s `decode` can't be used by a decoder",
         "`decode` is written with `self`",
@@ -1765,7 +1803,7 @@ fn error_encode_skips_decode() {
     let (failed, out) = compile_error_output("encode_skips_decode.rk");
     assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0424").count(), 5,
+        out.matches("E0426").count(), 5,
         "`Port`, the `Listener` that holds a `Vec<Port>`, the `Routes` that holds a `Map`, and the `Flag` \
          with an empty `Encode` block, at the block and where it is written: {}", out,
     );
@@ -1794,7 +1832,7 @@ fn error_encode_skips_decode() {
 fn error_encode_malformed() {
     let (failed, out) = compile_error_output("encode_malformed.rk");
     assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0423").count(), 9, "nine shapes: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes: {}", out);
     for want in [
         "`NoSelf`'s `encode` can't be used by an encoder",
         "`encode` has no `self`",
@@ -1827,7 +1865,7 @@ fn error_bound_on_unsettled_type() {
     let (failed, out) = compile_error_output("bound_on_unsettled_type.rk");
     assert!(failed, "a bound on a type settled after the call must still be checked: {}", out);
     for (code, what) in [
-        ("E0424", "`Port` cannot be encoded"),
+        ("E0426", "`Port` cannot be encoded"),
         ("E0377", "`Gate` cannot be decoded"),
         ("E0388", "`RawBuf` cannot be encoded"),
     ] {
@@ -5622,9 +5660,10 @@ fn assert_compares_by_value_on_both_backends() {
 /// same line, which is the one thing the two backends may not be — and no suite
 /// file asserted a *failing* comparison, so nothing compared them.
 ///
-/// Native can't do better: a struct opts into `Displayable` (std.fmt/D3) and
-/// most don't, so there is nothing to render. The message stands alone for
-/// those, on both sides.
+/// Anything that isn't a scalar goes through the debug renderer on both sides,
+/// the one `{:debug}` uses, so `[1, 2] == [1, 3]` reads as written. A Vec used to
+/// print its two buffer addresses on native and nothing at all on the
+/// interpreter.
 #[test]
 fn a_failed_comparison_reads_the_same_on_both_backends() {
     let cases: &[(&str, &str)] = &[
@@ -5635,6 +5674,11 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
         ("optionals", "assert maybe(1) == maybe(2)"),
         ("structs", "assert Point(x: 1, y: 2) == Point(x: 1, y: 3)"),
         ("tuples", "assert (1, 2) == (1, 3)"),
+        ("optional against a scalar", "assert maybe(3) == 2"),
+        ("vecs", "assert Vec.from([1, 2]) == Vec.from([1, 3])"),
+        ("vecs of structs", "assert Vec.from([Point(x: 1, y: 2)]) == Vec.from([Point(x: 1, y: 3)])"),
+        ("vecs of strings", "assert Vec.from([\"a\"]) == Vec.from([\"b\"])"),
+        ("nested", "assert (Vec.from([1]), maybe(3)) == (Vec.from([1]), maybe(1))"),
     ];
 
     for (name, assertion) in cases {
@@ -5671,6 +5715,32 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
             "{name}: no failure line at all:\n{native}"
         );
     }
+}
+
+/// `assert vec_a == vec_b` shows the elements, not buffer addresses or nothing.
+#[test]
+fn a_failed_vec_comparison_shows_the_elements() {
+    const SRC: &str = "test \"v\" {\n    assert Vec.from([1, 2]) == Vec.from([1, 3])\n}\n\
+                       test \"c\" {\n    check Vec.from([\"a\"]) != Vec.from([\"a\"])\n}\n";
+    let dir = std::env::temp_dir()
+        .join(format!("rask_vec_cmp_msg_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("vec_cmp.rk");
+    std::fs::write(&file, SRC).unwrap();
+    let path = file.to_str().unwrap();
+    for args in [vec![path], vec!["--interp", path]] {
+        let (ok, out) = rask_test_output(&args);
+        assert!(!ok, "the assertions have to fail ({args:?}):\n{out}");
+        assert!(
+            out.contains("assertion failed: [1, 2] == [1, 3] (left: [1, 2], right: [1, 3])"),
+            "assert on Vecs ({args:?}):\n{out}"
+        );
+        assert!(
+            out.contains("check failed: [\"a\"] != [\"a\"] (left: [\"a\"], right: [\"a\"])"),
+            "check on Vecs ({args:?}):\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ─── Regression: issues #566, #569 ──────────────────────────
@@ -8247,6 +8317,53 @@ fn scalar_assertion_messages_agree_across_backends() {
     );
 }
 
+const OPTIONAL_STRING_ASSERT_SRC: &str = r#"
+test "a string optional holding a string" {
+    let a: string? = "y"
+    assert a == "x"
+}
+
+test "a string optional holding none" {
+    let a: string? = none
+    assert a == "x"
+}
+
+test "a check on a string optional" {
+    let a: string? = "y"
+    check a == "x"
+}
+
+func main() {}
+"#;
+
+/// A `string?` against a string reads the same on both backends.
+///
+/// The interpreter's string case fired when *either* side was a string, so it
+/// printed the optional as a bare quoted word with no `(left:, right:)` half;
+/// native chooses by the two sides' types and the optional sent it down the
+/// debug route. The string form is for two strings.
+#[test]
+fn an_optional_string_assertion_reads_the_same_on_both_backends() {
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed") || l.contains("check failed"))
+            .map(|l| {
+                let i = l.find("assertion failed").or_else(|| l.find("check failed")).unwrap();
+                l[i..].to_string()
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, true));
+    assert_eq!(interp.len(), 3, "all three report:\n{interp:#?}");
+    assert_eq!(native, interp, "the two backends spell the same failure the same way");
+    assert!(
+        interp[0].contains("\"y\" == \"x\" (left: \"y\", right: \"x\")"),
+        "the optional renders as what it holds (fmt/G6):\n{}",
+        interp[0]
+    );
+}
+
 /// Run a source string through `rask run` and give back stdout + stderr.
 fn run_rask_run_source(src: &str, interp: bool) -> String {
     let rask = rask_binary();
@@ -8288,7 +8405,7 @@ func main() {
 }
 "#;
 
-const RUN_ASSERT_OPAQUE_SRC: &str = r#"
+const RUN_ASSERT_STRUCT_SRC: &str = r#"
 struct Pt { x: i64, y: i64 }
 
 func main() {
@@ -8339,16 +8456,145 @@ fn a_failed_assert_outside_a_test_says_it_once() {
             "{backend}: a hand-written message gets no prefix:\n{out}"
         );
 
-        // Neither backend renders struct operands — native compares by address
-        // — so the detail is empty and the words stand alone.
-        let out = run_rask_run_source(RUN_ASSERT_OPAQUE_SRC, interp);
+        // A struct is shown field by field, in debug form.
+        let out = run_rask_run_source(RUN_ASSERT_STRUCT_SRC, interp);
         assert!(
-            out.contains("assertion failed"),
-            "{backend}: an unrenderable comparison still reports:\n{out}"
+            out.contains(
+                "assertion failed: Pt(x: 1, y: 2) == Pt(x: 3, y: 4) \
+                 (left: Pt(x: 1, y: 2), right: Pt(x: 3, y: 4))"
+            ),
+            "{backend}: struct operands render in debug form:\n{out}"
         );
+    }
+}
+
+/// Each way a failure message is built from the program's own text, with a
+/// tail that no fixed buffer reaches: 6000 bytes of filler, then `END`.
+const LONG_FAILURE_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "assert on two long strings",
+        r#"func main() {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    assert a == b
+}"#,
+    ),
+    (
+        "assert on two long Vecs",
+        r#"func main() {
+    mut a: Vec<i64> = Vec.new()
+    mut b: Vec<i64> = Vec.new()
+    for i in 0..1500 {
+        a.push(i)
+        b.push(i)
+    }
+    b.push(0)
+    assert a == b
+}"#,
+    ),
+    (
+        "assert with a long message",
+        r#"func main() {
+    let f = "m".repeat(6000)
+    assert false, "{f}END"
+}"#,
+    ),
+    (
+        "panic with a long message",
+        r#"func main() {
+    let f = "p".repeat(6000)
+    panic("{f}END")
+}"#,
+    ),
+    (
+        "! on an error with a long message",
+        r#"enum Bad { Long }
+Bad implements Error {
+    func message(self) -> string {
+        let f = "e".repeat(6000)
+        return "{f}END"
+    }
+}
+func fail() -> i64 or Bad {
+    return Bad.Long
+}
+func main() {
+    let x = fail()!
+    println("{x}")
+}"#,
+    ),
+];
+
+const LONG_FAILURE_TESTS: &[(&str, &str)] = &[
+    (
+        "check on two long strings",
+        r#"test "long" {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    check a == b
+}
+
+func main() {}"#,
+    ),
+    (
+        "two failed checks, each long",
+        r#"test "long" {
+    let one = "1".repeat(3000)
+    let two = "2".repeat(3000)
+    check false, "one {one}"
+    check false, "two {two}END"
+}
+
+func main() {}"#,
+    ),
+    (
+        "a long skip reason",
+        r#"test "long" {
+    let f = "s".repeat(6000)
+    skip("{f}END")
+}
+
+func main() {}"#,
+    ),
+];
+
+/// A failure message is printed whole, however long the text in it.
+///
+/// Native built every one of these in a 512- or 2048-byte buffer and cut the
+/// rest off, where the interpreter printed all of it. They are now built to
+/// the size they need.
+#[test]
+fn a_long_failure_message_is_not_cut_off() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        for (what, src) in LONG_FAILURE_PROGRAMS {
+            let out = run_rask_run_source(src, interp);
+            // The Vecs end `…, 1499, 0]` on both sides of the message.
+            let tail = if what.contains("Vecs") { "1498, 1499, 0]" } else { "END" };
+            assert!(
+                out.contains(tail),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        for (what, src) in LONG_FAILURE_TESTS {
+            let out = run_rask_test_source(src, interp);
+            assert!(
+                out.contains("END"),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        // Both checks are kept, joined, whole.
+        let out = run_rask_test_source(LONG_FAILURE_TESTS[1].1, interp);
         assert!(
-            !out.contains("assertion failed:"),
-            "{backend}: and adds no empty detail after a colon:\n{out}"
+            out.contains(&"1".repeat(3000)) && out.contains(&"2".repeat(3000)),
+            "{backend}: the first of two long failed checks was cut:\n{}",
+            &out[out.len().saturating_sub(300)..]
         );
     }
 }

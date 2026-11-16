@@ -43,7 +43,7 @@ struct Point { x: f64, y: f64 }
 | **E12b: Own decode** | `T implements Decode { func decode(wire: W) -> Self or E { … } }` makes every decoder read the input as `W`, decode that the normal way, and hand the value to `decode`. It applies wherever `T` appears: a field, a `Vec` element, a `Map` value, a `T?`, an enum payload, the top level. `decode` is static, takes one plain parameter and returns `Self or E`. `W` is any `Decode` type, itself possibly one with its own `decode`, and `E` is any error (a union of errors too). `T` is concrete: a generic type can't write one. The fields of `T` are never consulted, so they need not be decodable, and a `private` one needs no default. This is how a type protects an invariant (E13a) |
 | **E12c: A refusal is a decode error** | When `decode` returns an error, the decode fails with that error's `message()` behind where in the input the value was. `json.decode` returns `JsonError.Refused(path: "field ports[1]", reason: "port 0 is reserved")`, which keeps where and why apart so a format that knows its own columns can name the right one, and the other decoders word it their own way (below). A claim's inputs are built through `decode` too, and an input it refuses is discarded, not given to the claim (`type.claims/CL5`, IN1) |
 | **E12d: Own encode** | `T implements Encode { func encode(self) -> W { … } }` makes every encoder write `W` in `T`'s place, the normal way, wherever `T` appears: a field, a `Vec` element, a `Map` value, a `T?`, an enum payload, the top level. `encode` takes a plain `self` and nothing else. `W` is any `Encode` type, itself possibly one with its own `encode`. It can't fail, because writing a value out can't make an invalid one, so `W` isn't a `T or E`. `T` is concrete, and its fields are never consulted, so they need not be encodable |
-| **E12e: Read through `decode`, written through `encode`** | A type with its own `decode` is not auto-`Encode`. The fields a derived `Encode` would write aren't what `decode` reads, so a value written out and read back fails at run time, in whoever reads the output. The type, and any `Vec`, `Map`, field or payload that holds it, fails an `Encode` bound with an error that names it (E0424). Two things lift the rule, both written where `T` is declared: its own `encode` (E12d), and `@no_encode`, which says it isn't written at all. An empty `T implements Encode { }` doesn't: it says the fields are the wire form, which is the mismatch (E0424) |
+| **E12e: Read through `decode`, written through `encode`** | A type with its own `decode` is not auto-`Encode`. The fields a derived `Encode` would write aren't what `decode` reads, so a value written out and read back fails at run time, in whoever reads the output. The type, and any `Vec`, `Map`, field or payload that holds it, fails an `Encode` bound with an error that names it (E0426). Two things lift the rule, both written where `T` is declared: its own `encode` (E12d), and `@no_encode`, which says it isn't written at all. An empty `T implements Encode { }` doesn't: it says the fields are the wire form, which is the mismatch (E0426) |
 | **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
 | **E15: Collection types** | `Vec<T>` where `T: Encode`, `Map<string, T>` where `T: Encode`, `T?` where `T: Encode` — all auto-implement `Encode`. Same for `Decode` |
@@ -161,16 +161,16 @@ The field is private on purpose. A public `value` would let anyone write `Port(v
 
 The two are a pair. A type that reads itself through `decode` and said nothing about writing would be written as an object of its fields, which `decode` can't read, so that is an error (E12e) and not a default. `Port implements Encode { }` doesn't answer it, because it says the fields are the wire form. The answers are `encode`, and `@no_encode` for a type that is never written.
 
-`decode`'s parameter can be anything `Decode`, including a type with a `decode` of its own, and the decoder follows the chain. A type that reads a `string` and hands a parsed value on, behind a type that reads a struct, works the same way. A circle (a type whose wire type is itself, or an optional of itself) is an error (E0423).
+`decode`'s parameter can be anything `Decode`, including a type with a `decode` of its own, and the decoder follows the chain. A type that reads a `string` and hands a parsed value on, behind a type that reads a struct, works the same way. A circle (a type whose wire type is itself, or an optional of itself) is an error (E0425).
 
 A static function that returns `Self or E` doesn't change any of this. `Settings.load(path)` is a loader, and `Settings` decodes from its fields like any other struct. Only the block says how a type decodes.
 
-`T implements Decode { }` with nothing in it still means the fields decode the way they would anyway. With `decode`, you say how. Anything else in the block is E0893, and `decode` itself has to be the shape E12b gives, or the error says which part isn't (E0423).
+`T implements Decode { }` with nothing in it still means the fields decode the way they would anyway. With `decode`, you say how. Anything else in the block is E0893, and `decode` itself has to be the shape E12b gives, or the error says which part isn't (E0425).
 
 The error for a write that would produce something `decode` can't read:
 
 ```
-ERROR [E0424]: `Port` cannot be encoded: `Port` is read as a `u16` and would be written as its fields
+ERROR [E0426]: `Port` cannot be encoded: `Port` is read as a `u16` and would be written as its fields
    |
 18 |  json.encode(port)
    |  ^^^^^^^^^^^^^^^^^ `Port.decode` reads a `u16`, and an encode would write `Port` as an object of its fields, which `decode` doesn't read back
@@ -256,7 +256,7 @@ DateTime implements Encode {
 
 Both can reach the type's private fields, since they are written where the type is. That's what a custom invariant needs.
 
-Writing only one of the two is not a half measure the compiler lets through quietly. A type with `decode` and nothing for `Encode`, or an empty `Encode` block, is E0424. The other direction is allowed: a type with `encode` and no `decode` is simply never read back, which is a choice about the type, not a mismatch.
+Writing only one of the two is not a half measure the compiler lets through quietly. A type with `decode` and nothing for `Encode`, or an empty `Encode` block, is E0426. The other direction is allowed: a type with `encode` and no `decode` is simply never read back, which is a choice about the type, not a mismatch.
 
 ## Field Annotations
 

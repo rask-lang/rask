@@ -118,14 +118,14 @@ Four documents, four different jobs:
 
 | | For |
 |---|---|
-| [Learning Rask](https://rask-lang.dev/book) | Learning the language. Install, first program, chapters. Start here |
+| [Learning Rask](https://rask-lang.dev/book) | Learning the language. Install it, then a tour of 32 short steps, each with an exercise. Start here |
 | [LANGUAGE_CARD.md](LANGUAGE_CARD.md) | Looking a rule up while you write. The whole language, compressed, one page |
 | [examples/](examples/) | Reading complete programs. Each one is compiled and run by CI |
 | [specs/](specs/) | The normative wording, and the reasoning behind it. Start at [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
 
 Also: the [blog](https://rask-lang.dev/blog/) (written in [writing/](writing/)) for the long-form design
-arguments, [tutorials/](tutorials/) for hands-on exercises, and
-[specs/RULINGS.md](specs/RULINGS.md) for how design questions get decided.
+arguments, and [specs/RULINGS.md](specs/RULINGS.md) for how design questions
+get decided.
 
 ---
 

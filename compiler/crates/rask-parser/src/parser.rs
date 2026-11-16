@@ -3086,15 +3086,17 @@ impl Parser {
         let kind = match self.current_kind() {
             TokenKind::Mut => self.parse_mut_stmt()?,
             TokenKind::Let => self.parse_let_stmt()?,
+            // Recorded, and the rest read as the `let` it was meant to be:
+            // same reason as `let mut`.
             TokenKind::Const => {
-                let err = ParseError {
+                self.record_error(ParseError {
                     span: self.current().span,
                     message: "'const' is only for module-level constants".to_string(),
                     hint: Some("use 'let' for local bindings ('mut' if it needs to change)".to_string()),
                     why: None,
-                };
-                self.advance(); // consume 'const' so recovery doesn't loop
-                return Err(err);
+                });
+                self.advance();
+                self.parse_let_binding()?
             }
             TokenKind::Return => self.parse_return_stmt()?,
             TokenKind::Break => self.parse_break_stmt()?,
@@ -3276,18 +3278,26 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Let)?;
 
-        // Catch Rust muscle memory: `let mut x = ...`
+        // Catch Rust muscle memory: `let mut x = ...`. The error is recorded
+        // and the statement is read as the `mut x = ...` it was meant to be,
+        // so `x` is still declared. Giving up on the statement left its tail
+        // to be re-read as a new one, and every later use of `x` reported
+        // "undefined symbol" on top of the one real mistake.
         if self.check(&TokenKind::Mut) {
-            let err = ParseError {
+            self.record_error(ParseError {
                 span: self.current().span,
                 message: "'let mut' is not Rask".to_string(),
                 hint: Some("'mut x = ...' declares a rebindable binding — drop the 'let'".to_string()),
                 why: None,
-            };
-            self.advance(); // consume 'mut' so recovery doesn't loop
-            return Err(err);
+            });
+            return self.parse_mut_stmt();
         }
 
+        self.parse_let_binding()
+    }
+
+    /// What follows `let`.
+    fn parse_let_binding(&mut self) -> Result<StmtKind, ParseError> {
         if self.match_token(&TokenKind::LParen) {
             let mut patterns = Vec::new();
             loop {
@@ -5690,6 +5700,7 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
         let first = self.parse_single_pattern()?;
 
         if self.check(&TokenKind::Pipe) {
@@ -5697,15 +5708,18 @@ impl Parser {
             while self.match_token(&TokenKind::Pipe) {
                 patterns.push(self.parse_single_pattern()?);
             }
-            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns)))
+            let end = self.tokens[self.pos - 1].span.end;
+            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns), self.span(start, end)))
         } else {
             Ok(first)
         }
     }
 
     fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
         let kind = self.parse_pattern_kind()?;
-        Ok(Pattern::new(self.next_id(), kind))
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Pattern::new(self.next_id(), kind, self.span(start, end)))
     }
 
     fn parse_pattern_kind(&mut self) -> Result<PatternKind, ParseError> {

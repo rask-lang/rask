@@ -590,8 +590,12 @@ impl CodeGenerator {
             self.func_ids.insert("main_error_exit".to_string(), id);
         }
 
-        // assert_fail_cmp_str(left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
-        {
+        // assert_fail_cmp_str / _debug (left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
+        // `_debug` takes operands lowering has already rendered to text.
+        for (internal, symbol) in [
+            ("assert_fail_cmp_str", "rask_assert_fail_cmp_str"),
+            ("assert_fail_cmp_debug", "rask_assert_fail_cmp_debug"),
+        ] {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // left str ptr
             sig.params.push(AbiParam::new(types::I64)); // right str ptr
@@ -600,9 +604,9 @@ impl CodeGenerator {
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_fail_cmp_str", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // assert_fail_cmp_f64/_f32(left, right, op: ptr, file: ptr, line: i32, col: i32)
@@ -637,6 +641,7 @@ impl CodeGenerator {
             ("check_fail_cmp_char", "rask_check_fail_cmp_char", types::I64),
             ("check_fail_cmp_bool", "rask_check_fail_cmp_bool", types::I64),
             ("check_fail_cmp_str",  "rask_check_fail_cmp_str",  types::I64),
+            ("check_fail_cmp_debug", "rask_check_fail_cmp_debug", types::I64),
             ("check_fail_cmp_i128", "rask_check_fail_cmp_i128", types::I128),
             ("check_fail_cmp_u128", "rask_check_fail_cmp_u128", types::I128),
             ("check_fail_cmp_f64",  "rask_check_fail_cmp_f64",  types::F64),

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: a `decode` a decoder can't call (std.encoding/E12b, E0423).
+// Compile Error: a `decode` a decoder can't call (std.encoding/E12b, E0425).
 //
 // A type writes its own decode as `func decode(wire: W) -> Self or E` in its
 // `Decode` block. The decoders read the input as `W`, call it, and turn a
 // rejection into a decode error with `E`'s message, so each part of that shape
 // is checked where the block is written. Eight ways to get it wrong, each
-// reported once: seven as E0423, and a rejection with no `message()`, which
+// reported once: seven as E0425, and a rejection with no `message()`, which
 // the signature already reports as E0344.
 
 struct Why {
@@ -29,7 +29,7 @@ struct Opaque {
     n: i64
 }
 
-// ERROR: `decode` has `self`: there is no value yet [E0423]
+// ERROR: `decode` has `self`: there is no value yet [E0425]
 struct WithSelf {
     n: i64
 }
@@ -40,7 +40,7 @@ WithSelf implements Decode {
     }
 }
 
-// ERROR: two parameters [E0423]
+// ERROR: two parameters [E0425]
 struct TwoParams {
     n: i64
 }
@@ -51,7 +51,7 @@ TwoParams implements Decode {
     }
 }
 
-// ERROR: `mutate` wire [E0423]
+// ERROR: `mutate` wire [E0425]
 struct Mutating {
     n: i64
 }
@@ -62,7 +62,7 @@ Mutating implements Decode {
     }
 }
 
-// ERROR: returns the type, not `Self or E` [E0423]
+// ERROR: returns the type, not `Self or E` [E0425]
 struct NoReject {
     n: i64
 }
@@ -73,7 +73,7 @@ NoReject implements Decode {
     }
 }
 
-// ERROR: the wire type can't be decoded [E0423]
+// ERROR: the wire type can't be decoded [E0425]
 struct BadWire {
     n: i64
 }
@@ -95,7 +95,7 @@ BadError implements Decode {
     }
 }
 
-// ERROR: generic [E0423]
+// ERROR: generic [E0425]
 struct Boxed<T> {
     inner: T
 }
@@ -106,7 +106,7 @@ Boxed<T> implements Decode {
     }
 }
 
-// ERROR: read as itself, so a decoder would never get to a number [E0423]
+// ERROR: read as itself, so a decoder would never get to a number [E0425]
 struct Loop {
     n: i64
 }
@@ -117,7 +117,7 @@ Loop implements Decode {
     }
 }
 
-// ERROR: a `T?` reads the input a `T` does, so this is the same circle [E0423]
+// ERROR: a `T?` reads the input a `T` does, so this is the same circle [E0425]
 struct LoopOpt {
     n: i64
 }
@@ -129,7 +129,7 @@ LoopOpt implements Decode {
 }
 
 // ERROR: each reads the other, one of them through a `T?`. A circle is reported
-// once, at the first type of it [E0423]
+// once, at the first type of it [E0425]
 struct Ping {
     n: i64
 }

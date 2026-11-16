@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Highlight every keyword the compiler has (`let`, `private`, `union`, `catch`, `discard`, `extern`, `select_priority`, `void` were missing); drop `deliver`, `own` and `step`, which aren't keywords
+- String interpolation colors as code: `"{respond(mutate world, words)}"` scopes its `{ }` hole as an expression, with nested brackets, strings and `:spec` formats; `{{`/`}}` are literal braces
+- Raw (`r"…"`, `r#"…"#`), triple-quoted and `x"…"` strings
+
 ## 0.2.1
 
 - Update for `let` → `mut` rename (mutable bindings)

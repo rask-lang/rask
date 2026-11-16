@@ -189,7 +189,7 @@ a string and `entries` on a map are all things that look right and aren't.
 `trim_start` `trim_end` `to_uppercase` `to_lowercase` `replace` `replacen`
 `repeat` `reverse` `substring` `char_count` `is_ascii` `to_string`
 `split` `split_whitespace` `lines` `chars` `char_indices` `bytes`
-`parse_int` `parse_float` `parse`
+`parse<T>` (`"42".parse<i32>()`, not `parse_int`)
 `index_of` / `last_index_of` (→ `usize?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
 
 **`bytes`** — `len` `is_empty` `starts_with` `ends_with` `contains` `index_of`

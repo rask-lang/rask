@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 7. for
+//
+// `for` walks a range. `0..n` stops before n; `1..=n` includes it.
+
+func sum_to(n: i32) -> i32 {
+    mut sum = 0
+    for i in 1..=n {
+        sum += i
+    }
+    return sum
+}
+
+// Your turn: `factorial(5)` is 1 * 2 * 3 * 4 * 5 = 120, and `factorial(0)` is 1.
+
+func factorial(n: i32) -> i32 {
+    todo()
+}
+
+test "sum to" {
+    assert sum_to(4) == 10
+}
+
+test "factorial" {
+    assert factorial(5) == 120
+    assert factorial(1) == 1
+    assert factorial(0) == 1
+}
+
+// new: for
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

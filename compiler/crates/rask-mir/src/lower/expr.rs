@@ -52,9 +52,12 @@ pub(super) struct PatternTest {
 /// the bare words "check failed"; giving it a second copy would have been a
 /// second place to relearn them.
 enum CmpFailHelper {
-    /// An optional operand — the helpers take raw scalars, and an optional is a
-    /// slot with a present flag beside the payload. Report without the values.
-    NoOperands,
+    /// Not a scalar: a Vec, a struct, an optional, a tuple, `bytes`. The typed
+    /// helpers take raw scalars, so each side is rendered to text in `{:debug}`
+    /// form first and the runtime prints the two strings. That is the renderer
+    /// `{x:debug}` uses and the interpreter's `debug_format` is its reference,
+    /// so a failed `assert v == w` reads the same on both backends.
+    Debug,
     /// Helper suffix, plus the width both operands are widened to.
     Typed(&'static str, MirType),
 }
@@ -64,16 +67,28 @@ enum CmpFailHelper {
 fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType, text: bool) -> CmpFailHelper {
     // Keyed off the lowered types, not the source shape: guessing from the
     // source meant only a written literal counted as a string (#897).
+    //
+    // An optional against a scalar (`f == 2.5` with `f: f64?`) is a slot with a
+    // present flag beside the payload, so no scalar helper can take that side.
+    // Checked ahead of `text` too: the checker calls `s? == "a"` text, and the
+    // string helper reads the optional as a string.
     if matches!(left_ty, MirType::Option(_)) || matches!(right_ty, MirType::Option(_)) {
-        return CmpFailHelper::NoOperands;
+        return CmpFailHelper::Debug;
     }
     if text {
         // Strings pass by reference; nothing to widen, and the width is unused.
         return CmpFailHelper::Typed("str", MirType::Buffer);
     }
-    // `bytes` has no one-line rendering the interpreter agrees on.
-    if matches!(left_ty, MirType::Buffer) || matches!(right_ty, MirType::Buffer) {
-        return CmpFailHelper::NoOperands;
+    // Anything that isn't one number in a register is passed by address (a
+    // struct, a tuple, `bytes`) or as a container handle (a Vec, a Map). The
+    // `i64` helper would print that address:
+    //
+    //   assertion failed: 140737253693408 == 140737253693424
+    //
+    // The comparison itself is right; there is just no scalar to report, so
+    // the operands are rendered the way `{:debug}` renders them.
+    if !is_machine_scalar(left_ty) || !is_machine_scalar(right_ty) {
+        return CmpFailHelper::Debug;
     }
     // Both sides f32 keeps the operands at that width. The shortest decimal that
     // reads back as the same value depends on the width you check against, so an
@@ -103,34 +118,22 @@ fn classify_cmp_fail(left_ty: &MirType, right_ty: &MirType, text: bool) -> CmpFa
     if matches!(left_ty, MirType::I128) || matches!(right_ty, MirType::I128) {
         return CmpFailHelper::Typed("i128", MirType::I128);
     }
-    // An aggregate compares correctly — codegen emits a real field-by-field Eq
-    // — but there is nothing to print. It is passed by address, so the `i64`
-    // fallback below rendered the two *addresses*:
-    //
-    //   assertion failed: 140737253693408 == 140737253693424
-    //
-    // which says nothing and reads as though the comparison itself were by
-    // address. There is no rendering to reach for either: a struct opts into
-    // `Displayable` (std.fmt/D3) and most don't. So the message stands on its
-    // own, which is what `assert_eq` did for the same case.
-    if is_aggregate(left_ty) || is_aggregate(right_ty) {
-        return CmpFailHelper::NoOperands;
-    }
     CmpFailHelper::Typed("i64", MirType::I64)
 }
 
-/// A value with no one-line rendering: passed by address, and its contents are
-/// a layout rather than a number.
-fn is_aggregate(ty: &MirType) -> bool {
-    matches!(
-        ty,
-        MirType::Struct(_)
-            | MirType::Enum(_)
-            | MirType::Tuple(_)
-            | MirType::Array { .. }
-            | MirType::Link(_)
-            | MirType::Result { .. }
-    )
+/// A value that is one number in a register, which the `i64` helper reads as
+/// what it is. Everything else keeps its meaning in memory it points at.
+fn is_machine_scalar(ty: &MirType) -> bool {
+    ty.is_int_like()
+        || matches!(
+            ty,
+            MirType::Bool
+                | MirType::Char
+                | MirType::F32
+                | MirType::F64
+                | MirType::RawPtr
+                | MirType::FuncPtr(_)
+        )
 }
 
 fn extract_assert_comparison(condition: &Expr) -> Option<(&Expr, &Expr, &'static str)> {
@@ -598,10 +601,6 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), option_ty))
     }
 
-    /// Park an assert operand in a named local and hand back an expression that
-    /// reads it. Keeps the original node id so the comparison built around it
-    /// still resolves to the same type. A plain ident needs no parking — it's
-    /// already a name, and re-reading it costs nothing.
     /// Emit the operand-carrying failure call for a comparison, into the block
     /// that is already current.
     ///
@@ -614,17 +613,21 @@ impl<'a> MirLowerer<'a> {
         (right_expr, right_op, right_ty): (&Expr, MirOperand, &MirType),
         op_str: &str,
         prefix: &str,
-    ) {
+    ) -> Result<(), LoweringError> {
         let op_const = MirOperand::Constant(MirConst::String(op_str.to_string()));
         let text = [left_expr, right_expr]
             .iter()
             .any(|e| self.ctx.node_is_text(e.id));
         match classify_cmp_fail(left_ty, right_ty, text) {
-            CmpFailHelper::NoOperands => {
+            CmpFailHelper::Debug => {
+                let left_decl = self.ctx.node_types.get(&left_expr.id).map(std::borrow::Cow::into_owned);
+                let right_decl = self.ctx.node_types.get(&right_expr.id).map(std::borrow::Cow::into_owned);
+                let left_text = self.debug_render_value(&left_op, left_ty, left_decl.as_ref(), 0)?;
+                let right_text = self.debug_render_value(&right_op, right_ty, right_decl.as_ref(), 0)?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(prefix.to_string()),
-                    args: vec![],
+                    func: FunctionRef::internal(format!("{}_cmp_debug", prefix)),
+                    args: vec![left_text, right_text, op_const],
                 }));
             }
             CmpFailHelper::Typed(suffix, want) => {
@@ -646,8 +649,13 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
         }
+        Ok(())
     }
 
+    /// Park an assert operand in a named local and hand back an expression that
+    /// reads it. Keeps the original node id so the comparison built around it
+    /// still resolves to the same type. A plain ident needs no parking — it's
+    /// already a name, and re-reading it costs nothing.
     fn bind_assert_operand(&mut self, src: &Expr, op: &MirOperand, ty: &MirType) -> Expr {
         if !expr_may_do_work(src) {
             return src.clone();
@@ -3905,7 +3913,7 @@ impl<'a> MirLowerer<'a> {
                 });
                 let arms = [
                     rask_ast::expr::MatchArm { pattern: pattern.clone(), guard: None, body: Box::new(then_branch.clone()) },
-                    rask_ast::expr::MatchArm { pattern: Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), guard: None, body: Box::new(otherwise) },
+                    rask_ast::expr::MatchArm { pattern: Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), guard: None, body: Box::new(otherwise) },
                 ];
                 return self.lower_struct_match(expr, val, val_ty, &arms);
             }
@@ -4778,7 +4786,7 @@ impl<'a> MirLowerer<'a> {
                     (right_expr, right_op, &right_ty),
                     op_str,
                     "assert_fail",
-                );
+                )?;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
 
                 self.builder.switch_to_block(ok_block);
@@ -4865,7 +4873,7 @@ impl<'a> MirLowerer<'a> {
                     (right_expr, right_op, &right_ty),
                     op_str,
                     "check_fail",
-                );
+                )?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
@@ -8506,15 +8514,27 @@ impl<'a> MirLowerer<'a> {
         niche: Option<i64>,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<PatternTest, LoweringError> {
-        // What the value is to the checker: a generic enum's payload takes
-        // its type from here, not from the shared layout's placeholder.
         let checked = self.ctx.lookup_raw_type(scrutinee.id);
+        self.emit_is_test_typed(checked.as_deref(), val, val_ty, niche, pattern)
+    }
+
+    /// `emit_is_test` for a value that isn't an expression, a struct's field,
+    /// say. `checked` is the checker's type of `val`: a generic enum's payload
+    /// takes its type from there, not from the shared layout's placeholder.
+    pub(super) fn emit_is_test_typed(
+        &mut self,
+        checked: Option<&Type>,
+        val: &MirOperand,
+        val_ty: &MirType,
+        niche: Option<i64>,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> Result<PatternTest, LoweringError> {
         // A variant nested inside a variant can't be one flat expression: the
         // inner tag means nothing until the outer one has passed, so it's
         // tested with branches and the answer collected in a bool (#1645).
         if matches!(val_ty, MirType::Enum(_)) && self.has_nested_variant(pattern) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_subpattern_test(val, val_ty, checked.as_deref(), pattern, fail)
+                this.emit_subpattern_test(val, val_ty, checked, pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8523,7 +8543,7 @@ impl<'a> MirLowerer<'a> {
         // one above it held.
         if let Some(path) = self.deep_result_path(pattern, val_ty) {
             let matches = self.collect_branch_test(|this, fail| {
-                this.emit_result_path_test(val, val_ty, checked.as_deref(), &path, pattern, fail)
+                this.emit_result_path_test(val, val_ty, checked, &path, pattern, fail)
             })?;
             return Ok(PatternTest { matches, flat_payload: None });
         }
@@ -8543,7 +8563,7 @@ impl<'a> MirLowerer<'a> {
         // `s is Sq(0)` isn't true of every `Sq` (#1532). Reading a field of a
         // variant the value doesn't hold reads payload bytes nobody uses, and
         // the tag test already says no.
-        for (field, wanted) in self.tested_variant_fields(val, val_ty, checked.as_deref(), pattern) {
+        for (field, wanted) in self.tested_variant_fields(val, val_ty, checked, pattern) {
             if let Some(ok) = self.emit_value_matches(&field, &wanted) {
                 matches = self.emit_and(matches, ok);
             }
@@ -8575,12 +8595,13 @@ impl<'a> MirLowerer<'a> {
         Ok(matches)
     }
 
-    /// Whether a variant pattern has another variant pattern in a field.
+    /// Whether a variant pattern has another variant pattern, or a type test,
+    /// in a field.
     fn has_nested_variant(&self, pattern: &rask_ast::expr::Pattern) -> bool {
         use rask_ast::expr::{Pattern, PatternKind};
         let nested = |p: &Pattern| match &p.kind {
-            PatternKind::Constructor { .. } | PatternKind::Struct { .. } => true,
-            PatternKind::Ident(_) => self.pattern_names_variant(p),
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::TypePat { .. } => true,
+            PatternKind::Ident(_) => !self.pattern_binds(p),
             _ => false,
         };
         match &pattern.kind {
@@ -8607,7 +8628,7 @@ impl<'a> MirLowerer<'a> {
                 let Some(names) = self.variant_field_names(val_ty, name) else { return Vec::new() };
                 let positional = names
                     .iter()
-                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard), |(_, p)| p.clone()))
+                    .map(|n| fields.iter().find(|(f, _)| f == n).map_or_else(|| Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, rask_ast::Span::new(0, 0)), |(_, p)| p.clone()))
                     .collect();
                 (name, positional)
             }
@@ -8715,22 +8736,39 @@ impl<'a> MirLowerer<'a> {
         is_niche: bool,
         val_ty: &MirType,
     ) {
+        let checked = self.ctx.lookup_raw_type(scrutinee.id);
+        self.bind_tested_pattern_typed(test, pattern, checked.as_deref(), val.clone(), payload_ty, is_niche, val_ty);
+        let retained_ty = match &test.flat_payload {
+            Some((_, leaf)) => MirType::Option(Box::new(leaf.clone())),
+            None => val_ty.clone(),
+        };
+        self.retain_pattern_copies(pattern, scrutinee, &retained_ty);
+    }
+
+    /// `bind_tested_pattern` for a value that isn't an expression. Retaining
+    /// the copies it binds out of borrowed storage is the caller's, which
+    /// knows where the value was read from.
+    pub(super) fn bind_tested_pattern_typed(
+        &mut self,
+        test: &PatternTest,
+        pattern: &rask_ast::expr::Pattern,
+        checked: Option<&Type>,
+        val: MirOperand,
+        payload_ty: Option<MirType>,
+        is_niche: bool,
+        val_ty: &MirType,
+    ) {
         match &test.flat_payload {
             Some((inner, inner_payload)) => {
                 let opt_ty = MirType::Option(Box::new(inner_payload.clone()));
-                self.bind_pattern_payload_niche(
-                    pattern, scrutinee, MirOperand::Local(*inner),
-                    Some(inner_payload.clone()), false, &opt_ty,
+                self.bind_pattern_fields(
+                    pattern, MirOperand::Local(*inner), Some(inner_payload.clone()), false, &opt_ty, checked,
                 );
             }
             None => match self.bindable_result_path(pattern, val_ty) {
-                Some(path) => {
-                    let checked = self.ctx.lookup_raw_type(scrutinee.id);
-                    self.bind_result_path(&val, val_ty, checked.as_deref(), &path, pattern);
-                    self.retain_pattern_copies(pattern, scrutinee, val_ty);
-                }
+                Some(path) => self.bind_result_path(&val, val_ty, checked, &path, pattern),
                 None => {
-                    self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, val_ty);
+                    self.bind_pattern_fields(pattern, val, payload_ty, is_niche, val_ty, checked);
                 }
             },
         }
@@ -9347,12 +9385,12 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `Option.Some(2.5)`, `Option.None`, `Result.Ok(3)`, `Result.Err(Fault.Bad)`
-    /// — the interpreter's spelling for a wrapper. The tag picks a block and
-    /// each block renders its payload through `debug_render_value`, so a
-    /// struct, a Vec or another wrapper inside reads as it does anywhere else.
-    /// A union err side is the same shape one level down: the member index
-    /// picks the block.
+    /// `2.5`, `none`, `3`, `Fault.Bad` — a wrapper renders as what it holds
+    /// (fmt/G6): a present optional as its payload, an absent one as `none`, a
+    /// result as whichever side it is. The tag picks a block and each block
+    /// renders its payload through `debug_render_value`, so a struct, a Vec or
+    /// another wrapper inside reads as it does anywhere else. A union err side
+    /// is the same shape one level down: the member index picks the block.
     ///
     /// A niche option (`Link<T>?`) is one word with no tag: the null address
     /// is `none`, and the link itself has no rendering.
@@ -9388,7 +9426,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(none_block);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
-                    rvalue: MirRValue::Use(lit("Option.None")),
+                    rvalue: MirRValue::Use(lit("none")),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
                 self.builder.switch_to_block(some_block);
@@ -9400,10 +9438,9 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(op.clone()),
                 }));
                 let node = self.debug_render_value(&MirOperand::Local(link), inner, None, depth)?;
-                let text = self.concat_all(vec![lit("Option.Some("), node, lit(")")]);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
-                    rvalue: MirRValue::Use(text),
+                    rvalue: MirRValue::Use(node),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
                 self.builder.switch_to_block(merge);
@@ -9422,17 +9459,18 @@ impl<'a> MirLowerer<'a> {
             _ => None,
         };
 
-        // One arm per tag value: its opening text, and what sits in the
-        // payload slot when it does carry one.
+        // One arm per tag value: the text it is when it holds nothing, and what
+        // sits in the payload slot when it holds something, which renders as
+        // itself.
         type Arm<'t> = (u64, String, Option<(MirType, Option<&'t rask_types::Type>)>);
         let arms: Vec<Arm> = match ty {
             MirType::Option(inner) => vec![
-                (0, "Option.Some(".to_string(), Some(((**inner).clone(), decl_ok))),
-                (1, "Option.None".to_string(), None),
+                (0, String::new(), Some(((**inner).clone(), decl_ok))),
+                (1, "none".to_string(), None),
             ],
             MirType::Result { ok, err } => vec![
-                (0, "Result.Ok(".to_string(), Some(((**ok).clone(), decl_ok))),
-                (1, "Result.Err(".to_string(), Some(((**err).clone(), decl_err))),
+                (0, String::new(), Some(((**ok).clone(), decl_ok))),
+                (1, String::new(), Some(((**err).clone(), decl_err))),
             ],
             MirType::Union(members) => members
                 .iter()
@@ -9455,24 +9493,17 @@ impl<'a> MirLowerer<'a> {
             default,
         }));
 
-        for ((_, open, payload), block) in arms.into_iter().zip(blocks) {
+        for ((_, empty, payload), block) in arms.into_iter().zip(blocks) {
             self.builder.switch_to_block(block);
             let text = match payload {
-                None => lit(&open),
+                None => lit(&empty),
                 Some((payload_ty, payload_decl)) => {
                     let slot = self.builder.alloc_temp(payload_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: slot,
                         rvalue: self.payload_field(op.clone(), ty, &payload_ty),
                     }));
-                    let inner = self.debug_render_value(
-                        &MirOperand::Local(slot), &payload_ty, payload_decl, depth,
-                    )?;
-                    if open.is_empty() {
-                        inner
-                    } else {
-                        self.concat_all(vec![lit(&open), inner, lit(")")])
-                    }
+                    self.debug_render_value(&MirOperand::Local(slot), &payload_ty, payload_decl, depth)?
                 }
             };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -9663,7 +9694,8 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let ctor = crate::elem_strs::map_ctor_for(&key_ty);
-        let map = self.builder.alloc_temp(MirType::I64);
+        let map_ty = MirType::Container(crate::types::ContainerKind::Map);
+        let map = self.builder.alloc_temp(map_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),
             func: FunctionRef::internal(ctor.to_string()),
@@ -9755,7 +9787,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_free".to_string()),
             args: vec![MirOperand::Local(pairs)],
         }));
-        Ok((MirOperand::Local(map), MirType::I64))
+        Ok((MirOperand::Local(map), map_ty))
     }
 
     /// `Map { "a": 1, "b": 2 }` — the entries, in sorted order.

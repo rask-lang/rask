@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 32. Splitting a program into files
+//
+// A program that grows past a few hundred lines is easier to work on in
+// several files, each about one thing. A directory with a `rask.toml` in it
+// is a package: one program, or one library, made of every .rk file in it.
+// The files see each other's names without importing anything, so moving a
+// function to another file changes nothing else.
+//
+// This step is a directory, and the commands take the directory:
+//
+//     rask test 32-packages
+//     rask run 32-packages
+//
+// `public` is for other packages. One that imports this package sees only
+// what's marked `public`, so everything else can change without breaking
+// anyone. `rask api 32-packages/prices.rk` lists what a file offers.
+//
+// Your turn is in till.rk.
+
+func main() {
+    let basket = Vec.from(["tea", "cake"])
+    println("tea costs {price_of("tea") ?? 0}, the basket {total(basket)}")
+}
+
+test "prices" {
+    assert price_of("tea") == 3
+    assert price_of("caviar") is none
+}
+
+test "total" {
+    assert total(Vec.from(["tea", "cake"])) == 7
+    assert total(Vec.from(["tea", "tea", "jam"])) == 8
+    assert total(Vec.from(["caviar"])) == 0
+    assert total(Vec.new()) == 0
+}
+
+// new: packages
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

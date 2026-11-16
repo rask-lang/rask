@@ -807,6 +807,7 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     ("assert_fail_cmp_f32", &[]),
     ("assert_fail_cmp_f64", &[]),
     ("assert_fail_cmp_str", &[]),
+    ("assert_fail_cmp_debug", &[]),
     // The JSON encoder's buffer copies what it is handed into its own bytes.
     ("json_buf_add_i64", &[]),
     ("json_buf_array_add_i64", &[]),

@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdarg.h>
 
 // Status codes, kind tags and encodings shared with the compiler.
 #include "rask_abi.h"
@@ -1196,17 +1197,28 @@ void rask_print_unlock_all(void);
 // Structured panic: aborts in main thread, catchable in spawned tasks.
 // Spawned tasks use setjmp/longjmp to convert panics into JoinError.
 
-// Big enough to hold an assertion message whose operands are floats spelled out
-// in full. A double near the top of its range is ~309 digits with no exponent
-// form (RASK_F64_BUF_SIZE), and the comparison messages print each operand
-// twice — so 512 truncated mid-number for large magnitudes. These are stack
-// buffers on a path that is about to unwind, so the headroom is free.
+// Room for a message whose operands are numbers, which are bounded: a double
+// near the top of its range is ~309 digits with no exponent form
+// (RASK_F64_BUF_SIZE), and the comparison messages print each operand twice.
+// A message that carries the program's own text (a string, a Vec rendered for
+// an assertion, a hand-written message) has no bound and is built to size with
+// `rask_msg_format`.
 #define RASK_PANIC_MSG_MAX 2048
 
 _Noreturn void rask_panic(const char *msg);
 _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
                              const char *msg);
 _Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// `rask_panic` and `rask_panic_at` for a message the caller malloc'd and hands
+// over: no copy, and no leak on the way out.
+_Noreturn void rask_panic_owned(char *msg);
+_Noreturn void rask_panic_at_owned(const char *file, int32_t line, int32_t col,
+                                   char *msg);
+
+// printf into a malloc'd block of exactly the size the result needs.
+char *rask_msg_format(const char *fmt, ...);
+char *rask_msg_vformat(const char *fmt, va_list ap);
 
 // ctrl.panic/A1: an `extern "C"` function's body is bracketed with these, so a
 // panic inside it aborts at the boundary instead of unwinding into the C
@@ -1303,6 +1315,12 @@ void rask_assert_fail_cmp_bool(int64_t left, int64_t right,
 void rask_assert_fail_cmp_str(const RaskStr *left, const RaskStr *right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
+void rask_assert_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                                const char *op, const char *file,
+                                int32_t line, int32_t col);
+void rask_check_fail_cmp_debug(const RaskStr *left, const RaskStr *right,
+                               const char *op, const char *file,
+                               int32_t line, int32_t col);
 void rask_assert_fail_cmp_f64(double left, double right,
                               const char *op, const char *file,
                               int32_t line, int32_t col);
