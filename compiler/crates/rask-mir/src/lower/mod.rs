@@ -5822,8 +5822,8 @@ impl<'a> MirLowerer<'a> {
         checked: Option<&Type>,
         pattern: &rask_ast::expr::Pattern,
     ) {
-        use rask_ast::expr::PatternKind;
-        if !matches!(&pattern.kind, PatternKind::TypePat { binding: Some(_), .. }) {
+        // `T` without `as` names a type to test and binds nothing.
+        if matches!(&pattern.kind, rask_ast::expr::PatternKind::TypePat { binding: None, .. }) {
             return;
         }
         let Some(test) = self.field_type_tests.remove(&pattern.id) else {
@@ -5877,6 +5877,16 @@ impl<'a> MirLowerer<'a> {
             PatternKind::Ident(_) if self.pattern_binds(pattern) => Ok(()),
             PatternKind::TypePat { .. } => self.emit_field_type_test(value, ty, checked, pattern, fail),
             PatternKind::Ident(_) if !self.pattern_names_variant(pattern) => {
+                self.emit_field_type_test(value, ty, checked, pattern, fail)
+            }
+            // A variant of the error side of a `T or E`, or of one member of a
+            // union, in a part of the value: the side tag, the member index and
+            // the variant tag, each read once the one above held. The same test
+            // `x is E.Variant(..)` runs on a value of that type.
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Ident(_)
+                if matches!(ty, MirType::Result { .. } | MirType::Union(_))
+                    && self.deep_result_path(pattern, ty).is_some() =>
+            {
                 self.emit_field_type_test(value, ty, checked, pattern, fail)
             }
             PatternKind::Literal(_) | PatternKind::Range { .. } => {
@@ -6056,7 +6066,7 @@ impl<'a> MirLowerer<'a> {
     /// and a pattern with parts of its own binds inside it.
     fn bind_field_value(
         &mut self,
-        local: LocalId,
+        value: MirOperand,
         field_ty: MirType,
         field_checked: Option<&Type>,
         field_pat: &rask_ast::expr::Pattern,
@@ -6067,7 +6077,7 @@ impl<'a> MirLowerer<'a> {
                 let bound = self.builder.alloc_local(binding.clone(), field_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: bound,
-                    rvalue: MirRValue::Use(MirOperand::Local(local)),
+                    rvalue: MirRValue::Use(value),
                 }));
                 if let Some(prefix) = self.mir_type_name(&field_ty) {
                     self.meta_mut(binding).type_prefix = Some(prefix);
@@ -6075,12 +6085,10 @@ impl<'a> MirLowerer<'a> {
                 self.locals.insert(binding.clone(), (bound, field_ty));
             }
             PatternKind::TypePat { .. } => {
-                self.bind_field_type_pattern(&MirOperand::Local(local), &field_ty, field_checked, field_pat);
+                self.bind_field_type_pattern(&value, &field_ty, field_checked, field_pat);
             }
             PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Tuple(_) => {
-                self.bind_pattern_fields(
-                    field_pat, MirOperand::Local(local), None, false, &field_ty, field_checked,
-                );
+                self.bind_pattern_fields(field_pat, value, None, false, &field_ty, field_checked);
             }
             _ => {}
         }
@@ -6099,6 +6107,14 @@ impl<'a> MirLowerer<'a> {
         checked: Option<&Type>,
     ) {
         use rask_ast::expr::{Pattern, PatternKind};
+        // A pattern that was tested as a whole on a `T or E` or a union binds
+        // along the path that test took.
+        if !matches!(&pattern.kind, PatternKind::TypePat { .. })
+            && self.field_type_tests.contains_key(&pattern.id)
+        {
+            self.bind_field_type_pattern(&value, scrutinee_ty, checked, pattern);
+            return;
+        }
         match &pattern.kind {
             // A named variant binds like its positional spelling: each field's
             // pattern at that field's index, `_` for the ones it leaves out.
@@ -6127,14 +6143,14 @@ impl<'a> MirLowerer<'a> {
                 for (local, field_ty, field_checked, field_pat) in
                     self.read_struct_pattern_fields(&value, scrutinee_ty, checked, fields, "__bind")
                 {
-                    self.bind_field_value(local, field_ty, field_checked.as_ref(), field_pat);
+                    self.bind_field_value(MirOperand::Local(local), field_ty, field_checked.as_ref(), field_pat);
                 }
             }
             PatternKind::Tuple(pats) => {
                 for (local, elem_ty, elem_checked, elem_pat) in
                     self.read_tuple_pattern_elems(&value, scrutinee_ty, checked, pats, "__bind")
                 {
-                    self.bind_field_value(local, elem_ty, elem_checked.as_ref(), elem_pat);
+                    self.bind_field_value(MirOperand::Local(local), elem_ty, elem_checked.as_ref(), elem_pat);
                 }
             }
             PatternKind::Constructor { name, fields } => {

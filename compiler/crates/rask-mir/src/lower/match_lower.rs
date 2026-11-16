@@ -1191,7 +1191,16 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         use rask_ast::expr::{Pattern, PatternKind};
 
-        let tuple_elems: Vec<(MirOperand, MirType)> = if let ExprKind::Tuple(elems) = &scrutinee.kind {
+        // An arm that is a plain name binds the whole tuple, so the tuple has
+        // to exist as a value; a literal scrutinee is otherwise read element by
+        // element and never built.
+        let binds_whole = arms.iter().any(|a| {
+            flatten_pattern_alternatives(&a.pattern)
+                .iter()
+                .any(|p| matches!(&p.kind, PatternKind::Ident(_)) && self.pattern_binds(p))
+        });
+        let mut whole: Option<(MirOperand, MirType)> = None;
+        let tuple_elems: Vec<(MirOperand, MirType)> = if let (ExprKind::Tuple(elems), false) = (&scrutinee.kind, binds_whole) {
             let mut result = Vec::new();
             for elem in elems {
                 result.push(self.lower_expr(elem)?);
@@ -1201,6 +1210,7 @@ impl<'a> MirLowerer<'a> {
             // Non-literal scrutinee — if its type is a tuple, project each
             // field; otherwise treat it as a single-element vec.
             let (op, ty) = self.lower_expr(scrutinee)?;
+            whole = Some((op.clone(), ty.clone()));
             if let MirType::Tuple(field_tys) = &ty {
                 let mut result = Vec::with_capacity(field_tys.len());
                 for (i, field_ty) in field_tys.iter().enumerate() {
@@ -1274,164 +1284,52 @@ impl<'a> MirLowerer<'a> {
                 fallthrough
             };
 
-            let sub_patterns = match &row_pat.kind {
+            // Each element of the tuple is matched by the same sub-pattern
+            // machinery a variant's field uses: a variant name or constructor
+            // tests the tag and what's inside, a literal or range compares, a
+            // struct or tuple pattern reads its parts, a type pattern tests the
+            // element's type, and a plain name binds it. A shape that machinery
+            // has no case for is an error, never an arm that matches anyway.
+            let names_whole = matches!(&row_pat.kind, PatternKind::Ident(_)) && self.pattern_binds(row_pat);
+            let sub_patterns: Vec<Pattern> = match &row_pat.kind {
                 PatternKind::Tuple(pats) => pats.clone(),
-                PatternKind::Wildcard => {
-                    vec![]
+                PatternKind::Wildcard => vec![],
+                // `t => …` takes the whole tuple.
+                PatternKind::Ident(_) if names_whole && whole.is_some() => vec![],
+                // A single value matched against one pattern.
+                _ if tuple_elems.len() == 1 => vec![row_pat.clone()],
+                _ => {
+                    return Err(LoweringError::InvalidConstruct(format!(
+                        "a `match` on {} values has an arm that isn't a tuple pattern: `{:?}`",
+                        tuple_elems.len(),
+                        row_pat.kind,
+                    )));
                 }
-                _ => vec![row_pat.clone()],
             };
+            if sub_patterns.len() != tuple_elems.len()
+                && !matches!(&row_pat.kind, PatternKind::Wildcard)
+                && !(names_whole && whole.is_some())
+            {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "a tuple pattern names {} parts, the matched tuple has {}",
+                    sub_patterns.len(),
+                    tuple_elems.len(),
+                )));
+            }
 
-            // A tuple element naming an enum variant is a *test*, not a binding.
-            // Only literals were collected here, so `(Method.Get, "/tasks")`
-            // checked the path and ignored the method: a POST to /tasks matched
-            // the GET arm and answered with the task list.
-            let mut variant_checks: Vec<(usize, u64)> = Vec::new();
-            let mut checks: Vec<(usize, Pattern)> = Vec::new();
-            // A tuple element that names a variant *and* binds its payload —
-            // `(Value.Int(x), Value.Int(y))`. Same tag test as a bare variant
-            // name, plus the payload reads. This arm fell into the catch-all
-            // below, so no test ran and `x` was never defined: MIR lowering
-            // failed with "unresolved variable `x`" while the interpreter
-            // answered fine (#793).
-            let mut payload_binds: Vec<(usize, u64, Pattern)> = Vec::new();
             for (j, pat) in sub_patterns.iter().enumerate() {
-                match &pat.kind {
-                    PatternKind::Literal(_) => checks.push((j, pat.clone())),
-                    PatternKind::Ident(_) => {
-                        let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
-                            variant_checks.push((j, tag as u64));
-                        }
-                    }
-                    PatternKind::Constructor { .. } => {
-                        let elem_ty = tuple_elems.get(j).map(|(_, t)| t);
-                        if let Some(tag) = elem_ty.and_then(|t| self.pattern_variant_tag(pat, t)) {
-                            payload_binds.push((j, tag as u64, pat.clone()));
-                        }
-                    }
-                    PatternKind::Wildcard => {}
-                    _ => {}
-                }
+                let (elem_op, elem_ty) = tuple_elems[j].clone();
+                self.emit_subpattern_test(&elem_op, &elem_ty, checked_elems.get(j), pat, next_arm)?;
             }
-            // The tag test is the same shape for both, so they share the loop.
-            variant_checks.extend(payload_binds.iter().map(|(j, tag, _)| (*j, *tag)));
-
-            // Emit the tag tests before anything else in the arm.
-            for (j, want_tag) in &variant_checks {
-                let (ref elem_op, _) = tuple_elems[*j];
-                let tag_local = self.builder.alloc_temp(MirType::U16);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: elem_op.clone() },
-                }));
-                let cmp_local = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: cmp_local,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::BinOp::Eq,
-                        left: MirOperand::Local(tag_local),
-                        right: MirOperand::Constant(crate::operand::MirConst::Int(*want_tag as i64)),
-                    },
-                }));
-                let pass_block = self.builder.create_block();
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: MirOperand::Local(cmp_local),
-                    then_block: pass_block,
-                    else_block: next_arm,
-                }));
-                self.builder.switch_to_block(pass_block);
+            // Every test has passed, so the parts are the right variants':
+            // bind them.
+            for (j, pat) in sub_patterns.iter().enumerate() {
+                let (elem_op, elem_ty) = tuple_elems[j].clone();
+                self.bind_field_value(elem_op, elem_ty, checked_elems.get(j), pat);
             }
-            let variant_tested: std::collections::HashSet<usize> =
-                variant_checks.iter().map(|(j, _)| *j).collect();
-
-            // Every tag test has passed by now, so the payloads are the right
-            // variant's. Read each bound field out of the element at its exact
-            // offset — mixed variants share field indices, so codegen must not
-            // be left to guess which variant a field index belongs to.
-            for (j, _, pattern) in &payload_binds {
-                let (elem_op, elem_ty) = tuple_elems[*j].clone();
-                // Its own tag passed above; this tests what's nested inside it.
-                let checked = checked_elems.get(*j);
-                self.emit_subpattern_test(&elem_op, &elem_ty, checked, pattern, next_arm)?;
-                self.bind_pattern_fields(pattern, elem_op, None, false, &elem_ty, checked);
-            }
-
-            if checks.is_empty() && !matches!(&row_pat.kind, PatternKind::Wildcard) {
-                for (j, pat) in sub_patterns.iter().enumerate() {
-                    if let PatternKind::Ident(name) = &pat.kind {
-                        if j < tuple_elems.len() && !variant_tested.contains(&j) {
-                            let (ref elem_op, ref elem_ty) = tuple_elems[j];
-                            let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local_id,
-                                rvalue: MirRValue::Use(elem_op.clone()),
-                            }));
-                            if let Some(prefix) = self.mir_type_name(elem_ty) {
-                                self.meta_mut(name).type_prefix = Some(prefix);
-                            }
-                            self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
-                        }
-                    }
-                }
-            } else if matches!(&row_pat.kind, PatternKind::Wildcard) {
-                // No checks needed
-            } else {
-                let mut first_check = true;
-                for (j, pat) in &checks {
-                    if let PatternKind::Literal(lit_expr) = &pat.kind {
-                        let (ref elem_op, _) = tuple_elems[*j];
-                        let (lit_op, _) = self.lower_expr(lit_expr)?;
-
-                        let cmp_local = self.builder.alloc_temp(MirType::I64);
-                        if matches!(&lit_expr.kind, ExprKind::String(_)) {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(cmp_local),
-                                func: FunctionRef::internal("string_eq".to_string()),
-                                args: vec![elem_op.clone(), lit_op],
-                            }));
-                        } else {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: cmp_local,
-                                rvalue: MirRValue::BinaryOp {
-                                    op: crate::BinOp::Eq,
-                                    left: elem_op.clone(),
-                                    right: lit_op,
-                                },
-                            }));
-                        }
-
-                        let pass_block = if first_check {
-                            first_check = false;
-                            self.builder.create_block()
-                        } else {
-                            self.builder.create_block()
-                        };
-                        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                            cond: MirOperand::Local(cmp_local),
-                            then_block: pass_block,
-                            else_block: next_arm,
-                        }));
-                        self.builder.switch_to_block(pass_block);
-                    }
-                }
-
-                for (j, pat) in sub_patterns.iter().enumerate() {
-                    if let PatternKind::Ident(name) = &pat.kind {
-                        if j < tuple_elems.len() && !variant_tested.contains(&j) {
-                            let (ref elem_op, ref elem_ty) = tuple_elems[j];
-                            let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local_id,
-                                rvalue: MirRValue::Use(elem_op.clone()),
-                            }));
-                            if let Some(prefix) = self.mir_type_name(elem_ty) {
-                                self.meta_mut(name).type_prefix = Some(prefix);
-                            }
-                            self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
-                        }
-                    }
-                }
+            if let (true, Some((whole_op, whole_ty))) = (names_whole, &whole) {
+                let whole_checked = self.ctx.lookup_raw_type(scrutinee.id).map(std::borrow::Cow::into_owned);
+                self.bind_field_value(whole_op.clone(), whole_ty.clone(), whole_checked.as_ref(), row_pat);
             }
 
             // A literal scrutinee is read element by element, so each element
