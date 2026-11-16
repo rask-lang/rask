@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic that holds itself at a bigger instance behind a pointer is a type
+// with a finite size, and the checker has to finish with it (#1882).
+//
+// `Grow<T>` keeps its children in a `Vec`, so a `Grow<i64>` holds a vector of
+// `Grow<(i64, i64)>`, whose children are `Grow<((i64, i64), (i64, i64))>`, and
+// so on. The walk that asks whether a type holds a handle with no `clone`
+// followed every instance and, with the argument doubling each step, ran out
+// of memory before any depth limit.
+
+struct Grow<T> {
+    value: T
+    kids: Vec<Grow<(T, T)>>
+}
+
+test "a value of the type is built and read" {
+    let g: Grow<i64> = Grow(value: 7, kids: Vec.new())
+    assert g.value == 7
+    assert g.kids.len() == 0
+}
+
+test "an optional of it, and a clone of the whole thing" {
+    let none_yet: Grow<i64>? = none
+    assert none_yet is none
+    let g: Grow<i64> = Grow(value: 1, kids: Vec.new())
+    let copy = g.clone()
+    assert copy.value == 1
+}

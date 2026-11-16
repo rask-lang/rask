@@ -2983,42 +2983,33 @@ impl TypeChecker {
         chain: &mut Vec<String>,
     ) -> bool {
         match ty {
-            Type::Named(id) => {
-                if *id == owner {
-                    return true;
-                }
-                if seen.contains(id) {
-                    return false;
-                }
-                seen.push(*id);
-                let (name, inner): (String, Vec<Type>) = match self.types.get(*id) {
-                    Some(TypeDef::Struct { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    Some(TypeDef::Enum { name, variants, .. }) => (
-                        name.clone(),
-                        variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
-                    ),
-                    Some(TypeDef::Union { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    // A nominal alias is the underlying type wearing a new
-                    // name, so it stores whatever that does.
-                    Some(TypeDef::NominalAlias { name, underlying, .. }) => {
-                        (name.clone(), vec![underlying.clone()])
-                    }
-                    _ => return false,
-                };
-                chain.push(name);
-                for t in &inner {
-                    if self.reaches_inline(t, owner, seen, chain) {
-                        return true;
-                    }
-                }
-                chain.pop();
-                false
+            Type::Named(id) => self.reaches_inline_through(*id, &[], owner, seen, chain),
+            // The owner at any arguments is the owner: `Grow<T>` holding
+            // `Grow<(T, T)>` needs room for itself at every bigger instance,
+            // so no size satisfies it. Another generic is walked with its
+            // arguments written into its fields, so `Wrap<Node>` holds a
+            // `Node` and `Wrap<Heap<Node>>` doesn't.
+            Type::Generic { base, args } => {
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.reaches_inline_through(*base, &args, owner, seen, chain)
+            }
+            // The same generic before its name is settled to an id.
+            Type::UnresolvedGeneric { name, args } => {
+                let Some(base) = self.types.get_type_id(name) else { return false };
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.reaches_inline_through(base, &args, owner, seen, chain)
             }
             // `T?` and `T or E` are a tag beside the payload, not a pointer to
             // it, so both sides are inline.
@@ -3032,6 +3023,56 @@ impl TypeChecker {
             Type::Array { elem, .. } => self.reaches_inline(elem, owner, seen, chain),
             _ => false,
         }
+    }
+
+    /// `reaches_inline` for a declared type `id` held with `args`: its fields
+    /// and payloads, with the arguments in place of its parameters.
+    fn reaches_inline_through(
+        &self,
+        id: rask_types::TypeId,
+        args: &[Type],
+        owner: rask_types::TypeId,
+        seen: &mut Vec<rask_types::TypeId>,
+        chain: &mut Vec<String>,
+    ) -> bool {
+        if id == owner {
+            return true;
+        }
+        if seen.contains(&id) {
+            return false;
+        }
+        // A stdlib generic is a handle or has its own layout; what it holds
+        // sits behind its pointer.
+        if !args.is_empty() && matches!(self.types.declared_by(id), super::type_table::TypeOwner::Stdlib) {
+            return false;
+        }
+        seen.push(id);
+        let Some(def) = self.types.get(id) else { return false };
+        let name = match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Union { name, .. }
+            // A nominal alias is the underlying type wearing a new
+            // name, so it stores whatever that does.
+            | TypeDef::NominalAlias { name, .. } => name.clone(),
+            _ => return false,
+        };
+        let params = def.type_params();
+        let subst: std::collections::HashMap<&str, &Type> =
+            params.iter().map(String::as_str).zip(args.iter()).collect();
+        let inner: Vec<Type> = def
+            .held_types()
+            .into_iter()
+            .map(|t| rask_layout::substitute_inside(t, &subst))
+            .collect();
+        chain.push(name);
+        for t in &inner {
+            if self.reaches_inline(t, owner, seen, chain) {
+                return true;
+            }
+        }
+        chain.pop();
+        false
     }
 
     /// Check a declaration with the type parameters it owns in scope for

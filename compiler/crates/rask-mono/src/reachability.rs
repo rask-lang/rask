@@ -31,10 +31,7 @@ struct WorkItem {
     depth: usize,
 }
 
-/// ctrl.comptime/CT68: an instantiation chain longer than this is an error.
-/// Polymorphic recursion (`nest<T>` calling `nest<Vec<T>>`) makes one that
-/// never ends; anything legitimate is far shorter.
-pub const INSTANTIATION_LIMIT: usize = 64;
+use rask_types::INSTANTIATION_LIMIT;
 
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"

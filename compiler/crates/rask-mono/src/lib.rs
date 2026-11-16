@@ -965,7 +965,7 @@ pub enum MonomorphizeError {
         reason: String,
     },
     /// ctrl.comptime/CT68: each generic instance demanded a deeper one, past
-    /// `reachability::INSTANTIATION_LIMIT`. The chain, outermost first.
+    /// `rask_types::INSTANTIATION_LIMIT`. The chain, outermost first.
     InstantiationTooDeep {
         chain: Vec<String>,
     },

@@ -49,6 +49,29 @@ struct Vertex {
     out: Edge?
 }
 
+// A generic that holds itself at a bigger instance is the same wall with a
+// longer climb: `Grow<T>` holds a `Grow<(T, T)>`, which holds a
+// `Grow<((T, T), (T, T))>`. The checker kept expanding the instance and never
+// finished, so `rask check` hung (#1882). The instance is the declaration
+// again, whatever its arguments are.
+// ERROR: `Grow<T>` holds a `Grow<(T, T)>` inline.
+struct Grow<T> {
+    v: T
+    next: Grow<(T, T)>?
+}
+
+// Through a generic carrier the declaration doesn't name: `Wrapper<Chain<T>>`
+// holds a `Chain<T>` by value, so `Chain<T>` holds itself.
+// ERROR: `Chain` reaches itself through `Wrapper`.
+struct Chain<T> {
+    v: T
+    next: Wrapper<Chain<T>>
+}
+
+struct Wrapper<T> {
+    inner: T
+}
+
 func main() {
     println("unreachable")
 }

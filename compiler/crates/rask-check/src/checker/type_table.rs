@@ -1914,19 +1914,38 @@ impl TypeTable {
     /// its elements, a field or a payload. Copying the handle's pointer leaves
     /// two owners to free one block (#1887).
     pub fn uncloneable_handle(&self, ty: &Type) -> Option<Type> {
-        self.uncloneable_handle_in(ty, &mut Vec::new())
+        self.uncloneable_handle_in(ty, &mut Vec::new(), 0)
     }
 
-    fn uncloneable_handle_in(&self, ty: &Type, seen: &mut Vec<(TypeId, Vec<GenericArg>)>) -> Option<Type> {
+    /// `depth` counts the generic instances between `ty` and the one the walk
+    /// started at. A struct that holds itself at a bigger type behind a `Vec`
+    /// (`n: Vec<Grow<(T, T)>>`) has a new instance at every step, which `seen`
+    /// never matches; past either limit nothing more is looked for (CT68).
+    fn uncloneable_handle_in(
+        &self,
+        ty: &Type,
+        seen: &mut Vec<(TypeId, Vec<GenericArg>)>,
+        depth: usize,
+    ) -> Option<Type> {
+        let nodes = std::cell::Cell::new(0usize);
+        ty.contains(&|_| {
+            nodes.set(nodes.get() + 1);
+            false
+        });
+        if depth > rask_types::INSTANTIATION_LIMIT || nodes.get() > rask_types::INSTANTIATION_SIZE_LIMIT {
+            return None;
+        }
         let (id, args): (TypeId, &[GenericArg]) = match ty {
             Type::Named(id) => (*id, &[]),
             Type::Generic { base, args } => (*base, args),
             Type::Tuple(parts) | Type::Union(parts) => {
-                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen));
+                return parts.iter().find_map(|t| self.uncloneable_handle_in(t, seen, depth));
             }
-            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen),
+            Type::Array { elem, .. } => return self.uncloneable_handle_in(elem, seen, depth),
             Type::Result { ok, err } => {
-                return self.uncloneable_handle_in(ok, seen).or_else(|| self.uncloneable_handle_in(err, seen));
+                return self
+                    .uncloneable_handle_in(ok, seen, depth)
+                    .or_else(|| self.uncloneable_handle_in(err, seen, depth));
             }
             _ => return None,
         };
@@ -1943,7 +1962,7 @@ impl TypeTable {
             }
             // A container's clone copies its elements.
             return args.iter().find_map(|a| match a {
-                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen),
+                GenericArg::Type(t) => self.uncloneable_handle_in(t, seen, depth + 1),
                 _ => None,
             });
         }
@@ -1968,7 +1987,9 @@ impl TypeTable {
             .collect();
         slots
             .into_iter()
-            .find_map(|t| self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen))
+            .find_map(|t| {
+                self.uncloneable_handle_in(&crate::interfaces::substitute_type(t, &subst), seen, depth + 1)
+            })
     }
 
     fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {
