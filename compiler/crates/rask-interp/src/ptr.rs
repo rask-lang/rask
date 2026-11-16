@@ -395,6 +395,7 @@ pub(crate) fn call_ptr_method(
     p: &RawPtr,
     method: &str,
     args: Vec<Value>,
+    machine: rask_ast::Target,
 ) -> Result<Value, RuntimeError> {
     // Rendering, the same way every other primitive answers it. A pointer
     // prints as its address (see `Display for Value`), which is what native
@@ -469,11 +470,11 @@ pub(crate) fn call_ptr_method(
         PtrSig::ToInt => {
             let n = int_arg(0)?;
             if n <= 0 {
-                return Ok(Value::Int(0, IntKind::usize_kind()));
+                return Ok(Value::Int(0, IntKind::usize_kind(machine)));
             }
             let rem = p.addr() % n as u64;
             let offset = if rem == 0 { 0 } else { n as u64 - rem };
-            Ok(Value::Int(offset as i64, IntKind::usize_kind()))
+            Ok(Value::Int(offset as i64, IntKind::usize_kind(machine)))
         }
         // The target type isn't an argument: the caller reads it off the
         // checker's type for the call and goes through `RawPtr::cast_to`. One

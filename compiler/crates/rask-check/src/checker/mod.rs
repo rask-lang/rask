@@ -11,7 +11,6 @@ use rask_resolve::{ResolvedProgram, SymbolId};
 use rask_types::Type;
 
 mod type_defs;
-mod builtins;
 pub(crate) mod type_table;
 mod inference;
 mod errors;
@@ -40,10 +39,10 @@ pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name, ErasedError};
-pub use type_table::{primitive_spelling, TaskBound, TypeTable};
+pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
+pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
 
 pub use generics::{bind_header_pattern, bind_header_patterns};
@@ -317,6 +316,9 @@ pub struct TypeChecker {
     /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
     pub(super) pending_interface_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
+    /// TR5 for a method argument: `(argument node, declared parameter,
+    /// argument)`, read once the argument's type has settled.
+    pub(super) pending_interface_arg_coercions: Vec<(NodeId, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
     /// function, which is what makes the handler cover the block.
@@ -685,14 +687,14 @@ impl TypeChecker {
     }
 
     /// Create a new type checker.
-    pub fn new(resolved: ResolvedProgram) -> Self {
+    pub fn new(resolved: ResolvedProgram, target: rask_ast::Target) -> Self {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
             conformance_interfaces: HashMap::new(),
             declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
-            types: TypeTable::new(),
+            types: TypeTable::new(target),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
@@ -735,6 +737,7 @@ impl TypeChecker {
             callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
+            pending_interface_arg_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
@@ -1239,8 +1242,8 @@ impl TypeChecker {
             .collect();
         let error_wraps = self.error_wraps.clone();
         for (id, scrutinee, named) in std::mem::take(&mut self.pending_pattern_sides) {
-            if let Some((err, member)) = self.pattern_side(&scrutinee, &named) {
-                self.pattern_targets.insert(id, rask_types::PatternTarget::Side { err, member });
+            if let Some(target) = self.pattern_side(&scrutinee, &named) {
+                self.pattern_targets.insert(id, target);
             }
         }
         let pattern_targets = std::mem::take(&mut self.pattern_targets);
@@ -1505,12 +1508,6 @@ impl TypeChecker {
     }
 }
 
-impl Default for TypeChecker {
-    fn default() -> Self {
-        Self::new(ResolvedProgram::default())
-    }
-}
-
 // ============================================================================
 // Public API
 // ============================================================================
@@ -1651,9 +1648,10 @@ pub fn typecheck(
     resolved: ResolvedProgram,
     decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     let mut typed = checker.check(decls)?;
     typed.attach_derived(decls);
@@ -1666,9 +1664,10 @@ pub fn typecheck_with_stdlib(
     decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
     // name, and they must not be overwritten when the program declares its own.
@@ -1691,9 +1690,10 @@ pub fn typecheck_with_stdlib_lenient(
     decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> (TypedProgram, Vec<TypeError>) {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);

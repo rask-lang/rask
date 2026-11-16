@@ -395,6 +395,7 @@ impl<'a> MirLowerer<'a> {
         };
         let mut captures = crate::stmt::lay_out_captures(
             free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), by_ref, *copy)),
+            self.ctx.target(),
         );
         // CM3: a carried capture that is a lent parameter of this frame is the
         // caller's, held for it. The environment must not free it.
@@ -594,7 +595,7 @@ impl<'a> MirLowerer<'a> {
         // `int64_t (*)(void *)` and kept whatever was in the integer return
         // register — a stale pointer for a task returning `2.5f64`, which read
         // back as 3.3e-310, and nothing at all for a string.
-        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret);
+        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret, self.ctx.target());
         let entry_name = if boxes_result {
             self.synthesize_spawn_box_thunk(&closure_name, &closure_ret)
         } else {
@@ -753,6 +754,7 @@ impl<'a> MirLowerer<'a> {
         // `transform::addr_taken` for why that matters.
         let captures = crate::stmt::lay_out_captures(
             free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), true, *copy)),
+            self.ctx.target(),
         );
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
@@ -905,7 +907,28 @@ impl<'a> MirLowerer<'a> {
             ret_vec_elem: None,
             param_tys: Vec::new(),
         });
-        self.synthesized_functions.push(yb.finish());
+        // A yield lends its item (type.sequence/SEQ34): the sequence that
+        // called it releases what it made once the call returns, as `map`'s
+        // does after `yield(f(x))`. For an item that owns only counted things
+        // (a tuple or struct of strings and numbers) the body borrows it too:
+        // it releases nothing, and one it keeps — `find` returning the hit —
+        // is a copy with references of its own. Unmarked, the body counted as
+        // the item's owner: it freed a miss and handed a hit on without a
+        // reference, and the string inside came back freed (#1871).
+        //
+        // An item that owns a container is the other protocol: the body keeps
+        // it by moving it, and the sequence hands it over instead of releasing
+        // it, which a copy can't stand in for.
+        let mut yield_fn = yb.finish();
+        let counted_aggregate = matches!(
+            elem_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_)
+                | MirType::Result { .. } | MirType::Array { .. }
+        ) && self.ctx.mir_owns_only_counted(&elem_ty, 0);
+        if counted_aggregate {
+            yield_fn.param_modes = vec![rask_ast::ty::ParamMode::Borrow, rask_ast::ty::ParamMode::Borrow];
+        }
+        self.synthesized_functions.push(yield_fn);
 
         // Build the closure and hand it to the sequence.
         let closure_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
@@ -1076,12 +1099,12 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
-        b.push_stmt(super::alloc_block_for(boxed, ret.size(), ret));
+        b.push_stmt(super::alloc_block_for(boxed, rask_layout::size_of(ret, self.ctx.target()), ret, self.ctx.target()));
         b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: boxed,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: ret.size(),
+            store_size: rask_layout::size_of(ret, self.ctx.target()),
             field: None,
         }));
         b.terminate(MirTerminator::dummy(MirTerminatorKind::Return {

@@ -34,6 +34,9 @@ struct RaskJsonShape {
     RaskJsonShape *err;           // E of `T or E`
     RaskJsonShape *key;           // Map key; NULL for a string key, all JSON has
     RaskJsonFill generate;        // a generated type: writes one at its argument
+    RaskJsonCustom custom;        // a custom decode: takes the wire value and the slot
+    RaskJsonCustomEncode custom_encode; // a custom encode: the value's JSON text
+    int64_t wire_size;            // a custom decode: bytes the wire value takes
     // What a Vec element or Map value owns, in the form every container
     // constructor takes, so the container the decoder builds frees it.
     const int32_t *elem_owned;

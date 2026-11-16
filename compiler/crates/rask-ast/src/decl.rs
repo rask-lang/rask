@@ -238,6 +238,7 @@ impl FnDecl {
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
+            reorders: has("reorders"),
             drops_elements: has("drops_elements"),
             copies_elements: has("copies_elements"),
             moves_out: has("moves_out"),
@@ -254,8 +255,9 @@ impl FnDecl {
 /// What a stdlib function does that its body can't show, as its declaration
 /// says. Read by the checker, ownership and effects.
 ///
-/// `grows`/`shrinks` (comp.advanced/EF1): the method changes how many elements
-/// its receiver holds, or moves them to new storage. Either one invalidates a
+/// `grows`/`shrinks`/`reorders` (comp.advanced/EF1): the method changes how many
+/// elements its receiver holds, moves them to new storage, or moves them
+/// between slots. Any of them invalidates a
 /// `with` binding or a `for mutate` loop over the receiver (mem.borrowing/W2,
 /// ctrl.loops/LP14), and neither is possible on a fixed array. It was five
 /// name lists once, and the with-block rule's list didn't know `remove_where`
@@ -270,6 +272,11 @@ pub struct DeclaredEffects {
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
+    /// Moves elements between slots and keeps the count (`sort`, `swap`,
+    /// `reverse`). Nothing is reallocated, but a place held inside the
+    /// receiver then names a different element, so it is refused where a
+    /// resize is (mem.borrowing/W2).
+    pub reorders: bool,
     /// Drops elements without handing them back (`clear`, `remove_where`).
     /// Refused on a container whose elements must be consumed
     /// (mem.resources/RC5).
@@ -309,6 +316,14 @@ impl DeclaredEffects {
     /// Changes the number of elements in the receiver, or where they live.
     pub fn changes_size(self) -> bool {
         self.grows || self.shrinks
+    }
+
+    /// Changes what a place inside the receiver refers to: how many elements
+    /// there are, which buffer they sit in, or which slot each one is in. A
+    /// `with` binding or a `for mutate` loop holds such a place, so none of
+    /// these may run under it (mem.borrowing/W2, ctrl.loops/LP14).
+    pub fn changes_layout(self) -> bool {
+        self.grows || self.shrinks || self.reorders
     }
 }
 
@@ -502,6 +517,19 @@ pub mod field_attrs {
         format!("__decode_default_{field_name}")
     }
 
+    /// The static method desugar writes beside a type's own `decode`
+    /// (std.encoding/E12b): `decode` with its rejection turned into a message,
+    /// `func __decode_checked(wire: W) -> Self or string`. The decoders call
+    /// it, so a rejection of any error type, a union included, reaches them as
+    /// the string `message()` gives.
+    pub const DECODE_ADAPTER: &str = "__decode_checked";
+
+    /// The method desugar writes beside a type's own `encode` (std.encoding/E12b):
+    /// `func __encode_json(self) -> string`, the type's value as JSON text. The
+    /// native JSON encoder calls it where the type sits inside something it
+    /// writes itself, a runtime-walked `Map` for one.
+    pub const ENCODE_ADAPTER: &str = "__encode_json";
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
@@ -535,6 +563,12 @@ pub fn positional_field_name(index: usize) -> String {
 pub fn is_positional_field_name(name: &str) -> bool {
     name.strip_prefix('_').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The static methods every fieldless enum gets without declaring them
+/// (E18): `Colour.variants()` and `Colour.from_value(n)`. A module-qualified
+/// receiver (`http.Method.from_value(0)`) is recognised by one of these names
+/// or by a variant's, so both backends read the same list.
+pub const GENERATED_ENUM_STATICS: &[&str] = &["variants", "from_value"];
 
 /// An enum variant.
 #[derive(Debug, Clone)]

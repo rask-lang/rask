@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct pattern nested in a variant's field.
+//
+// Native refused it: "`Entry { ... }` nested in a variant pattern needs an
+// enum field".
+
+struct Entry { key: string, n: i64 }
+
+enum Slot {
+    Filled(entry: Entry)
+    Empty
+}
+
+func show(s: Slot) -> string {
+    return match s {
+        Slot.Filled(entry: Entry(key, n: 2)) => "two {key}",
+        Slot.Filled(entry: Entry(key, n)) => "{key} {n}",
+        Slot.Empty => "empty",
+    }
+}
+
+enum Kind { Plain, Special(i64) }
+struct Tagged { kind: Kind, label: string }
+enum Holder { One(Tagged), Two(Tagged, i64), Nobody }
+
+func kind_of(h: Holder) -> string {
+    return match h {
+        Holder.One(Tagged(kind: Kind.Special(n), label)) => "special {n} {label}",
+        Holder.One(Tagged(kind: Kind.Plain, label)) => "plain {label}",
+        Holder.Two(Tagged(label, ..), n) => "two {label} {n}",
+        Holder.Nobody => "nobody",
+    }
+}
+
+test "a struct in a positional field, with an enum inside it" {
+    assert kind_of(Holder.One(Tagged(kind: Kind.Special(4), label: "x"))) == "special 4 x"
+    assert kind_of(Holder.One(Tagged(kind: Kind.Plain, label: "y"))) == "plain y"
+    assert kind_of(Holder.Two(Tagged(kind: Kind.Plain, label: "z"), 8)) == "two z 8"
+    assert kind_of(Holder.Nobody) == "nobody"
+}
+
+test "the struct's field decides the arm" {
+    assert show(Slot.Filled(entry: Entry(key: "a", n: 2))) == "two a"
+    assert show(Slot.Filled(entry: Entry(key: "b", n: 5))) == "b 5"
+    assert show(Slot.Empty) == "empty"
+}

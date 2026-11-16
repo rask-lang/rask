@@ -79,36 +79,26 @@ you learned.
 
 ## Who does the work
 
-Every turn of the main session re-sends all of it, so it stays small. Long
-reading (whole files, build logs, a bug hunt across passes) goes to agents,
-whose context is thrown away when they report. Why each runs on what it does:
-`.claude/routing.md`.
+**The main session does the coding**, one task at a time. Its cache lives an
+hour, so a ten-minute build doesn't empty it, and it learns the codebase once.
+The night of 2026-11-16 ran seven Sonnet workers at once instead: builds slowed
+to ten minutes under the contention, each worker's cache expired while it
+waited, and every return rewrote a 300-600K context. That night cost about $250.
+Why each agent runs on what it does: `.claude/routing.md`.
 
-- **Just do it** when the change is a few lines and you know where: a
-  constant, a message, a one-function bug with a test that fails before your
-  change, any docs or config edit. Edit, run that test, commit. No agent, no
-  skeptic, no plan. Not for ownership, MIR lowering, codegen or runtime memory:
-  those go to a worker and the skeptic however small (e8ea2956's first version
-  passed the existing tests and still freed twice; the skeptic caught it).
+- Keep the session small: read the lines you need (`grep -n`, `sed -n`), pipe
+  build and gate output through `tail` or `grep`, and compact at a theme change.
+- **One background worker at most**, for work that truly runs beside yours
+  with a short brief (a release, a docs pass, a second bug in another crate).
+  In a worktree, with the goal, branch and what done means. A report below the
+  bar is finished by you or by a fresh worker, never by resuming the old one.
 - **`scout`** (Haiku): lookups with a checkable answer. Failing CI lines, is
   main red too, does an issue exist. Not for one command; run that yourself.
-- **`worker`** (Sonnet): coding that needs a lot of reading or spans passes.
-  Brief it with the goal, branch, what done means and what's ruled out; point
-  at files, don't paste them. One per branch; parallel ones in worktrees,
-  and hand each one any number they might both claim (error codes, rule IDs)
-  in its brief, since they can't see each other's work.
-  Use `model: "opus"` for a task a worker failed twice, or one no test can
-  check.
-- **`lead`** (Opus, small context): for a job that fans out to three or
-  more workers. It runs them, merges, runs skeptic and pushes, and wakes the
-  main session once with the result. One or two workers report to main
-  directly.
-- **Hold reports to the bar.** One that says workaround, "for now", partial,
-  deferred or follow-up goes back to the worker: "finish it properly".
 - **`skeptic`** (Opus): once per finished PR that changes compiler, runtime or
-  stdlib, with the goal, not your reasoning. Not per push, not for a "just do
-  it" change. What it confirms goes to a worker; a finding you reject gets a
-  line under Status.
+  stdlib, with the goal, not your reasoning. Not per push, not for a docs or
+  config change. A finding you reject gets a line under Status. Ownership, MIR
+  lowering, codegen and runtime memory always get it, however small the change
+  (e8ea2956's first version passed the tests and still freed twice).
 - **`design-skeptic`** (Opus): once per spec change that adds a feature or
   changes a default. It prices the change against [specs/RULINGS.md](specs/RULINGS.md)
   and shows what it costs other features in code. Not for wording fixes.
@@ -129,7 +119,11 @@ reading it. Most turns used to be events. So:
   agent's report arrives as its own wake. Background is for when you have other
   work meanwhile.
 - **A gate sweep is one command that reports once**, not a Monitor that wakes
-  the session per gate.
+  the session per gate. A build plus gates runs past the 10-minute foreground
+  limit; start it in the background with a 2-hour timeout so it wakes you once,
+  not as a foreground call that times out and then wakes you again.
+- **Merge, gate, push in one turn.** A merge left unpushed while gates run
+  draws a stop-hook re-prompt per turn.
 - **Commit and push before ending a turn.** The cloud's stop hook re-prompts on
   uncommitted, untracked or unpushed work, and each re-prompt is a full turn.
   Scratch files go in `/tmp`.

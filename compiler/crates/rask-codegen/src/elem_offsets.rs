@@ -151,12 +151,18 @@ fn describe(
             out.push(entry(base, KIND_LINK))
         }
         // The element is the container. Its own list travels with it, so this
-        // level says "a Vec lives here" and stops there. A rack is an arena
-        // whose nodes outlive any one element (mem.racks), so it's nobody's
-        // here.
+        // level says "a Vec lives here" and stops there. A rack carries its
+        // nodes' description on itself too (`rask_link_register_*`), so the
+        // entry just says "a rack lives here" and the element owns it, nodes
+        // and all, freed through the handle table like any self-freeing
+        // handle (#1822).
         MirType::Container(ContainerKind::Vec) => out.push(entry(base, KIND_VEC)),
         MirType::Container(ContainerKind::Map) => out.push(entry(base, KIND_MAP)),
-        MirType::Container(ContainerKind::Handle(release)) => {
+        MirType::Container(kind @ (ContainerKind::Rack | ContainerKind::Handle(_))) => {
+            let release = match kind {
+                ContainerKind::Handle(release) => release,
+                _ => "rask_rack_free",
+            };
             let index = runtime_abi::handle_release_index(release)? as i32;
             let mask = runtime_abi::RASK_OWNED_HANDLE_OFFSET_MASK as i32;
             let shift = runtime_abi::RASK_OWNED_HANDLE_INDEX_SHIFT as u32;
@@ -186,12 +192,12 @@ fn describe(
         }
         // Parts at their natural offsets, the packing tuple lowering uses.
         MirType::Tuple(parts) => {
-            for (part, at) in parts.iter().zip(rask_mir::tuple_offsets(parts)) {
+            for (part, at) in parts.iter().zip(rask_layout::tuple_offsets(parts, shapes.fields.target)) {
                 describe(part, base + at as i32, shapes, depth + 1, self_layout, out)?;
             }
         }
         MirType::Array { elem, len } => {
-            let stride = elem.size() as i32;
+            let stride = rask_layout::size_of(elem.as_ref(), shapes.fields.target) as i32;
             for i in 0..*len as i32 {
                 describe(elem, base + i * stride, shapes, depth + 1, self_layout, out)?;
             }
@@ -215,7 +221,7 @@ fn wrapper_arms(
     out: &mut Vec<i32>,
 ) -> Option<()> {
     use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
-    let payload_offset = wrapper.payload_offset();
+    let payload_offset = rask_layout::payload_offset_of(wrapper, shapes.fields.target);
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
         describe(side, base + payload_offset as i32, shapes, depth + 1, self_layout, &mut arm)?;

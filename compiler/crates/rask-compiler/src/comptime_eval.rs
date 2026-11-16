@@ -31,7 +31,7 @@ const DEFAULT_BRANCH_QUOTA: usize = 1_000;
 /// An interpreter for the program's compile-time code: its functions, the
 /// build configuration, and which expressions the checker typed as enums.
 pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>) -> ComptimeInterpreter {
-    let mut interp = ComptimeInterpreter::new();
+    let mut interp = ComptimeInterpreter::new(typed.types.target());
     if let Some(c) = cfg {
         interp.inject_cfg(c);
     }
@@ -199,7 +199,9 @@ fn targets(decls: &[Decl]) -> Vec<Target<'_>> {
     let mut c = Collect { decls, found: Vec::new() };
     for decl in decls {
         let bodies: Vec<&[rask_ast::stmt::Stmt]> = match &decl.kind {
-            DeclKind::Fn(f) if !f.is_comptime => vec![&f.body],
+            // A generic body that asks about codecs is answered per instance,
+            // when its types are known (`rask-template`).
+            DeclKind::Fn(f) if !f.is_comptime && !rask_ast::comptime_if::is_instance_checked(f) => vec![&f.body],
             DeclKind::Struct(s) => s.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),
             DeclKind::Enum(e) => e.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),
             DeclKind::Impl(i) => i.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),

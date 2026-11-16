@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An error union with a generic member, `string or (Zz | GrowError<T> | Aa)`
+// (#1853).
+//
+// The checker decided where a value goes (success or error side) and whether
+// two unions fit by comparing members one at a time before `T` was settled.
+// `GrowError.Closed` is a `GrowError<_>` until the slot says which, and it was
+// not equal to `GrowError<T>`, so it went to the success side and the author
+// was told to change a `GrowError` into a `string`. A union is a set: the open
+// member meets the one member it can be, wherever either side lists it.
+
+struct Aa {
+    n: i64
+}
+
+extend Aa {
+    func message(self) -> string {
+        return "aa {self.n}"
+    }
+}
+
+struct Zz {
+    n: i64
+}
+
+extend Zz {
+    func message(self) -> string {
+        return "zz {self.n}"
+    }
+}
+
+enum GrowError<T> {
+    Closed
+    Full(T)
+}
+
+extend GrowError<T> {
+    func message(self) -> string {
+        return "grow"
+    }
+}
+
+struct Mm {
+    n: i64
+}
+
+extend Mm {
+    func message(self) -> string {
+        return "mm {self.n}"
+    }
+}
+
+func pick<T>(i: i64, take x: T) -> string or (Zz | GrowError<T> | Aa) {
+    if i == 0 {
+        return GrowError.Closed
+    }
+    if i == 1 {
+        return Aa(n: 1)
+    }
+    if i == 2 {
+        return GrowError.Full(x)
+    }
+    return "ok"
+}
+
+func reshape(i: i64) -> string or (Zz | GrowError<f64> | Aa) {
+    return pick(i, 1.5)
+}
+
+func either<T>(i: i64, take x: T) -> string or (Mm | T) {
+    if i == 0 {
+        return Mm(n: 1)
+    }
+    if i == 1 {
+        return x
+    }
+    return "ok"
+}
+
+func chain(i: i64) -> string or (Mm | Aa) {
+    let s = try either(i, Aa(n: 2))
+    return "{s}!"
+}
+
+func say(r: string or (Zz | GrowError<f64> | Aa)) -> string {
+    return r catch e => e.message()
+}
+
+func say_chain(r: string or (Mm | Aa)) -> string {
+    return r catch e => e.message()
+}
+
+test "a generic error returned into a union that names it" {
+    assert say(reshape(0)) == "grow"
+    assert say(reshape(1)) == "aa 1"
+    assert say(reshape(2)) == "grow"
+    assert say(reshape(3)) == "ok"
+}
+
+test "try through a union with a bare type parameter in it" {
+    assert say_chain(chain(0)) == "mm 1"
+    assert say_chain(chain(1)) == "aa 2"
+    assert say_chain(chain(2)) == "ok!"
+}

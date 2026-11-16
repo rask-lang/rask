@@ -412,6 +412,15 @@ impl TypeChecker {
     /// after the call was walked. Runs after solving, from the same list of
     /// deferred checks as the rest.
     pub(super) fn validate_pending_interface_elem_coercions(&mut self) {
+        // A method's own `any Interface` parameter. Free function calls record
+        // this as they're walked; a method only knows its parameters once the
+        // receiver resolves, inside the solver, so `coerce_arg` queues it.
+        // Without it `io.copy(src, dst)` and `c.scaled(Sq(…))` passed the bare
+        // struct where the fat pointer goes, and the first call through it
+        // read a vtable out of the struct.
+        for (node, param, arg) in std::mem::take(&mut self.pending_interface_arg_coercions) {
+            self.note_interface_coercion_node(node, false, &param, &arg);
+        }
         let pending = std::mem::take(&mut self.pending_interface_elem_coercions);
         for (node, is_any_cast, recv_ty, arg_ty) in pending {
             let applied = self.ctx.apply(&arg_ty);
@@ -514,12 +523,12 @@ impl TypeChecker {
             || (matches!(suffix, Some(IntSuffix::U128)) && value < 0)
     }
 
-    fn is_integer_type(ty: &Type) -> bool {
+    pub(super) fn is_integer_type(ty: &Type) -> bool {
         matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize)
     }
 
-    fn is_float_type(ty: &Type) -> bool {
+    pub(super) fn is_float_type(ty: &Type) -> bool {
         matches!(ty, Type::F32 | Type::F64)
     }
 
@@ -2644,9 +2653,14 @@ impl TypeChecker {
                 if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
                     self.errors.push(e);
                 }
-                // Extract literal size when available, otherwise use 0 as placeholder
+                // A literal, or a module const naming one (`[0; N]`); anything
+                // else keeps the 0 placeholder. A local of the same name is
+                // not the const.
                 let len = match &count.kind {
                     ExprKind::Int(n, _) => *n as usize,
+                    ExprKind::Ident(name) if self.lookup_local(name).is_none() => {
+                        self.types.const_length(name).unwrap_or(0)
+                    }
                     _ => 0,
                 };
                 Type::Array {
@@ -3138,7 +3152,7 @@ impl TypeChecker {
                         .functions()
                         .iter()
                         .find(|f| f.name == name)
-                        .map(|f| super::builtins::stub_type(&f.ret_ty))
+                        .map(|f| self.resolve_type_name(&f.ret_ty))
                         .unwrap_or(Type::Unit),
                 };
             }
@@ -3425,6 +3439,7 @@ impl TypeChecker {
                 // argument goes in: `mutate x` lends it for writing, anything
                 // else lends it to read. A `take` parameter has no marker, so
                 // a callee that turns out to take one is a mode mismatch.
+                self.check_marked_args_of_opaque_call(args);
                 let params: Vec<_> = args
                     .iter()
                     .map(|a| FnParam {
@@ -3490,6 +3505,7 @@ impl TypeChecker {
                 }
             }
             _ => {
+                self.check_marked_args_of_opaque_call(args);
                 for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
@@ -3637,6 +3653,65 @@ impl TypeChecker {
         self.check_arg_markers(&callee_name, args, &params);
     }
 
+    /// What a name handed to a `mutate` parameter must be: a place the caller
+    /// may write. A `let`, a `with` read binding, a read-only parameter and a
+    /// name an `as` binding copied out are all refused, whatever the callee is.
+    ///
+    /// A part of a name (`entry.1`, `v[0]`) is the same question one step
+    /// down: the write lands in the name's storage. Judged after solving, like
+    /// a field assignment, because whether a link or a pointer sits on the way
+    /// depends on types that aren't settled yet.
+    fn check_mutate_target(&mut self, arg: &Expr, arg_is_link: bool) {
+        if matches!(arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            let Some(root) = Self::root_ident_name(arg) else { return };
+            let Some(kind) = self.lookup_binding_kind(&root) else { return };
+            let mut steps = Vec::new();
+            let mut place: &Expr = arg;
+            while let ExprKind::Field { object, .. } | ExprKind::Index { object, .. } = &place.kind {
+                steps.push(object.id);
+                place = object;
+            }
+            self.pending_mutations.push(super::PendingMutation {
+                root: root.clone(),
+                ty: self.lookup_local(&root).unwrap_or(Type::Error),
+                kind,
+                span: arg.span,
+                steps,
+                call: None,
+            });
+            return;
+        }
+        let ExprKind::Ident(arg_name) = &arg.kind else { return };
+        match self.lookup_binding_kind(arg_name) {
+            Some(super::BindingKind::Let) if !arg_is_link => {
+                self.errors.push(TypeError::MutateConst { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::WithRead) => {
+                self.errors.push(TypeError::MutateWithBinding { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::Param) => {
+                self.errors.push(TypeError::MutateReadOnlyParam { name: arg_name.clone(), span: arg.span });
+            }
+            Some(super::BindingKind::Bound(from)) => {
+                self.errors.push(TypeError::MutateBoundName { name: arg_name.clone(), from, span: arg.span });
+            }
+            _ => {}
+        }
+    }
+
+    /// A call through a value whose type says nothing about its modes (a
+    /// type parameter, or a variable the solver hasn't placed): the markers
+    /// are all there is to read, and a `mutate` argument is a write the callee
+    /// may perform. It has to be a place the caller can write, the same as for
+    /// a callee the checker can see (mem.parameters/PM1, PM4).
+    fn check_marked_args_of_opaque_call(&mut self, args: &[CallArg]) {
+        for arg in args {
+            if matches!(arg.mode, rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting) {
+                self.check_mutate_target(&arg.expr, false);
+            }
+        }
+    }
+
     /// `params` has `None` for a parameter whose symbol didn't resolve:
     /// nothing to check that argument against.
     fn check_arg_markers(&mut self, callee_name: &str, args: &[CallArg], params: &[Option<CallParam>]) {
@@ -3665,36 +3740,7 @@ impl TypeChecker {
             // `mutate` would launder a view into a writer in one hop. That's the
             // guarantee that makes `n: Link<T>` a usable read-only view.
             if is_mutate && !is_take {
-                if let ExprKind::Ident(arg_name) = &arg.expr.kind {
-                    match self.lookup_binding_kind(arg_name) {
-                        Some(super::BindingKind::Let) if !arg_is_link => {
-                            self.errors.push(TypeError::MutateConst {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::WithRead) => {
-                            self.errors.push(TypeError::MutateWithBinding {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::Param) => {
-                            self.errors.push(TypeError::MutateReadOnlyParam {
-                                name: arg_name.clone(),
-                                span: arg.expr.span,
-                            });
-                        }
-                        Some(super::BindingKind::Bound(from)) => {
-                            self.errors.push(TypeError::MutateBoundName {
-                                name: arg_name.clone(),
-                                from,
-                                span: arg.expr.span,
-                            });
-                        }
-                        _ => {}
-                    }
-                }
+                self.check_mutate_target(&arg.expr, arg_is_link);
             }
 
             match (&arg.mode, is_take, is_mutate) {
@@ -4185,32 +4231,6 @@ impl TypeChecker {
             return ret;
         }
 
-        // A builtin module method call (e.g., fs.open), by the module the
-        // resolver bound the name to, so `import fs as files` makes
-        // `files.open` the same call. A local of the same name wins — `let fs =
-        // Vec.new()` is an ordinary variable, and routing `fs.len()` to the
-        // filesystem module reported "no method `len` found for type `fs`".
-        if let Some(module) = self.module_named_by(object) {
-            if self.types.builtin_modules.is_module(module) {
-                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(module, method) {
-                    let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
-                    self.note_param_names(call_id, names);
-                }
-                // The same record `time.sleep` imported bare gets, so the two
-                // spellings of one call agree on its target (#1600).
-                self.call_targets.insert(
-                    call_id,
-                    super::Callee::Method {
-                        recv: Type::UnresolvedNamed(module.to_string()),
-                        method: method.to_string(),
-                        package: None,
-                        body: self.types.builtin_modules.get_method(module, method).and_then(|m| m.body),
-                    },
-                );
-                return self.check_module_method(module, method, args, type_args, span);
-            }
-        }
-
         // Primitive type namespace: `char.from_u32(n)`. The name is a type
         // here, not a variable — route to the primitive's method resolver.
         //
@@ -4290,7 +4310,10 @@ impl TypeChecker {
             // Span.from_millis(1)` came back "couldn't work out the type of `d`"
             // (#923).
             let aliased = self.types.alias_target_name(spelled);
-            let base_name = aliased.as_deref().unwrap_or(spelled);
+            // `import fs as files` makes `files.exists(p)` the call `fs.exists(p)`,
+            // on the module's namespace struct either way.
+            let module = self.module_named_by(object);
+            let base_name = aliased.as_deref().or(module).unwrap_or(spelled);
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
@@ -4959,30 +4982,16 @@ impl TypeChecker {
         args: &[CallArg],
         span: Span,
     ) -> Type {
-        // The modules with a signature table answer here, and record nothing
-        // themselves — a qualified call to one finds its body by the module's
-        // name, which a bare call doesn't have.
-        if self.types.builtin_modules.is_module(module) {
-            self.call_targets.insert(
-                call_id,
-                super::Callee::Method {
-                    recv: Type::UnresolvedNamed(module.to_string()),
-                    method: function.to_string(),
-                    package: None,
-                    body: self.types.builtin_modules.get_method(module, function).and_then(|m| m.body),
-                },
-            );
-            let type_args = (!type_args.is_empty()).then_some(type_args);
-            return self.check_module_method(module, function, args, type_args, span);
-        }
-
-        // Everything else is a static call on the module's namespace struct,
+        // A static call on the module's namespace struct,
         // which is what `time.sleep(d)` files too. The solved constraint
         // records the target.
         if !type_args.is_empty() {
             let written = self.resolve_method_type_args(Some(module), function, type_args, span);
             self.written_method_type_args.insert(call_id, written);
         }
+        // The argument nodes, so a parameter that boxes (`any Writer`) can
+        // record its coercion once the call resolves (`coerce_arg`).
+        self.method_call_args.insert(call_id, args.iter().map(|a| a.expr.id).collect());
         let slots = self.stub_static_param_types(module, function);
         let arg_types: Vec<_> = args
             .iter()
@@ -5002,202 +5011,6 @@ impl TypeChecker {
             call_node: Some(call_id),
         });
         ret_ty
-    }
-
-    pub(super) fn check_module_method(
-        &mut self,
-        module: &str,
-        method: &str,
-        args: &[CallArg],
-        type_args: Option<&[TypeExpr]>,
-        span: Span,
-    ) -> Type {
-        // The slot picks an array literal's shape (std.collections/C9), and a
-        // module function's slots are known before its arguments are typed.
-        let params: Vec<Type> = self
-            .types
-            .builtin_modules
-            .get_method(module, method)
-            .map(|sig| sig.params.iter().map(|p| self.types.as_stdlib_reads(p)).collect())
-            .unwrap_or_default();
-        let arg_types: Vec<_> = args
-            .iter()
-            .enumerate()
-            .map(|(i, a)| match (&a.expr.kind, params.get(i)) {
-                (ExprKind::Array(_), Some(want))
-                    if !matches!(want, Type::UnresolvedNamed(n) if n == "_Any") =>
-                {
-                    let want = want.clone();
-                    self.infer_expr_expecting(&a.expr, &want)
-                }
-                _ => self.infer_expr(&a.expr),
-            })
-            .collect();
-
-        // A signature with nothing behind it. Methods on a receiver are caught
-        // in resolve_method; module functions took a different route and got
-        // no check at all, so `json.decode(body)` type-checked, compiled, and
-        // segfaulted at the call (#506).
-        if rask_stdlib::mir_metadata::is_unimplemented(module, method) {
-            self.errors.push(TypeError::UnimplementedStdlibMethod {
-                ty: module.to_string(),
-                method: method.to_string(),
-                span,
-            });
-            return Type::Error;
-        }
-
-        // Cloned rather than borrowed: recording an interface coercion below mutates
-        // the checker, and the borrow would outlive the whole body.
-        if let Some(mut sig) = self.types.builtin_modules.get_method(module, method).cloned() {
-            for p in &mut sig.params {
-                *p = self.types.as_stdlib_reads(p);
-            }
-            sig.ret = self.types.as_stdlib_reads(&sig.ret);
-            let mut interface_params: Vec<(Expr, Type, Type)> = Vec::new();
-            // Check parameter count — skip for wildcard params (_Any accepts anything)
-            let has_wildcard = sig.params.iter().any(|p| {
-                matches!(p, Type::UnresolvedNamed(n) if n == "_Any")
-            });
-            if !has_wildcard && sig.params.len() != arg_types.len() {
-                self.errors.push(TypeError::ArityMismatch {
-                    expected: sig.params.len(),
-                    found: arg_types.len(),
-                    span,
-                });
-                return Type::Error;
-            }
-
-            // Check parameter types (skip _Any wildcards)
-            if !has_wildcard {
-                for ((param_ty, arg_ty), arg) in
-                    sig.params.iter().zip(arg_types.iter()).zip(args.iter())
-                {
-                    // TR5: a concrete value flowing into an `any Interface`
-                    // parameter needs a vtable, and MIR builds it from this
-                    // note. A module function's arguments were the one call
-                    // position that never recorded it — `io.copy(buf, out)`
-                    // passed the raw struct pointer, and the first dispatch
-                    // through it jumped to address zero (#860).
-                    interface_params.push((arg.expr.clone(), param_ty.clone(), arg_ty.clone()));
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        param_ty.clone(),
-                        arg_ty.clone(),
-                        span,
-                    ));
-                }
-            }
-            for (arg_expr, param_ty, arg_ty) in interface_params {
-                self.note_interface_coercion(&arg_expr, &param_ty, &arg_ty);
-            }
-
-            // If explicit type args provided (e.g., json.decode<Foo>),
-            // substitute them directly instead of using unconstrained fresh vars
-            let ret = sig.ret.clone();
-            let bounds = sig.type_param_bounds.clone();
-            let param_type_params = sig.param_type_params.clone();
-            if let Some(ta) = type_args {
-                if ta.len() == 1 {
-                    let explicit_ty = self.resolve_type_arg(&ta[0], span);
-                    // The stub's bound is the whole check on this path — there's
-                    // no body to infer from. `json.decode<T: Decode>` with a T
-                    // that isn't Decode used to type-check clean and then fail in
-                    // MIR lowering on native, or blame a missing field on interp.
-                    if let Some((_, bound)) = bounds.first() {
-                        self.check_type_arg_bound(&explicit_ty, bound, span);
-                    }
-                    return self.freshen_module_return_type_with(&ret, &explicit_ty);
-                }
-            }
-
-            // No written type argument, so the argument's own type is what
-            // supplies the parameter — check the bound against it there.
-            //
-            // Without this the spelling decided whether the rule applied:
-            // `json.encode<Session>(s)` reported an unencodable field and
-            // `json.encode(s)` compiled clean, then produced whatever the
-            // encoder made of a function pointer.
-            for (param_name, bound) in &bounds {
-                for (idx, holder) in param_type_params.iter().enumerate() {
-                    if holder.as_deref() != Some(param_name.as_str()) {
-                        continue;
-                    }
-                    if let Some(arg_ty) = arg_types.get(idx).cloned() {
-                        self.check_type_arg_bound(&arg_ty, bound, span);
-                    }
-                }
-            }
-
-            // Replace placeholder types with fresh vars for generic module methods
-            self.freshen_module_return_type(&ret)
-        } else {
-            self.errors.push(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedNamed(module.to_string()),
-                method: method.to_string(),
-                span,
-            });
-            Type::Error
-        }
-    }
-
-    /// Replace internal placeholder types (_JsonDecodeResult, _Any) with fresh type vars.
-    pub(super) fn freshen_module_return_type(&mut self, ty: &Type) -> Type {
-        match ty {
-            Type::UnresolvedNamed(n) if n.starts_with('_') => self.ctx.fresh_var(),
-            Type::Result { ok, err } if **err == Type::None => {
-                Type::option(self.freshen_module_return_type(ok))
-            }
-            Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.freshen_module_return_type(ok)),
-                err: Box::new(self.freshen_module_return_type(err)),
-            },
-            _ => ty.clone(),
-        }
-    }
-
-    /// Replace internal placeholder types with an explicit type (from type args).
-    fn freshen_module_return_type_with(&mut self, ty: &Type, explicit: &Type) -> Type {
-        match ty {
-            Type::UnresolvedNamed(n) if n.starts_with('_') => explicit.clone(),
-            Type::Result { ok, err } if **err == Type::None => {
-                Type::option(self.freshen_module_return_type_with(ok, explicit))
-            }
-            Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.freshen_module_return_type_with(ok, explicit)),
-                err: Box::new(self.freshen_module_return_type_with(err, explicit)),
-            },
-            _ => ty.clone(),
-        }
-    }
-
-    /// Check a written type argument against the bound the stub declared for it.
-    ///
-    /// Unresolved names are skipped — a bare type parameter forwarded from an
-    /// enclosing generic isn't concrete yet, and reporting it here would blame
-    /// the wrong call site.
-    fn check_type_arg_bound(&mut self, ty: &Type, bound: &TypeExpr, span: Span) {
-        let resolved = self.resolve_named(ty);
-        match &resolved {
-            Type::Var(_) | Type::Error => return,
-            Type::UnresolvedNamed(_) => return,
-            _ => {}
-        }
-        // XC3: the bound is a place that needs the conformance, so it's a place
-        // two of them collide.
-        self.check_bound_conformance_ambiguity(&resolved, bound, span);
-        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.clone()]);
-        if let Err(errs) = crate::interfaces::verify_instantiation(
-            &self.types,
-            &resolved,
-            std::slice::from_ref(&interface_bound),
-            span,
-        ) {
-            for e in errs {
-                let (ty_name, interface_name) = super::validate::interface_error_parts(&e);
-                let err = self.bound_error(&resolved, ty_name, interface_name, span);
-                self.errors.push(err);
-            }
-        }
     }
 
     /// The type arguments a method call wrote, resolved.
@@ -7039,7 +6852,7 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_int_literals);
         for (value, bit_pattern, ty, span) in pending {
             let ty = self.ctx.apply(&ty);
-            let Some((min, max)) = int_range(&ty) else { continue };
+            let Some((min, max)) = int_range(&ty, self.types.target()) else { continue };
             // Compare as sign plus magnitude: a `u128` above `i128::MAX` is the
             // one literal that doesn't fit an `i128`, and it arrives as a bit
             // pattern rather than a number.
@@ -7347,6 +7160,15 @@ impl TypeChecker {
                     span,
                 });
             }
+            Some(IndexContainer::Rack) => {
+                self.errors.push(TypeError::IndexTypeMismatch {
+                    container: self.nameable(&self.ctx.apply(container)),
+                    found: index.clone(),
+                    kind: IndexErrorKind::NotIndexed,
+                    span,
+                });
+                return true;
+            }
             // Unknown / unresolved container — leave it.
             None => {
                 if self.is_sequence_type(container) {
@@ -7382,6 +7204,7 @@ impl TypeChecker {
         match self.classify_index_container(&self.ctx.apply(container)) {
             Some(IndexContainer::Sequence) => Some(IndexErrorKind::NoSliceType),
             Some(IndexContainer::Map(_)) => Some(IndexErrorKind::NotSliceable),
+            Some(IndexContainer::Rack) => Some(IndexErrorKind::NotIndexed),
             None if self.is_sequence_type(container) => Some(IndexErrorKind::NotPositioned),
             None => None,
         }
@@ -7395,6 +7218,7 @@ impl TypeChecker {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 match self.generic_base_name(ty)? {
                     "Vec" => Some(IndexContainer::Sequence),
+                    "Rack" => Some(IndexContainer::Rack),
                     "Map" => match args.first() {
                         Some(GenericArg::Type(k)) => Some(IndexContainer::Map((**k).clone())),
                         _ => None,
@@ -7806,6 +7630,8 @@ enum IndexContainer {
     Sequence,
     /// `Map<K, V>` — indexed by `K` (carried).
     Map(Type),
+    /// `Rack<T>` — not indexed at all: a node is reached through its link.
+    Rack,
 }
 
 /// An index site validated after inference finalizes (mod.rs).
@@ -7888,8 +7714,8 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
 /// a 32-bit one. Conversions are about types and stay target-independent
 /// (`is_integer_widening`). The one place the checker asks the target.
-pub(super) fn int_range(ty: &Type) -> Option<(i128, u128)> {
-    Some(match prim_of(&ty.at_target_width())? {
+pub(super) fn int_range(ty: &Type, target: rask_ast::Target) -> Option<(i128, u128)> {
+    Some(match prim_of(&ty.at_target(target))? {
         Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
         Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
         Prim::Int { lo, signed: true, .. } => (-(1i128 << (lo - 1)), (1u128 << (lo - 1)) - 1),
@@ -8193,7 +8019,7 @@ impl TypeChecker {
     /// pointer that may be absent, as every C pointer is (mem.unsafe/PT6).
     fn rask_type_of_c(&self, ty: &rask_c_parse::CType) -> Option<Type> {
         use rask_c_parse::CType;
-        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty) {
+        if let Some(name) = rask_c_parse::cexpr::rask_scalar(ty, self.types.target()) {
             return Some(scalar_type(name));
         }
         let CType::Pointer(inner) = rask_c_parse::cexpr::canonical(ty) else { return None };
@@ -8201,7 +8027,7 @@ impl TypeChecker {
             CType::Char | CType::SignedChar | CType::UnsignedChar => Type::U8,
             CType::Void => Type::Unit,
             CType::Named(n) => Type::Named(self.types.get_type_id(n)?),
-            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other)?),
+            other => scalar_type(rask_c_parse::cexpr::rask_scalar(other, self.types.target())?),
         };
         Some(Type::option(Type::RawPtr(Box::new(pointee))))
     }

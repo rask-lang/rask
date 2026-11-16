@@ -227,19 +227,19 @@ fn is_scalar(func: &MirFunction, id: LocalId) -> bool {
 /// Step 1 used to be the pipeline's first pass, which ran after this. Nothing
 /// else sat between them, so moving it here changes only what step 2 gets to
 /// read.
-pub fn run_all(fns: &mut [MirFunction]) {
+pub fn run_all(fns: &mut [MirFunction], target: rask_ast::Target) {
     crate::optimize_all_closures(fns);
     let by_value = crate::closures::closures_handed_on(fns);
     if !by_value.is_empty() {
-        withdraw_borrows(fns, &by_value);
+        withdraw_borrows(fns, &by_value, target);
     }
     for func in fns.iter_mut() {
-        run(func);
+        run(func, target);
     }
 }
 
 /// Turn the named closures' captures back into copies, on both sides.
-fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
+fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>, target: rask_ast::Target) {
     // The environment layout changes with the flag — a by-ref slot is a word,
     // a by-value one is as wide as the type — so the offsets have to be rebuilt
     // to match on both sides. Rebuilding from the local's own MIR type is what
@@ -261,18 +261,19 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
                 if !by_value.contains(func_name) {
                     continue;
                 }
-                let mut offset = 0u32;
+                let laid = crate::lay_out_captures(
+                    captures.iter().map(|c| {
+                        let ty = types.iter().find(|(id, _)| *id == c.local_id).map_or(MirType::Ptr, |(_, ty)| ty.clone());
+                        (c.local_id, ty, false, c.copy)
+                    }),
+                    target,
+                );
                 let mut offsets = Vec::with_capacity(captures.len());
-                for c in captures.iter_mut() {
-                    let size = types
-                        .iter()
-                        .find(|(id, _)| *id == c.local_id)
-                        .map_or(8, |(_, ty)| ty.size());
+                for (c, l) in captures.iter_mut().zip(&laid) {
                     c.by_ref = false;
-                    c.size = size;
-                    c.offset = (offset + 7) & !7;
-                    offset = c.offset + size;
-                    offsets.push(c.offset);
+                    c.size = l.size;
+                    c.offset = l.offset;
+                    offsets.push(l.offset);
                 }
                 layouts.push((func_name.clone(), offsets));
             }
@@ -308,7 +309,7 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
 
 /// Rewrite every read of an address-taken scalar into a load and every write
 /// into a store. Returns the locals that were made memory-resident.
-pub fn run(func: &mut MirFunction) -> AddrTaken {
+pub fn run(func: &mut MirFunction, target: rask_ast::Target) -> AddrTaken {
     let taken = wants_address(func);
     if taken.is_empty() {
         return taken;
@@ -404,8 +405,22 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                 Some(dst) if rewritable.contains(&dst) => {
                     let ty = ty_of(dst);
                     let tmp = new_temp(&ty, dst, &mut fresh);
+                    let reads_old = uses::stmt_reads(&stmt, dst);
                     redirect_def(&mut stmt, tmp);
                     out.push(stmt);
+                    // An aggregate written whole is a new value in its slot:
+                    // the release pass then gives back the one it held, which
+                    // a closure borrowing the slot knows nothing about
+                    // (`c = mk(2)` after `let f = || c.label.len()` leaked the
+                    // first `c`, #1839). Not when the new value is built from
+                    // the old one, which the zeroing would wipe.
+                    // Only a variable this frame owns: a `with` binding or a
+                    // closure's capture names storage somewhere else, and
+                    // lowering already gives back what a write over it
+                    // replaces.
+                    if taken.owned.contains(&dst) && ty.passed_by_address() && !reads_old {
+                        out.push(MirStmt::new(MirStmtKind::ZeroAggregate { local: dst }, span));
+                    }
                     out.push(MirStmt::new(
                         MirStmtKind::Store {
                             addr: dst,
@@ -415,7 +430,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                             // be stored at its own width or the load reads
                             // bytes the store never wrote — an f32 stored as a
                             // promoted f64 reads back as noise.
-                            store_size: ty.size(),
+                            store_size: rask_layout::size_of(&ty, target),
                             field: None,
                         },
                         span,

@@ -37,6 +37,10 @@ mod interface_drop;
 pub use builder::BlockBuilder;
 pub use closures::{insert_all_closure_drops, optimize_all_closures};
 pub use const_free::{add_const_free, CONST_FREE_FN};
+
+/// The runtime call lowering makes to ask whether a resource was consumed on
+/// the path just taken. The drop pass finds the flag by this symbol.
+pub const RESOURCE_IS_CONSUMED: &str = "rask_resource_is_consumed";
 pub use container_drop::{insert_container_drops, ENV_DROP_SUFFIX};
 pub use interface_drop::insert_interface_drops;
 pub use transform::clone_elision::elide_clones;
@@ -46,10 +50,10 @@ pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use transform::inline::InlineRegion;
 pub use operand::{BinOp, FieldAccess, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use rask_ast::expr::ConvertKind;
-pub use stmt::{lay_out_captures, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
+pub use stmt::{lay_out_captures, BoxRelease, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt, folded_symbol};
 pub use program::MirProgram;
-pub use types::{link_slots, rack_holding_structs, CopyLayouts, spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, LinkSlot, MirType, StructLayoutId, EnumLayoutId};
+pub use types::{link_slots, rack_holding_structs, CopyLayouts, spawn_payload_is_boxed, ContainerKind, FieldTypes, LinkSlot, MirType, StructLayoutId, EnumLayoutId};
 
 /// What `malloc` and a Cranelift stack slot guarantee without help. A type
 /// aligned past this (`@align(64)`) needs an aligned allocation on the heap

@@ -11,6 +11,8 @@ pub enum LangItem {
     /// What `compare` returns. The checker registers it; nothing declares it.
     Ordering,
     FieldInfo,
+    /// What a format reads a field as; `FieldInfo.wire_kind` holds one.
+    WireKind,
     MethodInfo,
     VariantInfo,
     ParamInfo,
@@ -26,6 +28,7 @@ impl LangItem {
         Some(match name {
             "ordering" => LangItem::Ordering,
             "field_info" => LangItem::FieldInfo,
+            "wire_kind" => LangItem::WireKind,
             "method_info" => LangItem::MethodInfo,
             "variant_info" => LangItem::VariantInfo,
             "param_info" => LangItem::ParamInfo,

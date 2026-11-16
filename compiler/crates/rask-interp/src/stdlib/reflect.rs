@@ -122,8 +122,7 @@ impl Interpreter {
         }
     }
 
-    /// The layout of the struct `type_name` names, with its type arguments
-    /// substituted.
+    /// The layout of the struct `id` is, with its type arguments substituted.
     ///
     /// A generic instantiation gets its own: `Pair<string>` puts 16 bytes where
     /// `Pair<i64>` puts 8, and reading the shared layout — where every
@@ -131,7 +130,7 @@ impl Interpreter {
     /// wrong offset. Same rule native follows, for the same reason (#781, #968).
     fn struct_layout_of(
         &self,
-        decl: &rask_ast::decl::StructDecl,
+        id: rask_types::TypeId,
         ty: &TypeExpr,
         params: &[String],
     ) -> Option<rask_layout::StructLayout> {
@@ -140,10 +139,7 @@ impl Interpreter {
             return None;
         }
         let type_args = self.checked_type_args(args)?;
-        let owner = self.type_decls.iter().find(|d| {
-            matches!(&d.kind, rask_ast::decl::DeclKind::Struct(s) if s.name == decl.name)
-        })?;
-        self.types.struct_layout(self.types.declared_type(owner.id)?, &type_args)
+        self.types.struct_layout(id, &type_args)
     }
 
     /// Written type arguments as the checker's types, which is what layout
@@ -159,9 +155,9 @@ impl Interpreter {
     /// substituted into the field types — otherwise every generic struct
     /// answered "not a struct type" (#968).
     fn reflect_fields(&self, ty: &TypeExpr) -> Result<Value, RuntimeError> {
-        let decl = ty
-            .name()
-            .and_then(|n| self.struct_decls.get(&n))
+        let id = reflect::declared_type(&self.types, ty);
+        let decl = id
+            .and_then(|id| self.struct_decls.get(&self.types.type_name(id)))
             .ok_or_else(|| {
                 RuntimeError::TypeError(format!(
                     "reflect.fields<{}>(): not a struct type",
@@ -175,7 +171,7 @@ impl Interpreter {
                 params.iter().position(|p| p == name).and_then(|i| args.get(i)).cloned()
             })
         };
-        let layout = self.struct_layout_of(decl, ty, &params);
+        let layout = id.and_then(|id| self.struct_layout_of(id, ty, &params));
 
         let field_infos: Vec<Value> = decl
             .fields
@@ -193,6 +189,11 @@ impl Interpreter {
                         reflect::written_label(&self.types, &substitute(&f.ty)).source(),
                     ))),
                 );
+                let wire = reflect::wire_written_form(&self.types, &substitute(&f.ty));
+                fields.insert("wire_kind".to_string(), wire_kind_value(wire.kind));
+                fields.insert("wire_optional".to_string(), Value::Bool(wire.optional));
+                fields.insert("has_decode".to_string(), Value::Bool(wire.own_decode));
+                fields.insert("has_encode".to_string(), Value::Bool(wire.own_encode));
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
                 // the two backends can't drift into two answers.
@@ -254,8 +255,7 @@ impl Interpreter {
         };
         // `enums` rather than `type_decls`: it holds the stdlib's enums too,
         // `Ordering` among them.
-        let base = ty.name().ok_or_else(not_enum)?;
-        let id = self.types.get_type_id(&base).ok_or_else(not_enum)?;
+        let id = reflect::declared_type(&self.types, ty).ok_or_else(not_enum)?;
         let type_args = self.checked_type_args(ty.args()).ok_or_else(not_enum)?;
         let layout = self.types.enum_layout(id, &type_args).ok_or_else(not_enum)?;
         // The declaration's parameters against this instantiation's
@@ -269,6 +269,11 @@ impl Interpreter {
         let facts = rask_mono::reflect::variant_facts(&layout, &self.types, &subst);
         Ok(Value::vec(facts.into_iter().map(variant_info).collect()))
     }
+}
+
+/// A field's wire kind as the `reflect.WireKind` variant it names.
+fn wire_kind_value(kind: reflect::WireKind) -> Value {
+    Value::stdlib_enum("WireKind", kind.variant(), Vec::new())
 }
 
 fn string_value(s: String) -> Value {
@@ -322,6 +327,10 @@ fn variant_info(v: rask_mono::reflect::VariantFact) -> Value {
             let mut f = IndexMap::new();
             f.insert("name".to_string(), string_value(p.name.clone()));
             f.insert("type_name".to_string(), string_value(p.type_name));
+            f.insert("wire_kind".to_string(), wire_kind_value(p.wire.kind));
+            f.insert("wire_optional".to_string(), Value::Bool(p.wire.optional));
+            f.insert("has_decode".to_string(), Value::Bool(p.wire.own_decode));
+            f.insert("has_encode".to_string(), Value::Bool(p.wire.own_encode));
             f.insert("offset".to_string(), Value::int(p.offset as i64));
             f.insert("size".to_string(), Value::int(p.size as i64));
             // A payload has no visibility or wire annotations of its own.

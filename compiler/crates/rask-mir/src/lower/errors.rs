@@ -246,7 +246,7 @@ impl<'a> MirLowerer<'a> {
                     store_size: w.payload_size.unwrap_or(err_store_size),
                     field: None,
                 }));
-                (wrapped, w.enum_ty.size())
+                (wrapped, rask_layout::size_of(&w.enum_ty, self.ctx.target()))
             }
             None => (err_val, err_store_size),
         };
@@ -260,9 +260,10 @@ impl<'a> MirLowerer<'a> {
                     &err_ty,
                     Some(concrete),
                     interface_name,
+                    false,
                 )?;
                 match boxed {
-                    MirOperand::Local(id) => (id, boxed_ty.size()),
+                    MirOperand::Local(id) => (id, rask_layout::size_of(&boxed_ty, self.ctx.target())),
                     _ => (err_val, err_store_size),
                 }
             }
@@ -439,7 +440,7 @@ impl<'a> MirLowerer<'a> {
         // Payload, at the error's own size (a string is 16 bytes).
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
-            offset: ret_result_ty.payload_offset(),
+            offset: rask_layout::payload_offset_of(&ret_result_ty, self.ctx.target()),
             value: MirOperand::Local(err_val),
             store_size: err_store_size,
             field: None,
@@ -484,7 +485,7 @@ impl<'a> MirLowerer<'a> {
         let slot = self.builder.alloc_temp(union_ty.clone());
         self.store_wrapper_tag(slot, &union_ty, index as i64);
         self.store_wrapper_payload(slot, &union_ty, MirOperand::Local(err_val), &member);
-        (slot, union_ty.size())
+        (slot, rask_layout::size_of(&union_ty, self.ctx.target()))
     }
 
     /// The Ok side of a `try`: read the payload and continue at `merge_block`.

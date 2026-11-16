@@ -141,6 +141,7 @@ pub fn print_run_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}    Use the interpreter instead of compiling", output::arg("--interp"));
+    println!("  {}    Compile and run natively (the default; can't go with --interp)", output::arg("--native"));
     println!("  {}   Build in release mode", output::arg("--release"));
     println!("  {}   Verbose output", output::arg("--verbose"));
     println!("  {}        Output diagnostics as structured JSON", output::arg("--json"));

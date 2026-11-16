@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take self` method called through `any Interface` consumes its receiver, so
+// the receiver has to be one the caller owns. The concrete call was refused
+// already; through the interface it compiled, and the vector then released an
+// element the method had released too.
+
+interface Sink {
+    func finish(take self) -> i64
+}
+
+struct Pt {
+    n: i64
+}
+
+Pt implements Sink {
+    func finish(take self) -> i64 {
+        return self.n
+    }
+}
+
+func through_a_loop(boxes: Vec<any Sink>) -> i64 {
+    mut total = 0
+    for b in boxes {
+        // ERROR: the loop only lends `b` out of `boxes` (E0902)
+        total += b.finish()
+    }
+    return total
+}
+
+func through_a_borrowed_parameter(d: any Sink) -> i64 {
+    // ERROR: `d` is borrowed, not owned (E0835)
+    return d.finish()
+}
+
+func consumed_twice(take d: any Sink) -> i64 {
+    let first = d.finish()
+    // ERROR: `d` was consumed by the call above (E0800)
+    return first + d.finish()
+}

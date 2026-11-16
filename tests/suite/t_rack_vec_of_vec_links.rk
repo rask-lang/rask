@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Deleting a node removes its links from the inner vectors of a
+// `Vec<Vec<Link<T>>>` held in a struct field, and from the copy a `clone` made
+// (#1836).
+//
+// The links sit one vector deeper than the holder: the holder's field is the
+// outer vector, whose elements are vectors, and the vectors hold the links. A
+// delete has to find each inner vector as a holder of its own (mem.racks/RK15).
+// Natively the inner vectors once kept the dead link (`vv len 2 2`) where the
+// interpreter removed it (`vv len 1 1`).
+import memory.Link
+import memory.Rack
+
+struct Leaf { id: i32 }
+
+struct Holder {
+    vv: Vec<Vec<Link<Leaf>>>
+}
+
+func make(a: Link<Leaf>, b: Link<Leaf>) -> Vec<Vec<Link<Leaf>>> {
+    mut inner: Vec<Link<Leaf>> = Vec.new()
+    inner.push(a)
+    inner.push(b)
+    mut vv: Vec<Vec<Link<Leaf>>> = Vec.new()
+    vv.push(inner)
+    return vv
+}
+
+test "mem.racks/RK15 — a delete empties the dead link out of an inner vector" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut inner: Vec<Link<Leaf>> = Vec.new()
+    inner.push(a)
+    inner.push(b)
+    mut vv: Vec<Vec<Link<Leaf>>> = Vec.new()
+    vv.push(inner.clone())
+    let h = Holder(vv: vv)
+    let h2 = h.clone()
+    rack.delete(a)
+    assert h.vv[0].len() == 1
+    assert h2.vv[0].len() == 1
+}
+
+test "mem.racks/RK15 — a vector pushed onto a holder's outer vector is one too" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    let c = rack.insert(Leaf(id: 3))
+    let h = Holder(vv: make(a, b))
+    mut h2 = h.clone()
+    mut extra: Vec<Link<Leaf>> = Vec.new()
+    extra.push(a)
+    extra.push(c)
+    h2.vv.push(extra)
+    rack.delete(a)
+    assert h.vv[0].len() == 1
+    assert h2.vv[0].len() == 1
+    assert h2.vv[1].len() == 1
+}

@@ -924,6 +924,8 @@ struct Record {
     tried: u64,
     distinct: u64,
     discarded: u64,
+    /// Refused by a type's own `decode`, apart from what the claim discards.
+    refused: u64,
     over_budget: u64,
     /// Met another task, the clock or simulated I/O, so the schedule was sampled.
     scheduled: bool,
@@ -949,6 +951,7 @@ impl Record {
             tried: n("tried"),
             distinct: n("distinct"),
             discarded: n("discarded"),
+            refused: n("refused"),
             over_budget: n("over_budget"),
             scheduled: json.contains("\"scheduled\":true"),
             budget_input: s("budget_input"),
@@ -1082,6 +1085,17 @@ fn run_claims(
             });
             continue;
         }
+        // A claim most of whose inputs a `decode` turned away says almost
+        // nothing about the type, however many it tried (type.claims/IN4).
+        if mostly_refused(summary) {
+            all_held = false;
+            report_mostly_refused(claim, summary, compiled);
+            results.push(result(claim, "vacuous", verdict(summary)));
+            if format == Format::Human {
+                println!("  {:<24} {}", claim.name, verdict(summary));
+            }
+            continue;
+        }
         held.push(summary.clone());
         results.push(result(claim, if summary.mode == "all" { "checked_all" } else { "sampled" }, verdict(summary)));
         if format == Format::Human {
@@ -1168,7 +1182,7 @@ fn thousands(n: u64) -> String {
 
 /// The verdict line for a claim that held (type.claims/V2, V3).
 fn verdict(r: &Record) -> String {
-    let held = r.tried - r.discarded - r.over_budget;
+    let held = r.tried - r.discarded - r.refused - r.over_budget;
     let mut line = if r.mode == "all" {
         format!("checked all {}", count(r.distinct, "input"))
     } else {
@@ -1176,6 +1190,9 @@ fn verdict(r: &Record) -> String {
     };
     if r.discarded > 0 {
         line.push_str(&format!(", {} discarded", r.discarded));
+    }
+    if r.refused > 0 {
+        line.push_str(&format!(", {} refused by `decode`", r.refused));
     }
     if r.scheduled {
         line.push_str(", schedules sampled too");
@@ -1317,6 +1334,42 @@ fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compil
         format!("the claim is in {shown}; if it's the claim that's wrong, change it there, in review")
     };
     let diag = diag.with_help(help);
+    crate::show_diagnostic_multi(&diag, &compiled.sources);
+}
+
+/// A claim has to hold for at least one input in this many that it tried
+/// (type.claims/IN4).
+const MIN_ACCEPTED_ONE_IN: u64 = 10;
+
+/// Did a type's own `decode` refuse so many inputs that fewer than one in
+/// `MIN_ACCEPTED_ONE_IN` got past it? Only what `decode` itself turned away
+/// counts: an input the claim then discards with its own `return` (CL5) or one
+/// that ran past the step budget did get past `decode`, so a claim that skips
+/// most inputs by its own precondition is not this.
+fn mostly_refused(r: &Record) -> bool {
+    r.refused > 0 && (r.tried - r.refused) * MIN_ACCEPTED_ONE_IN < r.tried
+}
+
+/// E0975: a claim that held only for the few inputs a `decode` let through.
+fn report_mostly_refused(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
+    let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
+    let accepted = r.tried - r.refused;
+    let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` holds for almost no inputs", claim.name))
+        .with_code("E0975")
+        .with_primary(span, format!(
+            "a type's own `decode` refused {} of the {} tried, so the claim ran on {}",
+            r.refused, r.tried, count(accepted, "input")
+        ))
+        .with_note(
+            "a claim that holds for almost nothing passes without saying anything about the type: \
+             random input rarely satisfies what `decode` checks"
+                .to_string(),
+        )
+        .with_help(
+            "build the type's values another way: declare `T implements claims.Generate` in the claims \
+             source, which a claim uses in place of `decode` (type.claims/IN2, IN4), or narrow the claim's \
+             inputs to types whose decode accepts most of what is drawn",
+        );
     crate::show_diagnostic_multi(&diag, &compiled.sources);
 }
 

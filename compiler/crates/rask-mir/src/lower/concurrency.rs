@@ -298,7 +298,7 @@ impl<'a> MirLowerer<'a> {
         if by_address {
             self.meta_mut(binding_name).assigns_through = true;
         }
-        let writeback = (!by_address).then(|| guard_ty.size());
+        let writeback = (!by_address).then(|| rask_layout::size_of(&guard_ty, self.ctx.target()));
         let depth = self.ensure_stack.len();
         self.push_guard_cleanup(&box_op, guard_local, writeback, syms);
 
@@ -610,7 +610,7 @@ impl<'a> MirLowerer<'a> {
                         addr: buf,
                         offset: 0,
                         value,
-                        store_size: elem.size(),
+                        store_size: rask_layout::size_of(&elem, self.ctx.target()),
                         field: None,
                     }));
                     probes.push(Probe::Send { tx, buf, arm: i });
@@ -863,7 +863,7 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::ArrayIndex {
                         base: MirOperand::Local(*buf),
                         index: MirOperand::Constant(MirConst::Int(0)),
-                        elem_size: elem.size(),
+                        elem_size: rask_layout::size_of(elem, self.ctx.target()),
                     },
                 }));
                 self.locals.insert(binding.clone(), (bound, elem.clone()));

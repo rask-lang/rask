@@ -14,8 +14,10 @@
 // The caller can't ignore the result: calling `withdraw` and dropping what it
 // gives back is a compile error. `r is BankError` asks which one you got,
 // and `r is BankError.NotPositive` whether it was that error in particular.
-// `r!` takes the balance out and stops the program if it's an error, which is
-// right when an error here could only be a bug.
+// `if r is BankError as e { }` runs the block only for an error, named `e`,
+// the way `? as` does for an optional. `r!` takes the balance out and stops
+// the program if it's an error, which is right when an error here could only
+// be a bug.
 
 enum BankError {
     Overdrawn(short: i32)

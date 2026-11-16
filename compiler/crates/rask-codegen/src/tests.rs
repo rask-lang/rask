@@ -1343,7 +1343,7 @@ mod tests {
             (LocalId(1), MirType::U8, false, true),
             (LocalId(2), MirType::I32, false, true),
             (LocalId(3), MirType::F64, true, false),
-        ]);
+        ], rask_ast::Target::LP64);
         let offsets: Vec<u32> = caps.iter().map(|c| c.offset).collect();
         assert_eq!(offsets, vec![0, 8, 12, 16]);
 
@@ -2084,6 +2084,8 @@ mod tests {
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
@@ -2136,6 +2138,8 @@ mod tests {
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
@@ -2208,6 +2212,8 @@ mod tests {
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 }

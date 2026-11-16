@@ -388,10 +388,9 @@ impl Rewrite for ReferenceQualifier<'_> {
             ExprKind::MethodCall { object, method, type_args, args } => {
                 match package_binding(object) {
                     Some(pkg) => self.resolve(pkg, method).map(|q| ExprKind::Call {
-                        func: Box::new(ident_like(e, q)),
+                        func: Box::new(callee_like(e, q, type_args.as_deref())),
                         args: args.clone(),
-                    })
-                    .filter(|_| type_args.is_none()),
+                    }),
                     None => None,
                 }
             }
@@ -449,6 +448,19 @@ fn package_binding(object: &Expr) -> Option<&str> {
 /// about the rewritten call still points at what was written.
 fn ident_like(at: &Expr, name: &str) -> Expr {
     Expr { id: at.id, span: at.span, kind: ExprKind::Ident(name.to_string()) }
+}
+
+/// The callee of a rewritten call: the name, with the type arguments the
+/// qualified call was written with (`helpers.plain<i64>(5)` is `plain<i64>(5)`).
+fn callee_like(at: &Expr, name: &str, type_args: Option<&[TypeExpr]>) -> Expr {
+    match type_args {
+        Some(type_args) => Expr {
+            id: at.id,
+            span: at.span,
+            kind: ExprKind::GenericName { name: name.to_string(), type_args: type_args.to_vec() },
+        },
+        None => ident_like(at, name),
+    }
 }
 
 /// Write a dependency's names back the way the program spells them, in every

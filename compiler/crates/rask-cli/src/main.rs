@@ -2,6 +2,7 @@
 //! Rask CLI - REPL and file runner.
 
 mod commands;
+mod flags;
 mod help;
 mod output;
 
@@ -305,6 +306,8 @@ fn main() {
         return;
     }
 
+    flags::refuse_unknown_flags(&cmd_args);
+
     match cmd_args[1] {
         "lex" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -426,6 +429,10 @@ fn main() {
             // a file, so `--interp` decides first. Checking for a directory
             // first sent `rask run <dir> --interp` native without a word.
             let interp = cmd_args.contains(&"--interp");
+            if interp && cmd_args.contains(&"--native") {
+                eprintln!("{}: `--interp` and `--native` choose different backends; pass one", output::error_label());
+                process::exit(1);
+            }
             if interp {
                 let mut program_args: Vec<String> = vec![file.to_string()];
                 program_args.extend(prog_args.iter().map(|s| s.to_string()));

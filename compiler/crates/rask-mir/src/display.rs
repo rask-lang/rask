@@ -269,21 +269,24 @@ impl fmt::Display for MirStmt {
             MirStmtKind::InterfaceBox { dst, value, concrete_type, interface_name, .. } => {
                 write!(f, "_{} = interface_box({}, {} as any {})", dst.0, value, concrete_type, interface_name)
             }
-            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => {
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args, takes_receiver } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
-                write!(f, "interface_call(_{}.{}@{}", interface_object.0, method_name, vtable_offset)?;
+                write!(f, "interface_call{}(_{}.{}@{}", if *takes_receiver { "_taking" } else { "" }, interface_object.0, method_name, vtable_offset)?;
                 for arg in args {
                     write!(f, ", {}", arg)?;
                 }
                 write!(f, ")")
             }
-            MirStmtKind::InterfaceDrop { interface_object, owns: false } => {
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Borrows } => {
                 write!(f, "interface_drop(_{})", interface_object.0)
             }
-            MirStmtKind::InterfaceDrop { interface_object, owns: true } => {
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Owns } => {
                 write!(f, "interface_drop_owned(_{})", interface_object.0)
+            }
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Taken } => {
+                write!(f, "interface_drop_taken(_{})", interface_object.0)
             }
             MirStmtKind::Phi { dst, args } => {
                 write!(f, "_{} = phi [", dst.0)?;

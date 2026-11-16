@@ -64,7 +64,7 @@ impl<'a> MirLowerer<'a> {
                 self.to_slot_width(op, &elem_ty)
             })
             .collect();
-        let elem_size = elem_ty.size();
+        let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
         let array_ty = MirType::Array {
             elem: Box::new(elem_ty.clone()),
             len: elems.len() as u32,
@@ -159,8 +159,8 @@ impl<'a> MirLowerer<'a> {
         let val_ty = arg_ty(1).or_else(|| pair_ty(1)).unwrap_or(MirType::I64);
 
         let mut args = vec![
-            MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
-            MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&key_ty, self.ctx.target()) as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&val_ty, self.ctx.target()) as i64)),
         ];
         let ctor = match self.map_key_fn_addrs(call.id, &key_ty) {
             Some((hash, eq)) => {
@@ -325,6 +325,21 @@ impl<'a> MirLowerer<'a> {
         field_ty: &rask_types::Type,
     ) -> Result<(), LoweringError> {
         use rask_types::Type;
+
+        // A type with its own `encode` is written as what that answers
+        // (std.encoding/E12b), not as its fields.
+        if let Some(text) = self.custom_encode_text(MirOperand::Local(field_val), field_ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(key.to_string())),
+                    MirOperand::Local(text),
+                ],
+            }));
+            return Ok(());
+        }
 
         // A `Vec<T>` field is an array, not a number. Without this the field
         // went through json_buf_add_i64 and `{"items": [...]}` came out as
@@ -646,27 +661,39 @@ impl<'a> MirLowerer<'a> {
             payload_ty.clone(),
             false,
         );
-        match &payload_ty {
-            MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
-                let layout = self.ctx.struct_layouts.get(*id as usize).cloned();
-                match layout {
-                    Some(l) => {
-                        let (nested, _) =
-                            self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal("json_buf_add_raw".to_string()),
-                            args: vec![
-                                MirOperand::Local(buf),
-                                MirOperand::Constant(MirConst::String(field_name.to_string())),
-                                nested,
-                            ],
-                        }));
+        if let Some(text) = self.custom_encode_text(MirOperand::Local(payload), payload_decl) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(field_name.to_string())),
+                    MirOperand::Local(text),
+                ],
+            }));
+        } else {
+            match &payload_ty {
+                MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
+                    let layout = self.ctx.struct_layouts.get(*id as usize).cloned();
+                    match layout {
+                        Some(l) => {
+                            let (nested, _) =
+                                self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: None,
+                                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                                args: vec![
+                                    MirOperand::Local(buf),
+                                    MirOperand::Constant(MirConst::String(field_name.to_string())),
+                                    nested,
+                                ],
+                            }));
+                        }
+                        None => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
                     }
-                    None => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
                 }
+                _ => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
             }
-            _ => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
         }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -810,7 +837,17 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 
-        if let Some((_, layout)) = nested_struct {
+        let custom = match elem_ref {
+            Some(t) => self.custom_encode_text(MirOperand::Local(elem), t),
+            None => None,
+        };
+        if let Some(text) = custom {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
+                args: vec![MirOperand::Local(arr_buf), MirOperand::Local(text)],
+            }));
+        } else if let Some((_, layout)) = nested_struct {
             let (json_str, _) = self.lower_json_encode_struct(
                 MirOperand::Local(elem),
                 layout,
@@ -882,7 +919,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn slot_size_for_type(&self, ty: &rask_types::Type) -> Option<i64> {
         match ty {
             rask_types::Type::Var(_) => None,
-            _ => Some(self.ctx.type_to_mir(ty).size() as i64),
+            _ => Some(rask_layout::size_of(&self.ctx.type_to_mir(ty), self.ctx.target()) as i64),
         }
     }
 
@@ -912,7 +949,7 @@ impl<'a> MirLowerer<'a> {
         if self.ctx.lookup_raw_type(node_id).is_none() {
             if let Some(hint) = self.field_type_hint.clone() {
                 if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
-                    return Ok(self.ctx.type_to_mir(arg).size() as i64);
+                    return Ok(rask_layout::size_of(&self.ctx.type_to_mir(arg), self.ctx.target()) as i64);
                 }
             }
         }
@@ -996,18 +1033,7 @@ impl<'a> MirLowerer<'a> {
     /// a `Map<string, Vec<i32>>` freed its keys and left every value vector to
     /// nobody.
     pub(super) fn elem_type_of(&self, ty: &rask_types::Type) -> MirType {
-        match ty {
-            // `Map<string, func(i64) -> i64>.new()` records its argument as a
-            // name and nothing resolves it further, so the values looked like
-            // plain words: the map never held the closure's block, the block
-            // went at the end of the statement that inserted it, and calling
-            // what came back out answered 13 for `|x| x + 1` applied to 5
-            // (#1151).
-            rask_types::Type::UnresolvedNamed(name) if name.trim_start().starts_with("func(") => {
-                MirType::FuncPtr(crate::types::SignatureId(0))
-            }
-            _ => self.ctx.type_to_mir(ty),
-        }
+        self.ctx.type_to_mir(ty)
     }
 
     pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
@@ -1142,7 +1168,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result,
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
-                            store_size: MirType::Ptr.size(),
+                            store_size: rask_layout::size_of(&MirType::Ptr, self.ctx.target()),
                             field: None,
                         }));
                     }

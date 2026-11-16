@@ -2,18 +2,23 @@
 
 // Encoding: marker interfaces for format-agnostic serialization.
 //
-// Encode and Decode are marker interfaces with no methods (E11). They signal
-// that a type's structure is serialization-compatible. Format libraries
+// Encode and Decode have no required methods (E11). They signal that a type's
+// structure is serialization-compatible. A type can write its own `decode` in its
+// `Decode` block (E12b), and its own `encode` in its `Encode` block (E12d);
+// neither is declared here, because the parameter or return type differs per
+// type, so the checker holds each to the one shape E12b gives. Format libraries
 // (JSON, TOML, MessagePack) use comptime for + reflect to serialize any
 // compatible struct with zero user ceremony.
 //
 // Auto-derive (E12): the compiler derives Encode for any struct where all
-// public fields have Encode types, unless @no_encode. Same for Decode, except
-// that a type with a checking constructor (a static function returning
-// `Self or E`) isn't auto-Decode: a decode would build it without the check
-// (E12a). `T implements Decode { }` says a raw decode is intended.
-// Public fields only (E13). Enums auto-derive when all variant payloads
-// are compatible (E17).
+// serialized fields have Encode types, unless @no_encode. Same for Decode, except
+// that a field left out of the wire form (`private`) needs a default (E13a). A
+// type that protects an invariant makes its field private and writes
+// `T implements Decode { func decode(wire: W) -> Self or E }`, which builds the
+// value wherever the type appears (E12b). A type with its own `decode` isn't
+// auto-Encode: it writes its `encode`, or says `@no_encode` (E12e); an empty
+// `Encode` block isn't an answer. Private fields stay off the wire (E13). Enums
+// auto-derive when all variant payloads are compatible (E17).
 //
 // Base types (E14): bool, i8–i64, u8–u64, f32, f64, string.
 // Collection types (E15): Vec<T: Encode>, Map<string, T: Encode>, T?.

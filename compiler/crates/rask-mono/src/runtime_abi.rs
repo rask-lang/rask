@@ -152,6 +152,11 @@ runtime_constants! {
     RASK_JSON_ERR_PARSE = 1;
     RASK_JSON_ERR_TYPE = 2;
     RASK_JSON_ERR_MISSING = 3;
+    RASK_JSON_ERR_REFUSED = 4;
+
+    /// Which text of a failed decode `rask_json_error_message` hands back.
+    RASK_JSON_TEXT_MESSAGE = 0;
+    RASK_JSON_TEXT_PATH = 1;
 
     /// A decode shape's kind.
     RASK_JSHAPE_BOOL = 0;
@@ -186,6 +191,12 @@ runtime_constants! {
     /// A type that builds itself through `claims.Generate`: the shape holds
     /// the function that calls its `generate`. Claims only.
     RASK_JSHAPE_GENERATED = 21;
+    /// A type that decodes through its own `decode` (std.encoding/E12b): the
+    /// shape of what `decode` reads, and the function that calls it.
+    RASK_JSHAPE_CUSTOM = 22;
+    /// A type that writes itself out through its own `encode`: the shape holds
+    /// the function that answers its value as JSON text. Encoding only.
+    RASK_JSHAPE_CUSTOM_ENCODE = 23;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;

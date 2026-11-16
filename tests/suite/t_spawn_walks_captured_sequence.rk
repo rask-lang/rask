@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task block that walks a vector it captured through `as_sequence()` gives
+// the vector back when the task ends (#1873).
+//
+// A task block owns what it captured, and the environment frees whatever the
+// body doesn't give away. The question "does the body give this capture away?"
+// was asked with an empty table of what closures consume, so handing the
+// vector to the closure `m.as_sequence()` builds, which the block frees itself
+// and which only reads it, counted as giving it away. The block didn't free it
+// and neither did the environment: two allocations (the vector and its buffer)
+// per task. A plain `for v in m` freed it correctly.
+import thread.Thread
+
+test "conc.async/S6 — a task walking a captured vector as a sequence frees it" {
+    mut m: Vec<i64> = Vec.new()
+    m.push(2)
+    m.push(5)
+    let (tx, rx) = Channel<i64>.buffered(1)
+    let _ = Thread.spawn {
+        mut s: i64 = 0
+        for v in m.as_sequence() {
+            s = s + v
+        }
+        let _ = tx.send(s)
+        return
+    }.join()
+    if rx.receive() is i64 as got {
+        assert got == 7
+    } else {
+        assert false
+    }
+}
+
+test "conc.async/S6 — a task folding a captured vector's sequence" {
+    mut m: Vec<i64> = Vec.new()
+    m.push(1)
+    m.push(2)
+    m.push(3)
+    let h = Thread.spawn {
+        return m.as_sequence().map(|v| v * 2).fold(0, |a, b| a + b)
+    }
+    let r = h.join()
+    if r is i64 as total {
+        assert total == 12
+    } else {
+        assert false
+    }
+}

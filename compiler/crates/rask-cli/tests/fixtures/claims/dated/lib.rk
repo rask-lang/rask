@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Types read from a string that nearly no random string satisfies (std.encoding/
+// E12b): a claim handed one gets what `decode` accepts, which is almost nothing.
+
+public struct DateError {
+    reason: string
+}
+
+extend DateError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+// The month of a `YYYY-MM-DD` date.
+func month_of(s: string) -> i64 or DateError {
+    if s.len() != 10 || (s.byte_at(4) ?? 0) != 45 || (s.byte_at(7) ?? 0) != 45 {
+        return DateError(reason: "not a date: expected YYYY-MM-DD")
+    }
+    let m = s[5..7].to_string().parse<i64>() catch _ => {
+        return DateError(reason: "the month is not a number")
+    }
+    if m < 1 || m > 12 {
+        return DateError(reason: "the month is out of range")
+    }
+    return m
+}
+
+public struct DateTime {
+    private index: i64
+}
+
+extend DateTime {
+    public func month(self) -> i64 {
+        return self.index
+    }
+}
+
+DateTime implements Decode {
+    func decode(raw: string) -> DateTime or DateError {
+        let m = try month_of(raw)
+        return DateTime(index: m)
+    }
+}
+
+// The same, and one that also builds itself in the claims file.
+public struct Stamp {
+    private index: i64
+}
+
+extend Stamp {
+    public func month(self) -> i64 {
+        return self.index
+    }
+
+    public func in_month(m: i64) -> Stamp or DateError {
+        if m < 1 || m > 12 {
+            return DateError(reason: "the month is out of range")
+        }
+        return Stamp(index: m)
+    }
+}
+
+Stamp implements Decode {
+    func decode(raw: string) -> Stamp or DateError {
+        let m = try month_of(raw)
+        return Stamp(index: m)
+    }
+}
+
+func main() {}

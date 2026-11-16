@@ -268,8 +268,12 @@ impl TypeChecker {
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);
-            // PM6c: `take` on a Copy type takes nothing.
-            if param.is_take && param.name != "self" {
+            // PM6c: `take` on a Copy type takes nothing. Not for the adapter
+            // desugar writes beside a `decode` (std.encoding/E12b): it can't
+            // know whether the wire type is Copy, and `take` is what makes the
+            // function drop whatever the decoder built, a wire struct holding a
+            // `Vec` of custom types included. For a Copy wire there's nothing to drop.
+            if param.is_take && param.name != "self" && f.name != rask_ast::decl::field_attrs::DECODE_ADAPTER {
                 if let Some(spelled) = Self::always_copy_spelling(&param.ty) {
                     self.errors.push(TypeError::TakeOnCopyType {
                         param: param.name.clone(),
@@ -319,11 +323,18 @@ impl TypeChecker {
         }
         self.fn_sigs.insert(f.id, rask_types::FnSignature { params: sig_params, ret });
 
-        for stmt in &f.body {
-            self.check_stmt(stmt);
-            // Solve as we go so a later statement sees method-call return
-            // types that are already pinned, instead of a bare var.
-            self.solve_constraints();
+        // A generic body that asks what a type's own codec is isn't checked as
+        // written: `T.decode(wire)` and `reflect.DecodeWire<T>` mean something
+        // only once `T` is a type. It is written out for each instance the
+        // program reaches and checked there (`rask-template`).
+        let instance_checked = rask_ast::comptime_if::is_instance_checked(f);
+        if !instance_checked {
+            for stmt in &f.body {
+                self.check_stmt(stmt);
+                // Solve as we go so a later statement sees method-call return
+                // types that are already pinned, instead of a bare var.
+                self.solve_constraints();
+            }
         }
 
         // ER20: Finalize error union from accumulated error types
@@ -362,6 +373,7 @@ impl TypeChecker {
         // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
+            _ if instance_checked => {}
             Type::Unit => {
                 // No return needed
             }
@@ -529,7 +541,9 @@ impl TypeChecker {
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
             // A module isn't a type, so it's never the fix for a type position.
             // `str` used to suggest `std`, and `st` still would.
-            .filter(|cand| !self.types.builtin_modules.is_module(cand))
+            .filter(|cand| {
+                !rask_stdlib::modules::is_module(cand) || rask_ast::primitives::is_builtin_value_type(cand)
+            })
             // A candidate the written name is a prefix of ranks ahead of a
             // closer one that isn't. Pure edit distance answered `str` with
             // `std` — one character away, and a module, so not a type you could
@@ -729,12 +743,7 @@ impl TypeChecker {
                 self.symbol_types.get(sym),
                 Some(Type::Fn { ret, .. }) if never(ret)
             ),
-            Some(callee @ super::Callee::Method { recv, method, .. }) => {
-                if let Type::UnresolvedNamed(module) = recv {
-                    if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
-                        return never(&sig.ret);
-                    }
-                }
+            Some(callee @ super::Callee::Method { method, .. }) => {
                 callee
                     .recv_type_id()
                     .and_then(|id| self.types.get(id))

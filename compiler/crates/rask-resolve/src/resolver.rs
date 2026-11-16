@@ -426,7 +426,7 @@ impl Resolver {
                 "TooManyRedirects", "Io",
             ]),
             ("json", "JsonValue") => Some(&["Null", "Bool", "Number", "String", "Array", "Object"]),
-            ("json", "JsonError") => Some(&["ParseError", "TypeError", "MissingField"]),
+            ("json", "JsonError") => Some(&["ParseError", "TypeError", "MissingField", "Refused"]),
             _ => None,
         }
     }
