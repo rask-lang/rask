@@ -11,7 +11,9 @@
 // plain stores). And while the bodies of a chain run, nothing was armed for a
 // panic, so a body that panicked dropped what the bodies after it would have
 // read (#1895). The body that runs from the panic hook writes through the
-// frame's cell too, and its writes have to release what they replace.
+// frame's cell too, and its writes have to release what they replace, whatever
+// the type: a string, a struct, a Vec, an Option. The frame keeps what a hook
+// holds owned until the hook is gone, so there is always something to release.
 //
 // The leak gate runs this file under RASK_LEAK_CHECK; a count above zero is the
 // failure.
@@ -101,6 +103,82 @@ func hook_rewrites_a_string(mutate out: Vec<u64>) {
     out.push(1)
 }
 
+func hook_reads_then_rewrites_a_struct(mutate out: Vec<u64>) {
+    mut n = Names(list: Vec.new())
+    n.list.push("first value string long enough to heap")
+    ensure {
+        out.push(n.list.len())
+        n = Names(list: Vec.new())
+        n.list.push("second value string long enough to heap")
+        out.push(n.list.len())
+    }
+    ensure boom(out)
+    out.push(1)
+}
+
+func hook_rewrites_a_struct(mutate out: Vec<u64>, die: bool) {
+    mut n = Names(list: make(1))
+    ensure {
+        n = Names(list: make(2))
+        out.push(n.list.len())
+    }
+    if die {
+        ensure boom(out)
+    }
+    out.push(1)
+}
+
+func hook_rewrites_a_vec(mutate out: Vec<u64>, die: bool) {
+    mut v = make(1)
+    ensure {
+        out.push(v.len())
+        v = make(3)
+        out.push(v.len())
+    }
+    if die {
+        ensure boom(out)
+    }
+    out.push(2)
+}
+
+func hook_rewrites_an_option(mutate out: Vec<u64>, die: bool) {
+    mut o: string? = "an option string long enough to be on the heap"
+    ensure {
+        o = "another option string long enough to be on the heap"
+        out.push(1)
+    }
+    if die {
+        ensure boom(out)
+    }
+    out.push(3)
+}
+
+func rewrites_in_a_loop(mutate out: Vec<u64>) {
+    for i in 0..3 {
+        mut v = make(1)
+        ensure {
+            v = make(2)
+            out.push(v.len())
+        }
+        out.push(100)
+    }
+}
+
+func panics_in(which: i64) {
+    mut out: Vec<u64> = Vec.new()
+    if which == 0 {
+        hook_reads_then_rewrites_a_struct(mutate out)
+    } else if which == 1 {
+        hook_rewrites_a_string(mutate out)
+    } else if which == 2 {
+        hook_rewrites_a_struct(mutate out, true)
+    } else if which == 3 {
+        hook_rewrites_a_vec(mutate out, true)
+    } else {
+        hook_rewrites_an_option(mutate out, true)
+    }
+}
+
 test "a struct reassigned after the ensure read it is released" {
     mut seen: Vec<u64> = Vec.new()
     struct_reassigned(mutate seen)
@@ -145,17 +223,27 @@ test "a panic in an ensure body releases what the later bodies read" {
     assert died
 }
 
-test "a body run from the panic hook releases the string it overwrites" {
-    mut died = false
+test "an ensure body that overwrites what it holds releases it when the block ends" {
+    mut out: Vec<u64> = Vec.new()
+    hook_rewrites_a_struct(mutate out, false)
+    hook_rewrites_a_vec(mutate out, false)
+    hook_rewrites_an_option(mutate out, false)
+    rewrites_in_a_loop(mutate out)
+    assert out.len() == 13
+}
+
+test "a body run from the panic hook releases what it overwrites" {
+    mut died = 0
     using Multitasking {
-        let h = spawn {
-            mut out: Vec<u64> = Vec.new()
-            hook_rewrites_a_string(mutate out)
-        }
-        match h.join() {
-            JoinError.Panicked(msg) => { died = true },
-            _ => { died = false },
+        for which in 0..5 {
+            let h = spawn {
+                panics_in(which)
+            }
+            match h.join() {
+                JoinError.Panicked(msg) => { died += 1 },
+                _ => { died += 0 },
+            }
         }
     }
-    assert died
+    assert died == 5
 }

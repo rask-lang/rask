@@ -914,9 +914,10 @@ impl<'a> MirLowerer<'a> {
                         // hook holds its address, and the ensure reads whatever
                         // it holds when the block ends. As an `Assign` the new
                         // value was a store into that address that nothing
-                        // paired with a release of the old one (#1895). Not in
-                        // the hook's own copy of the body, where the name is
-                        // the frame's cell, borrowed like a parameter.
+                        // paired with a release of the old one (#1895). In the
+                        // hook's own copy of the body the name is the frame's
+                        // cell, an addressed local, and takes the other path
+                        // below, which releases the old value the same way.
                         let in_place = struct_assigned
                             && scalar_mutate.is_none()
                             && !assigns_through
@@ -929,7 +930,7 @@ impl<'a> MirLowerer<'a> {
                             )
                             && (self.ctx.mir_has_guarded_link(&dst_ty)
                                 || self.ctx.struct_carries_links(&dst_ty)
-                                || (self.ensure_read_names.contains(name) && !self.in_ensure_thunk));
+                                || self.ensure_read_names.contains(name));
                         let store_through_ptr = scalar_mutate.is_some()
                             || (assigns_through && mutate_param_by_pointer(&dst_ty))
                             || in_place;
@@ -1586,8 +1587,9 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(cleanup_block);
                 // Normal exit runs the inline cleanup — deregister the panic hook
                 // first so it can't double-run.
-                if hook.is_some() {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop));
+                if let Some((_, captures)) = &hook {
+                    let kept = captures.iter().filter(|c| c.by_ref).map(|c| c.local_id).collect();
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop { kept }));
                 }
                 if let Some((_, resource_id)) = receiver_name
                     .as_ref()

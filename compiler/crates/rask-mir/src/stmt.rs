@@ -70,7 +70,13 @@ pub enum MirStmtKind {
     /// Deregister the most recent ensure hook. Emitted at the top of the inline
     /// cleanup block, so a normal scope exit removes the hook (the inline path
     /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
-    EnsureHookPop,
+    ///
+    /// `kept` are the locals the hook holds by reference. The pop reads them,
+    /// which is what keeps each one owned from where the hook was registered
+    /// to here: a panic anywhere in between runs the hook, and a body that
+    /// writes one of them releases what it replaces, so the value has to
+    /// still be there to release.
+    EnsureHookPop { kept: Vec<LocalId> },
     /// From here on this frame owns what `value` holds: store it in slot
     /// `slot` of the frame's unwind record, so a panic that abandons the frame
     /// releases it (ctrl.panic/U6).

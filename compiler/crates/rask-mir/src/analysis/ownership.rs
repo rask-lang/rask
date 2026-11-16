@@ -459,7 +459,8 @@ fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
     let index_of: std::collections::HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
     let mut out = Vec::new();
-    let mut at_end: std::collections::BTreeMap<usize, (BTreeSet<LocalId>, BTreeSet<usize>)> = Default::default();
+    type Heads = BTreeSet<(usize, Vec<usize>)>;
+    let mut at_end: std::collections::BTreeMap<usize, (BTreeSet<LocalId>, BTreeSet<usize>, Heads)> = Default::default();
     for (bi, b) in func.blocks.iter().enumerate() {
         match &b.terminator.kind {
             MirTerminatorKind::Return { .. } => out.push((bi, Exit::All)),
@@ -468,8 +469,10 @@ fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
             }
             MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
                 out.push((bi, Exit::Except(live.out[bi].clone())));
-                for &head in cleanup_chain {
+                for (k, &head) in cleanup_chain.iter().enumerate() {
                     let (blocks, ends) = ensure_body(func, &index_of, head);
+                    let later: Vec<usize> =
+                        cleanup_chain[k + 1..].iter().filter_map(|h| index_of.get(h).copied()).collect();
                     // Live into a body means read there or in a later one, so
                     // the last body a name is live into is the last that reads it.
                     let last_read: Vec<LocalId> = live.out[bi]
@@ -486,13 +489,16 @@ fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
                         let entry = at_end.entry(end).or_default();
                         entry.0.extend(last_read.iter().copied());
                         entry.1.extend(blocks.iter().copied());
+                        if let Some(&hi) = index_of.get(&head) {
+                            entry.2.insert((hi, later.clone()));
+                        }
                     }
                 }
             }
             _ => {}
         }
     }
-    out.extend(at_end.into_iter().map(|(bi, (read, made_in))| (bi, Exit::BodyEnd { read, made_in })));
+    out.extend(at_end.into_iter().map(|(bi, (read, made_in, heads))| (bi, Exit::BodyEnd { read, made_in, heads })));
     out
 }
 
@@ -502,11 +508,94 @@ enum Exit {
     /// Those held under none of these names.
     Except(BTreeSet<LocalId>),
     /// Those held under one of `read`, and those made in one of `made_in`.
-    BodyEnd { read: BTreeSet<LocalId>, made_in: BTreeSet<usize> },
+    /// And a value the body took in that nothing after it reads, whatever it
+    /// holds it under by now: a body that writes a new value over the one it
+    /// read leaves the old one held by no name that was live into the chain.
+    /// `heads` is each chain this end belongs to, as the body's block and the
+    /// bodies that run after it.
+    BodyEnd { read: BTreeSet<LocalId>, made_in: BTreeSet<usize>, heads: BTreeSet<(usize, Vec<usize>)> },
+}
+
+/// What the `ensure` hooks still registered hold by reference where a path
+/// ends in `Unreachable` without reaching the hook's pop: a `panic()`, or the
+/// end of any path the program doesn't come back from.
+///
+/// A hook runs on a panic anywhere between its registration and its pop, and
+/// the pop reads what the hook holds (`EnsureHookPop`), which keeps the value
+/// owned on every path that gets there. A path that panics never gets there, so
+/// nothing kept the value, and it was released on the way into the branch with
+/// the panic in it, before the hook ran and wrote over it (#1895).
+///
+/// Paths a cleanup chain runs aren't followed: the chain's own pops are the
+/// reads there, and a body's end is a jump, not a path that ends.
+fn hooks_pending_at_ends(func: &MirFunction) -> Vec<Vec<LocalId>> {
+    use std::collections::HashMap;
+    let n = func.blocks.len();
+    let mut out: Vec<Vec<LocalId>> = vec![Vec::new(); n];
+    if !func.blocks.iter().flat_map(|b| &b.statements).any(|s| matches!(s.kind, MirStmtKind::EnsureHookRegister { .. })) {
+        return out;
+    }
+    let index_of: HashMap<BlockId, usize> = func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let cleanup_only = cfg::cleanup_only_blocks(func);
+    // Per block, how many hooks hold each local at its start. The most any
+    // way in says, capped so a loop can't count up for ever.
+    let mut at_start: Vec<Option<BTreeMap<LocalId, u32>>> = vec![None; n];
+    let Some(&entry) = index_of.get(&func.entry_block) else { return out };
+    at_start[entry] = Some(BTreeMap::new());
+    let mut work = vec![entry];
+    while let Some(bi) = work.pop() {
+        let Some(mut held) = at_start[bi].clone() else { continue };
+        for st in &func.blocks[bi].statements {
+            match &st.kind {
+                MirStmtKind::EnsureHookRegister { captures, .. } => {
+                    for c in captures.iter().filter(|c| c.by_ref) {
+                        let k = held.entry(c.local_id).or_insert(0);
+                        *k = (*k + 1).min(4);
+                    }
+                }
+                MirStmtKind::EnsureHookPop { kept } => {
+                    for l in kept {
+                        if let Some(k) = held.get_mut(l) {
+                            *k = k.saturating_sub(1);
+                        }
+                    }
+                    held.retain(|_, k| *k > 0);
+                }
+                _ => {}
+            }
+        }
+        let term = &func.blocks[bi].terminator;
+        if matches!(term.kind, MirTerminatorKind::Unreachable) && !cleanup_only.contains(&func.blocks[bi].id) {
+            out[bi] = held.keys().copied().collect();
+        }
+        if matches!(term.kind, MirTerminatorKind::CleanupReturn { .. }) {
+            continue;
+        }
+        for succ in cfg::successors(term) {
+            let Some(&si) = index_of.get(&succ) else { continue };
+            let merged = match &at_start[si] {
+                None => held.clone(),
+                Some(prev) => {
+                    let mut m = prev.clone();
+                    for (l, k) in &held {
+                        let e = m.entry(*l).or_insert(0);
+                        *e = (*e).max(*k);
+                    }
+                    m
+                }
+            };
+            if at_start[si].as_ref() != Some(&merged) {
+                at_start[si] = Some(merged);
+                work.push(si);
+            }
+        }
+    }
+    out
 }
 
 fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(usize, usize)>) -> Live {
     let n = func.blocks.len();
+    let pending = hooks_pending_at_ends(func);
     let phi_dsts: Vec<BTreeSet<LocalId>> =
         sh.phis.iter().map(|ps| ps.iter().map(|(d, _)| *d).collect()).collect();
 
@@ -519,6 +608,7 @@ fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(us
         for r in &facts.terminator_reads[bi] {
             live.insert(*r);
         }
+        live.extend(pending[bi].iter().copied());
         at[len] = live.clone();
         for si in (0..len).rev() {
             if !is_phi(func, bi, si) {
@@ -1440,8 +1530,16 @@ fn before_returns(
             let here = match &exit {
                 Exit::All => true,
                 Exit::Except(read) => !st.needed(*v, read),
-                Exit::BodyEnd { read, made_in } => {
-                    st.needed(*v, read) || made_in.contains(&(v.block as usize))
+                Exit::BodyEnd { read, made_in, heads } => {
+                    st.needed(*v, read)
+                        || made_in.contains(&(v.block as usize))
+                        || heads.iter().any(|(h, later)| {
+                            entries[*h].as_ref().is_some_and(|eh| {
+                                eh.owned(*v)
+                                    && eh.needed(*v, &live.at[*h][0])
+                                    && !later.iter().any(|l| eh.needed(*v, &live.at[*l][0]))
+                            })
+                        })
                 }
             };
             if *owned && here {
@@ -1537,6 +1635,26 @@ fn unwind_marks(
     let mut entry_arm: Vec<Option<BTreeMap<Value, LocalId>>> = vec![None; n];
     let mut exit_arm: Vec<BTreeMap<Value, LocalId>> = vec![BTreeMap::new(); n];
     let read_in = read_since_made(func, facts, sh, live, entries, kills);
+    // Slots an `ensure` hook holds by reference. The hook can write a new value
+    // into one while the frame is unwinding, so the frame's record has to name
+    // the slot, whose contents the release reads when it runs, and not the
+    // value it held when it was armed (#1895).
+    let hooked: BTreeSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::EnsureHookRegister { captures, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| c.by_ref)
+        .map(|c| c.local_id)
+        .collect();
+    let pick_arm = |st: &State, v: Value| -> Option<LocalId> {
+        let holders = st.holders(v);
+        holders.iter().copied().filter(|h| hooked.contains(h)).min().or_else(|| pick(st, v, &[]))
+    };
     let mut half_built: BTreeSet<Value> = BTreeSet::new();
     for (bi, block) in facts.events.iter().enumerate() {
         for (si, evs) in block.iter().enumerate() {
@@ -1582,8 +1700,11 @@ fn unwind_marks(
                     _ => Some(None),
                 };
             }
-            let kept = agreed.flatten().filter(|m| holders.contains(m));
-            if let Some(name) = kept.or_else(|| pick(entry, *v, &[])) {
+            let hooked_holder = holders.iter().any(|h| hooked.contains(h));
+            let kept = agreed
+                .flatten()
+                .filter(|m| holders.contains(m) && (!hooked_holder || hooked.contains(m)));
+            if let Some(name) = kept.or_else(|| pick_arm(entry, *v)) {
                 arm.insert(*v, name);
             }
         }
@@ -1613,6 +1734,20 @@ fn unwind_marks(
             // release.
             for (v, name) in arm.clone() {
                 let made_here = v.block as usize == bi && v.at as usize == si;
+                // Now held by a slot a hook holds: armed under that slot from
+                // here, by the arm below, rather than under a name the hook
+                // can't see written.
+                let moved_to_hooked_slot = st.owned(v)
+                    && !hooked.contains(&name)
+                    && st.holders(v).iter().any(|h| hooked.contains(h));
+                if moved_to_hooked_slot {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si, late: true },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                    arm.remove(&v);
+                    continue;
+                }
                 if made_here || !st.owned(v) || !st.holders(v).contains(&name) {
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si, late: true },
@@ -1653,7 +1788,7 @@ fn unwind_marks(
                 {
                     continue;
                 }
-                if let Some(name) = pick(&st, v, &[]) {
+                if let Some(name) = pick_arm(&st, v) {
                     let guard = flags.of(st.guard.get(&v).copied());
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si + 1, late: false },

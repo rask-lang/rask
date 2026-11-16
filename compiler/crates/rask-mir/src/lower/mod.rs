@@ -4309,13 +4309,7 @@ impl<'a> MirLowerer<'a> {
             if Some(i) == res_index {
                 thunk_res_local = Some(dst);
             } else {
-                // Only a string: its cell is released after every body has
-                // run, so what a write replaces is still the cell's to release
-                // when the hook runs. An aggregate or container is released by
-                // the ownership plan where the frame last reads it, which can
-                // be before the hook runs, and releasing it again here freed
-                // it twice.
-                if cap.by_ref && matches!(cap.ty, MirType::Buffer) {
+                if cap.by_ref {
                     thunk_addressed.insert(dst);
                 }
                 // The body still resolves the name the way the outer function
@@ -4363,7 +4357,9 @@ impl<'a> MirLowerer<'a> {
         let saved_in_thunk = std::mem::replace(&mut self.in_ensure_thunk, true);
         // A write to a by-reference capture replaces what the frame's cell
         // holds, and the body that runs from the hook on a panic is the only
-        // thing left to release the old value (#1895).
+        // thing left to release the old value (#1895). The value is still the
+        // cell's to release: `EnsureHookPop` reads what the hook holds, so the
+        // frame doesn't release it before the hook is gone.
         let saved_addressed = std::mem::replace(&mut self.addressed_locals, thunk_addressed);
         let body_result = self.lower_ensure_body(body, else_handler);
         self.addressed_locals = saved_addressed;

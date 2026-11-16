@@ -1254,7 +1254,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Deregister the most recent hook (normal exit runs the inline path).
-            MirStmtKind::EnsureHookPop => {
+            MirStmtKind::EnsureHookPop { .. } => {
                 let pop_ref = ctx.func_refs.get("rask_ensure_pop")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_ensure_pop".to_string()))?;
                 builder.ins().call(*pop_ref, &[]);
