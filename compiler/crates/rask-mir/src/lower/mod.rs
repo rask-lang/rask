@@ -6409,17 +6409,6 @@ fn vec_elem_of_type(ret_ty: Option<&TypeExpr>, ctx: &MirContext) -> Option<MirTy
     }
 }
 
-/// Is `name` one of the integer primitives (as spelled in source)?
-/// Register-width only — `string.parse<i128>` isn't supported.
-pub(crate) fn is_integer_type_name(name: &str) -> bool {
-    rask_ast::primitives::is_machine_integer(name)
-}
-
-/// Type arguments `string.parse<T>` accepts — the numeric primitives.
-pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
-    is_integer_type_name(name) || matches!(name, "f32" | "f64")
-}
-
 /// The MIR operator a desugared method name stands for: `add` is `+`.
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {
     rask_ast::expr::binary_op_of_method(method).map(lower_binop)

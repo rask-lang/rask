@@ -31,7 +31,7 @@ struct Ratchet {
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "name sniffs in the back half",
-        today: 3,
+        today: 0,
         target: 0,
         why: "MIR or codegen asked a callee's or type's spelling what it is. The \
               checker resolved that call; carry its identity on the call \
@@ -66,7 +66,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 212,
+        today: 210,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",

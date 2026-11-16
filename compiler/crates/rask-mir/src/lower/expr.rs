@@ -6052,31 +6052,7 @@ impl<'a> MirLowerer<'a> {
             .get(&expr.id)
             .map(|t| t.method.clone())
             .or_else(|| self.ctx.recorded_filed_method(expr.id, method));
-        let method = filed.as_ref().unwrap_or(method);
-
-        // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)
-        let method = if let Some(ta) = type_args {
-            if let Some(ty_name) = ta.first() {
-                format!("{}_{}", method, ty_name.source())
-            } else {
-                method.clone()
-            }
-        } else {
-            method.clone()
-        };
-
-        // `const x: f64 = "3.5".parse()` infers the target from context, so
-        // there's no type argument to mangle and the name stays plain `parse`
-        // — which dispatches to the integer runtime and fails on "3.5" (#480).
-        // Recover the target from the checker's type for the call.
-        let method = match (method.as_str(), self.ctx.lookup_node_type(expr.id)) {
-            ("parse", Some(MirType::Result { ok, .. })) => match *ok {
-                MirType::F32 => "parse_f32".to_string(),
-                MirType::F64 => "parse_f64".to_string(),
-                _ => method,
-            },
-            _ => method,
-        };
+        let method = filed.as_ref().unwrap_or(method).clone();
 
         // Regular method call. Clone the receiver operand so obj_op stays
         // available for the inline Result/Option dispatch below (which
@@ -6615,23 +6591,23 @@ impl<'a> MirLowerer<'a> {
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
-        } else if qualified_name == "string_parse"
-            || qualified_name.strip_prefix("string_parse_")
-                .is_some_and(super::is_parse_target_type_name)
-        {
+        } else if qualified_name == "string_parse" {
             // `parse<T>` yields `T or ParseError`. The stub's signature still
-            // says the literal `T`, which maps to i64, and a mangled
-            // `string_parse_<T>` isn't in the stub metadata at all — either way
-            // the fallback below lands on a bare i64. The local then gets no
-            // Result slot while the caller still reads a tag and payload off it
-            // — garbage, and a segfault on the `??`. Prefer the checker's type;
-            // rebuild it from the mangled type argument when node types aren't
-            // available (instantiated bodies).
-            let target = qualified_name.strip_prefix("string_parse_").unwrap_or("i64");
+            // says the literal `T`, which maps to i64, so the fallback below
+            // would land on a bare i64: the local gets no Result slot while the
+            // caller still reads a tag and payload off it — garbage, and a
+            // segfault on the `??`. Prefer the checker's type; when node types
+            // aren't available (instantiated bodies) rebuild it from the call's
+            // written type argument.
+            let target = type_args
+                .as_ref()
+                .and_then(|ta| ta.first())
+                .map(|ta| self.ctx.resolve_type_expr(ta))
+                .unwrap_or(MirType::I64);
             Some(self.ctx.lookup_node_type(expr.id)
                 .filter(|t| matches!(t, MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
                 .unwrap_or_else(|| MirType::Result {
-                    ok: Box::new(self.ctx.resolve_type_name(target)),
+                    ok: Box::new(target),
                     err: Box::new(self.ctx.resolve_type_name("ParseError")),
                 }))
         } else {
@@ -6787,24 +6763,25 @@ impl<'a> MirLowerer<'a> {
             None
         };
 
-        let (final_name, final_args) = if qualified_name.starts_with("string_parse")
-            && Self::parse_variant_for_slot(&ret_ty).is_some()
+        let (final_name, final_args) = if let Some(entry) = (qualified_name == "string_parse")
+            .then(|| match &ret_ty {
+                MirType::Result { ok, .. } => crate::parse_runtime::entry_for_slot(ok),
+                _ => None,
+            })
+            .flatten()
         {
-            // The parse variant has to agree with the slot it writes into. The
-            // name comes from the turbofish and the slot from inference, and
-            // those can disagree: `"2.25".parse<f32>() ?? -1.0` with no
+            // The parse entry has to agree with the slot it writes into. The
+            // target comes from the call's checked type, and the slot's own
+            // payload type decides: `"2.25".parse<f32>() ?? -1.0` with no
             // annotation is an `f64 or E` slot (the fallback literal is f64),
-            // so `string_parse_f32` wrote four bytes where eight were read.
-            // The slot's own payload type decides.
+            // and an `f32` entry wrote four bytes where eight were read.
             //
             // Integers get the same treatment, and it isn't only about width:
-            // each narrow variant range-checks against its own type, so
+            // each narrow entry range-checks against its own type, so
             // `let a: u8 = "300".parse()` is `ParseError.OutOfRange` instead of
             // 44 (native) or 300 in a u8 (interp) (#919). Without this the
             // inferred call kept the bare 64-bit parse.
-            let by_slot = Self::parse_variant_for_slot(&ret_ty)
-                .expect("checked just above");
-            (by_slot.to_string(), all_args)
+            (entry.to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // `Vec_join` takes strings. Anything else is written the way it
             // prints, which the runtime can't tell from a width: a one-byte
@@ -6898,11 +6875,10 @@ impl<'a> MirLowerer<'a> {
         // promoted on the way in and the answer comes back at double width.
         // Handing that straight back left `(2.0 as f32).sqrt()` as
         // 1.4142135623730951 while the interpreter, which computes at the
-        // receiver's own width, said 1.4142135. Round the answer back to the
-        // width the method was called at (#844).
-        if matches!(obj_ty, MirType::F32)
-            && matches!(ret_ty, MirType::F64)
-            && final_name.starts_with("f64_")
+        // receiver's own width, said 1.4142135. The checker typed the call at
+        // `f32`; round the answer back to that (#844).
+        if matches!(ret_ty, MirType::F64)
+            && matches!(self.ctx.lookup_node_type(expr.id), Some(MirType::F32))
         {
             let narrowed = self.builder.alloc_temp(MirType::F32);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -10746,29 +10722,6 @@ impl<'a> MirLowerer<'a> {
             ]);
         }
         self.lower_info_vec(rask_types::LangItem::VariantInfo, rows)
-    }
-
-    /// Which `string_parse_*` runtime writes into this result slot, by the
-    /// slot's own payload type. `None` when the payload isn't a number the
-    /// runtime has a variant for — a still-open type, or a generic body that
-    /// hasn't been instantiated, both of which keep the 64-bit parse.
-    fn parse_variant_for_slot(ret_ty: &MirType) -> Option<&'static str> {
-        let MirType::Result { ok, .. } = ret_ty else {
-            return None;
-        };
-        Some(match **ok {
-            MirType::F32 => "string_parse_f32",
-            MirType::F64 => "string_parse_f64",
-            MirType::I8 => "string_parse_i8",
-            MirType::I16 => "string_parse_i16",
-            MirType::I32 => "string_parse_i32",
-            MirType::I64 => "string_parse_i64",
-            MirType::U8 => "string_parse_u8",
-            MirType::U16 => "string_parse_u16",
-            MirType::U32 => "string_parse_u32",
-            MirType::U64 => "string_parse_u64",
-            _ => return None,
-        })
     }
 
     /// The `[T; N]` methods that need no call — the answer is in the type or is

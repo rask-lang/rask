@@ -32,6 +32,7 @@ pub mod lower;
 mod const_free;
 mod container_drop;
 pub mod own_names;
+pub mod parse_runtime;
 mod interface_drop;
 
 pub use builder::BlockBuilder;
