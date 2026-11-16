@@ -6668,8 +6668,16 @@ impl<'a> MirLowerer<'a> {
                         // width. A narrow one read as a word took the next
                         // field's bytes with it.
                         // A niche option is the one word it's loaded as.
+                        //
+                        // An edge to a rack node is a plain word: the rack owns
+                        // the node, and the copy has no part in anything the
+                        // struct owns. Typed as a pointer the release pass read
+                        // it as a part of the source, and handing it to the new
+                        // struct handed the whole source over (#1842).
                         let field_mir_ty = self.ctx.type_to_mir(&field.ty);
-                        let field_mir_ty = if field_mir_ty.niche_none().is_some() {
+                        let field_mir_ty = if field_mir_ty.is_link_slot() {
+                            MirType::I64
+                        } else if field_mir_ty.niche_none().is_some() {
                             MirType::Ptr
                         } else {
                             field_mir_ty
