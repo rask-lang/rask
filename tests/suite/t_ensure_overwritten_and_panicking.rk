@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What an `ensure` reads is still released when the variable it names is
+// written again, when its body writes a variable of its own, and when a body
+// panics.
+//
+// A variable an `ensure` reads is read in place, so the ensure sees whatever it
+// holds when the block ends. Native wrote the new value over the old one
+// without releasing it (#1895, #1917): a struct or string reassigned after the
+// `ensure`, a string reassigned inside its body, a `string?` the body rebinds
+// in a loop (an Option was counted as a scalar, so it got a one-word cell and
+// plain stores). And while the bodies of a chain run, nothing was armed for a
+// panic, so a body that panicked dropped what the bodies after it would have
+// read (#1895).
+//
+// The leak gate runs this file under RASK_LEAK_CHECK; a count above zero is the
+// failure.
+
+struct Names {
+    list: Vec<string>
+}
+
+func make(n: i64) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    for i in 0..n {
+        v.push("a heap string long enough to allocate, number {i}")
+    }
+    return v
+}
+
+func count(n: Names, mutate seen: Vec<u64>) {
+    seen.push(n.list.len())
+}
+
+func struct_reassigned(mutate seen: Vec<u64>) {
+    mut n = Names(list: Vec.new())
+    n.list.push("first value string long enough to heap")
+    ensure count(n, mutate seen)
+    n = Names(list: Vec.new())
+    n.list.push("second value string long enough to heap")
+    n.list.push("third value string long enough to heap")
+}
+
+func string_reassigned_in_body(mutate out: Vec<u64>) {
+    mut s = "outer {out.len()} initial string long enough for the heap"
+    ensure out.push(s.len())
+    ensure {
+        s = "replaced in the body, a string long enough for the heap {out.len()}"
+        out.push(1)
+    }
+}
+
+func option_rebound_in_body(mutate out: Vec<u64>) {
+    ensure out.push(1)
+    ensure {
+        mut last: string? = none
+        for i in 0..3 {
+            last = "a heap string long enough to allocate {i}"
+        }
+        if last? as s {
+            out.push(s.len())
+        }
+    }
+}
+
+func closure_in_body(mutate out: Vec<u64>) {
+    let base = make(2)
+    ensure out.push(base.len())
+    ensure {
+        let f = |k: u64| -> u64 { return k + base.len() }
+        out.push(f(1))
+    }
+}
+
+func look(tag: string, n: Names, mutate seen: Vec<u64>) {
+    seen.push(n.list.len())
+    if tag == "two" {
+        panic("boom in ensure")
+    }
+}
+
+func panicking_chain() {
+    mut seen: Vec<u64> = Vec.new()
+    mut n = Names(list: Vec.new())
+    ensure look("one", n, mutate seen)
+    ensure look("two", n, mutate seen)
+    n.list.push("a heap string that is definitely long enough to allocate")
+}
+
+test "a struct reassigned after the ensure read it is released" {
+    mut seen: Vec<u64> = Vec.new()
+    struct_reassigned(mutate seen)
+    assert seen.len() == 1
+    assert seen[0] == 2
+}
+
+test "a string the ensure body reassigns is released" {
+    mut out: Vec<u64> = Vec.new()
+    string_reassigned_in_body(mutate out)
+    assert out.len() == 2
+    assert out[0] == 1
+}
+
+test "a string? the body rebinds in a loop is released" {
+    mut out: Vec<u64> = Vec.new()
+    option_rebound_in_body(mutate out)
+    assert out.len() == 2
+    assert out[0] > 0
+    assert out[1] == 1
+}
+
+test "a closure in an ensure body reads a value from before the ensures" {
+    mut out: Vec<u64> = Vec.new()
+    closure_in_body(mutate out)
+    assert out.len() == 2
+    assert out[0] == 3
+    assert out[1] == 2
+}
+
+test "a panic in an ensure body releases what the later bodies read" {
+    mut died = false
+    using Multitasking {
+        let h = spawn {
+            panicking_chain()
+        }
+        match h.join() {
+            JoinError.Panicked(msg) => { died = true },
+            _ => { died = false },
+        }
+    }
+    assert died
+}

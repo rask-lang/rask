@@ -1666,14 +1666,49 @@ fn unwind_marks(
         // A cleanup return released everything still ours just before it; the
         // `ensure` bodies it runs next can still panic.
         apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
-        let cleanup_return =
-            matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
+        let chain: &[BlockId] = match &func.blocks[bi].terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => cleanup_chain,
+            _ => &[],
+        };
+        let cleanup_return = matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
         for (v, name) in arm.clone() {
             if cleanup_return || !st.owned(v) || !st.holders(v).contains(&name) {
-                marks.push(Mark {
-                    at: MarkAt::In { block: bi, at: len, late: true },
-                    kind: MarkKind::Disarm { slot: slot(v, name) },
-                });
+                // A value an `ensure` body reads stays armed while the bodies
+                // run: one that panics must not drop what the bodies after it
+                // would read (#1895). It comes off at the end of the last body
+                // that reads it, where `exit_points` releases it.
+                let mut disarm_at: Vec<usize> = Vec::new();
+                let holders = st.holders(v);
+                if cleanup_return && st.owned(v) && holders.contains(&name) && holders.iter().any(|h| live.out[bi].contains(h)) {
+                    let index_of: std::collections::HashMap<BlockId, usize> =
+                        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+                    // The bodies read it under any name that holds it, a lent
+                    // slot included, not only the one it was armed under.
+                    let reads = |h: &BlockId| {
+                        index_of.get(h).is_some_and(|&hi| {
+                            live.at[hi].first().is_some_and(|l| holders.iter().any(|n| l.contains(n)))
+                        })
+                    };
+                    if let Some(head) = chain.iter().rev().find(|h| reads(h)) {
+                        disarm_at = ensure_body_ends(func, &index_of, *head);
+                    }
+                }
+                if disarm_at.is_empty() {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: len, late: true },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                } else {
+                    for end in disarm_at {
+                        let mark = Mark {
+                            at: MarkAt::In { block: end, at: func.blocks[end].statements.len(), late: true },
+                            kind: MarkKind::Disarm { slot: slot(v, name) },
+                        };
+                        if !marks.contains(&mark) {
+                            marks.push(mark);
+                        }
+                    }
+                }
                 arm.remove(&v);
             }
         }

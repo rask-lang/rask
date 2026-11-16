@@ -909,6 +909,12 @@ impl<'a> MirLowerer<'a> {
                         // Not a parameter: its name is the caller's storage,
                         // so a write in place would land in the caller's slot,
                         // and what the old value was is the caller's to free.
+                        //
+                        // A name an `ensure` reads is written in place too: the
+                        // hook holds its address, and the ensure reads whatever
+                        // it holds when the block ends. As an `Assign` the new
+                        // value was a store into that address that nothing
+                        // paired with a release of the old one (#1895).
                         let in_place = struct_assigned
                             && scalar_mutate.is_none()
                             && !assigns_through
@@ -920,7 +926,8 @@ impl<'a> MirLowerer<'a> {
                                     | MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. }
                             )
                             && (self.ctx.mir_has_guarded_link(&dst_ty)
-                                || self.ctx.struct_carries_links(&dst_ty));
+                                || self.ctx.struct_carries_links(&dst_ty)
+                                || self.ensure_read_names.contains(name));
                         let store_through_ptr = scalar_mutate.is_some()
                             || (assigns_through && mutate_param_by_pointer(&dst_ty))
                             || in_place;

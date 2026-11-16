@@ -2972,6 +2972,7 @@ fn cells_this_frame_frees(
         }
     }
 
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
     let mut out = Vec::new();
     for cell in &by_ref_cells {
         let Some(values) = stores.get(cell) else { continue };
@@ -2987,10 +2988,14 @@ fn cells_this_frame_frees(
             _ => false,
         };
         if values.iter().any(|(v, _)| is_string(v)) {
-            if let [(_, store_block)] = values.as_slice() {
-                if ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
-                    out.push((*cell, Holds::Str, *store_block));
-                }
+            // The first store fills the cell; the rest overwrite it, and
+            // `insert_cell_drops` releases what each one covers. The first has
+            // to be the one every other store follows, or there is no telling
+            // which write makes the value and which replaces it.
+            let (_, store_block) = &values[0];
+            let first_leads = values.iter().all(|(_, b)| dom.dominates(*store_block, *b));
+            if first_leads && ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
+                out.push((*cell, Holds::Str, *store_block));
             }
             continue;
         }
@@ -3277,6 +3282,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// had there — reliably zero on a fresh frame, and 0xAAAA… under
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    release_overwritten_string_cells(func, cells);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);
@@ -3338,6 +3344,37 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
                 func: free_call(free),
                 args: vec![MirOperand::Local(tmp)],
             }));
+        }
+    }
+}
+
+/// A store into a string cell after the one that filled it replaces a string
+/// the cell owns, so the old one is released first. A variable an `ensure`
+/// reads is such a cell, and `s = "…"` after the ensure (or in its body) left
+/// every string it covered unreleased (#1917).
+fn release_overwritten_string_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
+    for (cell, holds, fill_block) in cells {
+        if !matches!(holds, Holds::Str) {
+            continue;
+        }
+        let is_store = |s: &MirStmt| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell);
+        for block in func.blocks.iter_mut() {
+            let mut skip_first = block.id == *fill_block;
+            let mut at = 0;
+            while at < block.statements.len() {
+                if is_store(&block.statements[at]) {
+                    if skip_first {
+                        skip_first = false;
+                    } else {
+                        block.statements.insert(
+                            at,
+                            MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::Buffer }),
+                        );
+                        at += 1;
+                    }
+                }
+                at += 1;
+            }
         }
     }
 }

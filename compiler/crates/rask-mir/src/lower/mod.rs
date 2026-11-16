@@ -4165,17 +4165,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn is_ref_capturable(ty: &MirType) -> bool {
-        matches!(
-            ty,
-            MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Array { .. }
-                | MirType::Tuple(_)
-                | MirType::Ptr
-                | MirType::RawPtr
-                | MirType::Container(_)
-                | MirType::Buffer
-        )
+        // An option, result or union is an aggregate in a stack slot like a
+        // struct, unless it is a niche option (`Link<T>?`), which is one word.
+        // Counted as scalars, a `string?` an `ensure` read got a cell of its own
+        // and its writes were stores nothing released (#1917).
+        ty.niche_none().is_none()
+            && matches!(
+                ty,
+                MirType::Struct(_)
+                    | MirType::Enum(_)
+                    | MirType::Array { .. }
+                    | MirType::Tuple(_)
+                    | MirType::Option(_)
+                    | MirType::Result { .. }
+                    | MirType::Union(_)
+                    | MirType::Ptr
+                    | MirType::RawPtr
+                    | MirType::Container(_)
+                    | MirType::Buffer
+            )
     }
 
     /// Reify an ensure body as a runtime hook thunk so the cleanup runs if the
