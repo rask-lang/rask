@@ -6,13 +6,26 @@
 //
 // It used to borrow: the bytes were copied into the channel with no reference
 // of their own and the caller then released the string, so the receiver got
-// whatever reused that memory. A refusal carried the channel's status code
-// where the value belonged.
+// memory that was already freed (memcheck_gate sees it; the answer can still
+// look right until something reuses the block). A refusal carried the channel's
+// status code where the value belonged, which is what the `full:` and
+// `closed:` checks below read.
+//
+// The helpers only interpolate the payload, so the file reads the same before
+// and after `TrySendError` became generic.
 
-import async.TrySendError
+import async.Sender
 
-func tag_of(r: void or TrySendError<string>) -> string {
-    match r {
+func offer(tx: Sender<string>, text: string) -> string {
+    match tx.try_send(text) {
+        TrySendError.Full(v) => return "full:{v}",
+        TrySendError.Closed(v) => return "closed:{v}",
+        _ => return "sent",
+    }
+}
+
+func offer_number(tx: Sender<i64>, n: i64) -> string {
+    match tx.try_send(n) {
         TrySendError.Full(v) => return "full:{v}",
         TrySendError.Closed(v) => return "closed:{v}",
         _ => return "sent",
@@ -23,10 +36,10 @@ test "a string sent with try_send reaches the receiver intact" {
     using Multitasking {
         let (tx, rx) = Channel<string>.buffered(2)
         let name = "ada"
-        assert tag_of(tx.try_send("hello {name}")) == "sent"
-        // The next string built lands in whatever the first one freed.
+        assert offer(tx, "hello {name}") == "sent"
+        // The next strings built land in whatever the first one freed.
         let other = "x".repeat(40)
-        assert tag_of(tx.try_send("second {name}")) == "sent"
+        assert offer(tx, "second {name}") == "sent"
         assert other.len() == 40
         assert rx.receive()! == "hello ada"
         assert rx.receive()! == "second ada"
@@ -36,9 +49,9 @@ test "a string sent with try_send reaches the receiver intact" {
 test "a full channel hands the value back" {
     using Multitasking {
         let (tx, rx) = Channel<string>.buffered(1)
-        assert tag_of(tx.try_send("first")) == "sent"
+        assert offer(tx, "first") == "sent"
         let n = 2
-        assert tag_of(tx.try_send("second {n}")) == "full:second 2"
+        assert offer(tx, "second {n}") == "full:second 2"
         assert rx.receive()! == "first"
     }
 }
@@ -48,22 +61,31 @@ test "a closed channel hands the value back" {
         let (tx, rx) = Channel<string>.buffered(1)
         rx.close()!
         let n = 7
-        assert tag_of(tx.try_send("late {n}")) == "closed:late 7"
+        assert offer(tx, "late {n}") == "closed:late 7"
     }
 }
 
-test "the refused value is usable and a plain integer works too" {
+test "a plain integer is handed back too" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
-        let a = tx.try_send(10)
-        let b = tx.try_send(20)
-        mut back = 0
-        match b {
-            TrySendError.Full(v) => { back = v },
-            TrySendError.Closed(v) => { back = -v },
-            _ => { back = -1 },
-        }
-        assert back == 20
+        assert offer_number(tx, 10) == "sent"
+        assert offer_number(tx, 20) == "full:20"
         assert rx.receive()! == 10
+    }
+}
+
+// A generic error can be tested by its bare name, as `CasFailed as e` is.
+test "is TrySendError, without the type argument" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        mut refused = 0
+        for word in ["first", "second"] {
+            let r = tx.try_send(word)
+            if r is TrySendError {
+                refused += 1
+            }
+        }
+        assert refused == 1
+        assert rx.receive()! == "first"
     }
 }

@@ -6607,6 +6607,13 @@ impl<'a> MirLowerer<'a> {
             }
             if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
+        } else if qualified_name == "Sender_try_send" {
+            // `void or TrySendError<T>`: the stub's `T` is a placeholder word,
+            // so the result took the shared layout of the error enum. A
+            // `string` handed back in `Full(v)` is sixteen bytes and was
+            // written, and read, past that slot. The call site knows what
+            // `T` became.
+            self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Result { .. }))
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
                     let src = all_args[0].clone();
                     for (idx, field) in layout.fields.iter().enumerate() {

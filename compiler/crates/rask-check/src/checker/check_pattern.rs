@@ -433,7 +433,15 @@ impl TypeChecker {
                         self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), candidate.clone()));
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
-                        if branches.contains(&candidate) {
+                        // A generic error written without its arguments
+                        // (`r is TrySendError`) names the one branch with that
+                        // head, as the `as` form does (`branch_named`).
+                        let by_head = branches
+                            .iter()
+                            .filter(|b| self.same_type_head(b, &candidate))
+                            .count()
+                            == 1;
+                        if branches.contains(&candidate) || by_head {
                             return vec![];
                         }
                         // A branch that hasn't resolved yet can't be compared
