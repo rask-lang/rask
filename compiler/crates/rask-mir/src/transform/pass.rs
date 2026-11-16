@@ -309,11 +309,13 @@ impl MirPass for StringRcInsertionPass {
         let closure_keeps = |func: &str, closure, i, n| {
             crate::container_drop::closure_call_keeps_argument(&targets, &reach, &kept, func, closure, i, n)
         };
+        let writes = crate::transform::inline::params_written_through(fns);
         let mut carried = Vec::new();
         for func in fns.iter_mut() {
             carried.extend(crate::transform::rc_insert::insert_rc_ops(
                 func,
                 &kept,
+                &writes,
                 &ctx.own_functions,
                 &closure_keeps,
                 &ctx.rack_holders,

@@ -36,6 +36,7 @@ pub type ClosureKeeps<'a> = dyn Fn(&str, LocalId, usize, usize) -> bool + 'a;
 pub fn insert_rc_ops(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
+    writes: &HashMap<String, HashSet<usize>>,
     own: &HashSet<String>,
     closure_keeps: &ClosureKeeps,
     rack_holders: &HashSet<u32>,
@@ -95,7 +96,7 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own, &owns_copy, closure_keeps, rack_holders, copy_layouts)
+    insert_aggregate_release(func, kept, writes, own, &owns_copy, closure_keeps, rack_holders, copy_layouts)
 }
 
 /// One site that builds a heap closure, and the aggregate captures it handed
@@ -711,6 +712,7 @@ fn holds_rack(ty: &MirType, rack_holders: &HashSet<u32>) -> bool {
 fn insert_aggregate_release(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
+    writes: &HashMap<String, HashSet<usize>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
     closure_keeps: &ClosureKeeps,
@@ -1273,7 +1275,15 @@ fn insert_aggregate_release(
                         if !call_keeps_arg(fref, i, kept) {
                             // It may still write into it: a `mutate`
                             // parameter is the caller's slot, by address.
-                            if aggregates.contains(&id) {
+                            // Unless the body is known and never writes the
+                            // aggregate itself, only what its handles point
+                            // at (`w.pos[i] = p`): the copy then holds the
+                            // same bytes as the name it was made from, and
+                            // calling that a write left no name the frame
+                            // could release the value under (#1927).
+                            let writes_it = !own.contains(&fref.name)
+                                || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
+                            if aggregates.contains(&id) && writes_it {
                                 ev.push(ownership::Event::WriteThrough(id));
                             }
                             continue;
@@ -2578,7 +2588,7 @@ mod tests {
             param_modes: Vec::new(),
             source_file: None,
         };
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
@@ -2626,7 +2636,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2679,7 +2689,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let stmts = &f.blocks[0].statements;
         let dec = stmts
@@ -2748,7 +2758,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let surviving = &f.blocks[1].statements;
         assert!(
@@ -2818,7 +2828,7 @@ mod tests {
                 },
             ],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
 
         let building = &f.blocks[0].statements;
         assert!(
@@ -2851,7 +2861,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert!(has_rc_inc(&f.blocks[0].statements, local(1)));
     }
 
@@ -2870,7 +2880,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
     }
 
@@ -2890,7 +2900,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         // Both src and dst should get RcDec (src after copy, dst after block)
         assert!(has_rc_dec(&f.blocks[0].statements, local(0)));
         assert!(has_rc_dec(&f.blocks[0].statements, local(1)));
@@ -2915,7 +2925,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let stmts = &f.blocks[0].statements;
         let (src, dst) = (local(0), local(1));
         let inc = stmts.iter().position(|s|
@@ -2961,7 +2971,7 @@ mod tests {
             vec![string_local(0, "carried"), string_local(1, "fresh")],
             vec![entry, header, body],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         let header = f.blocks.iter().find(|b| b.id == BlockId(1)).unwrap();
         assert!(
             !has_rc_dec(&header.statements, local(1)),
@@ -2982,7 +2992,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_rc_ops(&mut f, &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default());
         assert_eq!(count_rc_inc(&f.blocks[0].statements), 0);
         assert_eq!(count_rc_dec(&f.blocks[0].statements), 0);
     }
