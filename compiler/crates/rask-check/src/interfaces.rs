@@ -2157,6 +2157,43 @@ pub fn interface_vtable_methods(types: &TypeTable) -> std::collections::HashMap<
     methods
 }
 
+/// The methods of each interface that are declared `take self`, super-interfaces
+/// included, keyed by the interface's symbol as `interface_vtable_methods` is.
+/// A call through `any Interface` to one of them consumes the box.
+pub fn interface_take_self_methods(
+    types: &TypeTable,
+) -> std::collections::HashMap<String, std::collections::HashSet<String>> {
+    types
+        .interfaces()
+        .map(|(id, name)| (types.interface_symbol(name, Some(id)), take_self_methods_of(types, id, &mut Vec::new())))
+        .collect()
+}
+
+fn take_self_methods_of(
+    types: &TypeTable,
+    id: TypeId,
+    seen: &mut Vec<TypeId>,
+) -> std::collections::HashSet<String> {
+    if seen.contains(&id) {
+        return Default::default();
+    }
+    seen.push(id);
+    let Some(TypeDef::Interface { methods, super_interfaces, .. }) = types.get(id) else {
+        return Default::default();
+    };
+    let mut out: std::collections::HashSet<String> = methods
+        .iter()
+        .filter(|m| matches!(m.self_param, rask_types::SelfParam::Take))
+        .map(|m| m.name.clone())
+        .collect();
+    for parent in super_interfaces {
+        if let Some(pid) = types.parent_interface(id, parent) {
+            out.extend(take_self_methods_of(types, pid, seen));
+        }
+    }
+    out
+}
+
 /// `object_compatible_methods` for a declaration already identified. Parents
 /// are named as the interface's own side reads them (#1329).
 fn object_compatible_methods_of(types: &TypeTable, id: TypeId) -> Vec<String> {

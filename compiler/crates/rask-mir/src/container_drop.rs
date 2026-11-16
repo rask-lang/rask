@@ -849,13 +849,6 @@ pub(crate) fn params_a_callee_keeps(
         .iter()
         .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
         .collect();
-    // A method a vtable can hold is also called through `any Interface`,
-    // where the caller's box keeps owning the receiver and releases it
-    // (`interface_drop_owned`). Its `take self` is read off the body, as
-    // before modes were: one answer has to serve both kinds of call.
-    // Workaround until an interface call hands the receiver over (#1911).
-    let behind_vtable: HashSet<&str> = vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()).collect();
-
     loop {
         let mut grew = false;
         for func in fns {
@@ -869,8 +862,7 @@ pub(crate) fn params_a_callee_keeps(
                 // a borrowed non-Copy one can't be given away (PM6), and a
                 // `mutate` slot the callee moves out of comes back refilled
                 // (PM7), the new value the caller's to release (#1885).
-                let mode = func.param_modes.get(i).filter(|_| !(i == 0 && behind_vtable.contains(func.name.as_str())));
-                match mode {
+                match func.param_modes.get(i) {
                     Some(ParamMode::Borrow | ParamMode::Mutate) => continue,
                     // Written `take`: the frame owns it from the call on, and
                     // releases what it doesn't hand on.

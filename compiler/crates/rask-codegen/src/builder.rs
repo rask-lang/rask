@@ -1364,7 +1364,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::InterfaceBox { dst, value, vtable_name, concrete_size, .. } => Self::lower_interface_box(builder, dst, value, vtable_name, concrete_size, ctx)?,
 
-            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args, .. } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
 
             // A *borrowed* box — one built for a call while the frame keeps
             // the value — frees the block and nothing inside it: the value's
@@ -1373,15 +1373,17 @@ impl<'a> FunctionBuilder<'a> {
             // `rc_insert` puts the frame's own release after this statement.
             // Hence the null hook.
             //
-            // A box the value was *moved* into owns its contents (`owns`), and
+            // A box the value was *moved* into owns its contents (`Owns`), and
             // its release goes through the vtable's `owned_release`, which is
-            // what a container element's release does.
-            MirStmtKind::InterfaceDrop { interface_object, owns } => {
+            // what a container element's release does. One a `take self` call
+            // consumed (`Taken`) gave the contents to the method, so it frees
+            // the block alone, as a borrowed one does.
+            MirStmtKind::InterfaceDrop { interface_object, release } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "InterfaceDrop: interface object variable not found".to_string()
                     ))?);
-                if *owns {
+                if *release == rask_mir::BoxRelease::Owns {
                     // The variable holds the fat pointer's address, which is
                     // the slot shape a boxed field's release takes.
                     Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;

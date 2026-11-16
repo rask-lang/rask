@@ -899,6 +899,20 @@ impl<'a> MirLowerer<'a> {
         self.ctx.enum_of(&ty).map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
     }
 
+    /// Is the expression a value written right here, which nothing else names?
+    /// A box made from one is its only owner.
+    fn builds_its_value(kind: &ExprKind) -> bool {
+        matches!(
+            kind,
+            ExprKind::StructLit { .. }
+                | ExprKind::Int(..)
+                | ExprKind::Float(..)
+                | ExprKind::String(_)
+                | ExprKind::Char(_)
+                | ExprKind::Bool(_)
+        )
+    }
+
     /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
     /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
     /// The vtable is the one monomorphization made for this type and interface.
@@ -908,6 +922,7 @@ impl<'a> MirLowerer<'a> {
         concrete_mir_ty: &MirType,
         concrete: Option<&rask_types::Type>,
         interface_name: &str,
+        owns_value: bool,
     ) -> Result<(MirOperand, MirType), LoweringError> {
         let vtable_name = concrete
             .and_then(|t| self.ctx.vtables.get(&(t.clone(), interface_name.to_string())))
@@ -935,6 +950,7 @@ impl<'a> MirLowerer<'a> {
             concrete_size,
             concrete_align,
             vtable_name,
+            owns_value,
         }));
 
         Ok((MirOperand::Local(result_local), interface_obj_ty))
@@ -1531,7 +1547,8 @@ impl<'a> MirLowerer<'a> {
         if !matches!(ty, MirType::InterfaceObject { .. }) {
             if let Some(interface_name) = self.ctx.interface_coercions.get(&expr.id).cloned() {
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name);
+                let owns_value = Self::builds_its_value(&expr.kind);
+                return self.emit_interface_box(op, &ty, concrete.as_ref(), &interface_name, owns_value);
             }
         }
         Ok((op, ty))
@@ -2143,7 +2160,8 @@ impl<'a> MirLowerer<'a> {
                 let interface_name = interface.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
                 let concrete = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned);
-                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name);
+                let owns_value = Self::builds_its_value(&expr.kind);
+                return self.emit_interface_box(val, &concrete_mir_ty, concrete.as_ref(), &interface_name, owns_value);
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
@@ -4028,6 +4046,9 @@ impl<'a> MirLowerer<'a> {
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<(MirOperand, MirType), LoweringError> {
         if let (MirType::Result { ok, err }, Some(path)) = (val_ty, self.deep_result_path(pattern, val_ty)) {
+            if let Some(inner_path) = &path.inner {
+                return self.nested_rest_after_leaf(val, ok, err, inner_path);
+            }
             if let (Some((tested, _)), None) = (path.member, &path.variant) {
                 return Ok(self.union_rest_after_member(val, ok, err, tested));
             }
@@ -4046,9 +4067,6 @@ impl<'a> MirLowerer<'a> {
                 // The test may be bare, `is MyErr` with no `as` (#1516).
                 let err_side = match &pattern.kind {
                     rask_ast::expr::PatternKind::TypePat { .. } | rask_ast::expr::PatternKind::Ident(_) => {
-            if let Some(inner_path) = &path.inner {
-                return self.nested_rest_after_leaf(val, ok, err, inner_path);
-            }
                         match super::match_lower::pattern_name(pattern) {
                             Some(name) => self.pattern_is_err_side(pattern, &name, val_ty)?,
                             None => false,
@@ -4139,24 +4157,6 @@ impl<'a> MirLowerer<'a> {
         (MirOperand::Local(dst), rest_ty)
     }
 
-    /// `T or B` out of a `T or (A | B)` that isn't an `A`: the success side as
-    /// it was, and the error moved into the union of the members left, or
-    /// standing alone when one is left.
-    fn union_rest_after_member(
-        &mut self,
-        val: &MirOperand,
-        ok_ty: &MirType,
-        union_ty: &MirType,
-        tested: usize,
-    ) -> (MirOperand, MirType) {
-        let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
-        let rest: Vec<(usize, MirType)> =
-            members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
-        let rest_err = match &rest[..] {
-            [(_, only)] => only.clone(),
-            _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
-        };
-        let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
     /// What is left of `(A or B) or E` once `A` (or `B`) is ruled out: the
     /// other leaf of the inner result and `E`, as one `B or E` (or `A or E`).
     /// The error stays the error, with its origin; when the success side's
@@ -4216,6 +4216,24 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(dst), rest_ty))
     }
 
+    /// `T or B` out of a `T or (A | B)` that isn't an `A`: the success side as
+    /// it was, and the error moved into the union of the members left, or
+    /// standing alone when one is left.
+    fn union_rest_after_member(
+        &mut self,
+        val: &MirOperand,
+        ok_ty: &MirType,
+        union_ty: &MirType,
+        tested: usize,
+    ) -> (MirOperand, MirType) {
+        let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
+        let rest: Vec<(usize, MirType)> =
+            members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
+        let rest_err = match &rest[..] {
+            [(_, only)] => only.clone(),
+            _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
+        };
+        let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
         let dst = self.builder.alloc_temp(rest_ty.clone());
         let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
 
@@ -6589,6 +6607,13 @@ impl<'a> MirLowerer<'a> {
                 .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
                 .or_else(|| self.func_sigs.get(stub).map(|s| s.ret_ty.clone()))
                 .or_else(|| Some(super::stdlib_return_mir_type_in(stub, Some(self.ctx))))
+        } else if qualified_name == "Sender_try_send" {
+            // `void or TrySendError<T>`: the stub's `T` is a placeholder word,
+            // so the result took the shared layout of the error enum. A
+            // `string` handed back in `Full(v)` is sixteen bytes and was
+            // written, and read, past that slot. The call site knows what
+            // `T` became.
+            self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Result { .. }))
         } else if qualified_name == "string_parse"
             || qualified_name.strip_prefix("string_parse_")
                 .is_some_and(super::is_parse_target_type_name)
@@ -6669,13 +6694,6 @@ impl<'a> MirLowerer<'a> {
             }
             if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
-        } else if qualified_name == "Sender_try_send" {
-            // `void or TrySendError<T>`: the stub's `T` is a placeholder word,
-            // so the result took the shared layout of the error enum. A
-            // `string` handed back in `Full(v)` is sixteen bytes and was
-            // written, and read, past that slot. The call site knows what
-            // `T` became.
-            self.ctx.lookup_node_type(expr.id).filter(|t| matches!(t, MirType::Result { .. }))
                     let result_local = self.builder.alloc_temp(obj_ty.clone());
                     let src = all_args[0].clone();
                     for (idx, field) in layout.fields.iter().enumerate() {
@@ -10935,6 +10953,11 @@ impl<'a> MirLowerer<'a> {
                         method_name: method.clone(),
                         vtable_offset,
                         args: arg_operands,
+                        takes_receiver: self
+                            .ctx
+                            .interface_take_self
+                            .get(interface_name)
+                            .is_some_and(|methods| methods.contains(method)),
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok(Some((MirOperand::Local(result_local), ret_ty)));
