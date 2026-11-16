@@ -2718,7 +2718,7 @@ impl<'a> MirLowerer<'a> {
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local_id),
-                        func: FunctionRef::internal("Field_take".to_string()),
+                        func: FunctionRef::like("Field_take", "Vec_remove"),
                         args: vec![
                             MirOperand::Local(addr),
                             MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
