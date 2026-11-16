@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct rebuilt from some of its own fields: the fields it moves are taken
+// out of the old value, and the rest of the old value is released. The old
+// labels used to leak, because the whole assignment counted as "the new value
+// is made out of the old one" and released nothing (#1840).
+
+struct Cursor {
+    id: i32
+    label: string
+    hist: Vec<string>
+}
+
+struct Wrap {
+    inner: Cursor
+    tag: i32
+    extra: Vec<i64>
+}
+
+func mk(i: i64) -> Cursor {
+    return Cursor(id: 1, label: "label-long-enough-to-live-on-the-heap-{i}", hist: Vec.new())
+}
+
+func bump(mutate c: Cursor, i: i64) {
+    c = Cursor(id: c.id + 1, label: "bumped-label-long-enough-for-the-heap-{i}", hist: c.hist)
+}
+
+struct Holder {
+    c: Cursor
+}
+
+extend Holder {
+    func rebuild(mutate self, i: i64) {
+        self.c = Cursor(id: self.c.id, label: "held-label-long-enough-for-the-heap-{i}", hist: self.c.hist)
+    }
+}
+
+test "a local rebuilt from its own hist" {
+    mut c = mk(1)
+    c.hist.push("first entry long enough to live on the heap")
+    for i in 0..3 {
+        c = Cursor(id: c.id, label: "new-label-long-enough-to-live-on-the-heap-{i}", hist: c.hist)
+    }
+    assert c.label == "new-label-long-enough-to-live-on-the-heap-2"
+    assert c.hist.len() == 1
+    assert c.hist[0] == "first entry long enough to live on the heap"
+}
+
+test "a mutate parameter rebuilt from its own hist" {
+    mut c = mk(1)
+    c.hist.push("entry long enough to live on the heap")
+    bump(mutate c, 7)
+    bump(mutate c, 8)
+    assert c.id == 3
+    assert c.label == "bumped-label-long-enough-for-the-heap-8"
+    assert c.hist.len() == 1
+}
+
+test "a field rebuilt from its own hist" {
+    mut h = Holder(c: mk(1))
+    h.c.hist.push("entry long enough to live on the heap")
+    h.rebuild(1)
+    h.rebuild(2)
+    assert h.c.label == "held-label-long-enough-for-the-heap-2"
+    assert h.c.hist.len() == 1
+}
+
+test "a wrapper rebuilt from its own extra" {
+    mut w = Wrap(inner: mk(3), tag: 1, extra: [1, 2, 3])
+    for i in 0..3 {
+        w = Wrap(inner: mk(10 + i), tag: 9, extra: w.extra)
+    }
+    assert w.inner.label == "label-long-enough-to-live-on-the-heap-12"
+    assert w.extra.len() == 3
+}

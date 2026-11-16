@@ -2327,6 +2327,33 @@ impl<'a> MirLowerer<'a> {
             // the scalar through it (writes store through it; see stmt.rs).
             if let Some(sty) = self.meta(name).and_then(|m| m.scalar_through_ptr.clone()) {
                 if let Some((id, _)) = self.locals.get(name).cloned() {
+                    // A container `mutate` parameter given away whole: the
+                    // slot holds its handle, and the caller's unwinding frees
+                    // what the slot holds. Taken, the handle goes to a local
+                    // of this frame and the slot is left empty, as for an
+                    // aggregate below (#1937). Only a non-Copy parameter is
+                    // ever recorded as moved.
+                    if self.ctx.field_reuses.contains(&expr.id) && self.builder.is_param(id) {
+                        let dst = self.builder.alloc_temp(sty.clone());
+                        let addr = self.builder.alloc_temp(MirType::Ptr);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: addr,
+                            rvalue: MirRValue::BinaryOp {
+                                op: crate::operand::BinOp::Add,
+                                left: MirOperand::Local(id),
+                                right: MirOperand::Constant(MirConst::Int(0)),
+                            },
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(dst),
+                            func: FunctionRef::internal("Field_take".to_string()),
+                            args: vec![
+                                MirOperand::Local(addr),
+                                MirOperand::Constant(MirConst::Int(sty.size() as i64)),
+                            ],
+                        }));
+                        return Ok((MirOperand::Local(dst), sty));
+                    }
                     let tmp = self.builder.alloc_temp(sty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: tmp,
@@ -2341,6 +2368,41 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             if let Some((id, ty)) = self.locals.get(name).cloned() {
+                // A `mutate` parameter given away whole: the slot is the
+                // caller's, and it is the caller's unwinding that releases
+                // what is in it. Read in place, the new owner and the slot
+                // both held the value, and a panic before the refill freed
+                // it twice (#1937). Taken, the bytes go to a local of this
+                // frame and the slot is left empty.
+                if self.ctx.field_reuses.contains(&expr.id)
+                    && self.builder.is_param(id)
+                    && self.meta(name).is_some_and(|m| m.assigns_through && m.scalar_through_ptr.is_none())
+                    && matches!(
+                        ty,
+                        MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                            | MirType::Array { .. } | MirType::Option(_) | MirType::Result { .. }
+                    )
+                {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(id),
+                            right: MirOperand::Constant(MirConst::Int(0)),
+                        },
+                    }));
+                    let dst = self.builder.alloc_temp(ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(dst),
+                        func: FunctionRef::internal("Field_take".to_string()),
+                        args: vec![
+                            MirOperand::Local(addr),
+                            MirOperand::Constant(MirConst::Int(ty.size() as i64)),
+                        ],
+                    }));
+                    return Ok((MirOperand::Local(dst), ty));
+                }
                 // ER24/CF22: ER24 narrowing redefines the binding's type in
                 // the type checker's scope, but the MIR local keeps its
                 // declared type. When the use-site has a more specific
@@ -6836,8 +6898,16 @@ impl<'a> MirLowerer<'a> {
                         // width. A narrow one read as a word took the next
                         // field's bytes with it.
                         // A niche option is the one word it's loaded as.
+                        //
+                        // An edge to a rack node is a plain word: the rack owns
+                        // the node, and the copy has no part in anything the
+                        // struct owns. Typed as a pointer the release pass read
+                        // it as a part of the source, and handing it to the new
+                        // struct handed the whole source over (#1842).
                         let field_mir_ty = self.ctx.type_to_mir(&field.ty);
-                        let field_mir_ty = if field_mir_ty.niche_none().is_some() {
+                        let field_mir_ty = if field_mir_ty.is_link_slot() {
+                            MirType::I64
+                        } else if field_mir_ty.niche_none().is_some() {
                             MirType::Ptr
                         } else {
                             field_mir_ty

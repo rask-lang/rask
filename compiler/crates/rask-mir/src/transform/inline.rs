@@ -197,7 +197,7 @@ fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
     alias
 }
 
-fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
+pub(crate) fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
     use std::collections::HashSet;
 
     let known: HashMap<&str, &MirFunction> =
