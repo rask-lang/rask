@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A tuple, an optional and a link are Equal, and a tuple, a link and (through
+// its parts) an optional are Hashable, without any `extend` block. A bound
+// `T: Equal` takes each of them: a tuple or an optional when its parts are,
+// and a link by identity, whatever its node holds.
+
+import memory.Link
+import memory.Rack
+
+struct Node {
+    public name: string
+}
+
+func same<T: Equal>(a: T, b: T) -> bool {
+    return a == b
+}
+
+func code<K: Hashable>(k: K) -> u64 {
+    return k.hash()
+}
+
+test "a link is Equal by identity, not by what its node holds" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(name: "x"))
+    let b = rack.insert(Node(name: "x"))
+    assert same(a, a)
+    assert !same(a, b)
+}
+
+test "a link is Hashable by identity" {
+    mut rack: Rack<Node> = Rack.new()
+    let a = rack.insert(Node(name: "x"))
+    let b = rack.insert(Node(name: "x"))
+    assert code(a) == code(a)
+    assert code(a) != code(b)
+}
+
+test "a tuple is Equal when its parts are" {
+    assert same((1, "a"), (1, "a"))
+    assert !same((1, "a"), (2, "a"))
+    assert same((1, (2, 3)), (1, (2, 3)))
+}
+
+test "an optional is Equal when its payload is" {
+    let a: i64? = 5
+    let b: i64? = 5
+    let c: i64? = none
+    assert same(a, b)
+    assert !same(a, c)
+    assert same(c, c)
+}
+
+test "an optional compares against a bare value and a literal" {
+    let a: i64? = 5
+    let five: i64 = 5
+    assert a == 5
+    assert a == five
+    assert a != 6
+}

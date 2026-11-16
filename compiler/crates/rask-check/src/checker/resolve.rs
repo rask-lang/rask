@@ -869,11 +869,13 @@ impl TypeChecker {
         // spellings of `Link<T>` land here; the arm further down only ever saw
         // the unresolved one, and a link from `Rack.insert` is resolved (#1285).
         //
-        // `clone` stays the link's too: a link is a word that copies (RK2), and
-        // `l.clone()` has always been another link to the same node.
+        // What the link's own interfaces declare (`shape_of`): `clone` too, since
+        // a link is a word that copies (RK2) and `l.clone()` is another link to
+        // the same node.
         if let Some(node) = self.link_node_type(&ty) {
-            let own = matches!(method.as_str(), "eq" | "ne") && args.len() == 1
-                || matches!(method.as_str(), "hash" | "clone") && args.is_empty();
+            let own = self
+                .provided_signature(&ty, &method)
+                .is_some_and(|(params, _)| params.len() == args.len());
             if !own {
                 if self.takes_self(&node, &method) {
                     // Typed anyway, so the call's result doesn't add an error
@@ -1474,21 +1476,11 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "Rack" => {
                 self.resolve_rack_method(type_args, &method, &args, &ret, call_node, span)
             }
-            // Link<T> — a reference. `eq`/`ne` compare node identity; anything
-            // else went to the node's own methods above.
-            Type::UnresolvedGeneric { name, .. } if name == "Link" => {
-                match method.as_str() {
-                    "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
-                    // `hash` is the link's, not the node's. Falling through
-                    // gave it the node's derived hash, which disagrees with
-                    // `==` in both directions: two distinct nodes holding equal
-                    // fields hashed the same while their links compare
-                    // different. Equal keys have to hash equal, and here equal
-                    // means the same node (#1268).
-                    "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
+            // Link<T> — a reference. Its identity interfaces are its own
+            // (`shape_of`); anything else went to the node's own methods above.
+            Type::UnresolvedGeneric { name, .. } if name == "Link" => self
+                .resolve_provided_method(&ty, &method, &args, &ret, span)
+                .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span })),
             // Rack (bare, for Rack.new())
             Type::UnresolvedNamed(name) if name == "Rack" => {
                 self.resolve_rack_method(&[], &method, &args, &ret, call_node, span)
@@ -1795,16 +1787,15 @@ impl TypeChecker {
                 let inner = (**inner).clone();
                 self.resolve_raw_ptr_method(&inner, &ty, &method, &args, &ret, span)
             }
-            // type.tuples/TU9 — `==`/`!=` on tuples, element by element. The
+            // type.tuples/TU9 — `==` on tuples, element by element. The
             // elements have to be comparable themselves, which unifying the
-            // two tuple types checks.
-            Type::Tuple(_) => match method.as_str() {
-                "eq" | "ne" if args.len() == 1 => {
-                    self.unify(&args[0], &ty, span)?;
-                    self.unify(&ret, &Type::Bool, span)
-                }
-                _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-            },
+            // two tuple types checks. Like the optional, a tuple answers the
+            // operators: its hash is the compiler's own (`derive`'s wrapper
+            // functions), not a method a program calls.
+            Type::Tuple(_) if rask_ast::expr::is_operator_method(&method) => self
+                .resolve_provided_method(&ty, &method, &args, &ret, span)
+                .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty, method, span })),
+            Type::Tuple(_) => Err(TypeError::NoSuchMethod { ty, method, span }),
             ty if ty.is_option() => {
                 let inner = ty.as_option().unwrap().clone();
                 self.resolve_option_method(&inner, &method, &args, &ret, span)
@@ -2180,14 +2171,24 @@ impl TypeChecker {
         Some(self.apply_method_sig(ty, method, &sig, Default::default(), args.to_vec(), ret, call_node, span))
     }
 
-    /// The signature of a method a primitive answers through a conformance
-    /// the compiler provides for it (`primitive_conformances`), not a
+    /// The interfaces the compiler gives `ty` without an `extend` block: a
+    /// primitive's (`primitive_conformances`), or what a tuple, an optional or
+    /// a link has from its shape (`shape_of`).
+    fn provided_conformances(&self, ty: &Type) -> &'static [&'static str] {
+        match crate::interfaces::shape_of(&self.types, ty) {
+            Some(shape) => shape.conformances,
+            None => crate::interfaces::primitive_conformances(ty),
+        }
+    }
+
+    /// The signature of a method a type answers through a conformance
+    /// the compiler provides for it (`provided_conformances`), not a
     /// declaration in `stdlib/*.rk`: its operators, comparisons and hash. The
     /// interface it comes from says the shape; `Self` reads as the receiver.
     /// An operator interface from `stdlib/ops.rk` takes one `Self` when it has
     /// an `Rhs` and nothing when it's unary, and answers `Self`.
     fn provided_signature(&self, ty: &Type, method: &str) -> Option<(Vec<Type>, Type)> {
-        let conformances = crate::interfaces::primitive_conformances(ty);
+        let conformances = self.provided_conformances(ty);
         if let Some(op) = conformances
             .iter()
             .find(|i| rask_stdlib::operators::operator_interface_method(i) == Some(method))
@@ -3106,36 +3107,48 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let self_ty = Type::option(inner.clone());
-        match method {
-            // `x == none` desugars to `x.eq(none)`. Equality on a zero-field
-            // type is ordinary; `tool.lint/I5` steers it toward `x is none`.
-            //
-            // A bare *literal* on the other side is meant as the payload, and
-            // nothing else constrains it — `let a: i64? = 5` then `a == 5` left
-            // the `5` free, so it defaulted to `i32` and the comparison was
-            // between an `i64?` and an `i32`. Lowering then had a mismatch it
-            // couldn't wrap, and codegen read the scalar as an address (#834).
-            // Only a literal: a typed argument keeps its own type, and `none`
-            // has its own.
-            "eq" | "ne" if args.len() == 1 => {
-                if let Type::Var(id) = self.ctx.apply(&args[0]) {
-                    if self.ctx.literal_vars.contains_key(&id) {
-                        let _ = self.unify(&args[0], inner, span);
-                    }
+        // The wrapper shapes have no methods (std.api/SD4): what they answer is
+        // the operators, which their Equal conformance (`shape_of`) provides.
+        let operator = rask_ast::expr::is_operator_method(method);
+        let Some((_, want_ret)) = self
+            .provided_signature(&self_ty, method)
+            .filter(|(params, _)| operator && params.len() == args.len())
+        else {
+            return Err(Self::wrapper_method_cut(self_ty, method, span));
+        };
+        // `x == none` desugars to `x.eq(none)`. Equality on a zero-field type
+        // is ordinary; `tool.lint/I5` steers it toward `x is none`.
+        //
+        // The other side is an optional of the same type, or a bare value that
+        // is made present first (specs/types/optionals.md, equality). A bare *literal* is
+        // meant as the payload, and nothing else constrains it — `let a: i64 =
+        // 5` then `a == 5` left the `5` free, so it defaulted to `i32` and the
+        // comparison was between an `i64?` and an `i32`. Lowering then had a
+        // mismatch it couldn't wrap, and codegen read the scalar as an address
+        // (#834).
+        if let [operand] = args {
+            match self.ctx.apply(operand) {
+                // Not known yet: leave it for what settles it.
+                Type::Var(id) if !self.ctx.literal_vars.contains_key(&id) => {}
+                // A literal: the payload.
+                Type::Var(_) => {
+                    let _ = self.unify(operand, inner, span);
                 }
-                // The other side is an optional too — `x == none` most of the
-                // time. `none` has no payload type of its own, so unless it's
-                // tied to the receiver here it stays `?` forever: the node came
-                // out of the checker still holding a variable, and MIR had to
-                // guess a width for it. Comparing two optionals means comparing
-                // the same optional, so say so.
-                if self.ctx.apply(&args[0]).is_option() {
-                    let _ = self.unify(&args[0], &self_ty, span);
+                // `none` has no payload type of its own, so unless it's tied to
+                // the receiver here it stays `?` forever: the node came out of
+                // the checker still holding a variable, and MIR had to guess a
+                // width for it. Comparing two optionals means comparing the
+                // same optional, so say so.
+                t if t.is_option() => {
+                    let _ = self.unify(operand, &self_ty, span);
                 }
-                self.unify(ret, &Type::Bool, span)
+                // A typed bare value keeps its own type: lowering makes it
+                // present, and integers compare across widths
+                // (type.operators/ORD4).
+                _ => {}
             }
-            _ => Err(Self::wrapper_method_cut(self_ty, method, span)),
         }
+        self.unify(ret, &want_ret, span)
     }
 
     /// std.api/SD4: neither wrapper has methods — the operators are the whole

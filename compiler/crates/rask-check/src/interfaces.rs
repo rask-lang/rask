@@ -436,19 +436,9 @@ impl<'a> InterfaceChecker<'a> {
             }
         }
 
-        if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
-            let elems: Option<Vec<Type>> = match ty {
-                Type::Tuple(elems) => Some(elems.clone()),
-                // `T?` and `T or E` have no methods (std.api/SD4), but `==`,
-                // hashing and cloning work over the whole slot when they work
-                // on its parts — the same answer the struct derive gives a
-                // field of this type. Order is not on this list.
-                Type::Result { ok, err } if **err == Type::None => Some(vec![(**ok).clone()]),
-                Type::Result { ok, err } => Some(vec![(**ok).clone(), (**err).clone()]),
-                _ => None,
-            };
-            if let Some(elems) = elems {
-                if elems.iter().all(|e| {
+        if let Some(shape) = shape_of(self.types, ty) {
+            if shape.conformances.contains(&base_interface) {
+                if shape.parts.iter().all(|e| {
                     self.check_satisfies(e, &TypeExpr::named(base_interface), span).is_ok()
                 }) {
                     return Ok(());
@@ -2029,6 +2019,47 @@ pub fn primitive_conformances(ty: &Type) -> &'static [&'static str] {
         Type::Unit => UNIT,
         Type::RawPtr(_) => POINTER,
         _ => &[],
+    }
+}
+
+/// What a type made of other types gets from its shape: its interfaces, and
+/// the parts that each have to have them too.
+pub(crate) struct Shape {
+    pub conformances: &'static [&'static str],
+    pub parts: Vec<Type>,
+}
+
+/// The interfaces a tuple, an optional, a result or a link has without any
+/// `extend` block, and what has to hold of its parts.
+///
+/// The one statement of it, like `primitive_conformances` for the primitives.
+/// The conformance check and the method resolver both read it.
+///
+/// A tuple, an optional and a result are Equal, Hashable and Cloneable when
+/// their parts are, element by element (type.tuples/TU8, TU9, TU11; the same
+/// rule a struct's derive applies to its fields). Order is not on the list.
+///
+/// A `Link<T>` is a word naming a node: it compares and hashes by that
+/// identity, whatever the node holds (mem.racks/RK2), so nothing is asked of
+/// `T`. Two distinct nodes with equal fields are different links.
+pub(crate) fn shape_of(types: &TypeTable, ty: &Type) -> Option<Shape> {
+    const THROUGH_PARTS: &[&str] = &["Equal", "Hashable", "Cloneable"];
+    match ty {
+        Type::Tuple(elems) => Some(Shape { conformances: THROUGH_PARTS, parts: elems.clone() }),
+        // `T?` is `T or none`: one part.
+        Type::Result { ok, err } if **err == Type::None => {
+            Some(Shape { conformances: THROUGH_PARTS, parts: vec![(**ok).clone()] })
+        }
+        Type::Result { ok, err } => {
+            Some(Shape { conformances: THROUGH_PARTS, parts: vec![(**ok).clone(), (**err).clone()] })
+        }
+        Type::Generic { base, .. } if types.type_name(*base) == "Link" => {
+            Some(Shape { conformances: THROUGH_PARTS, parts: Vec::new() })
+        }
+        Type::UnresolvedGeneric { name, .. } if name == "Link" => {
+            Some(Shape { conformances: THROUGH_PARTS, parts: Vec::new() })
+        }
+        _ => None,
     }
 }
 
