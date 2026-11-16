@@ -159,8 +159,7 @@ impl Interpreter {
     /// substituted into the field types — otherwise every generic struct
     /// answered "not a struct type" (#968).
     fn reflect_fields(&self, ty: &TypeExpr) -> Result<Value, RuntimeError> {
-        let decl = ty
-            .name()
+        let decl = reflect::declared_name(&self.types, ty)
             .and_then(|n| self.struct_decls.get(&n))
             .ok_or_else(|| {
                 RuntimeError::TypeError(format!(
@@ -254,7 +253,7 @@ impl Interpreter {
         };
         // `enums` rather than `type_decls`: it holds the stdlib's enums too,
         // `Ordering` among them.
-        let base = ty.name().ok_or_else(not_enum)?;
+        let base = reflect::declared_name(&self.types, ty).ok_or_else(not_enum)?;
         let id = self.types.get_type_id(&base).ok_or_else(not_enum)?;
         let type_args = self.checked_type_args(ty.args()).ok_or_else(not_enum)?;
         let layout = self.types.enum_layout(id, &type_args).ok_or_else(not_enum)?;

@@ -90,6 +90,13 @@ impl Interpreter {
         self.match_pattern(&as_form, value)?.remove(GUARD)
     }
 
+    /// Does a pattern's enum spelling name the enum a value carries? Under a
+    /// transparent `type alias HB = Holder<Big>` the pattern says `HB` while
+    /// the value was built as `Holder`.
+    fn names_enum(&self, spelled: &str, enum_name: &str) -> bool {
+        spelled == enum_name || self.resolve_transparent_alias(spelled) == enum_name
+    }
+
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
         match &pattern.kind {
             PatternKind::Wildcard => Some(HashMap::new()),
@@ -100,16 +107,17 @@ impl Interpreter {
                     let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
                     return match value {
                         Value::Enum { name: en, variant, .. }
-                            if en == pat_enum && variant == pat_variant =>
+                            if self.names_enum(pat_enum, en) && variant == pat_variant =>
                         {
                             Some(HashMap::new())
                         }
                         // ER28: for a Result scrutinee, descend into Ok/Err
                         // and retry against the payload (so arms like
                         // `IoError.NotFound` work against `r: T or IoError`).
-                        Value::Enum { name: en, variant, fields, .. }
-                            if en == "Result" && matches!(variant.as_str(), "Ok" | "Err") =>
-                        {
+                        // A flat `T? or E` wears an `Option` inside the `Ok`
+                        // (`Ok(Some(Light.Red))`), so the walk goes through
+                        // both layers (#1849).
+                        Value::Enum { name: en, variant, fields, .. } if wraps_payload(en, variant) => {
                             if let Some(inner) = fields.first() {
                                 return self.match_pattern(pattern, inner);
                             }
@@ -202,7 +210,7 @@ impl Interpreter {
                     // `pa.Shape.Circle`.
                     let matches = if let Some((path, pat_variant)) = name.rsplit_once('.') {
                         let pat_enum = path.rsplit('.').next().unwrap_or(path);
-                        enum_name == pat_enum && variant == pat_variant
+                        self.names_enum(pat_enum, enum_name) && variant == pat_variant
                     } else {
                         variant == name
                     };
@@ -220,7 +228,7 @@ impl Interpreter {
                     // ER28: for a Result scrutinee, descend into Ok/Err and
                     // match against the inner value. Lets `match r { IoError.NotFound(p) => ... }`
                     // work when r: T or IoError.
-                    if enum_name == "Result" && matches!(variant.as_str(), "Ok" | "Err") {
+                    if wraps_payload(enum_name, variant) {
                         if let Some(inner) = enum_fields.first() {
                             return self.match_pattern(pattern, inner);
                         }
@@ -266,7 +274,7 @@ impl Interpreter {
                         None => (None, pat_name.as_str()),
                     };
                     if variant != pat_variant
-                        || pat_enum.is_some_and(|e| e != enum_name)
+                        || pat_enum.is_some_and(|e| !self.names_enum(e, enum_name))
                     {
                         // ER28, as for `Constructor` above: against a
                         // `T or E` the arm names the error's own variant,
@@ -274,7 +282,7 @@ impl Interpreter {
                         // desugars to this named form when `A`'s fields are
                         // labelled, and `assert r is Fail.A(n: 3)` is one
                         // from the start (#1958).
-                        if enum_name == "Result" && matches!(variant.as_str(), "Ok" | "Err") {
+                        if wraps_payload(enum_name, variant) {
                             if let Some(inner) = payload.first() {
                                 return self.match_pattern(pattern, inner);
                             }
@@ -715,3 +723,11 @@ fn enum_variant_path(ty: &TypeExpr) -> Option<(&str, &str)> {
     }
 }
 
+
+/// `Ok`, `Err` and `Some` hold the value a variant pattern is really about:
+/// `match r { IoError.NotFound(p) => .. }` on a `T or IoError`, and the same
+/// through the `Option` of a flat `T? or E`.
+fn wraps_payload(enum_name: &str, variant: &str) -> bool {
+    (enum_name == "Result" && matches!(variant, "Ok" | "Err"))
+        || (enum_name == "Option" && variant == "Some")
+}
