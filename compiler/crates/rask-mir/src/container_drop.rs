@@ -3477,16 +3477,24 @@ fn release_overwritten_string_cells(func: &mut MirFunction, cells: &[(LocalId, H
             continue;
         }
         let is_store = |s: &MirStmt| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell);
+        let is_zero = |s: &MirStmt| matches!(&s.kind, MirStmtKind::ZeroAggregate { local } if local == cell);
         for block in func.blocks.iter_mut() {
             let mut skip_first = block.id == *fill_block;
+            // A whole write of an addressed cell starts by zeroing it
+            // (`addr_taken`), so the old string has to go before the zero,
+            // not before the store that follows it.
+            let mut zeroed_at: Option<usize> = None;
             let mut at = 0;
             while at < block.statements.len() {
-                if is_store(&block.statements[at]) {
+                if is_zero(&block.statements[at]) {
+                    zeroed_at = Some(at);
+                } else if is_store(&block.statements[at]) {
+                    let write_starts = zeroed_at.take().unwrap_or(at);
                     if skip_first {
                         skip_first = false;
                     } else {
                         block.statements.insert(
-                            at,
+                            write_starts,
                             MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::Buffer }),
                         );
                         at += 1;
