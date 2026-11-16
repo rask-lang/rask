@@ -2111,11 +2111,28 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), payload_ty))
         }
 
+    /// The length of `[x; count]` when `count` is known at compile time: a
+    /// literal, or a module const that folds to an integer (`[0; N]`). A local
+    /// of the same name as the const is not the const.
+    fn constant_array_length(&self, count: &Expr) -> Option<u32> {
+        match &count.kind {
+            ExprKind::Int(n, _) => Some(*n as u32),
+            ExprKind::Ident(name) => {
+                let (own, fact) = self.const_facts.get(name)?;
+                let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
+                match fact {
+                    rask_ast::comptime_if::Fact::Int(n, _) if still_the_const => u32::try_from(*n).ok(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
             // Constant count → expand to a fixed-size array (same as literal)
-            if let ExprKind::Int(n, _) = &count.kind {
+            if let Some(len) = self.constant_array_length(count) {
                 let (val, elem_ty) = self.lower_expr(value)?;
-                let len = *n as u32;
                 let elem_size = elem_ty.size();
                 let array_ty = MirType::Array { elem: Box::new(elem_ty), len };
                 let result_local = self.builder.alloc_temp(array_ty.clone());

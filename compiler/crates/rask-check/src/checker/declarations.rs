@@ -190,6 +190,21 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        // `const W = 4` then `[i32; W]`, and `const TWICE = W * 2`. The length
+        // has to be known before any declared type is parsed, so the consts
+        // are folded here rather than where each is checked (#906). The fold is
+        // the one the backends use for `comptime if`.
+        let consts = decls.iter().filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some((c.name.as_str(), &c.init, c.ty.as_ref().and_then(|t| t.bare_name()))),
+            _ => None,
+        });
+        for (name, fact) in rask_ast::comptime_if::const_facts(consts) {
+            if let rask_ast::comptime_if::Fact::Int(n, _) = fact {
+                if let Ok(len) = usize::try_from(n) {
+                    self.types.register_const_length(name, len);
+                }
+            }
+        }
         // Transparent aliases first: a struct field or another declaration's
         // signature may name one declared further down, and resolving it
         // before the alias is in the table gives a type nobody declared.
@@ -388,16 +403,6 @@ impl TypeChecker {
                     if !a.is_transparent {
                         self.types.record_declared_type(decl.id, id);
                         self.types.record_param_bounds(id, &a.type_params);
-                    }
-                }
-            }
-            // `const W = 4` then `[i32; W]`. The length has to be known
-            // before any declared type is parsed, so it's recorded in this
-            // pass rather than where the const is checked (#906).
-            DeclKind::Const(c) => {
-                if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
-                    if let Ok(len) = usize::try_from(*n) {
-                        self.types.register_const_length(c.name.clone(), len);
                     }
                 }
             }
