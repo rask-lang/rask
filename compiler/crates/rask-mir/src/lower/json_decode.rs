@@ -13,6 +13,7 @@
 //! matching variant and the runtime's message.
 
 use rask_ast::decl::field_attrs;
+use rask_ast::ty::ParamMode;
 use rask_layout::{EnumLayout, StructLayout};
 use rask_types::{GenericArg, Type};
 
@@ -31,7 +32,8 @@ use rask_mono::runtime_abi::{
     RASK_JSHAPE_CHAR as JSHAPE_CHAR, RASK_JSHAPE_I128 as JSHAPE_I128, RASK_JSHAPE_U128 as JSHAPE_U128, RASK_JSHAPE_STRING as JSHAPE_STRING, RASK_JSHAPE_U16 as JSHAPE_U16,
     RASK_JSHAPE_U32 as JSHAPE_U32, RASK_JSHAPE_U64 as JSHAPE_U64, RASK_JSHAPE_U8 as JSHAPE_U8,
     RASK_JSON_ERR_MISSING as ERR_MISSING, RASK_JSON_ERR_PARSE as ERR_PARSE,
-    RASK_JSON_ERR_TYPE as ERR_TYPE,
+    RASK_JSON_ERR_REFUSED as ERR_REFUSED, RASK_JSON_ERR_TYPE as ERR_TYPE,
+    RASK_JSON_TEXT_MESSAGE as TEXT_MESSAGE, RASK_JSON_TEXT_PATH as TEXT_PATH,
 };
 
 impl<'a> MirLowerer<'a> {
@@ -186,19 +188,22 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
             func: FunctionRef::internal("json_error_message".to_string()),
-            args: vec![],
+            args: vec![MirOperand::Constant(MirConst::Int(TEXT_MESSAGE))],
         }));
 
         let err_val = self.builder.alloc_temp(err_ty.clone());
-        let variants: Vec<(i64, u32, u32)> = [
+        // Each variant's tag and where its payload fields sit.
+        let variants: Vec<(i64, u32, u32, Vec<u32>)> = [
             (ERR_PARSE, "ParseError"),
             (ERR_TYPE, "TypeError"),
             (ERR_MISSING, "MissingField"),
+            (ERR_REFUSED, "Refused"),
         ]
         .iter()
         .filter_map(|(code, name)| {
             let v = json_error?.variants.iter().find(|v| v.name == *name)?;
-            Some((*code, v.tag as u32, v.payload_offset))
+            let at = v.fields.iter().map(|f| v.payload_offset + f.offset).collect();
+            Some((*code, v.tag as u32, v.payload_offset, at))
         })
         .collect();
 
@@ -223,7 +228,7 @@ impl<'a> MirLowerer<'a> {
         let entry = self.builder.next_stmt_pos().0;
         let join = self.builder.create_block();
         let mut cases = Vec::new();
-        for (code, tag, payload_offset) in &variants {
+        for (code, tag, payload_offset, fields) in &variants {
             let block = self.builder.create_block();
             cases.push((*code as u64, block));
             self.builder.switch_to_block(block);
@@ -234,9 +239,30 @@ impl<'a> MirLowerer<'a> {
                 store_size: tag_bytes,
                 field: None,
             }));
+            // A refusal holds where and why, apart; the others hold the
+            // message alone.
+            let (message_at, path_at) = match fields.as_slice() {
+                [path, reason] if *code == ERR_REFUSED => (*reason, Some(*path)),
+                _ => (*payload_offset, None),
+            };
+            if let Some(path_at) = path_at {
+                let path = self.builder.alloc_temp(MirType::Buffer);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(path),
+                    func: FunctionRef::internal("json_error_message".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::Int(TEXT_PATH))],
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: err_val,
+                    offset: path_at,
+                    value: MirOperand::Local(path),
+                    store_size: 16,
+                    field: None,
+                }));
+            }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: err_val,
-                offset: *payload_offset,
+                offset: message_at,
                 value: MirOperand::Local(msg),
                 store_size: 16,
                 field: None,
@@ -274,6 +300,18 @@ impl<'a> MirLowerer<'a> {
             if let Some(shape) = self.emit_generated_shape(ty) {
                 return Some(shape);
             }
+        }
+        // A type with its own `decode` is read as its wire type and handed to
+        // that; one with its own `encode` is written as what that returns
+        // (std.encoding/E12b). Each way only follows its own hook.
+        if purpose == ShapeFor::Encode {
+            if let Some(shape) = self.emit_custom_encode_shape(ty) {
+                return Some(shape);
+            }
+        } else if let Some(shape) = self.emit_custom_decode_shape(ty, purpose) {
+            return shape;
+        }
+        if purpose == ShapeFor::Claims {
             if let Some(shape) = self.emit_claim_only_shape(ty) {
                 return Some(shape);
             }
@@ -507,6 +545,237 @@ impl<'a> MirLowerer<'a> {
         Some(shape)
     }
 
+    /// The symbol of the `__encode_json` of a type that writes itself out
+    /// through its own `encode` (std.encoding/E12b), for a type as the checker
+    /// spells it. `None` for any other type.
+    fn custom_encode_adapter(&self, ty: &Type) -> Option<String> {
+        let name = match ty {
+            Type::Named(id) => self.ctx.type_names.get(id)?,
+            Type::UnresolvedNamed(name) => name,
+            _ => return None,
+        };
+        self.ctx.custom_encodes.get(name).cloned()
+    }
+
+    /// The JSON text of `value`, a `ty` with its own `encode`: its adapter's
+    /// answer. Where an encoder would have walked the type's fields, it adds
+    /// this instead. `None` when `ty` has no `encode` of its own.
+    pub(super) fn custom_encode_text(&mut self, value: MirOperand, ty: &Type) -> Option<crate::LocalId> {
+        let adapter = self.custom_encode_adapter(ty)?;
+        let text = self.builder.alloc_temp(MirType::Buffer);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(adapter),
+            args: vec![value],
+        }));
+        Some(text)
+    }
+
+    /// The shape of a type with its own `encode`: a function the runtime calls
+    /// with the value's address and a string slot, which it fills with the
+    /// value's JSON text and the runtime then frees.
+    fn emit_custom_encode_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
+        let adapter = self.custom_encode_adapter(ty)?;
+        let ty_mir = self.ctx.type_to_mir(ty);
+        let string_mir = self.ctx.type_to_mir(&Type::String);
+        let fn_name = format!("{}__encode_custom_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::Void);
+        // Both parameters first, as in the decode trampoline: a parameter's
+        // local id is its position.
+        // An aggregate arrives as its own address; a word is read out of the
+        // buffer the runtime points at.
+        let src_param = if ty_mir.passed_by_address() {
+            wb.add_param("__src".to_string(), ty_mir.clone())
+        } else {
+            wb.add_param("__src".to_string(), MirType::Ptr)
+        };
+        let out = wb.add_param("__out".to_string(), MirType::Ptr);
+        let value = if ty_mir.passed_by_address() {
+            src_param
+        } else {
+            let src = src_param;
+            let v = wb.alloc_temp(ty_mir.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: v,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(src),
+                    field_index: 0,
+                    byte_offset: Some(0),
+                    access: FieldAccess::for_field(&ty_mir, rask_layout::size_of(&ty_mir, self.ctx.target())),
+                },
+            }));
+            v
+        };
+        let text = wb.alloc_temp(string_mir.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(adapter),
+            args: vec![MirOperand::Local(value)],
+        }));
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: out,
+            offset: 0,
+            value: MirOperand::Local(text),
+            store_size: rask_layout::size_of(&string_mir, self.ctx.target()),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
+        self.func_sigs.insert(fn_name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(fn_name),
+        }));
+        Some(self.emit_shape_call("json_shape_custom_encode", vec![
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64)),
+            MirOperand::Local(addr),
+        ]))
+    }
+
+    /// A type that decodes through its own `decode` (std.encoding/E12b): the
+    /// wire type's shape, and a function the decoder calls with the wire value
+    /// and the slot to fill. `None` for any other type; `Some(None)` when the
+    /// type has one but its wire type has no shape.
+    fn emit_custom_decode_shape(&mut self, ty: &Type, purpose: ShapeFor) -> Option<Option<crate::LocalId>> {
+        let name = match ty {
+            Type::Named(id) => self.ctx.type_names.get(id)?.clone(),
+            Type::UnresolvedNamed(name) => name.clone(),
+            _ => return None,
+        };
+        let custom = self.ctx.custom_decodes.get(&name)?.clone();
+        let Some(wire_shape) = self.emit_shape_for(&custom.wire, purpose) else { return Some(None) };
+        let ty_mir = self.ctx.type_to_mir(ty);
+        let wire_mir = self.ctx.type_to_mir(&custom.wire);
+        let string_mir = self.ctx.type_to_mir(&Type::String);
+        let result_ty = Type::Result { ok: Box::new(ty.clone()), err: Box::new(Type::String) };
+        let result_mir = self.ctx.type_to_mir(&result_ty);
+
+        // `i64 (void *wire, void *dst)`: run the type's adapter on the wire
+        // value, store what it made, or hand the runtime the rejection's
+        // message. 0 is made, 1 is refused.
+        let fn_name = format!("{}__decode_custom_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::I64);
+        // Both parameters first: a parameter's local id is its position, so a
+        // temp allocated between them would take the second parameter's slot
+        // and hand `__dst` a local of the wire's type.
+        // An aggregate arrives as its own address, the way any aggregate
+        // parameter does; a word is read out of the buffer the runtime points at.
+        let wire_param = if wire_mir.passed_by_address() {
+            wb.add_param("__wire".to_string(), wire_mir.clone())
+        } else {
+            wb.add_param("__wire".to_string(), MirType::Ptr)
+        };
+        let dst = wb.add_param("__dst".to_string(), MirType::Ptr);
+        let wire = if wire_mir.passed_by_address() {
+            wire_param
+        } else {
+            let wire_ptr = wire_param;
+            let v = wb.alloc_temp(wire_mir.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: v,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(wire_ptr),
+                    field_index: 0,
+                    byte_offset: Some(0),
+                    access: FieldAccess::for_field(&wire_mir, rask_layout::size_of(&wire_mir, self.ctx.target())),
+                },
+            }));
+            v
+        };
+        let result = wb.alloc_temp(result_mir.clone());
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(result),
+            func: FunctionRef::internal(custom.adapter.clone()),
+            args: vec![MirOperand::Local(wire)],
+        }));
+        let tag = wb.alloc_temp(MirType::U8);
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(result) },
+        }));
+        let made = wb.create_block();
+        let refused = wb.create_block();
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag),
+            then_block: refused,
+            else_block: made,
+        }));
+        let payload = |wb: &mut crate::builder::BlockBuilder, arm: &MirType| {
+            let value = wb.alloc_temp(arm.clone());
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: value,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(result),
+                    field_index: 0,
+                    byte_offset: Some(rask_layout::payload_offset_of(&result_mir, self.ctx.target())),
+                    access: FieldAccess::for_field(arm, rask_layout::size_of(arm, self.ctx.target())),
+                },
+            }));
+            value
+        };
+        wb.switch_to_block(made);
+        let value = payload(&mut wb, &ty_mir);
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: dst,
+            offset: 0,
+            value: MirOperand::Local(value),
+            store_size: rask_layout::size_of(&ty_mir, self.ctx.target()),
+            field: None,
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        wb.switch_to_block(refused);
+        let message = payload(&mut wb, &string_mir);
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("json_custom_reject".to_string()),
+            args: vec![MirOperand::Local(message)],
+        }));
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.func_sigs.insert(fn_name.clone(), super::FuncSig {
+            ret_ty: MirType::I64,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        let mut trampoline = wb.finish();
+        // An aggregate wire is the trampoline's to hand on: the runtime made it
+        // and gives it up here, and the adapter takes it. Left as a borrowed
+        // parameter, the adapter's release of its parts was dropped as the
+        // trampoline's problem, and a wire struct holding a `Vec` leaked it.
+        trampoline.param_modes = vec![
+            if wire_mir.passed_by_address() { ParamMode::Take } else { ParamMode::Borrow },
+            ParamMode::Borrow,
+        ];
+        self.synthesized_functions.push(trampoline);
+
+        let addr = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::FuncAddr(fn_name),
+        }));
+        let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
+        Some(Some(self.emit_shape_call("json_shape_custom", vec![
+            int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64),
+            MirOperand::Local(wire_shape),
+            int(rask_layout::size_of(&wire_mir, self.ctx.target()) as i64),
+            MirOperand::Local(addr),
+        ])))
+    }
+
     /// A type with its own `claims.Generate` (type.claims/IN2): a function
     /// that calls its `generate` and writes the result where the runtime
     /// says, wrapped in a shape. `None` for any other type.
@@ -733,7 +1002,7 @@ impl<'a> MirLowerer<'a> {
             }));
             buf
         };
-        let shape = self.emit_shape(ty)?;
+        let shape = self.emit_shape_for(ty, ShapeFor::Encode)?;
         let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
@@ -780,6 +1049,9 @@ impl<'a> MirLowerer<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeFor {
     Json,
+    /// Writing a value out. The same walk as `Json`, except that a type follows
+    /// its own `encode`, not its `decode`.
+    Encode,
     Claims,
 }
 

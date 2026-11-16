@@ -39,10 +39,10 @@ pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name, ErasedError};
-pub use type_table::{primitive_spelling, TaskBound, TypeTable};
+pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
+pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
 
 pub use generics::{bind_header_pattern, bind_header_patterns};

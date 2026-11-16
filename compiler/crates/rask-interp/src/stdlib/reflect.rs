@@ -189,6 +189,11 @@ impl Interpreter {
                         reflect::written_label(&self.types, &substitute(&f.ty)).source(),
                     ))),
                 );
+                let wire = reflect::wire_written_form(&self.types, &substitute(&f.ty));
+                fields.insert("wire_kind".to_string(), wire_kind_value(wire.kind));
+                fields.insert("wire_optional".to_string(), Value::Bool(wire.optional));
+                fields.insert("has_decode".to_string(), Value::Bool(wire.own_decode));
+                fields.insert("has_encode".to_string(), Value::Bool(wire.own_encode));
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so
                 // the two backends can't drift into two answers.
@@ -266,6 +271,11 @@ impl Interpreter {
     }
 }
 
+/// A field's wire kind as the `reflect.WireKind` variant it names.
+fn wire_kind_value(kind: reflect::WireKind) -> Value {
+    Value::stdlib_enum("WireKind", kind.variant(), Vec::new())
+}
+
 fn string_value(s: String) -> Value {
     Value::String(Arc::new(Mutex::new(s)))
 }
@@ -317,6 +327,10 @@ fn variant_info(v: rask_mono::reflect::VariantFact) -> Value {
             let mut f = IndexMap::new();
             f.insert("name".to_string(), string_value(p.name.clone()));
             f.insert("type_name".to_string(), string_value(p.type_name));
+            f.insert("wire_kind".to_string(), wire_kind_value(p.wire.kind));
+            f.insert("wire_optional".to_string(), Value::Bool(p.wire.optional));
+            f.insert("has_decode".to_string(), Value::Bool(p.wire.own_decode));
+            f.insert("has_encode".to_string(), Value::Bool(p.wire.own_encode));
             f.insert("offset".to_string(), Value::int(p.offset as i64));
             f.insert("size".to_string(), Value::int(p.size as i64));
             // A payload has no visibility or wire annotations of its own.

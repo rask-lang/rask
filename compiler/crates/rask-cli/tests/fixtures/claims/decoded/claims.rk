@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A claim is given the values a decode could build, so a `Port` is never 0,
+// alone, in a list or in an enum's payload. The last claim is false, to show
+// how a counterexample prints.
+
+import decoded
+
+claim a_port_passed_its_check(p: decoded.Port) {
+    assert p.value != 0
+}
+
+claim every_listed_port_passed(c: decoded.Config) {
+    for p in c.ports {
+        assert p.value != 0
+    }
+}
+
+claim a_bound_port_passed(b: decoded.Bind) {
+    match b {
+        decoded.Bind.Local(p) => assert p.value != 0
+        decoded.Bind.Remote(_, p) => assert p.value != 0
+    }
+}
+
+claim ports_are_small(p: decoded.Port) {
+    assert p.value < 10
+}

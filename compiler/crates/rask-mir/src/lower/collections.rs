@@ -326,6 +326,21 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<(), LoweringError> {
         use rask_types::Type;
 
+        // A type with its own `encode` is written as what that answers
+        // (std.encoding/E12b), not as its fields.
+        if let Some(text) = self.custom_encode_text(MirOperand::Local(field_val), field_ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(key.to_string())),
+                    MirOperand::Local(text),
+                ],
+            }));
+            return Ok(());
+        }
+
         // A `Vec<T>` field is an array, not a number. Without this the field
         // went through json_buf_add_i64 and `{"items": [...]}` came out as
         // `{"items":{}}`.
@@ -646,27 +661,39 @@ impl<'a> MirLowerer<'a> {
             payload_ty.clone(),
             false,
         );
-        match &payload_ty {
-            MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
-                let layout = self.ctx.struct_layouts.get(*id as usize).cloned();
-                match layout {
-                    Some(l) => {
-                        let (nested, _) =
-                            self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal("json_buf_add_raw".to_string()),
-                            args: vec![
-                                MirOperand::Local(buf),
-                                MirOperand::Constant(MirConst::String(field_name.to_string())),
-                                nested,
-                            ],
-                        }));
+        if let Some(text) = self.custom_encode_text(MirOperand::Local(payload), payload_decl) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(field_name.to_string())),
+                    MirOperand::Local(text),
+                ],
+            }));
+        } else {
+            match &payload_ty {
+                MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
+                    let layout = self.ctx.struct_layouts.get(*id as usize).cloned();
+                    match layout {
+                        Some(l) => {
+                            let (nested, _) =
+                                self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                dst: None,
+                                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                                args: vec![
+                                    MirOperand::Local(buf),
+                                    MirOperand::Constant(MirConst::String(field_name.to_string())),
+                                    nested,
+                                ],
+                            }));
+                        }
+                        None => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
                     }
-                    None => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
                 }
+                _ => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
             }
-            _ => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
         }
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
@@ -810,7 +837,17 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 
-        if let Some((_, layout)) = nested_struct {
+        let custom = match elem_ref {
+            Some(t) => self.custom_encode_text(MirOperand::Local(elem), t),
+            None => None,
+        };
+        if let Some(text) = custom {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
+                args: vec![MirOperand::Local(arr_buf), MirOperand::Local(text)],
+            }));
+        } else if let Some((_, layout)) = nested_struct {
             let (json_str, _) = self.lower_json_encode_struct(
                 MirOperand::Local(elem),
                 layout,

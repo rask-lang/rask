@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import portish
+
+// The claim's own precondition keeps few inputs; decode refuses 2 in 100.
+claim small_ports_are_nonzero(p: portish.Port, n: u8) {
+    if n >= 2 {
+        return
+    }
+    assert p.number() != 0
+}
+
+// No precondition: decode refuses 2 in 100.
+claim ports_are_nonzero(p: portish.Port) {
+    assert p.number() != 0
+}

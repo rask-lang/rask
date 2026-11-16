@@ -394,6 +394,8 @@ mod empty {
     empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
     empty_of!(decode_defaults, HashMap<(String, String), String>);
     empty_of!(claim_generators, HashMap<String, String>);
+    empty_of!(custom_decodes, HashMap<String, rask_mono::CustomDecodeFn>);
+    empty_of!(custom_encodes, HashMap<String, String>);
     empty_of!(vtables, HashMap<(rask_types::Type, String), rask_mono::VTable>);
     empty_of!(symbols, rask_mono::Symbols);
     empty_of!(erased_try_errors, HashMap<NodeId, rask_check::ErasedError>);
@@ -473,6 +475,8 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            custom_decodes: empty::custom_decodes(),
+            custom_encodes: empty::custom_encodes(),
             vtables: empty::vtables(),
             symbols: empty::symbols(),
             resource_types: empty::strings(),
@@ -544,6 +548,8 @@ impl<'a> MirContext<'a> {
         self.map_key_fns = CallMap::of(&mono.map_key_fns);
         self.decode_defaults = &mono.decode_defaults;
         self.claim_generators = &mono.claim_generators;
+        self.custom_decodes = &mono.custom_decodes;
+        self.custom_encodes = &mono.custom_encodes;
         self.vtables = &mono.vtables;
         self.symbols = &mono.symbols;
         self
@@ -677,6 +683,8 @@ pub struct MirContext<'a> {
     pub decode_defaults: &'a HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: &'a HashMap<String, String>,
+    pub custom_decodes: &'a HashMap<String, rask_mono::CustomDecodeFn>,
+    pub custom_encodes: &'a HashMap<String, String>,
     /// Every function's symbol, and what a method call runs, from
     /// monomorphization.
     pub symbols: &'a rask_mono::Symbols,
@@ -1014,6 +1022,8 @@ impl<'a> MirContext<'a> {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            custom_decodes: empty::custom_decodes(),
+            custom_encodes: empty::custom_encodes(),
             vtables: empty::vtables(),
             symbols: empty::symbols(),
             call_targets: NodeMap::of(&EMPTY_TARGETS),
@@ -2315,6 +2325,7 @@ pub struct MirLowerer<'a> {
 pub(crate) struct ReflectFieldConst {
     pub(crate) name: String,
     pub(crate) type_name: String,
+    pub(crate) wire: rask_check::reflect::WireForm,
     pub(crate) offset: u32,
     pub(crate) size: u32,
     pub(crate) is_public: bool,
@@ -8159,6 +8170,8 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            custom_decodes: empty::custom_decodes(),
+            custom_encodes: empty::custom_encodes(),
             vtables: empty::vtables(),
             symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
@@ -8262,6 +8275,8 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            custom_decodes: empty::custom_decodes(),
+            custom_encodes: empty::custom_encodes(),
             vtables: empty::vtables(),
             symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),
@@ -8372,6 +8387,8 @@ mod tests {
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
+            custom_decodes: empty::custom_decodes(),
+            custom_encodes: empty::custom_encodes(),
             vtables: empty::vtables(),
             symbols: empty::symbols(),
             call_targets: NodeMap::of(&empty_targets),

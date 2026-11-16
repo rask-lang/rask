@@ -15,6 +15,7 @@
 mod annotation_defaults;
 mod binary_methods;
 mod construct;
+mod decode_adapters;
 mod defaults;
 mod generalize;
 mod interface_defaults;
@@ -164,6 +165,7 @@ fn desugar_inner_from(
         injected.entry(index).or_default().extend(positions);
     }
     ordering_operators::inject(decls, &mut injected);
+    decode_adapters::inject(decls, &mut injected);
 
 
     // Before anything rewrites an operator: this reads the body's operators as

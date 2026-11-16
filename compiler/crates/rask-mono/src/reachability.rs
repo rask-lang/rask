@@ -123,6 +123,10 @@ pub struct Monomorphizer<'a> {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
+    /// Type -> how it decodes through its own `decode` (`queue_decode_defaults`).
+    pub custom_decodes: HashMap<String, crate::CustomDecodeFn>,
+    /// Type -> its `__encode_json` (`queue_custom_encodes`).
+    pub custom_encodes: HashMap<String, String>,
     /// Node ids handed out to instantiated copies. Starts above every id the
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
@@ -428,6 +432,8 @@ impl<'a> Monomorphizer<'a> {
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
             claim_generators: HashMap::new(),
+            custom_decodes: HashMap::new(),
+            custom_encodes: HashMap::new(),
             in_test_body: false,
             records: crate::InstanceCalls::default(),
             instance_args: Vec::new(),
@@ -1046,6 +1052,18 @@ impl<'a> Monomorphizer<'a> {
                     }
                     return;
                 }
+                // A type that decodes through its own `decode` is read as its
+                // wire type and handed to the adapter; its fields aren't read.
+                if let Some(custom) = typed.types.custom_decode(*id).cloned() {
+                    let name = typed.types.type_name(*id);
+                    let adapter = format!("{name}_{}", rask_ast::decl::field_attrs::DECODE_ADAPTER);
+                    if self.method_table.contains_key(&adapter) {
+                        self.enqueue(adapter.clone(), Vec::new());
+                        self.custom_decodes.insert(name, crate::CustomDecodeFn { wire: custom.wire.clone(), adapter });
+                    }
+                    self.queue_decode_defaults(&custom.wire, seen);
+                    return;
+                }
                 let (name, fields) = match typed.types.get(*id) {
                     Some(rask_types::TypeDef::Struct { name, fields, .. }) => (name, fields),
                     // An enum's payloads are built too (claims only; a decode
@@ -1072,6 +1090,12 @@ impl<'a> Monomorphizer<'a> {
                     self.queue_decode_defaults(field_ty, seen);
                 }
             }
+            // A field's or a wire type's own spelling of a declared type.
+            Type::UnresolvedNamed(name) => {
+                if let Some(id) = typed.types.get_type_id(name) {
+                    self.queue_decode_defaults(&Type::Named(id), seen);
+                }
+            }
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 for arg in args {
                     if let rask_types::GenericArg::Type(t) = arg {
@@ -1087,6 +1111,81 @@ impl<'a> Monomorphizer<'a> {
             Type::Tuple(elems) => {
                 for e in elems {
                     self.queue_decode_defaults(e, seen);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A `json.encode` of `value` writes every type with its own `encode` that
+    /// the value holds through that type's `__encode_json`, which nothing in the
+    /// source calls: the encoder does. Queue each, and record which is which.
+    fn note_json_encode(&mut self, id: NodeId, value: NodeId) {
+        let Some(typed) = self.typed else { return };
+        let is_encode = matches!(
+            self.call_target(id),
+            Some(Callee::Method { recv, method, .. })
+                if matches!(method.as_str(), "encode" | "encode_pretty")
+                    && rask_check::receiver_name(&recv, &typed.types).as_deref() == Some("json")
+        );
+        if !is_encode {
+            return;
+        }
+        if let Some(ty) = self.node_type(value) {
+            self.queue_custom_encodes(&ty, &mut HashSet::new());
+        }
+    }
+
+    fn queue_custom_encodes(&mut self, ty: &Type, seen: &mut HashSet<rask_types::TypeId>) {
+        let Some(typed) = self.typed else { return };
+        match ty {
+            Type::Named(id) => {
+                if !seen.insert(*id) {
+                    return;
+                }
+                // Written through its own `encode`: its fields aren't written,
+                // and what `encode` returns is queued when the adapter runs.
+                if typed.types.custom_encode(*id).is_some() {
+                    let name = typed.types.type_name(*id);
+                    let adapter = format!("{name}_{}", rask_ast::decl::field_attrs::ENCODE_ADAPTER);
+                    if self.method_table.contains_key(&adapter) {
+                        self.enqueue(adapter.clone(), Vec::new());
+                        self.custom_encodes.insert(name, adapter);
+                    }
+                    return;
+                }
+                match typed.types.get(*id) {
+                    Some(rask_types::TypeDef::Struct { fields, .. }) => {
+                        for (_, field_ty) in fields.clone() {
+                            self.queue_custom_encodes(&field_ty, seen);
+                        }
+                    }
+                    Some(rask_types::TypeDef::Enum { variants, .. }) => {
+                        for (_, payload) in variants.clone() {
+                            for t in payload {
+                                self.queue_custom_encodes(&t, seen);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Type::UnresolvedNamed(name) => {
+                if let Some(id) = typed.types.get_type_id(name) {
+                    self.queue_custom_encodes(&Type::Named(id), seen);
+                }
+            }
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                for arg in args {
+                    if let rask_types::GenericArg::Type(t) = arg {
+                        self.queue_custom_encodes(t, seen);
+                    }
+                }
+            }
+            Type::Result { ok, .. } => self.queue_custom_encodes(ok, seen),
+            Type::Tuple(elems) => {
+                for e in elems {
+                    self.queue_custom_encodes(e, seen);
                 }
             }
             _ => {}
@@ -1353,6 +1452,9 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::MethodCall { object, method, args, .. } => {
                 let type_args = self.type_args_at(expr.id);
+                if let [arg] = args.as_slice() {
+                    self.note_json_encode(expr.id, arg.expr.id);
+                }
 
                 // `json.encode(v)` where v is a JsonValue is `v.to_string()`,
                 // the encoder in stdlib/json.rk. MIR asks

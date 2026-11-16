@@ -1,0 +1,225 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A format written in Rask honours a type's own `decode` and `encode`
+// (std.encoding/E12b, E12d, std.reflect). `reflect.has_decode<T>()` and
+// `has_encode<T>()` say whether `T` has one, and `reflect.DecodeWire<T>` and
+// `EncodeWire<T>` name the type it reads and writes, so a library decodes the
+// wire type, then calls `T.decode`, for the top-level value, a `Vec` element,
+// a `Map` value or a field alike.
+//
+// The format here is a toy: a number or a word is its own text, a list is
+// `a,b,c`, a map is `k=v;k=v`. What matters is that it never names `Port` or
+// `Name`, and still reads and writes both.
+
+import reflect
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+// A port that refuses 0, and keeps its number private.
+struct Port {
+    private value: u16
+}
+
+extend Port {
+    public func number(self) -> u16 {
+        return self.value
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or Bad {
+        if raw == 0 {
+            return Bad(why: "port 0 is reserved")
+        }
+        return Port(value: raw)
+    }
+}
+
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
+    }
+}
+
+// A name read from a word, behind a type that reads a port: the chain is
+// followed one step at a time.
+struct Service {
+    private port: Port
+}
+
+extend Service {
+    public func number(self) -> u16 {
+        return self.port.number()
+    }
+}
+
+Service implements Decode {
+    func decode(raw: Port) -> Service or Bad {
+        return Service(port: raw)
+    }
+}
+
+Service implements Encode {
+    func encode(self) -> Port {
+        return self.port
+    }
+}
+
+struct Pair {
+    first: Port
+    second: Port
+}
+
+struct FormatError {
+    why: string
+}
+
+extend FormatError {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+// What the format reads: `T` from its text.
+func read<T>(text: string) -> T or FormatError {
+    comptime {
+        if reflect.has_decode<T>() {
+            let wire = try read<reflect.DecodeWire<T>>(text)
+            return T.decode(wire) catch e => {
+                return FormatError(why: e.message())
+            }
+        } else if reflect.is_integer<T>() {
+            let n = text.parse<T>() catch _ => {
+                return FormatError(why: "not a number: {text}")
+            }
+            return n
+        } else if reflect.is_vec<T>() {
+            mut items = Vec.new()
+            for part in text.split(",") {
+                items.push(try read(part.to_string()))
+            }
+            return items
+        } else if reflect.is_map<T>() {
+            mut entries = Map.new()
+            for part in text.split(";") {
+                let pair = part.split("=").map(|x| x.to_string()).to_vec()
+                if pair.len() != 2 {
+                    return FormatError(why: "not key=value: {part}")
+                }
+                entries.insert(pair[0].clone(), try read(pair[1].clone()))
+            }
+            return entries
+        } else {
+            return FormatError(why: "unsupported")
+        }
+    }
+}
+
+// What the format writes: the value's text.
+func write<T>(v: T) -> string {
+    comptime {
+        if reflect.has_encode<T>() {
+            let wire: reflect.EncodeWire<T> = v.encode()
+            return write(wire)
+        } else if reflect.is_integer<T>() {
+            return "{v}"
+        } else if reflect.is_vec<T>() {
+            mut parts: Vec<string> = Vec.new()
+            for item in v {
+                parts.push(write(item))
+            }
+            return parts.join(",")
+        } else if reflect.is_map<T>() {
+            mut parts: Vec<string> = Vec.new()
+            for (key, item) in v {
+                parts.push("{key}={write(item)}")
+            }
+            return parts.join(";")
+        } else {
+            return "?"
+        }
+    }
+}
+
+test "std.reflect — a library reads a top-level type through its own decode" {
+    let p = read<Port>("8080") catch e => {
+        assert false
+        return
+    }
+    assert p.number() == 8080
+    let s = read<Service>("443") catch e => {
+        assert false
+        return
+    }
+    assert s.number() == 443
+}
+
+test "std.reflect — the library reports what decode refused" {
+    let r = read<Port>("0")
+    if r is FormatError as e {
+        assert e.message() == "port 0 is reserved"
+    } else {
+        assert false
+    }
+    let bad = read<Port>("http")
+    if bad is FormatError as e {
+        assert e.message() == "not a number: http"
+    } else {
+        assert false
+    }
+}
+
+test "std.reflect — a Vec's elements and a Map's values go through decode too" {
+    let ports = read<Vec<Port>>("80,8080,443") catch e => {
+        assert false
+        return
+    }
+    assert ports.len() == 3
+    assert ports[1].number() == 8080
+    let by_name = read<Map<string, Port>>("web=80;db=5432") catch e => {
+        assert false
+        return
+    }
+    assert by_name.len() == 2
+    let refused = read<Vec<Port>>("80,0")
+    if refused is FormatError as e {
+        assert e.message() == "port 0 is reserved"
+    } else {
+        assert false
+    }
+}
+
+test "std.reflect — the library writes a type as what its encode answers" {
+    let p = read<Port>("8080")!
+    assert write(p) == "8080"
+    let s = read<Service>("443")!
+    assert write(s) == "443"
+    let ports = read<Vec<Port>>("80,8080")!
+    assert write(ports) == "80,8080"
+    let by_name = read<Map<string, Port>>("web=80")!
+    assert write(by_name) == "web=80"
+}
+
+test "std.reflect — has_decode and has_encode answer for a type and for a field" {
+    assert reflect.has_decode<Port>()
+    assert reflect.has_encode<Port>()
+    assert !reflect.has_decode<u16>()
+    assert !reflect.has_encode<string>()
+    assert !reflect.has_decode<Vec<Port>>()
+    mut with_codec = 0
+    comptime for f in reflect.fields<Pair>() {
+        comptime {
+            if f.has_decode && f.has_encode {
+                with_codec += 1
+            }
+        }
+    }
+    assert with_codec == 2
+}

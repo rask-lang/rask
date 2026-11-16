@@ -58,6 +58,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, false, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -67,6 +68,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, true, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -76,6 +78,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 value_to_json(&value, &self.struct_decls, &self.enums)
             }
             "decode" => Err(RuntimeError::TypeError(
@@ -86,6 +89,77 @@ impl Interpreter {
                 method: method.to_string(),
             }),
         }
+    }
+
+    /// std.encoding/E12b: `value` with every value of a type that has its own
+    /// `encode` replaced by what that answers, down to the leaves. The encoder
+    /// below then writes the result the normal way, so a type's wire form is
+    /// whatever its `encode` returns, however deeply the type sits in a `Vec`,
+    /// a `Map`, an optional or another struct. Read off the checker's table.
+    pub(crate) fn written_as(&mut self, value: &Value) -> Result<Value, RuntimeError> {
+        if !self.types.has_custom_encodes() {
+            return Ok(value.clone());
+        }
+        match value {
+            Value::Struct(s) => {
+                let name = s.lock().unwrap().name.clone();
+                // A struct-shaped variant is a struct named `Enum.Variant`; the
+                // `encode` belongs to the enum.
+                let owner = name.split_once('.').map_or(name.as_str(), |(e, _)| e).to_string();
+                if self.writes_itself(&owner) {
+                    let wire = self.call_rask_method(&owner, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let fields: Vec<(String, Value)> =
+                    s.lock().unwrap().fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = IndexMap::new();
+                for (k, v) in fields {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::new_struct(name, out, None))
+            }
+            Value::Enum { name, variant, fields, variant_index, origin } => {
+                if self.writes_itself(name) {
+                    let wire = self.call_rask_method(name, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let mut mapped = Vec::with_capacity(fields.len());
+                for f in fields {
+                    mapped.push(self.written_as(f)?);
+                }
+                Ok(Value::Enum {
+                    name: name.clone(),
+                    variant: variant.clone(),
+                    fields: mapped,
+                    variant_index: *variant_index,
+                    origin: origin.clone(),
+                })
+            }
+            Value::Vec(v) => {
+                let items: Vec<Value> = v.lock().unwrap().iter().cloned().collect();
+                let mut out = Vec::with_capacity(items.len());
+                for item in &items {
+                    out.push(self.written_as(item)?);
+                }
+                Ok(Value::vec(out))
+            }
+            Value::Map(m) => {
+                let entries: Vec<(MapKey, Value)> =
+                    m.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = MapData::with_capacity(entries.len());
+                for (k, v) in entries {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::Map(Arc::new(Mutex::new(out))))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    /// Does the type named this have its own `encode`?
+    fn writes_itself(&self, name: &str) -> bool {
+        let types = &self.types;
+        types.get_type_id(name).is_some_and(|id| types.custom_encode(id).is_some())
     }
 
     /// `json.decode<T>(text)`.
@@ -865,19 +939,23 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
 // ─── JSON Decode (typed deserialization) ───
 
 /// Which JsonError variant a failure maps to.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum JsonErrKind {
     Parse,
     Type,
     Missing,
+    /// A type's own `decode` refused; the error holds where, and the message
+    /// is why.
+    Refused { path: String },
 }
 
 impl JsonErrKind {
-    fn variant(self) -> &'static str {
+    fn variant(&self) -> &'static str {
         match self {
             JsonErrKind::Parse => "ParseError",
             JsonErrKind::Type => "TypeError",
             JsonErrKind::Missing => "MissingField",
+            JsonErrKind::Refused { .. } => "Refused",
         }
     }
 }
@@ -928,6 +1006,25 @@ struct Decode<'a> {
 }
 
 impl Decode<'_> {
+    /// How a type decodes through its own `decode` (std.encoding/E12b): its
+    /// name, and what `decode` reads as a type expression. `None` for any
+    /// other type. Read off the checker's table, which says so once.
+    fn custom_decode(&self, ty: &TypeExpr) -> Option<(String, TypeExpr)> {
+        let name = ty.bare_name()?;
+        let types = &self.interp.types;
+        let custom = types.custom_decode(types.get_type_id(name)?)?;
+        Some((name.to_string(), rask_check::reflect::type_label(types, &custom.wire)))
+    }
+
+    /// Does a member left out of the input still decode? A `T?` takes `none`,
+    /// and so does a custom decode whose wire type is one.
+    fn takes_absent(&self, ty: &TypeExpr) -> bool {
+        match self.custom_decode(ty) {
+            Some((_, wire)) => self.takes_absent(&wire),
+            None => matches!(ty, TypeExpr::Optional(_)),
+        }
+    }
+
     /// The value of a field the input doesn't supply: its default, run by
     /// calling the method desugar wrote for it (E20, type.structs/FD6).
     fn default_of(&mut self, ty: &str, field: &rask_ast::decl::Field) -> Result<Value, JsonErr> {
@@ -961,6 +1058,41 @@ fn json_to_typed(
     // The untyped tree, handed back as-is.
     if ty.is_name("JsonValue") {
         return Ok(json.clone());
+    }
+
+    // A type that writes its own `decode`: read the input as what it takes,
+    // the normal way, and hand that over. What it refuses with comes back as
+    // the message of its error, behind where in the input the value was.
+    if let Some((name, wire_ty)) = cx.custom_decode(ty) {
+        let wire = json_to_typed(json, &wire_ty, path, cx)?;
+        let answer = cx.interp.call_rask_static(&name, rask_ast::decl::field_attrs::DECODE_ADAPTER, vec![wire]);
+        let answer = match answer {
+            Ok(v) => v,
+            Err(e) => {
+                *cx.failed = Some(e);
+                return Err(JsonErr {
+                    kind: JsonErrKind::Type,
+                    message: format!("`{}`'s decode failed", name),
+                });
+            }
+        };
+        return match answer {
+            Value::Enum { variant, mut fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
+            Value::Enum { variant, mut fields, .. } if variant == "Err" && fields.len() == 1 => {
+                let why = match fields.remove(0) {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    other => format!("{:?}", other),
+                };
+                let where_ = if path.is_empty() { "the value" } else { path };
+                Err(JsonErr { kind: JsonErrKind::Refused { path: where_.to_string() }, message: why })
+            }
+            other => {
+                *cx.failed = Some(RuntimeError::TypeError(format!(
+                    "`{}`'s decode answered {:?}, not a `T or string`", name, other
+                )));
+                Err(JsonErr { kind: JsonErrKind::Type, message: format!("`{}`'s decode failed", name) })
+            }
+        };
     }
 
     let raw = unwrap_json_value(json);
@@ -1043,6 +1175,12 @@ fn json_to_typed(
                     // A `T?` field takes `none`; anything else has to be there (J9).
                     None if matches!(field.ty, TypeExpr::Optional(_)) => {
                         fields.insert(field.name.clone(), Value::none());
+                    }
+                    // A custom decode whose wire type is `T?` reads the absence
+                    // as that wire value.
+                    None if cx.takes_absent(&field.ty) => {
+                        let value = json_to_typed(&Value::Unit, &field.ty, &child_path(path, &key), cx)?;
+                        fields.insert(field.name.clone(), value);
                     }
                     None => {
                         return Err(JsonErr {
@@ -1147,7 +1285,12 @@ fn make_result_err(kind: JsonErrKind, msg: &str) -> Value {
 /// The `JsonError` a failing decode hands back (J3). A bare string used to go
 /// here, so `e.message()` didn't resolve — the error had no type.
 fn make_json_error(kind: JsonErrKind, msg: &str) -> Value {
-    Value::stdlib_enum("JsonError", kind.variant(), vec![Value::String(Arc::new(Mutex::new(msg.to_string())))])
+    let text = |s: &str| Value::String(Arc::new(Mutex::new(s.to_string())));
+    let payload = match &kind {
+        JsonErrKind::Refused { path } => vec![text(path), text(msg)],
+        _ => vec![text(msg)],
+    };
+    Value::stdlib_enum("JsonError", kind.variant(), payload)
 }
 
 
