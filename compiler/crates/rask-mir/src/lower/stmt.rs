@@ -2269,13 +2269,23 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer"
+            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer".
+            // What the call returns is the checker's word, as for `Type.method()`
+            // above: `http.Method.variants()` is a `Vec<Method>`, and a prefix of
+            // `Method` sent `all[0]` to `Method_index`.
             if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
                 if let Some(module_name) = inner_obj.name() {
                     if !self.locals.contains_key(module_name)
                         && super::is_type_constructor_name(module_name)
                     {
-                        self.meta_mut(name).type_prefix = Some(type_name.clone());
+                        let checked = self
+                            .ctx
+                            .lookup_raw_type(init_inner.id)
+                            .filter(|ty| !matches!(&**ty, rask_types::Type::Result { .. })
+                                && !ty.is_option())
+                            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+                            .map(|p| p.as_str().to_string());
+                        self.meta_mut(name).type_prefix = Some(checked.unwrap_or_else(|| type_name.clone()));
                     }
                 }
             }

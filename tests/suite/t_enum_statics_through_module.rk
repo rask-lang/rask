@@ -29,4 +29,6 @@ test "type.enums/E18 — from_value through the module that exports the enum" {
 test "type.enums/E18 — variants through the module that exports the enum" {
     let all = http.Method.variants()
     assert all.len() == 7
+    assert all[0] == Method.Get
+    assert all[6] == Method.Options
 }
