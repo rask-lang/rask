@@ -4,8 +4,9 @@
 //
 // Every function so far has only read its parameters. That's the default,
 // and it's cheap: a function reads a Vec where the caller keeps it, without
-// copying it. It also can't change it: a `scores.push(1)` in a function that
-// only reads `scores` is a compile error.
+// copying it. The compiler calls this **borrowing**, and you'll see the word
+// in error messages. A borrowed value can't be changed: a `scores.push(1)` in
+// a function that only reads `scores` is a compile error.
 //
 // So when a function should change the caller's value, it says `mutate`, and
 // the caller writes `mutate` too. You can tell which calls might change your

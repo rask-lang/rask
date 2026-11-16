@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task block that ends in a closure over something it captured hands the
+// closure out through the join. The block took `fresh` out of its environment
+// and gave it to the closure, so the task's own environment leaves it alone;
+// nothing owned it after that and the closure's environment never gave it
+// back. `RASK_LEAK_CHECK=1` reported the vector's two allocations.
+//
+// Both ways of reading it: the caller holds the closure (`make`), and a
+// function that returns what the join handed it (`pass_on`).
+
+func make() -> func() -> usize {
+    let fresh = Vec.from([1, 2, 3])
+    using Multitasking {
+        let h = spawn {
+            let f = || fresh.len()
+            f
+        }
+        let h2 = h
+        return h2.join()!
+    }
+}
+
+@allow(blocking_loop)
+func pass_on(label: string) -> func() -> usize {
+    let words = Vec.from([label, "b", "c", "d"])
+    using Multitasking {
+        let h = spawn {
+            let count = || words.len()
+            count
+        }
+        return h.join()!
+    }
+}
+
+test "a closure out of a task keeps what it captured, and gives it back" {
+    let g = make()
+    assert g() == 3
+}
+
+test "a function that returns the closure a join gave it" {
+    let a = pass_on("a")
+    let b = pass_on("b")
+    assert a() == 4
+    assert b() == 4
+}
+
+test "called in a loop, where it isn't inlined away" {
+    mut total = 0
+    for i in 0..3 {
+        let g = pass_on("x")
+        total += g()
+    }
+    assert total == 12
+}

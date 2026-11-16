@@ -2889,7 +2889,7 @@ fn error_held_source_resized() {
     // ... plus one through an interface object, taken to resize.
     assert_eq!(out.matches("error[E0814]").count(), 3, "for mutate: {}", out);
     assert!(
-        out.contains("`wipe_twice` can resize `v`") && out.contains("`reset` can resize `h.items`"),
+        out.contains("`wipe_twice` can resize or reorder `v`") && out.contains("`reset` can resize or reorder `h.items`"),
         "the message names the callee that would resize it: {}",
         out
     );
@@ -9802,6 +9802,47 @@ fn comptime_cfg_answers_for_the_target_not_the_host() {
         branches("x86_64-windows-msvc", false),
         want(&["arch=x86_64", "debug", "env=msvc", "os=windows"]),
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// `usize.MAX` and `isize.MIN` are the target's pointer width, not the
+// compiler's: lowering answered with the 64-bit numbers for every `--target`,
+// so a 32-bit program's `usize.MAX` was 18446744073709551615. Read off the MIR,
+// which needs no 32-bit backend.
+#[test]
+fn pointer_sized_limits_are_the_targets_in_mir() {
+    let dir = std::env::temp_dir().join(format!("rask_limits_target_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("limits.rk");
+    std::fs::write(
+        &src,
+        "func main() {\n\
+         \x20   let hi: usize = usize.MAX\n\
+         \x20   let lo: isize = isize.MIN\n\
+         \x20   println(\"{hi} {lo}\")\n\
+         }\n",
+    )
+    .unwrap();
+    let dump = |target: &str| -> String {
+        let out = Command::new(rask_binary())
+            .arg("compile")
+            .arg("--dump-mir")
+            .arg("--target")
+            .arg(target)
+            .arg(&src)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{target}: dump failed:\n{text}");
+        text
+    };
+    let narrow = dump("arm-none");
+    assert!(narrow.contains("4294967295"), "usize.MAX on a 32-bit target:\n{narrow}");
+    assert!(narrow.contains("-2147483648"), "isize.MIN on a 32-bit target:\n{narrow}");
+    let wide = dump("x86_64-linux");
+    assert!(wide.contains("-9223372036854775808"), "isize.MIN on a 64-bit target:\n{wide}");
+    assert!(!wide.contains("4294967295"), "a 64-bit target has no 32-bit limit:\n{wide}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -83,6 +83,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
+    let interface_take_self = rask_check::interface_take_self_methods(&input.typed.types);
     let extern_funcs = extern_func_names(input.decls);
     let nominal_underlying = nominal_underlying(input.typed);
     // A generic instance's body shares the original's nodes; what differs is
@@ -99,6 +100,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     .with_extern_funcs(&extern_funcs)
     .with_package_modules(input.package_modules)
     .with_interface_methods(interface_methods)
+    .with_interface_take_self(interface_take_self)
     .with_mono_calls(input.mono)
     .with_nominal_underlying(&nominal_underlying);
     ctx.line_map = line_map.as_ref();
@@ -149,7 +151,8 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
 
     // A captured scalar has to live in memory before SSA runs, or SSA builds
     // phis over a variable whose real home is a stack slot (#1038).
-    rask_mir::transform::addr_taken::run_all(&mut functions);
+    let target = ctx.target();
+    rask_mir::transform::addr_taken::run_all(&mut functions, target);
     for func in &mut functions {
         rask_mir::transform::ssa::construct(func);
     }
@@ -161,14 +164,26 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let field_types = ctx.field_types();
     let rack_holders = rask_mir::rack_holding_structs(&field_types);
     let copy_layouts = rask_mir::CopyLayouts::from_fields(&field_types);
-    let pipeline = rask_mir::PassManager::default_pipeline().run_with(&mut functions, rack_holders, copy_layouts);
+    let const_init_thunks: std::collections::HashSet<String> = ctx
+        .const_slot_types
+        .borrow()
+        .keys()
+        .map(|name| rask_mir::lower::const_init_fn_name(name))
+        .collect();
+    let pipeline = rask_mir::PassManager::default_pipeline().run_with(
+        &mut functions,
+        target,
+        rack_holders,
+        copy_layouts,
+        const_init_thunks,
+    );
 
     for func in &mut functions {
         rask_mir::transform::ssa::destruct(func);
     }
     // Local structs holding links forget their edges when their frame ends.
     // After SSA is gone, so the locals named are the ones that hold the bytes.
-    rask_mir::link_holders::forget_local_links(&mut functions);
+    rask_mir::link_holders::forget_local_links(&mut functions, target);
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }
@@ -367,7 +382,7 @@ fn emit_inner(
         codegen.set_debug_context(file, rask_ast::LineMap::new(text));
     }
     codegen.set_inline_regions(pipeline.inline_regions);
-    codegen.set_field_types(field_types);
+    codegen.set_field_types(field_types).map_err(fail)?;
 
     let vtables = collect_vtables(&functions, input.mono);
     if !vtables.is_empty() {

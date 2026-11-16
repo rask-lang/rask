@@ -395,6 +395,7 @@ impl<'a> MirLowerer<'a> {
         };
         let mut captures = crate::stmt::lay_out_captures(
             free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), by_ref, *copy)),
+            self.ctx.target(),
         );
         // CM3: a carried capture that is a lent parameter of this frame is the
         // caller's, held for it. The environment must not free it.
@@ -594,7 +595,7 @@ impl<'a> MirLowerer<'a> {
         // `int64_t (*)(void *)` and kept whatever was in the integer return
         // register — a stale pointer for a task returning `2.5f64`, which read
         // back as 3.3e-310, and nothing at all for a string.
-        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret);
+        let boxes_result = for_spawn && crate::types::spawn_payload_is_boxed(&closure_ret, self.ctx.target());
         let entry_name = if boxes_result {
             self.synthesize_spawn_box_thunk(&closure_name, &closure_ret)
         } else {
@@ -753,6 +754,7 @@ impl<'a> MirLowerer<'a> {
         // `transform::addr_taken` for why that matters.
         let captures = crate::stmt::lay_out_captures(
             free_vars.iter().map(|(_, id, ty, copy)| (*id, ty.clone(), true, *copy)),
+            self.ctx.target(),
         );
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
@@ -1097,12 +1099,12 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
-        b.push_stmt(super::alloc_block_for(boxed, ret.size(), ret));
+        b.push_stmt(super::alloc_block_for(boxed, rask_layout::size_of(ret, self.ctx.target()), ret, self.ctx.target()));
         b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: boxed,
             offset: 0,
             value: MirOperand::Local(value),
-            store_size: ret.size(),
+            store_size: rask_layout::size_of(ret, self.ctx.target()),
             field: None,
         }));
         b.terminate(MirTerminator::dummy(MirTerminatorKind::Return {

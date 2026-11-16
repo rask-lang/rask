@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take self` method called through `any Interface` hands the receiver over
+// (mem.parameters/PM3). The method releases what is inside like any `take`
+// parameter, and the caller's box gives it up at the call: no second release
+// afterwards, and its block is freed.
+//
+// Before, a method a vtable could hold had its receiver read off its body
+// instead, and the box kept owning the value and released it. That is the same
+// answer for a direct call and an interface call only by accident, and a `take
+// self` that did hand the value on freed it twice. The memcheck and leak gates
+// are what see the difference; the answers below are right either way.
+
+struct Pt {
+    s: string
+    v: Vec<i64>
+}
+
+interface Sink {
+    func finish(take self) -> usize
+    func peek(self) -> usize
+}
+
+Pt implements Sink {
+    func finish(take self) -> usize {
+        return self.s.len() + self.v.len()
+    }
+    func peek(self) -> usize {
+        return self.s.len()
+    }
+}
+
+func make(n: i64) -> Pt {
+    mut v: Vec<i64> = Vec.new()
+    v.push(n)
+    return Pt(s: "s{n}", v: v)
+}
+
+func run_any(take t: any Sink) -> usize {
+    return t.finish()
+}
+
+func either(take t: any Sink, finish: bool) -> usize {
+    if finish {
+        return t.finish()
+    }
+    return t.peek()
+}
+
+test "a box built for the call, consumed by it" {
+    let d: any Sink = make(3)
+    assert d.finish() == 3
+}
+
+test "a box made from a named value" {
+    let p = make(4)
+    let d: any Sink = p
+    assert d.finish() == 3
+}
+
+test "a box handed to a function that takes it" {
+    let d: any Sink = make(5)
+    assert run_any(d) == 3
+}
+
+test "consumed on one path and kept on the other" {
+    let a: any Sink = make(6)
+    let b: any Sink = make(7)
+    assert either(a, true) == 3
+    assert either(b, false) == 2
+}
+
+test "consumed in a branch, dropped on the other" {
+    let p = make(8)
+    let d: any Sink = p
+    mut total = 0
+    if total == 0 {
+        total += d.finish()
+    } else {
+        total += d.peek()
+    }
+    assert total == 3
+}
+
+test "boxes taken out of a vector and consumed" {
+    mut boxes: Vec<any Sink> = Vec.new()
+    boxes.push(make(1))
+    boxes.push(make(2))
+    mut total = 0
+    while boxes.len() > 0 {
+        let b = boxes.pop()!
+        total += b.finish()
+    }
+    assert total == 6
+}
+
+test "a method that only borrows still leaves the box to its frame" {
+    let d: any Sink = make(9)
+    assert d.peek() == 2
+    assert d.peek() == 2
+}

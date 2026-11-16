@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` parameter handed on to a method of a borrowed struct's field, in
+// a loop. The callee writes through the world's vectors, never the world
+// itself; the frame still has to release the world's vectors at the end
+// (#1927). The leak gate runs this file.
+
+struct World {
+    pos: Vec<Pos>
+    vel: Vec<Vel>
+}
+
+struct Pos {
+    x: f64
+}
+
+struct Vel {
+    x: f64
+}
+
+extend Pos {
+    func store(self, mutate w: World, i: usize) {
+        w.pos[i] = self
+    }
+}
+
+extend Vel {
+    func store(self, mutate w: World, i: usize) {
+        w.vel[i] = self
+    }
+}
+
+struct Moving {
+    p: Pos
+    v: Vel
+}
+
+func scatter_m(q: Moving, mutate w: World, i: usize) {
+    q.p.store(mutate w, i)
+    q.v.store(mutate w, i)
+}
+
+test "a mutate parameter passed on to methods of a borrowed struct's fields" {
+    mut w = World(pos: [Pos(x: 1.0), Pos(x: 10.0)], vel: [Vel(x: 2.0), Vel(x: 3.0)])
+    for i in 0..w.pos.len() {
+        let q = Moving(p: Pos(x: 7.0), v: Vel(x: 8.0))
+        scatter_m(q, mutate w, i)
+    }
+    assert w.pos[0].x == 7.0
+    assert w.pos[1].x == 7.0
+    assert w.vel[0].x == 8.0
+    assert w.vel[1].x == 8.0
+}

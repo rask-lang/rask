@@ -5283,8 +5283,9 @@ impl Parser {
 
         // Parse additional comma-separated bindings
         while self.match_token(&TokenKind::Comma) {
-            // Use bp=22 to stop before consuming 'as' (which has bp=21)
-            let expr = self.parse_expr_bp(22)?;
+            // Stop above `as`'s power, or `rooms[1] as second` is read as a
+            // cast to a type called `second`.
+            let expr = self.parse_expr_bp(binding::CAST + 1)?;
             self.expect(&TokenKind::As)?;
             self.reject_with_binding_keyword()?;
             let name = self.expect_ident()?;

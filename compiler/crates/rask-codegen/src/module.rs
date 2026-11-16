@@ -242,8 +242,26 @@ impl CodeGenerator {
     /// Each layout's field types as MIR types (`MirContext::field_types`), for
     /// the walks over what a struct or a variant owns. Call before
     /// gen_function().
-    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) {
+    ///
+    /// The table also says what machine the program was laid out for. The
+    /// backend only emits code for its own pointer width, so a program laid
+    /// out for another is refused here rather than miscompiled.
+    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) -> CodegenResult<()> {
+        let backend = u32::from(self.module.isa().pointer_bits());
+        if field_types.target.pointer_bits() != backend {
+            return Err(CodegenError::UnsupportedFeature(format!(
+                "the program is laid out for {}-bit pointers, and this backend emits {}-bit code",
+                field_types.target.pointer_bits(),
+                backend,
+            )));
+        }
         self.field_types = field_types;
+        Ok(())
+    }
+
+    /// The machine the code is for: the one lowering laid the types out for.
+    pub(crate) fn target(&self) -> rask_ast::Target {
+        self.field_types.target
     }
 
     /// Declare runtime functions as external imports.
@@ -1392,7 +1410,7 @@ impl CodeGenerator {
         // `StructReturn` signature to return nothing — the pointer the caller
         // passed *is* the answer, so there is nothing left to hand back (#1109).
         let through_dst = !is_main
-            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty);
+            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty, self.target());
         if through_dst {
             sig.params.push(AbiParam::special(
                 cranelift_codegen::ir::types::I64,
@@ -1683,7 +1701,7 @@ impl CodeGenerator {
                 .elem
                 .iter()
                 .chain(meta.map_types.iter().flat_map(|(k, v)| [k, v]))
-                .map(|t| u64::from(t.align()))
+                .map(|t| u64::from(rask_layout::align_of(t, self.target())))
                 .max()
                 .unwrap_or(8);
             desc.set_align(elem_align.max(8));
@@ -2071,7 +2089,7 @@ impl CodeGenerator {
                     .map(|v| v.as_slice()).unwrap_or(&[]);
                 if let Some(info) = crate::debug_info::collect_function_debug(
                     compiled, func_id, mir_fn, inline_regions,
-                    &self.struct_layouts, &self.enum_layouts, self.line_map.as_ref(),
+                    &self.struct_layouts, &self.enum_layouts, self.target(), self.line_map.as_ref(),
                 ) {
                     self.debug_srclocs.push(info);
                 }

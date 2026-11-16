@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A local that a closure borrows, then reassigned: the closure reads the slot,
+// so it sees the new value, and the value the slot held before is released.
+// It used to be counted as handed to the closure, which nothing ever freed
+// (#1839, #1906).
+
+struct Cursor {
+    label: string
+    hist: Vec<string>
+}
+
+func mk(i: i64) -> Cursor {
+    return Cursor(label: "label-long-enough-to-live-on-the-heap-{i}", hist: Vec.new())
+}
+
+func text(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+test "a captured struct reassigned after the closure was made" {
+    mut c = mk(1)
+    let f = || c.label.len()
+    let before = f()
+    c = mk(2222)
+    let after = f()
+    assert before == "label-long-enough-to-live-on-the-heap-1".len()
+    assert after == "label-long-enough-to-live-on-the-heap-2222".len()
+    assert c.label == "label-long-enough-to-live-on-the-heap-2222"
+}
+
+test "a captured struct reassigned in a loop" {
+    mut c = mk(1)
+    let f = || c.label.len()
+    mut total = 0
+    for i in 10..14 {
+        c = mk(i)
+        total += f()
+    }
+    assert total == 4 * "label-long-enough-to-live-on-the-heap-10".len()
+}
+
+test "a captured array reassigned after the closure was made" {
+    let a = [text(1)]
+    mut t = [text(0)]
+    let c = || {
+        return t[0].len()
+    }
+    assert c() == text(0).len()
+    t = a
+    assert c() == text(1).len()
+    assert t[0] == text(1)
+    assert a[0] == text(1)
+}
+
+test "a captured array reassigned in a loop" {
+    let a = [text(1)]
+    mut t = [text(0)]
+    let c = || {
+        return t[0].len()
+    }
+    mut total = 0
+    for i in 0..3 {
+        if i == 1 {
+            t = a
+        } else {
+            t = [text(20 + i)]
+        }
+        total += c()
+    }
+    assert total == text(20).len() + text(1).len() + text(22).len()
+}

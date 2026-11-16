@@ -190,6 +190,21 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        // `const W = 4` then `[i32; W]`, and `const TWICE = W * 2`. The length
+        // has to be known before any declared type is parsed, so the consts
+        // are folded here rather than where each is checked (#906). The fold is
+        // the one the backends use for `comptime if`.
+        let consts = decls.iter().filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some((c.name.as_str(), &c.init, c.ty.as_ref().and_then(|t| t.bare_name()))),
+            _ => None,
+        });
+        for (name, fact) in rask_ast::comptime_if::const_facts(consts) {
+            if let rask_ast::comptime_if::Fact::Int(n, _) = fact {
+                if let Ok(len) = usize::try_from(n) {
+                    self.types.register_const_length(name, len);
+                }
+            }
+        }
         // Transparent aliases first: a struct field or another declaration's
         // signature may name one declared further down, and resolving it
         // before the alias is in the table gives a type nobody declared.
@@ -388,16 +403,6 @@ impl TypeChecker {
                     if !a.is_transparent {
                         self.types.record_declared_type(decl.id, id);
                         self.types.record_param_bounds(id, &a.type_params);
-                    }
-                }
-            }
-            // `const W = 4` then `[i32; W]`. The length has to be known
-            // before any declared type is parsed, so it's recorded in this
-            // pass rather than where the const is checked (#906).
-            DeclKind::Const(c) => {
-                if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
-                    if let Ok(len) = usize::try_from(*n) {
-                        self.types.register_const_length(c.name.clone(), len);
                     }
                 }
             }
@@ -2195,7 +2200,7 @@ impl TypeChecker {
                 Type::Bool | Type::Char | Type::I8 | Type::I16 | Type::I32 | Type::I64
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::F32 | Type::F64
                     | Type::RawPtr(_) | Type::Var(_) | Type::Error
-            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::primitives::c_type_spelling(n).is_some());
+            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::target::is_c_scalar(n));
             if !ok {
                 self.errors.push(TypeError::VariadicArg { ty, span });
             }
@@ -2801,15 +2806,11 @@ impl TypeChecker {
                     match def {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
-                            let family = match method {
-                                "eq" => Some("eq"),
-                                "hash" => Some("hash"),
-                                "clone" => Some("clone"),
-                                m if Self::is_ordering_method(m) => Some("compare"),
-                                _ => None,
-                            };
+                            // The four operators ORD1 derives answer with `compare`;
+                            // every other derived method is its own entry.
+                            let family = if Self::is_ordering_method(method) { "compare" } else { method };
                             methods.iter().any(|m| m.name == method)
-                                || family.is_some_and(|f| self.derive_assumed.contains(&(*id, f)))
+                                || self.derive_assumed.contains(&(*id, family))
                         }
                         _ => false,
                     }
@@ -2978,42 +2979,33 @@ impl TypeChecker {
         chain: &mut Vec<String>,
     ) -> bool {
         match ty {
-            Type::Named(id) => {
-                if *id == owner {
-                    return true;
-                }
-                if seen.contains(id) {
-                    return false;
-                }
-                seen.push(*id);
-                let (name, inner): (String, Vec<Type>) = match self.types.get(*id) {
-                    Some(TypeDef::Struct { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    Some(TypeDef::Enum { name, variants, .. }) => (
-                        name.clone(),
-                        variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
-                    ),
-                    Some(TypeDef::Union { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    // A nominal alias is the underlying type wearing a new
-                    // name, so it stores whatever that does.
-                    Some(TypeDef::NominalAlias { name, underlying, .. }) => {
-                        (name.clone(), vec![underlying.clone()])
-                    }
-                    _ => return false,
-                };
-                chain.push(name);
-                for t in &inner {
-                    if self.reaches_inline(t, owner, seen, chain) {
-                        return true;
-                    }
-                }
-                chain.pop();
-                false
+            Type::Named(id) => self.reaches_inline_through(*id, &[], owner, seen, chain),
+            // The owner at any arguments is the owner: `Grow<T>` holding
+            // `Grow<(T, T)>` needs room for itself at every bigger instance,
+            // so no size satisfies it. Another generic is walked with its
+            // arguments written into its fields, so `Wrap<Node>` holds a
+            // `Node` and `Wrap<Heap<Node>>` doesn't.
+            Type::Generic { base, args } => {
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.reaches_inline_through(*base, &args, owner, seen, chain)
+            }
+            // The same generic before its name is settled to an id.
+            Type::UnresolvedGeneric { name, args } => {
+                let Some(base) = self.types.get_type_id(name) else { return false };
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect();
+                self.reaches_inline_through(base, &args, owner, seen, chain)
             }
             // `T?` and `T or E` are a tag beside the payload, not a pointer to
             // it, so both sides are inline.
@@ -3027,6 +3019,56 @@ impl TypeChecker {
             Type::Array { elem, .. } => self.reaches_inline(elem, owner, seen, chain),
             _ => false,
         }
+    }
+
+    /// `reaches_inline` for a declared type `id` held with `args`: its fields
+    /// and payloads, with the arguments in place of its parameters.
+    fn reaches_inline_through(
+        &self,
+        id: rask_types::TypeId,
+        args: &[Type],
+        owner: rask_types::TypeId,
+        seen: &mut Vec<rask_types::TypeId>,
+        chain: &mut Vec<String>,
+    ) -> bool {
+        if id == owner {
+            return true;
+        }
+        if seen.contains(&id) {
+            return false;
+        }
+        // A stdlib generic is a handle or has its own layout; what it holds
+        // sits behind its pointer.
+        if !args.is_empty() && matches!(self.types.declared_by(id), super::type_table::TypeOwner::Stdlib) {
+            return false;
+        }
+        seen.push(id);
+        let Some(def) = self.types.get(id) else { return false };
+        let name = match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Union { name, .. }
+            // A nominal alias is the underlying type wearing a new
+            // name, so it stores whatever that does.
+            | TypeDef::NominalAlias { name, .. } => name.clone(),
+            _ => return false,
+        };
+        let params = def.type_params();
+        let subst: std::collections::HashMap<&str, &Type> =
+            params.iter().map(String::as_str).zip(args.iter()).collect();
+        let inner: Vec<Type> = def
+            .held_types()
+            .into_iter()
+            .map(|t| rask_layout::substitute_inside(t, &subst))
+            .collect();
+        chain.push(name);
+        for t in &inner {
+            if self.reaches_inline(t, owner, seen, chain) {
+                return true;
+            }
+        }
+        chain.pop();
+        false
     }
 
     /// Check a declaration with the type parameters it owns in scope for
@@ -3290,10 +3332,8 @@ impl TypeChecker {
                 self.allowed_warnings = old_allowed;
             }
             DeclKind::Import(imp) => {
-                // Register module name as local for field/method resolution.
-                // Modules handled by BuiltinModules (net, json, fs) route through
-                // check_method_call directly. Others like 'time' need local registration
-                // so field access (time.Instant) flows through resolve_field.
+                // Register the module name as a local, so field access
+                // (`time.Instant`) flows through resolve_field.
                 if imp.path.len() == 1 {
                     let pkg_name = &imp.path[0];
                     let module_name = imp.alias.as_ref().unwrap_or(pkg_name).clone();
@@ -3308,12 +3348,10 @@ impl TypeChecker {
 
                     // The marker names the module, not the alias, so `import
                     // time as tm` checks `tm.sleep` as `time.sleep`.
-                    if !self.types.builtin_modules.is_module(pkg_name) {
-                        self.define_local(
-                            module_name.clone(),
-                            Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
-                        );
-                    }
+                    self.define_local(
+                        module_name.clone(),
+                        Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
+                    );
                 }
             }
             // Registration resolved these quietly, before every type they

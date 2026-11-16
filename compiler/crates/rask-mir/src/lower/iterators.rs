@@ -740,7 +740,7 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     })),
                     ClosureArg::InPlace { collection, at, map } => {
-                        self.bind_element_in_place(param_local, collection, at, map)
+                        self.bind_element_in_place(param_local, collection, at, map);
                     }
                 }
                 self.locals.insert(param_name.clone(), (param_local, arg_ty));
@@ -838,7 +838,7 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<IterLoopSetup, LoweringError> {
         let (source_op, source_ty) = self.lower_expr(chain.source)?;
         let (array_len, array_elem_size) = match &source_ty {
-            MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
+            MirType::Array { elem, len } => (Some(*len), Some(rask_layout::size_of(elem.as_ref(), self.ctx.target()))),
             _ => (None, None),
         };
 
@@ -1163,14 +1163,14 @@ impl<'a> MirLowerer<'a> {
                         addr: tuple_local,
                         offset: 0,
                         value: MirOperand::Local(setup.position),
-                        store_size: MirType::I64.size(),
+                        store_size: rask_layout::size_of(&MirType::I64, self.ctx.target()),
                         field: None,
                     }));
                     // The element follows the index at its own alignment,
                     // which a word already satisfies.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: tuple_local,
-                        offset: MirType::I64.size(),
+                        offset: rask_layout::size_of(&MirType::I64, self.ctx.target()),
                         value: current_op,
                         store_size: self.aggregate_size(&current_ty),
                         field: None,
@@ -1313,7 +1313,7 @@ impl<'a> MirLowerer<'a> {
         // the vector held 4-byte elements that every reader took 8 at a time.
         let slot_ty = elem.clone().unwrap_or_else(|| final_ty.clone());
         let args = vec![
-            MirOperand::Constant(MirConst::Int(slot_ty.size() as i64)),
+            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&slot_ty, self.ctx.target()) as i64)),
             crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
         ];
         self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
@@ -1381,8 +1381,8 @@ impl<'a> MirLowerer<'a> {
             "Map_new",
             crate::elem_strs::map_ctor_for(&key_ty),
             vec![
-                MirOperand::Constant(MirConst::Int((key_ty.size() as i64))),
-                MirOperand::Constant(MirConst::Int((val_ty.size() as i64))),
+                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&key_ty, self.ctx.target()) as i64))),
+                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&val_ty, self.ctx.target()) as i64))),
                 crate::elem_strs::elem(key.unwrap_or_else(|| key_ty.clone())),
                 crate::elem_strs::elem(value.unwrap_or_else(|| val_ty.clone())),
             ],
@@ -1390,7 +1390,7 @@ impl<'a> MirLowerer<'a> {
 
         // The pair is a `(key, value)` tuple, each field at its own offset
         // and width.
-        let offsets = crate::types::tuple_offsets(&[key_ty.clone(), val_ty.clone()]);
+        let offsets = rask_layout::tuple_offsets(&[key_ty.clone(), val_ty.clone()], self.ctx.target());
         let key = self.builder.alloc_temp(key_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: key,
@@ -1398,7 +1398,7 @@ impl<'a> MirLowerer<'a> {
                 base: final_op.clone(),
                 field_index: 0,
                 byte_offset: Some(offsets[0]),
-                access: FieldAccess::for_field(&key_ty, key_ty.size()),
+                access: FieldAccess::for_field(&key_ty, rask_layout::size_of(&key_ty, self.ctx.target())),
             },
         }));
         let val = self.builder.alloc_temp(val_ty.clone());
@@ -1408,7 +1408,7 @@ impl<'a> MirLowerer<'a> {
                 base: final_op,
                 field_index: 1,
                 byte_offset: Some(offsets[1]),
-                access: FieldAccess::for_field(&val_ty, val_ty.size()),
+                access: FieldAccess::for_field(&val_ty, rask_layout::size_of(&val_ty, self.ctx.target())),
             },
         }));
         // SEQ29: a later key overwrites an earlier one. `Map_set`, because
@@ -2088,7 +2088,7 @@ impl<'a> MirLowerer<'a> {
             vec_new_pos.1,
             "Vec_new",
             vec![
-                MirOperand::Constant(MirConst::Int((pair_ty.size() as i64))),
+                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&pair_ty, self.ctx.target()) as i64))),
                 crate::elem_strs::elem(pair.unwrap_or_else(|| pair_ty.clone())),
             ],
         );
@@ -2130,11 +2130,9 @@ impl<'a> MirLowerer<'a> {
     ) -> (MirOperand, MirType) {
         let tuple_ty = MirType::Tuple(vec![first.1.clone(), second.1.clone()]);
         let result_local = self.builder.alloc_temp(tuple_ty.clone());
-        let mut offset = 0u32;
-        for (op, ty) in [first, second] {
-            let elem_size = ty.size();
-            let elem_align = ty.align().max(1);
-            offset = (offset + elem_align - 1) & !(elem_align - 1);
+        let offsets = rask_layout::tuple_offsets(&[first.1.clone(), second.1.clone()], self.ctx.target());
+        for ((op, ty), offset) in [first, second].into_iter().zip(offsets) {
+            let elem_size = rask_layout::size_of(&ty, self.ctx.target());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: result_local,
                 offset,
@@ -2142,7 +2140,6 @@ impl<'a> MirLowerer<'a> {
                 store_size: elem_size,
                 field: None,
             }));
-            offset += elem_size;
         }
         (MirOperand::Local(result_local), tuple_ty)
     }
@@ -2355,7 +2352,7 @@ impl<'a> MirLowerer<'a> {
             keys_new_pos.0,
             keys_new_pos.1,
             "Vec_new",
-            vec![MirOperand::Constant(MirConst::Int((key_ty.size() as i64)))],
+            vec![MirOperand::Constant(MirConst::Int((rask_layout::size_of(&key_ty, self.ctx.target()) as i64)))],
         );
 
         // The sort itself is the runtime's merge sort, over the keys.

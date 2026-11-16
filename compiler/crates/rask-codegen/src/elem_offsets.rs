@@ -192,12 +192,12 @@ fn describe(
         }
         // Parts at their natural offsets, the packing tuple lowering uses.
         MirType::Tuple(parts) => {
-            for (part, at) in parts.iter().zip(rask_mir::tuple_offsets(parts)) {
+            for (part, at) in parts.iter().zip(rask_layout::tuple_offsets(parts, shapes.fields.target)) {
                 describe(part, base + at as i32, shapes, depth + 1, self_layout, out)?;
             }
         }
         MirType::Array { elem, len } => {
-            let stride = elem.size() as i32;
+            let stride = rask_layout::size_of(elem.as_ref(), shapes.fields.target) as i32;
             for i in 0..*len as i32 {
                 describe(elem, base + i * stride, shapes, depth + 1, self_layout, out)?;
             }
@@ -221,7 +221,7 @@ fn wrapper_arms(
     out: &mut Vec<i32>,
 ) -> Option<()> {
     use rask_mono::runtime_abi::{RASK_TAG_ABSENT, RASK_TAG_PRESENT};
-    let payload_offset = wrapper.payload_offset();
+    let payload_offset = rask_layout::payload_offset_of(wrapper, shapes.fields.target);
     for (tag_value, side) in [(RASK_TAG_PRESENT as u64, ok), (RASK_TAG_ABSENT as u64, err)] {
         let mut arm = Vec::new();
         describe(side, base + payload_offset as i32, shapes, depth + 1, self_layout, &mut arm)?;

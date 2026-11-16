@@ -231,6 +231,11 @@ static void map_check_no_borrows(const RaskMap *m, const char *op) {
     }
 }
 
+static void map_drop_borrow(int64_t handle) {
+    RaskMap *m = (RaskMap *)(intptr_t)handle;
+    if (m && m->borrows > 0) m->borrows--;
+}
+
 // Value pointer lent straight out of the table, so a `mutate` callee writes the
 // real value instead of a copy. Paired with rask_map_release_elem.
 void *rask_map_borrow_elem(RaskMap *m, const void *key) {
@@ -242,11 +247,15 @@ void *rask_map_borrow_elem(RaskMap *m, const void *key) {
         rask_panic("key not found in map");
     }
     m->borrows++;
+    // A callee that panics never reaches the release the caller emitted after
+    // the call; the held-access list gives it back on the way out (ctrl.panic/U3).
+    rask_access_push(map_drop_borrow, (int64_t)(intptr_t)m);
     return slot;
 }
 
 void rask_map_release_elem(RaskMap *m) {
     if (m && m->borrows > 0) m->borrows--;
+    rask_access_pop((int64_t)(intptr_t)m);
 }
 
 static void map_rehash(RaskMap *m) {

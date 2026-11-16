@@ -156,9 +156,11 @@ extend Sender<T> {
     @blocks
     public func send(self, take value: T) -> void or SendError {}
 
-    /// Non-blocking send. Returns error if full or closed.
-    @native("rask_channel_try_send_ptr", returns: negative)
-    public func try_send(self, value: T) -> void or TrySendError {}
+    /// Non-blocking send. A channel that is full or closed doesn't take the
+    /// value; it comes back inside the error, so the caller can retry it, spill
+    /// it or drop it.
+    @native("rask_channel_try_send_ptr")
+    public func try_send(self, take value: T) -> void or TrySendError<T> {}
 
     /// Explicitly close this end. Consumes the sender: closing *is* dropping
     /// it, and the channel closes when the last sender goes. Declaring it
@@ -223,7 +225,7 @@ extend CloseError {
     }
 }
 
-public enum TrySendError {
+public enum TrySendError<T> {
     Full(T)
     Closed(T)
 }

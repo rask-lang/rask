@@ -267,8 +267,7 @@ fn is_float(ty: &rask_types::Type) -> bool {
     match ty {
         T::F32 | T::F64 => true,
         T::UnresolvedNamed(n) => {
-            let n = rask_ast::primitives::c_type_spelling(n).unwrap_or(n.as_str());
-            matches!(n, "f32" | "f64")
+            matches!(n.as_str(), "f32" | "f64")
         }
         _ => false,
     }
@@ -381,10 +380,23 @@ mod tests {
         assert_eq!(classify_aggregate(CallConv::Win64, 12, &[f(0, 4, false), f(4, 4, false), f(8, 4, false)]), CArg::ByAddress(12));
     }
 
+    /// The declaration a fixture's struct name stands for. Layouts are found
+    /// by identity, so each name gets an id.
+    fn id_of(name: &str) -> rask_types::TypeId {
+        rask_types::TypeId(match name {
+            "Vec2" => 1,
+            "Seg" => 2,
+            "Tri" => 3,
+            "Rect" => 4,
+            "Box" => 5,
+            other => panic!("no id for fixture struct {other}"),
+        })
+    }
+
     fn layout(name: &str, size: u32, fields: &[(&str, rask_types::Type, u32, u32)]) -> StructLayout {
         use rask_layout::FieldLayout;
         StructLayout {
-            key: None,
+            key: Some(rask_layout::LayoutKey::of(id_of(name))),
             name: name.to_string(),
             size,
             align: 4,
@@ -410,7 +422,7 @@ mod tests {
     }
 
     fn named(n: &str) -> rask_types::Type {
-        rask_types::Type::UnresolvedNamed(n.to_string())
+        rask_types::Type::Named(id_of(n))
     }
 
     #[test]

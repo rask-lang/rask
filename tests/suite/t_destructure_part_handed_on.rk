@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A destructure moves every part out of the tuple. Handing one part to a
-// keeper used to free the rest twice when the slot was then refilled (#1876);
-// natively the string part still leaks (#1902).
+// keeper used to free the rest twice when the slot was then refilled (#1876),
+// and leaked the string part (#1902). Rebinding a part with `mut` and using it
+// after the tuple's scope began to end freed it under the new name (#1870).
 
 func mk(i: i64) -> string {
     return "item-{i}-long-enough-to-live-on-the-heap"
@@ -34,4 +35,20 @@ test "a local tuple destructured, one part kept" {
     keep.push(list)
     assert name == mk(1)
     assert keep[0][0] == mk(10)
+}
+
+func bump(mutate v: Vec<i64>) {
+    v.push(9)
+}
+
+test "a destructured part rebound as mut survives the tuple" {
+    let three: Vec<i64> = [3]
+    let t = ("b", three)
+    let (k, start) = t
+    mut value = start
+    bump(mutate value)
+    assert k == "b"
+    assert value.len() == 2
+    let back = (k, value)
+    assert back.1.len() == 2
 }

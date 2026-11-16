@@ -29,22 +29,22 @@ pub const UNWIND_SUFFIX: &str = "__unwind";
 
 /// Bytes ahead of the first slot: the record's link and its `run` pointer
 /// (`RaskUnwindRec` in the runtime).
-pub fn record_header() -> u32 {
-    2 * MirType::word()
+pub fn record_header(target: rask_ast::Target) -> u32 {
+    2 * target.word()
 }
 
 /// Where slot `i` sits in a record. Each slot is one word.
-pub fn slot_offset(i: u32) -> u32 {
-    record_header() + MirType::word() * i
+pub fn slot_offset(i: u32, target: rask_ast::Target) -> u32 {
+    record_header(target) + target.word() * i
 }
 
 /// Arm the strings, then build every function's unwind glue.
-pub fn build_unwind_records(fns: &mut Vec<MirFunction>) {
+pub fn build_unwind_records(fns: &mut Vec<MirFunction>, target: rask_ast::Target) {
     let mut glue = Vec::new();
     for func in fns.iter_mut() {
         arm_strings(func);
         drop_unreleasable_slots(func);
-        if let Some(g) = unwind_glue(func) {
+        if let Some(g) = unwind_glue(func, target) {
             glue.push(g);
         }
     }
@@ -235,7 +235,7 @@ fn drop_unreleasable_slots(func: &mut MirFunction) {
 /// `<fn>__unwind(record)`: for each slot, if it holds something, release it
 /// the way the frame would have. `None` for a frame that arms nothing, which
 /// then gets no record at all.
-fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
+fn unwind_glue(func: &MirFunction, target: rask_ast::Target) -> Option<MirFunction> {
     let mut releases: BTreeMap<u32, &UnwindRelease> = BTreeMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         if let MirStmtKind::UnwindArm { slot, release, .. } = &stmt.kind {
@@ -280,8 +280,8 @@ fn unwind_glue(func: &MirFunction) -> Option<MirFunction> {
                     dst: raw,
                     rvalue: MirRValue::ArrayIndex {
                         base: MirOperand::Local(record),
-                        index: MirOperand::Constant(MirConst::Int((slot_offset(i) / MirType::word()) as i64)),
-                        elem_size: MirType::word(),
+                        index: MirOperand::Constant(MirConst::Int((slot_offset(i, target) / target.word()) as i64)),
+                        elem_size: target.word(),
                     },
                 }),
                 MirStmt::dummy(MirStmtKind::Assign {

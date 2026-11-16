@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure handed to a function that only calls it, from inside a closure of
+// its own, still borrows the caller's variables. Native read "captured by
+// another closure" as "handed on", put the argument on the heap, and a heap
+// closure copies what it captures: the write landed in the copy and the caller
+// saw `n` unchanged.
+
+func one(f: func()) {
+    let g = || { f() }
+    g()
+}
+
+func twice(f: func()) {
+    let g = || { f() }
+    g()
+    g()
+}
+
+func keep(f: func() -> i64) -> func() -> i64 {
+    return || { f() + 1 }
+}
+
+test "a write through a closure called by the callee's inner closure" {
+    mut n = 0
+    let tick = || { n += 1 }
+    let w = || { tick() }
+    one(w)
+    assert n == 1
+}
+
+test "the inner closure called twice" {
+    mut n = 0
+    let tick = || { n += 1 }
+    let w = || { tick() }
+    twice(w)
+    assert n == 2
+}
+
+test "a closure the callee hands back still carries what it captured" {
+    let base = 41
+    let get = || { base }
+    let later = keep(get)
+    assert later() == 42
+}

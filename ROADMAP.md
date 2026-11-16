@@ -426,7 +426,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 415 sites restate a fact, 408 to go.**
+ratchet at its target. Today: 304 sites restate a fact, 297 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -443,15 +443,14 @@ each pinned at today's count, each with the count it has to reach.
 
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
-| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
-| Method names the checker answers by matching the name instead of reading a declaration or interface | 26 | 0 | #1561, #1565 |
-| `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
-| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
-| Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
+| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 3 | 0 | #1564, #1566 |
+| Method names the checker answers by matching the name instead of reading a declaration or interface | 7 | 0 | #1561, #1565 |
+| `_Any` wildcards that skip argument checks | 0 (at target) | 0 | #1561 |
+| Rows in `INTERNAL_SPELLINGS`, `BORROWS_ITS_CALLBACK` | 69 | 0 | #1564, #1565 |
+| Hand-written codegen dispatch entries (`internal_entries`) | 212 | 0 | #1555, #1565 |
 | Public entry points into the passes | 13 | 7 | #1568 |
 | Interpreters run without the driver's setup (`prepare_interpreter`) | 0 (at target) | 0 | #1568 |
-| Size or alignment computed outside the layout model | 5 | 0 | #1567 |
-| Readers of the pointer-width process global | 12 | 0 | #1568 |
+| Size or alignment computed outside the layout model | 0 (at target) | 0 | #1567 |
 
 A ratchet at its target gets deleted, and the thing that made the sites
 impossible stays: a Cargo dependency that can't reach the old answer, or a type
@@ -514,11 +513,13 @@ for a checker type by accident, and no grep test has to say so.
    interpreter's `reflect` weren't re-checked this pass. The crate takes `Type`, type
    definitions whose fields are already `Type`s, and a `Target`; the copy
    rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
-   `compiler/CLAUDE.md` calls `rask_layout` "the one size model"
-   today; it will be right once the other five answers are gone. The
-   pointer-width global goes here too, not in step 3: most of its fifty-odd
-   readers are `MirType::size()` and `LayoutCache::new()`, which this step
-   replaces, so threading a `Target` through them first would be done twice.
+   Sizes are done: `MirType` has no size rules of its own (it says what
+   shape it is, `rask_layout::Shaped`, and `rask_layout::size_of(ty, target)`
+   composes it), codegen, the comptime aggregate writer and the interpreter's
+   `transmute` use the same tuple and array rules, and the pointer-width
+   process global is gone. `rask_ast::Target` is built by the driver from the
+   config and carried by the checker's `TypeTable`; layout, MIR, codegen, the
+   interpreter and the comptime evaluator read it from there.
 5. **#1564 + #1565.** A call carries its callee's identity and signature;
    stdlib facts live only on the `.rk` declarations. #1656 is the first
    consumer of that flow and a good proof it works, but not a gate.

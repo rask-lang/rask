@@ -15,6 +15,20 @@ pub struct FieldSlot {
     pub field: u32,
 }
 
+/// What dropping an interface object's box does about the value inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxRelease {
+    /// The value was moved into the box, so the box's release gives it back
+    /// through the vtable's `owned_release`, and the block with it.
+    Owns,
+    /// The box only borrowed the value, which the frame keeps and releases
+    /// itself. The block alone is freed.
+    Borrows,
+    /// A `take self` call consumed the value: the method released it. The block
+    /// alone is freed.
+    Taken,
+}
+
 /// MIR statement kind — no control flow
 #[derive(Debug, Clone)]
 pub enum MirStmtKind {
@@ -171,21 +185,31 @@ pub enum MirStmtKind {
         /// The vtable's name in monomorphization's table, which says what
         /// its slots hold.
         vtable_name: String,
+        /// The value is a literal written where it is boxed: nothing else
+        /// names it, so the box is its only owner and releases what is inside.
+        /// Any other value is a name the frame goes on holding, or one a
+        /// caller handed it, and the box only borrows it.
+        owns_value: bool,
     },
     /// Call a method through an interface object's vtable.
+    ///
+    /// `takes_receiver` is the interface's own word on the method: it is
+    /// declared `take self`. The box is the call's from there on. The method
+    /// releases the value inside like any `take` parameter, and the box's block
+    /// is freed by the caller (`BoxRelease::Taken`).
     InterfaceCall {
         dst: Option<LocalId>,
         interface_object: LocalId,
         method_name: String,
         vtable_offset: u32,
         args: Vec<MirOperand>,
+        takes_receiver: bool,
     },
-    /// Drop an interface object's box. With `owns`, the value inside is the
-    /// box's and is released through the vtable's `owned_release` first;
-    /// without, the box only borrowed it and the block alone is freed.
+    /// Drop an interface object's box. What happens to the value inside is
+    /// `release`'s.
     InterfaceDrop {
         interface_object: LocalId,
-        owns: bool,
+        release: BoxRelease,
     },
     /// SSA phi node — selects a value based on which predecessor block was executed.
     /// Always appears at the start of a block; removed by de-SSA before codegen.
@@ -354,18 +378,25 @@ pub struct ClosureCapture {
 /// `items` is (local, type, by_ref, copy) per capture.
 pub fn lay_out_captures(
     items: impl IntoIterator<Item = (LocalId, crate::MirType, bool, bool)>,
+    target: rask_ast::Target,
 ) -> Vec<ClosureCapture> {
-    let mut end = 0u32;
+    let items: Vec<_> = items.into_iter().collect();
+    let parts: Vec<(u32, u32)> = items
+        .iter()
+        .map(|(_, ty, by_ref, _)| {
+            if *by_ref {
+                (target.word(), target.word())
+            } else {
+                rask_layout::size_align_of(ty, target)
+            }
+        })
+        .collect();
+    let (offsets, _, _) = rask_layout::tuple_layout(parts.iter().copied());
     items
         .into_iter()
-        .map(|(local_id, ty, by_ref, copy)| {
-            let (size, align) = if by_ref {
-                (crate::MirType::word(), crate::MirType::word())
-            } else {
-                (ty.size(), ty.align().max(1))
-            };
-            let offset = end.next_multiple_of(align);
-            end = offset + size;
+        .zip(parts)
+        .zip(offsets)
+        .map(|(((local_id, _, by_ref, copy), (size, _)), offset)| {
             ClosureCapture { local_id, offset, size, by_ref, copy, lent: false }
         })
         .collect()

@@ -18,6 +18,7 @@ pub mod interfaces;
 pub mod operators;
 pub mod fmt_spec;
 pub mod primitives;
+pub mod target;
 pub mod ty;
 pub mod rewrite;
 pub mod qualify;
@@ -27,6 +28,7 @@ pub mod allow_names;
 pub mod type_params;
 
 pub use span::{Span, LineMap};
+pub use target::Target;
 
 /// Unique identifier for AST nodes.
 ///

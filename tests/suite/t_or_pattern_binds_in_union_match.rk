@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An or-pattern that binds a name, in a `T or E` match with a variant arm.
+//
+// Native refused it ("isn't lowered natively yet"): the chain that tests each
+// alternative had no place to bind the name from whichever one matched.
+
+enum Bad { Code(i64), Pair(i64, string), Other }
+
+func f(i: i64) -> i64 or Bad {
+    if i == 1 { return Bad.Code(40) }
+    if i == 2 { return Bad.Pair(3, "x") }
+    if i == 3 { return Bad.Other }
+    return i
+}
+
+func g(i: i64) -> string {
+    return match f(i) {
+        Bad.Code(n) | Bad.Pair(n, _) => "num {n}",
+        Bad.Other => "other",
+        i64 as v => "v {v}",
+    }
+}
+
+test "each alternative binds the shared name" {
+    assert g(1) == "num 40"
+    assert g(2) == "num 3"
+}
+
+test "the other arms still match" {
+    assert g(3) == "other"
+    assert g(9) == "v 9"
+}

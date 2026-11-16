@@ -228,7 +228,7 @@ impl Interpreter {
                         let k = FloatKind::from_name(&target).unwrap_or(FloatKind::F64);
                         Value::Float(k.round(f), k)
                     })
-                } else if let Some(k) = IntKind::from_name(&target) {
+                } else if let Some(k) = IntKind::from_name(&target, self.types.target()) {
                     // The target's own width, both for the sign and for the
                     // range. Everything went through `i64`: u64::MAX exactly
                     // failed, `"-1".parse<u64>()` succeeded and printed as -1

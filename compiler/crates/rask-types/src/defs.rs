@@ -418,5 +418,10 @@ pub enum PatternTarget {
     /// side (`true`) or the success side, and, when the error side is a
     /// union, which member it names. `member` indexes the union's members in
     /// their canonical order, the order the union type itself keeps.
-    Side { err: bool, member: Option<usize> },
+    ///
+    /// A success side that is itself a `T or E` (`f64 or Bad` coming back
+    /// from a join as `(f64 or Bad) or JoinError`) holds the leaves of that
+    /// result too. `inside` is the test one result down, and then `err` is
+    /// `false`: the value has to be on the success side to be in there.
+    Side { err: bool, member: Option<usize>, inside: Option<Box<PatternTarget>> },
 }

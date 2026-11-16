@@ -529,7 +529,9 @@ impl TypeChecker {
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
             // A module isn't a type, so it's never the fix for a type position.
             // `str` used to suggest `std`, and `st` still would.
-            .filter(|cand| !self.types.builtin_modules.is_module(cand))
+            .filter(|cand| {
+                !rask_stdlib::modules::is_module(cand) || rask_ast::primitives::is_builtin_value_type(cand)
+            })
             // A candidate the written name is a prefix of ranks ahead of a
             // closer one that isn't. Pure edit distance answered `str` with
             // `std` — one character away, and a module, so not a type you could
@@ -729,12 +731,7 @@ impl TypeChecker {
                 self.symbol_types.get(sym),
                 Some(Type::Fn { ret, .. }) if never(ret)
             ),
-            Some(callee @ super::Callee::Method { recv, method, .. }) => {
-                if let Type::UnresolvedNamed(module) = recv {
-                    if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
-                        return never(&sig.ret);
-                    }
-                }
+            Some(callee @ super::Callee::Method { method, .. }) => {
                 callee
                     .recv_type_id()
                     .and_then(|id| self.types.get(id))

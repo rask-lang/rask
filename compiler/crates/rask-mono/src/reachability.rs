@@ -31,10 +31,7 @@ struct WorkItem {
     depth: usize,
 }
 
-/// ctrl.comptime/CT68: an instantiation chain longer than this is an error.
-/// Polymorphic recursion (`nest<T>` calling `nest<Vec<T>>`) makes one that
-/// never ends; anything legitimate is far shorter.
-pub const INSTANTIATION_LIMIT: usize = 64;
+use rask_types::INSTANTIATION_LIMIT;
 
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"
@@ -1109,10 +1106,12 @@ impl<'a> Monomorphizer<'a> {
     /// for the call too, as lowering asks it: the written argument is a
     /// spelling, and `json.JsonValue` didn't match one.
     fn note_json_decode(&mut self, id: NodeId) {
+        let Some(typed) = self.typed else { return };
         let is_decode = matches!(
             self.call_target(id),
-            Some(Callee::Method { recv: Type::UnresolvedNamed(m), method, .. })
-                if m == "json" && method == "decode"
+            Some(Callee::Method { recv, method, .. })
+                if method == "decode"
+                    && rask_check::receiver_name(&recv, &typed.types).as_deref() == Some("json")
         );
         if !is_decode {
             return;

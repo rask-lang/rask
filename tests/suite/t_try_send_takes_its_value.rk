@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `try_send` takes its value (conc.async, channel operations). A send that goes
+// through is the channel's; one that is refused hands the value back inside
+// `TrySendError.Full` or `.Closed`.
+//
+// It used to borrow: the bytes were copied into the channel with no reference
+// of their own and the caller then released the string, so the receiver got
+// memory that was already freed (memcheck_gate sees it; the answer can still
+// look right until something reuses the block). A refusal carried the channel's
+// status code where the value belonged, which is what the `full:` and
+// `closed:` checks below read.
+//
+// The helpers only interpolate the payload, so the file reads the same before
+// and after `TrySendError` became generic.
+
+import async.Sender
+
+func offer(tx: Sender<string>, text: string) -> string {
+    match tx.try_send(text) {
+        TrySendError.Full(v) => return "full:{v}",
+        TrySendError.Closed(v) => return "closed:{v}",
+        _ => return "sent",
+    }
+}
+
+func offer_number(tx: Sender<i64>, n: i64) -> string {
+    match tx.try_send(n) {
+        TrySendError.Full(v) => return "full:{v}",
+        TrySendError.Closed(v) => return "closed:{v}",
+        _ => return "sent",
+    }
+}
+
+test "a string sent with try_send reaches the receiver intact" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(2)
+        let name = "ada"
+        assert offer(tx, "hello {name}") == "sent"
+        // The next strings built land in whatever the first one freed.
+        let other = "x".repeat(40)
+        assert offer(tx, "second {name}") == "sent"
+        assert other.len() == 40
+        assert rx.receive()! == "hello ada"
+        assert rx.receive()! == "second ada"
+    }
+}
+
+test "a full channel hands the value back" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        assert offer(tx, "first") == "sent"
+        let n = 2
+        assert offer(tx, "second {n}") == "full:second 2"
+        assert rx.receive()! == "first"
+    }
+}
+
+test "a closed channel hands the value back" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        rx.close()!
+        let n = 7
+        assert offer(tx, "late {n}") == "closed:late 7"
+    }
+}
+
+test "a plain integer is handed back too" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        assert offer_number(tx, 10) == "sent"
+        assert offer_number(tx, 20) == "full:20"
+        assert rx.receive()! == 10
+    }
+}
+
+// A generic error can be tested by its bare name, as `CasFailed as e` is.
+test "is TrySendError, without the type argument" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        mut refused = 0
+        for word in ["first", "second"] {
+            let r = tx.try_send(word)
+            if r is TrySendError {
+                refused += 1
+            }
+        }
+        assert refused == 1
+        assert rx.receive()! == "first"
+    }
+}

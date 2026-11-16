@@ -1513,10 +1513,6 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Random" => {
                 self.resolve_rng_method(&method, &args, &ret, call_node, span)
             }
-            // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
-            Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
-                self.resolve_simd_method(name, &method, &args, &ret, span)
-            }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, call_node, span)
@@ -2466,9 +2462,8 @@ impl TypeChecker {
             // `Shared.new/mutex/local(value)` — the constructor settles the
             // strategy, and it lands in the type so a reader of the annotation
             // sees the same thing (conc.sync/SH2).
-            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
-                let inner = args[0].clone();
-                let shared_ty = Self::shared_type(inner, method);
+            ("Shared", _) if args.len() == 1 && Self::shared_type(Type::Unit, method).is_some() => {
+                let shared_ty = Self::shared_type(args[0].clone(), method).unwrap();
                 self.unify(ret, &shared_ty, span)
             }
             // `Cell` is the `Local` strategy now (analysis.storage-consolidation).
@@ -2488,22 +2483,24 @@ impl TypeChecker {
         }
     }
 
-    /// `Shared<T, S>` for the strategy a constructor names. `new` is `Readers`,
-    /// which is what bare `Shared<T>` means everywhere (SH3) — the default
-    /// serves the common case, which is a box several tasks reach.
-    fn shared_type(inner: Type, constructor: &str) -> Type {
-        let strategy = match constructor {
-            "local" => "Local",
-            "mutex" => "Mutex",
-            _ => "Readers",
-        };
-        Type::UnresolvedGeneric {
+    /// `Shared<T, S>` for a constructor, with the strategy its declaration in
+    /// `sync.rk` returns: `local` says `Shared<T, Local>`, `new` says
+    /// `Shared<T, Readers>` (SH3). `None` when `constructor` isn't a static
+    /// method of `Shared` returning one.
+    fn shared_type(inner: Type, constructor: &str) -> Option<Type> {
+        let stub = rask_stdlib::lookup_method("Shared", constructor).filter(|m| !m.takes_self)?;
+        let TypeExpr::Named { path, args } = &stub.ret_ty else { return None };
+        if path.last().map(String::as_str) != Some("Shared") {
+            return None;
+        }
+        let strategy = args.get(1)?.bare_name()?;
+        Some(Type::UnresolvedGeneric {
             name: "Shared".to_string(),
             args: vec![
                 GenericArg::Type(Box::new(inner)),
                 GenericArg::Type(Box::new(Type::UnresolvedNamed(strategy.to_string()))),
             ],
-        }
+        })
     }
 
     /// `s.try_read(|v| …)` and `try_write`: tie the closure to the box.
@@ -2695,9 +2692,9 @@ impl TypeChecker {
             }
             // Written `Shared.new(0)` the element type comes from the value, so
             // pin the variable to it. The strategy comes from the constructor.
-            ("Shared", "new" | "mutex" | "local") if args.len() == 1 => {
+            ("Shared", _) if args.len() == 1 && Self::shared_type(Type::Unit, method).is_some() => {
                 let _ = self.unify(&args[0], &inner_type, span);
-                let shared_ty = Self::shared_type(inner_type.clone(), method);
+                let shared_ty = Self::shared_type(inner_type.clone(), method).unwrap();
                 self.unify(ret, &shared_ty, span)
             }
             // Unrecognized method: hand the receiver on exactly as written
@@ -2909,9 +2906,6 @@ impl TypeChecker {
                 };
                 Some(self.resolve_atomic_method(payload, method, args, ret, call_node, span))
             }
-            name if Self::is_simd_type(name) => {
-                Some(self.resolve_simd_method(name, method, args, ret, span))
-            }
             "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
                 Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, call_node, span))
             }
@@ -3100,111 +3094,6 @@ impl TypeChecker {
         }
         self.resolve_declared_stdlib_method("Atomic", &self_ty, &[val_ty.clone()], method, args, ret, call_node, span)
             .unwrap_or_else(|| Err(TypeError::NoSuchMethod { ty: self_ty, method: method.to_string(), span }))
-    }
-
-    /// Check whether a type name is a SIMD vector type.
-    fn is_simd_type(name: &str) -> bool {
-        matches!(
-            name,
-            "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
-        )
-    }
-
-    /// Parse SIMD type name to (element Type, lane count).
-    fn simd_elem_type(name: &str) -> (Type, usize) {
-        match name {
-            "f32x4" => (Type::F32, 4),
-            "f32x8" => (Type::F32, 8),
-            "f64x2" => (Type::F64, 2),
-            "f64x4" => (Type::F64, 4),
-            "i32x4" => (Type::I32, 4),
-            "i32x8" => (Type::I32, 8),
-            _ => (Type::F32, 4), // unreachable given is_simd_type guard
-        }
-    }
-
-    /// Resolve methods on SIMD vector types (type.simd spec).
-    pub(super) fn resolve_simd_method(
-        &mut self,
-        type_name: &str,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        let (elem_ty, lanes) = Self::simd_elem_type(type_name);
-        let self_ty = Type::UnresolvedNamed(type_name.to_string());
-        let _vec_ty = Type::SimdVector {
-            elem: Box::new(elem_ty.clone()),
-            lanes,
-        };
-
-        match method {
-            // ── Construction ────────────────────────────────
-            // splat(scalar) → vec
-            "splat" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &elem_ty, span);
-                self.unify(ret, &self_ty, span)
-            }
-            // load(v) → vec (static method)
-            "load" if args.len() == 1 => {
-                let src_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(elem_ty.clone()))],
-                };
-                let _ = self.unify(&args[0], &src_ty, span);
-                self.unify(ret, &self_ty, span)
-            }
-
-            // ── Memory ──────────────────────────────────────
-            // store(v) → ()
-            "store" if args.len() == 1 => {
-                let dst_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(elem_ty.clone()))],
-                };
-                let _ = self.unify(&args[0], &dst_ty, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-
-            // ── Element-wise arithmetic ─────────────────────
-            // add(other) → vec, sub(other) → vec, mul(other) → vec, div(other) → vec
-            "add" | "sub" | "mul" | "div" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &self_ty, span);
-                self.unify(ret, &self_ty, span)
-            }
-
-            // ── Scalar broadcast ops ────────────────────────
-            // scale(scalar) → vec (multiply by scalar)
-            "scale" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &elem_ty, span);
-                self.unify(ret, &self_ty, span)
-            }
-
-            // ── Reductions ──────────────────────────────────
-            "sum" | "product" | "min" | "max" if args.is_empty() => {
-                self.unify(ret, &elem_ty, span)
-            }
-
-            // ── Lane access ─────────────────────────────────
-            // get(index) → elem
-            "get" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
-                self.unify(ret, &elem_ty, span)
-            }
-            // set(index, value) → ()
-            "set" if args.len() == 2 => {
-                let _ = self.unify(&args[0], &Type::I64, span);
-                let _ = self.unify(&args[1], &elem_ty, span);
-                self.unify(ret, &Type::Unit, span)
-            }
-
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
-        }
     }
 
     /// Resolve methods on Option<T> (i.e., T?)
@@ -3849,7 +3738,7 @@ impl TypeChecker {
             );
             let integer = kind == super::inference::LiteralKind::Integer;
             // An integer has to fit: `300` isn't a `u8`.
-            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param)) {
+            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param, self.types.target())) {
                 (Some(&v), Some((lo, hi))) => v >= lo && (v < 0 || (v as u128) <= hi),
                 _ => true,
             };

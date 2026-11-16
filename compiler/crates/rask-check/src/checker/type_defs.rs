@@ -92,29 +92,6 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
     }
 }
 
-/// Builtin module method signature.
-#[derive(Debug, Clone)]
-pub struct ModuleMethodSig {
-    pub name: String,
-    /// The declaration a call runs, when it has a body in Rask.
-    pub body: Option<NodeId>,
-    pub params: Vec<Type>,
-    pub ret: Type,
-    /// Interface bounds on the method's own type parameters, as the stub wrote them
-    /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
-    /// type argument at the call site.
-    pub type_param_bounds: Vec<(String, rask_ast::ty::TypeExpr)>,
-    /// Which bounded type parameter each parameter *is*, when its declared type
-    /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
-    ///
-    /// `params` can't answer this: `stub_type` turns a single-letter type
-    /// parameter into the `_Any` wildcard, which is what the return-type
-    /// freshening runs on, so by then the name is gone. Without it a call that
-    /// didn't write the type argument had nothing to check the bound against.
-    pub param_type_params: Vec<Option<String>>,
-}
-
-
 /// type.generics/GT7: a call through a bound naming a generic interface's
 /// conformance. Which filed method that is depends on what the bound's
 /// parameter turns out to be, so the backends look it up per instantiation.

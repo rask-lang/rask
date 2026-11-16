@@ -22,12 +22,12 @@ enum Scalar {
     Bool,
 }
 
-fn scalar(ty: &TypeExpr) -> Option<Scalar> {
+fn scalar(ty: &TypeExpr, target: rask_ast::Target) -> Option<Scalar> {
     let name = ty.bare_name()?;
-    let name = rask_ast::primitives::c_type_spelling(name).unwrap_or(name);
+    let name = target.c_type_spelling(name).unwrap_or(name);
     let name = match name {
-        "usize" => rask_ast::primitives::usize_spelling(),
-        "isize" => rask_ast::primitives::isize_spelling(),
+        "usize" => target.usize_spelling(),
+        "isize" => target.isize_spelling(),
         n => n,
     };
     Some(match name {
@@ -80,7 +80,12 @@ fn from_bytes(b: &[u8], kind: Scalar) -> Value {
 }
 
 /// `want` read from whichever member of `u` is live in `fields`.
-pub(crate) fn reinterpret(u: &UnionDecl, fields: &IndexMap<String, Value>, want: &str) -> Result<Value, String> {
+pub(crate) fn reinterpret(
+    u: &UnionDecl,
+    fields: &IndexMap<String, Value>,
+    want: &str,
+    target: rask_ast::Target,
+) -> Result<Value, String> {
     let ty_of = |name: &str| u.fields.iter().find(|f| f.name == name).map(|f| &f.ty);
     let want_ty = ty_of(want).ok_or_else(|| format!("union `{}` has no member `{}`", u.name, want))?;
     let (live, value) = fields.iter().next().ok_or_else(|| format!("union `{}` holds no member", u.name))?;
@@ -90,8 +95,8 @@ pub(crate) fn reinterpret(u: &UnionDecl, fields: &IndexMap<String, Value>, want:
             u.name, live, want
         )
     };
-    let live_kind = ty_of(live).and_then(scalar).ok_or_else(unsupported)?;
-    let want_kind = scalar(want_ty).ok_or_else(unsupported)?;
+    let live_kind = ty_of(live).and_then(|t| scalar(t, target)).ok_or_else(unsupported)?;
+    let want_kind = scalar(want_ty, target).ok_or_else(unsupported)?;
     let bytes = to_bytes(value, live_kind).ok_or_else(unsupported)?;
     Ok(from_bytes(&bytes, want_kind))
 }
