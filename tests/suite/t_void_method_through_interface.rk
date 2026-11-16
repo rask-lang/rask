@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A method that returns nothing, called through `any Interface`. Native code
+// generation read the call's result out of an instruction that has none and
+// panicked, so any such call, with an argument it mutates or without, stopped
+// the build.
+
+interface Bump {
+    func bump(self, mutate v: Vec<i64>)
+    func note(self, text: string)
+    func reset(self)
+}
+
+struct Adder {
+    n: i64
+}
+
+Adder implements Bump {
+    func bump(self, mutate v: Vec<i64>) {
+        v.push(self.n)
+    }
+    func note(self, text: string) {
+        println("{text} {self.n}")
+    }
+    func reset(self) {
+        println("reset {self.n}")
+    }
+}
+
+func run(b: any Bump, mutate v: Vec<i64>) {
+    b.bump(mutate v)
+}
+
+test "a void method that mutates its argument" {
+    mut v: Vec<i64> = Vec.new()
+    let a: any Bump = Adder(n: 5)
+    a.bump(mutate v)
+    a.bump(mutate v)
+    assert v.len() == 2
+    assert v[1] == 5
+}
+
+test "a void method called from a function that takes the box" {
+    mut v: Vec<i64> = Vec.new()
+    let a: any Bump = Adder(n: 7)
+    run(a, mutate v)
+    assert v[0] == 7
+}
+
+test "a void method with a plain argument, and one with none" {
+    let a: any Bump = Adder(n: 1)
+    a.note("noted")
+    a.reset()
+}

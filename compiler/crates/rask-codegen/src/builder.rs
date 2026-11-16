@@ -3288,7 +3288,10 @@ impl<'a> FunctionBuilder<'a> {
         let sig_ref = builder.import_signature(sig);
         let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
 
-        if let Some(dst_id) = dst {
+        // A method that returns nothing has no result to land: the call
+        // gave back no value, and nothing reads the void destination.
+        let answers = !matches!(ret_mir, Some(MirType::Void));
+        if let Some(dst_id) = dst.as_ref().filter(|_| answers) {
             let result = match dst_ptr {
                 Some(addr) => addr,
                 None => builder.inst_results(call_inst)[0],
