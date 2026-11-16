@@ -151,12 +151,18 @@ fn describe(
             out.push(entry(base, KIND_LINK))
         }
         // The element is the container. Its own list travels with it, so this
-        // level says "a Vec lives here" and stops there. A rack is an arena
-        // whose nodes outlive any one element (mem.racks), so it's nobody's
-        // here.
+        // level says "a Vec lives here" and stops there. A rack carries its
+        // nodes' description on itself too (`rask_link_register_*`), so the
+        // entry just says "a rack lives here" and the element owns it, nodes
+        // and all, freed through the handle table like any self-freeing
+        // handle (#1822).
         MirType::Container(ContainerKind::Vec) => out.push(entry(base, KIND_VEC)),
         MirType::Container(ContainerKind::Map) => out.push(entry(base, KIND_MAP)),
-        MirType::Container(ContainerKind::Handle(release)) => {
+        MirType::Container(kind @ (ContainerKind::Rack | ContainerKind::Handle(_))) => {
+            let release = match kind {
+                ContainerKind::Handle(release) => release,
+                _ => "rask_rack_free",
+            };
             let index = runtime_abi::handle_release_index(release)? as i32;
             let mask = runtime_abi::RASK_OWNED_HANDLE_OFFSET_MASK as i32;
             let shift = runtime_abi::RASK_OWNED_HANDLE_INDEX_SHIFT as u32;

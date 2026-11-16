@@ -805,7 +805,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("channel_rx", "rask_channel_get_rx", &[types::I64], Some(types::I64), false),
 
-        StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "send", c_name: "rask_channel_send_ptr",

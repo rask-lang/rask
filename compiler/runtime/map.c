@@ -574,6 +574,11 @@ void *rask_map_take(RaskMap *m, const void *key) {
             m->states[slot] = MAP_TOMBSTONE;
             m->len--;
             m->tombstones++;
+            // The value goes to the caller. The key the map stored is nobody's
+            // once the entry is gone, and the caller's own `key` is a separate
+            // buffer that stays theirs (#1873).
+            rask_owned_release_all(m->keys + slot * m->key_size,
+                                   m->key_strs.offsets, m->key_strs.count);
             return m->vals + slot * m->val_size;
         }
     }
@@ -595,6 +600,23 @@ int64_t rask_map_is_empty(const RaskMap *m) {
 void rask_map_clear(RaskMap *m) {
     map_check_no_borrows(m, "clear");
     if (!m) return;
+    // What the entries own goes back first; resetting the states leaves no way
+    // to find them (#1828).
+    int has_key = m->key_strs.offsets && m->key_strs.count > 0;
+    int has_val = m->val_strs.offsets && m->val_strs.count > 0;
+    if (has_key || has_val) {
+        for (int64_t i = 0; i < m->cap; i++) {
+            if (m->states[i] != MAP_OCCUPIED) continue;
+            if (has_key) {
+                rask_owned_release_all(m->keys + i * m->key_size,
+                                       m->key_strs.offsets, m->key_strs.count);
+            }
+            if (has_val) {
+                rask_owned_release_all(m->vals + i * m->val_size,
+                                       m->val_strs.offsets, m->val_strs.count);
+            }
+        }
+    }
     memset(m->states, MAP_EMPTY, (size_t)m->cap);
     m->len = 0;
     m->tombstones = 0;

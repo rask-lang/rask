@@ -907,7 +907,28 @@ impl<'a> MirLowerer<'a> {
             ret_vec_elem: None,
             param_tys: Vec::new(),
         });
-        self.synthesized_functions.push(yb.finish());
+        // A yield lends its item (type.sequence/SEQ34): the sequence that
+        // called it releases what it made once the call returns, as `map`'s
+        // does after `yield(f(x))`. For an item that owns only counted things
+        // (a tuple or struct of strings and numbers) the body borrows it too:
+        // it releases nothing, and one it keeps — `find` returning the hit —
+        // is a copy with references of its own. Unmarked, the body counted as
+        // the item's owner: it freed a miss and handed a hit on without a
+        // reference, and the string inside came back freed (#1871).
+        //
+        // An item that owns a container is the other protocol: the body keeps
+        // it by moving it, and the sequence hands it over instead of releasing
+        // it, which a copy can't stand in for.
+        let mut yield_fn = yb.finish();
+        let counted_aggregate = matches!(
+            elem_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_)
+                | MirType::Result { .. } | MirType::Array { .. }
+        ) && self.ctx.mir_owns_only_counted(&elem_ty, 0);
+        if counted_aggregate {
+            yield_fn.param_modes = vec![rask_ast::ty::ParamMode::Borrow, rask_ast::ty::ParamMode::Borrow];
+        }
+        self.synthesized_functions.push(yield_fn);
 
         // Build the closure and hand it to the sequence.
         let closure_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));

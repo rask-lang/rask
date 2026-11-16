@@ -552,6 +552,12 @@ impl CopyLayouts {
         }
     }
 
+    /// How many bytes a value of `ty` takes on the target these layouts were
+    /// built for.
+    pub fn size_of(&self, ty: &MirType) -> u32 {
+        rask_layout::size_of(ty, self.target)
+    }
+
     /// Is a value of `ty` Copy?
     pub fn is_copy(&self, ty: &MirType) -> bool {
         if rask_layout::size_of(ty, self.target) > 16 {

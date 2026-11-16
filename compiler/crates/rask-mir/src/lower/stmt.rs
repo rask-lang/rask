@@ -384,13 +384,22 @@ impl<'a> MirLowerer<'a> {
     /// or an array, a string, a container. A scalar holds nothing to give
     /// back.
     fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
-        self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(
-                t,
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
-                    | MirType::Buffer | MirType::Container(_)
-            )
-        })
+        self.replaced_slot_type(target, reuses_old, ty)
+            .filter(|t| {
+                matches!(
+                    t,
+                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+                        | MirType::Buffer | MirType::Container(_)
+                )
+            })
+            // An optional or a result holds what it wraps, and the slot is
+            // always filled (`none` counts): `best = x` in a loop body over a
+            // `T?` captured by address replaced the hit it held without
+            // giving it back (`max_by_key`, #1871).
+            .or_else(|| {
+                (!reuses_old && matches!(ty, MirType::Option(_) | MirType::Result { .. }))
+                    .then(|| ty.clone())
+            })
     }
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
@@ -2289,13 +2298,23 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer"
+            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer".
+            // What the call returns is the checker's word, as for `Type.method()`
+            // above: `http.Method.variants()` is a `Vec<Method>`, and a prefix of
+            // `Method` sent `all[0]` to `Method_index`.
             if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
                 if let Some(module_name) = inner_obj.name() {
                     if !self.locals.contains_key(module_name)
                         && super::is_type_constructor_name(module_name)
                     {
-                        self.meta_mut(name).type_prefix = Some(type_name.clone());
+                        let checked = self
+                            .ctx
+                            .lookup_raw_type(init_inner.id)
+                            .filter(|ty| !matches!(&**ty, rask_types::Type::Result { .. })
+                                && !ty.is_option())
+                            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
+                            .map(|p| p.as_str().to_string());
+                        self.meta_mut(name).type_prefix = Some(checked.unwrap_or_else(|| type_name.clone()));
                     }
                 }
             }

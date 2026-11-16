@@ -302,11 +302,12 @@ fn env_drop_glue(
     // glue freeing it again on the way out aborted the process on a double
     // free. A task block may give away anything it captured, since it runs
     // once (conc.async/S6).
+    let body_consumed = captures_consumed_by_bodies(fns);
     let consumed: HashMap<&str, HashSet<u32>> = fns
         .iter()
         .map(|f| {
             let mut gone = captures_the_body_consumes(f);
-            gone.extend(task_captures_given_away(f, kept, targets, closure_reach));
+            gone.extend(task_captures_given_away(f, kept, &body_consumed, targets, closure_reach));
             (f.name.as_str(), gone)
         })
         .collect();
@@ -632,6 +633,11 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
+/// What each closure body takes away from its own captures, by function name.
+fn captures_consumed_by_bodies(fns: &[MirFunction]) -> HashMap<&str, HashSet<u32>> {
+    fns.iter().map(|f| (f.name.as_str(), captures_the_body_consumes(f))).collect()
+}
+
 /// The capture offsets a task block's body gives away: returns, stores, hands
 /// to something that keeps it, or carries into a task of its own. A closure
 /// value it captured counts whatever it does with it: the body frees that one
@@ -643,13 +649,19 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
 /// of each capture the block loads. Conservative the same way: a capture given
 /// away on one path counts, which leaks on the other path rather than freeing
 /// twice.
+///
+/// `consumed` is what each closure body takes away from its own captures
+/// (`captures_consumed_by_bodies`), so a capture the block only lends to a
+/// closure it builds and frees itself isn't read as given away. Asked of an
+/// empty map, every capture handed to a closure counted as consumed by it, and
+/// a vector a task block walked through `m.as_sequence()` was freed by nobody.
 pub(crate) fn task_captures_given_away(
     func: &MirFunction,
     kept: &HashMap<String, Vec<bool>>,
+    consumed: &HashMap<&str, HashSet<u32>>,
     targets: &ClosureTargets,
     reach: &ClosureReach,
 ) -> HashSet<u32> {
-    let none = HashMap::new();
     func.blocks
         .iter()
         .flat_map(|b| b.statements.iter())
@@ -661,7 +673,7 @@ pub(crate) fn task_captures_given_away(
                 Some(*offset)
             }
             MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
-                param_is_kept_by(func, *dst, kept, &none, targets, reach).then_some(*offset)
+                param_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
             }
             _ => None,
         })
@@ -700,6 +712,13 @@ pub(crate) fn add_carried_releases(
     targets: &ClosureTargets,
     reach: &ClosureReach,
 ) {
+    // Owned, because the glue functions are pushed onto `fns` below.
+    let consumed_by_name: HashMap<String, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), captures_the_body_consumes(f)))
+        .collect();
+    let body_consumed: HashMap<&str, HashSet<u32>> =
+        consumed_by_name.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
     let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for site in sites {
@@ -723,7 +742,7 @@ pub(crate) fn add_carried_releases(
         // non-Copy field of one, and the Copy things a body can consume — a
         // channel end's `close` — are not what the walk releases.
         if let Some(body) = fns.iter().find(|f| f.name == name) {
-            let gone = task_captures_given_away(body, kept, targets, reach);
+            let gone = task_captures_given_away(body, kept, &body_consumed, targets, reach);
             slots.retain(|(offset, _)| !gone.contains(offset));
         }
         if slots.is_empty() {

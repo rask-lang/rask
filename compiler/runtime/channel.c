@@ -574,11 +574,16 @@ int64_t rask_channel_recv_into(int64_t rx, int64_t out_ptr) {
     return rask_channel_recv((RaskRecver *)(intptr_t)rx, (void *)(intptr_t)out_ptr);
 }
 
+// These are also the declared releases of `Sender` and `Receiver`, which a
+// struct field's release calls on whatever the slot holds. A slot an explicit
+// `close()` already consumed holds zero, and releasing it does nothing.
 void rask_sender_drop_i64(int64_t tx) {
+    if (!tx) return;
     rask_sender_drop((RaskSender *)(intptr_t)tx);
 }
 
 void rask_recver_drop_i64(int64_t rx) {
+    if (!rx) return;
     rask_recver_drop((RaskRecver *)(intptr_t)rx);
 }
 

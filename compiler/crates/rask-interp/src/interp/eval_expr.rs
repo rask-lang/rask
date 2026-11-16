@@ -940,7 +940,9 @@ impl Interpreter {
             return None;
         }
         let decl = self.enums.get(type_name)?;
-        decl.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
+        (decl.variants.iter().any(|v| v.name == method)
+            || rask_ast::decl::GENERATED_ENUM_STATICS.contains(&method))
+        .then(|| type_name.clone())
     }
 
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
