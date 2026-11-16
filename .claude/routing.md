@@ -29,6 +29,11 @@ A cached read is 5% of the input price on Opus and Sonnet 5.5 ($0.20 and
 $0.10). Writing the cache for one hour costs twice the input price ($8 and $4),
 forty times a read. A turn reads the whole session, so its price is the
 session's size, and a turn after an hour idle pays the write price on all of
-it. That's why `CLAUDE.md` cuts wakes and `.claude/settings.json` sets
-`autoCompactWindow` to 800K: cloud sessions compact at 80% of the window, so
-about 640K, before the model gets worse past ~600K.
+it. That's why `CLAUDE.md` cuts wakes.
+
+`.claude/settings.json` sets `autoCompactWindow` to 250K, so a session compacts
+at about 200K. It was 800K (compact at ~640K), and the night of 2026-11-16 showed
+what that costs: seven Sonnet workers each grew to 400–620K, every tool call
+re-read all of it, and the account hit its five-hour spend limit twice. A worker
+that compacts at 200K loses some of its own history; a fresh one with a short
+brief came in at 120K for the same kind of job.

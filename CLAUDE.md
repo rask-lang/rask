@@ -96,7 +96,8 @@ whose context is thrown away when they report. Why each runs on what it does:
   Brief it with the goal, branch, what done means and what's ruled out; point
   at files, don't paste them. One per branch; parallel ones in worktrees,
   and hand each one any number they might both claim (error codes, rule IDs)
-  in its brief, since they can't see each other's work.
+  in its brief, since they can't see each other's work. **At most three run
+  at once.** Seven at once hit the five-hour spend limit twice in one night.
   Use `model: "opus"` for a task a worker failed twice, or one no test can
   check.
 - **`lead`** (Opus, small context): for a job that fans out to three or
@@ -104,7 +105,10 @@ whose context is thrown away when they report. Why each runs on what it does:
   main session once with the result. One or two workers report to main
   directly.
 - **Hold reports to the bar.** One that says workaround, "for now", partial,
-  deferred or follow-up goes back to the worker: "finish it properly".
+  deferred or follow-up isn't done. Send what's left to a **fresh** worker with
+  a short brief (what's committed, what's left, the repro), not back to the
+  same one: a resumed worker re-reads its whole history on every tool call,
+  and resumed ones reached 600K tokens.
 - **`skeptic`** (Opus): once per finished PR that changes compiler, runtime or
   stdlib, with the goal, not your reasoning. Not per push, not for a "just do
   it" change. What it confirms goes to a worker; a finding you reject gets a
@@ -129,7 +133,11 @@ reading it. Most turns used to be events. So:
   agent's report arrives as its own wake. Background is for when you have other
   work meanwhile.
 - **A gate sweep is one command that reports once**, not a Monitor that wakes
-  the session per gate.
+  the session per gate. A build plus gates runs past the 10-minute foreground
+  limit; start it in the background with a 2-hour timeout so it wakes you once,
+  not as a foreground call that times out and then wakes you again.
+- **Merge, gate, push in one turn.** A merge left unpushed while gates run
+  draws a stop-hook re-prompt per turn.
 - **Commit and push before ending a turn.** The cloud's stop hook re-prompts on
   uncommitted, untracked or unpushed work, and each re-prompt is a full turn.
   Scratch files go in `/tmp`.
