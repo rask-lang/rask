@@ -49,6 +49,8 @@ struct RaskJsonVal {
 // ─── Error reporting ──────────────────────────────────────────────
 
 static _Thread_local char json_err_msg[512];
+// Where a refusal happened, as the decoders word a path (`field ports[1]`).
+static _Thread_local char json_err_path[256];
 static _Thread_local int64_t json_err_kind = RASK_JSON_OK;
 
 static void json_fail(int64_t kind, const char *fmt, ...) {
@@ -63,8 +65,11 @@ int64_t rask_json_error_kind(void) {
     return json_err_kind;
 }
 
-void rask_json_error_message(RaskStr *out) {
-    rask_string_from_bytes(out, json_err_msg, (int64_t)strlen(json_err_msg));
+// The message of the failed decode, or where it happened (a refusal keeps the
+// two apart).
+void rask_json_error_message(RaskStr *out, int64_t part) {
+    const char *text = part == RASK_JSON_TEXT_PATH ? json_err_path : json_err_msg;
+    rask_string_from_bytes(out, text, (int64_t)strlen(text));
 }
 
 // ─── Parser ───────────────────────────────────────────────────────
@@ -632,6 +637,32 @@ RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int
     return s;
 }
 
+RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t wire_size,
+                                      void *decode) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM, size);
+    s->elem = wire;
+    s->wire_size = wire_size;
+    s->custom = (RaskJsonCustom)decode;
+    return s;
+}
+
+RaskJsonShape *rask_json_shape_custom_encode(int64_t size, void *encode) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM_ENCODE, size);
+    s->custom_encode = (RaskJsonCustomEncode)encode;
+    return s;
+}
+
+// Why the custom decode that just ran refused, for the decoder to put behind
+// the path it happened at.
+static _Thread_local char json_reject_msg[384];
+
+void rask_json_custom_reject(const RaskStr *msg) {
+    int64_t n = rask_string_len(msg);
+    if (n >= (int64_t)sizeof(json_reject_msg)) n = (int64_t)sizeof(json_reject_msg) - 1;
+    memcpy(json_reject_msg, rask_string_ptr(msg), (size_t)n);
+    json_reject_msg[n] = '\0';
+}
+
 RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_GENERATED, size);
     s->generate = (RaskJsonFill)generate;
@@ -729,6 +760,37 @@ static int json_decode_opt(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     return json_decode_into_slot((char *)dst + at, shape->elem, v, path);
 }
 
+// Does an absent member decode without being there? A `T?` takes `none`, and
+// so does a custom decode whose wire type is one (std.encoding/E12b).
+static int json_shape_takes_absent(const RaskJsonShape *shape) {
+    while (shape && shape->kind == RASK_JSHAPE_CUSTOM) shape = shape->elem;
+    return shape && shape->kind == RASK_JSHAPE_OPT;
+}
+
+// A type's own `decode`: read the input as the wire type, the normal way, and
+// hand the result over. The wire value belongs to the function it's handed to.
+static int json_decode_custom(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
+                              const char *path) {
+    int64_t size = shape->wire_size > 16 ? shape->wire_size : 16;
+    void *wire = rask_alloc(size);
+    memset(wire, 0, (size_t)size);
+    if (!json_decode_into_slot(wire, shape->elem, v, path)) {
+        rask_free(wire);
+        return 0;
+    }
+    json_reject_msg[0] = '\0';
+    int64_t refused = shape->custom(wire, dst);
+    rask_free(wire);
+    if (refused) {
+        // The message is the type's own reason; where it happened is kept
+        // apart so a format that knows its columns can name the right one.
+        json_fail(RASK_JSON_ERR_REFUSED, "%s", json_reject_msg);
+        snprintf(json_err_path, sizeof(json_err_path), "%s", path[0] ? path : "the value");
+        return 0;
+    }
+    return 1;
+}
+
 static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                               const char *path) {
     if (v->kind != RASK_JSON_OBJ) {
@@ -761,8 +823,8 @@ static int json_decode_struct(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
                 continue;
             }
             // A `T?` field takes `none`; anything else has to be there (J9).
-            if (f->shape->kind == RASK_JSHAPE_OPT) {
-                if (!json_decode_opt((char *)dst + f->offset, f->shape, NULL, child)) return 0;
+            if (json_shape_takes_absent(f->shape)) {
+                if (!json_decode_into_slot((char *)dst + f->offset, f->shape, NULL, child)) return 0;
                 continue;
             }
             json_fail(RASK_JSON_ERR_MISSING, "field \"%s\" not found in the JSON object", f->key);
@@ -847,6 +909,9 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
     if (shape->kind == RASK_JSHAPE_OPT) {
         return json_decode_opt(dst, shape, v, path);
     }
+    if (shape->kind == RASK_JSHAPE_CUSTOM) {
+        return json_decode_custom(dst, shape, v, path);
+    }
     if (!v) {
         json_fail(RASK_JSON_ERR_MISSING, "%s is missing", path[0] ? path : "the value");
         return 0;
@@ -863,6 +928,7 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         case RASK_JSHAPE_ENUM:
         case RASK_JSHAPE_RESULT:
         case RASK_JSHAPE_GENERATED:
+        case RASK_JSHAPE_CUSTOM_ENCODE:
             json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
             return 0;
         case RASK_JSHAPE_STRING: {
@@ -904,6 +970,7 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input) {
     json_err_kind = RASK_JSON_OK;
     json_err_msg[0] = '\0';
+    json_err_path[0] = '\0';
 
     RaskJsonVal *tree = rask_json_tree_parse(input);
     if (!tree) return json_err_kind ? json_err_kind : RASK_JSON_ERR_PARSE;
@@ -1004,6 +1071,15 @@ static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShap
         return;
     }
     switch (shape->kind) {
+        // A type with its own `encode`: its value's JSON text, as it gave it.
+        case RASK_JSHAPE_CUSTOM_ENCODE: {
+            RaskStr text;
+            memset(&text, 0, sizeof text);
+            shape->custom_encode(src, &text);
+            jsb_push(b, rask_string_ptr(&text), rask_string_len(&text));
+            rask_string_free(&text);
+            return;
+        }
         case RASK_JSHAPE_OPT: {
             if (*(const uint8_t *)src != RASK_TAG_PRESENT) {
                 jsb_push(b, "null", 4);

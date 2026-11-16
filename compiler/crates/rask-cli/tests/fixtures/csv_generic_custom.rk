@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic struct whose field is typed by its parameter: `Row<Flag>.x` is a
+// `Flag`, read from its cell as the `bool` its `decode` takes.
+import csv
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Flag {
+    on: bool
+}
+
+Flag implements Decode {
+    func decode(raw: bool) -> Flag or Bad {
+        return Flag(on: raw)
+    }
+}
+
+Flag implements Encode {
+    func encode(self) -> bool {
+        return self.on
+    }
+}
+
+struct Row<T> {
+    name: string
+    x: T
+}
+
+func main() {
+    let rows = csv.decode<Row<Flag>>("name,x\na,TRUE\nb,false\n") catch e => {
+        println("failed: {e.message()}")
+        return
+    }
+    println("{rows.len()} {rows[0].x.on} {rows[1].x.on}")
+    let bad = csv.decode<Row<Flag>>("name,x\na,maybe\n")
+    if bad is CsvError as e {
+        println(e.message())
+    }
+}

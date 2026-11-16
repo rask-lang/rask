@@ -57,6 +57,8 @@ extend reflect {
 | `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
 | `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, resources) |
+| `has_decode<T>()` | `-> bool` | Whether T writes its own `decode` (`std.encoding/E12b`) |
+| `has_encode<T>()` | `-> bool` | Whether T writes its own `encode` (`std.encoding/E12d`) |
 
 <!-- surface -->
 ```rask
@@ -69,7 +71,13 @@ extend reflect {
     func is_integer<T>() -> bool
     func is_float<T>() -> bool
     func is_flat<T>() -> bool
+    func has_decode<T>() -> bool
+    func has_encode<T>() -> bool
 }
+
+// In type position, in a generic function that asks about codecs:
+//   reflect.DecodeWire<T>    what T's `decode` takes (T itself if it has none)
+//   reflect.EncodeWire<T>    what T's `encode` answers (T itself if it has none)
 ```
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
@@ -115,6 +123,10 @@ extend reflect {
 struct FieldInfo {
     name: string
     type_name: string
+    wire_kind: WireKind       // what a decoder reads the field as (std.encoding/E12b)
+    wire_optional: bool       // ... and whether that is a `T?`
+    has_decode: bool          // the field's type writes its own `decode`
+    has_encode: bool          // ... or its own `encode`
     offset: usize
     size: usize
     is_public: bool
@@ -127,9 +139,28 @@ struct FieldInfo {
 
 `has_field` is a predicate, so it answers rather than refuses: an enum's payload isn't a field and a primitive has none, and both say false. `fields<T>()` on a non-struct stays a compile error, because there's no list to hand back.
 
+`wire_kind` is what the field is read as: its own type, unless that decodes through its own `decode` (`std.encoding/E12b`), in which case it is what `decode` takes, followed down a chain and through a `T?`. `WireKind.U16` for a `Port` whose `decode` takes a `u16`, with `wire_optional` true for a `Port?`. A format that checks cells or tokens by type (csv) matches on this instead of `type_name`, so it never has to know which types write their own, and it never reads a type back out of a name.
+
+```rask
+enum WireKind {
+    Text, Bool, F32, F64,
+    I8, I16, I32, I64, Isize,
+    U8, U16, U32, U64, Usize,
+    Other        // a struct, a list, a map, an enum: written as JSON
+}
+```
+
 `serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
 
 `serialized` is the **inclusion decision, already made** — false for a `private` field or one marked `@no_serialize`, true otherwise. Format libraries read the one flag instead of re-deriving the rule from `is_private` and the annotations; when `std.encoding`'s policy changes, they don't.
+
+### Codecs [R6]
+
+| Rule | Description |
+|------|-------------|
+| **R6: A type's codec is data** | `has_decode<T>()`, `has_encode<T>()` and the `has_decode`/`has_encode` of a `FieldInfo` say whether a type writes its own codec (`std.encoding/E12b`, E12d), for any `T`: a field's type, a `Vec` element, a `Map` value, the top level. `reflect.DecodeWire<T>` and `reflect.EncodeWire<T>` are the types its `decode` takes and its `encode` answers, one step, usable as a type argument or an annotation. A generic function that uses any of them is written out per instance and checked there (`std.encoding/E31`), because `T.decode(wire)` has nothing to call until `T` is a type |
+
+A format library reads a value with its own `decode` by reading `reflect.DecodeWire<T>` and calling `T.decode`, and writes one by calling `value.encode()` and writing that. The worked example is in `std.encoding` ("Types With Their Own Codec"), and it runs as `tests/suite/t_format_library_codecs.rk`. csv does not need the wire as a type, only as a kind of cell, which is `wire_kind`.
 
 ### Reflection and Auto-Derived Conformances [R4]
 

@@ -39,6 +39,7 @@ pub const TEMPLATE_ID_BASE: u32 = 60_000_000;
 pub struct FieldFact {
     pub name: String,
     pub type_name: String,
+    pub wire: rask_check::reflect::WireForm,
     pub offset: u32,
     pub size: u32,
     pub is_public: bool,
@@ -86,6 +87,7 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
                 FieldFact {
                     name: fl.name.clone(),
                     type_name: rask_check::reflect::substituted_label(types, declared_ty, &subst),
+                    wire: rask_check::reflect::wire_form(types, declared_ty, &subst),
                     offset: fl.offset,
                     size: fl.size,
                     is_public: fl.is_public,
@@ -102,7 +104,7 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
 /// A generic function whose body has comptime control to expand per instance.
 /// Generic counts a type parameter written without `<T>` (type.gradual/PC1).
 pub fn is_template(f: &FnDecl) -> bool {
-    is_generic(f) && has_comptime_for(&f.body)
+    is_generic(f) && (has_comptime_for(&f.body) || rask_ast::comptime_if::asks_about_codecs(&f.body))
 }
 
 fn is_generic(f: &FnDecl) -> bool {
@@ -608,8 +610,9 @@ impl Expander<'_> {
                 doc: None,
             }),
         };
-        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written, types: &self.typed.types });
         rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
+        decide_instance(&mut decl, self.known);
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -630,8 +633,9 @@ impl Expander<'_> {
         let concrete: HashMap<String, Type> = type_args.iter().map(|b| (b.param.clone(), b.ty.clone())).collect();
         f.name = name.to_string();
         f.type_params.clear();
-        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written });
+        rewrite::rewrite_decl(&mut decl, &mut TypeParams { written: &written, types: &self.typed.types });
         rewrite::rewrite_decl(&mut decl, &mut Unroll { ex: self, concrete: &concrete, lenient: false });
+        decide_instance(&mut decl, self.known);
         let mut fresh = Fresh { next: self.next_id, copied_from: &mut self.copied_from };
         rewrite::rewrite_decl(&mut decl, &mut fresh);
         decl.id = fresh.fresh(decl.id);
@@ -643,11 +647,22 @@ impl Expander<'_> {
 /// types, as a call's receiver (`T.zero()`) and as a literal's name (`T(…)`).
 struct TypeParams<'a> {
     written: &'a HashMap<String, TypeExpr>,
+    types: &'a rask_check::TypeTable,
 }
 
 impl Rewrite for TypeParams<'_> {
+    /// `reflect.DecodeWire<Port>` is written out as what `Port`'s `decode` takes.
     fn ty(&mut self, t: &mut TypeExpr) {
-        *t = t.substitute(&|n| self.written.get(n).cloned());
+        let substituted = t.substitute(&|n| self.written.get(n).cloned());
+        *t = substituted.replace_named(&|path, args| {
+            let decode = match path {
+                [m, n] if m == "reflect" && n == "DecodeWire" => true,
+                [m, n] if m == "reflect" && n == "EncodeWire" => false,
+                _ => return None,
+            };
+            let [arg] = args else { return None };
+            Some(rask_check::reflect::wire_step(self.types, arg, decode))
+        });
     }
 
     fn expr(&mut self, e: &mut Expr) {
@@ -940,6 +955,15 @@ impl Rewrite for PayloadLoops<'_, '_, '_> {
     }
 }
 
+/// `reflect.WireKind.U16`: a field's wire kind as a value the copy can name.
+/// Written where the property was read, so its nodes carry that position.
+fn wire_kind_expr(kind: rask_check::reflect::WireKind, at: &Expr) -> ExprKind {
+    let node = |kind: ExprKind| Box::new(Expr { id: at.id, kind, span: at.span });
+    let module = node(ExprKind::Ident("reflect".to_string()));
+    let ty = node(ExprKind::Field { object: module, field: "WireKind".to_string() });
+    ExprKind::Field { object: ty, field: kind.variant().to_string() }
+}
+
 /// A payload field as a field of the variant: it has no visibility or wire
 /// annotations of its own.
 fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
@@ -947,6 +971,7 @@ fn payload_fact(p: rask_mono::reflect::PayloadField) -> FieldFact {
         serial_name: p.name.clone(),
         name: p.name,
         type_name: p.type_name,
+        wire: p.wire,
         offset: p.offset,
         size: p.size,
         is_public: true,
@@ -1019,7 +1044,7 @@ impl ItemFacts<'_> {
     }
 
     /// `f.name`, `f.offset`, `p.is_mutate`, … as the literal it is here.
-    fn property(&self, field: &str) -> Option<ExprKind> {
+    fn property(&self, field: &str, at: &Expr) -> Option<ExprKind> {
         let (f, index) = match self.it {
             Item::Field(f, index) => (f, *index),
             Item::Variant(v) => {
@@ -1046,6 +1071,10 @@ impl ItemFacts<'_> {
         Some(match field {
             "name" => ExprKind::String(f.name.clone()),
             "type_name" => ExprKind::String(f.type_name.clone()),
+            "wire_kind" => wire_kind_expr(f.wire.kind, at),
+            "wire_optional" => ExprKind::Bool(f.wire.optional),
+            "has_decode" => ExprKind::Bool(f.wire.own_decode),
+            "has_encode" => ExprKind::Bool(f.wire.own_encode),
             "serial_name" => ExprKind::String(f.serial_name.clone()),
             "offset" => ExprKind::Int(f.offset as i128, Some(IntSuffix::Usize)),
             "size" => ExprKind::Int(f.size as i128, Some(IntSuffix::Usize)),
@@ -1103,7 +1132,7 @@ impl Rewrite for ItemFacts<'_> {
                 }
                 _ => None,
             },
-            ExprKind::Field { object, field } if self.is_item(object) => self.property(field),
+            ExprKind::Field { object, field } if self.is_item(object) => self.property(field, e),
             // The item alone, as a value: there isn't one at run time.
             ExprKind::Ident(_) if self.report && !matches!(self.it, Item::Value(_)) && self.is_item(e) => {
                 self.errors.push(ExpandError {
@@ -1133,6 +1162,20 @@ impl Rewrite for ItemFacts<'_> {
         if let Some(kind) = replaced {
             e.kind = kind;
         }
+    }
+}
+
+/// An instance's own `comptime if`s: what its types settle (`reflect.has_decode<Port>()`)
+/// is decided now, so the branch not taken is never checked for this instance.
+fn decide_instance(decl: &mut Decl, known: &Known) {
+    match &mut decl.kind {
+        DeclKind::Fn(f) => decide_comptime_ifs(&mut f.body, known),
+        DeclKind::Impl(i) => {
+            for m in &mut i.methods {
+                decide_comptime_ifs(&mut m.body, known);
+            }
+        }
+        _ => {}
     }
 }
 

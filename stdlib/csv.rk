@@ -13,8 +13,10 @@
 import io.IoError
 import io.Reader
 import json
+import json.JsonError
 import sequence.Sequence
 import std.reflect
+import std.reflect.WireKind
 
 /// Why a CSV document was rejected. Rows count records from 1, the header
 /// included, the way a spreadsheet numbers them.
@@ -223,26 +225,33 @@ extend csv {
 
 // ─── Records to structs ─────────────────────────────────────────
 
-/// The columns a struct reads: wire name, declared type, and whether a
-/// missing column is fine because the field has another way to get a value.
+/// The columns a struct reads: wire name, what a cell is read as, and whether
+/// a missing column is fine because the field has another way to get a value.
+/// A field whose type decodes through its own `decode` (std.encoding/E12b) is
+/// read as what that takes: a `Port` taking a `u16` is a number in its column,
+/// and the type's own `decode` runs on it. `nullable` is a `T?`, which a blank
+/// cell makes `none`.
 struct CsvShape {
     names: Vec<string>
-    kinds: Vec<string>
+    kinds: Vec<WireKind>
+    nullable: Vec<bool>
     optional: Vec<bool>
 }
 
 func csv_shape<T>() -> CsvShape {
     mut names: Vec<string> = Vec.new()
-    mut kinds: Vec<string> = Vec.new()
+    mut kinds: Vec<WireKind> = Vec.new()
+    mut nullable: Vec<bool> = Vec.new()
     mut optional: Vec<bool> = Vec.new()
     comptime for f in reflect.fields<T>() {
         if !f.is_skipped {
             names.push(f.serial_name)
-            kinds.push(f.type_name)
-            optional.push(f.has_default || f.type_name.ends_with("?"))
+            kinds.push(f.wire_kind)
+            nullable.push(f.wire_optional)
+            optional.push(f.has_default || f.wire_optional)
         }
     }
-    return CsvShape(names, kinds, optional)
+    return CsvShape(names, kinds, nullable, optional)
 }
 
 /// Field k reads column k.
@@ -291,7 +300,7 @@ func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>,
     for k in 0..shape.names.len() {
         if cols[k] >= 0 {
             let cell = record[cols[k].wrap<usize>()]
-            let value = csv_cell_json(shape.kinds[k], cell) catch bad => {
+            let value = csv_cell_json(shape.kinds[k], shape.nullable[k], cell) catch bad => {
                 return CsvError.BadValue(row: row, column: shape.names[k], reason: bad.reason)
             }
             if any {
@@ -305,11 +314,36 @@ func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>,
     }
     obj.push("}}")
     // Every primitive cell was checked above, so what's left for the decoder
-    // to reject is a nested value written as JSON.
+    // to reject is a type's own `decode` or a nested value written as JSON.
     let value = json.decode<T>(obj.build()) catch e => {
-        return CsvError.BadValue(row: row, column: csv_nested_columns(shape, cols), reason: e.message())
+        return csv_json_error(shape, cols, row, e)
     }
     return value
+}
+
+/// What the JSON decoder said about a record, as the record's error. A type's
+/// own `decode` turning a column down is that column's, in the type's words.
+/// Anything else came from a nested value, which could be any of the columns
+/// holding one.
+func csv_json_error(shape: CsvShape, cols: Vec<i64>, row: usize, e: JsonError) -> CsvError {
+    match e {
+        JsonError.Refused(path, reason) => {
+            for k in 0..shape.names.len() {
+                if cols[k] < 0 {
+                    continue
+                }
+                let column = "field {shape.names[k]}"
+                if path == column {
+                    return CsvError.BadValue(row: row, column: shape.names[k], reason: reason)
+                }
+                if path.starts_with("{column}.") || path.starts_with("{column}[") {
+                    return CsvError.BadValue(row: row, column: shape.names[k], reason: e.message())
+                }
+            }
+        }
+        _ => {}
+    }
+    return CsvError.BadValue(row: row, column: csv_nested_columns(shape, cols), reason: e.message())
 }
 
 /// An error as the sequence's item. A yield isn't a `return`, so it doesn't
@@ -444,45 +478,55 @@ extend CsvBadCell {
 
 /// A cell as the JSON value its field's type reads, or why it can't be one.
 /// Empty is the type's blank: `none`, "", 0 or false.
-func csv_cell_json(kind: string, cell: string) -> string or CsvBadCell {
-    let optional = kind.ends_with("?")
-    let base = if optional { kind[0..kind.len() - 1].to_string() } else { kind }
+func csv_cell_json(kind: WireKind, nullable: bool, cell: string) -> string or CsvBadCell {
     if cell.is_empty() {
-        if optional {
+        if nullable {
             return "null"
         }
-        if base == "string" {
-            return "\"\""
+        match kind {
+            WireKind.Text => return "\"\""
+            WireKind.Bool => return "false"
+            WireKind.Other => return "null"
+            _ => return "0"
         }
-        if base == "bool" {
-            return "false"
-        }
-        if csv_is_int_type(base) || base == "f32" || base == "f64" {
-            return "0"
-        }
-        return "null"
     }
-    if base == "string" {
-        return csv_json_string(cell)
+    match kind {
+        WireKind.Text => return csv_json_string(cell)
+        WireKind.Bool => return csv_bool_cell(cell)
+        WireKind.F32 => return csv_float_cell(cell)
+        WireKind.F64 => return csv_float_cell(cell)
+        WireKind.I8 => return csv_check_signed(cell, "i8", -128, 127)
+        WireKind.I16 => return csv_check_signed(cell, "i16", -32768, 32767)
+        WireKind.I32 => return csv_check_signed(cell, "i32", -2147483648, 2147483647)
+        WireKind.I64 => return csv_check_signed(cell, "i64", -9223372036854775807 - 1, 9223372036854775807)
+        WireKind.Isize => return csv_check_signed(cell, "isize", -9223372036854775807 - 1, 9223372036854775807)
+        WireKind.U8 => return csv_check_unsigned(cell, "u8", 255)
+        WireKind.U16 => return csv_check_unsigned(cell, "u16", 65535)
+        WireKind.U32 => return csv_check_unsigned(cell, "u32", 4294967295)
+        WireKind.U64 => return csv_check_unsigned(cell, "u64", 18446744073709551615)
+        WireKind.Usize => return csv_check_unsigned(cell, "usize", 18446744073709551615)
+        WireKind.Other => return csv_nested_cell(cell)
     }
-    if base == "bool" {
-        let lower = cell.to_lowercase()
-        if lower == "true" || lower == "false" {
-            return lower
-        }
-        return CsvBadCell(reason: "\"{cell}\" is not true or false")
+}
+
+func csv_bool_cell(cell: string) -> string or CsvBadCell {
+    let lower = cell.to_lowercase()
+    if lower == "true" || lower == "false" {
+        return lower
     }
-    if csv_is_int_type(base) {
-        return csv_check_int(base, cell)
+    return CsvBadCell(reason: "\"{cell}\" is not true or false")
+}
+
+func csv_float_cell(cell: string) -> string or CsvBadCell {
+    if csv_is_json_number(cell) {
+        return cell
     }
-    if base == "f32" || base == "f64" {
-        if csv_is_json_number(cell) {
-            return cell
-        }
-        return CsvBadCell(reason: "\"{cell}\" is not a number")
-    }
-    // A nested value is written as JSON. Anything else is taken as a string,
-    // which is how an enum without payloads is spelled.
+    return CsvBadCell(reason: "\"{cell}\" is not a number")
+}
+
+/// A nested value is written as JSON. Anything else is taken as a string,
+/// which is how an enum without payloads is spelled.
+func csv_nested_cell(cell: string) -> string {
     let b = cell.byte_at(0) ?? 0
     if b == 91 || b == 123 || b == 34 || cell == "null" || cell == "true" || cell == "false" || csv_is_json_number(cell) {
         return cell
@@ -490,52 +534,57 @@ func csv_cell_json(kind: string, cell: string) -> string or CsvBadCell {
     return csv_json_string(cell)
 }
 
-func csv_is_int_type(t: string) -> bool {
-    return t == "i8" || t == "i16" || t == "i32" || t == "i64" || t == "isize" || t == "u8" || t == "u16" || t == "u32" || t == "u64" || t == "usize"
+/// Whether the cells of this column hold a nested value, written as JSON.
+func csv_is_nested(kind: WireKind) -> bool {
+    match kind {
+        WireKind.Other => return true
+        _ => return false
+    }
 }
 
 /// Digits with an optional leading "-", inside the type's range.
-func csv_check_int(t: string, cell: string) -> string or CsvBadCell {
-    let negative = cell.starts_with("-")
-    let digits = if negative { cell[1..cell.len()].to_string() } else { cell }
-    if digits.is_empty() {
+func csv_check_signed(cell: string, name: string, min: i64, max: i64) -> string or CsvBadCell {
+    let digits = if cell.starts_with("-") { cell[1..cell.len()].to_string() } else { cell }
+    if !csv_all_digits(digits) {
         return CsvBadCell(reason: "\"{cell}\" is not a whole number")
     }
-    for i in 0..digits.len() {
-        let b = digits.byte_at(i) ?? 0
-        if b < 48 || b > 57 {
-            return CsvBadCell(reason: "\"{cell}\" is not a whole number")
-        }
-    }
-    if t.starts_with("u") {
-        if negative {
-            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
-        }
-        let n = digits.parse<u64>() catch _ => {
-            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
-        }
-        let max: u64 = if t == "u8" { 255 } else if t == "u16" { 65535 } else if t == "u32" { 4294967295 } else { 18446744073709551615 }
-        if n > max {
-            return CsvBadCell(reason: "{cell} doesn't fit in {t}")
-        }
-        return digits
-    }
     let n = cell.parse<i64>() catch _ => {
-        return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+        return CsvBadCell(reason: "{cell} doesn't fit in {name}")
     }
-    let ok = if t == "i8" {
-        n >= -128 && n <= 127
-    } else if t == "i16" {
-        n >= -32768 && n <= 32767
-    } else if t == "i32" {
-        n >= -2147483648 && n <= 2147483647
-    } else {
-        true
-    }
-    if !ok {
-        return CsvBadCell(reason: "{cell} doesn't fit in {t}")
+    if n < min || n > max {
+        return CsvBadCell(reason: "{cell} doesn't fit in {name}")
     }
     return cell
+}
+
+/// Digits, inside the type's range.
+func csv_check_unsigned(cell: string, name: string, max: u64) -> string or CsvBadCell {
+    if cell.starts_with("-") && csv_all_digits(cell[1..cell.len()].to_string()) {
+        return CsvBadCell(reason: "{cell} doesn't fit in {name}")
+    }
+    if !csv_all_digits(cell) {
+        return CsvBadCell(reason: "\"{cell}\" is not a whole number")
+    }
+    let n = cell.parse<u64>() catch _ => {
+        return CsvBadCell(reason: "{cell} doesn't fit in {name}")
+    }
+    if n > max {
+        return CsvBadCell(reason: "{cell} doesn't fit in {name}")
+    }
+    return cell
+}
+
+/// A non-empty run of digits.
+func csv_all_digits(s: string) -> bool {
+    if s.is_empty() {
+        return false
+    }
+    for i in 0..s.len() {
+        if !csv_is_digit(s.byte_at(i) ?? 0) {
+            return false
+        }
+    }
+    return true
 }
 
 /// RFC 8259's number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
@@ -615,10 +664,7 @@ func csv_json_string(s: string) -> string {
 func csv_nested_columns(shape: CsvShape, cols: Vec<i64>) -> string {
     mut out: Vec<string> = Vec.new()
     for k in 0..shape.names.len() {
-        let kind = shape.kinds[k]
-        let base = if kind.ends_with("?") { kind[0..kind.len() - 1].to_string() } else { kind }
-        let primitive = base == "string" || base == "bool" || base == "f32" || base == "f64" || csv_is_int_type(base)
-        if cols[k] >= 0 && !primitive {
+        if cols[k] >= 0 && csv_is_nested(shape.kinds[k]) {
             out.push(shape.names[k])
         }
     }

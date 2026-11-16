@@ -742,7 +742,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_decode_zero", "rask_json_decode_zero", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "json_error_message", c_name: "rask_json_error_message",
-            params: &[types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -1507,6 +1507,8 @@ mod tests {
     ("reflect.variants",          Ok_("t_native_reach_reflect")),
     ("reflect.params",            Ok_("t_reflect_params")),
     ("reflect.is_enum",           Ok_("t_native_reach_reflect")),
+    ("reflect.has_decode",        Ok_("t_format_library_codecs")),
+    ("reflect.has_encode",        Ok_("t_format_library_codecs")),
     ("reflect.is_flat",           Ok_("t_native_reach_reflect")),
     ("reflect.is_float",          Ok_("t_native_reach_reflect")),
     ("reflect.is_integer",        Ok_("t_native_reach_reflect")),

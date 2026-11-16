@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Types that decode through their own `decode` (std.encoding/E12b): a claim's
+// inputs go through it too.
+
+public struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+public struct Port {
+    public value: u16
+}
+
+extend Port {
+    func new(v: u16) -> Port or PortError {
+        if v == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: v)
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        return Port.new(raw)
+    }
+}
+
+public struct Config {
+    public ports: Vec<Port>
+}
+
+public enum Bind {
+    Local(Port)
+    Remote(string, Port)
+}
+
+func main() {}

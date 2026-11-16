@@ -19,6 +19,31 @@ pub enum MapKeyFix {
     ExtendBlock,
 }
 
+/// What is wrong with a custom `decode` or `encode` (std.encoding/E12b).
+#[derive(Debug, Clone)]
+pub enum WireHookProblem {
+    /// A `decode` written with `self`: a decode builds a value, it has none yet.
+    TakesSelf,
+    /// An `encode` written without it: it writes out the value it is called on.
+    NeedsSelf,
+    /// Zero or several parameters. `decode` takes the wire value alone,
+    /// `encode` takes nothing but `self`.
+    ParamCount(usize),
+    /// The wire parameter or the receiver is `mutate` or `take`.
+    NotPlain,
+    /// `decode` doesn't return `Self or E`, or `encode` returns a `T or E` or
+    /// nothing.
+    Returns { found: String },
+    /// The wire type can't be decoded (or encoded), so nothing can read (or
+    /// write) it.
+    WireNotCodable { wire: String },
+    /// On a generic type, which isn't supported.
+    GenericType,
+    /// Its wire type is itself, or goes through a chain that comes back.
+    ChainsBack,
+}
+
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -905,19 +930,28 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// std.encoding/E12a: a decode that would build a value around a
-    /// constructor that checks it.
-    #[error("`{ty}` cannot be decoded: `{owner}.{constructor}` checks its input and a decode wouldn't call it")]
-    DecodeSkipsConstructor {
+    /// std.encoding/E12b: the `decode` or `encode` in a `T implements Decode { }`
+    /// or `Encode { }` block isn't the shape a codec can call.
+    #[error("`{ty}`'s `{}` can't be used by a codec", hook.method())]
+    BadCustomWire {
+        ty: String,
+        hook: super::WireHook,
+        problem: WireHookProblem,
+        span: Span,
+    },
+
+    /// std.encoding/E12b: a type reads itself through its own `decode` and
+    /// would be written as its fields, which its `decode` doesn't read back.
+    #[error("`{ty}` cannot be encoded: `{owner}` decodes through its own `decode`, so its fields aren't what it reads")]
+    EncodeSkipsDecode {
         /// The type that was asked for.
         ty: String,
-        /// The type that has the constructor: `ty` itself, or one it holds.
+        /// The type with the `decode`: `ty` itself, or one it holds.
         owner: String,
         /// `owner` is something `ty` holds, not `ty` itself.
         through: bool,
-        constructor: String,
-        /// The constructor's return type as written, `Port or PortError`.
-        returns: String,
+        /// What its `decode` takes.
+        wire: String,
         span: Span,
     },
 
@@ -2097,7 +2131,8 @@ impl TypeError {
             | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
-            | DecodeSkipsConstructor { .. }
+            | BadCustomWire { .. }
+            | EncodeSkipsDecode { .. }
             | StringAddForbidden { .. }
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }

@@ -658,7 +658,11 @@ impl TypeChecker {
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
-        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+        let checker = match interface_name.as_str() {
+            "Decode" => crate::interfaces::InterfaceChecker::for_decode(&self.types),
+            "Encode" => crate::interfaces::InterfaceChecker::for_encode(&self.types),
+            _ => crate::interfaces::InterfaceChecker::new(&self.types),
+        };
         // E16: the declaration refused. Reported before the field hunt, because
         // the fields are usually fine — `@no_encode` goes on a credential whose
         // `string` would serialize perfectly well, and that's the problem. The
@@ -685,16 +689,15 @@ impl TypeChecker {
                 };
             }
         }
-        // E12a: nothing is wrong with the fields; the type has a constructor
-        // that checks, and a decode would build it without one.
-        if interface_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
-            if let Some(skipped) = checker.decode_skips_constructor(ty) {
-                return TypeError::DecodeSkipsConstructor {
+        // E12e: the fields are fine; the type reads itself through its own
+        // `decode` and has no `encode` to write it back.
+        if interface_name == "Encode" && checker.first_unencodable_field(ty).is_none() {
+            if let Some(unpaired) = checker.encode_skips_decode(ty) {
+                return TypeError::EncodeSkipsDecode {
                     ty: ty_name,
-                    through: checker.named_type_id(ty) != Some(skipped.id),
-                    owner: skipped.ty,
-                    constructor: skipped.constructor,
-                    returns: skipped.returns,
+                    through: checker.named_type_id(ty) != Some(unpaired.id),
+                    owner: unpaired.ty,
+                    wire: unpaired.wire,
                     span,
                 };
             }

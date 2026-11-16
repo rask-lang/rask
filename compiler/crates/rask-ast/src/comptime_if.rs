@@ -22,6 +22,50 @@ pub fn parts(stmts: &[Stmt]) -> Option<(&Expr, &Expr, Option<&Expr>)> {
     Some((cond, then_branch, else_branch.as_deref()))
 }
 
+/// Does the body ask what a type's own codec is: `reflect.has_decode<T>()`,
+/// `reflect.has_encode<T>()`, `reflect.DecodeWire<T>` or `reflect.EncodeWire<T>`
+/// (std.reflect)? Those answers differ per instance, and the branch a
+/// `comptime if` on them leaves holds code only that instance can check
+/// (`T.decode(wire)`), so a generic body that asks is written out for each
+/// instance like one with a `comptime for`, and checked there, not as written.
+pub fn asks_about_codecs(body: &[Stmt]) -> bool {
+    use crate::rewrite::{self, Rewrite};
+    use crate::ty::TypeExpr;
+    struct Find(bool);
+    impl Rewrite for Find {
+        fn expr(&mut self, e: &mut Expr) {
+            if let ExprKind::MethodCall { object, method, type_args: Some(_), .. } = &e.kind {
+                if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                    && matches!(method.as_str(), "has_decode" | "has_encode")
+                {
+                    self.0 = true;
+                }
+            }
+        }
+        fn ty(&mut self, t: &mut TypeExpr) {
+            t.walk_paths(&mut |path| {
+                if let [m, n] = path {
+                    if m == "reflect" && matches!(n.as_str(), "DecodeWire" | "EncodeWire") {
+                        self.0 = true;
+                    }
+                }
+            });
+        }
+    }
+    let mut find = Find(false);
+    let mut copy = body.to_vec();
+    for s in &mut copy {
+        rewrite::rewrite_stmt(s, &mut find);
+    }
+    find.0
+}
+
+/// A generic function whose body asks about codecs: checked, and its
+/// `comptime` questions answered, for each instance and not as written.
+pub fn is_instance_checked(f: &crate::decl::FnDecl) -> bool {
+    !crate::type_params::signature_type_param_names(f).is_empty() && asks_about_codecs(&f.body)
+}
+
 /// The statements of whichever branch a decided condition selects. A branch
 /// that isn't a block gives `None`, and a false condition with no `else`
 /// gives an empty slice: the branch is gone.

@@ -33,6 +33,17 @@ use rask_types::{Type, TypeBinding, TypeDef, TypeId};
 use rask_check::TypedProgram;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// A type that writes its own `decode` (std.encoding/E12b), as the decoders
+/// need it: what to read the input as, and the function that takes that and
+/// answers `T or string`, the string being a rejection's message.
+#[derive(Debug, Clone)]
+pub struct CustomDecodeFn {
+    /// What `decode` reads. Decoded the normal way first.
+    pub wire: Type,
+    /// The symbol of the type's `__decode_checked`.
+    pub adapter: String,
+}
+
 /// Monomorphized program with all generics eliminated
 /// The symbols a map calls to hash and compare its keys.
 #[derive(Debug, Clone)]
@@ -74,6 +85,11 @@ pub struct MonoProgram {
     pub decode_defaults: HashMap<(String, String), String>,
     /// Type → the `generate` that builds it as a claim input (type.claims/IN2).
     pub claim_generators: HashMap<String, String>,
+    /// Type -> how it decodes through its own `decode` (std.encoding/E12b).
+    pub custom_decodes: HashMap<String, CustomDecodeFn>,
+    /// Type -> the symbol of its `__encode_json`, for a type that writes itself
+    /// out through its own `encode` (std.encoding/E12b).
+    pub custom_encodes: HashMap<String, String>,
     /// Every vtable the program boxes into, by (concrete type, interface).
     /// The one place a vtable's name and slots are decided; lowering points a
     /// box at an entry and codegen builds the data from it.
@@ -948,6 +964,8 @@ fn monomorphize_inner(
         map_key_fns: mono.map_key_fns,
         decode_defaults: mono.decode_defaults,
         claim_generators: mono.claim_generators,
+        custom_decodes: mono.custom_decodes,
+        custom_encodes: mono.custom_encodes,
         vtables: mono.vtables,
         symbols: mono.symbols,
     })

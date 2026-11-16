@@ -341,18 +341,26 @@ impl<'a> DiagnosticFormatter<'a> {
 
         let mut first = true;
         for line in text.split('\n') {
-            for piece in wrap_words(line.trim_start(), width) {
+            // A line that starts with spaces is code laid out on purpose (a
+            // fix that shows a block). Wrapping it flush left read as three
+            // lines at one depth, so the indentation stays and the words wrap
+            // inside it.
+            let body = line.trim_start();
+            let indent = &line[..line.len() - body.len()];
+            let room = width.saturating_sub(indent.chars().count()).max(20);
+            for piece in wrap_words(body, room) {
                 if first {
                     out.push_str(&format!(
-                        "{} {} {}: {}\n",
+                        "{} {} {}: {}{}\n",
                         " ".repeat(gutter_width + 1),
                         "=".cyan(),
                         label,
+                        indent,
                         piece
                     ));
                     first = false;
                 } else {
-                    out.push_str(&format!("{}{}\n", continuation, piece));
+                    out.push_str(&format!("{}{}{}\n", continuation, indent, piece));
                 }
             }
         }
