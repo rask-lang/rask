@@ -2696,6 +2696,78 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// A pattern matched against a place binds views of what is in it: `job`
+    /// in `match self.state { Running(job) => … }` is the payload inside
+    /// `self.state`, not a copy, and lasts as long as the arm does. Writing
+    /// over `self.state` in the arm frees the payload under it, so each
+    /// non-Copy binding is recorded like `let job = self.state` would be
+    /// (mem.borrowing/S1, E0958).
+    ///
+    /// Only a place that stays where it is: a field chain, or a `mutate`
+    /// parameter. A local scrutinee is moved into the arms and its bindings
+    /// own what they got; a `Heap` payload belongs to the holder and is
+    /// tracked as a part. Returns what each name was bound to before, for
+    /// `end_pattern_views`.
+    fn record_pattern_views(&mut self, pattern: &Pattern, scrutinee: &Expr) -> Vec<(String, Option<FieldView>)> {
+        let (Some(root), fields) = Self::extract_root_and_fields(scrutinee) else {
+            return Vec::new();
+        };
+        let fields = fields.unwrap_or_default();
+        let held_in_place = if fields.is_empty() {
+            self.borrowed_params.get(&root).is_some_and(|&(_, is_mutate)| is_mutate)
+        } else {
+            self.names_a_value(&root)
+        };
+        if !held_in_place {
+            return Vec::new();
+        }
+        let path = std::iter::once(root.as_str()).chain(fields.iter().map(String::as_str)).collect::<Vec<_>>().join(".");
+        let root_sym = self.root_symbol(scrutinee);
+        let mut names = Vec::new();
+        Self::collect_pattern_binding_names(pattern, &mut names);
+        let mut prior = Vec::new();
+        for name in names {
+            let Some(ty) = self.binding_types.get(&name).cloned() else { continue };
+            if self.copy_verdict(&ty) != CopyVerdict::Move
+                || self.type_is_resource(&ty)
+                || self.is_link_type(&ty)
+                || self.pattern_payload_is_borrowed(&ty)
+            {
+                continue;
+            }
+            let outer = self.field_views.remove(&name);
+            if let Some(outer) = &outer {
+                // Still reads its field while the arm hides it by name.
+                self.shadowed_views.push((self.current_block + 1, name.clone(), outer.clone()));
+            }
+            self.field_views.insert(
+                name.clone(),
+                FieldView {
+                    path: path.clone(),
+                    root: root.clone(),
+                    field_ty: self.resource_type_display(&ty),
+                    bound: Some((name.clone(), pattern.span)),
+                    block: self.current_block,
+                    root_sym,
+                },
+            );
+            prior.push((name, outer));
+        }
+        prior
+    }
+
+    /// The arm is over: its bindings stop viewing, and a view of the same name
+    /// from outside is back.
+    fn end_pattern_views(&mut self, prior: Vec<(String, Option<FieldView>)>) {
+        for (name, outer) in prior {
+            self.field_views.remove(&name);
+            if let Some(outer) = outer {
+                self.shadowed_views.retain(|(_, n, v)| !(n == &name && v.path == outer.path && v.bound == outer.bound));
+                self.field_views.insert(name, outer);
+            }
+        }
+    }
+
     /// `let tmp = src.items`: remember that `tmp` is a view, or forget that a
     /// rebound name was one. `let t2 = tmp` is the same view again.
     fn record_field_view(&mut self, name: &str, init: &Expr) {
@@ -4409,7 +4481,9 @@ impl<'a> OwnershipChecker<'a> {
                     .difference(&resources_before)
                     .cloned()
                     .collect();
+                let pattern_views = self.record_pattern_views(pattern, scrutinee);
                 self.check_expr(then_branch);
+                self.end_pattern_views(pattern_views);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
                 for binding in &pattern_bound {
@@ -4493,10 +4567,12 @@ impl<'a> OwnershipChecker<'a> {
                         Self::collect_pattern_binding_names(&arm.pattern, &mut bound);
                         self.inherit_frame_limit(&bound, scrutinee, self.current_block);
                     }
+                    let arm_views = self.record_pattern_views(&arm.pattern, scrutinee);
                     if let Some(guard) = &arm.guard {
                         self.check_expr(guard);
                     }
                     self.check_expr(&arm.body);
+                    self.end_pattern_views(arm_views);
                     self.move_branch_value(&arm.body);
                     let terminal = Self::is_terminal_expr(&arm.body);
                     self.close_arm_resources(&before_arm, terminal, arm.body.span);
