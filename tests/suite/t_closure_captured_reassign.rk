@@ -45,7 +45,27 @@ test "a captured array reassigned after the closure was made" {
     let c = || {
         return t[0].len()
     }
+    assert c() == text(0).len()
     t = a
     assert c() == text(1).len()
     assert t[0] == text(1)
+    assert a[0] == text(1)
+}
+
+test "a captured array reassigned in a loop" {
+    let a = [text(1)]
+    mut t = [text(0)]
+    let c = || {
+        return t[0].len()
+    }
+    mut total = 0
+    for i in 0..3 {
+        if i == 1 {
+            t = a
+        } else {
+            t = [text(20 + i)]
+        }
+        total += c()
+    }
+    assert total == text(20).len() + text(1).len() + text(22).len()
 }

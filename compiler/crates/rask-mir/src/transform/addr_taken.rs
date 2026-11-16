@@ -412,13 +412,12 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                     // a closure borrowing the slot knows nothing about
                     // (`c = mk(2)` after `let f = || c.label.len()` leaked the
                     // first `c`, #1839). Not when the new value is built from
-                    // the old one, which the zeroing would wipe, and not an
-                    // array, whose copy on assignment has its own release.
+                    // the old one, which the zeroing would wipe.
                     // Only a variable this frame owns: a `with` binding or a
                     // closure's capture names storage somewhere else, and
                     // lowering already gives back what a write over it
                     // replaces.
-                    if taken.owned.contains(&dst) && ty.passed_by_address() && !matches!(ty, MirType::Array { .. }) && !reads_old {
+                    if taken.owned.contains(&dst) && ty.passed_by_address() && !reads_old {
                         out.push(MirStmt::new(MirStmtKind::ZeroAggregate { local: dst }, span));
                     }
                     out.push(MirStmt::new(

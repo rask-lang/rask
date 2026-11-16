@@ -1059,7 +1059,7 @@ fn insert_aggregate_release(
                 if !*heap || closures_dropped.contains(dst) {
                     let slots: Vec<LocalId> = captures
                         .iter()
-                        .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && tracked.contains(&c.local_id) && !matches!(ty_of.get(&c.local_id), Some(MirType::Array { .. })))
+                        .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && tracked.contains(&c.local_id))
                         .map(|c| c.local_id)
                         .collect();
                     if !slots.is_empty() {
@@ -1323,7 +1323,21 @@ fn insert_aggregate_release(
                     if let Some(v) = uses::operand_local(value).filter(|v| {
                         is_tracked(v) && !retained.contains(v) && !retained_for_this.contains(v) && copied.is_none()
                     }) {
-                        if owns_copy.contains(addr) {
+                        // A retain of the slot's own follows in this block.
+                        // `owns_copy` alone says only that one is made
+                        // somewhere in the function: the first store into the
+                        // slot of `mut t = [s]` (no retain before the slot is
+                        // written again) is a hand-over.
+                        let retain_follows = block.statements[si + 1..]
+                            .iter()
+                            .find_map(|later| match &later.kind {
+                                MirStmtKind::RcIncContents { local, for_hand_off: false } if local == addr => Some(true),
+                                MirStmtKind::Store { addr: a, .. } if a == addr => Some(false),
+                                MirStmtKind::ZeroAggregate { local } if local == addr => Some(false),
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+                        if owns_copy.contains(addr) && retain_follows {
                             // A Copy value bound into a slot lowering retains
                             // (`retain_bound_copy`): the slot takes references
                             // of its own, so this is a copy and the source
@@ -1416,13 +1430,9 @@ fn insert_aggregate_release(
                         // the slot's next value, and nothing was left to
                         // release it (#1839).
                         //
-                        // Not an array: reassigning one goes through the
-                        // array copy (`reads_caller_array_slot`), whose own
-                        // release already sits after the store, and giving
-                        // the slot a release of its own on top frees it twice.
                         let by_slot: Vec<LocalId> = captures
                             .iter()
-                            .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && is_tracked(&c.local_id) && !matches!(ty_of.get(&c.local_id), Some(MirType::Array { .. })))
+                            .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && is_tracked(&c.local_id))
                             .map(|c| c.local_id)
                             .collect();
                         let caps: Vec<LocalId> = caps.into_iter().filter(|c| !by_slot.contains(c)).collect();
