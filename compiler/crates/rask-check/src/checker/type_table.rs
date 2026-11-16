@@ -51,6 +51,47 @@ pub(super) struct ConformanceSite {
     pub package: Option<String>,
 }
 
+/// std.encoding/E12b: a type that decodes through its own `decode`. The
+/// decoders read the wire type, decode that the normal way, and hand the result
+/// to the type's `decode`; a rejection becomes a decode error.
+#[derive(Debug, Clone)]
+pub struct CustomDecode {
+    /// What `decode` takes: the type the input is read as first. Itself
+    /// `Decode`, possibly a custom one.
+    pub wire: Type,
+    /// What it rejects with. Any `Error`, so a rejection has a message.
+    pub err: Type,
+    /// The `decode` method's declaration.
+    pub decl: NodeId,
+}
+
+/// std.encoding/E12b: a type that writes itself out through its own `encode`.
+/// An encoder calls it for the value and writes what comes back, `wire`, the
+/// normal way (which may be another type's own `encode`).
+#[derive(Debug, Clone)]
+pub struct CustomEncode {
+    /// What `encode` returns: the type that is written in its place.
+    pub wire: Type,
+    /// The `encode` method's declaration.
+    pub decl: NodeId,
+}
+
+/// Which of a type's two wire methods a rule is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireHook {
+    Decode,
+    Encode,
+}
+
+impl WireHook {
+    pub fn method(self) -> &'static str {
+        match self {
+            WireHook::Decode => "decode",
+            WireHook::Encode => "encode",
+        }
+    }
+}
+
 /// Which interface a conformance is to.
 ///
 /// A name isn't enough: a program's `interface Writer` and the stdlib's are two
@@ -119,6 +160,9 @@ pub struct Alias {
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
+    /// The machine this compilation is for. Every later stage reads it from
+    /// here: layout's pointer width, the C scalar names, what `usize` holds.
+    target: rask_ast::Target,
     /// Each interface's methods that come with a body (TD2). Desugar copies
     /// those into every conformer, so by the time a type declares the
     /// interface it has them; a type that doesn't declare it never needs them.
@@ -226,6 +270,11 @@ pub struct TypeTable {
     /// G1: declared/derived interface conformances (nominal). TypeId → the interfaces
     /// the type conforms to, from `T implements Interface` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<ConformanceKey>>,
+    /// std.encoding/E12b: the types that write their own `Decode`, each with
+    /// what its `decode` reads and what it can reject with.
+    pub(super) custom_decodes: HashMap<TypeId, CustomDecode>,
+    /// The same for writing out: the types with their own `encode`.
+    pub(super) custom_encodes: HashMap<TypeId, CustomEncode>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, ConformanceKey), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
@@ -290,8 +339,9 @@ pub struct TypeTable {
 }
 
 impl TypeTable {
-    pub fn new() -> Self {
+    pub fn new(target: rask_ast::Target) -> Self {
         let mut table = Self {
+            target,
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
@@ -311,6 +361,8 @@ impl TypeTable {
             type_method_decls: HashMap::new(),
             method_access: HashMap::new(),
             conformances: HashMap::new(),
+            custom_decodes: HashMap::new(),
+            custom_encodes: HashMap::new(),
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
@@ -359,8 +411,8 @@ impl TypeTable {
         // The C scalar names an `import c` header translates to. Until these
         // were here none of them was a type, so `*i64` passed for a `const int
         // *` and the C side read a 64-bit buffer as 32-bit ints (#947).
-        for name in rask_ast::primitives::C_SCALARS {
-            let spelling = rask_ast::primitives::c_type_spelling(name)
+        for name in rask_ast::target::C_SCALARS {
+            let spelling = self.target.c_type_spelling(name)
                 .expect("C_SCALARS and c_type_spelling must agree");
             let ty = self
                 .builtins
@@ -833,6 +885,11 @@ impl TypeTable {
     }
 
     /// Get a type definition by ID.
+    /// The machine this compilation is for.
+    pub fn target(&self) -> rask_ast::Target {
+        self.target
+    }
+
     pub fn get(&self, id: TypeId) -> Option<&TypeDef> {
         self.types.get(id.0 as usize)
     }
@@ -1557,36 +1614,9 @@ impl TypeTable {
         self.declares_conformance_to(type_id, iface, interface)
     }
 
-    /// std.encoding/E12a: the function that makes a type's values pass a
-    /// check. A static function the author wrote in an `extend` block whose
-    /// return type is `Self or E`, with a real error on the right. A decode
-    /// builds the value straight from the wire and never calls it, so a type
-    /// that has one isn't auto-`Decode`.
-    ///
-    /// Read off the declared signatures, so it answers once every `extend`
-    /// block has been collected and not before. `T?` doesn't count: absence
-    /// says nothing was rejected, and the rule is about a check that can fail
-    /// with a reason. Visibility doesn't count either: a package-private
-    /// constructor guards the package's own values just as a public one does.
-    pub fn checking_constructor(&self, type_id: TypeId) -> Option<&MethodSig> {
-        let methods = match self.get(type_id)? {
-            TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => methods,
-            _ => return None,
-        };
-        methods.iter().find(|m| {
-            m.origin == rask_types::MethodOrigin::Declared
-                && m.self_param == SelfParam::None
-                && matches!(
-                    &m.ret,
-                    Type::Result { ok, err }
-                        if !matches!(**err, Type::None) && self.names_type(ok, type_id)
-                )
-        })
-    }
-
     /// Is `ty` the type `id`, instantiated or not, under whichever spelling the
     /// signature kept?
-    fn names_type(&self, ty: &Type, id: TypeId) -> bool {
+    pub(super) fn names_type(&self, ty: &Type, id: TypeId) -> bool {
         match ty {
             Type::Named(n) => *n == id,
             Type::Generic { base, .. } => *base == id,
@@ -1595,6 +1625,82 @@ impl TypeTable {
             }
             _ => false,
         }
+    }
+
+    /// std.encoding/E12b: how a type decodes when its author wrote the
+    /// `decode` in its `Decode` block. `None` for every type that decodes
+    /// from its fields, which is nearly all of them.
+    ///
+    /// Filled once, when the block is collected, off the method's own
+    /// signature. Every decoder (native, interpreter, csv, claims) asks here
+    /// rather than looking for a method named `decode`.
+    pub fn custom_decode(&self, type_id: TypeId) -> Option<&CustomDecode> {
+        self.custom_decodes.get(&type_id)
+    }
+
+    /// std.encoding/E12b: how a type writes itself out when its author wrote
+    /// the `encode` in its `Encode` block. `None` for every type that is
+    /// written as its fields.
+    pub fn custom_encode(&self, type_id: TypeId) -> Option<&CustomEncode> {
+        self.custom_encodes.get(&type_id)
+    }
+
+    /// Does any type write itself out through its own `encode`? Lets a
+    /// backend skip the walk that looks for them when none does.
+    pub fn has_custom_encodes(&self) -> bool {
+        !self.custom_encodes.is_empty()
+    }
+
+    /// A type as a message reads it, `Port`, not an id.
+    pub fn display_type(&self, ty: &Type) -> String {
+        format!("{}", self.resolve_type_names(ty))
+    }
+
+    /// E12b: does reading `wire` come back to `start`? A custom `decode` whose
+    /// wire type is a type that is read as `start` again never reaches a
+    /// primitive, so the decoders would follow it forever.
+    pub fn decodes_through(&self, wire: &Type, start: TypeId) -> bool {
+        self.wire_chain_returns(wire, start, |id| self.custom_decode(id).map(|c| &c.wire))
+    }
+
+    /// The same for `encode`: a wire type that is written through `start`
+    /// again never reaches a primitive.
+    pub fn encodes_through(&self, wire: &Type, start: TypeId) -> bool {
+        self.wire_chain_returns(wire, start, |id| self.custom_encode(id).map(|c| &c.wire))
+    }
+
+    fn wire_chain_returns<'a>(
+        &'a self,
+        wire: &Type,
+        start: TypeId,
+        next: impl Fn(TypeId) -> Option<&'a Type>,
+    ) -> bool {
+        let mut at = wire.clone();
+        for _ in 0..64 {
+            // A `T?` reads the very input a `T` does (null is `none`, anything
+            // else is a `T`), so it goes back to where `T` does.
+            while let Type::Result { ok, err } = &at {
+                if **err != Type::None {
+                    break;
+                }
+                let inner = (**ok).clone();
+                at = inner;
+            }
+            let id = match &at {
+                Type::Named(id) => Some(*id),
+                Type::UnresolvedNamed(name) => self.get_type_id(name),
+                _ => None,
+            };
+            let Some(id) = id else { return false };
+            if id == start {
+                return true;
+            }
+            match next(id) {
+                Some(w) => at = w.clone(),
+                None => return false,
+            }
+        }
+        true
     }
 
     /// Does the type build its own claim inputs: is there a `T implements

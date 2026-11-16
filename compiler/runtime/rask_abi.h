@@ -151,6 +151,11 @@
 #define RASK_JSON_ERR_PARSE 1
 #define RASK_JSON_ERR_TYPE 2
 #define RASK_JSON_ERR_MISSING 3
+#define RASK_JSON_ERR_REFUSED 4
+
+// Which text of a failed decode `rask_json_error_message` hands back.
+#define RASK_JSON_TEXT_MESSAGE 0
+#define RASK_JSON_TEXT_PATH 1
 
 // A decode shape's kind.
 #define RASK_JSHAPE_BOOL 0
@@ -191,6 +196,14 @@
 // the function that calls its `generate`. Claims only.
 #define RASK_JSHAPE_GENERATED 21
 
+// A type that decodes through its own `decode` (std.encoding/E12b): the
+// shape of what `decode` reads, and the function that calls it.
+#define RASK_JSHAPE_CUSTOM 22
+
+// A type that writes itself out through its own `encode`: the shape holds
+// the function that answers its value as JSON text. Encoding only.
+#define RASK_JSHAPE_CUSTOM_ENCODE 23
+
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1
 
@@ -209,10 +222,15 @@
 // `RASK_OWNED_HANDLE` entry or a handle box payload calls.
 #define RASK_HANDLE_RELEASES(X) \
     X(rask_atomic_free) \
+    X(rask_cell_free) \
     X(rask_cstring_free) \
     X(rask_map_free) \
+    X(rask_mutex_drop) \
     X(rask_rack_free) \
+    X(rask_recver_drop_i64) \
     X(rask_rng_free) \
+    X(rask_sender_drop_i64) \
+    X(rask_shared_drop_i64) \
     X(rask_staged_free) \
     X(rask_vec_free)
 

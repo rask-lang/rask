@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+public struct Bad {
+    reason: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+public struct Port {
+    private value: u16
+}
+
+extend Port {
+    public func number(self) -> u16 {
+        return self.value
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or Bad {
+        if raw % 50 == 0 {
+            return Bad(reason: "multiple of 50")
+        }
+        return Port(value: raw)
+    }
+}
+
+func main() {}

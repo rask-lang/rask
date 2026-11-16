@@ -101,6 +101,8 @@ with a different character — a parameter, not a `csv.Tsv` type or a builder ch
 | **C5: Missing column is an error, empty cell is not** | A column the struct needs but the file lacks fails at the header. A `T?` field or one with `@default` doesn't need its column. An empty cell decodes normally — to `""`, `0`, `false`, or `none` for `T?` — because blank is what CSV writes for missing data |
 | **C6: One decoder** | `decode<T>` and `encode<T>` go through the same derived codec as `json.decode<T>`/`json.encode`, so `@rename`, `@no_serialize` and `@default` mean the same thing in both formats. Cells are checked against their field's type first, so a bad cell is reported with its row and column. A field that isn't a string, number or bool is written as JSON in its cell |
 
+| **C7: Own decode** | A field whose type has its own `decode` (`std.encoding/E12b`) is read as the type `decode` takes: a `Port` taking a `u16` is a number in its column, and an empty cell is that type's blank. `decode` then runs, and a refusal is a `BadValue` for the row carrying its message. `encode` writes the cell the type's own `encode` gave, so what is written reads back |
+
 ## Errors
 
 <!-- surface -->

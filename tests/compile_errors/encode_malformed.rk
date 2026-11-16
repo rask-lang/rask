@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: an `encode` an encoder can't call (std.encoding/E12b, E0425).
+//
+// A type writes itself out as `func encode(self) -> W` in its `Encode` block.
+// The encoders call it and write `W` the normal way, so each part of that shape
+// is checked where the block is written. Seven ways to get it wrong, each
+// reported once.
+
+// A wire type nothing can write.
+@no_encode
+struct Opaque {
+    n: i64
+}
+
+struct Why {
+    text: string
+}
+
+extend Why {
+    public func message(self) -> string {
+        return self.text
+    }
+}
+
+// ERROR: no `self`: it has no value to write [E0425]
+struct NoSelf {
+    n: i64
+}
+
+NoSelf implements Encode {
+    func encode() -> i64 {
+        return 1
+    }
+}
+
+// ERROR: a parameter besides `self` [E0425]
+struct Extra {
+    n: i64
+}
+
+Extra implements Encode {
+    func encode(self, indent: i64) -> i64 {
+        return self.n + indent
+    }
+}
+
+// ERROR: `mutate self` [E0425]
+struct Mutating {
+    n: i64
+}
+
+Mutating implements Encode {
+    func encode(mutate self) -> i64 {
+        return self.n
+    }
+}
+
+// ERROR: can fail: writing a value out can't [E0425]
+struct Fails {
+    n: i64
+}
+
+Fails implements Encode {
+    func encode(self) -> i64 or Why {
+        return self.n
+    }
+}
+
+// ERROR: returns nothing [E0425]
+struct Nothing {
+    n: i64
+}
+
+Nothing implements Encode {
+    func encode(self) {}
+}
+
+// ERROR: the wire type can't be encoded [E0425]
+struct BadWire {
+    n: i64
+}
+
+BadWire implements Encode {
+    func encode(self) -> Opaque {
+        return Opaque(n: self.n)
+    }
+}
+
+// ERROR: generic [E0425]
+struct Boxed<T> {
+    inner: T
+}
+
+Boxed<T> implements Encode {
+    func encode(self) -> i64 {
+        return 1
+    }
+}
+
+// ERROR: written as itself, so an encoder would never reach a number [E0425]
+struct Loop {
+    n: i64
+}
+
+Loop implements Encode {
+    func encode(self) -> Loop {
+        return self
+    }
+}
+
+// ERROR: written as an optional of itself, which is written the same way [E0425]
+struct LoopOpt {
+    n: i64
+}
+
+LoopOpt implements Encode {
+    func encode(self) -> LoopOpt? {
+        return self
+    }
+}
+
+func main() {}

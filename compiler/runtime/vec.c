@@ -164,9 +164,33 @@ void rask_owned_release(char *elem, int32_t entry) {
     }
 }
 
+// A copy of an element holding a counted handle takes a reference of its own:
+// a sender and the three `Shared` boxes are counted, so the copy and the
+// original each give one back. Any other handle (a `Random`, an `Atomic`, a
+// receiver) has one owner and isn't copied this way.
+static void handle_retain(int64_t index, void *handle) {
+    if (!handle || index < 0 || index >= rask_handle_release_count) return;
+    void (*release)(void *) = rask_handle_releases[index];
+    if (release == (void (*)(void *))rask_sender_drop_i64) {
+        rask_sender_clone_i64((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_shared_drop_i64) {
+        rask_shared_clone_i64((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_mutex_drop) {
+        rask_mutex_clone((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_cell_free) {
+        rask_cell_clone((int64_t)(intptr_t)handle);
+    }
+}
+
 void rask_owned_retain(char *elem, int32_t entry) {
     char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
     switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_HANDLE: {
+            int32_t bits = entry & RASK_OWNED_OFFSET_MASK;
+            void **slot = (void **)(elem + (bits & RASK_OWNED_HANDLE_OFFSET_MASK));
+            handle_retain(bits >> RASK_OWNED_HANDLE_INDEX_SHIFT, *slot);
+            break;
+        }
         case RASK_OWNED_STRING:
             rask_string_clone((const RaskStr *)at);
             break;
@@ -568,6 +592,11 @@ static void vec_check_no_borrows(const RaskVec *v, const char *op) {
     }
 }
 
+static void vec_drop_borrow(int64_t handle) {
+    RaskVec *v = (RaskVec *)(intptr_t)handle;
+    if (v && v->borrows > 0) v->borrows--;
+}
+
 // Lend out a pointer straight into the buffer, so a callee writing through a
 // `mutate` parameter writes the real element instead of a copy. Paired with
 // rask_vec_release_elem; in between, anything that would move the buffer panics.
@@ -577,11 +606,16 @@ void *rask_vec_borrow_elem(RaskVec *v, int64_t index) {
                        (long long)index, (long long)(v ? v->len : 0));
     }
     v->borrows++;
+    // A callee that panics never reaches the release the caller emitted after
+    // the call. The held-access list gives it back on the way out (ctrl.panic/U3),
+    // so the caller's unwinding can free the vector it was lent from.
+    rask_access_push(vec_drop_borrow, (int64_t)(intptr_t)v);
     return v->data + index * v->elem_size;
 }
 
 void rask_vec_release_elem(RaskVec *v) {
     if (v && v->borrows > 0) v->borrows--;
+    rask_access_pop((int64_t)(intptr_t)v);
 }
 
 int64_t rask_vec_push(RaskVec *v, const void *elem) {

@@ -51,6 +51,7 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 - `src/stmt.rs` — statements
 - `src/token.rs` — token types (shared with lexer)
 - `src/lib.rs` — NodeId, Span, LineMap
+- `src/target.rs` — `Target`: the machine a compilation is for (pointer width, C `char` signedness). The driver builds it from the config; every stage that needs a width takes it as a value, there is no global
 - Changes here ripple through parser, desugar, types, interp, mir, codegen
 
 ### rask-desugar — Pre-typecheck transforms
@@ -71,7 +72,8 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 - Depends on `rask-ast` alone. The checker produces this data; nothing here checks anything
 
 ### rask-layout — Sizes, alignments and field offsets
-- `src/lib.rs` — the one size model. Monomorphization lays out with it, and the checker's copy rule asks it through `TypeTable`
+- `src/lib.rs` — the one size model for declared types. Monomorphization lays out with it, and the checker's copy rule asks it through `TypeTable`
+- `src/shape.rs` — the composition rules (tuple offsets, array stride, wrapper payloads) for any type that says what shape it is (`Shaped`). MIR's `MirType` implements it, so MIR and codegen size with `rask_layout::size_of(ty, target)` and keep no size rules of their own
 - Depends on `rask-ast`, `rask-types` and `rask-stdlib`, never on the checker: the checker reads it
 
 ### rask-check — Type checker and inference (largest crate)

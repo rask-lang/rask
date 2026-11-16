@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` on a struct that holds a link copies the link as the plain edge
+// it is. Read as a part of the source, handing it to the copy handed the whole
+// source over, and the original's string was released by nobody (#1842).
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Pin {
+    at: Link<Leaf>?
+    name: string
+}
+
+test "a clone of a struct with a link releases the original's string" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let p = Pin(at: a, name: "pin-name-long-enough-to-live-on-the-heap-{a.id}")
+    let q = p.clone()
+    assert q.name == "pin-name-long-enough-to-live-on-the-heap-1"
+    assert p.name == q.name
+    if q.at? as l {
+        assert l.id == 1
+    } else {
+        assert false
+    }
+}

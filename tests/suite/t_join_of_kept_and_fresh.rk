@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value that is the frame's own `p` on one way in and a fresh one on the
+// other, handed to a keeper. The fresh one used to leak on every turn that
+// took it, because on the other turn the join *was* `p` and the release pass
+// would not free what it could not tell apart (#1904).
+
+func mk(i: i64) -> string {
+    return "item-{i}-long-enough-to-live-on-the-heap"
+}
+
+struct Pt {
+    s: string
+}
+
+test "in a loop, a kept value or a fresh one, handed to a keeper" {
+    mut keep: Vec<Pt> = Vec.new()
+    let p = Pt(s: mk(1))
+    for i in 0..4 {
+        let x = if i % 2 == 0 { p } else { Pt(s: mk(10 + i)) }
+        keep.push(x)
+    }
+    assert p.s == mk(1)
+    assert keep.len() == 4
+    assert keep[0].s == mk(1)
+    assert keep[1].s == mk(11)
+    assert keep[2].s == mk(1)
+    assert keep[3].s == mk(13)
+}
+
+test "without a loop" {
+    mut keep: Vec<Pt> = Vec.new()
+    let p = Pt(s: mk(1))
+    let first = if keep.len() == 0 { p } else { Pt(s: mk(2)) }
+    keep.push(first)
+    let second = if keep.len() == 0 { p } else { Pt(s: mk(3)) }
+    keep.push(second)
+    assert p.s == mk(1)
+    assert keep[0].s == mk(1)
+    assert keep[1].s == mk(3)
+}
+
+test "a join the frame only reads" {
+    let p = Pt(s: mk(1))
+    mut seen = 0
+    for i in 0..4 {
+        let x = if i % 2 == 0 { p } else { Pt(s: mk(10 + i)) }
+        seen += x.s.len()
+    }
+    assert seen == mk(1).len() * 2 + mk(11).len() + mk(13).len()
+    assert p.s == mk(1)
+}
+
+test "the kept value is not read again, so it moves" {
+    mut keep: Vec<Pt> = Vec.new()
+    let p = Pt(s: mk(1))
+    let x = if keep.len() == 0 { p } else { Pt(s: mk(2)) }
+    keep.push(x)
+    assert keep[0].s == mk(1)
+}

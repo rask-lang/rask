@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: indexing a `Rack`, by link or by position (#1824, #1833)
+//
+// A rack's nodes are reached through their links (`h.id = 2`). `rack[h]` is the
+// pool-and-handle style a rack is set against, and neither backend could run
+// it: native used the link's address as a vector index and panicked, the
+// interpreter failed at run time, and the checker said nothing.
+
+import memory.Link
+import memory.Rack
+
+struct Item { id: i32 }
+
+func write_through_index() {
+    mut items: Rack<Item> = Rack.new()
+    let h = items.insert(Item(id: 1))
+    // ERROR: cannot index `Rack` [E0819]
+    items[h] = Item(id: 2)
+    println("{h.id}")
+}
+
+func read_through_index() {
+    mut items: Rack<Item> = Rack.new()
+    let h = items.insert(Item(id: 1))
+    // ERROR: cannot index `Rack` [E0819]
+    let it = items[h]
+    println("{it.id}")
+}
+
+struct World { items: Rack<Item> }
+
+func through_a_field(w: World, h: Link<Item>) {
+    // ERROR: cannot index `Rack` [E0819]
+    let it = w.items[h]
+    println("{it.id}")
+}

@@ -56,24 +56,12 @@ impl CfgConfig {
         }
     }
 
-    /// Whether C's `char` is unsigned here: on ARM, AArch64, RISC-V and
-    /// PowerPC it is, on x86 and wasm it isn't.
-    pub fn c_char_unsigned(&self) -> bool {
-        let a = self.arch.as_str();
-        a.starts_with("arm") || a.starts_with("aarch64") || a.starts_with("riscv") || a.starts_with("powerpc")
-    }
-
-    /// How wide a pointer is on this target, in bits.
-    ///
-    /// The arch names are the ones a target triple uses, so this reads the
-    /// same string `cfg.arch` shows a Rask program. Anything unrecognised is
-    /// 64: every arch the compiler can reach today is, and guessing 32 would
-    /// silently narrow `usize` rather than fail loudly.
-    pub fn pointer_bits(&self) -> u32 {
-        match self.arch.as_str() {
-            "x86" | "i686" | "arm" | "armv7" | "wasm32" | "riscv32" | "mips" => 32,
-            _ => 64,
-        }
+    /// The machine this configuration is for: how wide a pointer is, whether
+    /// C's `char` is signed. Read from the same arch string `cfg.arch` shows a
+    /// Rask program, so the width and the `cfg` values can't describe two
+    /// machines.
+    pub fn target(&self) -> rask_ast::Target {
+        rask_ast::Target::for_arch(&self.arch)
     }
 
     /// Convert to a `ComptimeValue::Struct` for injection into the comptime environment.
@@ -1044,15 +1032,15 @@ impl CtInt {
         }
     }
     /// The kind a type annotation names, or `None` if it isn't an integer width.
-    fn from_name(name: &str) -> Option<CtInt> {
+    fn from_name(name: &str, target: rask_ast::Target) -> Option<CtInt> {
         Some(match name.trim() {
             "i8" => CtInt::I8, "i16" => CtInt::I16, "i32" => CtInt::I32,
             "i64" => CtInt::I64, "i128" => CtInt::I128,
             "u8" => CtInt::U8, "u16" => CtInt::U16, "u32" => CtInt::U32,
             "u64" => CtInt::U64, "u128" => CtInt::U128,
             // P2: pointer-sized, decided in one place.
-            "isize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
-            "usize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
+            "isize" => if target.pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
+            "usize" => if target.pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
             _ => return None,
         })
     }
@@ -1287,26 +1275,19 @@ pub struct ComptimeInterpreter {
     nominals: std::collections::HashSet<String>,
     /// Each call the checker typed as a C function-like macro (PP4).
     c_macros: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
+    /// What `usize` is wide as, and the C scalars.
+    target: rask_ast::Target,
 }
 
 impl ComptimeInterpreter {
-    pub fn new() -> Self {
+    pub fn new(target: rask_ast::Target) -> Self {
         Self {
             env: ComptimeEnv::new(),
             enums: HashMap::new(),
             literals: HashMap::new(),
             nominals: std::collections::HashSet::new(),
             c_macros: HashMap::new(),
-        }
-    }
-
-    pub fn with_quota(quota: usize) -> Self {
-        Self {
-            env: ComptimeEnv::with_quota(quota),
-            enums: HashMap::new(),
-            literals: HashMap::new(),
-            nominals: std::collections::HashSet::new(),
-            c_macros: HashMap::new(),
+            target,
         }
     }
 
@@ -1446,7 +1427,7 @@ impl ComptimeInterpreter {
             "`{}` did what C leaves undefined: a division by zero or a shift past the width",
             call.name
         )))?;
-        let scalar = rask_c_parse::cexpr::rask_scalar(&call.result);
+        let scalar = rask_c_parse::cexpr::rask_scalar(&call.result, self.target);
         Ok(match (scalar, result) {
             (Some("bool"), CVal::Int(v, _)) => ComptimeValue::Bool(v != 0),
             (Some("i8"), CVal::Int(v, _)) => ComptimeValue::I8(v as i8),
@@ -1493,7 +1474,7 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
                     Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
                     Some(IntSuffix::I64) => ComptimeValue::I64(*v as i64),
-                    Some(IntSuffix::Isize) => if rask_ast::primitives::pointer_bits() == 32 {
+                    Some(IntSuffix::Isize) => if self.target.pointer_bits() == 32 {
                         ComptimeValue::I32(*v as i32)
                     } else {
                         ComptimeValue::I64(*v as i64)
@@ -1504,7 +1485,7 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => {
                         ComptimeValue::U64(*v as u64)
                     }
-                    Some(IntSuffix::Usize) => if rask_ast::primitives::pointer_bits() == 32 {
+                    Some(IntSuffix::Usize) => if self.target.pointer_bits() == 32 {
                         ComptimeValue::U32(*v as u32)
                     } else {
                         ComptimeValue::U64(*v as u64)
@@ -1897,8 +1878,8 @@ impl ComptimeInterpreter {
                     // checker lets `as` only widen (type.primitives/CV3), so the
                     // value carries over whole. Listed pair by pair, `3u32 as
                     // u64` wasn't a pair and came back still a `u32`.
-                    (_, target) if val.as_int().is_some() && CtInt::from_name(target).is_some() => {
-                        let kind = CtInt::from_name(target).expect("checked above");
+                    (_, target) if val.as_int().is_some() && CtInt::from_name(target, self.target).is_some() => {
+                        let kind = CtInt::from_name(target, self.target).expect("checked above");
                         match val.as_int().expect("checked above").0 {
                             CtNum::Signed(n) => kind.make(n),
                             CtNum::Big(n) => kind.make_u128(n),
@@ -2136,7 +2117,7 @@ impl ComptimeInterpreter {
                 // in u64>` bound a `u64` — and a fold of it came out `u64`-wide,
                 // which printed the same digits and compared unequal against a
                 // `u128` (#826).
-                let value = match ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+                let value = match ty.as_ref().and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
                     Some(kind) => Self::coerce_int_width(value, kind)?,
                     None => value,
                 };
@@ -2583,7 +2564,7 @@ impl ComptimeInterpreter {
         // expression evaluated to otherwise, which is a different type from the
         // one the signature promises.
         for (param, value) in func.params.iter().zip(args) {
-            let value = match param.ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+            let value = match param.ty.as_ref().and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
                 Some(kind) => Self::coerce_int_width(value, kind)?,
                 None => value,
             };
@@ -2608,7 +2589,7 @@ impl ComptimeInterpreter {
         if matches!(ret, Some(rask_ast::ty::TypeExpr::Optional(_))) {
             return Ok(Self::ct_some(value));
         }
-        match ret.and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+        match ret.and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
             Some(kind) => Self::coerce_int_width(value, kind),
             None => Ok(value),
         }
@@ -3476,19 +3457,13 @@ impl ComptimeInterpreter {
     }
 }
 
-impl Default for ComptimeInterpreter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_arithmetic() {
-        let mut interp = ComptimeInterpreter::new();
+        let mut interp = ComptimeInterpreter::new(rask_ast::Target::LP64);
 
         // We'd need to construct AST nodes for proper testing
         // For now, just verify the interpreter can be created

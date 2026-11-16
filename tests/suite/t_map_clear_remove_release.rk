@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `Map.clear` and `Map.remove` give back what the entries owned (#1828, #1873).
+//
+// `clear` reset the table's states and walked nothing, so every key and value
+// it held was left behind: a `Map<i64, Msg>` whose `Msg.Pair` carries a `Vec`
+// leaked the vector's header after `m.clone()` then `m.clear()`. `remove` hands
+// the value to the caller but never released the key the map had stored, so a
+// heap-string key leaked once per removal. `tests/leak_gate.sh` counts the
+// allocations; this file is not in `known_leaks.txt`.
+//
+// Strings under sixteen bytes live inside the value with no buffer, so the keys
+// here are long.
+
+enum Msg {
+    Empty
+    Pair(string, Vec<string>)
+}
+
+func key(i: i64) -> string {
+    return "key-number-{i}-padded-out-so-it-lives-on-the-heap"
+}
+
+test "std.collections — clear after clone releases what the entries hold" {
+    mut m: Map<i64, Msg> = Map.new()
+    m.insert(2, Msg.Pair("a payload string that is long enough", Vec.new()))
+    let m2 = m.clone()
+    m.clear()
+    assert m.len() == 0
+    assert m2.len() == 1
+}
+
+test "std.collections — clear releases string keys and string values" {
+    mut m: Map<string, string> = Map.new()
+    m.insert(key(1), key(10))
+    m.insert(key(2), key(20))
+    m.clear()
+    assert m.len() == 0
+    m.insert(key(3), key(30))
+    assert m.len() == 1
+    if m.get(key(3))? as v {
+        assert v == key(30)
+    } else {
+        assert false
+    }
+}
+
+test "std.collections — remove releases the key the map stored" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert(key(1), 1)
+    let k = key(1)
+    let old = m.remove(k)
+    assert old == 1
+    assert m.len() == 0
+    // The caller's own key is untouched.
+    assert k == key(1)
+}
+
+test "std.collections — remove hands back the value and frees the key" {
+    mut m: Map<string, Vec<string>> = Map.new()
+    mut v: Vec<string> = Vec.new()
+    v.push(key(11))
+    m.insert(key(1), v)
+    let got = m.remove(key(1))
+    if got? as taken {
+        assert taken.len() == 1
+        assert taken[0] == key(11)
+    } else {
+        assert false
+    }
+    assert m.len() == 0
+}
+
+test "std.collections — a slot freed by remove takes a new key" {
+    mut m: Map<string, i64> = Map.new()
+    for i in 0..20 {
+        m.insert(key(i), i)
+    }
+    for i in 0..20 {
+        let _ = m.remove(key(i))
+    }
+    assert m.len() == 0
+    for i in 0..5 {
+        m.insert(key(i), i * 2)
+    }
+    assert m.len() == 5
+    if m.get(key(3))? as three {
+        assert three == 6
+    } else {
+        assert false
+    }
+}

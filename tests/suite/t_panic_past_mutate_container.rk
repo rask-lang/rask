@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` Vec or Map parameter given away whole, then a panic before it is
+// refilled: the caller's unwinding frees what its slot holds, so the slot must
+// not still name what moved out. The same as for a struct (#1937). Run in a
+// task so the panic is caught at the join; the memcheck gate sees a double free.
+func boom() -> i64 {
+    panic("boom")
+}
+
+func give_vec(mutate v: Vec<string>, mutate store: Vec<Vec<string>>) {
+    store.push(v)
+    let q = boom()
+    v = Vec.new()
+}
+
+func give_map(mutate m: Map<string, string>, mutate store: Vec<Map<string, string>>) {
+    store.push(m)
+    let q = boom()
+    m = Map.new()
+}
+
+func give_vec_local(mutate v: Vec<string>) {
+    mut keep: Vec<Vec<string>> = Vec.new()
+    keep.push(v)
+    let q = boom()
+    v = Vec.new()
+}
+
+test "a Vec given away by a callee that then panics" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut store: Vec<Vec<string>> = Vec.new()
+            mut v: Vec<string> = Vec.new()
+            v.push("an item that is heap allocated")
+            give_vec(mutate v, mutate store)
+            return 0
+        }
+        match h.join() {
+            i64 as x => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a Map given away by a callee that then panics" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut store: Vec<Map<string, string>> = Vec.new()
+            mut m: Map<string, string> = Map.new()
+            m.insert("key", "a value that is heap allocated")
+            give_map(mutate m, mutate store)
+            return 0
+        }
+        match h.join() {
+            i64 as x => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a Vec given away into a local of the callee, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut v: Vec<string> = Vec.new()
+            v.push("an item that is heap allocated")
+            give_vec_local(mutate v)
+            return 0
+        }
+        match h.join() {
+            i64 as x => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+func maybe_give(mutate v: Vec<string>, mutate keep: Vec<Vec<string>>, c: bool) {
+    if c {
+        keep.push(v)
+    }
+    v = Vec.new()
+    v.push("the refill, long enough to live on the heap")
+}
+
+test "a Vec given away on one path and refilled, no panic" {
+    mut keep: Vec<Vec<string>> = Vec.new()
+    mut v: Vec<string> = Vec.new()
+    v.push("an item that is heap allocated")
+    maybe_give(mutate v, mutate keep, false)
+    v.push("another")
+    maybe_give(mutate v, mutate keep, true)
+    maybe_give(mutate v, mutate keep, false)
+    assert keep.len() == 1
+    assert keep[0].len() == 2
+    assert v.len() == 1
+}

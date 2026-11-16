@@ -732,7 +732,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("json_decode_zero", "rask_json_decode_zero", &[types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "json_error_message", c_name: "rask_json_error_message",
-            params: &[types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -795,7 +795,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("channel_tx", "rask_channel_get_tx", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("channel_rx", "rask_channel_get_rx", &[types::I64], Some(types::I64), false),
 
-        StdlibEntry::simple("Sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
         StdlibEntry {
             mir_name: "send", c_name: "rask_channel_send_ptr",
@@ -1464,6 +1463,8 @@ mod tests {
     ("reflect.variants",          Ok_("t_native_reach_reflect")),
     ("reflect.params",            Ok_("t_reflect_params")),
     ("reflect.is_enum",           Ok_("t_native_reach_reflect")),
+    ("reflect.has_decode",        Ok_("t_format_library_codecs")),
+    ("reflect.has_encode",        Ok_("t_format_library_codecs")),
     ("reflect.is_flat",           Ok_("t_native_reach_reflect")),
     ("reflect.is_float",          Ok_("t_native_reach_reflect")),
     ("reflect.is_integer",        Ok_("t_native_reach_reflect")),

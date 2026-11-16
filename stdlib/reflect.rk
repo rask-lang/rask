@@ -6,11 +6,44 @@
 
 // ─── Info Types ─────────────────────────────────────────────────
 
+/// What a format reads a value as, for one that checks and writes text by
+/// type (csv). `Other` is anything that isn't a string, bool or number: a
+/// struct, a list, a map, an enum.
+@lang(wire_kind)
+public enum WireKind {
+    Text
+    Bool
+    F32
+    F64
+    I8
+    I16
+    I32
+    I64
+    Isize
+    U8
+    U16
+    U32
+    U64
+    Usize
+    Other
+}
+
 /// Metadata for a single struct field. Returned by reflect.fields<T>().
 @lang(field_info)
 public struct FieldInfo {
     public name: string
     public type_name: string
+    /// What a decoder reads the field as: the field's own type, unless it
+    /// decodes through its own `decode` (std.encoding/E12b), then what that
+    /// takes, down the chain. `U16` for a `Port` whose `decode` takes a `u16`.
+    public wire_kind: WireKind
+    /// Whether that is a `T?`, which a missing member reads as `none`.
+    public wire_optional: bool
+    /// The field's type writes its own `decode`, or its own `encode`
+    /// (std.encoding/E12b, E12d). Not looked through a `T?`: ask about the
+    /// payload with `reflect.has_decode<U>()`.
+    public has_decode: bool
+    public has_encode: bool
     public offset: usize
     public size: usize
     public is_public: bool
@@ -104,6 +137,10 @@ extend reflect {
     public func is_float<T>() -> bool {}
     @native
     public func is_flat<T>() -> bool {}
+    @native
+    public func has_decode<T>() -> bool {}
+    @native
+    public func has_encode<T>() -> bool {}
     @native
     public func fields<T>() -> Vec<FieldInfo> {}
     @native

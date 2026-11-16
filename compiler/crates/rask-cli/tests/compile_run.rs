@@ -1764,37 +1764,121 @@ fn error_decode_bound_not_satisfied() {
     );
 }
 
-// std.encoding/E12a (#1936): `Port.new` rejects 0, and a derived `Decode` built
-// ports straight from the wire without calling it. A type with a constructor
-// returning `Self or E` isn't auto-`Decode`, whether it is asked for directly
-// or sits inside a `Vec` field, and the error names the constructor.
+// std.encoding/E12b: the `decode` in a `Decode` block has one shape a decoder
+// can call. Each way to break it is reported once, at the method.
 #[test]
-fn error_decode_skips_constructor() {
-    let (failed, out) = compile_error_output("decode_skips_constructor.rk");
-    assert!(failed, "decoding a type with a checking constructor must be rejected: {}", out);
+fn error_decode_malformed() {
+    let (failed, out) = compile_error_output("decode_malformed.rk");
+    assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes are E0425: {}", out);
+    for want in [
+        "`WithSelf`'s `decode` can't be used by a decoder",
+        "`decode` is written with `self`",
+        "`decode` takes 2 parameters, it needs one",
+        "the parameter is `mutate` or `take`",
+        "`decode` returns `NoReject`, it needs to return `NoReject or SomeError`",
+        "`Opaque` can't be decoded, so nothing can read it from the input",
+        "`Boxed<T>` is generic",
+        "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
+        "`Ping` goes through itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // A rejection with no `message()` has its own error, and the adapter the
+    // compiler writes beside `decode` adds none of its own.
+    assert_eq!(out.matches("E0344").count(), 1, "{}", out);
+    assert!(
+        !out.contains("E0308") && !out.contains("E0313") && !out.contains("E0361") && !out.contains("E0893"),
+        "no second error out of code the author never wrote: {}", out,
+    );
+}
+
+// std.encoding/E12b: a type that reads itself through its own `decode` isn't
+// auto-`Encode`, because the fields it would write aren't what `decode` reads.
+// Reached directly, through a `Vec` field and through a `Map` value; one that
+// writes its own `encode` is fine, and an empty `Encode` block is not.
+#[test]
+fn error_encode_skips_decode() {
+    let (failed, out) = compile_error_output("encode_skips_decode.rk");
+    assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0418").count(), 4,
-        "`Port`, the `Listener` that holds a `Vec<Port>`, `Gate` written `-> Self or E`, \
-         and `Wrapper<Port>`: {}", out,
-    );
-    // The type argument is what gets decoded. Judging the bare `T` blamed a field
-    // and advised `@no_serialize`, which is wrong for a `Port`.
-    assert!(
-        !out.contains("E0388") && !out.contains("@no_serialize"),
-        "`Wrapper<Port>` is a constructor problem, not an undecodable field: {}", out,
+        out.matches("E0426").count(), 5,
+        "`Port`, the `Listener` that holds a `Vec<Port>`, the `Routes` that holds a `Map`, and the `Flag` \
+         with an empty `Encode` block, at the block and where it is written: {}", out,
     );
     assert!(
-        out.contains("`Gate.open` checks its input"),
-        "a constructor written `-> Self or E` is still one: {}", out,
+        !out.contains("E0333"),
+        "an empty `Encode` block isn't missing a method, it is the wrong block: {}", out,
     );
     assert!(
-        out.contains("`Port.new` checks its input") && out.contains("`Listener` holds a `Port`"),
-        "should name the constructor, and the type it was reached through: {}", out,
+        out.contains("`Port` is read as a `u16` and would be written as its fields")
+            && out.contains("`Listener` holds a `Port`"),
+        "should name the type, what it is read as, and the type it was reached through: {}", out,
     );
     assert!(
-        out.contains("Port implements Decode"),
-        "should offer the declaration that says a raw decode is intended: {}", out,
+        out.contains("Port implements Encode") && out.contains("func encode(self) -> u16") && out.contains("@no_encode"),
+        "should show the `encode` and the opt-out: {}", out,
     );
+    assert!(
+        !out.contains("fields really are what gets written"),
+        "the empty block is the mistake, not a fix to offer: {}", out,
+    );
+}
+
+// std.encoding/E12b: the `encode` in an `Encode` block has one shape an encoder
+// can call. Each way to break it is reported once, at the method.
+#[test]
+fn error_encode_malformed() {
+    let (failed, out) = compile_error_output("encode_malformed.rk");
+    assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes: {}", out);
+    for want in [
+        "`NoSelf`'s `encode` can't be used by an encoder",
+        "`encode` has no `self`",
+        "`encode` takes 1 parameter besides `self`, it needs none",
+        "`self` is `mutate` or `take`",
+        "`encode` returns `i64 or Why`",
+        "`encode` returns `void`",
+        "`Opaque` can't be encoded, so nothing can write it",
+        "`Boxed<T>` is generic",
+        "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    assert!(
+        !out.contains("E0893") && !out.contains("E0308") && !out.contains("E0313"),
+        "no second error out of code the author never wrote: {}", out,
+    );
+}
+
+// A bound on a type the checker doesn't know yet when it checks the call.
+// `Port.new(n)` on a program's own type answers through a constraint the solver
+// settles later, and `json.decode(text)` takes its target from the binding, so
+// both reach the bound as an open variable. The bound used to be dropped there
+// and the call compiled: the encoder wrote fields a `decode` can't read, the
+// decoder had no value for a private field. It is kept, and checked once the
+// type has settled.
+#[test]
+fn error_bound_on_unsettled_type() {
+    let (failed, out) = compile_error_output("bound_on_unsettled_type.rk");
+    assert!(failed, "a bound on a type settled after the call must still be checked: {}", out);
+    for (code, what) in [
+        ("E0426", "`Port` cannot be encoded"),
+        ("E0377", "`Gate` cannot be decoded"),
+        ("E0388", "`RawBuf` cannot be encoded"),
+    ] {
+        assert_eq!(out.matches(code).count(), 1, "{code} ({what}) once: {out}");
+        assert!(out.contains(what), "missing `{what}` in:\n{out}");
+    }
+    // The fix shows the block as a block: the body sits deeper than the header.
+    let depth = |needle: &str| {
+        out.lines().find(|l| l.contains(needle)).map(|l| l.len() - l.trim_start().len())
+    };
+    let header = depth("Port implements Encode {").expect("the fix shows the block");
+    let body = depth("func encode(self) -> u16 {").expect("the fix shows the method");
+    assert!(body > header, "the fix keeps its indentation ({header} vs {body}): {out}");
 }
 
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
@@ -9805,6 +9889,47 @@ fn comptime_cfg_answers_for_the_target_not_the_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// `usize.MAX` and `isize.MIN` are the target's pointer width, not the
+// compiler's: lowering answered with the 64-bit numbers for every `--target`,
+// so a 32-bit program's `usize.MAX` was 18446744073709551615. Read off the MIR,
+// which needs no 32-bit backend.
+#[test]
+fn pointer_sized_limits_are_the_targets_in_mir() {
+    let dir = std::env::temp_dir().join(format!("rask_limits_target_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("limits.rk");
+    std::fs::write(
+        &src,
+        "func main() {\n\
+         \x20   let hi: usize = usize.MAX\n\
+         \x20   let lo: isize = isize.MIN\n\
+         \x20   println(\"{hi} {lo}\")\n\
+         }\n",
+    )
+    .unwrap();
+    let dump = |target: &str| -> String {
+        let out = Command::new(rask_binary())
+            .arg("compile")
+            .arg("--dump-mir")
+            .arg("--target")
+            .arg(target)
+            .arg(&src)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{target}: dump failed:\n{text}");
+        text
+    };
+    let narrow = dump("arm-none");
+    assert!(narrow.contains("4294967295"), "usize.MAX on a 32-bit target:\n{narrow}");
+    assert!(narrow.contains("-2147483648"), "isize.MIN on a 32-bit target:\n{narrow}");
+    let wide = dump("x86_64-linux");
+    assert!(wide.contains("-9223372036854775808"), "isize.MIN on a 64-bit target:\n{wide}");
+    assert!(!wide.contains("4294967295"), "a 64-bit target has no 32-bit limit:\n{wide}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // The other half: a name nobody declared is an error, not a guess at what was
 // meant. It used to be accepted by anything shaped like `arch-os`.
 #[test]
@@ -10504,4 +10629,19 @@ test "runs after it" {
         let out = run_rask_test_source(SRC, interp);
         assert!(out.contains("2 tests, 1 passed, 1 failed"), "interp={interp}:\n{out}");
     }
+}
+
+// std.reflect: a field typed by a type parameter reports what the instance put
+// there. `Row<Flag>.x` is a `Flag`, read from a cell as a `bool`; the wire kind
+// and the codec facts were worked out from the bare `T` and said "other" with no
+// `decode`, so csv refused a valid cell. Native only: the interpreter's
+// `json.decode` doesn't build a generic struct at all.
+#[test]
+fn csv_reads_a_generic_structs_custom_field_as_its_wire_type() {
+    let (stdout, code) = run_native("csv_generic_custom.rk");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(
+        stdout,
+        "2 true false\nCSV row 2, column \"x\": \"maybe\" is not true or false\n",
+    );
 }

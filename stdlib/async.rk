@@ -139,10 +139,18 @@ extend Channel<T> {
     public func unbuffered() -> (Sender<T>, Receiver<T>) {}
 }
 
-@handle
+// Dropping an end closes it; the channel goes with the second one. A sender
+// is counted, so a copy of one takes a reference of its own (`Sender.clone`).
+@handle(release: "rask_sender_drop_i64")
 public struct Sender<T> { }
 
 extend Sender<T> {
+    /// Another sender on the same channel. The channel stays open until every
+    /// sender has been dropped or closed. Declared here because a handle that
+    /// frees itself can be cloned only by saying how.
+    @native("rask_sender_clone_i64")
+    public func clone(self) -> Sender<T> {}
+
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
     @blocks
@@ -162,7 +170,7 @@ extend Sender<T> {
     public func close(take self) -> void or CloseError {}
 }
 
-@handle
+@handle(release: "rask_recver_drop_i64")
 public struct Receiver<T> { }
 
 extend Receiver<T> {

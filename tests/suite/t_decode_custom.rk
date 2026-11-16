@@ -1,0 +1,557 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type writes its own `Decode` and `Encode` (std.encoding/E12b), and every
+// decoder and encoder calls them wherever the type appears: nested in a
+// struct, in a `Vec` or a `Map`, as an optional, behind another custom type, or
+// as an enum. One `decode` serves json and csv; the claim side is
+// `tests/fixtures/claims/decoded`. A type that reads itself through `decode`
+// writes itself through `encode`, so what is written reads back.
+//
+// A rejection comes back as a decode error with the error's message and where
+// in the input it happened.
+
+import csv
+import json
+
+struct PortError {
+    reason: string
+}
+
+extend PortError {
+    public func message(self) -> string {
+        return self.reason
+    }
+}
+
+struct Port {
+    value: u16
+}
+
+extend Port {
+    func new(v: u16) -> Port or PortError {
+        if v == 0 {
+            return PortError(reason: "port 0 is reserved")
+        }
+        return Port(value: v)
+    }
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        return Port.new(raw)
+    }
+}
+
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
+    }
+}
+
+struct Config {
+    ports: Vec<Port>
+}
+
+func rejection<T: Decode>(text: string) -> string {
+    let _ = json.decode<T>(text) catch e => {
+        return e.message()
+    }
+    return "decoded"
+}
+
+test "std.encoding/E12b — a Vec of custom types decodes each through its decode" {
+    let c = json.decode<Config>("{{\"ports\": [80, 8080]}") catch e => {
+        assert false
+        return
+    }
+    assert c.ports.len() == 2
+    assert c.ports[0].value == 80
+    assert c.ports[1].value == 8080
+}
+
+test "std.encoding/E12b — a rejection inside a nested field names the path" {
+    assert rejection<Config>("{{\"ports\": [80, 0]}") == "type error: field ports[1]: port 0 is reserved"
+    assert rejection<Config>("{{\"ports\": [0]}") == "type error: field ports[0]: port 0 is reserved"
+}
+
+test "std.encoding/E12b — the type's wire form is checked first, as its decode's parameter" {
+    assert rejection<Config>("{{\"ports\": [\"x\"]}") == "type error: field ports[0] should be an integer, found a string"
+}
+
+test "std.encoding/E12b — the type asked for directly" {
+    assert rejection<Port>("0") == "type error: the value: port 0 is reserved"
+    assert rejection<Port>("443") == "decoded"
+}
+
+struct Routes {
+    by_name: Map<string, Port>
+}
+
+test "std.encoding/E12b — a Map's values" {
+    let r = json.decode<Routes>("{{\"by_name\": {{\"web\": 80, \"db\": 5432} }") catch e => {
+        assert false
+        return
+    }
+    assert r.by_name.len() == 2
+    if r.by_name.get("db")? as db {
+        assert db.value == 5432
+    } else {
+        assert false
+    }
+    assert rejection<Routes>("{{\"by_name\": {{\"web\": 80, \"db\": 0} }") == "type error: field by_name.db: port 0 is reserved"
+}
+
+struct Maybe {
+    extra: Port?
+}
+
+test "std.encoding/E12b — an optional custom type: absent and null are none, a value is decoded" {
+    let none_left = json.decode<Maybe>("{{ }") catch e => {
+        assert false
+        return
+    }
+    assert none_left.extra is none
+    let null_in = json.decode<Maybe>("{{\"extra\": null}") catch e => {
+        assert false
+        return
+    }
+    assert null_in.extra is none
+    let some = json.decode<Maybe>("{{\"extra\": 9}") catch e => {
+        assert false
+        return
+    }
+    if some.extra is Port as p {
+        assert p.value == 9
+    } else {
+        assert false
+    }
+    assert rejection<Maybe>("{{\"extra\": 0}") == "type error: field extra: port 0 is reserved"
+}
+
+// The wire type can be a struct, and hold more custom types.
+struct Name {
+    text: string
+}
+
+struct Blank {
+}
+
+extend Blank {
+    public func message(self) -> string {
+        return "name is empty"
+    }
+}
+
+struct TooLong {
+    max: i64
+}
+
+extend TooLong {
+    public func message(self) -> string {
+        return "longer than {self.max}"
+    }
+}
+
+// Rejects with either of two errors.
+Name implements Decode {
+    func decode(s: string) -> Name or Blank | TooLong {
+        if s.len() == 0 {
+            return Blank()
+        }
+        if s.len() > 5 {
+            return TooLong(max: 5)
+        }
+        return Name(text: s)
+    }
+}
+
+Name implements Encode {
+    func encode(self) -> string {
+        return self.text
+    }
+}
+
+struct Endpoint {
+    host: Name
+    port: Port
+}
+
+struct Pair {
+    first: Name
+    rest: Vec<Name>
+}
+
+struct NoNames {
+    why: string
+}
+
+extend NoNames {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Group {
+    lead: string
+}
+
+Group implements Decode {
+    func decode(p: Pair) -> Group or NoNames {
+        if p.first.text == "none" {
+            return NoNames(why: "nobody leads")
+        }
+        return Group(lead: p.first.text)
+    }
+}
+
+Group implements Encode {
+    func encode(self) -> Pair {
+        return Pair(first: Name(text: self.lead), rest: Vec.new())
+    }
+}
+
+struct Team {
+    group: Group
+}
+
+test "std.encoding/E12b — a union of errors, and a wire struct that holds custom types" {
+    let e = json.decode<Endpoint>("{{\"host\": \"abc\", \"port\": 22}") catch err => {
+        assert false
+        return
+    }
+    assert e.host.text == "abc"
+    assert e.port.value == 22
+    assert rejection<Endpoint>("{{\"host\": \"\", \"port\": 22}") == "type error: field host: name is empty"
+    assert rejection<Endpoint>("{{\"host\": \"toolongname\", \"port\": 22}") == "type error: field host: longer than 5"
+    assert rejection<Endpoint>("{{\"host\": \"ok\", \"port\": 0}") == "type error: field port: port 0 is reserved"
+
+    let t = json.decode<Team>("{{\"group\": {{\"first\": \"ann\", \"rest\": [\"bo\", \"cy\"]} }") catch err => {
+        assert false
+        return
+    }
+    assert t.group.lead == "ann"
+    assert rejection<Team>("{{\"group\": {{\"first\": \"none\", \"rest\": []} }") == "type error: field group: nobody leads"
+    // The wire struct's own custom field is decoded, and refuses, before `Group`'s decode runs.
+    assert rejection<Team>("{{\"group\": {{\"first\": \"\", \"rest\": []} }") == "type error: field group.first: name is empty"
+}
+
+// Recursion: a type whose wire type is another custom type.
+struct NoTag {
+    why: string
+}
+
+extend NoTag {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Tag {
+    label: string
+}
+
+Tag implements Decode {
+    func decode(n: Name) -> Tag or NoTag {
+        if n.text == "none" {
+            return NoTag(why: "none is not a tag")
+        }
+        return Tag(label: n.text)
+    }
+}
+
+// Written as a Name, which writes itself as a string.
+Tag implements Encode {
+    func encode(self) -> Name {
+        return Name(text: self.label)
+    }
+}
+
+struct Tags {
+    all: Vec<Tag>
+}
+
+test "std.encoding/E12b — a custom type read through another custom type" {
+    let t = json.decode<Tags>("{{\"all\": [\"a\", \"bc\"]}") catch err => {
+        assert false
+        return
+    }
+    assert t.all.len() == 2
+    assert t.all[1].label == "bc"
+    // Each layer's own rejection, with the path of the value.
+    assert rejection<Tags>("{{\"all\": [\"a\", \"\"]}") == "type error: field all[1]: name is empty"
+    assert rejection<Tags>("{{\"all\": [\"a\", \"none\"]}") == "type error: field all[1]: none is not a tag"
+    assert rejection<Tags>("{{\"all\": [\"toolongtag\"]}") == "type error: field all[0]: longer than 5"
+}
+
+// A wire type that is optional reads a missing member as none.
+struct Level {
+    n: i64
+}
+
+struct BadLevel {
+}
+
+extend BadLevel {
+    public func message(self) -> string {
+        return "negative level"
+    }
+}
+
+Level implements Decode {
+    func decode(v: i64?) -> Level or BadLevel {
+        if v is i64 as n {
+            if n < 0 {
+                return BadLevel()
+            }
+            return Level(n: n)
+        }
+        return Level(n: 1)
+    }
+}
+
+Level implements Encode {
+    func encode(self) -> i64? {
+        return self.n
+    }
+}
+
+struct Job {
+    level: Level
+}
+
+test "std.encoding/E12b — a wire type of `T?` takes a missing member as none" {
+    let j = json.decode<Job>("{{ }") catch err => {
+        assert false
+        return
+    }
+    assert j.level.n == 1
+    let k = json.decode<Job>("{{\"level\": 4}") catch err => {
+        assert false
+        return
+    }
+    assert k.level.n == 4
+    assert rejection<Job>("{{\"level\": -2}") == "type error: field level: negative level"
+}
+
+// An enum writes its own decode like a struct does.
+enum Mode {
+    Fast
+    Slow
+}
+
+@message
+enum ModeError {
+    @message("unknown mode")
+    Unknown
+}
+
+Mode implements Decode {
+    func decode(s: string) -> Mode or ModeError {
+        if s == "fast" {
+            return Mode.Fast
+        }
+        if s == "slow" {
+            return Mode.Slow
+        }
+        return ModeError.Unknown
+    }
+}
+
+Mode implements Encode {
+    func encode(self) -> string {
+        match self {
+            Mode.Fast => return "fast"
+            Mode.Slow => return "slow"
+        }
+    }
+}
+
+struct Run {
+    modes: Vec<Mode>
+}
+
+test "std.encoding/E12b — an enum decodes through its decode" {
+    let r = json.decode<Run>("{{\"modes\": [\"fast\", \"slow\"]}") catch err => {
+        assert false
+        return
+    }
+    assert r.modes.len() == 2
+    assert r.modes[1] == Mode.Slow
+    assert rejection<Run>("{{\"modes\": [\"fast\", \"warp\"]}") == "type error: field modes[1]: unknown mode"
+}
+
+// What is written reads back: each type's `encode` is its `decode` the other
+// way round, wherever the type sits.
+test "std.encoding/E12b — json round trips through encode and decode" {
+    let text = "{{\"ports\": [80, 8080]}"
+    let c = json.decode<Config>(text) catch e => {
+        assert false
+        return
+    }
+    assert json.encode(c) == "{{\"ports\":[80,8080]}"
+    assert json.encode(c.ports[1]) == "8080"
+    assert json.encode(c.ports) == "[80,8080]"
+    assert json.encode_pretty(c) == "{{\n  \"ports\": [\n    80,\n    8080\n  ]\n}"
+    let back = json.decode<Config>(json.encode(c)) catch e => {
+        assert false
+        return
+    }
+    assert back.ports.len() == 2
+    assert back.ports[0].value == 80
+}
+
+test "std.encoding/E12b — encode in a Map, an optional and a plain field" {
+    let r = json.decode<Routes>("{{\"by_name\": {{\"web\": 80 } }") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(r) == "{{\"by_name\":{{\"web\":80}}}}"
+    let m = json.decode<Maybe>("{{\"extra\": 9}") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(m) == "{{\"extra\":9}"
+    let none_left = json.decode<Maybe>("{{ }") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(none_left) == "{{\"extra\":null}"
+}
+
+test "std.encoding/E12b — a type written as another custom type, and as a wire struct" {
+    let t = json.decode<Tags>("{{\"all\": [\"a\", \"bc\"]}") catch err => {
+        assert false
+        return
+    }
+    // Tag is written as a Name, and a Name as a string.
+    assert json.encode(t) == "{{\"all\":[\"a\",\"bc\"]}"
+    let team = json.decode<Team>("{{\"group\": {{\"first\": \"ann\", \"rest\": [\"bo\"] } }") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(team) == "{{\"group\":{{\"first\":\"ann\",\"rest\":[]}}}}"
+    let again = json.decode<Team>(json.encode(team)) catch err => {
+        assert false
+        return
+    }
+    assert again.group.lead == "ann"
+}
+
+test "std.encoding/E12b — an optional wire type and an enum round trip" {
+    let j = json.decode<Job>("{{\"level\": 4}") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(j) == "{{\"level\":4}"
+    let r = json.decode<Run>("{{\"modes\": [\"fast\", \"slow\"]}") catch err => {
+        assert false
+        return
+    }
+    assert json.encode(r) == "{{\"modes\":[\"fast\",\"slow\"]}"
+    assert json.encode(r.modes[0]) == "\"fast\""
+}
+
+// csv reads a cell as the type `decode` takes, then runs `decode`.
+struct Listener {
+    name: string
+    port: Port
+    host: Name
+}
+
+test "std.encoding/E12b — csv cells go through the type's decode" {
+    let rows = csv.decode<Listener>("name,port,host\nweb,80,abc\ndb,5432,xy\n") catch e => {
+        assert false
+        return
+    }
+    assert rows.len() == 2
+    assert rows[0].port.value == 80
+    assert rows[1].host.text == "xy"
+
+    // A refusal is the column's own, in the type's words: the column it came
+    // from and nothing about JSON.
+    let zero = csv.decode<Listener>("name,port,host\nweb,0,abc\n")
+    if zero is CsvError as e {
+        assert e.message() == "CSV row 2, column \"port\": port 0 is reserved"
+    } else {
+        assert false
+    }
+    let long = csv.decode<Listener>("name,port,host\nweb,80,toolongname\n")
+    if long is CsvError as e {
+        assert e.message() == "CSV row 2, column \"host\": longer than 5"
+    } else {
+        assert false
+    }
+    // The cell isn't a number, so it never gets to `decode`.
+    let word = csv.decode<Listener>("name,port,host\nweb,http,abc\n")
+    if word is CsvError as e {
+        assert e.message().contains("\"http\" is not a whole number")
+    } else {
+        assert false
+    }
+}
+
+test "std.encoding/E12b — csv writes a cell as the type's encode and reads it back" {
+    let rows = csv.decode<Listener>("name,port,host\nweb,80,abc\ndb,5432,xy\n") catch e => {
+        assert false
+        return
+    }
+    let text = csv.encode(rows)
+    assert text == "name,port,host\nweb,80,abc\ndb,5432,xy\n"
+    let back = csv.decode<Listener>(text) catch e => {
+        assert false
+        return
+    }
+    assert back.len() == 2
+    assert back[1].port.value == 5432
+    assert back[1].host.text == "xy"
+}
+
+// Several columns can hold the same custom type; the one that was turned down
+// is the one named.
+struct Triple {
+    first: Port
+    second: Port
+    third: Port
+}
+
+test "std.encoding/E12b — csv names the column a refusal came from, among several of one type" {
+    let second = csv.decode<Triple>("first,second,third\n80,0,9\n")
+    if second is CsvError as e {
+        assert e.message() == "CSV row 2, column \"second\": port 0 is reserved"
+    } else {
+        assert false
+    }
+    let third = csv.decode<Triple>("first,second,third\n80,8080,0\n")
+    if third is CsvError as e {
+        assert e.message() == "CSV row 2, column \"third\": port 0 is reserved"
+    } else {
+        assert false
+    }
+}
+
+test "std.encoding/E12c — a refusal keeps where it happened apart from why" {
+    let _ = json.decode<Config>("{{\"ports\": [80, 0]}") catch e => {
+        match e {
+            JsonError.Refused(path, reason) => {
+                assert path == "field ports[1]"
+                assert reason == "port 0 is reserved"
+            }
+            _ => assert false
+        }
+        return
+    }
+    assert false
+}
+
+test "std.encoding/E12c — a refusal at the top is at the value" {
+    let _ = json.decode<Port>("0") catch e => {
+        match e {
+            JsonError.Refused(path, reason) => {
+                assert path == "the value"
+                assert reason == "port 0 is reserved"
+            }
+            _ => assert false
+        }
+        return
+    }
+    assert false
+}

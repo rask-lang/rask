@@ -31,7 +31,7 @@ impl Located {
 /// type.primitives/NT1 — associated constants on the numeric types.
 /// `MIN`/`MAX` carry the receiver's own width so overflow checks see the right
 /// bounds; `ZERO`/`ONE` are the same value everywhere.
-fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
+fn primitive_type_constant(type_name: &str, field: &str, machine: rask_ast::Target) -> Option<Value> {
     use crate::value::IntKind;
     if matches!(type_name, "f32" | "f64") {
         let v = match field {
@@ -55,14 +55,16 @@ fn primitive_type_constant(type_name: &str, field: &str) -> Option<Value> {
         "i16" => (i16::MIN as i64, i16::MAX as i64, IntKind::I16),
         "i32" => (i32::MIN as i64, i32::MAX as i64, IntKind::I32),
         "i64" => (i64::MIN, i64::MAX, IntKind::I64),
-        "isize" => (i64::MIN, i64::MAX, IntKind::isize_kind()),
+        "isize" if machine.pointer_bits() == 32 => (i32::MIN as i64, i32::MAX as i64, IntKind::isize_kind(machine)),
+        "isize" => (i64::MIN, i64::MAX, IntKind::isize_kind(machine)),
         "u8" => (0, u8::MAX as i64, IntKind::U8),
         "u16" => (0, u16::MAX as i64, IntKind::U16),
         "u32" => (0, u32::MAX as i64, IntKind::U32),
         // u64::MAX doesn't fit an i64; it's carried as the same bit pattern and
         // read back unsigned because the kind says U64.
         "u64" => (0, u64::MAX as i64, IntKind::U64),
-        "usize" => (0, u64::MAX as i64, IntKind::usize_kind()),
+        "usize" if machine.pointer_bits() == 32 => (0, u32::MAX as i64, IntKind::usize_kind(machine)),
+        "usize" => (0, u64::MAX as i64, IntKind::usize_kind(machine)),
         _ => return None,
     };
     let n = match field {
@@ -639,7 +641,7 @@ impl Interpreter {
                     return Ok(v.clone());
                 }
                 if let Some(u) = self.union_decls.get(&guard.name) {
-                    return crate::interp::union_bits::reinterpret(u, &guard.fields, field)
+                    return crate::interp::union_bits::reinterpret(u, &guard.fields, field, self.types.target())
                         .map_err(|msg| RuntimeDiagnostic::new(RuntimeError::TypeError(msg), span));
                 }
                 Ok(Value::Unit)
@@ -938,7 +940,9 @@ impl Interpreter {
             return None;
         }
         let decl = self.enums.get(type_name)?;
-        decl.variants.iter().any(|v| v.name == method).then(|| type_name.clone())
+        (decl.variants.iter().any(|v| v.name == method)
+            || rask_ast::decl::GENERATED_ENUM_STATICS.contains(&method))
+        .then(|| type_name.clone())
     }
 
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
@@ -980,20 +984,20 @@ impl Interpreter {
                     Some(IntSuffix::I16) => IntKind::I16,
                     Some(IntSuffix::I32) => IntKind::I32,
                     Some(IntSuffix::I64) => IntKind::I64,
-                    Some(IntSuffix::Isize) => IntKind::isize_kind(),
+                    Some(IntSuffix::Isize) => IntKind::isize_kind(self.types.target()),
                     Some(IntSuffix::U8) => IntKind::U8,
                     Some(IntSuffix::U16) => IntKind::U16,
                     Some(IntSuffix::U32) => IntKind::U32,
-                    Some(IntSuffix::Usize) => IntKind::usize_kind(),
+                    Some(IntSuffix::Usize) => IntKind::usize_kind(self.types.target()),
                     Some(IntSuffix::U64) => IntKind::U64,
                     // The marker's own band is the fallback when the checker
                     // left nothing behind.
                     Some(IntSuffix::U64ByMagnitude) => self
                         .node_types
                         .get(&expr.id)
-                        .map(IntKind::from_type)
+                        .map(|t| IntKind::from_type(t, self.types.target()))
                         .unwrap_or(IntKind::U64),
-                    None => self.node_types.get(&expr.id).map(IntKind::from_type).unwrap_or(IntKind::Untyped),
+                    None => self.node_types.get(&expr.id).map(|t| IntKind::from_type(t, self.types.target())).unwrap_or(IntKind::Untyped),
                 };
                 Ok(Value::Int(*n as i64, kind))
             }
@@ -1428,7 +1432,7 @@ impl Interpreter {
                     if let Value::RawPtr(p) = &receiver {
                         let pointee = |id: rask_ast::NodeId| match self.node_types.get(&id) {
                             Some(rask_types::Type::RawPtr(inner)) => {
-                                Some(crate::value::IntKind::from_type(inner))
+                                Some(crate::value::IntKind::from_type(inner, self.types.target()))
                                     .filter(|k| *k != crate::value::IntKind::Untyped)
                             }
                             _ => None,
@@ -2095,7 +2099,7 @@ impl Interpreter {
                 // type.primitives/NT1 — `i32.MAX`, `u8.MIN`, `f64.EPSILON`, …
                 // The interpreter had no answer for these at all; only MIR did.
                 if let Some(type_name) = object.name() {
-                    if let Some(v) = primitive_type_constant(type_name, field) {
+                    if let Some(v) = primitive_type_constant(type_name, field, self.types.target()) {
                         return Ok(v);
                     }
                 }
@@ -2623,12 +2627,12 @@ impl Interpreter {
                     (Value::Int(n, _), "f64") => Ok(Value::Float(n as f64, FloatKind::F64)),
                     (Value::Float(n, _), t @ ("i64" | "i32" | "i16" | "i8"
                         | "u64" | "u32" | "u16" | "u8" | "usize")) => {
-                        let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
+                        let kind = crate::value::IntKind::from_name(t, self.types.target()).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n as i64), kind))
                     }
                     (Value::Int(n, _), t @ ("i64" | "i32" | "i16" | "i8" | "u64" | "u32"
                         | "u16" | "u8" | "usize")) => {
-                        let kind = crate::value::IntKind::from_name(t).unwrap_or(crate::value::IntKind::Untyped);
+                        let kind = crate::value::IntKind::from_name(t, self.types.target()).unwrap_or(crate::value::IntKind::Untyped);
                         Ok(Value::Int(kind.wrap(n), kind))
                     }
                     (Value::Int(n, _), "string") => {
@@ -2704,7 +2708,7 @@ impl Interpreter {
 
             ExprKind::Convert { expr: inner, target, kind } => {
                 let val = self.eval_expr(inner)?;
-                super::overflow::convert(val, target.bare_name().unwrap_or_default(), *kind)
+                super::overflow::convert(val, target.bare_name().unwrap_or_default(), *kind, self.types.target())
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
@@ -3513,12 +3517,37 @@ impl Interpreter {
             "u64" => crate::value::IntKind::U64,
             _ => crate::value::IntKind::I64,
         };
-        Ok(match (cexpr::rask_scalar(&call.result), result) {
+        Ok(match (cexpr::rask_scalar(&call.result, self.types.target()), result) {
             (Some("bool"), CVal::Int(v, _)) => Value::Bool(v != 0),
             (Some("f32"), CVal::Float(f, _)) => Value::Float(f, crate::value::FloatKind::F32),
             (_, CVal::Float(f, _)) => Value::Float(f, crate::value::FloatKind::F64),
             (Some(name), CVal::Int(v, _)) => Value::Int(v as i64, kind(name)),
             _ => return Err(RuntimeError::TypeError(format!("`{}` doesn't answer a number", call.name))),
         })
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+    use crate::value::IntKind;
+
+    /// `usize.MAX` is the target's, and carries its width.
+    #[test]
+    fn pointer_sized_limits_follow_the_target() {
+        let arm = rask_ast::Target::for_arch("arm");
+        let x86 = rask_ast::Target::LP64;
+        assert!(matches!(
+            primitive_type_constant("usize", "MAX", arm),
+            Some(Value::Int(n, IntKind::U32)) if n == u32::MAX as i64
+        ));
+        assert!(matches!(
+            primitive_type_constant("isize", "MIN", arm),
+            Some(Value::Int(n, IntKind::I32)) if n == i32::MIN as i64
+        ));
+        assert!(matches!(
+            primitive_type_constant("usize", "MAX", x86),
+            Some(Value::Int(-1, IntKind::U64))
+        ));
     }
 }

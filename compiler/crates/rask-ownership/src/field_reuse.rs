@@ -99,7 +99,12 @@ impl<'c, 'a, 'e> Visit<'e> for Finder<'c, 'a> {
     fn stmt(&mut self, stmt: &'e Stmt) -> bool {
         if let StmtKind::Assign { target, value, .. } = &stmt.kind {
             if let Some(place) = place_path(target) {
-                if self.takes(value, &place) {
+                if let Some(parts) = self.field_parts_moved(value, &place) {
+                    // Only fields of the old value move, and each is read as a
+                    // take (zeroed in the old value). The assignment then
+                    // releases the rest of it like any other.
+                    self.found.extend(parts);
+                } else if self.takes(value, &place) {
                     self.found.insert(stmt.id);
                 }
             }
@@ -122,6 +127,37 @@ impl Finder<'_, '_> {
             self.found.insert(take);
             self.found.insert(refill);
         }
+    }
+
+    /// The field reads in `value` that move a part of `place`, when every move
+    /// of it is such a read: `c = Cursor(label: "new", hist: c.hist)` moves
+    /// `hist` and nothing else, so the old `label` is still the old value's
+    /// to release. `None` when `place` itself moves (`c = Wrap(inner: c)`),
+    /// when the value is itself the field, or when the path goes through an
+    /// index, where one element can't be told from another.
+    fn field_parts_moved(&self, value: &Expr, place: &[String]) -> Option<Vec<NodeId>> {
+        if self.moves(value, place) {
+            return None;
+        }
+        let mut parts: Vec<NodeId> = Vec::new();
+        let mut whole = false;
+        visit::walk_expr(value, &mut |e| {
+            for c in self.owned_children(e) {
+                if !self.moves(c, place) {
+                    continue;
+                }
+                let strict_field = matches!(c.kind, ExprKind::Field { .. })
+                    && place_path(c).is_some_and(|p| {
+                        p.len() > place.len() && p[..place.len()] == *place && !p.iter().any(|s| s == "[]")
+                    });
+                if strict_field {
+                    parts.push(c.id);
+                } else {
+                    whole = true;
+                }
+            }
+        });
+        (!whole && !parts.is_empty() && !place.iter().any(|s| s == "[]")).then_some(parts)
     }
 
     /// Whether `value`, or anything in it, takes ownership of `place`.

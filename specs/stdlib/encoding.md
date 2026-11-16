@@ -38,9 +38,12 @@ struct Point { x: f64, y: f64 }
 
 | Rule | Description |
 |------|-------------|
-| **E11: Marker interfaces** | `Encode` and `Decode` are marker interfaces with no methods. They signal that a type's structure is serialization-compatible |
-| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode`, with one more condition: E12a |
-| **E12a: Checking constructors** | A type with a checking constructor is not auto-`Decode`. That is a static function the author wrote in an `extend` block whose return type is `Self or E`, with `E` a real error (`Self?` doesn't count), at any visibility. The type, and any `Vec`, `Map`, field or payload that holds it, fails a `Decode` bound with an error that names the constructor. `T implements Decode { }`, written where `T` is declared, says a raw decode is intended and lifts the rule for that type. `Encode` is never affected |
+| **E11: Marker interfaces** | `Encode` and `Decode` are interfaces with no required methods. They signal that a type's structure is serialization-compatible. A type may add one method to each block: its own `decode` to `Decode` (E12b), its own `encode` to `Encode` (E12d) |
+| **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode`, with one more condition: a field left out of the wire form needs a default (E13a). And `Encode` has one of its own: E12e |
+| **E12b: Own decode** | `T implements Decode { func decode(wire: W) -> Self or E { … } }` makes every decoder read the input as `W`, decode that the normal way, and hand the value to `decode`. It applies wherever `T` appears: a field, a `Vec` element, a `Map` value, a `T?`, an enum payload, the top level. `decode` is static, takes one plain parameter and returns `Self or E`. `W` is any `Decode` type, itself possibly one with its own `decode`, and `E` is any error (a union of errors too). `T` is concrete: a generic type can't write one. The fields of `T` are never consulted, so they need not be decodable, and a `private` one needs no default. This is how a type protects an invariant (E13a) |
+| **E12c: A refusal is a decode error** | When `decode` returns an error, the decode fails with that error's `message()` behind where in the input the value was. `json.decode` returns `JsonError.Refused(path: "field ports[1]", reason: "port 0 is reserved")`, which keeps where and why apart so a format that knows its own columns can name the right one, and the other decoders word it their own way (below). A claim's inputs are built through `decode` too, and an input it refuses is discarded, not given to the claim (`type.claims/CL5`, IN1) |
+| **E12d: Own encode** | `T implements Encode { func encode(self) -> W { … } }` makes every encoder write `W` in `T`'s place, the normal way, wherever `T` appears: a field, a `Vec` element, a `Map` value, a `T?`, an enum payload, the top level. `encode` takes a plain `self` and nothing else. `W` is any `Encode` type, itself possibly one with its own `encode`. It can't fail, because writing a value out can't make an invalid one, so `W` isn't a `T or E`. `T` is concrete, and its fields are never consulted, so they need not be encodable |
+| **E12e: Read through `decode`, written through `encode`** | A type with its own `decode` is not auto-`Encode`. The fields a derived `Encode` would write aren't what `decode` reads, so a value written out and read back fails at run time, in whoever reads the output. The type, and any `Vec`, `Map`, field or payload that holds it, fails an `Encode` bound with an error that names it (E0426). Two things lift the rule, both written where `T` is declared: its own `encode` (E12d), and `@no_encode`, which says it isn't written at all. An empty `T implements Encode { }` doesn't: it says the fields are the wire form, which is the mismatch (E0426) |
 | **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
 | **E15: Collection types** | `Vec<T>` where `T: Encode`, `Map<string, T>` where `T: Encode`, `T?` where `T: Encode` — all auto-implement `Encode`. Same for `Decode` |
@@ -99,9 +102,11 @@ struct Session {
 
 E13b is the mass-assignment rail: an attacker who puts `"password_hash": "…"` in the request body cannot reach the field, because decode never looks for it.
 
-### Types With a Checking Constructor [E12a]
+A private field is also how a type says it protects an invariant. Nothing outside the type can write the field, and no decoder reads it off the wire, so a type with `private value: u16` can only be built through code it wrote. For decoding that code is its `decode` (E12b). Without one the type isn't `Decode` (the error says so, and shows the `decode` to write), and with one the field needs no default, since `decode` builds the whole value.
 
-<!-- test: run | 8080\nport 0 is reserved -->
+### Types That Protect an Invariant [E13a, E12b]
+
+<!-- test: run | 2 ports\n{"ports":[80,8080]}\ntype error: field ports[1]: port 0 is reserved -->
 ```rask
 import json
 
@@ -111,62 +116,86 @@ extend PortError {
     public func message(self) -> string { return self.reason }
 }
 
-struct Port { value: u16 }
+struct Port { private value: u16 }
 
 extend Port {
-    func new(v: u16) -> Port or PortError {
-        if v == 0 { return PortError(reason: "port 0 is reserved") }
-        return Port(value: v)
+    public func number(self) -> u16 { return self.value }
+}
+
+// How a Port is decoded: as a u16, checked, then built. Only code written
+// here can reach the private field.
+Port implements Decode {
+    func decode(raw: u16) -> Port or PortError {
+        if raw == 0 { return PortError(reason: "port 0 is reserved") }
+        return Port(value: raw)
     }
 }
 
-// `json.decode<Port>` is an error: it would build a Port without calling `new`.
-// Decode the raw fields into a plain struct and hand them to the constructor.
-struct PortWire { value: u16 }
-
-func read_port(text: string) -> Port or PortError {
-    let wire = json.decode<PortWire>(text) catch e => {
-        return PortError(reason: e.message())
+// And written: as the u16 it was read as.
+Port implements Encode {
+    func encode(self) -> u16 {
+        return self.value
     }
-    return try Port.new(wire.value)
 }
+
+struct Config { ports: Vec<Port> }
 
 func main() {
-    let ok = read_port("{{\"value\": 8080}") catch _ => return
-    println("{ok.value}")
-    let bad = read_port("{{\"value\": 0}") catch e => {
+    let good = json.decode<Config>("{{\"ports\": [80, 8080]}") catch e => {
         println(e.message())
         return
     }
-    println("{bad.value}")
+    println("{good.ports.len()} ports")
+    println(json.encode(good))
+    let bad = json.decode<Config>("{{\"ports\": [80, 0]}") catch e => {
+        println(e.message())
+        return
+    }
+    println("{bad.ports.len()} ports")
 }
 ```
 
-When the function that returns `Self or E` isn't a check on decoded data, say so where the type is declared:
+Each `Port` in `ports` is read as a `u16` and goes through `Port.decode`, and written as the `u16` `Port.encode` answers. `Config` needs nothing of its own, and neither does a `Vec<Port>` or a `Map<string, Port>` somewhere else: the type says how it is read and written once, and every place it appears follows.
 
-<!-- test: skip -->
-```rask
-extend Settings {
-    func load(path: string) -> Settings or IoError { … }
-}
+The field is private on purpose. A public `value` would let anyone write `Port(value: 0)` without going through `decode`, and then decode skipping a check guards nothing. With it private, the only ways to a `Port` are the ones the type wrote. The signal that a type protects an invariant is the private field, and `decode` is what that costs: without it `json.decode<Port>` is the error E13a gives, which shows the `decode` to write.
 
-Settings implements Decode { }     // a raw decode is fine
+The two are a pair. A type that reads itself through `decode` and said nothing about writing would be written as an object of its fields, which `decode` can't read, so that is an error (E12e) and not a default. `Port implements Encode { }` doesn't answer it, because it says the fields are the wire form. The answers are `encode`, and `@no_encode` for a type that is never written.
+
+`decode`'s parameter can be anything `Decode`, including a type with a `decode` of its own, and the decoder follows the chain. A type that reads a `string` and hands a parsed value on, behind a type that reads a struct, works the same way. A circle (a type whose wire type is itself, or an optional of itself) is an error (E0425).
+
+A static function that returns `Self or E` doesn't change any of this. `Settings.load(path)` is a loader, and `Settings` decodes from its fields like any other struct. Only the block says how a type decodes.
+
+`T implements Decode { }` with nothing in it still means the fields decode the way they would anyway. With `decode`, you say how. Anything else in the block is E0893, and `decode` itself has to be the shape E12b gives, or the error says which part isn't (E0425).
+
+The error for a write that would produce something `decode` can't read:
+
 ```
-
-The error names the constructor and shows both ways out:
-
-```
-ERROR [E0418]: `Port` cannot be decoded: `Port.new` checks its input
+ERROR [E0426]: `Port` cannot be encoded: `Port` is read as a `u16` and would be written as its fields
    |
-12 |  json.decode<Port>(text)
-   |  ^^^^^^^^^^^^^^^^^^^^^^^ `Port.new` returns `Port or PortError`, and a decode builds `Port` without calling it
+18 |  json.encode(port)
+   |  ^^^^^^^^^^^^^^^^^ `Port.decode` reads a `u16`, and an encode would write `Port` as an object of its fields, which `decode` doesn't read back
 
-WHY: a type with a checking constructor promises its values passed the check,
-     and a derived `Decode` would break that promise without a word.
+WHY: a value that is written out and read back should come back the same.
 
-FIX: decode a plain struct of the raw fields and call `Port.new` on them,
-     or, if `new` isn't a check on decoded data: `Port implements Decode { }`
+FIX: write the `encode` that is `decode` the other way round:
+
+       Port implements Encode {
+           func encode(self) -> u16 { return /* the u16 that `decode` reads */ }
+       }
+
+     or keep it from being written at all with `@no_encode`
 ```
+
+### How Each Codec Honours It [E12b, E12d]
+
+| Decoder | What it does |
+|---------|--------------|
+| `json.decode` (native and interpreter) | Reads the input as `W` and calls `decode`. A refusal is a `JsonError.Refused`, whose `message()` reads `type error: field path: message`, the path worded like every other decode error (`field ports[1]`, `field by_name.db`, `the value` at the top). A `W` of `T?` reads a missing member as `none` |
+| `csv.decode` | Reads a cell as `W`, so a `Port` taking a `u16` is a number in its column, empty is `0`, and `abc` is rejected as a bad number before `decode` sees it. `decode` runs on the result, and a refusal is a `CsvError.BadValue` for that row naming the column the refusal came from, with the type's own message and no JSON wording. `FieldInfo.wire_kind` (`std.reflect`) is what tells a format what to read a field as |
+| `json.encode`, `encode_pretty` (native and interpreter) | Calls `encode` for each value of the type and writes what it returns the normal way: `80`, not `{"value":80}`. Compact and pretty agree |
+| `csv.encode` | Writes the cell the encode gave, a number or an unquoted string, so what it writes is what `csv.decode` reads |
+| claim inputs | Builds a `W` from the claim's choices, calls `decode`, and discards the input when it refuses. A type with its own `decode` is always sampled, like one with its own generator (`type.claims/IN2`), because what it refuses isn't known before it runs. A claim whose inputs it refuses nearly all of fails instead of passing (`type.claims/IN4`, E0975) |
+| a format library in Rask | Asks `reflect.has_decode<T>()` and `reflect.has_encode<T>()`, names the wire type as `reflect.DecodeWire<T>` or `EncodeWire<T>`, and calls `T.decode` and `v.encode()` itself (E29–E31) |
 
 ### Generic Bounds
 
@@ -185,11 +214,10 @@ func load_config<T: Decode>(path: string) -> T or ConfigError {
 
 ### Manual Implementation
 
-For types where auto-derive doesn't apply (private fields, custom invariants), implement encoding in the same module where the type is defined:
+For a type whose wire form isn't its fields (a date written as a string, a port that checks its number), write `decode` and `encode`. One of each serves every format that reads or writes the type: json, csv and a claim's inputs call the same functions. There is no per-format hook to write, and none to forget.
 
 <!-- test: skip -->
 ```rask
-@no_encode
 struct DateTime {
     year: i32
     month: u8
@@ -199,18 +227,36 @@ struct DateTime {
     second: u8
 }
 
-// In the same module — can access private fields
-extend DateTime {
-    public func to_json(self) -> JsonValue {
-        return JsonValue.String(self.to_iso8601())
-    }
+struct ParseError { reason: string }
 
-    public func from_json(value: JsonValue) -> DateTime or JsonError {
-        let s = value.as_string() ?? return JsonError.TypeError("expected string for DateTime")
-        return try DateTime.parse_iso8601(s)
+extend ParseError {
+    public func message(self) -> string { return self.reason }
+}
+
+extend DateTime {
+    func parse_iso8601(s: string) -> DateTime or ParseError { … }
+    func to_iso8601(self) -> string { … }
+}
+
+// Read as a string, then parsed. `{"at": "2026-11-15T09:30:00"}` decodes, and
+// `{"at": "yesterday"}` fails with `field at: not an ISO 8601 date`.
+DateTime implements Decode {
+    func decode(s: string) -> DateTime or ParseError {
+        return DateTime.parse_iso8601(s)
+    }
+}
+
+// Written as the same string, so the output reads back.
+DateTime implements Encode {
+    func encode(self) -> string {
+        return self.to_iso8601()
     }
 }
 ```
+
+Both can reach the type's private fields, since they are written where the type is. That's what a custom invariant needs.
+
+Writing only one of the two is not a half measure the compiler lets through quietly. A type with `decode` and nothing for `Encode`, or an empty `Encode` block, is E0426. The other direction is allowed: a type with `encode` and no `decode` is simply never read back, which is a choice about the type, not a mismatch.
 
 ## Field Annotations
 
@@ -328,7 +374,11 @@ import std.reflect
 
 // Type dispatch — monomorphizes per concrete type
 func encode_value<T: Encode>(value: T, w: mutate JsonWriter) -> void or JsonError {
-    comptime if T == bool {
+    comptime if reflect.has_encode<T>() {
+        // A type with its own `encode` is written as what that answers (E12d),
+        // wherever it appears: the top level, an element, a value, a field.
+        return encode_value(value.encode(), mutate w)
+    } else if T == bool {
         return w.write_bool(value)
     } else if T == string {
         return w.write_string(value)
@@ -383,7 +433,14 @@ public func encode<T: Encode>(value: T) -> string {
 <!-- test: skip -->
 ```rask
 func decode_value<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
-    comptime if T == bool {
+    comptime if reflect.has_decode<T>() {
+        // Read the type `decode` takes, then hand it over (E12b). The wire type
+        // is a type here, `reflect.DecodeWire<T>`, so it is read like any other.
+        let wire = try decode_value<reflect.DecodeWire<T>>(parser)
+        return T.decode(wire) catch e => {
+            return JsonError.Refused(path: "the value", reason: e.message())
+        }
+    } else if T == bool {
         return parser.read_bool()
     } else if T == string {
         return parser.read_string()
@@ -436,6 +493,55 @@ func decode_struct<T: Decode>(parser: mutate JsonParser) -> T or JsonError {
 }
 ```
 
+### Types With Their Own Codec [E12b, E12d]
+
+A type can write its own `decode` and `encode`, and a format library written in Rask honours them the way the stdlib's codecs do. `std.reflect` hands it the facts as data it can match on, so the library never names a user's type:
+
+| Rule | Description |
+|------|-------------|
+| **E29: Codec facts** | `reflect.has_decode<T>()` and `reflect.has_encode<T>()` say whether `T` writes its own `decode` or `encode`. They answer for any `T`: the top-level value, a `Vec` element, a `Map` value, a field's type. On a field, `f.has_decode` and `f.has_encode` say the same of its type |
+| **E30: Wire types** | `reflect.DecodeWire<T>` is the type `T`'s `decode` takes, and `reflect.EncodeWire<T>` is the type its `encode` answers. They are types, so a library names them as a type argument or an annotation: `read<reflect.DecodeWire<T>>(…)`. One step: when the wire type has a codec of its own, the library asks again. For a `T` with none, the answer is `T` |
+| **E31: Written out per instance** | A generic function that asks (`has_decode`, `has_encode`, `DecodeWire`, `EncodeWire`) is written out for each `T` it is used with, like one with a `comptime for`. The branch a `comptime if` leaves is checked for that `T`, so `T.decode(wire)` is an ordinary call there. The function is not checked as written, since for a bare `T` there is nothing to call |
+| **E32: Field kinds** | `FieldInfo.wire_kind` and `wire_optional` (`std.reflect`) give a field's wire as data: the kind of value `decode` takes, followed down a chain and through a `T?`. A format that checks or writes text by type (csv) matches on it, and never reads a type back out of a name |
+
+<!-- test: skip -->
+```rask
+// A format reads `T` from its text, and has never heard of `Port`.
+func read<T>(text: string) -> T or FormatError {
+    comptime if reflect.has_decode<T>() {
+        let wire = try read<reflect.DecodeWire<T>>(text)
+        return T.decode(wire) catch e => {
+            return FormatError(why: e.message())
+        }
+    } else if reflect.is_integer<T>() {
+        let n = text.parse<T>() catch _ => {
+            return FormatError(why: "not a number: {text}")
+        }
+        return n
+    } else if reflect.is_vec<T>() {
+        mut items = Vec.new()
+        for part in text.split(",") {
+            items.push(try read(part.to_string()))   // the element type comes from `T`
+        }
+        return items
+    }
+    // ... map, struct, string
+}
+
+// And writes it: a value with its own `encode` is written as what that answers.
+func write<T>(v: T) -> string {
+    comptime if reflect.has_encode<T>() {
+        let wire: reflect.EncodeWire<T> = v.encode()
+        return write(wire)
+    } else if reflect.is_integer<T>() {
+        return "{v}"
+    }
+    // ...
+}
+```
+
+`tests/suite/t_format_library_codecs.rk` is this, complete, running on both backends: it reads and writes a port that refuses 0 as a top-level value, as a `Vec` element, as a `Map` value, and through a type that reads another custom type. A refusal comes back as the library's own error with `decode`'s message.
+
 ### Struct Literal Construction
 
 | Rule | Description |
@@ -470,7 +576,7 @@ ERROR [std.encoding/E16]: `InternalState` does not implement Encode
 
 WHY: @no_encode prevents auto-derive of Encode.
 
-FIX: Remove @no_encode, or implement a custom encoding method.
+FIX: Remove @no_encode, or write the type's `encode` (E12d).
 ```
 
 **Runtime string in field access [CT53]:**
@@ -539,7 +645,7 @@ FIX: @no_serialize
 | All fields excluded | E19, E27 | Encodes as `{}`; decode produces the struct from declared defaults |
 | `@default` on non-optional required field | E20 | Field becomes optional in input, required in struct definition. Default fills the gap |
 | `@rename` collision (two fields same serial name) | E18 | Compile error: duplicate serial name |
-| Excluded field without a default | E13a | Compile error naming the field — the type is not auto-`Decode` |
+| Excluded field without a default | E13a | Compile error naming the field — the type is not auto-`Decode`. The fix offers `decode`, which builds the whole value and needs no default |
 | Input carries a key matching an excluded field | E13b | Ignored, like any unknown key (`std.json/J10`) |
 | `@no_serialize` on a `private` field | E19 | Accepted but redundant; lint suggests dropping it |
 | `@rename` on a `private` field | E13 | Accepted but ineffective — the field isn't on the wire. Useful for same-module custom encoding |
@@ -557,11 +663,25 @@ FIX: @no_serialize
 
 **E12 (auto-derive with opt-out):** The zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
 
-**E12a (a constructor that checks is a promise).** `Port.new` rejects 0, so everyone who receives a `Port` assumes it isn't 0. Auto-derived `Decode` broke that without a sound: `json.decode<Port>` built the value straight from the wire. I kept `Decode` auto-derived for plain data, because that's most types and the zero-ceremony path should stay the common one, and withheld it from a type whose author wrote a constructor that can fail. `Encode` stays derived for everyone, since writing a value out can't make an invalid one.
+**E12a (dropped): a constructor that checks.** The first version withheld `Decode` from any type with a static function returning `Self or E`, on the idea that such a function is a promise values passed a check. I dropped it. A public field means anyone can write `Port(value: 0)` without `new`, so a decode that skips the constructor guards nothing that wasn't already open. The trigger was also wrong in both directions. It fired on loaders and parsers that have nothing to do with decoding (`Settings.from_json`, `Priority.from_label` in the validation example), and a function returning `Self?`, a free function or a generic type got past it. The signal that a type protects an invariant is a private field, and that already exists: private fields are never read from the wire (E13b), and one without a default makes the type non-`Decode` (E13a). So a type with an invariant makes its fields private and writes `decode`. That costs the author the one thing the invariant needs anyway, and it costs every other type nothing.
 
-The trigger is the shape of the declaration, not the name: a static function in an `extend` block returning `Self or E`. I count it at any visibility, because a package-private constructor guards the package's own values as much as a public one does. I don't count `Self?`: absence carries no rejection reason, and the rule is about a check that fails with one. The cost is a false positive when a function returns `Self or E` without validating anything (`Settings.load(path)`). `T implements Decode { }` is the escape for that, and it is visible at the declaration, where a reader of the type will see it. The `{ }` form means "raw decode is intended". It doesn't call anything, so it can't stand in for the check.
+**E12b (a type says how it decodes, once).** A check on decoded data only holds if the decoder runs it, and the decoders build structs field by field. The first answer was a plain struct of the raw fields, decoded and handed to a constructor by hand. That works for one type at the top. It doesn't compose: `struct Config { ports: Vec<Port> }` would need a second `Config` of raw ports and a loop to convert, for every struct that holds a `Port`. The check has to live with the type, and the decoders have to find it.
 
-A `Decode` conformance with a body, one that decodes the raw fields itself and calls the constructor, would need the decoders to call user code at each place the type appears. Markers have no methods (E11), so there is none yet. Until then the wire struct above is the way, and it's what the validation example's DTOs already do.
+I wanted one method and no new syntax (`RULINGS` test 7: a feature pays rent in the language, not the compiler). `decode` goes in the `Decode` block, which already exists and already means "how this type decodes", and `Decode` stays an interface with nothing required, so nearly every type pays nothing. The empty block and the block with `decode` are one declaration at two levels of detail, so there isn't a second keyword to learn.
+
+What `decode` reads is its parameter's type. I considered an associated type, `type Wire = u16` beside the method, and decided against it. The signature already says it, and an associated type would make every author write it twice and keep the two in step. It would also earn nothing: `Decode` can't declare `decode`'s signature either way, because the parameter differs per type, so the compiler checks the method against the one shape E12b describes whichever way the type is named. Reading it off the parameter adds nothing to the language.
+
+`decode` is concrete-only. A generic type's wire type could mention its parameters, and the decoders would need that substitution carried into the runtime's description of the type. Nothing needs it yet, and a generic container can already hold a concrete type with a `decode`.
+
+The refusal is a message and a path because that is what a decode error is. `E` can be a union of errors, so the compiler writes one function beside `decode` that turns any of them into `message()`, and the decoders call that. A decoder never takes an error apart.
+
+**E12d, E12e (written the way it is read).** The first cut of E12b left `Encode` alone, on the ground that this change was about the decoders calling user code. That left a defect: a `DateTime` read from a string and written as an object. Every value that went out came back as an error, and nothing said so until a round trip failed in someone else's process. So `encode` is the same idea turned round: it returns the type written in `T`'s place, the encoders write that the normal way, and a type can chain through another (a `Tag` written as a `Name`, a `Name` as a string) without any encoder knowing.
+
+It takes `self` and returns `W`, with no error, because writing a value out can't make an invalid one.
+
+The pairing is a question about what the default does when it's wrong. Without a rule, a type with a `decode` and nothing else would derive `Encode` from its fields, and the one who pays is whoever reads the output, at run time, with no pointer back to the type (`RULINGS` test 8). The way out that costs least is `@no_encode`, which the `DateTime` example used to wear: an escape hatch, which is how you can tell the default was wrong. So a type with its own `decode` gets no derived `Encode`, and the error at the use names the type. Each answer says what you mean: `encode`, or `@no_encode` for a type that is never written. I first let `T implements Encode { }` stand for "the fields really are the wire form". But a type that reads a `u16` doesn't have fields that are the wire form, so the empty block on such a type recreates the round-trip failure under a name that looks deliberate, and it is an error too. The reverse pairing isn't an error. A type that is only ever written, like a log record, has no reason to read itself back.
+
+The JSON text of a value with its own `encode` comes from a method the compiler writes beside it, `__encode_json`, which is `json.encode(self.encode())`. The native encoder unrolls most shapes into straight-line code, but a `Map` is walked by the runtime, which has no unrolled code to put a call in. It asks the type for its JSON text instead.
 
 **E13 (non-private, not public-only).** This used to be public-fields-only, copied from Go's exported-fields rule. It had the polarity backwards. The common case is "serialize the whole value", and it was the one paying per-field ceremony: every DTO field wore a `public` it didn't need for code access — the validation example's `dto.rk` was columns of `public` doing wire-work, not visibility-work — to guard against an uncommon accident.
 
@@ -596,7 +716,10 @@ The umbrella verb is deliberate. Separate `@no_encode`/`@no_decode` at field lev
 import std.reflect
 
 func encode_value<T: Encode>(value: T, w: mutate TomlWriter, key: string?) -> void or TomlError {
-    comptime if T == bool {
+    comptime if reflect.has_encode<T>() {
+        // Written as what its own `encode` answers (E12d, E29)
+        return encode_value(value.encode(), mutate w, key)
+    } else if T == bool {
         return w.write_bool(key, value)
     } else if T == string {
         return w.write_string(key, value)

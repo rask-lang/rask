@@ -523,6 +523,19 @@ pub mod field_attrs {
         format!("__decode_default_{field_name}")
     }
 
+    /// The static method desugar writes beside a type's own `decode`
+    /// (std.encoding/E12b): `decode` with its rejection turned into a message,
+    /// `func __decode_checked(wire: W) -> Self or string`. The decoders call
+    /// it, so a rejection of any error type, a union included, reaches them as
+    /// the string `message()` gives.
+    pub const DECODE_ADAPTER: &str = "__decode_checked";
+
+    /// The method desugar writes beside a type's own `encode` (std.encoding/E12b):
+    /// `func __encode_json(self) -> string`, the type's value as JSON text. The
+    /// native JSON encoder calls it where the type sits inside something it
+    /// writes itself, a runtime-walked `Map` for one.
+    pub const ENCODE_ADAPTER: &str = "__encode_json";
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
@@ -556,6 +569,12 @@ pub fn positional_field_name(index: usize) -> String {
 pub fn is_positional_field_name(name: &str) -> bool {
     name.strip_prefix('_').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The static methods every fieldless enum gets without declaring them
+/// (E18): `Colour.variants()` and `Colour.from_value(n)`. A module-qualified
+/// receiver (`http.Method.from_value(0)`) is recognised by one of these names
+/// or by a variant's, so both backends read the same list.
+pub const GENERATED_ENUM_STATICS: &[&str] = &["variants", "from_value"];
 
 /// An enum variant.
 #[derive(Debug, Clone)]

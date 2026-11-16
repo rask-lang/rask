@@ -27,6 +27,9 @@ pub struct PayloadField {
     /// What the declaration named it; a positional payload's index.
     pub name: String,
     pub type_name: String,
+    /// What a decoder reads the payload as (`FieldInfo.wire_kind` and
+    /// `wire_optional`).
+    pub wire: rask_check::reflect::WireForm,
     /// From the start of the enum value, the same origin a struct field's
     /// offset counts from.
     pub offset: u32,
@@ -59,19 +62,19 @@ pub fn variant_facts(
                 .fields
                 .iter()
                 .enumerate()
-                .map(|(i, f)| PayloadField {
-                    name: f.name.clone(),
-                    type_name: rask_check::reflect::substituted_label(
-                        types,
-                        declared
-                            .and_then(|vs| vs.iter().find(|(n, _)| *n == v.name))
-                            .and_then(|(_, payload)| payload.get(i))
-                            .unwrap_or(&f.ty),
-                        subst,
-                    ),
-                    offset: v.payload_offset + f.offset,
-                    size: f.size,
-                    has_default: f.has_declared_default,
+                .map(|(i, f)| {
+                    let written = declared
+                        .and_then(|vs| vs.iter().find(|(n, _)| *n == v.name))
+                        .and_then(|(_, payload)| payload.get(i))
+                        .unwrap_or(&f.ty);
+                    PayloadField {
+                        name: f.name.clone(),
+                        type_name: rask_check::reflect::substituted_label(types, written, subst),
+                        wire: rask_check::reflect::wire_form(types, written, subst),
+                        offset: v.payload_offset + f.offset,
+                        size: f.size,
+                        has_default: f.has_declared_default,
+                    }
                 })
                 .collect(),
         })

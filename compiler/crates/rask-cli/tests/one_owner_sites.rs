@@ -66,7 +66,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 210,
+        today: 211,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",
@@ -91,19 +91,12 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "size or alignment computed outside the layout model",
-        today: 4,
+        today: 0,
         target: 0,
-        why: "a second answer to how wide a value is; one layout crate answers \
-              everyone (rask-lang/rask#1567)",
+        why: "a second answer to how wide a value is, or where a part sits; \
+              `rask_layout` answers everyone, with the target handed down \
+              (rask-lang/rask#1567)",
         count: size_models,
-    },
-    Ratchet {
-        name: "readers of the pointer-width global",
-        today: 12,
-        target: 0,
-        why: "the target's pointer width read from a process global instead of \
-              the config the driver hands down (rask-lang/rask#1568)",
-        count: pointer_bits_readers,
     },
 ];
 
@@ -303,24 +296,19 @@ fn interpreter_setups(crates: &Path) -> Vec<String> {
 }
 
 fn size_models(crates: &Path) -> Vec<String> {
-    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-check/src/copy_rule.rs"];
-    let names = ["fn size(", "fn align(", "fn slot_size(", "fn named_layout_size(", "fn struct_elem_size(", "fn value_size("];
-    source_lines(crates, &dirs, &[])
+    let dirs = [
+        "rask-mir/src", "rask-codegen/src", "rask-mono/src", "rask-check/src", "rask-compiler/src",
+        "rask-interp/src", "rask-miri/src",
+    ];
+    // `FieldAccess::size` says how a field is read, not how wide a type is.
+    let skip = ["rask-mir/src/operand.rs"];
+    let names = [
+        "fn size(", "fn align(", "fn slot_size(", "fn word(", "fn payload_offset(", "fn wrapper_layout(",
+        "fn tuple_offsets(", "fn named_layout_size(", "fn value_size(", "fn struct_elem_size(",
+    ];
+    source_lines(crates, &dirs, &skip)
         .into_iter()
         .filter(|(_, _, code)| names.iter().any(|n| code.contains(n)))
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
-}
-
-fn pointer_bits_readers(crates: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(crates).unwrap().flatten() {
-        files.push(format!("{}/src", entry.file_name().to_string_lossy()));
-    }
-    let dirs: Vec<&str> = files.iter().map(String::as_str).collect();
-    source_lines(crates, &dirs, &["rask-ast/src/primitives.rs"])
-        .into_iter()
-        .filter(|(_, _, code)| code.contains("pointer_bits()"))
         .map(|(rel, line, code)| site(&rel, line, &code))
         .collect()
 }

@@ -69,13 +69,17 @@ pub struct OwnershipResult {
     /// there, so writing over it releases nothing; lowering reads these
     /// with `field_reuses`.
     ///
-    /// An aggregate `mutate` parameter that isn't Copy doesn't need this: the
-    /// release pass holds it for the call and decides per path
-    /// (`rc_insert::held_mutate_params`). A bare container parameter still
-    /// does. Workaround there for `MaybeMoved`: the release is decided once,
-    /// so it leaks what the other path left in the slot rather than freeing
-    /// what the move took (#1903).
+    /// A non-Copy `mutate` parameter doesn't need this: a whole one given
+    /// away is taken (`mutate_param_moves`), leaving its slot empty, so the
+    /// write that refills it releases whatever the slot holds, on every path.
     pub refills_after_move: HashSet<rask_ast::NodeId>,
+    /// Uses of a non-Copy `mutate` parameter that give it away whole
+    /// (`store.push(w)`, `Holder(w: w)`), by the expression naming it.
+    /// The slot is the caller's, and its own unwinding releases what is in
+    /// it, so lowering reads these as a take: the bytes go to the new owner and
+    /// the slot is left empty. Otherwise a panic after the hand-over finds
+    /// the value in both places.
+    pub mutate_param_moves: HashSet<rask_ast::NodeId>,
     /// conc.async/B1: tasks joined where they were spawned whose block turned
     /// out to consume something it names, by `Spawn` node. Such a task takes
     /// its captures the way any task does; `check_ownership` runs again with
@@ -435,6 +439,8 @@ pub struct OwnershipChecker<'a> {
     lent_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// See `OwnershipResult::refills_after_move`.
     refills_after_move: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::mutate_param_moves`.
+    mutate_param_moves: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::consuming_tasks`.
     consuming_tasks: HashSet<rask_ast::NodeId>,
     /// Spawns made to take their captures because an earlier run found them
@@ -714,6 +720,7 @@ impl<'a> OwnershipChecker<'a> {
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
             refills_after_move: HashSet::new(),
+            mutate_param_moves: HashSet::new(),
             consuming_tasks: HashSet::new(),
             carrying_tasks: HashSet::new(),
             generic_closure_captures: HashMap::new(),
@@ -992,6 +999,7 @@ impl<'a> OwnershipChecker<'a> {
             generic_closure_captures: self.generic_closure_captures,
             lent_captures: self.lent_captures,
             refills_after_move: self.refills_after_move,
+            mutate_param_moves: self.mutate_param_moves,
             consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
         }
@@ -8750,6 +8758,9 @@ impl<'a> OwnershipChecker<'a> {
             let is_copy = !self.owned_bindings.contains(name)
                 && ty.map(|t| self.is_copy(t)).unwrap_or(false);
             if !is_copy {
+                if self.mutate_params.contains_key(name) {
+                    self.mutate_param_moves.insert(arg_expr.id);
+                }
                 self.consume_binding(name, arg_expr.span, sink);
             }
         }
@@ -10435,6 +10446,7 @@ pub fn check_ownership_with_stdlib(
     result.task_bound_closures.extend(stdlib.task_bound_closures);
     result.lent_captures.extend(stdlib.lent_captures);
     result.refills_after_move.extend(stdlib.refills_after_move);
+    result.mutate_param_moves.extend(stdlib.mutate_param_moves);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result.quiet_loops.extend(stdlib.quiet_loops);
     result

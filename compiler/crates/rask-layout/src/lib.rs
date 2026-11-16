@@ -7,6 +7,13 @@ use rask_ast::ty::TypeExpr;
 use rask_types::{FnParam, GenericArg, Type, TypeDef, TypeId};
 use std::collections::HashMap;
 
+mod shape;
+pub use shape::{
+    align_of, array_layout, fat_pointer, payload_offset_of, simd_layout, size_align_of, size_of, tuple_layout,
+    tuple_offsets, widest, wrapper_of, Shape, Shaped, BUFFER_SIZE_ALIGN,
+};
+use shape::align_up;
+
 /// What a layout is keyed by: the type's declaration and, for one instance of
 /// a generic type, its arguments. No arguments is the declaration's own
 /// layout, the shared one for a generic type.
@@ -95,41 +102,41 @@ fn declared(ty: &Type) -> Type {
     settle(ty, Unsolved::KeepParams, &no_params).expect("keeping parameters always answers")
 }
 
-/// Already-computed type layouts, by `LayoutKey`, for one pointer width.
+/// Already-computed type layouts, by `LayoutKey`, for one target.
 ///
-/// The width is the cache's because every layout in it was computed with it: a
+/// The target is the cache's because every layout in it was computed for it: a
 /// struct holding a `Vec` is 8 bytes bigger on a 64-bit target than on a 32-bit
-/// one, and so is everything holding that struct. Real layouts use the
-/// target's width (`LayoutCache::new`). The copy rule measures with 8 on every
-/// target (`mem.value/VS7a`), so a type copies everywhere or nowhere
-/// (`LayoutCache::for_copy_rule`).
+/// one, and so is everything holding that struct. Real layouts are for the
+/// target being compiled for (`LayoutCache::new`). The copy rule measures with
+/// 8-byte pointers on every target (`mem.value/VS7a`), so a type copies
+/// everywhere or nowhere (`LayoutCache::for_copy_rule`).
 #[derive(Debug, Clone)]
 pub struct LayoutCache {
     sizes: HashMap<LayoutKey, (u32, u32)>,
     /// Handles whose `T?` is the address with null for `none`
     /// (`@handle(niche)`): `Link`.
     niches: std::collections::HashSet<TypeId>,
-    word: u32,
+    target: rask_ast::Target,
 }
 
 impl LayoutCache {
     /// For the target being compiled for.
-    pub fn new() -> Self {
-        Self::with_word(rask_ast::primitives::pointer_bits() / 8)
+    pub fn new(target: rask_ast::Target) -> Self {
+        Self { sizes: HashMap::new(), niches: Default::default(), target }
     }
 
     /// For the copy rule and `@small`: 64-bit pointers whatever the target.
     pub fn for_copy_rule() -> Self {
-        Self::with_word(8)
-    }
-
-    fn with_word(word: u32) -> Self {
-        Self { sizes: HashMap::new(), niches: Default::default(), word }
+        Self::new(rask_ast::Target::LP64)
     }
 
     /// Bytes in a pointer, and its alignment.
     pub fn word(&self) -> u32 {
-        self.word
+        self.target.word()
+    }
+
+    pub fn target(&self) -> rask_ast::Target {
+        self.target
     }
 
     pub fn get(&self, key: &LayoutKey) -> Option<(u32, u32)> {
@@ -154,7 +161,7 @@ impl LayoutCache {
             if handle.niche {
                 self.niches.insert(id);
             }
-            let w = self.word;
+            let w = self.word();
             self.insert(LayoutKey::of(id), (w, w));
             return true;
         }
@@ -177,9 +184,9 @@ impl LayoutCache {
 }
 
 /// The struct layout a checked type is laid out by: an instance's own when one
-/// was made, else the declaration's. A type the checker left spelled (a
-/// compiler-provided one, or a layout read from written syntax) is found by
-/// its name, until every reader holds checked types.
+/// was made, else the declaration's. Found by identity only: a type that is
+/// still a spelled name has no layout here, because the same name can mean two
+/// types and one type can be spelled two ways.
 pub fn struct_for<'a>(ty: &Type, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
     struct_index_for(ty, layouts).map(|i| &layouts[i])
 }
@@ -191,16 +198,16 @@ pub fn enum_for<'a>(ty: &Type, layouts: &'a [EnumLayout]) -> Option<&'a EnumLayo
 
 /// `struct_for`, giving the layout's position: what MIR's layout ids are.
 pub fn struct_index_for(ty: &Type, layouts: &[StructLayout]) -> Option<usize> {
-    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    index_for(ty, layouts, |l| l.key.as_ref())
 }
 
 /// `struct_index_for` for enums.
 pub fn enum_index_for(ty: &Type, layouts: &[EnumLayout]) -> Option<usize> {
-    index_for(ty, layouts, |l| (l.key.as_ref(), l.name.as_str()))
+    index_for(ty, layouts, |l| l.key.as_ref())
 }
 
-fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutKey>, &str)) -> Option<usize> {
-    let by_key = |key: &LayoutKey| layouts.iter().position(|l| parts(l).0 == Some(key));
+fn index_for<L>(ty: &Type, layouts: &[L], key_of: impl Fn(&L) -> Option<&LayoutKey>) -> Option<usize> {
+    let by_key = |key: &LayoutKey| layouts.iter().position(|l| key_of(l) == Some(key));
     let type_args = |args: &[GenericArg]| -> Vec<Type> {
         args.iter()
             .filter_map(|a| match a {
@@ -214,20 +221,7 @@ fn index_for<L>(ty: &Type, layouts: &[L], parts: impl Fn(&L) -> (Option<&LayoutK
         Type::Generic { base, args } => {
             by_key(&LayoutKey::instance(*base, type_args(args))).or_else(|| by_key(&LayoutKey::of(*base)))
         }
-        Type::UnresolvedNamed(name) => layouts.iter().position(|l| parts(l).1 == name),
-        Type::UnresolvedGeneric { name, args } => {
-            let by_name = |n: &str| layouts.iter().position(|l| parts(l).1 == n);
-            generic_instance_name(name, &type_args(args), &HashMap::new())
-                .and_then(|instance| by_name(&instance))
-                .or_else(|| by_name(name))
-        }
         _ => None,
-    }
-}
-
-impl Default for LayoutCache {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -495,7 +489,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         Type::Usize | Type::Isize => (w, w),
         // The runtime's `RaskStr`: 16 bytes on every target, since its heap
         // form holds a 64-bit length beside the pointer.
-        Type::String | Type::Bytes => (16, 8),
+        Type::String | Type::Bytes => BUFFER_SIZE_ALIGN,
         // Niche optimization: `Link<T>?` is the node's address and `*T?` the
         // pointer, each with null for `none` — one word, no tag.
         ty if ty.as_option().is_some_and(|inner| is_niche_word(inner, cache)) => (w, w),
@@ -504,21 +498,14 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             (l.size, l.align)
         }
         Type::Tuple(types) => {
-            let mut offset = 0u32;
-            let mut max_align = 1u32;
-            for ty in types {
-                let (size, align) = size_align_in(ty, cache, on_unknown)?;
-                max_align = max_align.max(align);
-                offset = align_up(offset, align);
-                offset += size;
-            }
-            let total_size = align_up(offset, max_align);
-            (total_size, max_align)
+            let parts = types
+                .iter()
+                .map(|ty| size_align_in(ty, cache, on_unknown))
+                .collect::<Option<Vec<_>>>()?;
+            let (_, size, align) = tuple_layout(parts);
+            (size, align)
         }
-        Type::Array { elem, len } => {
-            let (elem_size, elem_align) = size_align_in(elem, cache, on_unknown)?;
-            (elem_size * (*len as u32), elem_align)
-        }
+        Type::Array { elem, len } => array_layout(size_align_in(elem, cache, on_unknown)?, *len as u32),
         Type::Fn { .. } => (w, w), // Function pointer
         Type::Named(id) => match cache.get(&LayoutKey::of(*id)) {
             Some(found) => found,
@@ -556,8 +543,8 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         // live in one table (`c_type_spelling`) so the checker and the layout
         // can't drift. Without this an imported C struct sized every field at a
         // pointer and the offsets missed what C put there.
-        Type::UnresolvedNamed(name) if rask_ast::primitives::c_type_spelling(name).is_some() => {
-            let spelling = rask_ast::primitives::c_type_spelling(name).unwrap();
+        Type::UnresolvedNamed(name) if cache.target().c_type_spelling(name).is_some() => {
+            let spelling = cache.target().c_type_spelling(name).unwrap();
             return size_align_in(&Type::UnresolvedNamed(spelling.to_string()), cache, on_unknown);
         }
         Type::UnresolvedNamed(name) => {
@@ -599,22 +586,13 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)
         }
-        Type::SimdVector { elem, lanes } => {
-            let (elem_size, _) = size_align_in(elem, cache, on_unknown)?;
-            let total = elem_size * *lanes as u32;
-            (total, total.min(32)) // natural SIMD alignment, cap at 32
-        }
+        Type::SimdVector { elem, lanes } => simd_layout(size_align_in(elem, cache, on_unknown)?.0, *lanes as u32),
         Type::Never => (0, 1),
         Type::None => (0, 1),
-        Type::InterfaceObject { .. } => (2 * w, w), // Fat pointer: data_ptr + vtable_ptr
+        Type::InterfaceObject { .. } => fat_pointer(w),
         Type::RawPtr(_) => (w, w),
         Type::Error => return on_unknown.unknown(format_args!("Error type in layout computation"), w),
     })
-}
-
-/// Align a value up to the given alignment
-fn align_up(val: u32, align: u32) -> u32 {
-    (val + align - 1) & !(align - 1)
 }
 
 fn align_up_u64(val: u64, align: u64) -> u64 {
@@ -940,7 +918,7 @@ fn struct_layout(
             let signed = match &ty {
                 Type::I8 | Type::I16 | Type::I32 | Type::I64 => true,
                 Type::UnresolvedNamed(n) => {
-                    rask_ast::primitives::c_type_spelling(n).is_some_and(|s| s.starts_with('i'))
+                    cache.target().c_type_spelling(n).is_some_and(|s| s.starts_with('i'))
                 }
                 _ => false,
             };
@@ -1060,7 +1038,8 @@ pub fn compute_union_layout(def: &TypeDef, cache: &LayoutCache) -> StructLayout 
 /// equal values compared equal or not depending on what was next to them on
 /// the stack.
 pub fn ordering_layout() -> EnumLayout {
-    let (tag_size, tag_align) = type_size_align(&Type::U8, &LayoutCache::new());
+    let tag_size = Type::U8.scalar_bytes().expect("a byte has a width");
+    let tag_align = tag_size;
     EnumLayout {
         key: None,
         name: "Ordering".to_string(),
@@ -1394,7 +1373,7 @@ mod tests {
     // ── type_size_align ─────────────────────────────────────────
 
     fn empty_cache() -> LayoutCache {
-        LayoutCache::new()
+        LayoutCache::new(rask_ast::Target::LP64)
     }
 
     /// Shorthand: type_size_align with empty cache (for primitive tests)
@@ -1408,7 +1387,7 @@ mod tests {
     #[test]
     fn pointers_follow_the_cache_word() {
         let three = make_struct("Three", vec![("x", "i64"), ("p", "*u8"), ("q", "*u8")]);
-        let narrow = LayoutCache::with_word(4);
+        let narrow = LayoutCache::new(rask_ast::Target::for_arch("arm"));
         assert_eq!(compute_struct_layout(&three, &[], &narrow).size, 16);
         assert_eq!(compute_struct_layout(&three, &[], &LayoutCache::for_copy_rule()).size, 24);
 
@@ -1435,7 +1414,7 @@ mod tests {
         // A user struct can share a name with a builtin container (e.g. `Wide`,
         // also the name of the SIMD-vector generic). It's its own id, so its
         // layout is the one found.
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Wide")), (24, 8));
         assert_eq!(type_size_align(&Type::Named(id_of("Wide")), &cache), (24, 8));
     }
@@ -1443,7 +1422,7 @@ mod tests {
     #[test]
     fn an_instance_is_found_by_its_arguments_and_falls_back_to_the_shared_layout() {
         let pair = id_of("Big");
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(pair), (16, 8));
         cache.insert(LayoutKey::instance(pair, vec![Type::String]), (32, 8));
         let at = |arg: Type| Type::Generic { base: pair, args: vec![GenericArg::Type(Box::new(arg))] };
@@ -1454,7 +1433,7 @@ mod tests {
     #[test]
     fn primitive_sizes() {
         // A scalar is as wide as it says it is — the same answer
-        // `MirType::size` has always given (#1083).
+        // MIR gave (#1083).
         assert_eq!(tsa(&Type::Bool), (1, 1));
         assert_eq!(tsa(&Type::I8), (1, 1));
         assert_eq!(tsa(&Type::U8), (1, 1));
@@ -1502,13 +1481,26 @@ mod tests {
         assert_eq!(size, 2);
     }
 
+    /// The C scalar names are the cache's target's, whatever another
+    /// compilation in the same process is for: `long` and `size_t` are as wide
+    /// as a pointer on 32-bit ARM and 64-bit x86, and a plain `char` is
+    /// unsigned on one and signed on the other.
+    #[test]
+    fn c_scalars_follow_the_cache_target() {
+        let c = make_struct("C", vec![("a", "c_long"), ("b", "c_size"), ("c", "c_char")]);
+        let arm = LayoutCache::new(rask_ast::Target::for_arch("arm"));
+        let x86 = LayoutCache::new(rask_ast::Target::for_arch("x86_64"));
+        assert_eq!(compute_struct_layout(&c, &[], &arm).size, 12);
+        assert_eq!(compute_struct_layout(&c, &[], &x86).size, 24);
+    }
+
     /// A cache that knows `Link` as the stdlib declares it, `@handle(niche)`,
     /// under a test id, and the `Link<i32>` that names it.
     fn declared_link() -> (LayoutCache, Type) {
         let id = TypeId(100);
         let niche = rask_ast::attr::AttrArg { label: None, value: rask_ast::attr::AttrValue::synthetic_name("niche") };
         let link = make_struct_with_attrs("Link", vec![], vec![rask_ast::attr::Attr::synthetic("handle", Some(vec![niche]))]);
-        let mut cache = LayoutCache::with_word(8);
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         assert!(cache.note_declared_size(id, &link));
         (cache, Type::Generic { base: id, args: vec![GenericArg::Type(Box::new(Type::I32))] })
     }
@@ -1587,7 +1579,7 @@ mod tests {
 
     #[test]
     fn cache_resolves_user_defined_type() {
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Color")), (1, 1));
         let (size, align) = type_size_align(&Type::Named(id_of("Color")), &cache);
         assert_eq!(size, 1);
@@ -1598,7 +1590,7 @@ mod tests {
     fn struct_field_uses_cache() {
         // Struct Inner { x: i32, y: i32 } → size 16, align 8 (i32 stored as i64)
         // Struct Outer { inner: Inner, z: i32 }
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Inner")), (16, 8));
         let decl = make_struct("Outer", vec![("inner", "Inner"), ("z", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &cache);
@@ -1756,7 +1748,7 @@ mod tests {
     #[test]
     fn field_reorder_with_different_alignments() {
         // Use cache to give types different alignments
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Small")), (1, 1));   // 1-byte align
         cache.insert(LayoutKey::of(id_of("Medium")), (4, 4));   // 4-byte align
         cache.insert(LayoutKey::of(id_of("Large")), (16, 8));    // 8-byte align
@@ -1774,7 +1766,7 @@ mod tests {
 
     #[test]
     fn field_reorder_reduces_padding() {
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Small")), (1, 1));
         cache.insert(LayoutKey::of(id_of("Big")), (8, 8));
 
@@ -1793,7 +1785,7 @@ mod tests {
 
     #[test]
     fn c_layout_preserves_source_order() {
-        let mut cache = LayoutCache::new();
+        let mut cache = LayoutCache::new(rask_ast::Target::LP64);
         cache.insert(LayoutKey::of(id_of("Small")), (1, 1));
         cache.insert(LayoutKey::of(id_of("Big")), (8, 8));
 

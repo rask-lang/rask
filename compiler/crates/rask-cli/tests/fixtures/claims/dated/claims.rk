@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A claim over a type whose `decode` accepts almost nothing a claim draws holds
+// for a handful of inputs and says nothing, so it fails (type.claims/IN4). A
+// type that also builds itself is built by its generator, never decoded, so the
+// claim over it holds for every input it tries.
+
+import claims
+import dated
+
+dated.Stamp implements claims.Generate {
+    func generate(from: claims.Choices) -> dated.Stamp {
+        let m = from.below(12) + 1
+        return dated.Stamp.in_month(m.to<i64>()!)!
+    }
+}
+
+// Fails: `decode` refuses nearly every string.
+claim a_date_is_in_a_month(d: dated.DateTime) {
+    assert d.month() >= 1 && d.month() <= 12
+}
+
+// Holds: built by the generator above, which wins over `decode`.
+claim a_stamp_is_in_a_month(s: dated.Stamp) {
+    assert s.month() >= 1 && s.month() <= 12
+}
