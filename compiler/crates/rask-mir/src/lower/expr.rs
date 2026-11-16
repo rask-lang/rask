@@ -2279,6 +2279,33 @@ impl<'a> MirLowerer<'a> {
             // the scalar through it (writes store through it; see stmt.rs).
             if let Some(sty) = self.meta(name).and_then(|m| m.scalar_through_ptr.clone()) {
                 if let Some((id, _)) = self.locals.get(name).cloned() {
+                    // A container `mutate` parameter given away whole: the
+                    // slot holds its handle, and the caller's unwinding frees
+                    // what the slot holds. Taken, the handle goes to a local
+                    // of this frame and the slot is left empty, as for an
+                    // aggregate below (#1937). Only a non-Copy parameter is
+                    // ever recorded as moved.
+                    if self.ctx.field_reuses.contains(&expr.id) && self.builder.is_param(id) {
+                        let dst = self.builder.alloc_temp(sty.clone());
+                        let addr = self.builder.alloc_temp(MirType::Ptr);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: addr,
+                            rvalue: MirRValue::BinaryOp {
+                                op: crate::operand::BinOp::Add,
+                                left: MirOperand::Local(id),
+                                right: MirOperand::Constant(MirConst::Int(0)),
+                            },
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(dst),
+                            func: FunctionRef::internal("Field_take".to_string()),
+                            args: vec![
+                                MirOperand::Local(addr),
+                                MirOperand::Constant(MirConst::Int(sty.size() as i64)),
+                            ],
+                        }));
+                        return Ok((MirOperand::Local(dst), sty));
+                    }
                     let tmp = self.builder.alloc_temp(sty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: tmp,

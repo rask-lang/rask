@@ -993,6 +993,16 @@ impl<'a> MirLowerer<'a> {
                                     .lookup_raw_type(target.id)
                                     .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
                             let renew = in_place || held_param;
+                            // A container `mutate` parameter given away whole is
+                            // taken (`lower_ident`), leaving its slot empty, so
+                            // the write that refills it can always release what
+                            // the slot holds: the old handle on a path that
+                            // never gave it away, nothing on one that did
+                            // (#1903).
+                            let reuses_old = reuses_old
+                                && !(scalar_mutate.is_some()
+                                    && assigns_through
+                                    && self.builder.is_param(local_id));
                             // `c = c` (or `c = { c }`): the value is the slot.
                             // Renewing would release it and then copy the
                             // released bytes back.
