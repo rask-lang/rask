@@ -548,15 +548,15 @@ impl Interpreter {
                     return Ok(Value::none());
                 };
                 let (result, written) =
-                    self.call_closure_keeping_arg(closure.clone(), vec![item])?;
-                // What the closure left in its parameter is the new element.
-                // This used to be dropped, so `modify` never modified (#843).
+                    self.call_closure_keeping_arg(closure.clone(), vec![item]);
+                // What the closure left in its parameter is the new element,
+                // also when it then failed (#843, #1926).
                 if let Some(new_item) = written {
                     if let Some(slot) = v.lock().unwrap().get_mut(index) {
                         *slot = new_item;
                     }
                 }
-                Ok(Value::some(result))
+                Ok(Value::some(result?))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
@@ -970,14 +970,14 @@ impl Interpreter {
                 };
 
                 let (result, written) =
-                    self.call_closure_keeping_arg(modifier.clone(), vec![value_to_modify])?;
+                    self.call_closure_keeping_arg(modifier.clone(), vec![value_to_modify]);
                 // The spec's own example for this is
                 // `|u| { u.last_seen = now(); u.visit_count += 1 }` — the whole
                 // reason the entry API exists is that the write lands (#843).
                 if let Some(new_value) = written {
                     self.map_insert(&m, key, new_value)?;
                 }
-                Ok(result)
+                result
             }
             "take_all" => {
                 let items: MapData = std::mem::take(&mut *m.lock().unwrap());
@@ -1015,13 +1015,14 @@ impl Interpreter {
                 match found {
                     Some(v) => {
                         let (result, written) =
-                            self.call_closure_keeping_arg(closure.clone(), vec![v])?;
+                            self.call_closure_keeping_arg(closure.clone(), vec![v]);
                         // Same as `Vec.modify`: keep what the closure left
-                        // behind, which is the whole point of the name (#843).
+                        // behind, which is the whole point of the name (#843),
+                        // even when it then failed (#1926).
                         if let Some(new_value) = written {
                             self.map_insert(&m, key, new_value)?;
                         }
-                        Ok(option_of(Some(result)))
+                        Ok(option_of(Some(result?)))
                     }
                     None => Ok(option_of(None)),
                 }
