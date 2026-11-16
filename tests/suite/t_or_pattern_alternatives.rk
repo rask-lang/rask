@@ -64,6 +64,15 @@ func ints(a: i64, b: i64) -> string {
     }
 }
 
+test "an or-pattern in an `is` test" {
+    let c = Color.Blue
+    assert c is Red | Blue
+    assert !(c is Green | Red)
+    let m = Msg.Note("long enough")
+    assert m is Text(s) | Note(s) && s.len() > 3
+    assert !(Msg.Nothing is Text(_) | Note(_))
+}
+
 test "alternatives inside a tuple pattern" {
     assert pair(Color.Red, Color.Blue) == "rg-b"
     assert pair(Color.Green, Color.Blue) == "rg-b"

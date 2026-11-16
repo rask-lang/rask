@@ -40,7 +40,7 @@ struct EnumRow {
 }
 
 /// Does `pattern` hold an or-pattern anywhere?
-fn contains_or(pattern: &Pattern) -> bool {
+pub(super) fn contains_or(pattern: &Pattern) -> bool {
     use rask_ast::expr::PatternKind;
     match &pattern.kind {
         PatternKind::Or(_) => true,
@@ -71,7 +71,7 @@ fn product(parts: Vec<Vec<Pattern>>) -> Vec<Vec<Pattern>> {
 ///
 /// Each alternative then lowers like an arm of its own, with its tests and
 /// bindings in place, and the alternatives of one arm share its body.
-fn expand_or(pattern: &Pattern) -> Vec<Pattern> {
+pub(super) fn expand_or(pattern: &Pattern) -> Vec<Pattern> {
     use rask_ast::expr::PatternKind;
     if !contains_or(pattern) {
         return vec![pattern.clone()];
@@ -1025,6 +1025,64 @@ impl<'a> MirLowerer<'a> {
         for (name, local, ty) in merged {
             self.locals.insert(name.clone(), (*local, ty.clone()));
         }
+    }
+
+    /// `scrutinee is A | B(x)` as a bool: one test per alternative, the first
+    /// that passes binds its names (into one set of locals, as an or-pattern
+    /// arm's alternatives do) and answers true. On the failed path a string
+    /// binding is emptied, as `lower_is_pattern_binding` does, so releasing it
+    /// after an `&&` chain is harmless.
+    pub(super) fn lower_is_or_pattern(
+        &mut self,
+        scrutinee: &Expr,
+        val: MirOperand,
+        val_ty: MirType,
+        pattern: &Pattern,
+    ) -> Result<TypedOperand, LoweringError> {
+        let niche = self.option_niche(scrutinee, &val_ty);
+        let is_niche = niche.is_some();
+        let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
+        let result = self.builder.alloc_temp(MirType::Bool);
+        let merge_block = self.builder.create_block();
+        let mut merged: Vec<(String, crate::LocalId, MirType)> = Vec::new();
+        for alt in expand_or(pattern) {
+            let test = self.emit_is_test(scrutinee, &val, &val_ty, niche, &alt)?;
+            let bind_block = self.builder.create_block();
+            let next = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(test.matches),
+                then_block: bind_block,
+                else_block: next,
+            }));
+            self.builder.switch_to_block(bind_block);
+            let snapshot = self.snapshot_bindable(&alt);
+            self.bind_tested_pattern(
+                &test, &alt, scrutinee, val.clone(), payload_ty.clone(), is_niche, &val_ty,
+            );
+            self.merge_alt_bindings(&snapshot, &mut merged);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: result,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+            }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+            self.builder.switch_to_block(next);
+        }
+        for (_, local, ty) in &merged {
+            if *ty == MirType::Buffer {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: *local,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
+                }));
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+        self.builder.switch_to_block(merge_block);
+        self.install_merged(&merged);
+        Ok((MirOperand::Local(result), MirType::Bool))
     }
 
     /// Lower match on strings: emit chain of string_eq comparisons.
