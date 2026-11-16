@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `with v[i]` block and a `for mutate x in v` loop hold a place inside `v`.
+// Nothing may change `v` under them: not its size, and not which element sits
+// in which slot (mem.borrowing/W2, ctrl.loops/LP14). `sort`, `swap` and
+// `reverse` keep the count and move elements, so the binding quietly named a
+// different element afterwards on native, and wrote a stale copy over a
+// neighbour on the interpreter (#1925).
+
+import random
+
+func sort_under_with() {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    with v[0] as z {
+        // ERROR: `sort` moves the element `z` names [E0808]
+        v.sort()
+        z = "{z}!"
+    }
+}
+
+func swap_under_with() {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    with v[0] as z {
+        // ERROR: `swap` moves the element `z` names [E0808]
+        v.swap(0, 1)
+        z = "{z}!"
+    }
+}
+
+func reverse_in_loop() {
+    mut v: Vec<i64> = [3, 1, 2]
+    for mutate x in v {
+        // ERROR: `reverse` changes places under the loop [E0814]
+        v.reverse()
+        x += 1
+    }
+}
+
+// A helper that reorders the vector it is handed is refused the same way.
+func reorder(mutate items: Vec<string>) {
+    items.sort()
+}
+
+func helper_under_with() {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    with v[0] as z {
+        // ERROR: `reorder` can reorder `v` through its argument [E0808]
+        reorder(mutate v)
+        z = "{z}!"
+    }
+}
+
+// `random.shuffle` is declared to reorder what it is lent for writing.
+func shuffle_under_with() {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    with v[0] as z {
+        // ERROR: `shuffle` moves the element `z` names [E0808]
+        random.shuffle(mutate v)
+        z = "{z}!"
+    }
+}
+
+// Fine: sorting a different vector, or after the block ends.
+func fine() {
+    mut v: Vec<string> = ["zeta", "alpha"]
+    mut w: Vec<string> = ["b", "a"]
+    with v[0] as z {
+        w.sort()
+        z = "{z}!"
+    }
+    v.sort()
+}
+
+func main() {
+    sort_under_with()
+    swap_under_with()
+    reverse_in_loop()
+    helper_under_with()
+    shuffle_under_with()
+    fine()
+}
