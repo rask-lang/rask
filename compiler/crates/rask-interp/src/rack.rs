@@ -61,10 +61,11 @@ pub fn print_stats() {
     );
 }
 
-/// How deep registration and fixup descend through owned values inside one
-/// holder. Links are leaves — neither walk ever follows one — so this only
-/// bounds nesting of plain aggregates.
-const MAX_DEPTH: usize = 32;
+// The walks below recurse as deep as the value they are given. They never
+// follow a link, and a value can't reach itself without going through one, so
+// each walk ends with the value, the way `deep_clone` does. A depth cap here
+// used to leave a link nested more than about 16 levels down unrecorded, and
+// deleting its target then left it pointing at a dead node (#1837).
 
 /// The node a value names, seeing through the `Link<T>?` optional every edge
 /// field carries.
@@ -135,20 +136,6 @@ pub fn register_field(
     old: Option<&Value>,
     value: &Value,
 ) {
-    register_field_at(holder, field, old, value, 0);
-}
-
-/// `register_field` for a field `depth` levels inside the value being
-/// registered. The depth carries on into the field's own value, so a deep
-/// tree, or one that reaches a struct it is already inside, stops at
-/// `MAX_DEPTH` instead of starting over at every struct.
-fn register_field_at(
-    holder: &Arc<Mutex<StructData>>,
-    field: &str,
-    old: Option<&Value>,
-    value: &Value,
-    depth: usize,
-) {
     let slot = BacklinkKey { holder: Arc::as_ptr(holder) as usize, field: Some(field.to_string()) };
 
     // Unlink first: `a.target = a.target` must not drop the backlink it re-adds.
@@ -174,7 +161,15 @@ fn register_field_at(
     // drop.
     if let Some(old) = old {
         if !std::ptr::eq(old as *const Value, value as *const Value) {
-            forget_container_edges(old, 0);
+            forget_container_edges(old);
+            // A loop still walking the vector that was just replaced is
+            // walking one its owner dropped; native frees it and the loop
+            // ends there.
+            if let Value::Vec(vec) = old {
+                if !matches!(value, Value::Vec(new) if Arc::ptr_eq(vec, new)) {
+                    vec.lock().unwrap().detach_cursors();
+                }
+            }
         }
     }
 
@@ -199,21 +194,18 @@ fn register_field_at(
             );
         }
     }
-    register_nested(value, depth + 1);
+    register_nested(value);
 }
 
 /// A loop's temporary vector of links is done with: drop its records.
 pub fn forget_vec_links(value: &Value) {
-    forget_container_edges(value, 0);
+    forget_container_edges(value);
 }
 
 /// Drop the records a container held, when the container itself is being
 /// replaced. Descends through options and nested containers; stops at a struct,
 /// whose data may still be reachable through another name.
-fn forget_container_edges(value: &Value, depth: usize) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
+fn forget_container_edges(value: &Value) {
     match value {
         Value::Vec(vec) => {
             let slot = BacklinkKey { holder: Arc::as_ptr(vec) as usize, field: None };
@@ -225,7 +217,7 @@ fn forget_container_edges(value: &Value, depth: usize) {
                             rack.lock().unwrap().unregister_backlink(&target, &slot);
                         }
                     }
-                    None => forget_container_edges(it, depth + 1),
+                    None => forget_container_edges(it),
                 }
             }
         }
@@ -239,13 +231,18 @@ fn forget_container_edges(value: &Value, depth: usize) {
                             rack.lock().unwrap().unregister_backlink(&target, &slot);
                         }
                     }
-                    None => forget_container_edges(it, depth + 1),
+                    None => forget_container_edges(it),
                 }
             }
         }
         Value::Enum { fields, .. } => {
             for f in fields {
-                forget_container_edges(f, depth + 1);
+                forget_container_edges(f);
+            }
+        }
+        Value::Tuple(items) => {
+            for f in items.iter() {
+                forget_container_edges(f);
             }
         }
         _ => {}
@@ -260,24 +257,19 @@ fn forget_container_edges(value: &Value, depth: usize) {
 /// matching element goes away is dropped by `fix_elements` on the visit that
 /// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
-    register_element_at(vec, value, 1);
-}
-
-/// `register_element` for an element `depth` levels inside the value being
-/// registered. A struct or enum element is walked here and only here, so
-/// nested vectors of structs cost one pass, not two per level.
-fn register_element_at(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value, depth: usize) {
+    // A struct or enum element is walked here and only here, so nested
+    // vectors of structs cost one pass, not two per level.
     // An element of struct type holds its links in fields of its own: those
     // are edges the element's fields record, and delete nulls them in place
     // (#1804).
     if let s @ Value::Struct(_) = strip_some(value) {
-        register_nested(s, depth);
+        register_nested(s);
         return;
     }
-    // A struct an enum carries (`Small or Oops`, `Wrap.Yes(Cursor)`) records
-    // its own fields the same way.
-    if matches!(value, Value::Enum { .. }) {
-        register_nested(value, depth);
+    // A struct an enum or a tuple carries (`Small or Oops`, `Wrap.Yes(Cursor)`,
+    // `(Pin, i32)`) records its own fields the same way (#1844).
+    if matches!(value, Value::Enum { .. } | Value::Tuple(_)) {
+        register_nested(value);
     }
     // A tuple or an enum element is a value: its links are recorded against
     // the vector, and delete rebuilds the element in place.
@@ -305,14 +297,7 @@ pub fn register_vec_links(value: &Value) {
         // A struct or tuple bound whole — `let c2 = c` is a copy with links
         // of its own, and natively each is an edge the copy's slot holds.
         // An enum bound whole carries its structs' copies the same way.
-        Value::Struct(_) | Value::Enum { .. } => register_nested(value, 0),
-        Value::Tuple(items) => {
-            for item in items.iter() {
-                if matches!(item, Value::Struct(_)) {
-                    register_nested(item, 1);
-                }
-            }
-        }
+        Value::Struct(_) | Value::Enum { .. } | Value::Tuple(_) => register_nested(value),
         Value::Vec(v) => {
             let items: Vec<Value> = v.lock().unwrap().items.clone();
             for item in &items {
@@ -450,22 +435,12 @@ pub fn register_entry(
     old: Option<&Value>,
     value: &Value,
 ) {
-    register_entry_at(map, old, value, 1);
-}
-
-/// `register_entry` at a depth, the entry's only walk; see `register_element_at`.
-fn register_entry_at(
-    map: &Arc<Mutex<crate::value::MapData>>,
-    old: Option<&Value>,
-    value: &Value,
-    depth: usize,
-) {
     if let s @ Value::Struct(_) = strip_some(value) {
-        register_nested(s, depth);
+        register_nested(s);
         return;
     }
-    if matches!(value, Value::Enum { .. }) {
-        register_nested(value, depth);
+    if matches!(value, Value::Enum { .. } | Value::Tuple(_)) {
+        register_nested(value);
     }
     let mut in_value = Vec::new();
     tuple_links(value, &mut in_value);
@@ -505,10 +480,7 @@ fn register_entry_at(
 /// registered piecewise: `rack.insert(node)`, a struct literal, and a field
 /// assignment whose value is a container (`old.children = old.children.filter(…)`
 /// builds a fresh `Vec`, whose entries nothing has recorded yet).
-pub fn register_nested(value: &Value, depth: usize) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
+pub fn register_nested(value: &Value) {
     match value {
         Value::Struct(s) => {
             let fields: Vec<(String, Value)> = {
@@ -516,33 +488,38 @@ pub fn register_nested(value: &Value, depth: usize) {
                 guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
             };
             for (name, v) in &fields {
-                register_field_at(s, name, None, v, depth);
+                register_field(s, name, None, v);
             }
         }
         Value::Vec(vec) => {
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
-                register_element_at(vec, it, depth + 1);
+                register_element(vec, it);
                 // An inner container records its own elements; a vector
                 // arriving through `register_element` alone doesn't, so a
                 // loop over a grid stays one pass over its rows.
                 if matches!(it, Value::Vec(_) | Value::Map(_)) {
-                    register_nested(it, depth + 1);
+                    register_nested(it);
                 }
             }
         }
         Value::Map(map) => {
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
-                register_entry_at(map, None, it, depth + 1);
+                register_entry(map, None, it);
                 if matches!(it, Value::Vec(_) | Value::Map(_)) {
-                    register_nested(it, depth + 1);
+                    register_nested(it);
                 }
             }
         }
         Value::Enum { fields, .. } => {
             for f in fields {
-                register_nested(f, depth + 1);
+                register_nested(f);
+            }
+        }
+        Value::Tuple(items) => {
+            for f in items.iter() {
+                register_nested(f);
             }
         }
         _ => {}
@@ -564,20 +541,17 @@ pub fn register_nested(value: &Value, depth: usize) {
 /// pointed at (#983).
 /// The vectors a dying node holds by value are freed with it natively. Mark
 /// them, so a loop still walking one stops as the native one does.
-fn mark_owned_vecs_freed(value: &Value, depth: usize) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
+fn mark_owned_vecs_freed(value: &Value) {
     match value {
         Value::Struct(s) => {
             let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
             for v in &fields {
-                mark_owned_vecs_freed(v, depth + 1);
+                mark_owned_vecs_freed(v);
             }
         }
         Value::Tuple(items) => {
             for v in items.iter() {
-                mark_owned_vecs_freed(v, depth + 1);
+                mark_owned_vecs_freed(v);
             }
         }
         Value::Vec(v) => v.lock().unwrap().freed = true,
@@ -585,10 +559,7 @@ fn mark_owned_vecs_freed(value: &Value, depth: usize) {
     }
 }
 
-fn forget_own_edges(value: &Value, depth: usize) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
+fn forget_own_edges(value: &Value) {
     match value {
         Value::Struct(s) => {
             let fields: Vec<(String, Value)> = {
@@ -606,7 +577,7 @@ fn forget_own_edges(value: &Value, depth: usize) {
                     }
                     continue;
                 }
-                forget_own_edges(v, depth + 1);
+                forget_own_edges(v);
             }
         }
         Value::Vec(vec) => {
@@ -619,7 +590,7 @@ fn forget_own_edges(value: &Value, depth: usize) {
                     }
                     continue;
                 }
-                forget_own_edges(it, depth + 1);
+                forget_own_edges(it);
             }
         }
         Value::Map(map) => {
@@ -632,12 +603,17 @@ fn forget_own_edges(value: &Value, depth: usize) {
                     }
                     continue;
                 }
-                forget_own_edges(it, depth + 1);
+                forget_own_edges(it);
             }
         }
         Value::Enum { fields, .. } => {
             for f in fields {
-                forget_own_edges(f, depth + 1);
+                forget_own_edges(f);
+            }
+        }
+        Value::Tuple(items) => {
+            for f in items.iter() {
+                forget_own_edges(f);
             }
         }
         _ => {}
@@ -668,7 +644,7 @@ fn fix_field(holder: &Arc<Mutex<StructData>>, field: &str, rack_id: u32, dead: &
     }
     // The backlink may name a field whose edge now sits inside a container the
     // field holds, rather than in the field itself.
-    fix_container(&current, rack_id, dead, 0);
+    fix_container(&current, rack_id, dead);
 }
 
 /// Drop entries pointing at the dying node from an edge list. A list of live
@@ -681,16 +657,19 @@ fn fix_elements(vec: &Arc<Mutex<crate::value::VecData>>, rack_id: u32, dead: &Ar
             *el = fixed;
         }
     }
-    let before = guard.len();
-    let kept: Vec<Value> = guard
+    let doomed: Vec<usize> = guard
         .iter()
-        .filter(|el| !is_link_to(el, rack_id, dead))
-        .cloned()
+        .enumerate()
+        .filter(|(_, el)| is_link_to(el, rack_id, dead))
+        .map(|(i, _)| i)
         .collect();
-    let removed = before - kept.len();
-    if removed > 0 {
-        EDGES_FIXED.fetch_add(removed, Ordering::Relaxed);
-        **guard = kept;
+    if !doomed.is_empty() {
+        EDGES_FIXED.fetch_add(doomed.len(), Ordering::Relaxed);
+        // Back to front, so each index is still where the loops last saw it.
+        for &i in doomed.iter().rev() {
+            guard.removed_at(i);
+            guard.items.remove(i);
+        }
     }
 }
 
@@ -719,17 +698,14 @@ fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, rack_id: u32, dead: &Arc
 
 /// Fix edges nested inside a value a backlink pointed at. Bounded by the value's
 /// own size, and never follows a link.
-fn fix_container(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>, depth: usize) {
-    if depth >= MAX_DEPTH {
-        return;
-    }
+fn fix_container(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
     match v {
         Value::Vec(vec) => {
             fix_elements(vec, rack_id, dead);
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
                 if link_target(it, rack_id).is_none() {
-                    fix_container(it, rack_id, dead, depth + 1);
+                    fix_container(it, rack_id, dead);
                 }
             }
         }
@@ -738,7 +714,7 @@ fn fix_container(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>, depth: 
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
                 if link_target(it, rack_id).is_none() {
-                    fix_container(it, rack_id, dead, depth + 1);
+                    fix_container(it, rack_id, dead);
                 }
             }
         }
@@ -780,8 +756,8 @@ pub fn delete_node(
     // The dying node's own edges go before its incoming ones are walked: its
     // targets must stop naming it, or a later delete of one of them walks a
     // record for a node that no longer exists.
-    forget_own_edges(&Value::Struct(Arc::clone(node)), 0);
-    mark_owned_vecs_freed(&Value::Struct(Arc::clone(node)), 0);
+    forget_own_edges(&Value::Struct(Arc::clone(node)));
+    mark_owned_vecs_freed(&Value::Struct(Arc::clone(node)));
 
     DELETES.fetch_add(1, Ordering::Relaxed);
     HOLDERS_VISITED.fetch_add(holders.len(), Ordering::Relaxed);
@@ -862,11 +838,11 @@ pub fn snapshot_rack(rack: &Arc<Mutex<RackData>>) -> Value {
             guard.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
         };
         for (name, value) in fields {
-            if let Some(rewritten) = rewrite_links(&value, old_id, new_id, &map, 0) {
+            if let Some(rewritten) = rewrite_links(&value, old_id, new_id, &map) {
                 copy.lock().unwrap().fields.insert(name.clone(), rewritten);
             }
         }
-        crate::rack::register_nested(&Value::Struct(Arc::clone(copy)), 0);
+        crate::rack::register_nested(&Value::Struct(Arc::clone(copy)));
     }
 
     {
@@ -884,11 +860,7 @@ fn rewrite_links(
     old_id: u32,
     new_id: u32,
     map: &HashMap<usize, Arc<Mutex<StructData>>>,
-    depth: usize,
 ) -> Option<Value> {
-    if depth >= MAX_DEPTH {
-        return None;
-    }
     match value {
         Value::Link { rack_id, node } if *rack_id == old_id => map
             .get(&node_key(node))
@@ -898,7 +870,7 @@ fn rewrite_links(
             let mut changed = false;
             let next: Vec<Value> = current
                 .iter()
-                .map(|v| match rewrite_links(v, old_id, new_id, map, depth + 1) {
+                .map(|v| match rewrite_links(v, old_id, new_id, map) {
                     Some(nv) => {
                         changed = true;
                         nv
@@ -908,13 +880,27 @@ fn rewrite_links(
                 .collect();
             changed.then(|| Value::vec(next))
         }
+        Value::Tuple(items) => {
+            let mut changed = false;
+            let next: Vec<Value> = items
+                .iter()
+                .map(|v| match rewrite_links(v, old_id, new_id, map) {
+                    Some(nv) => {
+                        changed = true;
+                        nv
+                    }
+                    None => v.clone(),
+                })
+                .collect();
+            changed.then(|| Value::tuple(next))
+        }
         // An edge field is `Link<T>?`, so the common case arrives wrapped in an
         // Option rather than bare. Enum payloads generally: rewrite each field.
         Value::Enum { name, variant, fields, variant_index, origin } => {
             let mut changed = false;
             let next: Vec<Value> = fields
                 .iter()
-                .map(|f| match rewrite_links(f, old_id, new_id, map, depth + 1) {
+                .map(|f| match rewrite_links(f, old_id, new_id, map) {
                     Some(nv) => {
                         changed = true;
                         nv
@@ -941,7 +927,7 @@ fn rewrite_links(
             let mut changed = false;
             let mut next = inner.lock().unwrap().clone();
             for (name, v) in fields {
-                if let Some(nv) = rewrite_links(&v, old_id, new_id, map, depth + 1) {
+                if let Some(nv) = rewrite_links(&v, old_id, new_id, map) {
                     changed = true;
                     next.fields.insert(name, nv);
                 }
@@ -958,7 +944,7 @@ fn rewrite_links(
             let mut changed = false;
             let mut next = indexmap::IndexMap::new();
             for (k, v) in current {
-                match rewrite_links(&v, old_id, new_id, map, depth + 1) {
+                match rewrite_links(&v, old_id, new_id, map) {
                     Some(nv) => {
                         changed = true;
                         next.insert(k, nv);

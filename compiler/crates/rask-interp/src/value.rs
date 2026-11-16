@@ -1081,15 +1081,65 @@ pub struct VecData {
     /// vector is freed with it, so a loop still walking it stops there
     /// (mem.racks/RK15).
     pub freed: bool,
+    /// A fixed-size array `[T; N]`, which is a value: binding, assigning or
+    /// passing it makes a copy (`copy_on_bind`), the way a struct is copied.
+    /// A `Vec` is a handle and moves instead. Both are this storage, so the
+    /// type checker's word for the literal is what sets this.
+    pub array: bool,
+    /// Loops walking this vector right now. A removal moves each one back so
+    /// it still visits every entry present when it gets there (mem.racks/RK15).
+    pub cursors: Cursors,
+}
+
+/// Where a `for` loop over a vector stands: the next index to visit and the
+/// end it stops at, fixed when the loop began so entries added during it are
+/// not visited. A vector dropped under the loop detaches it.
+#[derive(Debug, Default)]
+pub struct VecCursor {
+    pub next: usize,
+    pub end: usize,
+    pub detached: bool,
+}
+
+/// The cursors registered on one vector. A copy of the vector's storage is
+/// not being walked by anyone, so cloning gives an empty list.
+#[derive(Debug, Default)]
+pub struct Cursors(pub Vec<Arc<Mutex<VecCursor>>>);
+
+impl Clone for Cursors {
+    fn clone(&self) -> Self {
+        Cursors(Vec::new())
+    }
 }
 
 impl VecData {
+    /// An element left the vector at `index`: every loop past it steps back,
+    /// the way native's `remove_at` moves its registered cursors.
+    pub fn removed_at(&self, index: usize) {
+        for c in &self.cursors.0 {
+            let mut c = c.lock().unwrap();
+            if index < c.next {
+                c.next -= 1;
+            }
+            if index < c.end {
+                c.end -= 1;
+            }
+        }
+    }
+
+    /// The vector stopped being its owner's: loops still walking it end.
+    pub fn detach_cursors(&mut self) {
+        for c in self.cursors.0.drain(..) {
+            c.lock().unwrap().detached = true;
+        }
+    }
+
     pub fn new(items: Vec<Value>) -> Self {
-        VecData { items, bound: None, freed: false }
+        VecData { items, bound: None, freed: false, array: false, cursors: Cursors::default() }
     }
 
     pub fn fixed(n: usize) -> Self {
-        VecData { items: Vec::with_capacity(n), bound: Some(n), freed: false }
+        VecData { items: Vec::with_capacity(n), bound: Some(n), freed: false, array: false, cursors: Cursors::default() }
     }
 
     /// CP2: at the bound, and so refusing further growth.
@@ -1455,6 +1505,14 @@ impl Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
 
+    /// A fixed-size array `[T; N]`: the same storage as a `Vec`, but a value
+    /// that is copied wherever it changes owner.
+    pub fn array(items: Vec<Value>) -> Value {
+        let mut data = VecData::new(items);
+        data.array = true;
+        Value::Vec(Arc::new(Mutex::new(data)))
+    }
+
     /// A tuple of these elements.
     pub fn tuple(items: Vec<Value>) -> Value {
         Value::Tuple(Arc::new(items))
@@ -1584,6 +1642,18 @@ impl Value {
             },
             // A tuple's elements are owned the way a struct's fields are.
             Value::Tuple(items) => Value::tuple(items.iter().map(|v| v.copy_on_bind()).collect()),
+            // A fixed-size array is a value: the new owner gets its own
+            // elements, so `mut b = a; b[0] = 9` leaves `a` alone. A `Vec`
+            // is not copied; it is a handle that moves.
+            Value::Vec(v) => {
+                let guard = v.lock().unwrap();
+                if !guard.array {
+                    return self.clone();
+                }
+                let mut copy = VecData::new(guard.items.iter().map(Value::copy_on_bind).collect());
+                copy.array = true;
+                Value::Vec(Arc::new(Mutex::new(copy)))
+            }
             // Reference/box types share; scalars are cheap clones.
             other => other.clone(),
         }
@@ -1610,8 +1680,9 @@ impl Value {
             Value::Closure { .. } if share_closures => self.clone(),
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
-                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone_impl(share_closures)).collect();
-                Value::vec(deep)
+                let guard = v.lock().unwrap();
+                let deep: Vec<Value> = guard.iter().map(|val| val.deep_clone_impl(share_closures)).collect();
+                if guard.array { Value::array(deep) } else { Value::vec(deep) }
             }
             Value::Tuple(items) => {
                 Value::tuple(items.iter().map(|v| v.deep_clone_impl(share_closures)).collect())

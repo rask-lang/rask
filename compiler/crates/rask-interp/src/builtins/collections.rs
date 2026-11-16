@@ -219,6 +219,9 @@ impl Interpreter {
                     items: guard.items.iter().map(Value::clone_as_element).collect(),
                     bound: guard.bound,
                     freed: false,
+                    cursors: Default::default(),
+                    // `clone` of an array is an array; `to_vec` makes a Vec.
+                    array: guard.array && method == "clone",
                 };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
@@ -275,6 +278,7 @@ impl Interpreter {
                 if idx >= vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
+                vec.removed_at(idx);
                 let removed = vec.remove(idx);
                 Ok(removed)
             }
@@ -599,7 +603,7 @@ impl Interpreter {
                 // (`Node { prev: list.tail, .. }`). Record them now — the
                 // struct literal that built it registered what it could see,
                 // but the node's own identity only exists from here.
-                crate::rack::register_nested(&Value::Struct(Arc::clone(&node)), 0);
+                crate::rack::register_nested(&Value::Struct(Arc::clone(&node)));
                 Ok(Value::Link { rack_id, node })
             }
             "delete" => {

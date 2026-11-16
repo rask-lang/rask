@@ -484,6 +484,15 @@ impl Interpreter {
         }
     }
 
+    /// What a `[..]` literal builds: a fixed-size array when the type checker
+    /// typed it `[T; N]`, a `Vec` when the slot it lands in is one.
+    fn collection_literal(&self, id: rask_ast::NodeId, values: Vec<Value>) -> Value {
+        match self.node_types.get(&id) {
+            Some(rask_types::Type::Array { .. }) => Value::array(values),
+            _ => Value::vec(values),
+        }
+    }
+
     /// A place expression names existing storage that may still be live after
     /// the read, so copying it on transfer is required for value semantics.
     fn expr_is_place(expr: &Expr) -> bool {
@@ -2078,7 +2087,7 @@ impl Interpreter {
                 let built = Value::new_struct(concrete_name, field_values, resource_id);
                 // `World { entities: store, player: link }` — edges born with
                 // the struct. Record them so a later delete can null them.
-                crate::rack::register_nested(&built, 0);
+                crate::rack::register_nested(&built);
                 Ok(built)
             }
 
@@ -2222,7 +2231,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_owned(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::vec(values))
+                Ok(self.collection_literal(expr.id, values))
             }
 
             ExprKind::ArrayRepeat { value, count } => {
@@ -2236,8 +2245,10 @@ impl Interpreter {
                         expr.span
                     )),
                 };
-                let values: Vec<Value> = (0..n).map(|_| val.clone()).collect();
-                Ok(Value::vec(values))
+                // Each slot owns its element: `[[0; 3]; 3]` is three rows, not
+                // one row three times.
+                let values: Vec<Value> = (0..n).map(|_| val.copy_on_bind()).collect();
+                Ok(self.collection_literal(expr.id, values))
             }
 
             ExprKind::Tuple(elements) => {
