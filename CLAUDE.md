@@ -100,10 +100,6 @@ whose context is thrown away when they report. Why each runs on what it does:
   at once.** Seven at once hit the five-hour spend limit twice in one night.
   Use `model: "opus"` for a task a worker failed twice, or one no test can
   check.
-- **`lead`** (Opus, small context): for a job that fans out to three or
-  more workers. It runs them, merges, runs skeptic and pushes, and wakes the
-  main session once with the result. One or two workers report to main
-  directly.
 - **Hold reports to the bar.** One that says workaround, "for now", partial,
   deferred or follow-up isn't done. Send what's left to a **fresh** worker with
   a short brief (what's committed, what's left, the repro), not back to the
