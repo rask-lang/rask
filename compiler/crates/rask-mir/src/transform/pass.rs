@@ -191,7 +191,7 @@ pub struct UnmappedSpellingReportPass;
 impl MirPass for UnmappedSpellingReportPass {
     fn name(&self) -> &str { "unmapped_spelling_report" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        crate::own_names::report_unmapped_calls(fns, &ctx.own_functions);
+        crate::own_names::report_unshaped_calls(fns, &ctx.own_functions);
     }
 }
 

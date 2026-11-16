@@ -636,7 +636,7 @@ impl<'a> MirLowerer<'a> {
                 let right_text = self.debug_render_value(&right_op, right_ty, right_decl.as_ref(), 0)?;
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(format!("{}_cmp_debug", prefix)),
+                    func: FunctionRef::reading(format!("{}_cmp_debug", prefix)),
                     args: vec![left_text, right_text, op_const],
                 }));
             }
@@ -654,7 +654,7 @@ impl<'a> MirLowerer<'a> {
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(format!("{}_cmp_{}", prefix, suffix)),
+                    func: FunctionRef::reading(format!("{}_cmp_{}", prefix, suffix)),
                     args: vec![left_op, right_op, op_const],
                 }));
             }
@@ -1180,9 +1180,15 @@ impl<'a> MirLowerer<'a> {
             return None;
         };
         let (borrow, release) = if self.is_vec_expr(object) {
-            ("Vec_borrow_elem", "Vec_release_elem")
+            (
+                crate::operand::Mint::like("Vec_borrow_elem", "Vec_get"),
+                crate::operand::Mint::borrowing("Vec_release_elem"),
+            )
         } else if self.is_map_expr(object) {
-            ("Map_borrow_elem", "Map_release_elem")
+            (
+                crate::operand::Mint::like("Map_borrow_elem", "Map_get"),
+                crate::operand::Mint::borrowing("Map_release_elem"),
+            )
         } else {
             return None;
         };
@@ -1205,7 +1211,7 @@ impl<'a> MirLowerer<'a> {
         let ptr = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(ptr),
-            func: FunctionRef::internal(borrow.to_string()),
+            func: borrow.call(),
             args: vec![coll_op.clone(), idx_op],
         }));
         self.elem_writebacks.push(super::ElemWriteback::ReleaseBorrow {
@@ -1257,7 +1263,7 @@ impl<'a> MirLowerer<'a> {
                 super::ElemWriteback::ReleaseBorrow { collection, release } => {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal(release.to_string()),
+                        func: release.call(),
                         args: vec![collection],
                     }));
                 }
@@ -2758,7 +2764,7 @@ impl<'a> MirLowerer<'a> {
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::internal(free_fn.to_string()),
+                                func: FunctionRef::releasing(free_fn),
                                 args: vec![MirOperand::Local(handle)],
                             }));
                         }
@@ -2772,7 +2778,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("rask_free".to_string()),
+                        func: FunctionRef::keeping("rask_free", &[0]),
                         args: vec![MirOperand::Local(block)],
                     }));
                 }
@@ -2950,7 +2956,7 @@ impl<'a> MirLowerer<'a> {
         let dst = self.builder.alloc_temp(ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::internal("Field_take".to_string()),
+            func: FunctionRef::like("Field_take", "Vec_remove"),
             args: vec![
                 MirOperand::Local(addr),
                 MirOperand::Constant(MirConst::Int(size as i64)),
@@ -3452,23 +3458,32 @@ impl<'a> MirLowerer<'a> {
                         .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
                 });
 
-            let index_name = type_prefix
+            let (index_name, shape) = type_prefix
                 .map(|prefix| {
                     // Strip generic parameters: "Vec<T>" → "Vec"
                     let base = prefix.as_str();
                     // Map indexing: `m[k]` panics on missing key — same shape
                     // as `Map_get_unwrap` (the unwrapping form of Map_get).
-                    if base == "Map" {
-                        "Map_get_unwrap".to_string()
-                    } else {
-                        format!("{}_index", base)
+                    match base {
+                        "Map" => ("Map_get_unwrap".to_string(), rask_stdlib::mir_metadata::declared_shape("Map_get")),
+                        // A read that points into the vector's own buffer, as
+                        // `Vec.get` does; the caller never releases it.
+                        "Vec" => ("Vec_index".to_string(), rask_stdlib::mir_metadata::declared_shape("Vec_get")),
+                        // One byte read out of the text; nothing is kept.
+                        "string" => (
+                            "string_index".to_string(),
+                            Some(rask_stdlib::mir_metadata::CallShape::borrows_receiver()),
+                        ),
+                        _ => (format!("{}_index", base), None),
                     }
                 })
-                .unwrap_or_else(|| "index".to_string());
+                .unwrap_or_else(|| ("index".to_string(), None));
             let result_local = self.builder.alloc_temp(result_ty.clone());
+            let mut func = FunctionRef::internal(index_name);
+            func.shape = shape.or(func.shape);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
-                func: FunctionRef::internal(index_name),
+                func,
                 args: vec![obj_op, idx_op],
             }));
             Ok((MirOperand::Local(result_local), result_ty))
@@ -5324,7 +5339,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(array) = write_back {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("rask_vec_copy_back".to_string()),
+                func: FunctionRef::reading("rask_vec_copy_back"),
                 args: vec![view, array],
             }));
         }
@@ -5382,7 +5397,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::internal("rask_vec_view".to_string()),
+            func: FunctionRef::reading("rask_vec_view"),
             args: vec![
                 obj_op.clone(),
                 MirOperand::Constant(MirConst::Int(*len as i64)),
@@ -5966,7 +5981,7 @@ impl<'a> MirLowerer<'a> {
                             // `Shared.new/mutex/local` settle the strategy, so
                             // the constructor call resolves to that strategy's
                             // runtime family (conc.sync/SH2).
-                            let func_name =
+                            let (func_name, shape) =
                                 self.resolve_shared_strategy_call(&func_name, object);
 
                             let ret_ty = self
@@ -5987,7 +6002,7 @@ impl<'a> MirLowerer<'a> {
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
-                                func: FunctionRef::internal(func_name),
+                                func: { let mut f = crate::elem_strs::map_ctor_ref(func_name); f.shape = shape.or(f.shape); f },
                                 args: arg_operands,
                             }));
                             self.flush_elem_writebacks(wb_mark);
@@ -6322,7 +6337,7 @@ impl<'a> MirLowerer<'a> {
         // The strategy is a type argument, so which family a call lands in is
         // settled here and nothing about the choice survives into the emitted
         // code — a `Local` box calls the no-lock runtime directly.
-        let qualified_name = self.resolve_shared_strategy_call(&qualified_name, object);
+        let (qualified_name, mut shape) = self.resolve_shared_strategy_call(&qualified_name, object);
 
         // A box owns its payload, and the payload can be a container:
         // `Shared.mutex(Map.new())` moves the map in, so the map's free belongs
@@ -6664,7 +6679,7 @@ impl<'a> MirLowerer<'a> {
                 let cloned = self.builder.alloc_temp(obj_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(cloned),
-                    func: FunctionRef::internal("string_clone".to_string()),
+                    func: FunctionRef::borrowing("string_clone"),
                     args: vec![all_args[0].clone()],
                 }));
                 return Ok((MirOperand::Local(cloned), obj_ty));
@@ -6719,7 +6734,7 @@ impl<'a> MirLowerer<'a> {
                             let cloned = self.builder.alloc_temp(field_mir_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(cloned),
-                                func: FunctionRef::internal(cfn.to_string()),
+                                func: FunctionRef::borrowing(cfn),
                                 args: vec![MirOperand::Local(field_val)],
                             }));
                             MirOperand::Local(cloned)
@@ -6781,6 +6796,7 @@ impl<'a> MirLowerer<'a> {
             // `let a: u8 = "300".parse()` is `ParseError.OutOfRange` instead of
             // 44 (native) or 300 in a u8 (interp) (#919). Without this the
             // inferred call kept the bare 64-bit parse.
+            shape = rask_stdlib::mir_metadata::declared_shape("string_parse");
             (entry.to_string(), all_args)
         } else if qualified_name == "Vec_join" {
             // `Vec_join` takes strings. Anything else is written the way it
@@ -6797,6 +6813,7 @@ impl<'a> MirLowerer<'a> {
                     ))?;
                 let mut args = all_args;
                 args.push(MirOperand::Constant(MirConst::Int(kind)));
+                shape = rask_stdlib::mir_metadata::declared_shape("Vec_join");
                 ("Vec_join_scalar".to_string(), args)
             }
         } else if let Some((kind, size)) = sort_scalar {
@@ -6808,6 +6825,7 @@ impl<'a> MirLowerer<'a> {
             let mut args = all_args;
             args.push(MirOperand::Constant(MirConst::Int(kind)));
             args.push(MirOperand::Constant(MirConst::Int(size)));
+            shape = rask_stdlib::mir_metadata::declared_shape("Vec_sort");
             ("Vec_sort_scalar".to_string(), args)
         } else if qualified_name == "Vec_sort" && sort_comparator.is_some() {
             // An aggregate with a `compare`: sort by it. The default runtime
@@ -6838,6 +6856,7 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_buffer(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
+            shape = rask_stdlib::mir_metadata::declared_shape("Vec_contains");
             ("Vec_contains_str".to_string(), all_args)
         } else {
             (qualified_name.clone(), all_args)
@@ -6845,7 +6864,26 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
+        // `v[i]` reached through the method path is `Vec.get`'s read.
+        if final_name == "Vec_index" {
+            shape = rask_stdlib::mir_metadata::declared_shape("Vec_get");
+        }
         let mut func = FunctionRef::internal(final_name.clone());
+        func.shape = shape.or(func.shape);
+        // A method the compiler provides for every type (`clone`, `hash`, `eq`,
+        // `compare`, `to_string`, `debug`) on a receiver no declaration covers
+        // — a channel end, a task handle, a link — reads it and hands back
+        // something fresh, as the interface it comes from says.
+        if func.shape.is_none()
+            && !self.func_sigs.contains_key(&final_name)
+            && [
+                "Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug",
+            ]
+            .iter()
+            .any(|i| rask_check::interface_requires(i, &method))
+        {
+            func.shape = Some(rask_stdlib::mir_metadata::CallShape::borrows_receiver());
+        }
         func.elidable_clone = method == "clone"
             && final_args.len() == 1
             && self
@@ -6900,10 +6938,19 @@ impl<'a> MirLowerer<'a> {
     /// `Shared.mutex` and `Shared.local` say which lock they want; `new` takes
     /// the default.
     /// Everything else reads it off the receiver's type.
-    fn resolve_shared_strategy_call(&self, qualified: &str, object: &Expr) -> String {
+    ///
+    /// Answers the spelling and, for a family spelling no declaration lists,
+    /// what it does: the same as the declared operation it realises, or a
+    /// borrowing clone.
+    fn resolve_shared_strategy_call(
+        &self,
+        qualified: &str,
+        object: &Expr,
+    ) -> (String, Option<rask_stdlib::mir_metadata::CallShape>) {
         use super::concurrency::SharedStrategy;
+        use rask_stdlib::mir_metadata::{declared_shape, CallShape};
         let Some(rest) = qualified.strip_prefix("Shared_") else {
-            return qualified.to_string();
+            return (qualified.to_string(), None);
         };
         let strategy = match rest {
             "new" => SharedStrategy::Readers,
@@ -6912,34 +6959,45 @@ impl<'a> MirLowerer<'a> {
             _ => self.shared_strategy(object),
         };
         if matches!(rest, "new" | "mutex" | "local") {
-            return format!("{}_new", strategy.prefix());
+            let shape = match strategy {
+                SharedStrategy::Local => declared_shape("Shared_local"),
+                SharedStrategy::Mutex => declared_shape("Shared_mutex"),
+                SharedStrategy::Readers => None,
+            };
+            return (format!("{}_new", strategy.prefix()), shape);
         }
-        let name = match (strategy, rest) {
+        // Each strategy's spelling of a verb is the declared `Shared` verb: the
+        // same operation over a different runtime object.
+        let same_as = |verb: &str| declared_shape(&format!("Shared_{verb}"));
+        let (name, shape) = match (strategy, rest) {
             // A `Local` box takes nothing, so both verbs are the same call: the
             // slot's address. `read` versus `write` is intent the reader can
             // see, not a different operation here.
-            (SharedStrategy::Local, "read" | "write" | "try_read" | "try_write") => "Cell_acquire",
-            (SharedStrategy::Local, "get") => "Cell_get",
-            (SharedStrategy::Local, "set") => "Cell_set",
-            (SharedStrategy::Local, "replace") => "Cell_replace",
-            (SharedStrategy::Local, "take") => "Cell_take",
-            (SharedStrategy::Local, "clone") => "Cell_clone",
-            (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
-            (SharedStrategy::Mutex, "clone") => "Mutex_clone",
+            (SharedStrategy::Local, "read" | "write" | "try_read" | "try_write") => ("Cell_acquire", same_as("read")),
+            (SharedStrategy::Local, "get") => ("Cell_get", same_as("get")),
+            (SharedStrategy::Local, "set") => ("Cell_set", same_as("set")),
+            (SharedStrategy::Local, "replace") => ("Cell_replace", same_as("replace")),
+            (SharedStrategy::Local, "take") => ("Cell_take", same_as("take")),
+            // Every strategy's clone hands back another handle on the same
+            // cell, so the receiver is borrowed and the result is the caller's.
+            (SharedStrategy::Local, "clone") => ("Cell_clone", Some(CallShape::borrows_receiver())),
+            (SharedStrategy::Mutex, "try_read" | "try_write") => ("Mutex_try_lock", same_as("read")),
+            (SharedStrategy::Mutex, "clone") => ("Mutex_clone", Some(CallShape::borrows_receiver())),
             // `get`/`set`/`replace` exist under every strategy (CE6), not just
             // the one that needs no lock. Left unmapped, `Shared.new(5).get()`
             // type-checked and then failed to link on `Shared_get`.
-            (SharedStrategy::Mutex, "get") => "Mutex_get",
-            (SharedStrategy::Mutex, "set") => "Mutex_set",
-            (SharedStrategy::Mutex, "replace") => "Mutex_replace",
-            (SharedStrategy::Mutex, "take") => "Mutex_take",
-            (SharedStrategy::Readers, "get") => "Shared_get",
-            (SharedStrategy::Readers, "set") => "Shared_set",
-            (SharedStrategy::Readers, "replace") => "Shared_replace",
-            (SharedStrategy::Readers, "take") => "Shared_take",
-            _ => return qualified.to_string(),
+            (SharedStrategy::Mutex, "get") => ("Mutex_get", same_as("get")),
+            (SharedStrategy::Mutex, "set") => ("Mutex_set", same_as("set")),
+            (SharedStrategy::Mutex, "replace") => ("Mutex_replace", same_as("replace")),
+            (SharedStrategy::Mutex, "take") => ("Mutex_take", same_as("take")),
+            (SharedStrategy::Readers, "get") => ("Shared_get", None),
+            (SharedStrategy::Readers, "set") => ("Shared_set", None),
+            (SharedStrategy::Readers, "replace") => ("Shared_replace", None),
+            (SharedStrategy::Readers, "take") => ("Shared_take", None),
+            (SharedStrategy::Readers, "clone") => ("Shared_clone", Some(CallShape::borrows_receiver())),
+            _ => return (qualified.to_string(), None),
         };
-        name.to_string()
+        (name.to_string(), shape)
     }
 
     /// The edge-registration call a container mutator needs, if its value is a
@@ -7928,7 +7986,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal(func_name),
+                    func: if matches!(entry.map(|e| e.sig), Some(rask_stdlib::PtrSig::Write)) { FunctionRef::internal(func_name) } else { FunctionRef::reading(func_name) },
                     args: all_args,
                 }));
                 if ret_ty == MirType::RawPtr {
@@ -8948,7 +9006,7 @@ impl<'a> MirLowerer<'a> {
             let result = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result),
-                func: FunctionRef::internal("f64_compare".to_string()),
+                func: FunctionRef::borrowing("f64_compare"),
                 args: vec![obj_op.clone(), rhs],
             }));
             // `rask_f64_compare_total` already answers in tag values (0/1/2),
@@ -9070,7 +9128,7 @@ impl<'a> MirLowerer<'a> {
             let raw = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(raw),
-                func: FunctionRef::internal("string_compare".to_string()),
+                func: FunctionRef::borrowing("string_compare"),
                 args: vec![obj_op.clone(), rhs],
             }));
             let tag = self.builder.alloc_temp(MirType::I64);
@@ -9098,7 +9156,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal(func_name.to_string()),
+                    func: FunctionRef::borrowing(func_name),
                     args: vec![obj_op.clone(), rhs],
                 }));
                 return Ok(Some((MirOperand::Local(result_local), MirType::Bool)));
@@ -9121,7 +9179,7 @@ impl<'a> MirLowerer<'a> {
             let result_local = self.builder.alloc_temp(MirType::Buffer);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
-                func: FunctionRef::internal("concat".to_string()),
+                func: FunctionRef::reading("concat"),
                 args: vec![obj_op.clone(), arg_op],
             }));
             return Ok(Some((MirOperand::Local(result_local), MirType::Buffer)));
@@ -9279,7 +9337,7 @@ impl<'a> MirLowerer<'a> {
             let dst = this.builder.alloc_temp(MirType::Buffer);
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::internal(name.to_string()),
+                func: FunctionRef::borrowing(name),
                 args,
             }));
             MirOperand::Local(dst)
@@ -9637,7 +9695,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![vec_op.clone(), MirOperand::Local(idx)],
         }));
         let rendered = self.debug_render_value(
@@ -9664,7 +9722,7 @@ impl<'a> MirLowerer<'a> {
         let joined = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(joined),
-            func: FunctionRef::internal("concat".to_string()),
+            func: FunctionRef::reading("concat"),
             args: vec![MirOperand::Local(acc), part],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -9699,7 +9757,7 @@ impl<'a> MirLowerer<'a> {
         let pairs = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pairs),
-            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
             args: vec![
                 MirOperand::Local(blob),
                 MirOperand::Constant(MirConst::Int(entries as i64)),
@@ -9716,7 +9774,7 @@ impl<'a> MirLowerer<'a> {
         let map = self.builder.alloc_temp(map_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),
-            func: FunctionRef::internal(ctor.to_string()),
+            func: crate::elem_strs::map_ctor_ref(ctor),
             args: vec![
                 MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
                 MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
@@ -9756,7 +9814,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
         }));
         let key_local = self.builder.alloc_temp(key_ty.clone());
@@ -9782,7 +9840,7 @@ impl<'a> MirLowerer<'a> {
         // `Map_set`: nothing takes a displaced value, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Map_set".to_string()),
+            func: FunctionRef::like("Map_set", "Map_insert"),
             args: vec![
                 MirOperand::Local(map),
                 MirOperand::Local(key_local),
@@ -9802,7 +9860,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(exit);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Vec_free".to_string()),
+            func: FunctionRef::releasing("Vec_free"),
             args: vec![MirOperand::Local(pairs)],
         }));
         Ok((MirOperand::Local(map), map_ty))
@@ -9850,7 +9908,7 @@ impl<'a> MirLowerer<'a> {
         let entries_args = self.map_entries_args(map_op.clone(), key_ty, val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(entries),
-            func: FunctionRef::internal("Map_entries".to_string()),
+            func: FunctionRef::borrowing("Map_entries"),
             args: entries_args,
         }));
 
@@ -9881,7 +9939,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(kind) = key_kind {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Vec_sort_scalar".to_string()),
+                func: FunctionRef::like("Vec_sort_scalar", "Vec_sort"),
                 args: vec![
                     MirOperand::Local(entries),
                     MirOperand::Constant(MirConst::Int(kind)),
@@ -9922,7 +9980,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![MirOperand::Local(entries), MirOperand::Local(idx)],
         }));
 
@@ -9975,7 +10033,7 @@ impl<'a> MirLowerer<'a> {
         if key_kind.is_none() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Vec_sort_str".to_string()),
+                func: FunctionRef::like("Vec_sort_str", "Vec_sort"),
                 args: vec![MirOperand::Local(rendered)],
             }));
         }
@@ -10037,7 +10095,7 @@ impl<'a> MirLowerer<'a> {
         for v in [entries, rendered] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Vec_free".to_string()),
+                func: FunctionRef::releasing("Vec_free"),
                 args: vec![MirOperand::Local(v)],
             }));
         }
@@ -10188,7 +10246,7 @@ impl<'a> MirLowerer<'a> {
             let dst = self.builder.alloc_temp(MirType::Buffer);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::internal("concat".to_string()),
+                func: FunctionRef::reading("concat"),
                 args: vec![acc, part],
             }));
             acc = MirOperand::Local(dst);
@@ -10241,7 +10299,7 @@ impl<'a> MirLowerer<'a> {
             let dst = this.builder.alloc_temp(MirType::Buffer);
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::internal(name.to_string()),
+                func: FunctionRef::borrowing(name),
                 args,
             }));
             MirOperand::Local(dst)
@@ -10403,7 +10461,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal(func_name.to_string()),
+                    func: FunctionRef::borrowing(func_name),
                     args: vec![obj_op.clone()],
                 }));
                 return Ok(Some((MirOperand::Local(result_local), MirType::Buffer)));
@@ -10501,7 +10559,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
             args: vec![
                 MirOperand::Local(arr),
                 MirOperand::Constant(MirConst::Int(len as i64)),
@@ -10644,7 +10702,7 @@ impl<'a> MirLowerer<'a> {
             let hit = self.builder.alloc_temp(MirType::Bool);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(hit),
-                func: FunctionRef::internal("string_eq".to_string()),
+                func: FunctionRef::borrowing("string_eq"),
                 args: vec![op.clone(), MirOperand::Constant(MirConst::String(name.clone()))],
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

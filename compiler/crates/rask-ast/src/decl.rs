@@ -242,6 +242,7 @@ impl FnDecl {
             copies_elements: has("copies_elements"),
             moves_out: has("moves_out"),
             places_node: has("places_node"),
+            eager_callback: has("eager_callback"),
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
@@ -287,6 +288,11 @@ pub struct DeclaredEffects {
     /// `Staged.insert`). The call carries the node type's layout with it: its
     /// size, where its links are and what it owns.
     pub places_node: bool,
+    /// Runs the closure it is handed to completion before it returns and keeps
+    /// nothing of it (`sort_by`). A call without this that takes a closure and
+    /// has no body to read has to be assumed to keep it, as a lazy adapter
+    /// does, so the caller releases nothing it passed.
+    pub eager_callback: bool,
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,

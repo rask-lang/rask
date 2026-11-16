@@ -106,6 +106,24 @@ pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
     }
 }
 
+/// A call to a map constructor, by any of the spellings `map_ctor_for` picks.
+/// Each is the declared `Map.new` (or `Map.with_capacity`) over a table keyed
+/// another way, so it does what that declaration says.
+pub fn map_ctor_ref(name: impl Into<String>) -> crate::FunctionRef {
+    let name = name.into();
+    let declared = match name.as_str() {
+        "Map_with_capacity_string_keys" | "Map_with_capacity_link_keys" | "Map_with_capacity_keyed" => {
+            Some("Map_with_capacity")
+        }
+        "Map_new_string_keys" | "Map_new_link_keys" | "Map_new_keyed" => Some("Map_new"),
+        _ => None,
+    };
+    match declared {
+        Some(declared) => crate::FunctionRef::like(name, declared),
+        None => crate::FunctionRef::internal(name),
+    }
+}
+
 /// Every call that hands back a container the caller owns: how many size
 /// arguments come first, how many element descriptions follow them, and what frees the
 /// result.

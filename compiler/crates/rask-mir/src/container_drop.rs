@@ -33,6 +33,13 @@ use crate::{
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
+/// A call's symbol without the module path it was qualified with and the `$`
+/// suffix monomorphization gave its instance.
+fn symbol_base(name: &str) -> &str {
+    let head = name.rsplit("::").next().unwrap_or(name);
+    head.split('$').next().unwrap_or(head)
+}
+
 /// What frees a container made by `ctor`, or `None` if this isn't one.
 ///
 /// `elem_strs::CTORS` names both — the calls that hand a container back and
@@ -40,8 +47,8 @@ use crate::{
 /// knows what its elements are.
 /// What frees a value fresh out of a call to `ctor`: a container's free from
 /// its constructor row, or the declared release of a handle a native hands back.
-pub(crate) fn free_for(ctor: &str) -> Option<&'static str> {
-    crate::elem_strs::free_fn(ctor).or_else(|| rask_stdlib::mir_metadata::fresh_handle_release(ctor))
+pub(crate) fn free_for(ctor: &FunctionRef) -> Option<&'static str> {
+    crate::elem_strs::free_fn(symbol_base(&ctor.name)).or_else(|| ctor.shape.and_then(|s| s.fresh_release()))
 }
 
 /// The call that gives back what `free` frees. A handle's declared release is
@@ -51,7 +58,7 @@ pub(crate) fn free_call(free: &str) -> FunctionRef {
     if rask_stdlib::handles::is_declared_release(free) {
         FunctionRef::runtime(free.to_string())
     } else {
-        FunctionRef::internal(free.to_string())
+        FunctionRef::releasing(free)
     }
 }
 
@@ -105,9 +112,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
     let live = crate::analysis::liveness::analyze(func, &dom);
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
-            let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-            let base = head.split('$').next().unwrap_or(head);
-            if let Some(free) = free_for(base) {
+            if let Some(free) = free_for(fref) {
                 made.insert(*dst, free);
             }
         }
@@ -170,7 +175,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
                 });
                 clones.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(to),
-                    func: FunctionRef::internal(retain.to_string()),
+                    func: FunctionRef::borrowing(retain),
                     args: vec![MirOperand::Local(from)],
                 }));
                 if let MirStmtKind::ClosureCreate { captures, .. } =
@@ -577,7 +582,7 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     let mut out = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
-        if !rask_stdlib::mir_metadata::consumes_receiver(&fref.name) {
+        if !fref.consumes_receiver() {
             continue;
         }
         let Some(recv) = args.first().and_then(crate::analysis::uses::operand_local) else { continue };
@@ -1119,8 +1124,7 @@ pub(crate) fn call_keeps_argument(
     if let Some(v) = kept.get(&fref.name) {
         return v.get(index).copied().unwrap_or(true);
     }
-    let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-    rask_stdlib::mir_metadata::keeps_argument(head, index)
+    fref.gives(index)
 }
 
 /// Does `closure(args)` in `func` keep the argument at `index`?
@@ -1642,14 +1646,18 @@ fn params_this_frame_owns(
     }
     let Some(flags) = kept.get(&func.name) else { return Vec::new() };
     // A caller doesn't hand over a container method's receiver, kept or not
-    // (`container_facts`).
-    let head = func.name.rsplit("::").next().unwrap_or(&func.name);
-    let receiver_lent = rask_stdlib::mir_metadata::borrows_receiver(head);
-    // A `take self` receiver is handed over by every caller whether or not
-    // the body keeps it (`container_facts` reads the declaration), so it is
-    // this frame's to free. Asking only whether the body kept it left
-    // `Vec.consume` freeing nothing and its caller freeing nothing.
-    let receiver_taken = rask_stdlib::mir_metadata::consumes_receiver(head);
+    // (`container_facts`). A `take self` receiver is handed over by every
+    // caller whether or not the body keeps it, so it is this frame's to free.
+    // Asking only whether the body kept it left `Vec.consume` freeing nothing
+    // and its caller freeing nothing. Both read the way the method declared
+    // `self`.
+    let receiver_mode = func
+        .params
+        .first()
+        .filter(|p| p.name.as_deref() == Some("self"))
+        .and_then(|_| func.param_modes.first().copied());
+    let receiver_lent = matches!(receiver_mode, Some(ParamMode::Borrow | ParamMode::Mutate));
+    let receiver_taken = receiver_mode == Some(ParamMode::Take);
     func.params
         .iter()
         .enumerate()
@@ -1778,7 +1786,7 @@ fn insert_for_function(
     // release rather than taken from any earlier name.
     let mut next_local = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
     let mut release = |func: &mut MirFunction, name: LocalId| -> Vec<MirStmt> {
-        let free = FunctionRef::internal(tracked[&name].to_string());
+        let free = FunctionRef::releasing(tracked[&name]);
         if !lent.slots.contains_key(&name) {
             return vec![MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
@@ -1948,9 +1956,8 @@ fn container_facts(
             match &stmt.kind {
                 MirStmtKind::Phi { .. } => {}
                 MirStmtKind::Call { func: fref, args, dst } => {
-                    let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                    let borrows = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
-                    let takes = rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
+                    let borrows = fref.borrows_receiver() && !args.is_empty();
+                    let takes = fref.consumes_receiver() && !args.is_empty();
                     for (i, arg) in args.iter().enumerate() {
                         if passes_arg(i) {
                             continue;
@@ -2487,12 +2494,9 @@ fn containers_and_makers(
                 continue;
             }
             if let MirStmtKind::Call { dst: Some(dst), func: fref, .. } = &stmt.kind {
-                let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                // A monomorphized name carries a `$` suffix.
-                let base = head.split('$').next().unwrap_or(head);
-                if let Some(free) = free_for(base) {
+                if let Some(free) = free_for(fref) {
                     fresh.insert(*dst, free);
-                } else if rask_stdlib::mir_metadata::transfers_out(base) {
+                } else if fref.moves_out() {
                     // A container taken out of a container — `vv.remove(i)`,
                     // `vv.pop()`, the binding of `for v in vv.take_all()` — is
                     // the caller's now, like one a constructor made. Nothing
@@ -2510,7 +2514,7 @@ fn containers_and_makers(
                         }
                         _ => {}
                     }
-                } else if let Some(free) = crate::elem_strs::wrapped_free_fn(base) {
+                } else if let Some(free) = crate::elem_strs::wrapped_free_fn(symbol_base(&fref.name)) {
                     unwrap_for.insert(*dst, free);
                 } else if let Some((back, free)) =
                     handing_over.get(&fref.name).and_then(|b| Some((b, b.made()?)))
@@ -3861,10 +3865,8 @@ fn find_escaping(
         for stmt in &block.statements {
             match &stmt.kind {
                 MirStmtKind::Call { func: fref, args, .. } => {
-                    let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-                    let skip_receiver = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
-                    let takes_receiver =
-                        rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
+                    let skip_receiver = fref.borrows_receiver() && !args.is_empty();
+                    let takes_receiver = fref.consumes_receiver() && !args.is_empty();
                     for (i, arg) in args.iter().enumerate() {
                         if skip_receiver && i == 0 {
                             continue;

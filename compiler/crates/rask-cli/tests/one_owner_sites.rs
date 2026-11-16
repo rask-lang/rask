@@ -57,11 +57,11 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 69,
+        today: 0,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS or BORROWS_ITS_CALLBACK: a \
-              fact about a call stated by its name instead of on its \
-              declaration (rask-lang/rask#1564, #1565)",
+              fact about a call stated by its name instead of on the call \
+              (`FunctionRef::shape`) or its declaration (rask-lang/rask#1564, #1565)",
         count: mir_metadata_rows,
     },
     Ratchet {

@@ -323,8 +323,8 @@ impl<'a> OwnershipChecker<'a> {
                 // No body to read: a stdlib method keeps what it takes.
                 let qualified = recv.map(|ty| format!("{ty}_{method}")).unwrap_or_default();
                 for (i, a) in args.iter().enumerate() {
-                    let given = rask_stdlib::mir_metadata::argument_mode(&qualified, i + 1)
-                        == Some(rask_stdlib::mir_metadata::ArgMode::Given);
+                    let given = rask_stdlib::mir_metadata::lookup(&qualified)
+                        .is_some_and(|m| m.argument_mode(i + 1) == rask_stdlib::mir_metadata::ArgMode::Given);
                     if given && self.expr_holds_link(&a.expr) {
                         return Some((a.expr.span, format!("`{method}` keeps this link")));
                     }
@@ -347,8 +347,8 @@ impl<'a> OwnershipChecker<'a> {
                         Key::Fn(n) | Key::Method(_, n) => n.clone(),
                     };
                     for (i, a) in args.iter().enumerate() {
-                        let given = rask_stdlib::mir_metadata::argument_mode(&name, i)
-                            == Some(rask_stdlib::mir_metadata::ArgMode::Given);
+                        let given = rask_stdlib::mir_metadata::lookup(&name)
+                            .is_some_and(|m| m.argument_mode(i) == rask_stdlib::mir_metadata::ArgMode::Given);
                         if given && self.expr_holds_link(&a.expr) {
                             return Some((a.expr.span, format!("`{name}` keeps this link")));
                         }

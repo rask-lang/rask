@@ -419,13 +419,13 @@ jobs:
       working-directory: compiler
 
     # MIR mints names for operations the stdlib declares under another spelling,
-    # and `INTERNAL_SPELLINGS` says what each stands for — that is what decides
-    # who owns what crosses the call. A name with no line there is treated as
-    # owning everything it touches, which leaks rather than double-frees; this
-    # is what stops it staying that way. Runs the suite through `rask test` as
-    # well as `compile`, because the two lowering paths reach different names.
-    # Parallel too (SPELL_JOBS): 3m13 -> 1m16.
-    - name: Internal spelling gate
+    # or not at all, and states at the emit site what each does with what
+    # crosses the call (`FunctionRef::like`, `borrowing`, `releasing`). A call in
+    # a stdlib family that states nothing is treated as reading everything and
+    # keeping nothing; this is what stops it staying that way. Runs the suite
+    # through `rask test` as well as `compile`, because the two lowering paths
+    # reach different names. Parallel too (SPELL_JOBS): 3m13 -> 1m16.
+    - name: Unshaped call gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
 

@@ -119,6 +119,7 @@ an owned block (`Heap(T)`), and aggregates release their parts.
 - `src/lib.rs` — MirFunction, MirStmt, MirTerminator, BlockId, LocalId
 - `src/types.rs` — MirType, `src/operand.rs` — MirOperand, MirConst, MirRValue
 - `src/builder.rs` — BlockBuilder, `src/program.rs` — MirProgram
+- `src/operand.rs` also holds `FunctionRef`: a call carries its `shape` (who owns what crosses it). Never ask a callee's name; state the shape where the call is emitted (`like`, `borrowing`, `releasing`, `reading`) and `tests/spellings_gate.sh` reports a stdlib-family call that doesn't
 
 **Analysis & transforms:** `src/analysis/` (dataflow), `src/transform/` (optimization passes)
 - New MIR instruction: add to `MirStmtKind`/`MirTerminatorKind` in `lib.rs`, update codegen + miri
@@ -158,7 +159,7 @@ the four divergences fixed in #687/#688/#677/#698 lived exactly there.
 - `src/types.rs` — stdlib type definitions (Vec, Map, string, etc.)
 - `src/builtins.rs` — built-in operator/method registrations
 - `src/registry.rs` — type registry for stdlib lookups
-- `src/mir_metadata.rs` — MIR-level metadata for stdlib functions (used by codegen)
+- `src/mir_metadata.rs` — each stdlib declaration's `CallShape` (what a call does with its arguments and result), read from `stdlib/*.rk`. MIR puts one on every call it emits (`FunctionRef::shape`); a spelling lowering makes up states its own where it emits it
 - New stdlib function: the declaration goes in `stdlib/*.rk`, and it must say
   where its body lives — a Rask body, `comptime func`, `@native("symbol")`,
   `@builtin` (the compiler lowers the call itself, e.g. `Shared.read`), or

@@ -14,6 +14,7 @@ mod result_path;
 mod stmt;
 
 use crate::FieldAccess;
+use crate::operand::Mint;
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType, BlockId, LocalId, operand::{MirConst, FunctionRef},
@@ -2727,7 +2728,11 @@ impl<'a> MirLowerer<'a> {
         let slot = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(slot),
-            func: FunctionRef::internal(if map { "Map_slot" } else { "Vec_slot" }.to_string()),
+            func: if map {
+                FunctionRef::like("Map_slot", "Map_get")
+            } else {
+                FunctionRef::like("Vec_slot", "Vec_get")
+            },
             args: vec![collection, at],
         }));
         slot
@@ -2853,7 +2858,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -6776,7 +6781,7 @@ pub(crate) enum ElemWriteback {
         /// The collection the element was borrowed from.
         collection: MirOperand,
         /// Which release to call — Vec and Map keep separate borrow counts.
-        release: &'static str,
+        release: Mint,
     },
     /// A scalar variable handed over as `mutate`. Codegen keeps scalars in
     /// registers, so the address the callee wrote through is a spilled copy —

@@ -863,7 +863,7 @@ impl<'a> MirLowerer<'a> {
                     let eq_result = self.builder.alloc_temp(MirType::Bool);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(eq_result),
-                        func: FunctionRef::internal("string_eq".to_string()),
+                        func: FunctionRef::borrowing("string_eq"),
                         args: vec![scrutinee_op.clone(), MirOperand::Constant(MirConst::String(lit))],
                     }));
                     let next_test = self.builder.create_block();
@@ -1106,7 +1106,7 @@ impl<'a> MirLowerer<'a> {
                         if matches!(&lit_expr.kind, ExprKind::String(_)) {
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(cmp_local),
-                                func: FunctionRef::internal("string_eq".to_string()),
+                                func: FunctionRef::borrowing("string_eq"),
                                 args: vec![elem_op.clone(), lit_op],
                             }));
                         } else {

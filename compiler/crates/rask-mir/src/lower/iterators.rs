@@ -566,7 +566,7 @@ impl<'a> MirLowerer<'a> {
             let value = self.builder.alloc_temp(value_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(value),
-                func: FunctionRef::internal("Map_get_unwrap".to_string()),
+                func: FunctionRef::like("Map_get_unwrap", "Map_get"),
                 args: vec![MirOperand::Local(map), MirOperand::Local(key)],
             }));
             ClosureArg::Value(MirOperand::Local(value))
@@ -683,7 +683,7 @@ impl<'a> MirLowerer<'a> {
             let elem = self.builder.alloc_temp(elem_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem),
-                func: FunctionRef::internal("Vec_index".to_string()),
+                func: FunctionRef::like("Vec_index", "Vec_get"),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
             ClosureArg::Value(MirOperand::Local(elem))
@@ -1060,7 +1060,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_local),
-                func: FunctionRef::internal("Vec_index".to_string()),
+                func: FunctionRef::like("Vec_index", "Vec_get"),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -1415,7 +1415,7 @@ impl<'a> MirLowerer<'a> {
         // nothing takes the value it displaces, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Map_set".to_string()),
+            func: FunctionRef::like("Map_set", "Map_insert"),
             args: vec![
                 MirOperand::Local(result_map),
                 MirOperand::Local(key),
@@ -2075,7 +2075,7 @@ impl<'a> MirLowerer<'a> {
         let other_elem = self.builder.alloc_temp(other_elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(other_elem),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
         }));
 
@@ -2161,7 +2161,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(key_ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
-                func: FunctionRef::internal("string_lt".to_string()),
+                func: FunctionRef::borrowing("string_lt"),
                 args: vec![MirOperand::Local(left), MirOperand::Local(right)],
             }));
         } else {
@@ -2322,7 +2322,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![MirOperand::Local(vec_local), MirOperand::Local(ex_idx)],
         }));
         let (key_op, key_ty) = self.inline_closure_body(closure, MirOperand::Local(elem), elem_ty)?;
@@ -2377,7 +2377,7 @@ impl<'a> MirLowerer<'a> {
         let cmp = self.emit_key_comparator(&key_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Vec_sort_by_keys".to_string()),
+            func: FunctionRef::like("Vec_sort_by_keys", "Vec_sort_by"),
             args: vec![
                 MirOperand::Local(vec_local),
                 MirOperand::Local(keys),
@@ -2388,7 +2388,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Vec_free".to_string()),
+            func: FunctionRef::releasing("Vec_free"),
             args: vec![MirOperand::Local(keys)],
         }));
 

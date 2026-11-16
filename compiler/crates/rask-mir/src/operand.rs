@@ -3,6 +3,7 @@
 //! MIR operands and rvalues.
 
 use crate::MirType;
+use rask_stdlib::mir_metadata::{CallShape, Receiver};
 
 pub use crate::function::LocalId;
 
@@ -264,21 +265,123 @@ pub struct FunctionRef {
     /// has a destination. Codegen declares it from the call, so it needs no
     /// dispatch row.
     pub runtime: bool,
+    /// What the call does with its arguments and result, for the ownership
+    /// passes. A stdlib method's is read off its declaration when the call is
+    /// made; an operation lowering makes up states its own where it emits it
+    /// (`borrowing`, `releasing`, `reading`, `like`). `None` is an ordinary function: it
+    /// reads its arguments and the passes ask its body, if there is one.
+    pub shape: Option<CallShape>,
 }
 
 impl FunctionRef {
-    /// Internal Rask or stdlib call.
+    /// A call by symbol. A stdlib symbol takes the shape its declaration gives.
     pub fn internal(name: String) -> Self {
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false }
+        let shape = rask_stdlib::mir_metadata::declared_shape(&name);
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false }
+        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None }
     }
 
     /// A runtime function by its C symbol (`runtime`).
     pub fn runtime(name: String) -> Self {
         Self { runtime: true, ..Self::internal(name) }
+    }
+
+    /// A call whose shape lowering states, because no declaration answers for it.
+    pub fn shaped(name: impl Into<String>, shape: CallShape) -> Self {
+        Self { shape: Some(shape), ..Self::internal(name.into()) }
+    }
+
+    /// A spelling lowering makes up for the stdlib operation `declared_as`
+    /// (`Vec_index` for `Vec.get`, a `Shared<T, Local>`'s `Cell_set` for
+    /// `Shared.set`): the same operation, so the same shape.
+    pub fn like(name: impl Into<String>, declared_as: &str) -> Self {
+        let shape = rask_stdlib::mir_metadata::declared_shape(declared_as)
+            .unwrap_or_else(|| panic!("`{declared_as}` is declared nowhere in stdlib/*.rk"));
+        Self::shaped(name, shape)
+    }
+
+    /// An operation that borrows its receiver, keeps nothing and hands back
+    /// something fresh.
+    pub fn borrowing(name: impl Into<String>) -> Self {
+        Self::shaped(name, CallShape::borrows_receiver())
+    }
+
+    /// A free or a release: the call is the receiver's last use.
+    pub fn releasing(name: impl Into<String>) -> Self {
+        Self::shaped(name, CallShape::consumes_receiver())
+    }
+
+    /// A constructor or other call with no receiver that only reads its
+    /// arguments.
+    pub fn reading(name: impl Into<String>) -> Self {
+        Self::shaped(name, CallShape::no_receiver())
+    }
+
+    /// A call with no receiver that keeps or frees the arguments at these
+    /// positions and only reads the rest.
+    pub fn keeping(name: impl Into<String>, positions: &[usize]) -> Self {
+        Self::shaped(name, CallShape::giving(positions))
+    }
+
+    /// Does the call keep the argument at `index`, as far as its shape says?
+    pub fn gives(&self, index: usize) -> bool {
+        self.shape.is_some_and(|s| s.gives(index))
+    }
+
+    /// Does the call borrow its receiver rather than consume it?
+    pub fn borrows_receiver(&self) -> bool {
+        self.shape.is_some_and(|s| s.receiver() == Receiver::Borrowed)
+    }
+
+    /// Does the call take its receiver away: `take self`, or a free?
+    pub fn consumes_receiver(&self) -> bool {
+        self.shape.is_some_and(|s| s.receiver() == Receiver::Consumed)
+    }
+
+    /// Does the call hand back an element it took out of its receiver?
+    pub fn moves_out(&self) -> bool {
+        self.shape.is_some_and(|s| s.moves_out())
+    }
+
+    /// Does the result point into storage the receiver keeps owning?
+    pub fn returns_a_view(&self) -> bool {
+        self.shape.is_some_and(|s| s.returns_a_view())
+    }
+}
+
+/// A spelling lowering makes up, held in a table until the call is emitted,
+/// with what the call it names does. The name and the fact are written side by
+/// side where the table is, so neither can be read from the other.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Mint {
+    name: &'static str,
+    what: MintWhat,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MintWhat {
+    /// The stdlib operation it realises.
+    Like(&'static str),
+    Borrowing,
+}
+
+impl Mint {
+    pub(crate) const fn like(name: &'static str, declared_as: &'static str) -> Self {
+        Self { name, what: MintWhat::Like(declared_as) }
+    }
+
+    pub(crate) const fn borrowing(name: &'static str) -> Self {
+        Self { name, what: MintWhat::Borrowing }
+    }
+
+    pub(crate) fn call(self) -> FunctionRef {
+        match self.what {
+            MintWhat::Like(declared_as) => FunctionRef::like(self.name, declared_as),
+            MintWhat::Borrowing => FunctionRef::borrowing(self.name),
+        }
     }
 }
