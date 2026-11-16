@@ -164,9 +164,33 @@ void rask_owned_release(char *elem, int32_t entry) {
     }
 }
 
+// A copy of an element holding a counted handle takes a reference of its own:
+// a sender and the three `Shared` boxes are counted, so the copy and the
+// original each give one back. Any other handle (a `Random`, an `Atomic`, a
+// receiver) has one owner and isn't copied this way.
+static void handle_retain(int64_t index, void *handle) {
+    if (!handle || index < 0 || index >= rask_handle_release_count) return;
+    void (*release)(void *) = rask_handle_releases[index];
+    if (release == (void (*)(void *))rask_sender_drop_i64) {
+        rask_sender_clone_i64((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_shared_drop_i64) {
+        rask_shared_clone_i64((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_mutex_drop) {
+        rask_mutex_clone((int64_t)(intptr_t)handle);
+    } else if (release == (void (*)(void *))rask_cell_free) {
+        rask_cell_clone((int64_t)(intptr_t)handle);
+    }
+}
+
 void rask_owned_retain(char *elem, int32_t entry) {
     char *at = elem + (entry & RASK_OWNED_OFFSET_MASK);
     switch ((uint32_t)entry >> RASK_OWNED_KIND_SHIFT) {
+        case RASK_OWNED_HANDLE: {
+            int32_t bits = entry & RASK_OWNED_OFFSET_MASK;
+            void **slot = (void **)(elem + (bits & RASK_OWNED_HANDLE_OFFSET_MASK));
+            handle_retain(bits >> RASK_OWNED_HANDLE_INDEX_SHIFT, *slot);
+            break;
+        }
         case RASK_OWNED_STRING:
             rask_string_clone((const RaskStr *)at);
             break;

@@ -49,22 +49,31 @@ pub fn declared_release(type_name: &str) -> Option<&'static str> {
     })
 }
 
-/// Every release a stdlib handle declares.
+/// What frees a `Shared<T, S>`, one per strategy (conc.sync/SH2): a counted
+/// box, a mutex and a cell. `Shared` has no declaration to carry
+/// `@handle(release: …)`, and which of the three a value needs is its second
+/// type argument, so they are listed here and
+/// `rask_mono::drop_names::box_release_for` picks one.
+pub const SHARED_RELEASES: &[&str] = &["rask_shared_drop_i64", "rask_mutex_drop", "rask_cell_free"];
+
+/// Every release a handle declares, the compiler-provided boxes' included.
 pub fn declared_releases() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = crate::stubs::parsed_decls()
         .filter_map(|decl| match &decl.kind {
             DeclKind::Struct(s) => RuntimeHandle::declared(&s.attrs)?.release,
             _ => None,
         })
+        .chain(SHARED_RELEASES.iter().copied())
         .collect();
     out.sort_unstable();
     out.dedup();
     out
 }
 
-/// Whether `symbol` is some stdlib handle's declared release.
+/// Whether `symbol` is some handle's declared release.
 pub fn is_declared_release(symbol: &str) -> bool {
-    crate::stubs::parsed_decls().any(|decl| match &decl.kind {
+    SHARED_RELEASES.contains(&symbol)
+        || crate::stubs::parsed_decls().any(|decl| match &decl.kind {
         DeclKind::Struct(s) => RuntimeHandle::declared(&s.attrs).and_then(|h| h.release) == Some(symbol),
         _ => false,
     })
@@ -83,8 +92,14 @@ mod tests {
 
     #[test]
     fn spelled_channel_ends_read_their_declaration() {
-        assert_eq!(spelled_handle("Sender"), Some(RuntimeHandle { release: None, niche: false }));
-        assert!(spelled_handle("Receiver").is_some());
+        assert_eq!(
+            spelled_handle("Sender"),
+            Some(RuntimeHandle { release: Some("rask_sender_drop_i64"), niche: false })
+        );
+        assert_eq!(
+            spelled_handle("Receiver"),
+            Some(RuntimeHandle { release: Some("rask_recver_drop_i64"), niche: false })
+        );
     }
 
     /// A declared handle has an id, and is asked about by it.

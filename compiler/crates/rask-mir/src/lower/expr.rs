@@ -5174,6 +5174,25 @@ impl<'a> MirLowerer<'a> {
             _ => obj_op,
         };
 
+        // A `take self` method on a handle held in a field consumes it: `w.tx.close()`
+        // drops the end. The struct still has the word in its slot and gives a
+        // handle back when it goes, so the end would be dropped twice. Empty the
+        // slot; releasing a null handle does nothing.
+        if matches!(obj_ty, MirType::Container(crate::types::ContainerKind::Handle(_)))
+            && matches!(object.kind, ExprKind::Field { .. })
+            && self.receiver_method_takes(object, method)
+        {
+            if let Some((base, offset, _, fsize)) = self.lower_place_chain(object) {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: base,
+                    offset,
+                    value: MirOperand::Constant(MirConst::Int(0)),
+                    store_size: fsize,
+                    field: None,
+                }));
+            }
+        }
+
         if let Some(r) = self.try_lower_raw_ptr_method(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }

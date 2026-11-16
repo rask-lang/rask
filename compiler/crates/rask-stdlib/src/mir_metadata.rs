@@ -360,7 +360,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
-    ("Sender_clone", Internal::FreshFromReceiver),
     // Every strategy's clone hands back another handle on the same cell, so
     // the receiver is borrowed and the result is the caller's. `Mutex_clone`
     // was here and the other two spellings weren't, which made a

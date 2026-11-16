@@ -1679,6 +1679,16 @@ impl<'a> MirContext<'a> {
                 .get(id)
                 .and_then(|r| crate::ContainerKind::handle(r))
                 .map_or(mir, MirType::Container),
+            // A channel end or a `Shared` box has no declaration to find by
+            // id: the checker spells it. Its release is still declared (the
+            // end's `@handle(release: …)`, the box's strategy), and it is
+            // what an aggregate or a container holding one gives back when
+            // it goes (#1859).
+            Type::UnresolvedGeneric { .. } | Type::UnresolvedNamed(_) => {
+                rask_mono::drop_names::container_free_for(ty, self.type_names, &self.handle_releases)
+                    .and_then(crate::ContainerKind::handle)
+                    .map_or(mir, MirType::Container)
+            }
             _ => mir,
         }
     }
