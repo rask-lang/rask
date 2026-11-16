@@ -84,8 +84,9 @@ impl CompilerConfig {
     /// once, at the top of every entry point, so it can never describe a
     /// different machine from the `cfg` values in the same config.
     fn declare_target(&self) {
-        rask_ast::primitives::set_pointer_bits(self.cfg.pointer_bits());
-        rask_ast::primitives::set_c_char_unsigned(self.cfg.c_char_unsigned());
+        let target = self.cfg.target();
+        rask_ast::primitives::set_pointer_bits(target.pointer_bits());
+        rask_ast::primitives::set_c_char_unsigned(target.c_char_unsigned());
     }
 }
 
@@ -638,6 +639,7 @@ fn check_loaded_scoped(
             &mut parse_result.decls,
             &stdlib_decls,
             &rounds.operator_calls,
+            config.cfg.target(),
         );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -1168,6 +1170,7 @@ fn check_package_scoped(
                 &mut pkg_ctx.all_decls,
                 &stdlib_decls,
                 &rounds.operator_calls,
+                config.cfg.target(),
             );
         for e in &type_errors {
             diags.push(e.to_diagnostic());

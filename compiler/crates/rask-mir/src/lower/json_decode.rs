@@ -265,7 +265,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn emit_shape_for(&mut self, ty: &Type, purpose: ShapeFor) -> Option<crate::LocalId> {
-        if let Some(kind) = prim_shape_kind(ty) {
+        if let Some(kind) = prim_shape_kind(ty, self.ctx.type_defs.target()) {
             return Some(self.emit_shape_call("json_shape_prim", vec![
                 MirOperand::Constant(MirConst::Int(kind)),
             ]));
@@ -448,7 +448,7 @@ impl<'a> MirLowerer<'a> {
         // can have any key a map compares by its bytes. A key with its own
         // `eq` and `hash` (a struct, an enum) isn't built yet.
         if let Some(key) = self.collection_arg(ty, "Map", 0) {
-            if compared_by_bytes(&key) {
+            if compared_by_bytes(&key, self.ctx.type_defs.target()) {
                 let key_shape = self.emit_shape_for(&key, ShapeFor::Claims)?;
                 let val = self.collection_arg(ty, "Map", 1)?;
                 let val_shape = self.emit_shape_for(&val, ShapeFor::Claims)?;
@@ -783,8 +783,8 @@ enum ShapeFor {
     Claims,
 }
 
-fn prim_shape_kind(ty: &Type) -> Option<i64> {
-    let kind = match &ty.at_target_width() {
+fn prim_shape_kind(ty: &Type, target: rask_ast::Target) -> Option<i64> {
+    let kind = match &ty.at_target(target) {
         Type::Bool => JSHAPE_BOOL,
         Type::I8 => JSHAPE_I8,
         Type::I16 => JSHAPE_I16,
@@ -803,12 +803,12 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
             "i16" => JSHAPE_I16,
             "i32" => JSHAPE_I32,
             "i64" => JSHAPE_I64,
-            "isize" => return prim_shape_kind(&Type::Isize),
+            "isize" => return prim_shape_kind(&Type::Isize, target),
             "u8" => JSHAPE_U8,
             "u16" => JSHAPE_U16,
             "u32" => JSHAPE_U32,
             "u64" => JSHAPE_U64,
-            "usize" => return prim_shape_kind(&Type::Usize),
+            "usize" => return prim_shape_kind(&Type::Usize, target),
             "f32" => JSHAPE_F32,
             "f64" => JSHAPE_F64,
             "string" => JSHAPE_STRING,
@@ -821,9 +821,9 @@ fn prim_shape_kind(ty: &Type) -> Option<i64> {
 
 /// A key a map compares by its bytes (`Map_new`): a number, a `bool`, a
 /// `char`. Not a string, which compares by contents.
-fn compared_by_bytes(ty: &Type) -> bool {
+fn compared_by_bytes(ty: &Type, target: rask_ast::Target) -> bool {
     let named = |n: &str| matches!(ty, Type::UnresolvedNamed(x) if x == n);
-    let kind = prim_shape_kind(ty);
+    let kind = prim_shape_kind(ty, target);
     (kind.is_some() && kind != Some(JSHAPE_STRING))
         || matches!(ty, Type::Char | Type::I128 | Type::U128)
         || named("char")

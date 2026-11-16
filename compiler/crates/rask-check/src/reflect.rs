@@ -602,7 +602,7 @@ mod tests {
     }
 
     fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
-        answer(method, &ty, &Decls(TypeTable::new()))
+        answer(method, &ty, &Decls(TypeTable::new(rask_ast::Target::LP64)))
     }
 
     #[test]

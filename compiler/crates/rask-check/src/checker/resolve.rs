@@ -3738,7 +3738,7 @@ impl TypeChecker {
             );
             let integer = kind == super::inference::LiteralKind::Integer;
             // An integer has to fit: `300` isn't a `u8`.
-            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param)) {
+            let holds = || match (self.ctx.literal_int_values.get(&id), super::check_expr::int_range(&param, self.types.target())) {
                 (Some(&v), Some((lo, hi))) => v >= lo && (v < 0 || (v as u128) <= hi),
                 _ => true,
             };

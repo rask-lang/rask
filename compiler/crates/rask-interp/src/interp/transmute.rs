@@ -32,8 +32,8 @@ fn align_up(n: u32, align: u32) -> u32 {
 }
 
 /// Width in bytes of an integer type, and whether it's signed.
-fn int_shape(ty: &Type) -> Option<(usize, bool)> {
-    Some(match ty.at_target_width() {
+fn int_shape(ty: &Type, target: rask_ast::Target) -> Option<(usize, bool)> {
+    Some(match ty.at_target(target) {
         Type::I8 => (1, true),
         Type::I16 => (2, true),
         Type::I32 => (4, true),
@@ -85,7 +85,7 @@ impl Interpreter {
     fn byte_layout(&self, ty: &Type) -> Result<(u32, u32), RuntimeError> {
         match ty {
             Type::Bool | Type::Char | Type::F32 | Type::F64 | Type::I128 | Type::U128 => {}
-            _ if int_shape(ty).is_some() => {}
+            _ if int_shape(ty, self.types.target()).is_some() => {}
             Type::Array { elem, .. } => {
                 self.byte_layout(elem)?;
             }
@@ -135,8 +135,8 @@ impl Interpreter {
             (Type::F64, Value::Float(f, _)) => put(&f.to_bits().to_le_bytes()),
             (Type::I128, Value::Int128(v)) => put(&v.to_le_bytes()),
             (Type::U128, Value::Uint128(v)) => put(&v.to_le_bytes()),
-            (_, Value::Int(v, _)) if int_shape(ty).is_some() => {
-                let (width, _) = int_shape(ty).unwrap();
+            (_, Value::Int(v, _)) if int_shape(ty, self.types.target()).is_some() => {
+                let (width, _) = int_shape(ty, self.types.target()).unwrap();
                 put(&v.to_le_bytes()[..width]);
             }
             (Type::Array { elem, .. }, Value::Vec(items)) => {
@@ -188,8 +188,8 @@ impl Interpreter {
             Type::F64 => Value::Float(f64::from_bits(u64::from_le_bytes(take(8)[..8].try_into().unwrap())), FloatKind::F64),
             Type::I128 => Value::Int128(i128::from_le_bytes(take(16))),
             Type::U128 => Value::Uint128(u128::from_le_bytes(take(16))),
-            _ if int_shape(ty).is_some() => {
-                let (width, signed) = int_shape(ty).unwrap();
+            _ if int_shape(ty, self.types.target()).is_some() => {
+                let (width, signed) = int_shape(ty, self.types.target()).unwrap();
                 let raw = u64::from_le_bytes(take(width)[..8].try_into().unwrap());
                 let shift = 64 - 8 * width as u32;
                 let v = if signed { ((raw << shift) as i64) >> shift } else { raw as i64 };

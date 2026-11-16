@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_run_time_call_gets_a_function_for_its_types() {
-        let w = wrapper(&mask(CType::UnsignedChar), &rask_check::TypeTable::new()).unwrap();
+        let w = wrapper(&mask(CType::UnsignedChar), &rask_check::TypeTable::new(rask_ast::Target::LP64)).unwrap();
         assert_eq!(w.sig.name, "rask_macro_4MASK__unsigned_char");
         assert_eq!(
             w.source,

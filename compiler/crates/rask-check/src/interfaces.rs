@@ -2200,7 +2200,7 @@ mod tests {
 
     #[test]
     fn test_primitive_interface_satisfaction() {
-        let types = TypeTable::new();
+        let types = TypeTable::new(rask_ast::Target::LP64);
 
         // i32 should implement Add
         assert!(implements_interface(&types, &Type::I32, "Add"));
@@ -2216,7 +2216,7 @@ mod tests {
         use rask_types::GenericArg;
         use rask_ast::Span;
 
-        let mut types = TypeTable::new();
+        let mut types = TypeTable::new(rask_ast::Target::LP64);
         let show = || MethodSig {
             param_names: Vec::new(),
             origin: rask_types::MethodOrigin::Declared,

@@ -56,24 +56,12 @@ impl CfgConfig {
         }
     }
 
-    /// Whether C's `char` is unsigned here: on ARM, AArch64, RISC-V and
-    /// PowerPC it is, on x86 and wasm it isn't.
-    pub fn c_char_unsigned(&self) -> bool {
-        let a = self.arch.as_str();
-        a.starts_with("arm") || a.starts_with("aarch64") || a.starts_with("riscv") || a.starts_with("powerpc")
-    }
-
-    /// How wide a pointer is on this target, in bits.
-    ///
-    /// The arch names are the ones a target triple uses, so this reads the
-    /// same string `cfg.arch` shows a Rask program. Anything unrecognised is
-    /// 64: every arch the compiler can reach today is, and guessing 32 would
-    /// silently narrow `usize` rather than fail loudly.
-    pub fn pointer_bits(&self) -> u32 {
-        match self.arch.as_str() {
-            "x86" | "i686" | "arm" | "armv7" | "wasm32" | "riscv32" | "mips" => 32,
-            _ => 64,
-        }
+    /// The machine this configuration is for: how wide a pointer is, whether
+    /// C's `char` is signed. Read from the same arch string `cfg.arch` shows a
+    /// Rask program, so the width and the `cfg` values can't describe two
+    /// machines.
+    pub fn target(&self) -> rask_ast::Target {
+        rask_ast::Target::for_arch(&self.arch)
     }
 
     /// Convert to a `ComptimeValue::Struct` for injection into the comptime environment.

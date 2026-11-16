@@ -6820,7 +6820,7 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_int_literals);
         for (value, bit_pattern, ty, span) in pending {
             let ty = self.ctx.apply(&ty);
-            let Some((min, max)) = int_range(&ty) else { continue };
+            let Some((min, max)) = int_range(&ty, self.types.target()) else { continue };
             // Compare as sign plus magnitude: a `u128` above `i128::MAX` is the
             // one literal that doesn't fit an `i128`, and it arrives as a bit
             // pattern rather than a number.
@@ -7669,8 +7669,8 @@ fn prim_of(ty: &Type) -> Option<Prim> {
 /// way any constant overflow is: `5_000_000_000` fits a 64-bit `usize` and not
 /// a 32-bit one. Conversions are about types and stay target-independent
 /// (`is_integer_widening`). The one place the checker asks the target.
-pub(super) fn int_range(ty: &Type) -> Option<(i128, u128)> {
-    Some(match prim_of(&ty.at_target_width())? {
+pub(super) fn int_range(ty: &Type, target: rask_ast::Target) -> Option<(i128, u128)> {
+    Some(match prim_of(&ty.at_target(target))? {
         Prim::Int { lo: 128, signed: false, .. } => (0, u128::MAX),
         Prim::Int { lo: 128, signed: true, .. } => (i128::MIN, i128::MAX as u128),
         Prim::Int { lo, signed: true, .. } => (-(1i128 << (lo - 1)), (1u128 << (lo - 1)) - 1),

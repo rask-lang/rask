@@ -65,7 +65,7 @@ pub enum Type {
     I128,
     /// P2: pointer-sized. Its own type, not an alias for `i64` or `i32`: a
     /// program means the same thing on every target, and only layout and the
-    /// backends learn the width (`at_pointer_width`).
+    /// backends learn the width (`at_target`).
     Isize,
     /// Unsigned integers
     U8,
@@ -257,18 +257,8 @@ impl Type {
     /// The fixed-width integer `usize` or `isize` is with `bits`-wide pointers.
     /// Anything else is itself. For layout and the backends; the checker never
     /// asks, so a program type-checks the same for every target.
-    pub fn at_pointer_width(&self, bits: u32) -> Type {
-        self.at_width(bits)
-    }
-
-    /// `at_pointer_width` for the target this compilation is for. Reads the
-    /// process-wide width, until a `Target` value is passed down instead.
-    pub fn at_target_width(&self) -> Type {
-        self.at_width(rask_ast::primitives::pointer_bits())
-    }
-
-    fn at_width(&self, bits: u32) -> Type {
-        match (self, bits) {
+    pub fn at_target(&self, target: rask_ast::Target) -> Type {
+        match (self, target.pointer_bits()) {
             (Type::Usize, 32) => Type::U32,
             (Type::Usize, _) => Type::U64,
             (Type::Isize, 32) => Type::I32,
