@@ -914,7 +914,9 @@ impl<'a> MirLowerer<'a> {
                         // hook holds its address, and the ensure reads whatever
                         // it holds when the block ends. As an `Assign` the new
                         // value was a store into that address that nothing
-                        // paired with a release of the old one (#1895).
+                        // paired with a release of the old one (#1895). Not in
+                        // the hook's own copy of the body, where the name is
+                        // the frame's cell, borrowed like a parameter.
                         let in_place = struct_assigned
                             && scalar_mutate.is_none()
                             && !assigns_through
@@ -927,7 +929,7 @@ impl<'a> MirLowerer<'a> {
                             )
                             && (self.ctx.mir_has_guarded_link(&dst_ty)
                                 || self.ctx.struct_carries_links(&dst_ty)
-                                || self.ensure_read_names.contains(name));
+                                || (self.ensure_read_names.contains(name) && !self.in_ensure_thunk));
                         let store_through_ptr = scalar_mutate.is_some()
                             || (assigns_through && mutate_param_by_pointer(&dst_ty))
                             || in_place;

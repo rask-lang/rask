@@ -10,7 +10,8 @@
 // in a loop (an Option was counted as a scalar, so it got a one-word cell and
 // plain stores). And while the bodies of a chain run, nothing was armed for a
 // panic, so a body that panicked dropped what the bodies after it would have
-// read (#1895).
+// read (#1895). The body that runs from the panic hook writes through the
+// frame's cell too, and its writes have to release what they replace.
 //
 // The leak gate runs this file under RASK_LEAK_CHECK; a count above zero is the
 // failure.
@@ -86,6 +87,20 @@ func panicking_chain() {
     n.list.push("a heap string that is definitely long enough to allocate")
 }
 
+func boom(out: Vec<u64>) {
+    panic("boom in the later ensure")
+}
+
+func hook_rewrites_a_string(mutate out: Vec<u64>) {
+    mut s = "outer {out.len()} initial string long enough for the heap"
+    ensure {
+        s = "replaced by the hook, a string long enough for the heap {out.len()}"
+        out.push(s.len())
+    }
+    ensure boom(out)
+    out.push(1)
+}
+
 test "a struct reassigned after the ensure read it is released" {
     mut seen: Vec<u64> = Vec.new()
     struct_reassigned(mutate seen)
@@ -121,6 +136,21 @@ test "a panic in an ensure body releases what the later bodies read" {
     using Multitasking {
         let h = spawn {
             panicking_chain()
+        }
+        match h.join() {
+            JoinError.Panicked(msg) => { died = true },
+            _ => { died = false },
+        }
+    }
+    assert died
+}
+
+test "a body run from the panic hook releases the string it overwrites" {
+    mut died = false
+    using Multitasking {
+        let h = spawn {
+            mut out: Vec<u64> = Vec.new()
+            hook_rewrites_a_string(mutate out)
         }
         match h.join() {
             JoinError.Panicked(msg) => { died = true },
