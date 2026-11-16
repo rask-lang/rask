@@ -179,6 +179,27 @@ func panics_in(which: i64) {
     }
 }
 
+func returns_what_an_ensure_reads(n: i64, mutate out: Vec<u64>) -> string {
+    let s = "kept {n} heap string long enough to allocate"
+    ensure out.push(s.len())
+    return s
+}
+
+func returns_after_reassigning(n: i64, mutate out: Vec<u64>) -> string {
+    mut s = "first {n} heap string long enough to allocate"
+    ensure out.push(s.len())
+    s = "second {n} heap string long enough to allocate"
+    return s
+}
+
+func returns_what_the_body_overwrites(n: i64) -> string {
+    mut s = "first {n} heap string long enough to allocate"
+    ensure {
+        s = "body {n} heap string long enough to allocate"
+    }
+    return s
+}
+
 test "a struct reassigned after the ensure read it is released" {
     mut seen: Vec<u64> = Vec.new()
     struct_reassigned(mutate seen)
@@ -246,4 +267,15 @@ test "a body run from the panic hook releases what it overwrites" {
         }
     }
     assert died == 5
+}
+
+test "a string returned while an ensure reads it is the caller's" {
+    mut out: Vec<u64> = Vec.new()
+    let a = returns_what_an_ensure_reads(1, mutate out)
+    let b = returns_after_reassigning(2, mutate out)
+    let c = returns_what_the_body_overwrites(3)
+    assert a == "kept 1 heap string long enough to allocate"
+    assert b == "second 2 heap string long enough to allocate"
+    assert c == "first 3 heap string long enough to allocate"
+    assert out.len() == 2
 }

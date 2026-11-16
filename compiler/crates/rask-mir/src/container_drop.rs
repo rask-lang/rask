@@ -3407,6 +3407,26 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
     let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    // `return s` with ensure bodies still to run: the bodies read the cell and
+    // may write it, and the cell's release comes at the end of the last one
+    // that does. The caller gets a reference of its own, taken at the return,
+    // so the string it gets is the one `s` held there.
+    for (cell, holds, _) in cells {
+        if !matches!(holds, Holds::Str) {
+            continue;
+        }
+        for block in func.blocks.iter_mut() {
+            let returns_cell = matches!(
+                &block.terminator.kind,
+                MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), cleanup_chain }
+                    if v == cell && !cleanup_chain.is_empty()
+            );
+            if !returns_cell {
+                continue;
+            }
+            block.statements.push(MirStmt::dummy(MirStmtKind::RcIncContents { local: *cell, for_hand_off: false }));
+        }
+    }
     for (ci, (cell, holds, store_block)) in cells.iter().enumerate() {
         for (block_idx, consumed_here) in exits[ci].clone() {
             let exit = func.blocks[block_idx].id;
