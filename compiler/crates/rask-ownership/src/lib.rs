@@ -577,8 +577,10 @@ struct PartOf {
 /// A non-Copy field read, as the value it views.
 #[derive(Debug, Clone)]
 struct FieldView {
-    /// `src.items`.
+    /// `src.items`, for messages: an element step reads `src.boxes[…].names`.
     path: String,
+    /// The fields below `root`, with `replaces::ELEM` for each element step.
+    steps: Vec<String>,
     /// `src`.
     root: String,
     field_ty: String,
@@ -590,6 +592,15 @@ struct FieldView {
     /// The declaration `root` resolves to, so a later binding that reuses the
     /// name isn't taken for it.
     root_sym: Option<u32>,
+}
+
+/// A non-Copy field read, as the place it reads.
+struct ViewPlace {
+    root: String,
+    steps: Vec<String>,
+    /// `root` and `steps` as written, for messages.
+    shown: String,
+    field_ty: String,
 }
 
 /// A value a container lent out, carried from wherever the walk found it to
@@ -2160,14 +2171,14 @@ impl<'a> OwnershipChecker<'a> {
         if !is_mut {
             return;
         }
-        let Some((path, field_ty)) = self.non_copy_field_view(init) else {
+        let Some(view) = self.non_copy_field_view(init) else {
             return;
         };
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::MutableFieldView {
                 binding: name.to_string(),
-                path,
-                field_ty,
+                path: view.shown,
+                field_ty: view.field_ty,
             },
             span: init.span,
         });
@@ -2515,19 +2526,17 @@ impl<'a> OwnershipChecker<'a> {
         if let ExprKind::Ident(name) = &expr.kind {
             return self.field_views.get(name).cloned();
         }
-        let (path, field_ty) = self.non_copy_field_view(expr)?;
-        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
-            return None;
-        };
+        let view = self.non_copy_field_view(expr)?;
         if let Some((t_root, t_fields)) = &self.store_target {
-            if *t_root == root && fields.starts_with(t_fields) {
+            if *t_root == view.root && view.steps.starts_with(t_fields) {
                 return None;
             }
         }
         Some(FieldView {
-            path,
-            root,
-            field_ty,
+            path: view.shown,
+            steps: view.steps,
+            root: view.root,
+            field_ty: view.field_ty,
             bound: None,
             block: self.current_block,
             root_sym: self.root_symbol(expr),
@@ -2536,11 +2545,17 @@ impl<'a> OwnershipChecker<'a> {
 
     /// `value.field` when it reads a field whose value a second owner would
     /// share: not Copy, and not linear. The path and the field's type name.
-    fn non_copy_field_view(&self, expr: &Expr) -> Option<(String, String)> {
-        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+    ///
+    /// The place may go through the elements of a `Vec` or `Map`
+    /// (`s.boxes[0].names`): what is read is still a field of something the
+    /// container owns, and replacing that field, or dropping the element,
+    /// frees it.
+    fn non_copy_field_view(&self, expr: &Expr) -> Option<ViewPlace> {
+        if !matches!(expr.kind, ExprKind::Field { .. }) {
             return None;
-        };
-        if fields.is_empty() || !self.names_a_value(&root) {
+        }
+        let (root, steps) = self.element_place(expr)?;
+        if !self.names_a_value(&root) {
             return None;
         }
         let ty = self.node_ty(&expr.id)?.clone();
@@ -2553,7 +2568,19 @@ impl<'a> OwnershipChecker<'a> {
         if self.type_is_resource(&ty) || self.is_link_type(&ty) {
             return None;
         }
-        Some((format!("{}.{}", root, fields.join(".")), self.resource_type_display(&ty)))
+        Some(ViewPlace {
+            shown: replaces::render_steps(&root, &steps),
+            field_ty: self.resource_type_display(&ty),
+            root,
+            steps,
+        })
+    }
+
+    /// A place as its root binding and the steps below it, through fields and
+    /// through the elements of a `Vec` or `Map` (`replaces::ELEM`). The
+    /// elements of a fixed-size array are its own storage and take no step.
+    fn element_place(&self, expr: &Expr) -> Option<(String, Vec<String>)> {
+        self.place_of(expr, true)
     }
 
     /// Writing over `place` frees what it held, so a view still in scope of
@@ -2563,18 +2590,35 @@ impl<'a> OwnershipChecker<'a> {
     /// A read the refill pairs with is a move, never a view, so
     /// consume-and-replace stays legal.
     fn check_views_at_write(&mut self, place: &Expr, under: &[String], at: Span) {
-        let Some((root, mut fields)) = self.written_place(place) else {
+        let Some((mut root, mut fields)) = self.place_of(place, true) else {
             return;
         };
+        let mut sym = self.root_symbol(place);
+        // A `for mutate` item is an element of the collection it walks, so
+        // writing its field writes that field of every element.
+        if let Some(fm) = self.active_for_mutates.iter().rev().find(|f| f.mutate && f.binding_names.contains(&root)) {
+            let mut through = fm.fields.clone();
+            through.push(replaces::ELEM.to_string());
+            through.extend(fields);
+            fields = through;
+            root = fm.root.clone();
+            sym = None;
+        }
         fields.extend(under.iter().cloned());
-        let sym = self.root_symbol(place);
         let hits = |name: &str, view: &FieldView| {
             if view.root != root || name == root || !Self::same_root(view.root_sym, sym) {
                 return false;
             }
-            let viewed: Vec<&str> = view.path.split('.').skip(1).collect();
-            let n = viewed.len().min(fields.len());
-            viewed[..n].iter().zip(&fields[..n]).all(|(a, b)| *a == b.as_str())
+            // A write that goes through an element reaches nothing in a view
+            // of the container itself: the vector keeps its buffer and the
+            // view sees the new element.
+            if let Some(k) = fields.iter().position(|f| f == replaces::ELEM) {
+                if view.steps.len() <= k {
+                    return false;
+                }
+            }
+            let n = view.steps.len().min(fields.len());
+            view.steps[..n] == fields[..n]
         };
         // A view an inner `let` hid by name still reads the field.
         let mut ended: Vec<(String, FieldView)> = Vec::new();
@@ -2721,7 +2765,7 @@ impl<'a> OwnershipChecker<'a> {
         if !held_in_place {
             return Vec::new();
         }
-        let path = std::iter::once(root.as_str()).chain(fields.iter().map(String::as_str)).collect::<Vec<_>>().join(".");
+        let path = replaces::render_steps(&root, &fields);
         let root_sym = self.root_symbol(scrutinee);
         let mut names = Vec::new();
         Self::collect_pattern_binding_names(pattern, &mut names);
@@ -2744,6 +2788,7 @@ impl<'a> OwnershipChecker<'a> {
                 name.clone(),
                 FieldView {
                     path: path.clone(),
+                    steps: fields.clone(),
                     root: root.clone(),
                     field_ty: self.resource_type_display(&ty),
                     bound: Some((name.clone(), pattern.span)),
@@ -2792,16 +2837,14 @@ impl<'a> OwnershipChecker<'a> {
                 block: self.current_block,
                 ..v
             }),
-            _ => self.non_copy_field_view(init).and_then(|(path, field_ty)| {
-                let root = Self::extract_root_and_fields(init).0?;
-                Some(FieldView {
-                    path,
-                    root,
-                    field_ty,
-                    bound: Some((name.to_string(), init.span)),
-                    block: self.current_block,
-                    root_sym: self.root_symbol(init),
-                })
+            _ => self.non_copy_field_view(init).map(|view| FieldView {
+                path: view.shown,
+                steps: view.steps,
+                root: view.root,
+                field_ty: view.field_ty,
+                bound: Some((name.to_string(), init.span)),
+                block: self.current_block,
+                root_sym: self.root_symbol(init),
             }),
         };
         if let Some(v) = view {

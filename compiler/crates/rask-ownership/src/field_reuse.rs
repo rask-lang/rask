@@ -211,6 +211,27 @@ fn place_path(expr: &Expr) -> Option<Vec<String>> {
     }
 }
 
+/// The indices a place goes through, outermost last: `v[0].items[i]` is
+/// `["0", "i"]`. A literal or a plain name, which is all a refill can be shown
+/// to land on the same element; any other index reads `None`, and so does a
+/// place with none to compare.
+fn index_keys(expr: &Expr) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Ident(_) => Some(Vec::new()),
+        ExprKind::Field { object, .. } => index_keys(object),
+        ExprKind::Index { object, index } => {
+            let mut keys = index_keys(object)?;
+            keys.push(match &index.kind {
+                ExprKind::Int(n, _) => n.to_string(),
+                ExprKind::Ident(name) => name.clone(),
+                _ => return None,
+            });
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
 /// `e` names `place`, something inside it, or something holding it.
 fn overlaps(e: &Expr, place: &[String]) -> bool {
     let Some(path) = place_path(e) else { return false };
@@ -231,7 +252,9 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
     let moves = |e: &Expr| !checker.node_ty(&e.id).is_some_and(|t| checker.is_copy(t));
     let mut pairs = Vec::new();
     // Each field a `let` moved out of, with the read that moved it.
-    let mut emptied: Vec<(Vec<String>, NodeId)> = Vec::new();
+    // With the index of every element step it went through: a refill only
+    // pairs with a read that went through the same ones.
+    let mut emptied: Vec<(Vec<String>, NodeId, Vec<String>)> = Vec::new();
     for stmt in stmts {
         if may_leave_early(stmt) {
             emptied.clear();
@@ -248,16 +271,23 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                     && moves(value)
                     && place_path(value) != place_path(target) =>
             {
-                place_path(value).map(|p| (p, value.id))
+                place_path(value).zip(index_keys(value)).map(|(p, k)| (p, value.id, k))
             }
             _ => None,
         };
         match &stmt.kind {
-            StmtKind::Assign { target, .. } if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _)| *e == p)) => {
+            StmtKind::Assign { target, .. }
+                if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _, _)| *e == p)) =>
+            {
                 let place = place_path(target).unwrap_or_default();
-                if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
+                let keys = index_keys(target);
+                if let Some(at) = emptied.iter().position(|(p, _, k)| *p == place && Some(k) == keys.as_ref()) {
                     pairs.push((emptied[at].1, stmt.id));
                     emptied.remove(at);
+                } else {
+                    // A write to the same place through other indices: which
+                    // slot is refilled can't be told, so nothing pairs.
+                    emptied.retain(|(p, _, _)| *p != place);
                 }
             }
             StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
@@ -268,8 +298,10 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                 // A second read of the same field reads the emptied slot; the
                 // latest read is the one the refill pairs with.
                 let place = place_path(init).unwrap_or_default();
-                emptied.retain(|(p, _)| *p != place);
-                emptied.push((place, init.id));
+                emptied.retain(|(p, _, _)| *p != place);
+                if let Some(keys) = index_keys(init) {
+                    emptied.push((place, init.id, keys));
+                }
             }
             _ => {
                 // A closure called here may read the field while it's empty,
@@ -281,17 +313,17 @@ pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Ve
                 // Anything else that writes the field, or the value around it,
                 // breaks the pair: what the refill would put back went first.
                 let written = places_written(checker, stmt);
-                emptied.retain(|(p, _)| {
+                emptied.retain(|(p, _, keys)| {
                     !written.iter().any(|w| {
                         let n = w.len().min(p.len());
                         w[..n] == p[..n]
-                    })
+                    }) && !written.iter().any(|w| w.len() == 1 && keys.contains(&w[0]))
                 });
             }
         }
-        if let Some((place, read)) = moved_by_assign {
-            emptied.retain(|(p, _)| *p != place);
-            emptied.push((place, read));
+        if let Some((place, read, keys)) = moved_by_assign {
+            emptied.retain(|(p, _, _)| *p != place);
+            emptied.push((place, read, keys));
         }
     }
     pairs

@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A view of a field reached through an index is a view like any other
+// (mem.borrowing/S1, E0958, #1861): `let v = s.boxes[0].names` reads storage
+// the element owns, and replacing the element's field, or dropping the
+// element, frees it under `v`. Natively `v[0]` read a freed block.
+
+struct Box {
+    names: Vec<string>
+}
+
+struct Shelf {
+    boxes: Vec<Box>
+}
+
+extend Shelf {
+    func wipe_all(mutate self) {
+        for mutate b in self.boxes {
+            b.names = Vec.new()
+        }
+    }
+}
+
+func through_call(mutate s: Shelf) -> string {
+    let v = s.boxes[0].names
+    // ERROR: `wipe_all` replaces `names` in every element, `v` views one [E0958]
+    s.wipe_all()
+    return v[0]
+}
+
+func through_loop(mutate s: Shelf) -> string {
+    let v = s.boxes[0].names
+    for mutate b in s.boxes {
+        // ERROR: the loop replaces `names`, `v` views one [E0958]
+        b.names = Vec.new()
+    }
+    return v[0]
+}
+
+func through_assign(mutate s: Shelf, i: i64) -> string {
+    let v = s.boxes[0].names
+    // ERROR: element `i` may be the one `v` views [E0958]
+    s.boxes[i].names = Vec.new()
+    return v[0]
+}
+
+func through_clear(mutate s: Shelf) -> string {
+    let v = s.boxes[0].names
+    // ERROR: `clear` drops the elements, and the vector `v` views goes with them [E0958]
+    s.boxes.clear()
+    return v[0]
+}
+
+// Fine: another field of the element, or a view that has ended.
+struct Tagged {
+    names: Vec<string>
+    tag: i64
+}
+
+func other_field(mutate items: Vec<Tagged>) -> string {
+    let v = items[0].names
+    items[0].tag = 7
+    return v[0]
+}
+
+func view_ended(mutate s: Shelf) -> string {
+    mut first = ""
+    if true {
+        let v = s.boxes[0].names
+        first = v[0]
+    }
+    s.wipe_all()
+    return first
+}
+
+func main() {
+    mut s = Shelf(boxes: [Box(names: ["hello"])])
+    println(view_ended(mutate s))
+    mut items: Vec<Tagged> = [Tagged(names: ["x"], tag: 1)]
+    println(other_field(mutate items))
+}

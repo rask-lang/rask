@@ -54,7 +54,7 @@ Views into fixed sources (struct fields, arrays) persist until the block ends.
 
 | Rule | Description |
 |------|-------------|
-| **S1: Block duration** | View valid from creation until end of enclosing block |
+| **S1: Block duration** | View valid from creation until end of enclosing block. A view is a `let` of a non-Copy field (`let old = s.f`), including one reached through an element (`let v = s.boxes[0].names`), and what a `match` arm or `if x is V(p)` binds out of a place (`match self.state { Running(job) => … }`: `job` is a view of `self.state` for the arm). Writing over the viewed place while the view is in scope is an error (E0958); so is removing the element it sits in |
 | **S2: Source outlives borrow** | Source must be valid for borrow's entire duration |
 | **S3: No escape** | Cannot store in struct, return, send cross-task, or hand to a `take` parameter — `m.get(k)!.as_array()` gives `as_array(take self)` a value `m` still holds |
 | **S4: Duration extension** | Borrowing a temporary extends its duration to match borrow |
