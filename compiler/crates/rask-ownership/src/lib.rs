@@ -8652,9 +8652,38 @@ impl<'a> OwnershipChecker<'a> {
         self.self_param_of(object, method_name) == Some(rask_types::SelfParam::Mutate)
     }
 
+    /// How interface `id` (or one it extends) declares `method_name`'s receiver.
+    fn interface_self_param(
+        &self,
+        id: rask_types::TypeId,
+        method_name: &str,
+        seen: &mut Vec<rask_types::TypeId>,
+    ) -> Option<rask_types::SelfParam> {
+        if seen.contains(&id) {
+            return None;
+        }
+        seen.push(id);
+        let Some(rask_types::TypeDef::Interface { methods, super_interfaces, .. }) = self.program.types.get(id) else {
+            return None;
+        };
+        if let Some(m) = methods.iter().find(|m| m.name == method_name) {
+            return Some(m.self_param);
+        }
+        super_interfaces.iter().find_map(|parent| {
+            let pid = self.program.types.parent_interface(id, parent)?;
+            self.interface_self_param(pid, method_name, seen)
+        })
+    }
+
     /// How a method takes its receiver, looked up from the receiver's type.
     fn self_param_of(&self, object: &Expr, method_name: &str) -> Option<rask_types::SelfParam> {
         if let Some(ty) = self.node_ty(&object.id) {
+            // Through `any Interface` the interface says how the method takes
+            // its receiver. A `take self` called on a loop's lent item or a
+            // borrowed parameter has to be refused like the concrete call is.
+            if let Type::InterfaceObject { decl: Some(id), .. } = ty {
+                return self.interface_self_param(*id, method_name, &mut Vec::new());
+            }
             // By id: a stdlib type arrives as its own *name* when the call that
             // produced it went through the module-function path, so
             // `io.stdout()` gives back `UnresolvedNamed("Stdout")` (#859).

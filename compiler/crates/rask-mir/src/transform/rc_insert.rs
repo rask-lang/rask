@@ -630,7 +630,7 @@ fn insert_aggregate_release(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::InterfaceDrop { interface_object, owns: false } => Some(*interface_object),
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Borrows } => Some(*interface_object),
             _ => None,
         })
         .collect();
@@ -664,6 +664,45 @@ fn insert_aggregate_release(
             }
         }
         false
+    };
+
+    // The values a box only views, by every name the box goes by. A `take self`
+    // call through the box consumes what is inside, and those values are given
+    // up there on that path (the box was dropped as a borrower on the others).
+    let lent_to_box: HashMap<LocalId, Vec<LocalId>> = {
+        let mut lent: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::InterfaceBox { dst, value, .. } = &stmt.kind {
+                if let Some(v) = uses::operand_local(value).filter(|_| reaches_a_drop(*dst)) {
+                    lent.entry(*dst).or_default().push(v);
+                }
+            }
+        }
+        let mut changed = !lent.is_empty();
+        while changed {
+            changed = false;
+            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                let (dst, srcs): (LocalId, Vec<LocalId>) = match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                        (*dst, vec![*src])
+                    }
+                    MirStmtKind::Phi { dst, args } => {
+                        (*dst, args.iter().filter_map(|(_, op)| uses::operand_local(op)).collect())
+                    }
+                    _ => continue,
+                };
+                for src in srcs {
+                    for v in lent.get(&src).cloned().unwrap_or_default() {
+                        let into = lent.entry(dst).or_default();
+                        if !into.contains(&v) {
+                            into.push(v);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        lent
     };
 
     // Names that may come to name an aggregate or read into one: the
@@ -1047,6 +1086,11 @@ fn insert_aggregate_release(
                         .filter(|v| !retained.contains(v) && !retained_for_this.contains(v))
                     {
                         hand_over(&mut ev, v);
+                    }
+                }
+                MirStmtKind::InterfaceCall { interface_object, takes_receiver: true, .. } => {
+                    for v in lent_to_box.get(interface_object).into_iter().flatten() {
+                        hand_over(&mut ev, *v);
                     }
                 }
                 MirStmtKind::InterfaceBox { dst, value, .. } => {

@@ -58,7 +58,7 @@ struct Site {
 /// Give each group of disagreeing create sites its own copy of the body.
 pub fn specialize_adapters(fns: &mut Vec<MirFunction>) {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
-    let callee_escapes = crate::closures::build_callee_escape_map(fns, true);
+    let callee_escapes = crate::closures::build_callee_escape_map(fns, crate::closures::CaptureRule::HeapClosure);
 
     let mut sites: HashMap<String, Vec<(Site, Fingerprint)>> = HashMap::new();
     for (fi, func) in fns.iter().enumerate() {

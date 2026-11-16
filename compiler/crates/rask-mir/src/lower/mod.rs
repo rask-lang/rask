@@ -464,6 +464,7 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -503,6 +504,11 @@ impl<'a> MirContext<'a> {
 
     pub fn with_interface_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
         self.interface_methods = methods;
+        self
+    }
+
+    pub fn with_interface_take_self(mut self, methods: HashMap<String, std::collections::HashSet<String>>) -> Self {
+        self.interface_take_self = methods;
         self
     }
 
@@ -618,6 +624,9 @@ pub struct MirContext<'a> {
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
+    /// The methods of each interface declared `take self`, by the same keys.
+    /// A call through `any Interface` to one of these consumes the box.
+    pub interface_take_self: HashMap<String, std::collections::HashSet<String>>,
     /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
     pub interface_coercions: &'a HashMap<NodeId, String>,
     /// See `TypedProgram::arm_widenings`.
@@ -980,6 +989,7 @@ impl<'a> MirContext<'a> {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -8077,6 +8087,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -8179,6 +8190,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -8288,6 +8300,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,

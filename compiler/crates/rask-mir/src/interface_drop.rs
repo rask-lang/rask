@@ -3,7 +3,8 @@
 //! Interface-object drop insertion.
 //!
 //! `InterfaceBox` heap-allocates and copies a concrete value once to build an
-//! `any Interface` fat pointer; `InterfaceCall` reads through it without consuming.
+//! `any Interface` fat pointer; `InterfaceCall` reads through it, and consumes
+//! it only when the method is declared `take self`.
 //! Nothing else in the pipeline ever dropped it (#366) — every interface object
 //! leaked its heap allocation unconditionally.
 //!
@@ -18,6 +19,11 @@
 //! left (created, only ever read through `InterfaceCall`, never hands off
 //! ownership) gets a `InterfaceDrop` before the function returns and before each
 //! loop back-edge it's still alive at.
+//!
+//! A `take self` call hands the box over like any other consumption. The method
+//! releases what is inside, so the frame frees the block alone, right after the
+//! call (`BoxRelease::Taken`), and `rc_insert` gives up the value a borrowing
+//! box was viewing on that path.
 //!
 //! Tracking starts from `InterfaceBox` destinations only — not every local typed
 //! as an interface object. Reading one back out of existing storage (a struct
@@ -59,10 +65,10 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
     // was small enough to inline, which is why one `io.copy` in a file was
     // clean and two leaked five buffers.
     //
-    // `heap_captures_only: false` — a parameter captured by *any* closure
-    // counts as escaping here. Erring that way leaks; erring the other way is
-    // a double free.
-    let callee_escapes = crate::closures::build_callee_escape_map(fns, false);
+    // A parameter captured by *any* closure counts as escaping here. Erring
+    // that way leaks; erring the other way is a double free.
+    let callee_escapes =
+        crate::closures::build_callee_escape_map(fns, crate::closures::CaptureRule::AnyClosure);
     // And which functions hand a fresh box *back*, which makes their caller the
     // owner. `return Boom.Bad` in a `-> i64 or Error` boxes the enum and
     // returns it, and the caller read the box out of the wrapper and dropped
@@ -446,7 +452,11 @@ fn insert_for_function(
     let drop_of = |interface_object: LocalId| {
         MirStmt::dummy(MirStmtKind::InterfaceDrop {
             interface_object,
-            owns: owning.contains(&interface_object),
+            release: if owning.contains(&interface_object) {
+                crate::BoxRelease::Owns
+            } else {
+                crate::BoxRelease::Borrows
+            },
         })
     };
     let guards = crate::analysis::ownership::Guards::new(func, &plan);
@@ -479,21 +489,48 @@ fn insert_for_function(
         ),
     );
     guards.finish(func);
+
+    // A box a `take self` call consumed still has its block. Nothing else
+    // frees it, and what is inside went to the method.
+    for block in &mut func.blocks {
+        let mut at = 0;
+        while at < block.statements.len() {
+            let consumed = match &block.statements[at].kind {
+                MirStmtKind::InterfaceCall { interface_object, takes_receiver: true, .. }
+                    if interface_locals.contains(interface_object) =>
+                {
+                    Some(*interface_object)
+                }
+                _ => None,
+            };
+            at += 1;
+            if let Some(interface_object) = consumed {
+                block.statements.insert(
+                    at,
+                    MirStmt::dummy(MirStmtKind::InterfaceDrop {
+                        interface_object,
+                        release: crate::BoxRelease::Taken,
+                    }),
+                );
+                at += 1;
+            }
+        }
+    }
 }
 
 /// The names whose drop releases the boxed value too, not only the block.
 ///
 /// A box owns what was moved into it. Two kinds of box reach a drop here
 /// owning their value: one a callee handed back (it moved the value in and
-/// returned the box), and one boxed in this frame from a value built for the
-/// box and read by nothing else — `return HttpRegistry { url: path }` once
-/// `make` is inlined. Releasing those through the frame's own copy of the
+/// returned the box), and one boxed in this frame from a literal written at
+/// the box (`InterfaceBox.owns_value`) — `return HttpRegistry { url: path }`
+/// once `make` is inlined. Releasing those through the frame's own copy of the
 /// value can't work everywhere: with the box picked in a branch, the value is
 /// a different struct on each path, and no one name holds it after the join.
 /// The box does, so its drop releases what is in it (#1424).
 ///
-/// A box built for a call from a value the frame goes on using borrows it, and
-/// its drop frees the block alone. A drop reached by both kinds can't do both,
+/// A box made from a name the frame goes on holding borrows it, and its drop
+/// frees the block alone. A drop reached by both kinds can't do both,
 /// so it borrows, and so does every other drop those boxes reach: `rc_insert`
 /// hands a box's value over only when every drop it reaches owns.
 fn drops_that_own(
@@ -514,7 +551,7 @@ fn drops_that_own(
 
     // What each name was copied from.
     let mut copied_from: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
-    let mut boxed_from: HashMap<LocalId, LocalId> = HashMap::new();
+    let mut boxed_value: HashMap<LocalId, bool> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         match &stmt.kind {
             MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
@@ -527,18 +564,16 @@ fn drops_that_own(
                     }
                 }
             }
-            MirStmtKind::InterfaceBox { dst, value, .. } => {
-                if let MirOperand::Local(src) = value {
-                    boxed_from.insert(*dst, *src);
-                }
+            MirStmtKind::InterfaceBox { dst, owns_value, .. } => {
+                boxed_value.insert(*dst, *owns_value);
             }
             _ => {}
         }
     }
-    let owns_its_value = |maker: LocalId| match boxed_from.get(&maker) {
-        Some(src) => built_for_the_box(func, *src),
-        // A box boxed from a constant, or one a callee handed back or that
-        // came out of a wrapper: the value is the box's.
+    let owns_its_value = |maker: LocalId| match boxed_value.get(&maker) {
+        Some(owns) => *owns,
+        // One a callee handed back or that came out of a wrapper: the value
+        // is the box's.
         None => true,
     };
 
@@ -579,36 +614,6 @@ fn drops_that_own(
             return owning;
         }
     }
-}
-
-/// Is `value` a struct or enum built for one box and nothing else? Filled
-/// field by field, never a copy of another name, and read by exactly one
-/// statement: the `InterfaceBox`.
-fn built_for_the_box(func: &MirFunction, value: LocalId) -> bool {
-    use crate::analysis::uses;
-    if func.params.iter().any(|p| p.id == value) {
-        return false;
-    }
-    let ty_of = local_types(func);
-    if !matches!(ty_of.get(&value), Some(MirType::Struct(_)) | Some(MirType::Enum(_))) {
-        return false;
-    }
-    let mut boxes = 0;
-    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        if uses::stmt_def(stmt) == Some(value) {
-            return false;
-        }
-        if !uses::stmt_reads(stmt, value) {
-            continue;
-        }
-        match &stmt.kind {
-            MirStmtKind::Store { addr, value: v, .. }
-                if *addr == value && uses::operand_local(v) != Some(value) => {}
-            MirStmtKind::InterfaceBox { value: MirOperand::Local(v), .. } if *v == value => boxes += 1,
-            _ => return false,
-        }
-    }
-    boxes == 1 && !func.blocks.iter().any(|b| uses::terminator_reads(&b.terminator, value))
 }
 
 /// What each statement does to the boxes this frame may hold.
@@ -656,7 +661,19 @@ fn box_facts(
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
+                MirStmtKind::ClosureCall { args, .. } => {
+                    for arg in args {
+                        give(&mut ev, arg);
+                    }
+                }
+                // A call through a vtable lends its receiver, unless the
+                // method is declared `take self`: then the box is the call's.
+                // The method releases what is inside, and the frame frees the
+                // block right after (`insert_for_function`).
+                MirStmtKind::InterfaceCall { interface_object, args, takes_receiver, .. } => {
+                    if *takes_receiver {
+                        give(&mut ev, &MirOperand::Local(*interface_object));
+                    }
                     for arg in args {
                         give(&mut ev, arg);
                     }
@@ -817,6 +834,7 @@ mod tests {
             concrete_size: 32,
             concrete_align: 8,
             vtable_name: ".vtable.Loud__Speaker".into(),
+            owns_value: false,
         })
     }
 
@@ -827,6 +845,7 @@ mod tests {
             method_name: "speak".into(),
             vtable_offset: crate::vtable_layout::method_offset(0),
             args: vec![],
+            takes_receiver: false,
         })
     }
 
