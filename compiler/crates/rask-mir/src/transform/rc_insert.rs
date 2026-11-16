@@ -1136,7 +1136,7 @@ fn insert_aggregate_release(
                         (*dst, args.iter().filter_map(uses::operand_local).collect())
                     }
                     MirStmtKind::Call { func: fref, dst: Some(dst), args }
-                        if crate::own_names::returns_a_view(&fref.name, own) =>
+                        if crate::own_names::returns_a_view(fref, own) =>
                     {
                         (*dst, args.first().and_then(uses::operand_local).into_iter().collect())
                     }

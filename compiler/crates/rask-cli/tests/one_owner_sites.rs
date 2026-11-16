@@ -66,7 +66,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 211,
+        today: 209,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",

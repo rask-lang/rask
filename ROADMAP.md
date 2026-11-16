@@ -436,7 +436,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 239 sites restate a fact, 232 to go.**
+ratchet at its target. Today: 222 sites restate a fact, 215 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
