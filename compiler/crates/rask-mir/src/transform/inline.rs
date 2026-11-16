@@ -898,7 +898,9 @@ fn remap_stmt(
                 })
                 .collect(),
         },
-        MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
+        MirStmtKind::EnsureHookPop { kept } => MirStmtKind::EnsureHookPop {
+            kept: kept.iter().map(|l| local_map.get(l).copied().unwrap_or(*l)).collect(),
+        },
         // Inlining runs before any release pass arms a slot, so these never
         // reach here; copied, they'd keep the callee's slot numbers.
         MirStmtKind::UnwindArm { slot, value, release } => MirStmtKind::UnwindArm {
