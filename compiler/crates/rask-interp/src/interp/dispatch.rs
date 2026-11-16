@@ -22,11 +22,16 @@ impl Interpreter {
     /// else, with no `mutate` marker, so the binding is read back out before
     /// the scope is popped. Whether the closure was *allowed* to write is the
     /// checker's business, and it already enforces `mutate`.
+    ///
+    /// The element comes back even when the call fails: a panic after the
+    /// closure wrote `x = 99` leaves 99 behind, as the closure works on the
+    /// element in place natively (#1926). The caller writes it back and then
+    /// passes the failure on.
     pub(crate) fn call_closure_keeping_arg(
         &mut self,
         func: Value,
         args: Vec<Value>,
-    ) -> Result<(Value, Option<Value>), RuntimeError> {
+    ) -> (Result<Value, RuntimeError>, Option<Value>) {
         if let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = func {
             self.enter_closure(&captured_env, &lent, &generics);
             let first = params.first().cloned();
@@ -42,10 +47,10 @@ impl Interpreter {
             let value = match result {
                 // A `try` in the body leaves the closure, as a `return` does,
                 // with the error as its result (#1781).
-                Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => closure_result(v, wraps_ok),
-                Err(e) => return Err(e),
+                Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => Ok(closure_result(v, wraps_ok)),
+                Err(e) => Err(e),
             };
-            return Ok((value, final_arg));
+            return (value, final_arg);
         }
         // A named function does declare `mutate`: lend it storage for the
         // argument, and read that back.
@@ -64,7 +69,7 @@ impl Interpreter {
         });
         let value = self.call_value(func, args);
         self.lent_args = None;
-        Ok((value?, lent.and_then(|cell| cell.get())))
+        (value, lent.and_then(|cell| cell.get()))
     }
 
     /// Call a value, keeping where the failure happened.

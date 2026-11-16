@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A fixed-size array `[T; N]` is a value: binding it, assigning it or reading
+// it out of a field gives the new owner a copy of its own. The interpreter
+// used to hand out the same storage, so a write through one name showed up in
+// the other (#1908). A `Vec` is a handle and still moves, not copies.
+
+struct Holder {
+    one: [i64; 2]
+}
+
+func zero_first(mutate a: [i64; 2]) -> i64 {
+    let t = a
+    a[0] = 0
+    return t[0]
+}
+
+func take_copy(a: [i64; 2]) -> i64 {
+    mut b = a
+    b[0] = 100
+    return b[0]
+}
+
+test "binding an array copies it" {
+    mut a = [1, 2]
+    mut b = a
+    b[0] = 9
+    assert a[0] == 1
+    assert b[0] == 9
+}
+
+test "a copy taken inside a mutate parameter keeps the old value" {
+    mut a = [5, 6]
+    let old = zero_first(mutate a)
+    assert old == 5
+    assert a[0] == 0
+}
+
+test "a copy read from a field does not follow later writes to the field" {
+    mut s = Holder(one: [3, 4])
+    let t = s.one
+    s.one[0] = 77
+    assert t[0] == 3
+    assert s.one[0] == 77
+}
+
+test "a by-value array argument is the callee's own" {
+    let a = [1, 2]
+    assert take_copy(a) == 100
+    assert a[0] == 1
+}
+
+test "assigning an array to a field copies it" {
+    mut a = [1, 2]
+    mut s = Holder(one: [0, 0])
+    s.one = a
+    a[1] = 50
+    assert s.one[1] == 2
+}
+
+test "repeat literal builds independent rows" {
+    mut grid = [[0; 2]; 2]
+    grid[0][0] = 7
+    assert grid[1][0] == 0
+}
+
+test "a Vec still moves and keeps one storage" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    mut w = v
+    w.push(2)
+    assert w.len() == 2
+}

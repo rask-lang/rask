@@ -357,6 +357,16 @@ fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Con
 
 /// A declared type's name, as the id it resolves to — so two spellings of one
 /// type compare equal.
+/// The name a written type's declaration is filed under: `Response` for
+/// `h.Response` under `import http as h`. A backend that keeps declarations by
+/// bare name asks this instead of reading the spelling, which says where the
+/// program reached the type from and not which type it is.
+pub fn declared_name(types: &TypeTable, ty: &TypeExpr) -> Option<String> {
+    let resolved = named(types, resolve_type_expr(ty, types).ok()?);
+    let id = types.conformance_target(&resolved)?;
+    Some(types.type_name(id).to_string())
+}
+
 fn named(types: &TypeTable, ty: Type) -> Type {
     match &ty {
         Type::UnresolvedNamed(n) => types.get_type_id(n).map(Type::Named).unwrap_or(ty),

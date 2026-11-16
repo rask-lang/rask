@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Names that reach a type through another spelling (#1832).
+//
+// `match h { HB.Full(b) => .. }` against a `type alias HB = Holder<Big>` found
+// no arm in the interpreter: the pattern said `HB`, the value was built as
+// `Holder`, and the two names were compared as text.
+//
+// `reflect.fields<h.Response>()` under `import http as h` failed with "not a
+// struct type": the interpreter looked the spelling `h.Response` up as if it
+// were a declaration's name, and `h` is only what this file calls `http`.
+import http as h
+import std.reflect
+struct Big {
+    a: string
+    b: string
+    c: i64
+}
+
+enum Holder<T> {
+    Full(T)
+    Empty
+}
+
+type alias HB = Holder<Big>
+
+func name_of(h: HB) -> string {
+    match h {
+        HB.Full(b) => return "full {b.a}",
+        HB.Empty => return "empty",
+    }
+}
+
+func is_full(h: HB) -> bool {
+    return !(h is HB.Empty)
+}
+
+func main() {}
+
+test "matching through a type alias finds the arm" {
+    assert name_of(HB.Full(Big(a: "a", b: "b", c: 1))) == "full a"
+    assert name_of(HB.Empty) == "empty"
+}
+
+test "an `is` test through a type alias" {
+    assert is_full(HB.Full(Big(a: "a", b: "b", c: 1)))
+    assert !is_full(HB.Empty)
+}
+
+test "reflect.fields through a module alias finds the struct" {
+    let fs = reflect.fields<h.Response>()
+    assert fs.len() == 3
+    assert fs[0].name == "status"
+    assert fs[1].name == "headers"
+    assert fs[2].name == "body"
+}
+
+test "reflect.has_field through a module alias" {
+    assert reflect.has_field<h.Response>("status")
+    assert !reflect.has_field<h.Response>("nope")
+}

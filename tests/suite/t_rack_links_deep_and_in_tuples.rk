@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link is an edge wherever it is stored, however deep (mem.racks/RK15).
+// The interpreter's walks stopped at a fixed depth, so a link nested about
+// 16 levels down was never recorded and deleting its target left it pointing
+// at a dead node (#1837). And a struct inside a tuple inside a `Vec` was
+// never walked at all, so its link survived the delete (#1844).
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Tree {
+    at: Link<Leaf>?
+    kids: Vec<Tree>
+}
+
+struct Pin {
+    at: Link<Leaf>?
+}
+
+// The link at the bottom of the chain of single-child trees.
+func innermost_link_is_none(t: Tree) -> bool {
+    if t.kids.len() == 0 {
+        return t.at is none
+    }
+    return innermost_link_is_none(t.kids[0])
+}
+
+func nested_link_survives(depth: i32) -> bool {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut t = Tree(at: a, kids: Vec.new())
+    for _i in 0..depth {
+        mut v: Vec<Tree> = Vec.new()
+        v.push(t)
+        t = Tree(at: none, kids: v)
+    }
+    let c = t.clone()
+    leaves.delete(a)
+    return innermost_link_is_none(c)
+}
+
+test "a link 4 levels down is nulled by delete" {
+    assert nested_link_survives(4)
+}
+
+test "a link 15 levels down is nulled by delete" {
+    assert nested_link_survives(15)
+}
+
+test "a link 20 levels down is nulled by delete" {
+    assert nested_link_survives(20)
+}
+
+test "a link 60 levels down is nulled by delete" {
+    assert nested_link_survives(60)
+}
+
+test "a link in a struct in a tuple in a Vec is nulled by delete" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let b = leaves.insert(Leaf(id: 2))
+    mut v: Vec<(Pin, i32)> = Vec.new()
+    v.push((Pin(at: b), 1))
+    leaves.delete(b)
+    assert v[0].0.at is none
+    assert v[0].1 == 1
+}
+
+test "a link in a struct in a tuple in a Vec built whole is nulled by delete" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let b = leaves.insert(Leaf(id: 3))
+    let v: Vec<(Pin, i32)> = [(Pin(at: b), 7), (Pin(at: b), 8)]
+    let w = v.clone()
+    leaves.delete(b)
+    assert w[0].0.at is none
+    assert w[1].0.at is none
+}

@@ -200,7 +200,7 @@ impl Interpreter {
                 let items = (0..*len)
                     .map(|i| self.read_bytes(elem, bytes, at + i * elem_size as usize))
                     .collect::<Result<Vec<_>, _>>()?;
-                Value::vec(items)
+                Value::array(items)
             }
             Type::Tuple(elems) => {
                 let mut offset = 0u32;
