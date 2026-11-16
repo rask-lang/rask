@@ -404,8 +404,19 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                 Some(dst) if rewritable.contains(&dst) => {
                     let ty = ty_of(dst);
                     let tmp = new_temp(&ty, dst, &mut fresh);
+                    let reads_old = uses::stmt_reads(&stmt, dst);
                     redirect_def(&mut stmt, tmp);
                     out.push(stmt);
+                    // An aggregate written whole is a new value in its slot:
+                    // the release pass then gives back the one it held, which
+                    // a closure borrowing the slot knows nothing about
+                    // (`c = mk(2)` after `let f = || c.label.len()` leaked the
+                    // first `c`, #1839). Not when the new value is built from
+                    // the old one, which the zeroing would wipe, and not an
+                    // array, whose copy on assignment has its own release.
+                    if ty.passed_by_address() && !matches!(ty, MirType::Array { .. }) && !reads_old {
+                        out.push(MirStmt::new(MirStmtKind::ZeroAggregate { local: dst }, span));
+                    }
                     out.push(MirStmt::new(
                         MirStmtKind::Store {
                             addr: dst,

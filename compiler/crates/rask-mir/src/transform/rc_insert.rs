@@ -928,6 +928,41 @@ fn insert_aggregate_release(
         caller_slots: held.iter().copied().filter(|p| tracked.contains(p)).collect(),
     };
 
+    // The variables a stack closure holds the address of, by closure name
+    // (and its copies): whatever uses the closure may read them.
+    let slot_captures: HashMap<LocalId, Vec<LocalId>> = {
+        let mut map: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+        for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::ClosureCreate { dst, captures, heap, .. } = &st.kind {
+                if !*heap || closures_dropped.contains(dst) {
+                    let slots: Vec<LocalId> = captures
+                        .iter()
+                        .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && tracked.contains(&c.local_id) && !matches!(ty_of.get(&c.local_id), Some(MirType::Array { .. })))
+                        .map(|c| c.local_id)
+                        .collect();
+                    if !slots.is_empty() {
+                        map.insert(*dst, slots);
+                    }
+                }
+            }
+        }
+        let mut changed = !map.is_empty();
+        while changed {
+            changed = false;
+            for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &st.kind {
+                    if let Some(slots) = map.get(src).cloned() {
+                        if !map.contains_key(dst) {
+                            map.insert(*dst, slots);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        map
+    };
+
     for block in &func.blocks {
         // Slots this block has given back and not yet written over. A store
         // that follows a release is a *replacement*, not the end of the value:
@@ -1214,6 +1249,25 @@ fn insert_aggregate_release(
                     // captured by `|| println(held.text)` was never released
                     // (#1448). Only a closure that leaves carries its captures.
                     if !*heap || closures_dropped.contains(dst) {
+                        // A stack closure holds the variable's address, not
+                        // a value: it reads whatever the slot holds when it
+                        // is called, so it keeps the *name* needed for as
+                        // long as it is used (`slot_captures`, below) and
+                        // isn't a view of the value the slot held when the
+                        // closure was made. A view of that value outlived
+                        // the slot's next value, and nothing was left to
+                        // release it (#1839).
+                        //
+                        // Not an array: reassigning one goes through the
+                        // array copy (`reads_caller_array_slot`), whose own
+                        // release already sits after the store, and giving
+                        // the slot a release of its own on top frees it twice.
+                        let by_slot: Vec<LocalId> = captures
+                            .iter()
+                            .filter(|c| c.by_ref && aggregates.contains(&c.local_id) && is_tracked(&c.local_id) && !matches!(ty_of.get(&c.local_id), Some(MirType::Array { .. })))
+                            .map(|c| c.local_id)
+                            .collect();
+                        let caps: Vec<LocalId> = caps.into_iter().filter(|c| !by_slot.contains(c)).collect();
                         if caps.is_empty() {
                             ev.push(ownership::Event::Other(*dst));
                         }
@@ -1345,7 +1399,10 @@ fn insert_aggregate_release(
                             uses::operand_local(value) == Some(*name) || replaces
                         }
                         _ => uses::stmt_reads(stmt, *name),
-                    } || copy_reads.get(&si) == Some(name);
+                    } || copy_reads.get(&si) == Some(name)
+                        || slot_captures
+                            .iter()
+                            .any(|(cl, slots)| slots.contains(name) && uses::stmt_reads(stmt, *cl));
                     if reads {
                         r.push(*name);
                     }
@@ -1394,7 +1451,13 @@ fn insert_aggregate_release(
                 .names
                 .iter()
                 .copied()
-                .filter(|n| uses::terminator_reads(&block.terminator, *n) || handed_back.contains(n))
+                .filter(|n| {
+                    uses::terminator_reads(&block.terminator, *n)
+                        || handed_back.contains(n)
+                        || slot_captures
+                            .iter()
+                            .any(|(cl, slots)| slots.contains(n) && uses::terminator_reads(&block.terminator, *cl))
+                })
                 .collect(),
         );
     }
