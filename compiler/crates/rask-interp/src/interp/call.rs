@@ -602,6 +602,12 @@ pub(super) fn optional_depth(ty: &TypeExpr) -> usize {
         TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Option" && args.len() == 1 => {
             1 + optional_depth(&args[0])
         }
+        // `T or none` is `T?` (type.optionals/OPT1): the parser reads it as a
+        // result whose error type is `none`, the long spelling of the same
+        // type, so a `none` or a bare `T` stored under it takes the same layer.
+        TypeExpr::Result { ok, err } if matches!(&**err, TypeExpr::NoneType) => {
+            1 + optional_depth(ok)
+        }
         _ => 0,
     }
 }
