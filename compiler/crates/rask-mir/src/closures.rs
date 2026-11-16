@@ -30,7 +30,7 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 ///
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, false);
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure);
     let kept = KeptThroughCalls::build(fns);
 
     for func in fns.iter_mut() {
@@ -118,7 +118,7 @@ impl KeptThroughCalls {
 /// that ends up holding the thing, so it can only be asked once inlining has
 /// settled which frame that is.
 pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, true);
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
 
     // A function that hands a heap closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
@@ -513,7 +513,7 @@ fn decide_allocation(
 /// `MirFunction`s that share nothing but the name. So a closure handed on in one
 /// frame captures by value in all of them.
 pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
-    let callee_escapes = build_callee_escape_map(fns, true);
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
     let routes = build_param_routes(fns);
     let kept = KeptThroughCalls::build(fns);
     let mut names = HashSet::new();
@@ -924,6 +924,7 @@ fn closure_facts(
     let tracked: std::collections::BTreeSet<LocalId> = aliases.map.keys().copied().collect();
     let is = |l: &LocalId| tracked.contains(l);
     let mut facts = crate::analysis::ownership::Facts {
+        moved_parts: Default::default(),
         names: tracked.clone(),
         events: Vec::new(),
         terminator_events: Vec::new(),
@@ -1008,6 +1009,40 @@ fn closure_facts(
     facts
 }
 
+/// Closures a function reads out of a join's result and returns.
+///
+/// A task that ends in a closure hands it over through the join as a boxed
+/// payload, and the joiner is the only one left holding it: the task's frame is
+/// gone and the handle was consumed. `return h.join()!` reads it out of the
+/// result wrapper with a field read, which no other rule saw as a source, so a
+/// function written that way didn't count as handing a closure back and its
+/// caller never freed the one it got.
+fn closures_out_of_joins(func: &MirFunction) -> Vec<LocalId> {
+    let mut joined: HashSet<LocalId> = HashSet::new();
+    let mut out = Vec::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                    if matches!(callee.name.as_str(), "Handle_join" | "Handle_cancel") =>
+                {
+                    joined.insert(*dst);
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: crate::MirRValue::Field { base: MirOperand::Local(base), .. },
+                } if joined.contains(base)
+                    && matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
+                {
+                    out.push(*dst);
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 /// The `ClosureCreate` destinations in a function.
 fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     let mut found = HashMap::new();
@@ -1058,6 +1093,9 @@ fn functions_handing_back_a_closure(
                     _ => {}
                 }
             }
+            for id in closures_out_of_joins(func) {
+                owned.insert(id, true);
+            }
             if owned.is_empty() {
                 continue;
             }
@@ -1081,6 +1119,31 @@ fn functions_handing_back_a_closure(
     }
 }
 
+/// How a parameter that a closure captures counts in the callee escape map.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureRule {
+    /// Every capture counts, whatever the closure does. For a question that
+    /// has no closure to ask about: a boxed interface value captured by any
+    /// closure is left to it (a leak beats a double free).
+    AnyClosure,
+    /// Only a capture by a closure already on the heap. A stack environment
+    /// dies with the frame, so the caller is still the owner.
+    /// `seq.reduce(|a, b| a + b)` is that case: the `for x in self` desugar
+    /// captures `f` into a scope-limited yield closure, so every closure
+    /// passed to a terminal read as given away and nobody freed it.
+    HeapClosure,
+    /// Only a capture by a closure that leaves its frame, worked out from the
+    /// map as it stands. For deciding stack or heap, when no closure has been
+    /// put on either yet.
+    ///
+    /// Counting every capture here said that a function which only calls a
+    /// closure it captured into a local closure (`let g = || { f() }; g()`)
+    /// gives `f` away. Its caller then put `f` on the heap, which copies what
+    /// it captures, and `f`'s write to the caller's variable landed in the
+    /// copy (#1886).
+    EscapingClosure,
+}
+
 /// Build a map of callee name → per-parameter escape info.
 ///
 /// For each function, checks whether each parameter escapes (appears in
@@ -1088,18 +1151,12 @@ fn functions_handing_back_a_closure(
 /// parameter means the function only uses it locally (e.g., via ClosureCall).
 /// Which parameters each function gives away, by name.
 ///
-/// `heap_captures_only` picks how strictly a captured parameter counts. While
-/// allocation is still being decided there is no answer to "does the closure
-/// that captured it escape", so every capture counts (a leak beats a
-/// use-after-free). Once the decisions are made, only a *heap* capture takes
-/// the parameter anywhere: a stack environment dies with the frame, so the
-/// caller is still the owner. `seq.reduce(|a, b| a + b)` is that case — the
-/// `for x in self` desugar captures `f` into a scope-limited yield closure, so
-/// every closure passed to a terminal read as given away and nobody freed it.
+/// `rule` picks how a parameter captured by a closure counts; see `CaptureRule`.
 pub(crate) fn build_callee_escape_map(
     fns: &[MirFunction],
-    heap_captures_only: bool,
+    rule: CaptureRule,
 ) -> HashMap<String, Vec<bool>> {
+    let kept = (rule == CaptureRule::EscapingClosure).then(|| KeptThroughCalls::build(fns));
     // Start from "nothing escapes" and keep adding until nothing new appears.
     // Handing a parameter on is only an escape if the callee lets it escape,
     // and that answer is this same map — so one pass can't compute it. A single
@@ -1120,11 +1177,24 @@ pub(crate) fn build_callee_escape_map(
     loop {
         let mut changed = false;
         for func in fns {
+            // Which of this frame's closures leave it, under the answers so far.
+            // They only ever grow, so the loop still settles.
+            let leaving = match &kept {
+                Some(kept) => {
+                    let created = created_closures(func);
+                    if created.is_empty() {
+                        HashSet::new()
+                    } else {
+                        find_escaping_closures(func, &created, &map, kept)
+                    }
+                }
+                None => HashSet::new(),
+            };
             for (i, p) in func.params.iter().enumerate() {
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, heap_captures_only, &map) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1145,14 +1215,15 @@ pub(crate) fn build_callee_escape_map(
 fn param_escapes_from(
     func: &MirFunction,
     param_id: LocalId,
-    heap_captures_only: bool,
+    rule: CaptureRule,
+    leaving: &HashSet<LocalId>,
     known: &HashMap<String, Vec<bool>>,
 ) -> bool {
     // A task block takes a reference of its own to a closure parameter it
     // captures (`retain_borrowed_closures_handed_on`), so for who frees what
     // the caller's reference stays the caller's. It still has to be on the
     // heap, which is the other question this map answers.
-    let tasks = if heap_captures_only { task_closures(func) } else { HashSet::new() };
+    let tasks = if rule == CaptureRule::HeapClosure { task_closures(func) } else { HashSet::new() };
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -1165,14 +1236,16 @@ fn param_escapes_from(
                 // dropped the source while the returned adapter still pointed
                 // at it (#1051).
                 //
-                // Conservative on purpose — this map is built before allocation
-                // is decided, so there is no "does the closure escape" to ask
-                // yet. Erring toward escaping costs a leak; erring the other way
-                // costs a use-after-free.
-                MirStmtKind::ClosureCreate { captures, heap, .. } => {
-                    if (*heap || !heap_captures_only)
-                        && captures.iter().any(|c| c.local_id == param_id)
-                    {
+                // Which closures count is the rule's (`CaptureRule`). Erring
+                // toward escaping costs a leak; erring the other way costs a
+                // use-after-free.
+                MirStmtKind::ClosureCreate { dst, captures, heap, .. } => {
+                    let takes_it = match rule {
+                        CaptureRule::AnyClosure => true,
+                        CaptureRule::HeapClosure => *heap,
+                        CaptureRule::EscapingClosure => leaving.contains(dst),
+                    };
+                    if takes_it && captures.iter().any(|c| c.local_id == param_id) {
                         return true;
                     }
                 }

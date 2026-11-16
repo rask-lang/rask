@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` argument has to be a place the caller may write, whatever the
+// callee is (mem.parameters/PM1, PM4). A call by name was checked against
+// the callee's signature. A call through a function value of unknown type
+// (`f: F` with no bound) was not, so a borrowed parameter could be handed out
+// as `mutate`, and native wrote through to the caller's `let` (#1921).
+
+struct Acc {
+    total: i64
+}
+
+func add(mutate acc: Acc) {
+    acc.total += 1
+}
+
+func apply<F>(f: F, acc: Acc) {
+    // ERROR: `acc` is borrowed, it can't be written through `f` [E0321]
+    f(mutate acc)
+}
+
+func apply_field<F>(f: F, acc: Acc) {
+    // ERROR: a part of a borrowed parameter is no better [E0321]
+    f(mutate acc.total)
+}
+
+func apply_const<F>(f: F) {
+    let local = Acc(total: 5)
+    // ERROR: `local` is a `let` [E0302]
+    f(mutate local)
+}
+
+// Fine: a `mutate` parameter may be passed on, and a `mut` local may be lent.
+func apply_mutable<F>(f: F, mutate acc: Acc) {
+    f(mutate acc)
+}
+
+func apply_local<F>(f: F) -> i64 {
+    mut local = Acc(total: 5)
+    f(mutate local)
+    return local.total
+}
+
+func main() {
+    mut a = Acc(total: 1)
+    apply_mutable(add, mutate a)
+    apply(add, a)
+    println("{a.total} {apply_local(add)}")
+}

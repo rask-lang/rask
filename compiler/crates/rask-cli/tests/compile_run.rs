@@ -2889,7 +2889,7 @@ fn error_held_source_resized() {
     // ... plus one through an interface object, taken to resize.
     assert_eq!(out.matches("error[E0814]").count(), 3, "for mutate: {}", out);
     assert!(
-        out.contains("`wipe_twice` can resize `v`") && out.contains("`reset` can resize `h.items`"),
+        out.contains("`wipe_twice` can resize or reorder `v`") && out.contains("`reset` can resize or reorder `h.items`"),
         "the message names the callee that would resize it: {}",
         out
     );

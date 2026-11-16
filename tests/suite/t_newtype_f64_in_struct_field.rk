@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A newtype over f64 held in a struct field.
+//
+// Native loaded the field as an integer, so `{r.s}` printed 3.5's bit pattern.
+
+type Score = f64 implements Displayable
+
+struct Rec { s: Score }
+
+func half() -> Score { return Score(3.5) }
+
+test "the field prints as a float" {
+    let r = Rec(s: half())
+    assert "{r.s}" == "3.5"
+}
+
+type Gain = f32 implements Displayable
+
+struct Mix { a: i64, g: Gain }
+
+test "an f32 newtype after another field" {
+    let m = Mix(a: 7, g: Gain(0.25))
+    assert "{m.a} {m.g}" == "7 0.25"
+}
+
+type Level = u8 implements Displayable
+
+struct Dial { before: i64, level: Level }
+
+test "an unsigned narrow newtype zero-extends" {
+    let d = Dial(before: 1, level: Level(200))
+    assert "{d.before} {d.level}" == "1 200"
+}

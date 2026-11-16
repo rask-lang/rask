@@ -104,6 +104,31 @@ impl TypeTable {
         is_param: rask_layout::IsParam,
         param_is_copy: &dyn Fn(&str) -> bool,
     ) -> CopyVerdict {
+        self.copy_verdict_for(ty, is_param, param_is_copy, false)
+    }
+
+    /// `copy_verdict_with` for a check that holds a generic body to what
+    /// `type.generics/G1a` says: a type parameter without a `Copy` bound is
+    /// assumed to move, because the body is written for every `T` and one of
+    /// them is a `Vec`. Plain `copy_verdict_with` leaves such a `T` unknown,
+    /// which is right where the checker asks again per instantiation and
+    /// wrong where nothing does (`let old = v[0]` on a `Vec<T>`, #1865).
+    pub fn copy_verdict_params_move(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> CopyVerdict {
+        self.copy_verdict_for(ty, is_param, param_is_copy, true)
+    }
+
+    fn copy_verdict_for(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+        params_move: bool,
+    ) -> CopyVerdict {
         use CopyVerdict::{Copy, Move, Unknown};
         // L1: a linear value is never Copy, whatever its size or its fields.
         // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
@@ -113,7 +138,7 @@ impl TypeTable {
         if self.is_linear_value(ty) {
             return Move;
         }
-        let verdict = |t: &Type| self.copy_verdict_with(t, is_param, param_is_copy);
+        let verdict = |t: &Type| self.copy_verdict_for(t, is_param, param_is_copy, params_move);
         let size = || self.copy_size(ty, is_param);
         match ty {
             Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
@@ -236,8 +261,18 @@ impl TypeTable {
             }
             // A type parameter is Copy where its bound says so (`T: Copy`);
             // the caller knows which names those are. Without the bound it
-            // may still be Copy at some instantiation.
-            Type::UnresolvedNamed(name) => if param_is_copy(name) { Copy } else { Unknown },
+            // may still be Copy at some instantiation, unless the caller
+            // asked for G1a's reading, where it moves. A name nobody says is
+            // a parameter nothing resolved, and that stays unknown.
+            Type::UnresolvedNamed(name) => {
+                if param_is_copy(name) {
+                    Copy
+                } else if params_move && is_param(name) {
+                    Move
+                } else {
+                    Unknown
+                }
+            }
 
             // Interface objects: never Copy (TR11 — owns heap data)
             Type::InterfaceObject { .. } => Move,

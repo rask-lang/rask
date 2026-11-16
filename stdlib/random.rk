@@ -38,6 +38,7 @@ extend random {
     /// Shuffle a vector in place (Fisher-Yates).
     @native("rask_random_shuffle")
     @ambient
+    @reorders
     public func shuffle<T>(mutate vec: Vec<T>) {}
 
     /// Pick a random element from a vector — `none` when it's empty.
@@ -86,6 +87,7 @@ extend Random {
 
     /// Shuffle a vector in place (Fisher-Yates).
     @native("rask_rng_shuffle")
+    @reorders
     public func shuffle<T>(mutate self, mutate vec: Vec<T>) {}
 
     /// Pick a random element from a vector — `none` when it's empty.

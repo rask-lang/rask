@@ -33,8 +33,12 @@ test "a panic inside modify keeps the closure's earlier writes" {
         xs.push(1)
     }
     let other = v.clone()
-    let r = Thread.spawn { change(other) }.join()
-    assert r is JoinError
+    mut panicked = false
+    using Multitasking {
+        let h = spawn { change(other) }
+        panicked = h.join() is JoinError
+    }
+    assert panicked
     with v.read() as xs {
         assert xs[0] == 99
     }

@@ -260,6 +260,7 @@ impl<'a> MirLowerer<'a> {
                     &err_ty,
                     Some(concrete),
                     interface_name,
+                    false,
                 )?;
                 match boxed {
                     MirOperand::Local(id) => (id, rask_layout::size_of(&boxed_ty, self.ctx.target())),

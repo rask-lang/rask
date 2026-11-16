@@ -361,6 +361,12 @@ impl MirType {
             // it keeps the word store. That's why this isn't just "everything
             // passed by address".
             MirType::Option(inner) => !inner.is_niche_payload(),
+            // `T or E` and a union lay their tag and payload out in the slot
+            // the same way. The literal always copied them in whole, so
+            // reading one back as a word handed out the first eight bytes as
+            // the element's address: `[f(3), f(1)]` segfaulted on `v[0]`
+            // (#1846).
+            MirType::Result { .. } | MirType::Union(_) => true,
             _ => false,
         }
     }

@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Or-patterns in a `match`: plain alternatives, alternatives inside a variant's
+// field, alternatives that bind strings, and a guard over all of them.
+//
+// Native sent an or-pattern's arm only the tag its position happened to equal,
+// so `Red | Blue` never took `Blue` and `1 | 2` never took anything.
+
+enum Color { Red, Green, Blue }
+enum Wrap { Inner(Color), Nothing }
+enum Msg { Text(string), Note(string), Tagged(Color, string), Nothing }
+
+func warm(c: Color) -> string {
+    return match c {
+        Red | Blue => "rb",
+        Green => "g",
+    }
+}
+
+func small(n: i64) -> string {
+    return match n {
+        1 | 2 => "low",
+        3 => "three",
+        _ => "other",
+    }
+}
+
+func inside(w: Wrap) -> string {
+    return match w {
+        Inner(Red | Blue) => "red or blue",
+        Inner(Green) => "green",
+        Wrap.Nothing => "nothing",
+    }
+}
+
+func text_of(m: Msg) -> string {
+    return match m {
+        Text(s) | Note(s) => "has {s}",
+        Tagged(Red | Green, s) => "warm {s}",
+        Tagged(Blue, s) => "cool {s}",
+        Msg.Nothing => "none",
+    }
+}
+
+func big_text(m: Msg) -> string {
+    return match m {
+        Text(s) | Note(s) if s.len() > 3 => "long {s}",
+        Text(s) | Note(s) => "short {s}",
+        _ => "no",
+    }
+}
+
+func pair(a: Color, b: Color) -> string {
+    return match (a, b) {
+        (Red | Green, Blue) => "rg-b",
+        (Blue, Red | Green) => "b-rg",
+        _ => "other",
+    }
+}
+
+func ints(a: i64, b: i64) -> string {
+    return match (a, b) {
+        (1 | 2, 3) => "x",
+        _ => "y",
+    }
+}
+
+test "an or-pattern in an `is` test" {
+    let c = Color.Blue
+    assert c is Red | Blue
+    assert !(c is Green | Red)
+    let m = Msg.Note("long enough")
+    assert m is Text(s) | Note(s) && s.len() > 3
+    assert !(Msg.Nothing is Text(_) | Note(_))
+}
+
+test "alternatives inside a tuple pattern" {
+    assert pair(Color.Red, Color.Blue) == "rg-b"
+    assert pair(Color.Green, Color.Blue) == "rg-b"
+    assert pair(Color.Blue, Color.Green) == "b-rg"
+    assert pair(Color.Blue, Color.Blue) == "other"
+    assert ints(1, 3) == "x"
+    assert ints(2, 3) == "x"
+    assert ints(3, 3) == "y"
+}
+
+test "plain alternatives each take the arm" {
+    assert warm(Color.Red) == "rb"
+    assert warm(Color.Green) == "g"
+    assert warm(Color.Blue) == "rb"
+    assert small(1) == "low"
+    assert small(2) == "low"
+    assert small(3) == "three"
+    assert small(4) == "other"
+}
+
+test "an or-pattern in a variant field" {
+    assert inside(Wrap.Inner(Color.Red)) == "red or blue"
+    assert inside(Wrap.Inner(Color.Blue)) == "red or blue"
+    assert inside(Wrap.Inner(Color.Green)) == "green"
+    assert inside(Wrap.Nothing) == "nothing"
+}
+
+test "alternatives bind strings" {
+    assert text_of(Msg.Text("a")) == "has a"
+    assert text_of(Msg.Note("b")) == "has b"
+    assert text_of(Msg.Tagged(Color.Green, "g")) == "warm g"
+    assert text_of(Msg.Tagged(Color.Red, "r")) == "warm r"
+    assert text_of(Msg.Tagged(Color.Blue, "b")) == "cool b"
+    assert text_of(Msg.Nothing) == "none"
+}
+
+test "a guard applies to every alternative" {
+    assert big_text(Msg.Text("abcd")) == "long abcd"
+    assert big_text(Msg.Note("abcd")) == "long abcd"
+    assert big_text(Msg.Text("ab")) == "short ab"
+    assert big_text(Msg.Note("ab")) == "short ab"
+    assert big_text(Msg.Nothing) == "no"
+}

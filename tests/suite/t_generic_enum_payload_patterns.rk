@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic enum's payload, read at the type the instance gives it, in
+// `{:debug}`, in a literal sub-pattern and in a tuple sub-pattern.
+//
+// Native read the shared layout's placeholder word: debug printed raw bits and
+// a mangled name, `is Maybe.Has("ab")` was false, and `Has((x, y))` didn't
+// compile.
+
+enum Maybe<T> { Has(T), Nope }
+enum Refusal<T> { Full(T), Other }
+
+func grow_f(i: i64) -> i64 or Refusal<f64> {
+    if i == 0 {
+        let w: f64 = 2.25
+        return Refusal.Full(w)
+    }
+    return i
+}
+
+func grow_s(i: i64) -> i64 or Refusal<string> {
+    if i == 0 {
+        return Refusal.Full("s0")
+    }
+    return i
+}
+
+test "debug prints a generic payload at its own type" {
+    assert "{grow_f(0):debug}" == "Refusal.Full(2.25)"
+    assert "{grow_s(0):debug}" == "Refusal.Full(\"s0\")"
+}
+
+struct Cell<T> { value: T, label: string }
+
+enum Plain { Has(string), Nope }
+
+func by_text(m: Maybe<string>) -> string {
+    return match m {
+        Maybe.Has("ab") => "ab",
+        Maybe.Has(s) => "other {s}",
+        Maybe.Nope => "nope",
+    }
+}
+
+func plain_text(p: Plain) -> string {
+    return match p {
+        Plain.Has("ab") => "ab",
+        Plain.Has(s) => "other {s}",
+        Plain.Nope => "nope",
+    }
+}
+
+test "debug prints a generic struct's field at its own type" {
+    let c = Cell(value: 2.25, label: "x")
+    assert "{c:debug}" == "Cell(value: 2.25, label: \"x\")"
+}
+
+test "a string literal in a variant field compares by content" {
+    assert by_text(Maybe.Has("ab")) == "ab"
+    assert by_text(Maybe.Has("zz")) == "other zz"
+    assert by_text(Maybe.Nope) == "nope"
+    assert plain_text(Plain.Has("ab")) == "ab"
+    assert plain_text(Plain.Has("zz")) == "other zz"
+}
+
+test "literal sub-pattern on a string payload" {
+    let ls: Maybe<string> = Maybe.Has("ab")
+    assert ls is Maybe.Has("ab")
+    assert !(ls is Maybe.Has("cd"))
+}
+
+test "tuple sub-pattern on a generic payload" {
+    let p: Maybe<(i64, i64)> = Maybe.Has((1, 2))
+    match p {
+        Maybe.Has((x, y)) => assert x == 1 && y == 2
+        Maybe.Nope => assert false
+    }
+}

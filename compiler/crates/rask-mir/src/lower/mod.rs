@@ -469,6 +469,7 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             map_key_fns: CallMap::of(empty::map_key_fns()),
             decode_defaults: empty::decode_defaults(),
             claim_generators: empty::claim_generators(),
@@ -508,6 +509,11 @@ impl<'a> MirContext<'a> {
 
     pub fn with_interface_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
         self.interface_methods = methods;
+        self
+    }
+
+    pub fn with_interface_take_self(mut self, methods: HashMap<String, std::collections::HashSet<String>>) -> Self {
+        self.interface_take_self = methods;
         self
     }
 
@@ -623,6 +629,9 @@ pub struct MirContext<'a> {
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
+    /// The methods of each interface declared `take self`, by the same keys.
+    /// A call through `any Interface` to one of these consumes the box.
+    pub interface_take_self: HashMap<String, std::collections::HashSet<String>>,
     /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
     pub interface_coercions: &'a HashMap<NodeId, String>,
     /// See `TypedProgram::arm_widenings`.
@@ -985,6 +994,7 @@ impl<'a> MirContext<'a> {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -5613,12 +5623,27 @@ impl<'a> MirLowerer<'a> {
             }));
             result
         } else {
-            let result = self.builder.alloc_temp(MirType::U8);
+            let result = self.builder.alloc_temp(self.stored_tag_type(value));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::EnumTag { value: value.clone() },
             }));
             result
+        }
+    }
+
+    /// The type a tag read off `value` has: the width its enum's layout
+    /// stores. A byte for the usual enum, two for one with over 256 variants,
+    /// more for a backed one. Wrappers (`T?`, `T or E`) keep a byte.
+    fn stored_tag_type(&self, value: &MirOperand) -> MirType {
+        let MirOperand::Local(id) = value else { return MirType::U8 };
+        match self.builder.local_type(*id) {
+            Some(MirType::Enum(eid)) => self
+                .ctx
+                .enum_layouts
+                .get(eid.id as usize)
+                .map_or(MirType::U8, |l| self.ctx.type_to_mir(&l.tag_ty)),
+            _ => MirType::U8,
         }
     }
 
@@ -5735,6 +5760,7 @@ impl<'a> MirLowerer<'a> {
         match &pattern.kind {
             PatternKind::Constructor { fields, .. } => fields.iter().any(binds),
             PatternKind::Struct { fields, .. } => fields.iter().any(|(_, f)| binds(f)),
+            PatternKind::Tuple(parts) => parts.iter().any(binds),
             _ => false,
         }
     }
@@ -5799,8 +5825,8 @@ impl<'a> MirLowerer<'a> {
         checked: Option<&Type>,
         pattern: &rask_ast::expr::Pattern,
     ) {
-        use rask_ast::expr::PatternKind;
-        if !matches!(&pattern.kind, PatternKind::TypePat { binding: Some(_), .. }) {
+        // `T` without `as` names a type to test and binds nothing.
+        if matches!(&pattern.kind, rask_ast::expr::PatternKind::TypePat { binding: None, .. }) {
             return;
         }
         let Some(test) = self.field_type_tests.remove(&pattern.id) else {
@@ -5856,6 +5882,16 @@ impl<'a> MirLowerer<'a> {
             PatternKind::Ident(_) if !self.pattern_names_variant(pattern) => {
                 self.emit_field_type_test(value, ty, checked, pattern, fail)
             }
+            // A variant of the error side of a `T or E`, or of one member of a
+            // union, in a part of the value: the side tag, the member index and
+            // the variant tag, each read once the one above held. The same test
+            // `x is E.Variant(..)` runs on a value of that type.
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Ident(_)
+                if matches!(ty, MirType::Result { .. } | MirType::Union(_))
+                    && self.deep_result_path(pattern, ty).is_some() =>
+            {
+                self.emit_field_type_test(value, ty, checked, pattern, fail)
+            }
             PatternKind::Literal(_) | PatternKind::Range { .. } => {
                 let pass = self.builder.create_block();
                 self.emit_pattern_test(value, pattern, pass, fail)?;
@@ -5863,11 +5899,32 @@ impl<'a> MirLowerer<'a> {
                 Ok(())
             }
             // A named variant tests like its positional spelling.
+            // A struct has no tag to test: its field patterns are the test.
+            PatternKind::Struct { fields, .. } if matches!(ty, MirType::Struct(_)) => {
+                for (local, field_ty, field_checked, field_pat) in
+                    self.read_struct_pattern_fields(value, ty, checked, fields, "__sub")
+                {
+                    self.emit_subpattern_test(
+                        &MirOperand::Local(local), &field_ty, field_checked.as_ref(), field_pat, fail,
+                    )?;
+                }
+                Ok(())
+            }
+            PatternKind::Tuple(pats) => {
+                for (local, elem_ty, elem_checked, elem_pat) in
+                    self.read_tuple_pattern_elems(value, ty, checked, pats, "__sub")
+                {
+                    self.emit_subpattern_test(
+                        &MirOperand::Local(local), &elem_ty, elem_checked.as_ref(), elem_pat, fail,
+                    )?;
+                }
+                Ok(())
+            }
             PatternKind::Struct { name, fields, .. } => {
                 let Some(names) = self.variant_field_names(ty, name) else {
                     return Err(LoweringError::InvalidConstruct(format!(
-                        "`{name} {{ … }}` nested in a variant pattern needs an enum field, \
-                         found `{ty:?}`"
+                        "`{name} {{ … }}` nested in a variant pattern needs an enum or struct \
+                         field, found `{ty:?}`"
                     )));
                 };
                 let positional = names
@@ -5932,9 +5989,111 @@ impl<'a> MirLowerer<'a> {
                 }
                 Ok(())
             }
-            other => Err(LoweringError::InvalidConstruct(format!(
-                "`{other:?}` nested in a variant pattern isn't lowered natively yet"
-            ))),
+            PatternKind::Or(_) => Err(LoweringError::InvalidConstruct(
+                "an or-pattern reached a nested test: `expand_or` should have split it".to_string(),
+            )),
+        }
+    }
+
+    /// Read each field a struct pattern names out of the struct `value` into a
+    /// local of its own: the local, its lowered type, the checker's type for
+    /// it (instantiated when the struct's type is known) and its pattern.
+    fn read_struct_pattern_fields<'p>(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        checked: Option<&Type>,
+        fields: &'p [(String, rask_ast::expr::Pattern)],
+        local_prefix: &str,
+    ) -> Vec<(LocalId, MirType, Option<Type>, &'p rask_ast::expr::Pattern)> {
+        let instantiated = checked.and_then(|c| self.struct_fields_of(c));
+        let mut reads = Vec::new();
+        for (field_name, field_pat) in fields {
+            let Some((field_idx, field_layout)) = self.struct_field(ty, field_name) else {
+                continue;
+            };
+            let field_checked = instantiated
+                .as_ref()
+                .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| field_layout.ty.clone());
+            let field_ty = self.ctx.type_to_mir(&field_checked);
+            let local = self.builder.alloc_local(format!("{local_prefix}_{field_name}"), field_ty.clone());
+            self.read_layout_field(
+                local, value.clone(), field_idx as u32, &field_layout, &field_ty, field_layout.offset,
+            );
+            reads.push((local, field_ty, Some(field_checked), field_pat));
+        }
+        reads
+    }
+
+    /// Read each element a tuple pattern names out of the tuple `value`, as
+    /// `read_struct_pattern_fields` does for a struct's fields.
+    fn read_tuple_pattern_elems<'p>(
+        &mut self,
+        value: &MirOperand,
+        ty: &MirType,
+        checked: Option<&Type>,
+        pats: &'p [rask_ast::expr::Pattern],
+        local_prefix: &str,
+    ) -> Vec<(LocalId, MirType, Option<Type>, &'p rask_ast::expr::Pattern)> {
+        let checked_elems = match checked {
+            Some(Type::Tuple(elems)) => Some(elems.as_slice()),
+            _ => None,
+        };
+        let mut reads = Vec::new();
+        for (j, pat) in pats.iter().enumerate() {
+            let elem_checked = checked_elems.and_then(|e| e.get(j)).cloned();
+            let elem_ty = match (ty, &elem_checked) {
+                (MirType::Tuple(parts), _) if j < parts.len() => parts[j].clone(),
+                (_, Some(c)) => self.ctx.type_to_mir(c),
+                _ => continue,
+            };
+            let local = self.builder.alloc_local(format!("{local_prefix}_{j}"), elem_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::Field {
+                    base: value.clone(),
+                    field_index: j as u32,
+                    byte_offset: None,
+                    access: FieldAccess::Word,
+                },
+            }));
+            reads.push((local, elem_ty, elem_checked, pat));
+        }
+        reads
+    }
+
+    /// Bind what one part of a nested pattern names, out of the local that
+    /// holds that part: a plain name takes it, a type test binds its payload,
+    /// and a pattern with parts of its own binds inside it.
+    fn bind_field_value(
+        &mut self,
+        value: MirOperand,
+        field_ty: MirType,
+        field_checked: Option<&Type>,
+        field_pat: &rask_ast::expr::Pattern,
+    ) {
+        use rask_ast::expr::PatternKind;
+        match &field_pat.kind {
+            PatternKind::Ident(binding) if self.pattern_binds(field_pat) => {
+                let bound = self.builder.alloc_local(binding.clone(), field_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: bound,
+                    rvalue: MirRValue::Use(value),
+                }));
+                if let Some(prefix) = self.mir_type_name(&field_ty) {
+                    self.meta_mut(binding).type_prefix = Some(prefix);
+                }
+                self.locals.insert(binding.clone(), (bound, field_ty));
+            }
+            PatternKind::TypePat { .. } => {
+                self.bind_field_type_pattern(&value, &field_ty, field_checked, field_pat);
+            }
+            PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Tuple(_) => {
+                self.bind_pattern_fields(field_pat, value, None, false, &field_ty, field_checked);
+            }
+            _ => {}
         }
     }
 
@@ -5951,6 +6110,14 @@ impl<'a> MirLowerer<'a> {
         checked: Option<&Type>,
     ) {
         use rask_ast::expr::{Pattern, PatternKind};
+        // A pattern that was tested as a whole on a `T or E` or a union binds
+        // along the path that test took.
+        if !matches!(&pattern.kind, PatternKind::TypePat { .. })
+            && self.field_type_tests.contains_key(&pattern.id)
+        {
+            self.bind_field_type_pattern(&value, scrutinee_ty, checked, pattern);
+            return;
+        }
         match &pattern.kind {
             // A named variant binds like its positional spelling: each field's
             // pattern at that field's index, `_` for the ones it leaves out.
@@ -5972,6 +6139,22 @@ impl<'a> MirLowerer<'a> {
                 let as_constructor =
                     Pattern::new(pattern.id, PatternKind::Constructor { name: name.clone(), fields: positional }, pattern.span);
                 self.bind_pattern_fields(&as_constructor, value, payload_ty, is_niche, scrutinee_ty, checked);
+            }
+            // A struct or tuple pattern nested in a variant's field: read each
+            // part it names and bind inside it.
+            PatternKind::Struct { fields, .. } if matches!(scrutinee_ty, MirType::Struct(_)) => {
+                for (local, field_ty, field_checked, field_pat) in
+                    self.read_struct_pattern_fields(&value, scrutinee_ty, checked, fields, "__bind")
+                {
+                    self.bind_field_value(MirOperand::Local(local), field_ty, field_checked.as_ref(), field_pat);
+                }
+            }
+            PatternKind::Tuple(pats) => {
+                for (local, elem_ty, elem_checked, elem_pat) in
+                    self.read_tuple_pattern_elems(&value, scrutinee_ty, checked, pats, "__bind")
+                {
+                    self.bind_field_value(MirOperand::Local(local), elem_ty, elem_checked.as_ref(), elem_pat);
+                }
             }
             PatternKind::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
@@ -7911,6 +8094,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -8013,6 +8197,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
@@ -8122,6 +8307,7 @@ mod tests {
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
+            interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
             erased_try_errors: empty::erased_try_errors(),
             arm_widenings: &EMPTY_ARM_WIDENINGS,
