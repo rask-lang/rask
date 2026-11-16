@@ -406,6 +406,15 @@ impl Interpreter {
         }
     }
 
+    /// Whether two values are the one collection, not two with equal contents.
+    pub(crate) fn same_collection(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Vec(a), Value::Vec(b)) => Arc::ptr_eq(a, b),
+            (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     /// Compare two runtime values for equality.
     pub(crate) fn value_eq(a: &Value, b: &Value) -> bool {
         match (a, b) {

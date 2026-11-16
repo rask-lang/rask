@@ -740,7 +740,7 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     })),
                     ClosureArg::InPlace { collection, at, map } => {
-                        self.bind_element_in_place(param_local, collection, at, map)
+                        self.bind_element_in_place(param_local, collection, at, map);
                     }
                 }
                 self.locals.insert(param_name.clone(), (param_local, arg_ty));
