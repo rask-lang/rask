@@ -139,3 +139,103 @@ test "else as e after testing the task's error" {
     assert lines[0] == "error bad input bad"
     assert lines[1] == "value 1.5"
 }
+
+// The task's error can itself be a union. Testing one member leaves the task's
+// result over the members that are left, still inside the join's, and `else as
+// e` binds that. Native refused to build it.
+struct NotFound {
+    key: string
+}
+
+struct Refused {
+    code: i64
+}
+
+struct TimedOut {
+    after: i64
+}
+
+extend NotFound {
+    func message(self) -> string {
+        return self.key
+    }
+}
+
+extend Refused {
+    func message(self) -> string {
+        return "refused {self.code}"
+    }
+}
+
+extend TimedOut {
+    func message(self) -> string {
+        return "timed out {self.after}"
+    }
+}
+
+func lookup(k: string) -> f64 or (NotFound | Refused) {
+    if k == "a" {
+        return NotFound(key: "no {k}")
+    }
+    if k == "b" {
+        return Refused(code: 9)
+    }
+    return 2.5
+}
+
+func probe(k: string) -> f64 or (NotFound | Refused | TimedOut) {
+    if k == "a" {
+        return NotFound(key: "no {k}")
+    }
+    if k == "b" {
+        return Refused(code: 9)
+    }
+    if k == "c" {
+        return TimedOut(after: 30)
+    }
+    return 2.5
+}
+
+test "else as e after testing a member of the task's error union" {
+    mut lines: Vec<string> = Vec.new()
+    using Multitasking {
+        for word in ["a", "b", "ok"] {
+            let r = spawn { return try lookup(word) }.join()
+            if r is NotFound as n {
+                lines.push("not found {n.key}")
+            } else as e {
+                match e {
+                    f64 as v => lines.push("value {v}"),
+                    Refused as x => lines.push("refused {x.code}"),
+                    JoinError as _ => lines.push("joined badly"),
+                }
+            }
+        }
+    }
+    assert lines[0] == "not found no a"
+    assert lines[1] == "refused 9"
+    assert lines[2] == "value 2.5"
+}
+
+test "else as e after testing the other member, and with three members" {
+    mut lines: Vec<string> = Vec.new()
+    using Multitasking {
+        for word in ["a", "b", "c", "ok"] {
+            let r = spawn { return try probe(word) }.join()
+            if r is Refused as x {
+                lines.push("refused {x.code}")
+            } else as e {
+                match e {
+                    f64 as v => lines.push("value {v}"),
+                    NotFound as n => lines.push("not found {n.key}"),
+                    TimedOut as t => lines.push("timed out {t.after}"),
+                    JoinError as _ => lines.push("joined badly"),
+                }
+            }
+        }
+    }
+    assert lines[0] == "not found no a"
+    assert lines[1] == "refused 9"
+    assert lines[2] == "timed out 30"
+    assert lines[3] == "value 2.5"
+}
